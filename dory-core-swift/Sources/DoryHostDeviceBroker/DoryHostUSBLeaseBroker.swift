@@ -87,6 +87,7 @@ public final class DoryHostUSBLeaseDevice: DoryPCUSBDevice, @unchecked Sendable 
   private var active = true
   private var outstandingTransfers = 0
   private var released = false
+  private var revocationHandler: (@Sendable () -> Void)?
 
   fileprivate init(
     leaseID: UUID,
@@ -114,6 +115,16 @@ public final class DoryHostUSBLeaseDevice: DoryPCUSBDevice, @unchecked Sendable 
 
   public var isActive: Bool {
     condition.withLock { active }
+  }
+
+  /// Installs the root-hub notification edge. Installing after a physical removal immediately
+  /// reports the already-terminal lease so capture and xHCI attachment cannot lose a disconnect.
+  public func setRevocationHandler(_ handler: (@Sendable () -> Void)?) {
+    let notifyNow = condition.withLock { () -> Bool in
+      revocationHandler = active ? handler : nil
+      return !active && handler != nil
+    }
+    if notifyNow { handler?() }
   }
 
   public func perform(_ transfer: DoryPCUSBTransfer) -> DoryPCUSBTransferResult {
@@ -159,12 +170,14 @@ public final class DoryHostUSBLeaseDevice: DoryPCUSBDevice, @unchecked Sendable 
   }
 
   private func revoke() {
-    let shouldClose = condition.withLock {
-      guard active else { return false }
+    let outcome = condition.withLock { () -> (Bool, (@Sendable () -> Void)?) in
+      guard active else { return (false, nil) }
       active = false
-      return true
+      let notification = revocationHandler
+      revocationHandler = nil
+      return (true, notification)
     }
-    guard shouldClose else { return }
+    guard outcome.0 else { return }
     capability.cancelAll()
     let deadline = Date().addingTimeInterval(1)
     condition.lock()
@@ -175,6 +188,7 @@ public final class DoryHostUSBLeaseDevice: DoryPCUSBDevice, @unchecked Sendable 
     capability.close()
     (capability as? any DoryHostUSBRevocationNotifying)?.setRevocationHandler(nil)
     if notify { releaseHandler(leaseID, identityToken, machineID) }
+    outcome.1?()
   }
 
   deinit {

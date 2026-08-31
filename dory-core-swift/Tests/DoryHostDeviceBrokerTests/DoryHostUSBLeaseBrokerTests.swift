@@ -126,6 +126,32 @@ import Testing
     #expect(capability.resetCount == 1)
     #expect(capability.closeCount == 1)
   }
+
+  @Test func revocationNotificationIsExactlyOnceAndLateRegistrationIsNotLost() throws {
+    let token = identityToken("e")
+    let capability = RecordingCapability(identityToken: token)
+    let broker = DoryHostUSBLeaseBroker()
+    let lease = try broker.acquire(
+      machineID: "machine-e",
+      identityToken: token,
+      family: .developerHardware,
+      admission: .init(userSelected: true),
+      capability: capability
+    )
+    lease.surpriseRemove()
+
+    let notifications = LockedCounter()
+    lease.setRevocationHandler { notifications.increment() }
+    lease.surpriseRemove()
+    #expect(notifications.value == 1)
+  }
+}
+
+private final class LockedCounter: @unchecked Sendable {
+  private let lock = NSLock()
+  private var count = 0
+  var value: Int { lock.withLock { count } }
+  func increment() { lock.withLock { count += 1 } }
 }
 
 private final class RecordingCapability: DoryHostUSBTransferCapability, @unchecked Sendable {

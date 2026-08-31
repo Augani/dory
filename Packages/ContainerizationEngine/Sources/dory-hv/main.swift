@@ -520,14 +520,21 @@ case "desktop":
               !genericGuest,
               bootMode == nil,
               shares.isEmpty,
-              environment.isEmpty,
-              usbControlSocket == nil else {
+              environment.isEmpty else {
             fail("DoryPC resolved launch rejects legacy ARM desktop arguments")
         }
         guard let handoffSocket else { fail("DoryPC desktop requires --handoff-sock") }
         guard let consoleSocket else { fail("DoryPC desktop requires --console-sock") }
         guard let controlSocket else { fail("DoryPC desktop requires --control-sock") }
         guard let gvproxy else { fail("DoryPC desktop requires --gvproxy") }
+        if pcRuntimeLaunchEnvelope.devices.removableUSBHotplug,
+           usbControlSocket == nil {
+            fail("DoryPC removable USB hotplug requires --usb-control-sock")
+        }
+        if !pcRuntimeLaunchEnvelope.devices.removableUSBHotplug,
+           usbControlSocket != nil {
+            fail("DoryPC --usb-control-sock is not authorized by the device contract")
+        }
         do {
             let authority = try DoryPCUEFIRuntimeAuthority.admit(
                 envelope: pcRuntimeLaunchEnvelope
@@ -539,6 +546,7 @@ case "desktop":
                 handoffSocketPath: handoffSocket,
                 consoleSocketPath: consoleSocket,
                 controlSocketPath: controlSocket,
+                usbControlSocketPath: usbControlSocket,
                 gvproxyPath: gvproxy,
                 displayPresentation: displayPresentation
             ))

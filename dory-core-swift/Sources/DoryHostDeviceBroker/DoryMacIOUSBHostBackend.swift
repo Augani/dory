@@ -8,6 +8,8 @@ import IOUSBHost
 
 public enum DoryIOUSBHostCaptureError: Error, Sendable, Equatable {
   case invalidService
+  case deviceNotFound
+  case discoveryFailed(Int32)
   case identityUnavailable
   case identityMismatch
   case authorizationFailed(Int32)
@@ -15,6 +17,38 @@ public enum DoryIOUSBHostCaptureError: Error, Sendable, Equatable {
 }
 
 extension DoryIOUSBHostTransferCapability {
+  /// Resolves a previously selected stable identity at the last responsible moment and captures
+  /// that exact device. Transient bus addresses are deliberately not trusted for reopening.
+  public static func capture(
+    expectedIdentityToken: DoryUSBPhysicalIdentityToken,
+    speed: DoryPCXHCIPortSpeed,
+    allowUserInteraction: Bool = true
+  ) throws -> DoryIOUSBHostTransferCapability {
+    var iterator: io_iterator_t = 0
+    let status = IOServiceGetMatchingServices(
+      kIOMainPortDefault,
+      IOServiceMatching("IOUSBHostDevice"),
+      &iterator
+    )
+    guard status == kIOReturnSuccess else {
+      throw DoryIOUSBHostCaptureError.discoveryFailed(status)
+    }
+    defer { IOObjectRelease(iterator) }
+    while true {
+      let service = IOIteratorNext(iterator)
+      guard service != 0 else { break }
+      defer { IOObjectRelease(service) }
+      guard DoryMacUSBIdentity.token(for: service) == expectedIdentityToken else { continue }
+      return try capture(
+        ioService: service,
+        expectedIdentityToken: expectedIdentityToken,
+        speed: speed,
+        allowUserInteraction: allowUserInteraction
+      )
+    }
+    throw DoryIOUSBHostCaptureError.deviceNotFound
+  }
+
   /// Authorizes and exclusively captures a user-selected physical USB device. The service identity
   /// is re-derived immediately before capture so a stale discovery result cannot attach a different
   /// device that reused a transient USB address.

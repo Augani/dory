@@ -11,7 +11,7 @@ public final class UsbControlServer: @unchecked Sendable {
     private static let maximumConfiguredTimeout: TimeInterval = 30
 
     private let path: String
-    private let handler: UsbControlHandler
+    private let handler: any UsbControlRequestHandling
     private let lock = NSLock()
     private let maximumSessions: Int
     private let frameTimeout: TimeInterval
@@ -22,7 +22,7 @@ public final class UsbControlServer: @unchecked Sendable {
     private let log: @Sendable (String) -> Void
     private var currentRun: UsbControlServerRun?
 
-    public convenience init(path: String, handler: UsbControlHandler) {
+    public convenience init(path: String, handler: any UsbControlRequestHandling) {
         self.init(
             path: path,
             handler: handler,
@@ -38,7 +38,7 @@ public final class UsbControlServer: @unchecked Sendable {
 
     init(
         path: String,
-        handler: UsbControlHandler,
+        handler: any UsbControlRequestHandling,
         maximumSessions: Int,
         frameTimeout: TimeInterval,
         expectedPeerUID: uid_t,
@@ -417,7 +417,7 @@ private final class UsbControlServerRun: @unchecked Sendable {
 
     private let condition = NSCondition()
     private let maximumSessions: Int
-    private let handler: UsbControlHandler
+    private let handler: any UsbControlRequestHandling
     private let frameTimeout: TimeInterval
     private let expectedPeerUID: uid_t
     private let peerUIDResolver: @Sendable (Int32) -> uid_t?
@@ -431,7 +431,7 @@ private final class UsbControlServerRun: @unchecked Sendable {
     init(
         listener: UsbControlOwnedListener,
         maximumSessions: Int,
-        handler: UsbControlHandler,
+        handler: any UsbControlRequestHandling,
         frameTimeout: TimeInterval,
         expectedPeerUID: uid_t,
         peerUIDResolver: @escaping @Sendable (Int32) -> uid_t?,
@@ -534,7 +534,7 @@ private final class UsbControlServerRun: @unchecked Sendable {
 
 private final class UsbControlServerSession: @unchecked Sendable {
     private let lock = NSLock()
-    private let handler: UsbControlHandler
+    private let handler: any UsbControlRequestHandling
     private let frameTimeout: TimeInterval
     private let expectedPeerUID: uid_t
     private let peerUIDResolver: @Sendable (Int32) -> uid_t?
@@ -547,7 +547,7 @@ private final class UsbControlServerSession: @unchecked Sendable {
 
     init(
         descriptor: Int32,
-        handler: UsbControlHandler,
+        handler: any UsbControlRequestHandling,
         frameTimeout: TimeInterval,
         expectedPeerUID: uid_t,
         peerUIDResolver: @escaping @Sendable (Int32) -> uid_t?,

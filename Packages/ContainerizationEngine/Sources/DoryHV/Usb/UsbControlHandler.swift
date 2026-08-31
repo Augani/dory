@@ -63,6 +63,15 @@ public enum UsbControlError: Error, Equatable, Sendable, CustomStringConvertible
     }
 }
 
+public protocol UsbControlRequestHandling: AnyObject, Sendable {
+    func attach(
+        busID: String,
+        expectedIdentity: DoryUSBPhysicalIdentityToken,
+        mode: HostUsbOpenMode
+    ) async throws -> DoryUSBControlV1.Attachment
+    func detach(busID: String) async throws
+}
+
 /// The engine-side logic behind `dory usb attach/detach`: claim the host device, register it with the
 /// `UsbipManager` so the listener can serve it, and tell the guest agent to dial and vhci-attach. All
 /// three collaborators are injected so the full sequence (including rollback when the guest notify
@@ -451,6 +460,8 @@ public final class UsbControlHandler: @unchecked Sendable {
         usedPorts.remove(expected.port)
     }
 }
+
+extension UsbControlHandler: UsbControlRequestHandling {}
 
 private extension NSLock {
     func withLock<R>(_ body: () throws -> R) rethrows -> R {

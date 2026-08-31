@@ -17,6 +17,7 @@ enum DoryPCMode {
         let handoffSocketPath: String
         let consoleSocketPath: String
         let controlSocketPath: String
+        let usbControlSocketPath: String?
         let gvproxyPath: String
         let displayPresentation: DoryMachineDisplayPresentation
     }
@@ -91,6 +92,8 @@ enum DoryPCMode {
         private let displaySink: DoryPCSoftwareDisplaySink?
         private let cameraBridge: DoryPCCameraBridge?
         private let audioBackend: DoryPCMacAudioBackend?
+        private let usbControlHandler: DoryPCUSBControlHandler?
+        private let usbControlServer: UsbControlServer?
         private let mailbox: DesktopFrameMailbox?
         private let window: NSWindow?
         private let readyPublisher: ReadyPublisher
@@ -116,8 +119,7 @@ enum DoryPCMode {
             guard devices.networkAttachment != .bridged,
                   !devices.clipboard,
                   !devices.clockSynchronization,
-                  !devices.dynamicDisplay,
-                  !devices.removableUSBHotplug else {
+                  !devices.dynamicDisplay else {
                 throw VMError.invalidConfiguration(
                     "DoryPC launch requested a host device backend that is not admitted by this runner"
                 )
@@ -208,6 +210,27 @@ enum DoryPCMode {
                 _ = machine.networkDevice.setLinkUp(false)
             }
             machineState = MachineState(machine: machine)
+            if devices.removableUSBHotplug {
+                guard let socketPath = configuration.usbControlSocketPath else {
+                    throw VMError.invalidConfiguration(
+                        "DoryPC removable USB hotplug requires an admitted control socket"
+                    )
+                }
+                let handler = DoryPCUSBControlHandler(
+                    controller: machine.xhciController,
+                    machineID: envelope.machineID
+                )
+                usbControlHandler = handler
+                usbControlServer = UsbControlServer(path: socketPath, handler: handler)
+            } else {
+                guard configuration.usbControlSocketPath == nil else {
+                    throw VMError.invalidConfiguration(
+                        "DoryPC USB control socket is not authorized by the device contract"
+                    )
+                }
+                usbControlHandler = nil
+                usbControlServer = nil
+            }
             if devices.cameraInput {
                 do {
                     let bridge = try DoryPCCameraBridge { message in
@@ -275,6 +298,7 @@ enum DoryPCMode {
 
         func run() throws {
             defer { cleanup() }
+            try usbControlServer?.start()
             try lifecycleServer.start()
             DoryDesktopApplicationIdentity.install(on: application)
             application.setActivationPolicy(window == nil ? .accessory : .regular)
@@ -328,6 +352,7 @@ enum DoryPCMode {
                                 ?? DoryVirtioInMemorySoundBackend(),
                             networkBackend: networkBackend
                         )
+                        try usbControlHandler?.replaceController(replacement.xhciController)
                         try cameraBridge?.attach(to: replacement.xhciController)
                         if configuration.envelope.devices.networkAttachment == .disconnected {
                             _ = replacement.networkDevice.setLinkUp(false)
@@ -396,6 +421,8 @@ enum DoryPCMode {
             signalSources.forEach { $0.cancel() }
             signalSources.removeAll()
             lifecycleServer.stop()
+            _ = usbControlServer?.stop()
+            usbControlHandler?.stop()
             networkRuntime?.stop()
             cameraBridge?.stop()
             audioBackend?.reset()

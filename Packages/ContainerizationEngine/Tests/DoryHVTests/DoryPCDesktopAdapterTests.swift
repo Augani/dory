@@ -1,12 +1,77 @@
 import CoreGraphics
+import DoryHostDeviceBroker
 import DoryHV
+import DoryMachinePC
 import DoryVirtio
+import DoryVMContracts
 import Foundation
 import ImageIO
 import Testing
 @testable import dory_hv
 
 @Suite struct DoryPCDesktopAdapterTests {
+    @Test func physicalUSBLeaseSurvivesResetAndRevokesTheRootPort() async throws {
+        let token = DoryUSBPhysicalIdentityToken(
+            rawValue: String(repeating: "a", count: 64)
+        )!
+        let descriptor = UsbipDeviceDescriptor(
+            path: "test-device",
+            busID: "3-2",
+            busNumber: 3,
+            deviceNumber: 2,
+            speed: 5,
+            vendorID: 0x2e8a,
+            productID: 0x0003,
+            bcdDevice: 0x0100,
+            deviceClass: 0xff,
+            deviceSubClass: 0,
+            deviceProtocol: 0,
+            configurationValue: 1,
+            configurationCount: 1,
+            interfaceCount: 1
+        )
+        let candidate = HostUsbDeviceCandidate(
+            descriptor: descriptor,
+            identityToken: token,
+            captureDecision: .allowed
+        )
+        let capability = RecordingPCUSBTransferCapability(identityToken: token)
+        let broker = DoryHostUSBLeaseBroker()
+        let lease = try broker.acquire(
+            machineID: "machine-a",
+            identityToken: token,
+            family: .developerHardware,
+            admission: .init(userSelected: true),
+            capability: capability
+        )
+        let initial = try DoryPCXHCIController()
+        let handler = DoryPCUSBControlHandler(
+            controller: initial,
+            machineID: "machine-a",
+            broker: broker,
+            lookupCandidate: { _ in candidate },
+            openLease: { _, _ in lease }
+        )
+
+        let attachment = try await handler.attach(
+            busID: "3-2",
+            expectedIdentity: token,
+            mode: .userAuthorized
+        )
+        #expect(attachment.port == 2)
+        #expect(try initial.portState(2).connected)
+        #expect(try initial.portState(2).speed == .superSpeed)
+
+        let replacement = try DoryPCXHCIController()
+        try handler.replaceController(replacement)
+        #expect(try replacement.portState(2).connected)
+
+        lease.surpriseRemove()
+        #expect(try !replacement.portState(2).connected)
+        #expect(broker.activeLeaseCount(machineID: "machine-a") == 0)
+        #expect(capability.closeCount == 1)
+    }
+
     @Test func macAudioAdapterPacesAndMapsDoryPCStreams() throws {
         let host = RecordingPCMacAudioHost()
         let adapter = DoryPCMacAudioBackend(log: { _ in }, host: host)
@@ -155,6 +220,32 @@ import Testing
         )
         #expect(sink.convert(frame) == nil)
     }
+}
+
+private final class RecordingPCUSBTransferCapability: DoryHostUSBTransferCapability,
+    @unchecked Sendable
+{
+    let identityToken: DoryUSBPhysicalIdentityToken
+    let speed: DoryPCXHCIPortSpeed = .superSpeed
+    private let lock = NSLock()
+    private var closes = 0
+
+    init(identityToken: DoryUSBPhysicalIdentityToken) {
+        self.identityToken = identityToken
+    }
+
+    var closeCount: Int { lock.withLock { closes } }
+
+    func perform(
+        _ transfer: DoryPCUSBTransfer,
+        deadline: ContinuousClock.Instant
+    ) -> DoryPCUSBTransferResult {
+        try! .init(status: .success)
+    }
+
+    func reset(deadline: ContinuousClock.Instant) -> Bool { true }
+    func cancelAll() {}
+    func close() { lock.withLock { closes += 1 } }
 }
 
 private final class RecordingPCMacAudioHost: VirtioSoundHost, @unchecked Sendable {
