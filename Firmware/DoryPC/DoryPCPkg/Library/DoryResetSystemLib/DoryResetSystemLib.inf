@@ -1,0 +1,18 @@
+[Defines]
+  INF_VERSION    = 0x0001001B
+  BASE_NAME      = DoryResetSystemLib
+  FILE_GUID      = a6914cf0-7799-42b9-90e8-3029332b0dae
+  MODULE_TYPE    = BASE
+  VERSION_STRING = 1.0
+  LIBRARY_CLASS  = ResetSystemLib
+
+[Sources]
+  DoryResetSystemLib.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+
+[LibraryClasses]
+  BaseLib
+  IoLib
