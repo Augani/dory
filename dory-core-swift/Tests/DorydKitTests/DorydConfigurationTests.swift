@@ -1019,6 +1019,7 @@ final class DorydConfigurationTests: XCTestCase {
             "DORYD_MACHINE_STATE_DIR": directory + "/machines",
             "DORYD_MACHINE_LOG_DIR": directory + "/logs",
             "DORYD_ARMVIRT_FIRMWARE_BUNDLE": directory + "/firmware",
+            "DORYD_PC_FIRMWARE_BUNDLE": directory + "/pc-firmware",
             "DORYD_VMM_ARGS": "--foreground --verbose",
             "DORYD_VMM_PASS_MACHINE_ARGS": "0",
             "DORYD_VMM_READY_HANDOFF": "0",
@@ -1027,6 +1028,7 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertEqual(env.machineManagerConfiguration(), MachineManagerConfiguration(
             vmmExecutablePath: helper,
             armVirtFirmwareBundlePath: directory + "/firmware",
+            pcFirmwareBundlePath: directory + "/pc-firmware",
             stateDirectory: directory + "/machines",
             runtimeDirectory: directory + "/home/.dory/machines",
             lifecycleJournalHome: directory + "/home",
@@ -1035,6 +1037,33 @@ final class DorydConfigurationTests: XCTestCase {
             logDirectory: directory + "/logs",
             requiresReadyHandoff: false
         ))
+    }
+
+    func testMachineManagerConfigurationFindsFirmwareInManagedResources() throws {
+        let directory = "/tmp/doryd-machine-firmware-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        let resources = directory + "/Resources"
+        try FileManager.default.createDirectory(
+            atPath: resources + "/dory-armvirt-firmware",
+            withIntermediateDirectories: true
+        )
+        try FileManager.default.createDirectory(
+            atPath: resources + "/dory-pc-firmware",
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let helper = try executableFixture(at: directory + "/dory-vmm")
+
+        let env = DorydEnvironment(values: [
+            "DORYD_VMM_HELPER": helper,
+            "DORYD_MACHINE_STATE_DIR": directory + "/machines",
+        ], home: directory + "/home", cwd: directory)
+
+        let config = try XCTUnwrap(env.machineManagerConfiguration())
+        XCTAssertEqual(
+            config.armVirtFirmwareBundlePath,
+            resources + "/dory-armvirt-firmware"
+        )
+        XCTAssertEqual(config.pcFirmwareBundlePath, resources + "/dory-pc-firmware")
     }
 
     func testMachineManagerConfigurationFindsSwiftPMBuiltDoryVMM() throws {

@@ -337,8 +337,14 @@ public struct DorydEnvironment: Sendable {
         return MachineManagerConfiguration(
             vmmExecutablePath: helper,
             acceleratedDesktopExecutablePath: acceleratedDesktop?.executablePath,
-            armVirtFirmwareBundlePath: string("DORYD_ARMVIRT_FIRMWARE_BUNDLE"),
-            pcFirmwareBundlePath: string("DORYD_PC_FIRMWARE_BUNDLE"),
+            armVirtFirmwareBundlePath: firmwareBundlePath(
+                environmentKey: "DORYD_ARMVIRT_FIRMWARE_BUNDLE",
+                resourceName: "dory-armvirt-firmware"
+            ),
+            pcFirmwareBundlePath: firmwareBundlePath(
+                environmentKey: "DORYD_PC_FIRMWARE_BUNDLE",
+                resourceName: "dory-pc-firmware"
+            ),
             stateDirectory: stateDirectory,
             runtimeDirectory: string("DORYD_MACHINE_RUNTIME_DIR") ?? "\(home)/.dory/machines",
             // The journal store derives `Library/Application Support/Dory/operations` from a
@@ -905,6 +911,13 @@ public struct DorydEnvironment: Sendable {
             "\(cwd)/dory-core/target/\(hostGuestArch == "arm64" ? "aarch64" : "x86_64")-unknown-linux-musl/release/dory-agent",
         ].compactMap { $0 }
         return candidates.first { FileManager.default.fileExists(atPath: $0) }
+    }
+
+    /// Explicit paths remain a qualification/development override. Production resolves the
+    /// immutable verified bundle from the same signed resource/component roots as other runtime
+    /// assets, so normal launches never depend on a caller-populated environment variable.
+    private func firmwareBundlePath(environmentKey: String, resourceName: String) -> String? {
+        string(environmentKey) ?? bundledResource(named: [resourceName])
     }
 
     private func bundledResource(named names: [String]) -> String? {
