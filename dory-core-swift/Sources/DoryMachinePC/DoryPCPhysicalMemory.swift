@@ -47,9 +47,11 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
 
   private final class SealedMappings: @unchecked Sendable {
     let values: [Mapping]
+    let hasRAMOverlays: Bool
 
-    init(_ values: [Mapping]) {
+    init(_ values: [Mapping], hasRAMOverlays: Bool) {
       self.values = values
+      self.hasRAMOverlays = hasRAMOverlays
     }
   }
 
@@ -113,7 +115,18 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   public func seal() {
     lock.withLock {
       guard !isSealed else { return }
-      sealedMappings = SealedMappings(mappings)
+      let ramBytes = UInt64(ram.byteCount)
+      let lowRAMUpper = min(ramBytes, mmioHoleStart)
+      let highRAMBytes = ramBytes > mmioHoleStart ? ramBytes - mmioHoleStart : 0
+      let (highRAMUpper, highRAMOverflow) = above4GRAMStart.addingReportingOverflow(highRAMBytes)
+      let hasRAMOverlays = highRAMOverflow || mappings.contains { mapping in
+        let overlapsLow = mapping.lowerBound < lowRAMUpper && mapping.upperBound > 0
+        let overlapsHigh =
+          highRAMBytes > 0 && mapping.lowerBound < highRAMUpper
+          && mapping.upperBound > above4GRAMStart
+        return overlapsLow || overlapsHigh
+      }
+      sealedMappings = SealedMappings(mappings, hasRAMOverlays: hasRAMOverlays)
       isSealed = true
       // Machine execution starts only after sealing. Release/acquire publication makes the
       // immutable routing table safe to read without taking the configuration lock on every
@@ -124,6 +137,12 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
 
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
     guard maximumCount > 0 else { return [] }
+    if let resolved = try directRAMRoute(address: address, byteCount: 1) {
+      return try ram.instructionBytes(
+        at: resolved.backingAddress,
+        maximumCount: min(maximumCount, resolved.availableByteCount)
+      )
+    }
     if let resolved = try resolve(address: address, byteCount: 1) {
       guard resolved.device.allowsInstructionFetch else {
         throw DoryX86MemoryError.unmapped(
@@ -151,6 +170,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
 
   public func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
     guard byteCount > 0 else { return [] }
+    if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
+      return try ram.read(at: resolved.backingAddress, byteCount: byteCount)
+    }
     if let resolved = try resolve(address: address, byteCount: byteCount) {
       return try resolved.device.read(offset: resolved.offset, byteCount: byteCount)
     }
@@ -160,6 +182,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
 
   public func codeGeneration(at address: UInt64, byteCount: Int) throws -> UInt64? {
     guard byteCount > 0 else { return nil }
+    if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
+      return try ram.codeGeneration(at: resolved.backingAddress, byteCount: byteCount)
+    }
     guard try resolve(address: address, byteCount: byteCount) == nil else { return nil }
     let resolved = try resolveRAM(
       address: address,
@@ -172,6 +197,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   public func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
     guard [1, 2, 4, 8].contains(byteCount) else {
       throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
+      return try ram.readScalar(at: resolved.backingAddress, byteCount: byteCount)
     }
     if let resolved = try resolve(address: address, byteCount: byteCount) {
       return try resolved.device.read(
@@ -186,6 +214,10 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
 
   public func write(at address: UInt64, bytes: [UInt8]) throws {
     guard !bytes.isEmpty else { return }
+    if let resolved = try directRAMRoute(address: address, byteCount: bytes.count) {
+      try ram.write(at: resolved.backingAddress, bytes: bytes)
+      return
+    }
     if let resolved = try resolve(address: address, byteCount: bytes.count) {
       try resolved.device.write(offset: resolved.offset, bytes: bytes)
       return
@@ -197,6 +229,10 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   public func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
     guard [1, 2, 4, 8].contains(byteCount) else {
       throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
+      try ram.writeScalar(at: resolved.backingAddress, value: value, byteCount: byteCount)
+      return
     }
     if let resolved = try resolve(address: address, byteCount: byteCount) {
       let bytes = (0..<byteCount).map {
@@ -212,6 +248,10 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {
     guard byteCount > 0 else { return }
+    if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
+      try ram.validateWrite(at: resolved.backingAddress, byteCount: byteCount)
+      return
+    }
     if let resolved = try resolve(address: address, byteCount: byteCount) {
       try resolved.device.validateWrite(offset: resolved.offset, byteCount: byteCount)
       return
@@ -298,6 +338,37 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
         address: address, byteCount: byteCount, access: access)
     }
     return (backingAddress, Int(ordinaryRAMBytes))
+  }
+
+  /// Once the router is sealed and RAM has no device overlays, the two binary mapping searches
+  /// in the general MMIO path are unnecessary for ordinary RAM. The acquire load publishes both
+  /// the immutable mapping table and the overlay proof before this fast path can be observed.
+  private func directRAMRoute(
+    address: UInt64,
+    byteCount: Int
+  ) throws -> (backingAddress: UInt64, availableByteCount: Int)? {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
+    guard dory_atomic_u8_load_acquire(hasPublishedSealedMappings) != 0,
+      sealedMappings?.hasRAMOverlays == false
+    else { return nil }
+    let (upper, overflow) = address.addingReportingOverflow(UInt64(byteCount))
+    guard !overflow else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
+    let ramBytes = UInt64(ram.byteCount)
+    let lowRAMUpper = min(ramBytes, mmioHoleStart)
+    if address < lowRAMUpper, upper <= lowRAMUpper {
+      return (address, Int(lowRAMUpper - address))
+    }
+    guard ramBytes > mmioHoleStart, address >= above4GRAMStart else { return nil }
+    let highOffset = address - above4GRAMStart
+    let highRAMBytes = ramBytes - mmioHoleStart
+    guard highOffset < highRAMBytes, UInt64(byteCount) <= highRAMBytes - highOffset else {
+      return nil
+    }
+    return (mmioHoleStart + highOffset, Int(highRAMBytes - highOffset))
   }
 
   private func resolve(
