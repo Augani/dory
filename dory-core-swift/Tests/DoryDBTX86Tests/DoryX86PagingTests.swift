@@ -1,8 +1,16 @@
+import Foundation
 import Testing
 
 @testable import DoryDBTX86
 
 @Suite struct DoryX86PagingTests {
+  @Test func memoryAccessKindsKeepStableWireValuesWithDistinctHotPathHashes() throws {
+    let kinds: [DoryX86MemoryAccessKind] = [.instructionFetch, .read, .write]
+    #expect(Set(kinds).count == 3)
+    #expect(String(decoding: try JSONEncoder().encode(kinds), as: UTF8.self)
+      == #"["instructionFetch","read","write"]"#)
+  }
+
   @Test func walksFourLevelsAndSetsAccessedAndDirtyBits() throws {
     let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0040_0123

@@ -4,6 +4,16 @@ public enum DoryX86MemoryAccessKind: String, Codable, Sendable, Hashable {
   case instructionFetch
   case read
   case write
+
+  public func hash(into hasher: inout Hasher) {
+    let discriminator: UInt8 =
+      switch self {
+      case .instructionFetch: 0
+      case .read: 1
+      case .write: 2
+      }
+    hasher.combine(discriminator)
+  }
 }
 
 public enum DoryX86MemoryError: Error, Codable, Sendable, Hashable, CustomStringConvertible {
