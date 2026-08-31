@@ -1728,6 +1728,7 @@ nonisolated struct DorydNetworkingStatus: Sendable, Equatable {
     var httpsProxyRunning: Bool
     var routes: [DorydDomainRoute]
     var customRoutes: [DorydDomainRoute]
+    var httpsProxyError: String?
 }
 
 nonisolated struct DorydNetworkingAuthorizationRequest: Sendable, Equatable, Codable {
@@ -5808,7 +5809,8 @@ nonisolated final class DorydClient: @unchecked Sendable {
             httpsProxyPort: uint16(dictionary["httpsProxyPort"]),
             httpsProxyRunning: (dictionary["httpsProxyRunning"] as? Bool) ?? false,
             routes: routes,
-            customRoutes: customRoutes
+            customRoutes: customRoutes,
+            httpsProxyError: dictionary["httpsProxyError"] as? String
         )
     }
 

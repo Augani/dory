@@ -130,19 +130,33 @@ struct UnixSocketHTTP: Sendable {
     /// Streams a response body (after headers) chunk-by-chunk. If the upstream response uses
     /// `Transfer-Encoding: chunked`, the framing is decoded so consumers receive the payload only.
     /// The returned handle's `close()` stops the stream. `onComplete` fires exactly once at the end.
+    /// A stream that never starts (connect, timeout, or request write failure) reports the reason
+    /// through `onFailure` before completing, so a consumer can tell that apart from an empty body.
     func stream(_ request: HTTPRequest,
                 onChunk: @escaping @Sendable (Data) -> Void,
-                onComplete: @escaping @Sendable () -> Void = {}) -> StreamHandle {
+                onComplete: @escaping @Sendable () -> Void = {},
+                onFailure: @escaping @Sendable (Error) -> Void = { _ in }) -> StreamHandle {
         let handle = StreamHandle()
         let path = self.path
         let chunk = self.readChunk
         let timeout = self.ioTimeout
         Self.ioQueue.async {
             defer { handle.close(); onComplete() }
-            guard let fd = try? Self.connectSocket(path) else { return }
+            let fd: Int32
+            do {
+                fd = try Self.connectSocket(path)
+            } catch {
+                onFailure(error)
+                return
+            }
             handle.set(fd)
-            if let timeout, (try? Self.configureTimeout(fd, seconds: timeout)) == nil { return }
-            guard (try? Self.writeAll(fd, HTTPCodec.serialize(request))) != nil else { return }
+            do {
+                if let timeout { try Self.configureTimeout(fd, seconds: timeout) }
+                try Self.writeAll(fd, HTTPCodec.serialize(request))
+            } catch {
+                onFailure(error)
+                return
+            }
             var buffer = Data()
             var bytes = [UInt8](repeating: 0, count: chunk)
             var headersDone = false
@@ -153,7 +167,11 @@ struct UnixSocketHTTP: Sendable {
             while true {
                 let count = bytes.withUnsafeMutableBytes { read(fd, $0.baseAddress, chunk) }
                 if count < 0, errno == EINTR { continue }
-                if count <= 0 { break }
+                if count < 0 {
+                    onFailure(HTTPError.socket(Self.errnoMessage("read")))
+                    break
+                }
+                if count == 0 { break }
                 if headersDone {
                     emit(Data(bytes[0..<count]))
                 } else {

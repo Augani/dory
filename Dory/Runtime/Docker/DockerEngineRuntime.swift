@@ -973,7 +973,14 @@ struct DockerEngineRuntime: ContainerRuntime {
         )
         let client = http
         return AsyncStream { continuation in
-            let handle = client.stream(request, onChunk: { continuation.yield($0) }, onComplete: { continuation.finish() })
+            let handle = client.stream(
+                request,
+                onChunk: { continuation.yield($0) },
+                onComplete: { continuation.finish() },
+                // A push that never reached the engine must not end as a silently empty
+                // progress stream; consumers already surface Docker's error frames.
+                onFailure: { continuation.yield(ShimContainerMapping.error(message: "push failed: \($0.localizedDescription)")) }
+            )
             continuation.onTermination = { _ in handle.close() }
         }
     }
@@ -1168,7 +1175,14 @@ struct DockerEngineRuntime: ContainerRuntime {
             headers: headers, body: contextTar)
         let client = http
         return AsyncStream { continuation in
-            let handle = client.stream(request, onChunk: { continuation.yield($0) }, onComplete: { continuation.finish() })
+            let handle = client.stream(
+                request,
+                onChunk: { continuation.yield($0) },
+                onComplete: { continuation.finish() },
+                // Same reasoning as `pushImage`: report the failure in-band instead of
+                // ending the build output as if it had completed.
+                onFailure: { continuation.yield(ShimContainerMapping.error(message: "build failed: \($0.localizedDescription)")) }
+            )
             continuation.onTermination = { _ in handle.close() }
         }
     }
@@ -1301,6 +1315,12 @@ struct DockerEngineRuntime: ContainerRuntime {
                 for line in decoder.feed(data) { continuation.yield(line) }
             }, onComplete: {
                 continuation.finish()
+            }, onFailure: { error in
+                continuation.yield(LogLine(
+                    timestamp: "",
+                    level: .error,
+                    message: "Log stream ended: \(error.localizedDescription)"
+                ))
             })
             continuation.onTermination = { _ in handle.close() }
         }
@@ -1312,7 +1332,9 @@ struct DockerEngineRuntime: ContainerRuntime {
             path: "/containers/\(DockerImageOps.pathComponent(containerID))/logs?stdout=1&stderr=1&tail=100&timestamps=1",
             headers: [(name: "Accept", value: "application/vnd.docker.raw-stream")]
         ))
-        guard response.isSuccess else { return [] }
+        guard response.isSuccess else {
+            throw HTTPError.status(code: response.statusCode, message: String(data: response.body, encoding: .utf8) ?? "")
+        }
         return DockerLogFrames.parse(response.body)
     }
 }

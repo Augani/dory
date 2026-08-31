@@ -1791,6 +1791,7 @@ struct DorydClientTests {
         #expect(networkStatus.httpProxyRunning)
         #expect(networkStatus.httpsProxyPort == 18443)
         #expect(networkStatus.httpsProxyRunning)
+        #expect(networkStatus.httpsProxyError == "trusted HTTPS could not be issued for the current domains")
         #expect(networkStatus.routes == [
             DorydDomainRoute(
                 hostname: "web.default.k8s.dory.local",
@@ -6395,6 +6396,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "httpsProxyRunning": true,
             "routes": routes.map(Self.dictionary),
             "customRoutes": customRoutes.map(Self.dictionary),
+            "httpsProxyError": "trusted HTTPS could not be issued for the current domains",
         ] as NSDictionary, "")
     }
 

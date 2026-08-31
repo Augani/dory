@@ -22,19 +22,23 @@ enum HostDockerCLI {
         var buildxInstalled: Bool
     }
 
+    /// Reports success only when the terminal integration is actually usable: `docker` resolves
+    /// through `~/.dory/bin` and at least one login profile carries the PATH block. A failed
+    /// symlink or an unwritable profile must not be reported to the user as an enabled command.
     @discardableResult
     static func install() -> Bool {
         guard bundledTool("docker") != nil else { return false }
         try? FileManager.default.createDirectory(atPath: binDir, withIntermediateDirectories: true)
+        var dockerLinked = false
         for tool in linkedTools {
-            if let source = bundledTool(tool) {
-                symlink(source, to: binDir + "/\(tool)")
-            }
+            guard let source = bundledTool(tool) else { continue }
+            let linked = symlink(source, to: binDir + "/\(tool)")
+            if tool == "docker" { dockerLinked = linked }
         }
         _ = installComposePlugin()
         _ = installBuildxPlugin()
-        addToPath()
-        return true
+        let onPath = addToPath()
+        return dockerLinked && onPath
     }
 
     static func reconcileOptionalTools(enabled: Bool) {
@@ -130,14 +134,22 @@ enum HostDockerCLI {
         try? fileManager.removeItem(atPath: destination)
     }
 
-    private static func symlink(_ source: String, to destination: String) {
-        guard source != destination else { return }
+    /// Only counts a tool as linked once the symlink resolves to the requested source, so a
+    /// broken or failed link is reported instead of being taken for a working install.
+    @discardableResult
+    private static func symlink(_ source: String, to destination: String) -> Bool {
+        guard source != destination else { return true }
         let fileManager = FileManager.default
         if let existing = try? fileManager.destinationOfSymbolicLink(atPath: destination), existing == source {
-            return
+            return true
         }
         try? fileManager.removeItem(atPath: destination)
-        try? fileManager.createSymbolicLink(atPath: destination, withDestinationPath: source)
+        do {
+            try fileManager.createSymbolicLink(atPath: destination, withDestinationPath: source)
+        } catch {
+            return false
+        }
+        return (try? fileManager.destinationOfSymbolicLink(atPath: destination)) == source
     }
 
     /// Installs Compose only when the destination is empty or is a symlink Dory already owns.
@@ -264,22 +276,34 @@ enum HostDockerCLI {
         return result
     }
 
-    private static func addToPath() {
+    /// Returns whether the PATH block is present in a login profile once this call finishes,
+    /// counting a profile that already carried it. An unwritable profile returns false rather
+    /// than passing for an install.
+    @discardableResult
+    private static func addToPath() -> Bool {
         let fileManager = FileManager.default
-        var wroteAny = false
+        var foundProfile = false
+        var onPath = false
         for name in profiles {
             let profileURL = URL(fileURLWithPath: NSHomeDirectory() + "/" + name)
             guard fileManager.fileExists(atPath: profileURL.path) else { continue }
             let targetURL = profileURL.resolvingSymlinksInPath()
             guard let content = try? String(contentsOf: targetURL, encoding: .utf8) else { continue }
-            wroteAny = true
-            guard let updated = appendingPathBlock(to: content) else { continue }
-            try? updated.write(to: targetURL, atomically: true, encoding: .utf8)
+            foundProfile = true
+            guard let updated = appendingPathBlock(to: content) else {
+                // The profile already carries the block.
+                onPath = true
+                continue
+            }
+            if (try? updated.write(to: targetURL, atomically: true, encoding: .utf8)) != nil {
+                onPath = true
+            }
         }
-        if !wroteAny {
-            try? pathBlock(removeProfileWhenEmpty: true)
-                .write(toFile: NSHomeDirectory() + "/.zprofile", atomically: true, encoding: .utf8)
+        if !foundProfile {
+            onPath = (try? pathBlock(removeProfileWhenEmpty: true)
+                .write(toFile: NSHomeDirectory() + "/.zprofile", atomically: true, encoding: .utf8)) != nil
         }
+        return onPath
     }
 
     private static func removeFromPath() {

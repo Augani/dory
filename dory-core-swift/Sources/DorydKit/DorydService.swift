@@ -2759,7 +2759,7 @@ private extension DomainRoute {
 
 private extension NetworkingStatus {
     var xpcDictionary: NSDictionary {
-        [
+        var dictionary: [String: Any] = [
             "mode": mode,
             "suffix": suffix,
             "dnsBindAddress": dnsBindAddress,
@@ -2775,6 +2775,10 @@ private extension NetworkingStatus {
                 ["listenPort": port, "detail": detail] as NSDictionary
             },
         ]
+        if let httpsProxyError {
+            dictionary["httpsProxyError"] = httpsProxyError
+        }
+        return dictionary as NSDictionary
     }
 }
 

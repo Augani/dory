@@ -1275,17 +1275,26 @@ public final class HealthReporter: @unchecked Sendable {
         let healthy = status.dnsRunning
             && status.httpProxyRunning
             && failures.isEmpty
+            && status.httpsProxyError == nil
             && resolverProvenance != "external-or-modified"
         let ownedUTUNDetail = ownedUTUNs.isEmpty ? "none" : ownedUTUNs.joined(separator: ",")
+        let action: String?
+        if !failures.isEmpty {
+            action = "Stop the process that owns the reported port, then run `dory repair ports --apply`; Dory will not kill the conflicting process."
+        } else if let httpsProxyError = status.httpsProxyError {
+            action = "Trusted HTTPS is degraded: \(httpsProxyError). Run `dory repair domains --apply`."
+        } else if !healthy {
+            action = "Run `dory network status --json` and repair only the degraded DNS/route/forward layer."
+        } else {
+            action = nil
+        }
         return HealthCheck(
             id: "network.resources",
             status: healthy ? .pass : .warn,
             code: failures.isEmpty ? (healthy ? "network.resources_ok" : "network.resources_degraded") : "network.port_conflict",
             title: "Owned network resources",
             detail: "DNS \(status.dnsBindAddress):\(status.dnsPort) \(status.dnsRunning ? "running" : "stopped"), \(status.routes.count) domain route(s), \(status.privilegedTCPForwards.count) low-port forward(s), resolver \(resolverProvenance), Dory UTUN \(ownedUTUNDetail)",
-            action: failures.isEmpty
-                ? (healthy ? nil : "Run `dory network status --json` and repair only the degraded DNS/route/forward layer.")
-                : "Stop the process that owns the reported port, then run `dory repair ports --apply`; Dory will not kill the conflicting process.",
+            action: action,
             data: [
                 "mode": status.mode,
                 "dns_bind": "\(status.dnsBindAddress):\(status.dnsPort)",
@@ -1294,6 +1303,7 @@ public final class HealthReporter: @unchecked Sendable {
                 "http_proxy_running": status.httpProxyRunning ? "true" : "false",
                 "https_proxy_port": String(status.httpsProxyPort),
                 "https_proxy_running": status.httpsProxyRunning ? "true" : "false",
+                "https_proxy_error": status.httpsProxyError ?? "",
                 "domain_route_count": String(status.routes.count),
                 "privileged_forwards": status.privilegedTCPForwards.map { "\($0.listenPort)->\($0.targetPort)" }.joined(separator: ","),
                 "port_conflicts": failures.joined(separator: ";"),

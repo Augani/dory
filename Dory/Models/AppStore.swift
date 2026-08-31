@@ -642,7 +642,7 @@ final class AppStore {
             guard localChangeApplied else {
                 routeDockerCLI = previous
                 UserDefaults.standard.set(previous, forKey: Self.routeDockerKey)
-                showSettingsFailure("Terminal docker command could not be enabled because Dory's bundled CLI helpers are missing.")
+                showSettingsFailure("Terminal docker command could not be enabled. Dory could not link its bundled CLI helpers into ~/.dory/bin or add that directory to a login shell profile.")
                 return
             }
 
@@ -3566,7 +3566,16 @@ final class AppStore {
                 for line in buffer.flush() { continuation.yield(line) }
                 continuation.finish()
             }
-            do { try process.run() } catch { continuation.finish() }
+            do {
+                try process.run()
+            } catch {
+                continuation.yield(LogLine(
+                    timestamp: "",
+                    level: .error,
+                    message: "Could not stream pod logs: \(error.localizedDescription)"
+                ))
+                continuation.finish()
+            }
             continuation.onTermination = { _ in
                 reader.readabilityHandler = nil
                 if process.isRunning { process.terminate() }
@@ -4113,15 +4122,26 @@ final class AppStore {
         guard !healthActionInFlight else { return }
         healthActionInFlight = true
         healthActionError = nil
-        if ["socket", "dns", "routes", "domains", "ports", "dockerd", "guest-agent", "data-drive"].contains(target),
-           let result = try? await dorydClient.repairSubsystem(target) {
-            if !result.ok {
-                healthActionError = result.message.isEmpty ? "Repair \(target) failed" : result.message
+        var daemonFailure: String?
+        var repairedByDaemon = false
+        if ["socket", "dns", "routes", "domains", "ports", "dockerd", "guest-agent", "data-drive"].contains(target) {
+            do {
+                let result = try await dorydClient.repairSubsystem(target)
+                repairedByDaemon = true
+                if !result.ok {
+                    healthActionError = result.message.isEmpty ? "Repair \(target) failed" : result.message
+                }
+            } catch {
+                // The daemon may simply not be running, so the CLI path still runs. Its reason is
+                // retained: if the fallback fails too, the daemon error is the useful diagnosis.
+                daemonFailure = "\(error)"
             }
-        } else {
+        }
+        if !repairedByDaemon {
             let result = await HealthDiagnostics.runControl(["repair", target, "--apply"])
             if !result.ok {
-                healthActionError = result.output.isEmpty ? "Repair \(target) failed" : result.output
+                let output = result.output.isEmpty ? "Repair \(target) failed" : result.output
+                healthActionError = daemonFailure.map { "\(output) (doryd repair also failed: \($0))" } ?? output
             }
         }
         healthActionInFlight = false
@@ -4479,8 +4499,24 @@ final class AppStore {
         ]
     }
 
-    func fetchLogs(_ id: String) async -> [LogLine] { (try? await runtime.logs(containerID: id)) ?? [] }
-    func fetchEnv(_ id: String) async -> [EnvVar] { (try? await runtime.env(containerID: id)) ?? [] }
+    func fetchLogs(_ id: String) async -> [LogLine] {
+        do {
+            return try await runtime.logs(containerID: id)
+        } catch {
+            actionError = "Could not read logs for this container: \(error.localizedDescription)"
+            return []
+        }
+    }
+
+    func fetchEnv(_ id: String) async -> [EnvVar] {
+        do {
+            return try await runtime.env(containerID: id)
+        } catch {
+            actionError = "Could not read the environment for this container: \(error.localizedDescription)"
+            return []
+        }
+    }
+
     func sampleCPU(_ id: String) async -> Double? { await runtime.sampleCPU(containerID: id) }
     func streamLogs(_ id: String) -> AsyncStream<LogLine> { runtime.streamLogs(containerID: id) }
 
