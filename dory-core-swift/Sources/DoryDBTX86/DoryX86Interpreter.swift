@@ -989,6 +989,38 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
+      case .moveVectorMask(let destination, let source, let laneWidth, let vectorByteCount):
+        let count = Int(vectorByteCount)
+        let bytes =
+          if count == 8 {
+            try readMMXBytes(
+              source,
+              byteCount: count,
+              instruction: instruction,
+              state: state,
+              memory: executionMemory
+            )
+          } else {
+            try readVectorBytes(
+              source,
+              byteCount: count,
+              instruction: instruction,
+              state: state,
+              memory: executionMemory
+            )
+          }
+        let laneBytes = Int(laneWidth.rawValue)
+        var mask: UInt64 = 0
+        for lane in 0..<(count / laneBytes) where bytes[(lane + 1) * laneBytes - 1] & 0x80 != 0 {
+          mask |= UInt64(1) << UInt64(lane)
+        }
+        try write(
+          mask,
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
       case .vectorBitwise(let operation, let destination, let source):
         let rhs = try readVectorBytes(
           source,

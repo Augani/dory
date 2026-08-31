@@ -362,6 +362,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   )
   case moveIntegerToVector(destination: UInt8, source: DoryX86Operand)
   case moveVectorToInteger(destination: DoryX86Operand, source: UInt8)
+  case moveVectorMask(
+    destination: DoryX86Operand,
+    source: DoryX86VectorOperand,
+    laneWidth: DoryX86VectorLaneWidth,
+    vectorByteCount: UInt8
+  )
   case vectorBitwise(
     DoryX86VectorBitwiseOperation,
     destination: UInt8,

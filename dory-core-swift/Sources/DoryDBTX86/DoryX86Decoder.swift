@@ -986,6 +986,23 @@ public struct DoryX86Decoder: Sendable {
           source: vectorOperand(operands.rm),
           truncate: second == 0x2C
         )
+      case 0x50:
+        guard prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "floating move mask rejects repeat prefixes")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .doubleword, prefixes: prefixes, mode: mode)
+        guard case .register = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "floating move mask requires register source")
+        }
+        operation = .moveVectorMask(
+          destination: operands.reg,
+          source: vectorOperand(operands.rm),
+          laneWidth: prefixes.operandSizeOverride ? .quadword : .doubleword,
+          vectorByteCount: 16
+        )
       case 0x54...0x57, 0xDB, 0xDF, 0xEB, 0xEF:
         let packedInteger = second == 0xDB || second == 0xDF || second == 0xEB || second == 0xEF
         guard prefixes.repeatPrefix == nil else {
@@ -1300,6 +1317,24 @@ public struct DoryX86Decoder: Sendable {
             count: .vector(try mmxOperand(operands.rm, address: address))
           )
         }
+      case 0xD7:
+        guard prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "packed byte move mask rejects repeat prefixes")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .doubleword, prefixes: prefixes, mode: mode)
+        guard case .register = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "packed byte move mask requires register source")
+        }
+        operation = .moveVectorMask(
+          destination: operands.reg,
+          source: prefixes.operandSizeOverride
+            ? vectorOperand(operands.rm) : try mmxOperand(operands.rm, address: address),
+          laneWidth: .byte,
+          vectorByteCount: prefixes.operandSizeOverride ? 16 : 8
+        )
       case 0x7E:
         if prefixes.repeatPrefix == nil {
           let integerWidth: DoryX86OperandWidth =

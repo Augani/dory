@@ -691,6 +691,24 @@ import Testing
           source: .register(1)
         )
     )
+    #expect(
+      try decoder.decode([0x0F, 0x50, 0xC1], at: 0x1000, mode: .long64).operation
+        == .moveVectorMask(
+          destination: .register(.rax, width: .doubleword),
+          source: .register(1),
+          laneWidth: .doubleword,
+          vectorByteCount: 16
+        )
+    )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0xD7, 0xC1], at: 0x1000, mode: .long64).operation
+        == .moveVectorMask(
+          destination: .register(.rax, width: .doubleword),
+          source: .register(1),
+          laneWidth: .byte,
+          vectorByteCount: 16
+        )
+    )
   }
 
   @Test func decodesX87StackDataTransfers() throws {

@@ -1018,6 +1018,46 @@ import Testing
     #expect(state.floatingPoint.ymm[0].bytes[16..<32] == Array(repeating: 0xAA, count: 16)[...])
   }
 
+  @Test func vectorMoveMasksExtractLaneSignBitsAndZeroExtendTheDestination() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000,
+      bytes: [
+        0x0F, 0x50, 0xC1,
+        0x66, 0x0F, 0x50, 0xC1,
+        0x66, 0x0F, 0xD7, 0xC1,
+      ] + .init(repeating: 0, count: 16)
+    )
+    var source = [UInt8](repeating: 0, count: 32)
+    source[3] = 0x80
+    source[7] = 0x7F
+    source[11] = 0xFF
+    source[15] = 0x80
+    var floatingPoint = try DoryX86FloatingPointState()
+    floatingPoint.ymm[1] = try .init(bytes: source, expectedByteCount: 32)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: .max), rip: 0x1000, floatingPoint: floatingPoint)
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rax == 0b1101)
+
+    source[7] = 0x80
+    source[15] = 0
+    state.floatingPoint.ymm[1] = try .init(bytes: source, expectedByteCount: 32)
+    state.registers.rax = .max
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rax == 0b01)
+
+    source.replaceSubrange(
+      0..<16,
+      with: [
+        0x80, 0, 0xFF, 0x7F, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 0x81, 0x80,
+      ])
+    state.floatingPoint.ymm[1] = try .init(bytes: source, expectedByteCount: 32)
+    state.registers.rax = .max
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rax == 0xC005)
+  }
+
   @Test func sseScalarComparisonsSetOnlyArchitecturalStatusFlags() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
