@@ -873,6 +873,25 @@ public struct DoryX86Interpreter: Sendable {
           bytes += rhs[offset..<offset + laneBytes]
         }
         writeMMXRegister(destination, bytes: bytes, state: &state.floatingPoint)
+      case .mmxIntegerPack(let operation, let sourceLaneWidth, let destination, let source):
+        let rhs = try readMMXBytes(
+          source,
+          byteCount: 8,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        let lhs = Array(state.floatingPoint.x87[Int(destination)].bytes.prefix(8))
+        writeMMXRegister(
+          destination,
+          bytes: packVectorIntegers(
+            operation,
+            sourceLaneWidth: sourceLaneWidth,
+            lhs: lhs,
+            rhs: rhs
+          ),
+          state: &state.floatingPoint
+        )
       case .emptyMMXState:
         state.floatingPoint.x87TagWord = 0xFFFF
       case .moveVector128(let destination, let source, let requiresAlignment):
@@ -1103,6 +1122,27 @@ public struct DoryX86Interpreter: Sendable {
           result += rhs[offset..<offset + laneBytes]
         }
         registerBytes.replaceSubrange(0..<16, with: result)
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .vectorIntegerPack(let operation, let sourceLaneWidth, let destination, let source):
+        let rhs = try readVectorBytes(
+          source,
+          byteCount: 16,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        let lhs = Array(registerBytes.prefix(16))
+        registerBytes.replaceSubrange(
+          0..<16,
+          with: packVectorIntegers(
+            operation,
+            sourceLaneWidth: sourceLaneWidth,
+            lhs: lhs,
+            rhs: rhs
+          )
+        )
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
       case .vectorShuffle(let format, let destination, let source, let control):
@@ -2616,6 +2656,36 @@ public struct DoryX86Interpreter: Sendable {
   private func signedVectorLane(_ value: UInt64, bitCount: Int) -> Int64 {
     let signBit = UInt64(1) << UInt64(bitCount - 1)
     return Int64(bitPattern: (value ^ signBit) &- signBit)
+  }
+
+  private func packVectorIntegers(
+    _ operation: DoryX86VectorPackOperation,
+    sourceLaneWidth: DoryX86VectorLaneWidth,
+    lhs: [UInt8],
+    rhs: [UInt8]
+  ) -> [UInt8] {
+    let sourceByteCount = Int(sourceLaneWidth.rawValue)
+    let resultByteCount = sourceByteCount / 2
+    let resultBitCount = resultByteCount * 8
+    let signedMaximum = (Int64(1) << Int64(resultBitCount - 1)) - 1
+    let signedMinimum = -(Int64(1) << Int64(resultBitCount - 1))
+    let unsignedMaximum = (Int64(1) << Int64(resultBitCount)) - 1
+    return [lhs, rhs].flatMap { bytes in
+      stride(from: 0, to: bytes.count, by: sourceByteCount).flatMap { offset in
+        let raw = fromLittleEndian(Array(bytes[offset..<offset + sourceByteCount]))
+        let signed = signedVectorLane(raw, bitCount: sourceByteCount * 8)
+        let narrowed: UInt64 =
+          switch operation {
+          case .signedSaturating:
+            UInt64(bitPattern: min(max(signed, signedMinimum), signedMaximum))
+          case .unsignedSaturating:
+            UInt64(min(max(signed, 0), unsignedMaximum))
+          }
+        return (0..<resultByteCount).map {
+          UInt8(truncatingIfNeeded: narrowed >> UInt64($0 * 8))
+        }
+      }
+    }
   }
 
   private func saturatingSignedVectorLane(_ value: Int64, bitCount: Int) -> Int64 {

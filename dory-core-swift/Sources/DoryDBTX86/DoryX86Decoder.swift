@@ -1064,6 +1064,31 @@ public struct DoryX86Decoder: Sendable {
             source: vectorOperand(operands.rm)
           )
         }
+      case 0x63, 0x67, 0x6B:
+        guard prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "packed integer narrowing rejects repeat prefixes")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        let packOperation: DoryX86VectorPackOperation =
+          second == 0x67 ? .unsignedSaturating : .signedSaturating
+        let sourceLaneWidth: DoryX86VectorLaneWidth = second == 0x6B ? .doubleword : .word
+        if prefixes.operandSizeOverride {
+          operation = .vectorIntegerPack(
+            packOperation,
+            sourceLaneWidth: sourceLaneWidth,
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm)
+          )
+        } else {
+          operation = .mmxIntegerPack(
+            packOperation,
+            sourceLaneWidth: sourceLaneWidth,
+            destination: try mmxRegister(operands.reg, address: address),
+            source: try mmxOperand(operands.rm, address: address)
+          )
+        }
       case 0x64...0x66, 0x74...0x76, 0xD4, 0xD5, 0xD8...0xDA, 0xDC...0xDE, 0xE0, 0xE3,
         0xE4, 0xE5, 0xE8...0xEA, 0xEC...0xEE, 0xF4...0xFE:
         guard prefixes.repeatPrefix == nil else {

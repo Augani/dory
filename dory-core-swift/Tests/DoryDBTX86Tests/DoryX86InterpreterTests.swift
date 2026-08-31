@@ -963,6 +963,61 @@ import Testing
     #expect(state.floatingPoint.ymm[0].bytes[16..<32] == Array(repeating: 0xAA, count: 16)[...])
   }
 
+  @Test func packedIntegerNarrowingSaturatesSignedAndUnsignedResults() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000,
+      bytes: [
+        0x66, 0x0F, 0x63, 0xC1,
+        0x66, 0x0F, 0x67, 0xC1,
+        0x66, 0x0F, 0x6B, 0xC1,
+      ] + .init(repeating: 0, count: 16)
+    )
+    var state = try DoryX86ArchitecturalState(rip: 0x1000)
+    func wordBytes(_ values: [Int16]) -> [UInt8] {
+      values.flatMap { Array(littleEndian(UInt64(UInt16(bitPattern: $0))).prefix(2)) }
+    }
+    func doublewordBytes(_ values: [Int32]) -> [UInt8] {
+      values.flatMap { Array(littleEndian(UInt64(UInt32(bitPattern: $0))).prefix(4)) }
+    }
+    func setVectors(_ lhs: [UInt8], _ rhs: [UInt8]) throws {
+      state.floatingPoint.ymm[0] = try .init(
+        bytes: lhs + .init(repeating: 0xAA, count: 32 - lhs.count), expectedByteCount: 32)
+      state.floatingPoint.ymm[1] = try .init(
+        bytes: rhs + .init(repeating: 0, count: 32 - rhs.count), expectedByteCount: 32)
+    }
+
+    try setVectors(
+      wordBytes([-200, -128, -1, 0, 1, 127, 128, 300]),
+      wordBytes([-129, -5, 5, 126, 127, 128, 255, 256])
+    )
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      state.floatingPoint.ymm[0].bytes.prefix(16)
+        == [128, 128, 255, 0, 1, 127, 127, 127, 128, 251, 5, 126, 127, 127, 127, 127][...]
+    )
+
+    try setVectors(
+      wordBytes([-1, 0, 1, 254, 255, 256, 300, 32_767]),
+      wordBytes([-32_768, 2, 3, 4, 250, 251, 252, 253])
+    )
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      state.floatingPoint.ymm[0].bytes.prefix(16)
+        == [0, 0, 1, 254, 255, 255, 255, 255, 0, 2, 3, 4, 250, 251, 252, 253][...]
+    )
+
+    try setVectors(
+      doublewordBytes([-100_000, -32_768, 32_767, 100_000]),
+      doublewordBytes([-32_769, -1, 0, 32_768])
+    )
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      state.floatingPoint.ymm[0].bytes.prefix(16)
+        == [0, 128, 0, 128, 255, 127, 255, 127, 0, 128, 255, 255, 0, 0, 255, 127][...]
+    )
+    #expect(state.floatingPoint.ymm[0].bytes[16..<32] == Array(repeating: 0xAA, count: 16)[...])
+  }
+
   @Test func sseScalarComparisonsSetOnlyArchitecturalStatusFlags() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x1000,

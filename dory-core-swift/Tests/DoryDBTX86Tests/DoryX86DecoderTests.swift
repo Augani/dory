@@ -673,6 +673,24 @@ import Testing
         == .vectorIntegerBinary(
           .sumAbsoluteDifferences, laneWidth: .byte, destination: 0, source: .register(1))
     )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0x63, 0xC1], at: 0x1000, mode: .long64).operation
+        == .vectorIntegerPack(
+          .signedSaturating,
+          sourceLaneWidth: .word,
+          destination: 0,
+          source: .register(1)
+        )
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x67, 0xC1], at: 0x1000, mode: .long64).operation
+        == .mmxIntegerPack(
+          .unsignedSaturating,
+          sourceLaneWidth: .word,
+          destination: 0,
+          source: .register(1)
+        )
+    )
   }
 
   @Test func decodesX87StackDataTransfers() throws {

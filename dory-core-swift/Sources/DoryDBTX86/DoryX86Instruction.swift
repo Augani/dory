@@ -154,6 +154,10 @@ public enum DoryX86VectorIntegerOperation: String, Codable, Sendable, Hashable {
   case multiplyUnsignedDoubleword, multiplyAddWords
 }
 
+public enum DoryX86VectorPackOperation: String, Codable, Sendable, Hashable {
+  case signedSaturating, unsignedSaturating
+}
+
 public enum DoryX86VectorShiftOperation: String, Codable, Sendable, Hashable {
   case logicalLeft, logicalRight, arithmeticRight
 }
@@ -338,6 +342,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     destination: UInt8,
     source: DoryX86VectorOperand
   )
+  case mmxIntegerPack(
+    DoryX86VectorPackOperation,
+    sourceLaneWidth: DoryX86VectorLaneWidth,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
   case emptyMMXState
   case moveVector128(
     destination: DoryX86VectorOperand,
@@ -384,6 +394,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case vectorIntegerInterleave(
     high: Bool,
     laneWidth: DoryX86VectorLaneWidth,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
+  case vectorIntegerPack(
+    DoryX86VectorPackOperation,
+    sourceLaneWidth: DoryX86VectorLaneWidth,
     destination: UInt8,
     source: DoryX86VectorOperand
   )
