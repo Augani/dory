@@ -625,7 +625,9 @@
 !if $(SOURCE_DEBUG_ENABLE) == TRUE
   gEfiMdePkgTokenSpaceGuid.PcdDebugPropertyMask|0x17
 !else
-  gEfiMdePkgTokenSpaceGuid.PcdDebugPropertyMask|0x2F
+  # Keep assertions, error printing, memory clearing, and assert deadloops in release firmware,
+  # but do not execute DEBUG_CODE blocks such as BDS's full load-option enumeration.
+  gEfiMdePkgTokenSpaceGuid.PcdDebugPropertyMask|0x2B
 !endif
 
   # This PCD is used to set the base address of the PCI express hierarchy. It
