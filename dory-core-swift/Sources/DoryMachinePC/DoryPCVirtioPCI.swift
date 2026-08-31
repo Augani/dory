@@ -258,6 +258,33 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   }
 
   private func writeCommon(offset: Int, bytes: [UInt8]) throws {
+    if (0x20..<0x28).contains(offset), offset + bytes.count <= 0x28 {
+      try writeSelectedQueueAddress(
+        offset: offset,
+        registerOffset: 0x20,
+        bytes: bytes,
+        keyPath: \.descriptorAddress
+      )
+      return
+    }
+    if (0x28..<0x30).contains(offset), offset + bytes.count <= 0x30 {
+      try writeSelectedQueueAddress(
+        offset: offset,
+        registerOffset: 0x28,
+        bytes: bytes,
+        keyPath: \.driverAddress
+      )
+      return
+    }
+    if (0x30..<0x38).contains(offset), offset + bytes.count <= 0x38 {
+      try writeSelectedQueueAddress(
+        offset: offset,
+        registerOffset: 0x30,
+        bytes: bytes,
+        keyPath: \.deviceAddress
+      )
+      return
+    }
     switch (offset, bytes.count) {
     case (0x00, 4): lock.withLock { deviceFeatureSelect = uint32(bytes) }
     case (0x08, 4): lock.withLock { driverFeatureSelect = uint32(bytes) }
@@ -307,11 +334,25 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
           deviceState.markDeviceNeedsReset()
         }
       }
-    case (0x20, 8):
-      try updateSelectedQueue { if !$0.enabled { $0.descriptorAddress = uint64(bytes) } }
-    case (0x28, 8): try updateSelectedQueue { if !$0.enabled { $0.driverAddress = uint64(bytes) } }
-    case (0x30, 8): try updateSelectedQueue { if !$0.enabled { $0.deviceAddress = uint64(bytes) } }
     default: break
+    }
+  }
+
+  private func writeSelectedQueueAddress(
+    offset: Int,
+    registerOffset: Int,
+    bytes: [UInt8],
+    keyPath: WritableKeyPath<QueueRegisters, UInt64>
+  ) throws {
+    try updateSelectedQueue { queue in
+      guard !queue.enabled else { return }
+      var address = queue[keyPath: keyPath]
+      for (index, byte) in bytes.enumerated() {
+        let shift = UInt64((offset - registerOffset + index) * 8)
+        let mask = UInt64(0xFF) << shift
+        address = (address & ~mask) | UInt64(byte) << shift
+      }
+      queue[keyPath: keyPath] = address
     }
   }
 

@@ -47,6 +47,29 @@ import Testing
     #expect(queue.deviceAddress == 0x12_0000)
   }
 
+  @Test func queueAddressesAcceptSplitMMIOWrites() throws {
+    let function = try makeFunction()
+    let bar = UInt64(0xD000_0000)
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+
+    try write16(machine, bar + 0x16, 0)
+    try write32(machine, bar + 0x20, 0x1234_5000)
+    try write32(machine, bar + 0x24, 0x0000_0001)
+    try write32(machine, bar + 0x28, 0x2345_6000)
+    try write32(machine, bar + 0x2C, 0x0000_0002)
+    try write32(machine, bar + 0x30, 0x3456_7000)
+    try write32(machine, bar + 0x34, 0x0000_0003)
+
+    let queue = try function.transport.queueSnapshot(at: 0)
+    #expect(queue.descriptorAddress == 0x0000_0001_1234_5000)
+    #expect(queue.driverAddress == 0x0000_0002_2345_6000)
+    #expect(queue.deviceAddress == 0x0000_0003_3456_7000)
+  }
+
   @Test func notifyRegionAndISRUseMSIAndClearOnRead() throws {
     let function = try makeFunction()
     let notifications = LockedQueueNotifications()
