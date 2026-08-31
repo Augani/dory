@@ -186,42 +186,104 @@ private enum DoryX86DecodeAudit {
     decoder: DoryX86Decoder,
     result: inout AuditResult
   ) {
+    var pendingLock: (address: UInt64, bytes: [UInt8])?
     for line in disassembly.split(separator: "\n") {
       let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
       guard fields.count >= 2,
-        let colon = fields[0].firstIndex(of: ":")
+        let colon = fields[0].firstIndex(of: ":"),
+        let instructionAddress = UInt64(
+          fields[0][..<colon].trimmingCharacters(in: .whitespaces),
+          radix: 16
+        )
       else { continue }
 
       let byteFields = fields[0][fields[0].index(after: colon)...]
         .split(whereSeparator: { $0 == " " })
-      let bytes = byteFields.compactMap { UInt8($0, radix: 16) }
+      var bytes = byteFields.compactMap { UInt8($0, radix: 16) }
       guard !bytes.isEmpty, bytes.count == byteFields.count else { continue }
 
-      let mnemonic = fields[1].trimmingCharacters(in: .whitespaces)
+      var mnemonic = fields[1].trimmingCharacters(in: .whitespaces)
       guard !mnemonic.isEmpty else { continue }
-      if skipUnknownMnemonics, mnemonic == "<unknown>" { continue }
-      result.total += 1
 
-      do {
-        let instruction = try decoder.decode(bytes, at: 0, mode: mode)
-        guard instruction.length == bytes.count else {
-          record(
-            mnemonic: mnemonic,
-            bytes: bytes,
-            reason: "decoded length \(instruction.length), expected \(bytes.count)",
+      // llvm-objdump renders LOCK as a standalone one-byte record and the opcode as the next
+      // contiguous record. Reassemble those bytes so the audit checks the real architectural
+      // instruction, including whether Dory accepts LOCK for that exact operand.
+      if bytes == [0xF0], mnemonic == "lock" {
+        if let pendingLock {
+          auditInstruction(
+            mnemonic: "lock",
+            bytes: pendingLock.bytes,
+            mode: mode,
+            decoder: decoder,
             result: &result
           )
-          continue
         }
-        result.decoded += 1
-      } catch {
+        pendingLock = (instructionAddress, bytes)
+        continue
+      }
+      let unknownMnemonic = mnemonic == "<unknown>"
+      if let pending = pendingLock {
+        if instructionAddress == pending.address + UInt64(pending.bytes.count) {
+          bytes = pending.bytes + bytes
+          mnemonic = "lock \(mnemonic)"
+        } else {
+          auditInstruction(
+            mnemonic: "lock",
+            bytes: pending.bytes,
+            mode: mode,
+            decoder: decoder,
+            result: &result
+          )
+        }
+        pendingLock = nil
+      }
+      if skipUnknownMnemonics, unknownMnemonic { continue }
+      auditInstruction(
+        mnemonic: mnemonic,
+        bytes: bytes,
+        mode: mode,
+        decoder: decoder,
+        result: &result
+      )
+    }
+    if let pendingLock {
+      auditInstruction(
+        mnemonic: "lock",
+        bytes: pendingLock.bytes,
+        mode: mode,
+        decoder: decoder,
+        result: &result
+      )
+    }
+  }
+
+  private static func auditInstruction(
+    mnemonic: String,
+    bytes: [UInt8],
+    mode: DoryX86ExecutionMode,
+    decoder: DoryX86Decoder,
+    result: inout AuditResult
+  ) {
+    result.total += 1
+    do {
+      let instruction = try decoder.decode(bytes, at: 0, mode: mode)
+      guard instruction.length == bytes.count else {
         record(
           mnemonic: mnemonic,
           bytes: bytes,
-          reason: String(describing: error),
+          reason: "decoded length \(instruction.length), expected \(bytes.count)",
           result: &result
         )
+        return
       }
+      result.decoded += 1
+    } catch {
+      record(
+        mnemonic: mnemonic,
+        bytes: bytes,
+        reason: String(describing: error),
+        result: &result
+      )
     }
   }
 
