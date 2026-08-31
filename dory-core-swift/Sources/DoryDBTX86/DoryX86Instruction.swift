@@ -304,6 +304,14 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case restoreFloatingPointState(DoryX86MemoryOperand)
   case loadMXCSR(DoryX86Operand)
   case storeMXCSR(DoryX86Operand)
+  case moveMMX(
+    destination: DoryX86VectorOperand,
+    source: DoryX86VectorOperand,
+    byteCount: UInt8
+  )
+  case moveIntegerToMMX(destination: UInt8, source: DoryX86Operand)
+  case moveMMXToInteger(destination: DoryX86Operand, source: UInt8)
+  case emptyMMXState
   case moveVector128(
     destination: DoryX86VectorOperand,
     source: DoryX86VectorOperand,

@@ -804,4 +804,29 @@ import Testing
         == .softwareInterrupt(vector: 3)
     )
   }
+
+  @Test func decodesMMXMovesAndEMMSWithoutConfusingXMMPrefixes() throws {
+    #expect(
+      try decoder.decode([0x0F, 0x6E, 0xC1], at: 0x1000, mode: .long64).operation
+        == .moveIntegerToMMX(
+          destination: 0, source: .register(.rcx, width: .doubleword))
+    )
+    #expect(
+      try decoder.decode([0x48, 0x0F, 0x7E, 0xC1], at: 0x1000, mode: .long64).operation
+        == .moveMMXToInteger(
+          destination: .register(.rcx, width: .quadword), source: 0)
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x6F, 0xC1], at: 0x1000, mode: .long64).operation
+        == .moveMMX(destination: .register(0), source: .register(1), byteCount: 8)
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x7F, 0xC1], at: 0x1000, mode: .long64).operation
+        == .moveMMX(destination: .register(1), source: .register(0), byteCount: 8)
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x77], at: 0x1000, mode: .long64).operation
+        == .emptyMMXState
+    )
+  }
 }

@@ -761,6 +761,40 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
+      case .moveMMX(let destination, let source, let byteCount):
+        let bytes = try readMMXBytes(
+          source,
+          byteCount: Int(byteCount),
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        try writeMMXBytes(
+          bytes,
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
+      case .moveIntegerToMMX(let destination, let source):
+        let width = operandWidth(source)
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        var bytes = littleEndian(value, width: width)
+        bytes += [UInt8](repeating: 0, count: 8 - bytes.count)
+        writeMMXRegister(destination, bytes: bytes, state: &state.floatingPoint)
+      case .moveMMXToInteger(let destination, let source):
+        let width = operandWidth(destination)
+        let bytes = Array(state.floatingPoint.x87[Int(source)].bytes.prefix(width.byteCount))
+        try write(
+          fromLittleEndian(bytes),
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
+      case .emptyMMXState:
+        state.floatingPoint.x87TagWord = 0xFFFF
       case .moveVector128(let destination, let source, let requiresAlignment):
         let bytes: [UInt8]
         switch source {
@@ -1812,6 +1846,66 @@ public struct DoryX86Interpreter: Sendable {
         byteCount: byteCount
       )
     }
+  }
+
+  private func readMMXBytes(
+    _ operand: DoryX86VectorOperand,
+    byteCount: Int,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> [UInt8] {
+    switch operand {
+    case .register(let register):
+      return Array(state.floatingPoint.x87[Int(register)].bytes.prefix(byteCount))
+    case .memory(let memoryOperand):
+      try validateSegmentAccess(
+        memoryOperand,
+        byteCount: byteCount,
+        write: false,
+        instruction: instruction,
+        state: state
+      )
+      return try memory.read(
+        at: effectiveAddress(memoryOperand, instruction: instruction, state: state),
+        byteCount: byteCount
+      )
+    }
+  }
+
+  private func writeMMXBytes(
+    _ bytes: [UInt8],
+    to operand: DoryX86VectorOperand,
+    instruction: DoryX86DecodedInstruction,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    switch operand {
+    case .register(let register):
+      writeMMXRegister(register, bytes: bytes, state: &state.floatingPoint)
+    case .memory(let memoryOperand):
+      try writeX87Memory(
+        bytes,
+        to: memoryOperand,
+        instruction: instruction,
+        state: state,
+        memory: memory
+      )
+    }
+  }
+
+  private func writeMMXRegister(
+    _ register: UInt8,
+    bytes: [UInt8],
+    state: inout DoryX86FloatingPointState
+  ) {
+    precondition(register < 8 && bytes.count <= 8)
+    var payload = [UInt8](repeating: 0, count: 10)
+    payload.replaceSubrange(0..<bytes.count, with: bytes)
+    payload[8] = 0xFF
+    payload[9] = 0xFF
+    state.x87[Int(register)] = try! .init(bytes: payload, expectedByteCount: 10)
+    state.x87TagWord = 0
   }
 
   private func readX87(

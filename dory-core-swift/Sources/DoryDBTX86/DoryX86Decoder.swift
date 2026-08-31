@@ -1076,29 +1076,43 @@ public struct DoryX86Decoder: Sendable {
           source: vectorOperand(operands.rm)
         )
       case 0x6E:
-        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+        guard prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
-            address: address, detail: "MOVD/MOVQ to XMM requires 66 prefix")
+            address: address, detail: "MOVD/MOVQ rejects repeat prefixes")
         }
         let integerWidth: DoryX86OperandWidth = prefixes.rex?.w == true ? .quadword : .doubleword
         let operands = try decodeModRM(
           cursor: &cursor, width: integerWidth, prefixes: prefixes, mode: mode)
-        operation = .moveIntegerToVector(
-          destination: vectorRegister(operands.reg), source: operands.rm)
+        if prefixes.operandSizeOverride {
+          operation = .moveIntegerToVector(
+            destination: vectorRegister(operands.reg), source: operands.rm)
+        } else {
+          operation = .moveIntegerToMMX(
+            destination: try mmxRegister(operands.reg, address: address), source: operands.rm)
+        }
       case 0x6F:
         let alignedVector = prefixes.operandSizeOverride && prefixes.repeatPrefix == nil
         let unalignedVector = prefixes.repeatPrefix == 0xF3 && !prefixes.operandSizeOverride
-        guard alignedVector || unalignedVector else {
+        let mmx = prefixes.repeatPrefix == nil && !prefixes.operandSizeOverride
+        guard alignedVector || unalignedVector || mmx else {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "unsupported 0F 6F mandatory prefix")
         }
         let operands = try decodeModRM(
           cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-        operation = .moveVector128(
-          destination: vectorOperand(operands.reg),
-          source: vectorOperand(operands.rm),
-          requiresAlignment: alignedVector
-        )
+        if mmx {
+          operation = .moveMMX(
+            destination: try mmxOperand(operands.reg, address: address),
+            source: try mmxOperand(operands.rm, address: address),
+            byteCount: 8
+          )
+        } else {
+          operation = .moveVector128(
+            destination: vectorOperand(operands.reg),
+            source: vectorOperand(operands.rm),
+            requiresAlignment: alignedVector
+          )
+        }
       case 0x70:
         guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
@@ -1147,17 +1161,26 @@ public struct DoryX86Decoder: Sendable {
       case 0x7F:
         let alignedVector = prefixes.operandSizeOverride && prefixes.repeatPrefix == nil
         let unalignedVector = prefixes.repeatPrefix == 0xF3 && !prefixes.operandSizeOverride
-        guard alignedVector || unalignedVector else {
+        let mmx = prefixes.repeatPrefix == nil && !prefixes.operandSizeOverride
+        guard alignedVector || unalignedVector || mmx else {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "unsupported 0F 7F mandatory prefix")
         }
         let operands = try decodeModRM(
           cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-        operation = .moveVector128(
-          destination: vectorOperand(operands.rm),
-          source: vectorOperand(operands.reg),
-          requiresAlignment: alignedVector
-        )
+        if mmx {
+          operation = .moveMMX(
+            destination: try mmxOperand(operands.rm, address: address),
+            source: try mmxOperand(operands.reg, address: address),
+            byteCount: 8
+          )
+        } else {
+          operation = .moveVector128(
+            destination: vectorOperand(operands.rm),
+            source: vectorOperand(operands.reg),
+            requiresAlignment: alignedVector
+          )
+        }
       case 0xD1...0xD3, 0xE1, 0xE2, 0xF1...0xF3:
         guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
@@ -1184,13 +1207,20 @@ public struct DoryX86Decoder: Sendable {
           count: .vector(vectorOperand(operands.rm))
         )
       case 0x7E:
-        if prefixes.operandSizeOverride, prefixes.repeatPrefix == nil {
+        if prefixes.repeatPrefix == nil {
           let integerWidth: DoryX86OperandWidth =
             prefixes.rex?.w == true ? .quadword : .doubleword
           let operands = try decodeModRM(
             cursor: &cursor, width: integerWidth, prefixes: prefixes, mode: mode)
-          operation = .moveVectorToInteger(
-            destination: operands.rm, source: vectorRegister(operands.reg))
+          if prefixes.operandSizeOverride {
+            operation = .moveVectorToInteger(
+              destination: operands.rm, source: vectorRegister(operands.reg))
+          } else {
+            operation = .moveMMXToInteger(
+              destination: operands.rm,
+              source: try mmxRegister(operands.reg, address: address)
+            )
+          }
         } else if prefixes.repeatPrefix == 0xF3, !prefixes.operandSizeOverride {
           let operands = try decodeModRM(
             cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
@@ -1204,6 +1234,12 @@ public struct DoryX86Decoder: Sendable {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "unsupported 0F 7E mandatory prefix")
         }
+      case 0x77:
+        guard prefixes.repeatPrefix == nil, !prefixes.operandSizeOverride else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "EMMS rejects mandatory prefixes")
+        }
+        operation = .emptyMMXState
       case 0xD6:
         guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
@@ -1477,6 +1513,25 @@ public struct DoryX86Decoder: Sendable {
       preconditionFailure("ModRM reg operand must be a register")
     }
     return UInt8(DoryX86GeneralRegister.allCases.firstIndex(of: register)!)
+  }
+
+  private func mmxRegister(_ operand: DoryX86Operand, address: UInt64) throws -> UInt8 {
+    let register = vectorRegister(operand)
+    guard register < 8 else {
+      throw DoryX86DecodeError.invalidEncoding(
+        address: address, detail: "MMX register encoding exceeds MM7")
+    }
+    return register
+  }
+
+  private func mmxOperand(
+    _ operand: DoryX86Operand,
+    address: UInt64
+  ) throws -> DoryX86VectorOperand {
+    if case .register = operand {
+      return .register(try mmxRegister(operand, address: address))
+    }
+    return vectorOperand(operand)
   }
 
   private func vectorFloatingFormat(

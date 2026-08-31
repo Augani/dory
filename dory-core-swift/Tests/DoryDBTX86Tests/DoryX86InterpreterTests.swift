@@ -565,6 +565,41 @@ import Testing
     #expect(state.registers.rax & 0xFF == 0xCC)
   }
 
+  @Test func mmxMovesAliasX87PayloadAndEMMSClearsEveryTag() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x100)
+    bytes.replaceSubrange(
+      0..<19,
+      with: [
+        0x0F, 0x6E, 0xC0,
+        0x48, 0x0F, 0x6E, 0xC9,
+        0x0F, 0x7F, 0x4B, 0x10,
+        0x0F, 0x6F, 0x53, 0x10,
+        0x48, 0x0F, 0x7E, 0xD2,
+        0x0F, 0x77,
+      ])
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(
+        rax: 0xFFFF_FFFF_1122_3344,
+        rcx: 0x8877_6655_4433_2211,
+        rbx: 0x1080
+      ),
+      rip: 0x1000
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.floatingPoint.x87[0].bytes[0..<8] == [0x44, 0x33, 0x22, 0x11, 0, 0, 0, 0][...])
+    #expect(state.floatingPoint.x87[0].bytes[8..<10] == [0xFF, 0xFF][...])
+    #expect(state.floatingPoint.x87TagWord == 0)
+    for _ in 0..<4 {
+      _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    }
+    #expect(state.registers.rdx == 0x8877_6655_4433_2211)
+    #expect(try memory.read(at: 0x1090, byteCount: 8) == littleEndian(0x8877_6655_4433_2211))
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.floatingPoint.x87TagWord == 0xFFFF)
+  }
+
   @Test func movdquLoadsLowVectorAndPreservesUpperVector() throws {
     var bytes = [UInt8](repeating: 0, count: 0x30)
     bytes.replaceSubrange(0..<8, with: [0xF3, 0x0F, 0x6F, 0x35, 0x08, 0, 0, 0])
