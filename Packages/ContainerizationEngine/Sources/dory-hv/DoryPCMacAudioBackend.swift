@@ -12,7 +12,9 @@ enum DoryPCMacAudioError: Error, Equatable {
 /// Adapts DoryPC's transport-neutral synchronous PCM contract to the proven Core Audio backend.
 /// Waiting for render/capture completion deliberately paces the translated guest's VirtIO queue
 /// to the physical audio timeline instead of allowing it to run unbounded ahead of the Mac.
-final class DoryPCMacAudioBackend: DoryVirtioSoundBackend, @unchecked Sendable {
+final class DoryPCMacAudioBackend: DoryVirtioSoundBackend,
+    DoryVirtioSoundFormatCapability, @unchecked Sendable
+{
     private struct Stream {
         let direction: VirtioSoundDirection
         let parameters: VirtioSoundPCMParameters
@@ -22,6 +24,8 @@ final class DoryPCMacAudioBackend: DoryVirtioSoundBackend, @unchecked Sendable {
     private let host: any VirtioSoundHost
     private let completionTimeout: DispatchTimeInterval
     private var streams = [UInt32: Stream]()
+
+    let supportedPCMFormats: Set<DoryVirtioSoundPCMFormat> = [.signed16]
 
     init(
         log: @escaping @Sendable (String) -> Void,

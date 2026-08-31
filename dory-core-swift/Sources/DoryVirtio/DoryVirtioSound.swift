@@ -70,6 +70,13 @@ public protocol DoryVirtioSoundBackend: AnyObject, Sendable {
   func capture(streamID: UInt32, byteCount: Int) throws -> [UInt8]
 }
 
+/// Optional backend capability projection. When absent, the transport retains the complete
+/// format set for in-memory and test backends; production adapters publish only formats they can
+/// execute without a late host-side rejection.
+public protocol DoryVirtioSoundFormatCapability: AnyObject, Sendable {
+  var supportedPCMFormats: Set<DoryVirtioSoundPCMFormat> { get }
+}
+
 public enum DoryVirtioSoundError: Error, Sendable, Equatable {
   case invalidDescriptorDirection
   case malformedRequest
@@ -131,6 +138,7 @@ public final class DoryVirtioSoundDevice: @unchecked Sendable {
   public let backend: any DoryVirtioSoundBackend
   public let maximumBufferBytes: UInt32
   public let maximumPendingEvents: Int
+  public let supportedPCMFormats: Set<DoryVirtioSoundPCMFormat>
 
   private let lock = NSLock()
   private var lifecycles: [Lifecycle] = [.unconfigured, .unconfigured]
@@ -147,6 +155,10 @@ public final class DoryVirtioSoundDevice: @unchecked Sendable {
     self.backend = backend
     self.maximumBufferBytes = maximumBufferBytes
     self.maximumPendingEvents = maximumPendingEvents
+    let backendFormats = (backend as? any DoryVirtioSoundFormatCapability)?
+      .supportedPCMFormats ?? Set(DoryVirtioSoundPCMFormat.allCases)
+    precondition(!backendFormats.isEmpty, "virtio-sound backend must support at least one format")
+    supportedPCMFormats = backendFormats
   }
 
   public var offeredFeatures: DoryVirtioFeatures { [] }
@@ -320,7 +332,7 @@ public final class DoryVirtioSoundDevice: @unchecked Sendable {
   }
 
   private func streamInformation(_ streamID: UInt32) -> [UInt8] {
-    let formats = DoryVirtioSoundPCMFormat.allCases.reduce(UInt64(0)) {
+    let formats = supportedPCMFormats.reduce(UInt64(0)) {
       $0 | (UInt64(1) << UInt64($1.rawValue))
     }
     let rates = DoryVirtioSoundPCMRate.allCases.reduce(UInt64(0)) {
@@ -344,6 +356,7 @@ public final class DoryVirtioSoundDevice: @unchecked Sendable {
     let channels = request[20]
     guard streamID < 2, features == 0, channels == 1 || channels == 2,
       let format = DoryVirtioSoundPCMFormat(rawValue: request[21]),
+      supportedPCMFormats.contains(format),
       let rate = DoryVirtioSoundPCMRate(rawValue: request[22]), request[23] == 0,
       bufferBytes > 0, bufferBytes <= maximumBufferBytes, periodBytes > 0,
       bufferBytes % periodBytes == 0

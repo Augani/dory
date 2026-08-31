@@ -110,6 +110,8 @@ import Testing
             log: { _ in },
             host: RecordingPCMacAudioHost()
         )
+        #expect(adapter.supportedPCMFormats == [.signed16])
+        #expect(DoryVirtioSoundDevice(backend: adapter).supportedPCMFormats == [.signed16])
         #expect(throws: DoryPCMacAudioError.unsupportedFormat) {
             try adapter.configure(
                 streamID: 0,

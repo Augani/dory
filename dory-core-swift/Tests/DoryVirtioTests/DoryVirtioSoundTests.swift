@@ -75,6 +75,19 @@ import Testing
         == 0x8000)
   }
 
+  @Test func backendCapabilityRestrictsAdvertisedAndAcceptedFormats() throws {
+    let device = DoryVirtioSoundDevice(backend: Signed16SoundBackend())
+    let memory = SoundGuestMemory(byteCount: 0x8000)
+    let query = littleEndian(UInt32(0x0100)) + littleEndian(UInt32(0))
+      + littleEndian(UInt32(1)) + littleEndian(UInt32(32))
+    let information = try control(device, request: query, responseBytes: 36, memory: memory)
+    #expect(read64(information, 12) == UInt64(1) << 5)
+
+    var unsupported = parameters(streamID: 0)
+    unsupported[21] = DoryVirtioSoundPCMFormat.float32.rawValue
+    #expect(read32(try control(device, request: unsupported, memory: memory), 0) == 0x8002)
+  }
+
   private func control(
     _ device: DoryVirtioSoundDevice,
     request: [UInt8],
@@ -106,6 +119,25 @@ import Testing
   }
 }
 
+private final class Signed16SoundBackend: DoryVirtioSoundBackend,
+  DoryVirtioSoundFormatCapability, @unchecked Sendable
+{
+  let supportedPCMFormats: Set<DoryVirtioSoundPCMFormat> = [.signed16]
+  func configure(
+    streamID: UInt32,
+    direction: DoryVirtioSoundDirection,
+    parameters: DoryVirtioSoundPCMParameters
+  ) throws {}
+  func prepare(streamID: UInt32) throws {}
+  func start(streamID: UInt32) throws {}
+  func stop(streamID: UInt32) throws {}
+  func release(streamID: UInt32) throws {}
+  func play(streamID: UInt32, pcmBytes: [UInt8]) throws {}
+  func capture(streamID: UInt32, byteCount: Int) throws -> [UInt8] {
+    [UInt8](repeating: 0, count: byteCount)
+  }
+}
+
 private final class SoundGuestMemory: DoryVirtioGuestMemory, @unchecked Sendable {
   private let lock = NSLock()
   private var bytes: [UInt8]
@@ -134,6 +166,10 @@ private final class SoundGuestMemory: DoryVirtioGuestMemory, @unchecked Sendable
 
 private func read32(_ bytes: [UInt8], _ offset: Int) -> UInt32 {
   (0..<4).reduce(0) { $0 | UInt32(bytes[offset + $1]) << UInt32($1 * 8) }
+}
+
+private func read64(_ bytes: [UInt8], _ offset: Int) -> UInt64 {
+  (0..<8).reduce(0) { $0 | UInt64(bytes[offset + $1]) << UInt64($1 * 8) }
 }
 
 private func littleEndian<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
