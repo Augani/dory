@@ -28,6 +28,41 @@ struct LocalCATests {
         #expect(text.contains("Dory Local CA"))
     }
 
+    @Test func caAndLeafPrivateKeysAreOwnerReadableOnly() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory()).appendingPathComponent("dory-ca-perms-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let ca = LocalCA(directory: directory)
+        guard ca.opensslPath != nil else { return }
+
+        try ca.ensureCA()
+        let pair = try ca.issue(domain: "web.dory.local")
+        let p12 = try ca.issuePKCS12(domain: "dory.local", password: AppStore.ephemeralIdentityPassword())
+
+        for path in [ca.caKey.path, pair.privateKey.path, p12.path] {
+            let mode = try #require(
+                FileManager.default.attributesOfItem(atPath: path)[.posixPermissions] as? NSNumber
+            ).intValue
+            #expect(mode & 0o077 == 0)
+        }
+    }
+
+    @Test func certificateNamesThatCouldInjectSANEntriesOrPathsAreRejected() throws {
+        for name in ["dory.local,DNS:evil.example.com", "../../etc/dory", "dory.local/../evil", "", "*.", "a..b"] {
+            #expect(throws: (any Error).self) { try LocalCA.validateCertificateName(name) }
+        }
+        for name in ["dory.local", "*.dory.local", "*.default.k8s.dory.local", "my-project.local"] {
+            try LocalCA.validateCertificateName(name)
+        }
+    }
+
+    @Test func ephemeralIdentityPasswordIsRandomAndNotAConstant() {
+        let first = AppStore.ephemeralIdentityPassword()
+        let second = AppStore.ephemeralIdentityPassword()
+        #expect(first.count == 48)
+        #expect(first != second)
+    }
+
     @Test func localTrustParserAcceptsOnlyAValidDoryCA() throws {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("dory-trust-parser-\(UUID().uuidString)")

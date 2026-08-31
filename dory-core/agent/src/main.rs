@@ -39,7 +39,8 @@ async fn main() -> std::io::Result<()> {
 
 /// `--daemon <addr>` selects remote-VPS daemon mode; absent, the guest PID-1 path runs.
 /// Daemon mode exposes `Exec` with no in-band authentication; it relies entirely on the transport
-/// (loopback default + SSH tunnel). Never bind it to a routable address.
+/// (loopback default + SSH tunnel), which `daemon::serve` enforces by refusing a routable listener
+/// and dropping non-loopback peers.
 fn daemon_addr() -> Option<String> {
     let args: Vec<String> = std::env::args().collect();
     let idx = args.iter().position(|a| a == "--daemon")?;

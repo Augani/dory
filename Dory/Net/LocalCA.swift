@@ -1,9 +1,11 @@
+import Darwin
 import Foundation
 
 nonisolated enum ShellError: Error, Sendable {
     case launchFailed(String)
     case nonZeroExit(Int32, String)
     case toolNotFound(String)
+    case invalidArgument(String)
 }
 
 nonisolated enum Shell {
@@ -51,11 +53,17 @@ nonisolated enum Shell {
     }
 
     @discardableResult
-    static func run(_ launchPath: String, _ arguments: [String], cwd: URL? = nil) throws -> String {
+    static func run(
+        _ launchPath: String,
+        _ arguments: [String],
+        cwd: URL? = nil,
+        environment: [String: String]? = nil
+    ) throws -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: launchPath)
         process.arguments = arguments
         if let cwd { process.currentDirectoryURL = cwd }
+        if let environment { process.environment = environment }
         let output = Pipe()
         process.standardOutput = output
         process.standardError = output
@@ -100,18 +108,48 @@ nonisolated struct LocalCA: Sendable {
         guard let openssl = opensslPath else { throw ShellError.toolNotFound("openssl") }
         if caExists { return }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try Shell.run(openssl, [
-            "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
-            "-keyout", caKey.path, "-out", caCertificate.path, "-days", "3650",
-            "-subj", "/CN=Dory Local CA/O=Dory",
-            "-addext", "basicConstraints=critical,CA:TRUE",
-            "-addext", "keyUsage=critical,keyCertSign,cRLSign",
-        ])
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        // This key signs certificates the user is asked to trust in their login keychain, so it is
+        // created 0600 via umask rather than chmod-after: it is never briefly world-readable.
+        let previousMask = umask(0o177)
+        do {
+            try Shell.run(openssl, [
+                "req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:prime256v1", "-nodes",
+                "-keyout", caKey.path, "-out", caCertificate.path, "-days", "3650",
+                "-subj", "/CN=Dory Local CA/O=Dory",
+                "-addext", "basicConstraints=critical,CA:TRUE",
+                "-addext", "keyUsage=critical,keyCertSign,cRLSign",
+            ])
+            umask(previousMask)
+        } catch {
+            umask(previousMask)
+            throw error
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: caKey.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: caCertificate.path)
+    }
+
+    /// Certificate names reach openssl inside a comma-separated SAN string and a file path, so a
+    /// name carrying a comma or a path separator could inject extra SAN entries or redirect the
+    /// written key. Domains come from user settings and container labels; validate them all.
+    static func validateCertificateName(_ name: String) throws {
+        var value = name
+        if value.hasPrefix("*.") { value = String(value.dropFirst(2)) }
+        let labels = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard !labels.isEmpty else { throw ShellError.invalidArgument("certificate name: \(name)") }
+        for label in labels {
+            guard !label.isEmpty,
+                  label.allSatisfy({ $0.isASCII && ($0.isLetter || $0.isNumber || $0 == "-") }) else {
+                throw ShellError.invalidArgument("certificate name: \(name)")
+            }
+        }
     }
 
     @discardableResult
     func issue(domain: String, extraSANs: [String] = []) throws -> CertificatePair {
         guard let openssl = opensslPath else { throw ShellError.toolNotFound("openssl") }
+        try Self.validateCertificateName(domain)
+        for name in extraSANs where !name.isEmpty { try Self.validateCertificateName(name) }
         try ensureCA()
         let certificate = directory.appendingPathComponent("\(domain).crt")
         let key = directory.appendingPathComponent("\(domain).key")
@@ -131,6 +169,8 @@ nonisolated struct LocalCA: Sendable {
             "x509", "-req", "-in", csr.path, "-CA", caCertificate.path, "-CAkey", caKey.path,
             "-CAcreateserial", "-out", certificate.path, "-days", "825", "-copy_extensions", "copyall",
         ])
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: key.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: certificate.path)
         return CertificatePair(certificate: certificate, privateKey: key)
     }
 
@@ -141,11 +181,17 @@ nonisolated struct LocalCA: Sendable {
         guard let openssl = opensslPath else { throw ShellError.toolNotFound("openssl") }
         let pair = try issue(domain: domain, extraSANs: extraSANs)
         let p12 = directory.appendingPathComponent("\(domain).p12")
+        // Pass the export passphrase through the environment rather than argv, so it is not
+        // visible in `ps` output while openssl runs.
+        let passphraseVariable = "DORY_LOCALCA_P12_PASS"
+        var childEnvironment = ProcessInfo.processInfo.environment
+        childEnvironment[passphraseVariable] = password
         try Shell.run(openssl, [
             "pkcs12", "-export", "-inkey", pair.privateKey.path, "-in", pair.certificate.path,
             "-certfile", caCertificate.path, "-out", p12.path,
-            "-passout", "pass:\(password)", "-legacy",
-        ])
+            "-passout", "env:\(passphraseVariable)", "-legacy",
+        ], environment: childEnvironment)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: p12.path)
         return p12
     }
 

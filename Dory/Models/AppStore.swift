@@ -2797,6 +2797,13 @@ final class AppStore {
         }
     }
 
+    nonisolated static func ephemeralIdentityPassword() -> String {
+        var generator = SystemRandomNumberGenerator()
+        return (0..<24)
+            .map { _ in String(format: "%02x", UInt8.random(in: .min ... .max, using: &generator)) }
+            .joined()
+    }
+
     private func startTLS() {
         let table = domainTable
         let suffix = domainSuffix
@@ -2807,8 +2814,11 @@ final class AppStore {
         let extraSANs = ["*.k8s.\(suffix)", "*.default.k8s.\(suffix)", "*.kube-system.k8s.\(suffix)"]
         Task { [weak self] in
             let proxy = await Task.detached { () -> DoryTLSProxy? in
-                guard let p12 = try? LocalCA().issuePKCS12(domain: suffix, password: "dory", extraSANs: extraSANs) else { return nil }
-                return DoryTLSProxy(p12Path: p12.path, password: "dory", resolve: { table.backend(for: $0) })
+                // The identity lives only for this proxy instance, so its passphrase is generated
+                // per start rather than shipped in the binary.
+                let password = Self.ephemeralIdentityPassword()
+                guard let p12 = try? LocalCA().issuePKCS12(domain: suffix, password: password, extraSANs: extraSANs) else { return nil }
+                return DoryTLSProxy(p12Path: p12.path, password: password, resolve: { table.backend(for: $0) })
             }.value
             guard let self, let proxy else { return }
             do {
