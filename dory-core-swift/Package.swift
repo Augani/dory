@@ -216,6 +216,7 @@ let package = Package(
       dependencies: [
         "DoryExecutionContracts",
         "DoryFirmware",
+        "DoryMachinePC",
         "DoryRendererWorkerWireContracts",
         "DoryVMContracts",
       ],
