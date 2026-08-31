@@ -32,6 +32,8 @@ private struct Arguments {
   let expectedSerialMarker: String?
   let bootProbe: Bool
   let initialRTCUnixSeconds: UInt64
+  let traceAfterInstructions: UInt64?
+  let traceCapacity: Int
 
   init(_ values: [String]) throws {
     var options: [String: String] = [:]
@@ -49,6 +51,7 @@ private struct Arguments {
           "--expected-serial-marker",
           "--boot-probe",
           "--initial-rtc-unix-seconds",
+          "--trace-after-instructions", "--trace-capacity",
         ].contains(name)
       else { throw SmokeError.usage("unknown option: \(name)") }
       guard options.updateValue(values[index + 1], forKey: name) == nil else {
@@ -66,6 +69,7 @@ private struct Arguments {
           + "[--expected-serial-marker text] "
           + "[--boot-probe enabled|disabled] "
           + "[--initial-rtc-unix-seconds seconds] "
+          + "[--trace-after-instructions count] [--trace-capacity count] "
           + "[--max-instructions count] [--progress-instructions count] [--memory-bytes count]"
       )
     }
@@ -74,6 +78,7 @@ private struct Arguments {
     let memoryText = options["--memory-bytes"] ?? "268435456"
     let processorText = options["--processor-count"] ?? "1"
     let rtcText = options["--initial-rtc-unix-seconds"] ?? "0"
+    let traceCapacityText = options["--trace-capacity"] ?? "256"
     guard let maximumInstructions = UInt64(instructionText), maximumInstructions > 0 else {
       throw SmokeError.invalidNumber(instructionText)
     }
@@ -89,6 +94,18 @@ private struct Arguments {
     guard let initialRTCUnixSeconds = UInt64(rtcText) else {
       throw SmokeError.invalidNumber(rtcText)
     }
+    guard let traceCapacity = Int(traceCapacityText), (1...4096).contains(traceCapacity) else {
+      throw SmokeError.invalidNumber(traceCapacityText)
+    }
+    if let traceText = options["--trace-after-instructions"] {
+      guard let traceAfterInstructions = UInt64(traceText) else {
+        throw SmokeError.invalidNumber(traceText)
+      }
+      self.traceAfterInstructions = traceAfterInstructions
+    } else {
+      traceAfterInstructions = nil
+    }
+    self.traceCapacity = traceCapacity
     let policyText = options["--exception-policy"] ?? "stop"
     switch policyText {
     case "stop": exceptionPolicy = .stop
@@ -205,15 +222,46 @@ private func runWithProgress(
   blockDevices: [DoryPCVirtioBlockPCIDevice],
   maximumInstructions: UInt64,
   progressInstructions: UInt64,
-  exceptionPolicy: DoryPCExceptionPolicy
-) throws -> DoryPCMachineStop {
+  exceptionPolicy: DoryPCExceptionPolicy,
+  traceAfterInstructions: UInt64?,
+  traceCapacity: Int
+) throws -> (stop: DoryPCMachineStop, trace: [[String: Any]]) {
   var completed: UInt64 = 0
+  var trace: [[String: Any]] = []
   while completed < maximumInstructions {
-    let chunk = min(progressInstructions, maximumInstructions - completed)
+    let tracing = traceAfterInstructions.map { completed >= $0 } ?? false
+    if tracing, let state = machine.state {
+      let bytes = (try? machine.instructionBytes(maximumCount: 16)) ?? nil
+      let statistics = machine.executionStatistics
+      trace.append([
+        "instruction": completed,
+        "rip": hexadecimal(state.cs.base &+ state.rip),
+        "bytes": bytes.map(hexadecimalBytes) ?? "unmapped",
+        "rax": hexadecimal(state.registers.rax),
+        "rbx": hexadecimal(state.registers.rbx),
+        "rcx": hexadecimal(state.registers.rcx),
+        "rdx": hexadecimal(state.registers.rdx),
+        "rbp": hexadecimal(state.registers.rbp),
+        "rsi": hexadecimal(state.registers.rsi),
+        "rdi": hexadecimal(state.registers.rdi),
+        "rsp": hexadecimal(state.registers.rsp),
+        "rflags": hexadecimal(state.rflags.rawValue),
+        "interpreterInstructions": statistics.interpreterInstructions,
+        "baselineJITInstructions": statistics.baselineJITInstructions,
+        "optimizingJITInstructions": statistics.optimizingJITInstructions,
+      ])
+      if trace.count > traceCapacity { trace.removeFirst(trace.count - traceCapacity) }
+    }
+    let distanceToTrace = traceAfterInstructions.map { $0 > completed ? $0 - completed : 0 } ?? 0
+    let chunk = min(
+      tracing ? 1 : max(1, min(progressInstructions, distanceToTrace == 0 ? progressInstructions : distanceToTrace)),
+      maximumInstructions - completed
+    )
     let stop = try machine.run(maximumInstructions: chunk, exceptionPolicy: exceptionPolicy)
     switch stop {
     case .instructionBudget(let count):
       completed &+= count
+      guard !tracing else { continue }
       let state = machine.state
       let statistics = machine.executionStatistics
       let payload: [String: Any] = [
@@ -226,15 +274,15 @@ private func runWithProgress(
       ]
       let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
       FileHandle.standardError.write(data + Data("\n".utf8))
-    case .halted(let count): return .halted(instructionCount: completed &+ count)
+    case .halted(let count): return (.halted(instructionCount: completed &+ count), trace)
     case .exception(let exception, let count):
-      return .exception(exception, instructionCount: completed &+ count)
-    case .tripleFault(let count): return .tripleFault(instructionCount: completed &+ count)
-    case .poweredOff(let count): return .poweredOff(instructionCount: completed &+ count)
-    case .reset(let count): return .reset(instructionCount: completed &+ count)
+      return (.exception(exception, instructionCount: completed &+ count), trace)
+    case .tripleFault(let count): return (.tripleFault(instructionCount: completed &+ count), trace)
+    case .poweredOff(let count): return (.poweredOff(instructionCount: completed &+ count), trace)
+    case .reset(let count): return (.reset(instructionCount: completed &+ count), trace)
     }
   }
-  return .instructionBudget(completed)
+  return (.instructionBudget(completed), trace)
 }
 
 private func pageTableTrace(
@@ -355,13 +403,16 @@ private func run() throws {
     firmwareConfigurationFlags: arguments.bootProbe ? [.qualificationBootProbe] : [],
     executionTier: arguments.executionTier
   )
-  let stop = try runWithProgress(
+  let execution = try runWithProgress(
     machine: composed.machine,
     blockDevices: composed.blockDevices,
     maximumInstructions: arguments.maximumInstructions,
     progressInstructions: arguments.progressInstructions,
-    exceptionPolicy: arguments.exceptionPolicy
+    exceptionPolicy: arguments.exceptionPolicy,
+    traceAfterInstructions: arguments.traceAfterInstructions,
+    traceCapacity: arguments.traceCapacity
   )
+  let stop = execution.stop
   let executionStatistics = composed.machine.executionStatistics
   let state = composed.machine.state
   let rip = state.map { hexadecimal($0.cs.base &+ $0.rip) } ?? "unavailable"
@@ -403,6 +454,8 @@ private func run() throws {
     "machineABIIdentity": artifacts.manifest.machineABIIdentity,
     "maximumInstructions": arguments.maximumInstructions,
     "progressInstructions": arguments.progressInstructions,
+    "traceAfterInstructions": arguments.traceAfterInstructions.map { $0 as Any } ?? NSNull(),
+    "instructionTrace": execution.trace,
     "processorCount": arguments.processorCount,
     "bootOrder": bootOrder,
     "exceptionPolicy": arguments.exceptionPolicy == .stop ? "stop" : "deliver",
