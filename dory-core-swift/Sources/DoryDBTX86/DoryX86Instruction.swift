@@ -397,6 +397,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case jumpIndirect(DoryX86Operand)
   case conditionalJump(DoryX86Condition, relative: Int64)
   case loop(DoryX86LoopCondition, relative: Int64, counterWidth: DoryX86OperandWidth)
+  case enter(allocation: UInt16, nesting: UInt8, width: DoryX86OperandWidth)
+  case translateByte(
+    addressWidth: DoryX86OperandWidth,
+    segment: DoryX86SegmentRegister,
+    ignoresLegacySegmentBase: Bool
+  )
   case cpuid
   case readControlRegister(index: UInt8, destination: DoryX86GeneralRegister)
   case writeControlRegister(index: UInt8, source: DoryX86GeneralRegister)

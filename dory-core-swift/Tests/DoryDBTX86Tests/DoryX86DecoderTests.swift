@@ -785,4 +785,23 @@ import Testing
         == .clearX87Exceptions
     )
   }
+
+  @Test func decodesEnterXLATAndBreakpointInterrupt() throws {
+    #expect(
+      try decoder.decode([0xC8, 0x20, 0x00, 0x23], at: 0x1000, mode: .long64).operation
+        == .enter(allocation: 0x20, nesting: 3, width: .quadword)
+    )
+    #expect(
+      try decoder.decode([0x67, 0x64, 0xD7], at: 0x1000, mode: .long64).operation
+        == .translateByte(
+          addressWidth: .doubleword,
+          segment: .fs,
+          ignoresLegacySegmentBase: true
+        )
+    )
+    #expect(
+      try decoder.decode([0xCC], at: 0x1000, mode: .long64).operation
+        == .softwareInterrupt(vector: 3)
+    )
+  }
 }

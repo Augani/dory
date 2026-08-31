@@ -537,6 +537,34 @@ import Testing
     #expect(state.floatingPoint.x87StatusWord & 0x00FF == 0)
   }
 
+  @Test func enterBuildsNestedFramesAndXLATUsesTheSelectedAddressSize() throws {
+    var bytes = [UInt8](repeating: 0, count: 0xB00)
+    bytes.replaceSubrange(0..<5, with: [0xC8, 0x20, 0x00, 0x03, 0xD7])
+    bytes.replaceSubrange(0x8F0..<0x8F8, with: littleEndian(0xBBBB))
+    bytes.replaceSubrange(0x8F8..<0x900, with: littleEndian(0xAAAA))
+    bytes[0xA05] = 0xCC
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: 5, rbx: 0x1A00, rsp: 0x1800, rbp: 0x1900),
+      rip: 0x1000
+    )
+
+    let enter = interpreter.step(state: &state, memory: memory, mode: .long64)
+    guard case .retired = enter else {
+      Issue.record("ENTER unexpectedly failed: \(enter)")
+      return
+    }
+    #expect(state.registers.rbp == 0x17F8)
+    #expect(state.registers.rsp == 0x17C0)
+    #expect(readQuadword(memory, at: 0x17F8) == 0x1900)
+    #expect(readQuadword(memory, at: 0x17F0) == 0xAAAA)
+    #expect(readQuadword(memory, at: 0x17E8) == 0xBBBB)
+    #expect(readQuadword(memory, at: 0x17E0) == 0x17F8)
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.registers.rax & 0xFF == 0xCC)
+  }
+
   @Test func movdquLoadsLowVectorAndPreservesUpperVector() throws {
     var bytes = [UInt8](repeating: 0, count: 0x30)
     bytes.replaceSubrange(0..<8, with: [0xF3, 0x0F, 0x6F, 0x35, 0x08, 0, 0, 0])

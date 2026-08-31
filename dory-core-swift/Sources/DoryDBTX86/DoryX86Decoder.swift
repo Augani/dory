@@ -455,6 +455,14 @@ public struct DoryX86Decoder: Sendable {
       )
     case 0xCF:
       operation = .interruptReturn
+    case 0xC8:
+      operation = .enter(
+        allocation: UInt16(try cursor.readUnsigned(byteCount: 2)),
+        nesting: try cursor.readByte() & 0x1F,
+        width: stackWidth(mode: mode, prefixes: prefixes)
+      )
+    case 0xCC:
+      operation = .softwareInterrupt(vector: 3)
     case 0xCD:
       operation = .softwareInterrupt(vector: try cursor.readByte())
     case 0xE9:
@@ -483,6 +491,12 @@ public struct DoryX86Decoder: Sendable {
       operation = .farJump(
         offset: try cursor.readUnsigned(byteCount: width == .word ? 2 : 4),
         selector: UInt16(try cursor.readUnsigned(byteCount: 2))
+      )
+    case 0xD7:
+      operation = .translateByte(
+        addressWidth: addressWidth(mode: mode, prefixes: prefixes),
+        segment: segmentRegister(prefixes.segmentOverride) ?? .ds,
+        ignoresLegacySegmentBase: mode == .long64
       )
     case 0x70...0x7F:
       operation = .conditionalJump(

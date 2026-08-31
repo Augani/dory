@@ -1210,6 +1210,28 @@ public struct DoryX86Interpreter: Sendable {
           case .countZero: count == 0
           }
         if branches { nextRIP = addRelative(nextRIP, relative) }
+      case .enter(let allocation, let nesting, let width):
+        try executeEnter(
+          allocation: allocation,
+          nesting: nesting,
+          width: width,
+          instruction: instruction,
+          mode: mode,
+          state: &state,
+          memory: executionMemory
+        )
+      case .translateByte(let addressWidth, let segment, let ignoresLegacySegmentBase):
+        let table = DoryX86MemoryOperand(
+          base: .rbx,
+          displacement: Int64(state.registers.rax & 0xFF),
+          width: .byte,
+          addressWidth: addressWidth,
+          segment: segment,
+          ignoresLegacySegmentBase: ignoresLegacySegmentBase
+        )
+        let value = try read(
+          .memory(table), instruction: instruction, state: state, memory: executionMemory)
+        state.registers.rax = (state.registers.rax & ~UInt64(0xFF)) | value
       case .cpuid:
         let result = profile.cpuid(
           leaf: UInt32(truncatingIfNeeded: state.registers.rax),
@@ -2895,6 +2917,89 @@ public struct DoryX86Interpreter: Sendable {
     try memory.validateWrite(at: address, byteCount: width.byteCount)
     try memory.write(at: address, bytes: littleEndian(value, width: width))
     writeStackPointer(nextOffset, mode: mode, state: &state)
+  }
+
+  private func executeEnter(
+    allocation: UInt16,
+    nesting: UInt8,
+    width: DoryX86OperandWidth,
+    instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    let pointerWidth = stackPointerWidth(mode: mode, state: state)
+    let pointerMask = mask(pointerWidth)
+    let operandMask = mask(width)
+    let originalStack = stackPointerOffset(mode: mode, state: state)
+    let frameBase = state.registers.rbp & operandMask
+    let frameTemporary = (originalStack &- UInt64(width.byteCount)) & pointerMask
+    var values = [frameBase]
+
+    if nesting > 0 {
+      var sourceOffset = frameBase
+      if nesting > 1 {
+        for _ in 1..<nesting {
+          sourceOffset = (sourceOffset &- UInt64(width.byteCount)) & operandMask
+          try validateStackAccess(
+            offset: sourceOffset,
+            byteCount: width.byteCount,
+            write: false,
+            instruction: instruction,
+            mode: mode,
+            state: state
+          )
+          values.append(
+            fromLittleEndian(
+              try memory.read(
+                at: stackAddress(sourceOffset, mode: mode, state: state),
+                byteCount: width.byteCount
+              )))
+        }
+      }
+      values.append(frameTemporary)
+    }
+
+    var writeOffsets: [UInt64] = []
+    writeOffsets.reserveCapacity(values.count)
+    for index in values.indices {
+      let offset =
+        (originalStack &- UInt64((index + 1) * width.byteCount)) & pointerMask
+      try validateStackAccess(
+        offset: offset,
+        byteCount: width.byteCount,
+        write: true,
+        instruction: instruction,
+        mode: mode,
+        state: state
+      )
+      try memory.validateWrite(
+        at: stackAddress(offset, mode: mode, state: state),
+        byteCount: width.byteCount
+      )
+      writeOffsets.append(offset)
+    }
+
+    let stackAfterPushes = writeOffsets.last ?? originalStack
+    let finalStack = (stackAfterPushes &- UInt64(allocation)) & pointerMask
+    if allocation > 0 {
+      try validateStackAccess(
+        offset: finalStack,
+        byteCount: Int(allocation),
+        write: true,
+        instruction: instruction,
+        mode: mode,
+        state: state
+      )
+    }
+    for (offset, value) in zip(writeOffsets, values) {
+      try memory.write(
+        at: stackAddress(offset, mode: mode, state: state),
+        bytes: littleEndian(value, width: width)
+      )
+    }
+    writeStringRegister(.rbp, value: frameTemporary, width: width, state: &state)
+    writeStackPointer(finalStack, mode: mode, state: &state)
   }
 
   private func readStack(
