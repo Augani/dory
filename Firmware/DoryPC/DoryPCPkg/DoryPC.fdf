@@ -171,6 +171,10 @@ READ_LOCK_STATUS   = TRUE
 APRIORI DXE {
   INF  MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf
   INF  MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
+  INF  MdeModulePkg/Universal/Console/ConPlatformDxe/ConPlatformDxe.inf
+  INF  MdeModulePkg/Universal/Console/ConSplitterDxe/ConSplitterDxe.inf
+  INF  MdeModulePkg/Universal/SerialDxe/SerialDxe.inf
+  INF  MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf
   # AmdSevDxe must be loaded before TdxDxe. Because in SEV guest AmdSevDxe
   # driver performs a MemEncryptSevClearMmioPageEncMask() call against the
   # PcdPciExpressBaseAddress range to mark it shared/unencrypted.
@@ -227,6 +231,7 @@ INF  MdeModulePkg/Universal/Console/ConPlatformDxe/ConPlatformDxe.inf
 INF  MdeModulePkg/Universal/Console/ConSplitterDxe/ConSplitterDxe.inf
 INF  MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf
 INF  MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf
+INF  MdeModulePkg/Universal/SerialDxe/SerialDxe.inf
 INF  MdeModulePkg/Universal/DriverHealthManagerDxe/DriverHealthManagerDxe.inf
 INF  MdeModulePkg/Universal/BdsDxe/BdsDxe.inf
 INF  MdeModulePkg/Application/UiApp/UiApp.inf

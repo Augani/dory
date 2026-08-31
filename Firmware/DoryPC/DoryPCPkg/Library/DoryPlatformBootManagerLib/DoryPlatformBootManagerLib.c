@@ -4,9 +4,11 @@
 #include <DoryPCFirmwareConfiguration.h>
 #include <Guid/EventGroup.h>
 #include <Guid/SerialPortLibVendor.h>
+#include <Guid/TtyTerm.h>
 #include <Library/IoLib.h>
 #include <Library/PcdLib.h>
 #include <Library/PlatformBootManagerLib.h>
+#include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiBootManagerLib.h>
 #include <Library/UefiLib.h>
 
@@ -16,6 +18,7 @@
 #define DORY_PC_SOFT_OFF_TYPE     5
 
 STATIC CONST CHAR8  mDoryBootMarker[] = "DORY-PC-UEFI-BOOT\r\n";
+STATIC CONST CHAR8  mDoryConsoleMissingMarker[] = "DORY-PC-UEFI-CONSOLE-MISSING\r\n";
 
 STATIC
 BOOLEAN
@@ -39,10 +42,19 @@ DoryRunBootProbe (
   VOID
   )
 {
+  CONST CHAR8  *Marker;
   UINTN  Index;
 
-  for (Index = 0; Index < sizeof (mDoryBootMarker) - 1; Index++) {
-    IoWrite8 (DORY_PC_SERIAL_PORT, mDoryBootMarker[Index]);
+  // External EFI applications are permitted to call ConOut unconditionally. Keep the raw UART
+  // marker for host-side qualification, but only publish success after the console splitter has
+  // installed a callable Simple Text Output protocol in the system table.
+  Marker = mDoryBootMarker;
+  if ((gST->ConOut == NULL) || (gST->ConOut->OutputString == NULL)) {
+    Marker = mDoryConsoleMissingMarker;
+  }
+
+  for (Index = 0; Marker[Index] != '\0'; Index++) {
+    IoWrite8 (DORY_PC_SERIAL_PORT, Marker[Index]);
   }
 
   IoWrite16 (
@@ -54,9 +66,10 @@ DoryRunBootProbe (
 
 #pragma pack (1)
 typedef struct {
-  VENDOR_DEVICE_PATH        SerialDxe;
-  UART_DEVICE_PATH          Uart;
-  EFI_DEVICE_PATH_PROTOCOL  End;
+  VENDOR_DEVICE_PATH          SerialDxe;
+  UART_DEVICE_PATH            Uart;
+  VENDOR_DEFINED_DEVICE_PATH  TerminalType;
+  EFI_DEVICE_PATH_PROTOCOL    End;
 } DORY_SERIAL_CONSOLE;
 #pragma pack ()
 
@@ -72,6 +85,10 @@ STATIC DORY_SERIAL_CONSOLE mSerialConsole = {
     FixedPcdGet8 (PcdUartDefaultDataBits),
     FixedPcdGet8 (PcdUartDefaultParity),
     FixedPcdGet8 (PcdUartDefaultStopBits)
+  },
+  {
+    { MESSAGING_DEVICE_PATH, MSG_VENDOR_DP, DP_NODE_LEN (VENDOR_DEFINED_DEVICE_PATH) },
+    EFI_TTY_TERM_GUID
   },
   {
     END_DEVICE_PATH_TYPE,
@@ -91,6 +108,7 @@ PlatformBootManagerBeforeConsole (
   EfiEventGroupSignal (&gEfiEndOfDxeEventGroupGuid);
   EfiBootManagerDispatchDeferredImages ();
 
+  EfiBootManagerUpdateConsoleVariable (ConIn, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
   EfiBootManagerUpdateConsoleVariable (ConOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
   EfiBootManagerUpdateConsoleVariable (ErrOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
 }
@@ -100,7 +118,14 @@ PlatformBootManagerAfterConsole (
   VOID
   )
 {
+  // Some console bus drivers only publish their child text protocols while the recursive device
+  // connection pass runs. Rescan those protocols afterwards so the standard console variables
+  // and EFI_SYSTEM_TABLE pointers describe the devices that now exist.
   EfiBootManagerConnectAll ();
+  EfiBootManagerUpdateConsoleVariable (ConIn, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
+  EfiBootManagerUpdateConsoleVariable (ConOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
+  EfiBootManagerUpdateConsoleVariable (ErrOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
+  EfiBootManagerConnectAllDefaultConsoles ();
   // Refresh guest-created file-specific options while retaining the host-published DoryPC
   // physical-device fallbacks and their launch-plan order in BootOrder.
   EfiBootManagerRefreshAllBootOption ();

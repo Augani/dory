@@ -142,6 +142,27 @@ def verify_platform_contract() -> None:
         raise BuildFailure("DoryPC production firmware must not bind the slow LZMA decompressor")
     if "DoryBootProbe" in contents:
         raise BuildFailure("DoryPC must not compile the superseded boot-probe application")
+    serial_console_driver = "MdeModulePkg/Universal/SerialDxe/SerialDxe.inf"
+    if serial_console_driver not in contents or serial_console_driver not in flash_contents:
+        raise BuildFailure(
+            "DoryPC firmware must publish a serial Simple Text Output console"
+        )
+    apriori_start = flash_contents.find("APRIORI DXE {")
+    apriori_end = flash_contents.find("\n}", apriori_start)
+    if apriori_start < 0 or apriori_end < 0:
+        raise BuildFailure("DoryPC firmware must define a DXE APRIORI dispatch list")
+    apriori = flash_contents[apriori_start:apriori_end]
+    console_dispatch_order = (
+        "MdeModulePkg/Universal/Console/ConPlatformDxe/ConPlatformDxe.inf",
+        "MdeModulePkg/Universal/Console/ConSplitterDxe/ConSplitterDxe.inf",
+        serial_console_driver,
+        "MdeModulePkg/Universal/Console/TerminalDxe/TerminalDxe.inf",
+    )
+    console_dispatch_positions = [apriori.find(driver) for driver in console_dispatch_order]
+    if any(position < 0 for position in console_dispatch_positions):
+        raise BuildFailure("DoryPC console drivers must be dispatched before BDS")
+    if console_dispatch_positions != sorted(console_dispatch_positions):
+        raise BuildFailure("DoryPC console drivers must preserve their dependency order")
     if "A31280AD-481E-41B6-95E8-127F4C984779" not in flash_contents:
         raise BuildFailure("DoryPC compact firmware volume must use Tiano compression")
     if "EE4E5898-3914-4259-9D6E-DC7BD79403CF" in flash_contents:
