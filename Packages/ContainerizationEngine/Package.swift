@@ -122,6 +122,7 @@ let package = Package(
                 .product(name: "DoryCore", package: "dory-core-swift"),
                 .product(name: "DoryFirmware", package: "dory-core-swift"),
                 .product(name: "DoryMachineARMVirt", package: "dory-core-swift"),
+                .product(name: "DoryVirtio", package: "dory-core-swift"),
                 .product(name: "DoryVMContracts", package: "dory-core-swift"),
             ],
             linkerSettings: [

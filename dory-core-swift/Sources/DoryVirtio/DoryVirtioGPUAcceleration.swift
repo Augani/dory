@@ -130,7 +130,11 @@ extension DoryVirtioGPUAccelerationAuthority {
     throw DoryVirtioGPUAccelerationError.unsupportedOperation
   }
 
-  public func attachBacking(resourceID: UInt32, entries: [DoryVirtioGPUBackingEntry]) throws {
+  public func attachBacking(
+    resourceID: UInt32,
+    entries: [DoryVirtioGPUBackingEntry],
+    memory: any DoryVirtioGuestMemory
+  ) throws {
     throw DoryVirtioGPUAccelerationError.unsupportedOperation
   }
 
@@ -140,7 +144,8 @@ extension DoryVirtioGPUAccelerationAuthority {
 
   public func transfer3D(
     _ transfer: DoryVirtioGPUTransfer3D,
-    entries: [DoryVirtioGPUBackingEntry]
+    entries: [DoryVirtioGPUBackingEntry],
+    memory: any DoryVirtioGuestMemory
   ) throws {
     throw DoryVirtioGPUAccelerationError.unsupportedOperation
   }

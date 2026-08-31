@@ -117,9 +117,17 @@ public protocol DoryVirtioGPUAccelerationAuthority: AnyObject, Sendable {
   func detachResource(contextID: UInt32, resourceID: UInt32) throws
   func submit3D(contextID: UInt32, command: [UInt8]) throws
   func createResource3D(_ resource: DoryVirtioGPUResource3D) throws
-  func attachBacking(resourceID: UInt32, entries: [DoryVirtioGPUBackingEntry]) throws
+  func attachBacking(
+    resourceID: UInt32,
+    entries: [DoryVirtioGPUBackingEntry],
+    memory: any DoryVirtioGuestMemory
+  ) throws
   func detachBacking(resourceID: UInt32) throws
-  func transfer3D(_ transfer: DoryVirtioGPUTransfer3D, entries: [DoryVirtioGPUBackingEntry]) throws
+  func transfer3D(
+    _ transfer: DoryVirtioGPUTransfer3D,
+    entries: [DoryVirtioGPUBackingEntry],
+    memory: any DoryVirtioGuestMemory
+  ) throws
   func unrefResource(resourceID: UInt32) throws
 }
 
@@ -454,7 +462,11 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
           return response(.errorInvalidResource, header: header)
         }
         do {
-          try accelerationAuthority?.attachBacking(resourceID: id, entries: entries)
+          try accelerationAuthority?.attachBacking(
+            resourceID: id,
+            entries: entries,
+            memory: memory
+          )
         } catch {
           return response(.errorInvalidParameter, header: header)
         }
@@ -636,7 +648,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
         header.contextID == 0 || lock.withLock({ rendererContexts.contains(header.contextID) })
       else { return response(.errorInvalidResource, header: header) }
       do {
-        try accelerationAuthority.transfer3D(transfer, entries: entries)
+        try accelerationAuthority.transfer3D(transfer, entries: entries, memory: memory)
       } catch {
         return response(.errorInvalidParameter, header: header)
       }

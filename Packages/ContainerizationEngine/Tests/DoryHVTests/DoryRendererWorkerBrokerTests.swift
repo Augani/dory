@@ -1,5 +1,6 @@
 import Darwin
 import DoryRendererWorkerContracts
+import DoryVirtio
 import Foundation
 import Metal
 import Testing
@@ -483,6 +484,179 @@ import Testing
 }
 
 @Suite struct DoryRendererWorkerVirtioCommandLaneTests {
+    @Test func doryPCVirGLAuthorityUsesOnlyAuthenticatedVirGLAndDescriptorBackedStaging() async throws {
+        let fixture = try rendererBrokerFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: 11
+        )
+
+        #expect(authority.capabilities.features == [
+            .gpuVirgl, .gpuResourceUUID, .gpuContextInit,
+        ])
+        #expect(authority.capabilities.capsets.map(\.id) == [2])
+
+        let context = Task.detached {
+            try authority.createContext(id: 7, capsetID: 2, name: "mesa")
+        }
+        #expect(await rendererEventually { fixture.channel.sendCount == 1 })
+        let createContext = try fixture.channel.command(
+            at: 0,
+            limits: fixture.bootstrap.limits
+        )
+        #expect(createContext.operation == .createContext)
+        #expect(try DoryRendererContextCreatePayload.decode(createContext.payload).capsetID == 2)
+        fixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        try await context.value
+
+        let resource = Task.detached {
+            try authority.createResource3D(.init(
+                resourceID: 29,
+                target: 2,
+                format: 1,
+                bind: 2,
+                width: 4,
+                height: 2,
+                depth: 1,
+                arraySize: 1,
+                lastLevel: 0,
+                samples: 0,
+                flags: 0
+            ))
+        }
+        #expect(await rendererEventually { fixture.channel.sendCount == 2 })
+        let createResource = try fixture.channel.command(
+            at: 1,
+            limits: fixture.bootstrap.limits
+        )
+        #expect(createResource.operation == .createResource3D)
+        let resourceGeneration = UInt64(41).littleEndian
+        fixture.channel.complete(
+            at: 1,
+            with: .success(DoryRendererWorkerChannelReply(
+                payload: withUnsafeBytes(of: resourceGeneration) { Data($0) },
+                descriptors: []
+            ))
+        )
+        try await resource.value
+
+        let memory = DoryPCVirGLTestMemory(byteCount: 0x2000)
+        let entries = [DoryVirtioGPUBackingEntry(guestAddress: 0x1000, length: 32)]
+        memory.put(Array(0..<32), at: 0x1000)
+        let attach = Task.detached {
+            try authority.attachBacking(
+                resourceID: 29,
+                entries: entries,
+                memory: memory
+            )
+        }
+        #expect(await rendererEventually { fixture.channel.sendCount == 3 })
+        let attachCommand = try fixture.channel.command(
+            at: 2,
+            limits: fixture.bootstrap.limits
+        )
+        #expect(attachCommand.operation == .attachBacking)
+        #expect(attachCommand.resourceGeneration == 41)
+        #expect(try fixture.channel.sharedRegionBytes(
+            at: 2,
+            regionIndex: 0,
+            limits: fixture.bootstrap.limits
+        ) == Array(0..<32))
+        let rendererBacking = try fixture.channel.duplicateDescriptor(
+            at: 2,
+            descriptorIndex: 0
+        )
+        fixture.channel.complete(
+            at: 2,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        try await attach.value
+
+        let guestUpdate = [UInt8](repeating: 0x5a, count: 32)
+        memory.put(guestUpdate, at: 0x1000)
+        let toHost = Task.detached {
+            try authority.transfer3D(
+                .init(
+                    direction: .toHost,
+                    resourceID: 29,
+                    contextID: 7,
+                    x: 0,
+                    y: 0,
+                    z: 0,
+                    width: 4,
+                    height: 2,
+                    depth: 1,
+                    offset: 0,
+                    level: 0,
+                    stride: 16,
+                    layerStride: 32
+                ),
+                entries: entries,
+                memory: memory
+            )
+        }
+        #expect(await rendererEventually { fixture.channel.sendCount == 4 })
+        #expect(try fixture.channel.command(at: 3, limits: fixture.bootstrap.limits).operation
+            == .transferToHost3D)
+        #expect(try fixture.channel.sharedRegionBytes(
+            at: 2,
+            regionIndex: 0,
+            limits: fixture.bootstrap.limits,
+            using: rendererBacking
+        ) == guestUpdate)
+        fixture.channel.complete(
+            at: 3,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        try await toHost.value
+
+        let rendererUpdate = [UInt8](repeating: 0xa5, count: 32)
+        try fixture.channel.writeSharedRegionBytes(
+            rendererUpdate,
+            at: 2,
+            regionIndex: 0,
+            limits: fixture.bootstrap.limits,
+            using: rendererBacking
+        )
+        let fromHost = Task.detached {
+            try authority.transfer3D(
+                .init(
+                    direction: .fromHost,
+                    resourceID: 29,
+                    contextID: 7,
+                    x: 0,
+                    y: 0,
+                    z: 0,
+                    width: 4,
+                    height: 2,
+                    depth: 1,
+                    offset: 0,
+                    level: 0,
+                    stride: 16,
+                    layerStride: 32
+                ),
+                entries: entries,
+                memory: memory
+            )
+        }
+        #expect(await rendererEventually { fixture.channel.sendCount == 5 })
+        #expect(try fixture.channel.command(at: 4, limits: fixture.bootstrap.limits).operation
+            == .transferFromHost3D)
+        fixture.channel.complete(
+            at: 4,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        try await fromHost.value
+        #expect(try memory.read(at: 0x1000, byteCount: 32) == rendererUpdate)
+    }
+
     @Test func capsetsComeOnlyFromAuthenticatedReceiptBytes() throws {
         let fixture = try rendererBrokerFixture()
         let lane = try DoryRendererWorkerVirtioCommandLane(
@@ -4553,6 +4727,44 @@ private final class RendererLaneRecorder: @unchecked Sendable {
     }
 }
 
+private final class DoryPCVirGLTestMemory: DoryVirtioGuestMemory, @unchecked Sendable {
+    private let lock = NSLock()
+    private var bytes: [UInt8]
+
+    init(byteCount: Int) { bytes = .init(repeating: 0, count: byteCount) }
+
+    func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+        try lock.withLock { Array(bytes[try checked(address, byteCount)]) }
+    }
+
+    func validate(at address: UInt64, byteCount: Int, deviceWillWrite _: Bool) throws {
+        _ = try lock.withLock { try checked(address, byteCount) }
+    }
+
+    func write(at address: UInt64, bytes: [UInt8]) throws {
+        try lock.withLock {
+            self.bytes.replaceSubrange(try checked(address, bytes.count), with: bytes)
+        }
+    }
+
+    func synchronize() {}
+
+    func put(_ value: [UInt8], at address: UInt64) {
+        lock.withLock {
+            bytes.replaceSubrange(Int(address)..<(Int(address) + value.count), with: value)
+        }
+    }
+
+    private func checked(_ address: UInt64, _ count: Int) throws -> Range<Int> {
+        guard count >= 0,
+              address <= UInt64(bytes.count),
+              UInt64(count) <= UInt64(bytes.count) - address else {
+            throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+        }
+        return Int(address)..<(Int(address) + count)
+    }
+}
+
 private final class RecordingRendererWorkerChannel:
     DoryRendererWorkerChannel,
     @unchecked Sendable
@@ -4626,10 +4838,18 @@ private final class RecordingRendererWorkerChannel:
         return fcntl(descriptor.fileDescriptor, F_GETFD) >= 0
     }
 
+    func duplicateDescriptor(at index: Int, descriptorIndex: Int) throws -> FileHandle {
+        let descriptor = lock.withLock { exchanges[index].descriptors[descriptorIndex] }
+        let duplicate = fcntl(descriptor.fileDescriptor, F_DUPFD_CLOEXEC, 0)
+        guard duplicate >= 0 else { throw POSIXError(.EBADF) }
+        return FileHandle(fileDescriptor: duplicate, closeOnDealloc: true)
+    }
+
     func sharedRegionBytes(
         at index: Int,
         regionIndex: Int,
-        limits: DoryRendererWorkerLimits
+        limits: DoryRendererWorkerLimits,
+        using retainedDescriptor: FileHandle? = nil
     ) throws -> [UInt8] {
         let exchange = lock.withLock { exchanges[index] }
         let command = try DoryRendererWorkerCommandCodec.decode(
@@ -4652,7 +4872,8 @@ private final class RecordingRendererWorkerChannel:
             Int(mappingLength),
             PROT_READ,
             MAP_SHARED,
-            exchange.descriptors[Int(region.descriptorIndex)].fileDescriptor,
+            retainedDescriptor?.fileDescriptor
+                ?? exchange.descriptors[Int(region.descriptorIndex)].fileDescriptor,
             off_t(mappingOffset)
         )
         guard mapped != MAP_FAILED, let mapped else { throw POSIXError(.EIO) }
@@ -4661,6 +4882,48 @@ private final class RecordingRendererWorkerChannel:
             start: mapped.advanced(by: Int(delta)),
             count: Int(region.length)
         ))
+    }
+
+    func writeSharedRegionBytes(
+        _ bytes: [UInt8],
+        at index: Int,
+        regionIndex: Int,
+        limits: DoryRendererWorkerLimits,
+        using retainedDescriptor: FileHandle? = nil
+    ) throws {
+        let exchange = lock.withLock { exchanges[index] }
+        let command = try DoryRendererWorkerCommandCodec.decode(
+            exchange.frame,
+            limits: limits
+        )
+        let region = command.sharedRegions[regionIndex]
+        guard UInt64(bytes.count) == region.length else { throw POSIXError(.EINVAL) }
+        let pageSize = UInt64(getpagesize())
+        let mappingOffset = region.offset - region.offset % pageSize
+        let delta = region.offset - mappingOffset
+        let (mappingLength, overflow) = delta.addingReportingOverflow(region.length)
+        guard !overflow,
+              mappingLength <= UInt64(Int.max),
+              mappingOffset <= UInt64(off_t.max) else {
+            throw POSIXError(.EOVERFLOW)
+        }
+        let mapped = mmap(
+            nil,
+            Int(mappingLength),
+            PROT_READ | PROT_WRITE,
+            MAP_SHARED,
+            retainedDescriptor?.fileDescriptor
+                ?? exchange.descriptors[Int(region.descriptorIndex)].fileDescriptor,
+            off_t(mappingOffset)
+        )
+        guard mapped != MAP_FAILED, let mapped else { throw POSIXError(.EIO) }
+        defer { munmap(mapped, Int(mappingLength)) }
+        bytes.withUnsafeBytes { source in
+            mapped.advanced(by: Int(delta)).copyMemory(
+                from: source.baseAddress!,
+                byteCount: bytes.count
+            )
+        }
     }
 
     func complete(

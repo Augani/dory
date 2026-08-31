@@ -57,6 +57,41 @@ struct DoryRendererWorkerSharedRegionSet: @unchecked Sendable {
     /// Copies one immutable submit stream directly from a lease-held virtqueue view into an
     /// unlinked shared mapping. No `[UInt8]` or XPC `Data` ever contains command dwords.
     static func immutableSubmit3D(
+        bytes: [UInt8],
+        maximumByteCount: Int
+    ) throws -> Self {
+        guard !bytes.isEmpty,
+              bytes.count <= maximumByteCount,
+              bytes.count.isMultiple(of: 4) else {
+            throw VMError.invalidConfiguration("invalid copied submit_3d range")
+        }
+        let authority = try ImmutableAuthority(byteCount: bytes.count)
+        do {
+            bytes.withUnsafeBytes { source in
+                authority.mapping.copyMemory(
+                    from: source.baseAddress!,
+                    byteCount: bytes.count
+                )
+            }
+            let descriptor = try authority.finish()
+            return Self(
+                references: [try DoryRendererSharedRegionReference(
+                    identity: .random(),
+                    descriptorIndex: 0,
+                    access: .readOnly,
+                    offset: 0,
+                    length: UInt64(bytes.count),
+                    declaredFileSize: UInt64(bytes.count)
+                )],
+                descriptors: [descriptor]
+            )
+        } catch {
+            authority.abort()
+            throw error
+        }
+    }
+
+    static func immutableSubmit3D(
         from access: VirtqueueLeaseAccess,
         readableOffset: Int,
         byteCount: Int,

@@ -307,6 +307,8 @@ public final class DoryRendererWorkerVirtioCommandLane: @unchecked Sendable {
         capsets.first { $0.id == id && version <= $0.maxVersion }
     }
 
+    var authenticatedCapsets: [VirtioGPUCapset] { capsets }
+
     func createContext(
         contextID: UInt32,
         capsetID: UInt32,

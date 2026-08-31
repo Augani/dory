@@ -343,13 +343,21 @@ private final class GPUAccelerationAuthority: DoryVirtioGPUAccelerationAuthority
     record("resource-create:\(resource.resourceID):\(resource.width)x\(resource.height)")
   }
 
-  func attachBacking(resourceID: UInt32, entries: [DoryVirtioGPUBackingEntry]) {
+  func attachBacking(
+    resourceID: UInt32,
+    entries: [DoryVirtioGPUBackingEntry],
+    memory: any DoryVirtioGuestMemory
+  ) {
     record("backing-attach:\(resourceID):\(entries.count)")
   }
 
   func detachBacking(resourceID: UInt32) { record("backing-detach:\(resourceID)") }
 
-  func transfer3D(_ transfer: DoryVirtioGPUTransfer3D, entries: [DoryVirtioGPUBackingEntry]) {
+  func transfer3D(
+    _ transfer: DoryVirtioGPUTransfer3D,
+    entries: [DoryVirtioGPUBackingEntry],
+    memory: any DoryVirtioGuestMemory
+  ) {
     record("transfer:\(transfer.direction):\(transfer.contextID):\(transfer.resourceID)")
   }
 
