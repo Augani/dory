@@ -89,6 +89,7 @@ enum DoryPCMode {
         private let keyboardInput: DoryPCDesktopInputSink
         private let pointerInput: DoryPCDesktopInputSink
         private let displaySink: DoryPCSoftwareDisplaySink?
+        private let cameraBridge: DoryPCCameraBridge?
         private let mailbox: DesktopFrameMailbox?
         private let window: NSWindow?
         private let readyPublisher: ReadyPublisher
@@ -114,7 +115,6 @@ enum DoryPCMode {
             guard devices.networkAttachment != .bridged,
                   !devices.audioInput,
                   !devices.audioOutput,
-                  !devices.cameraInput,
                   !devices.clipboard,
                   !devices.clockSynchronization,
                   !devices.dynamicDisplay,
@@ -201,6 +201,24 @@ enum DoryPCMode {
                 _ = machine.networkDevice.setLinkUp(false)
             }
             machineState = MachineState(machine: machine)
+            if devices.cameraInput {
+                do {
+                    let bridge = try DoryPCCameraBridge { message in
+                        FileHandle.standardError.write(
+                            Data("dory-hv DoryPC camera: \(message)\n".utf8)
+                        )
+                    }
+                    try bridge.attach(to: machine.xhciController)
+                    cameraBridge = bridge
+                } catch {
+                    cameraBridge = nil
+                    FileHandle.standardError.write(
+                        Data("dory-hv DoryPC camera unavailable: \(error)\n".utf8)
+                    )
+                }
+            } else {
+                cameraBridge = nil
+            }
             keyboardInput = DoryPCDesktopInputSink(device: machine.keyboardDevice)
             pointerInput = DoryPCDesktopInputSink(device: machine.tabletDevice)
             serialInput = try RawHVSerialConsoleInput(
@@ -300,6 +318,7 @@ enum DoryPCMode {
                             displaySink: displaySink,
                             networkBackend: networkBackend
                         )
+                        try cameraBridge?.attach(to: replacement.xhciController)
                         if configuration.envelope.devices.networkAttachment == .disconnected {
                             _ = replacement.networkDevice.setLinkUp(false)
                         }
@@ -368,6 +387,7 @@ enum DoryPCMode {
             signalSources.removeAll()
             lifecycleServer.stop()
             networkRuntime?.stop()
+            cameraBridge?.stop()
             serialInput.stop()
             _ = serialOutput.stop()
             try? serialLog.close()

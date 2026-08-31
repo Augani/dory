@@ -1,9 +1,48 @@
+import CoreGraphics
 import DoryVirtio
 import Foundation
+import ImageIO
 import Testing
 @testable import dory_hv
 
 @Suite struct DoryPCDesktopAdapterTests {
+    @Test func cameraBridgeConvertsJPEGToExactYUY2Frame() throws {
+        var pixels: [UInt8] = [255, 0, 0, 255, 255, 0, 0, 255]
+        let image = try pixels.withUnsafeMutableBytes { bytes -> CGImage in
+            let context = try #require(CGContext(
+                data: bytes.baseAddress,
+                width: 2,
+                height: 1,
+                bitsPerComponent: 8,
+                bytesPerRow: 8,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+                    | CGBitmapInfo.byteOrder32Big.rawValue
+            ))
+            return try #require(context.makeImage())
+        }
+        let data = NSMutableData()
+        let destination = try #require(CGImageDestinationCreateWithData(
+            data,
+            "public.jpeg" as CFString,
+            1,
+            nil
+        ))
+        CGImageDestinationAddImage(destination, image, nil)
+        #expect(CGImageDestinationFinalize(destination))
+
+        let converted = try #require(DoryPCCameraBridge.yuy2(
+            jpeg: data as Data,
+            width: 2,
+            height: 1
+        ))
+        #expect(converted.count == 4)
+        #expect(abs(Int(converted[0]) - 82) <= 8)
+        #expect(abs(Int(converted[1]) - 90) <= 8)
+        #expect(abs(Int(converted[2]) - 82) <= 8)
+        #expect(abs(Int(converted[3]) - 240) <= 8)
+    }
+
     @Test func softwareFrameConversionClipsDamageAndCopiesExactRows() throws {
         let mailbox = DesktopFrameMailbox(scanoutID: 0)
         let sink = DoryPCSoftwareDisplaySink(mailbox: mailbox)
