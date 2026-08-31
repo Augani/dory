@@ -793,6 +793,86 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
+      case .mmxBitwise(let operation, let destination, let source):
+        let rhs = try readMMXBytes(
+          source,
+          byteCount: 8,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        var bytes = Array(state.floatingPoint.x87[Int(destination)].bytes.prefix(8))
+        for index in bytes.indices {
+          let lhs = bytes[index]
+          bytes[index] =
+            switch operation {
+            case .and: lhs & rhs[index]
+            case .andNot: ~lhs & rhs[index]
+            case .or: lhs | rhs[index]
+            case .xor: lhs ^ rhs[index]
+            }
+        }
+        writeMMXRegister(destination, bytes: bytes, state: &state.floatingPoint)
+      case .mmxIntegerBinary(let operation, let laneWidth, let destination, let source):
+        let rhs = try readMMXBytes(
+          source,
+          byteCount: 8,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        var bytes = Array(state.floatingPoint.x87[Int(destination)].bytes.prefix(8))
+        executeVectorIntegerBinary(
+          operation,
+          laneWidth: laneWidth,
+          destination: &bytes,
+          source: rhs,
+          vectorByteCount: 8
+        )
+        writeMMXRegister(destination, bytes: bytes, state: &state.floatingPoint)
+      case .mmxIntegerShift(let operation, let laneWidth, let destination, let countSource):
+        let count: UInt64
+        switch countSource {
+        case .immediate(let immediate):
+          count = UInt64(immediate)
+        case .vector(let source):
+          count = fromLittleEndian(
+            try readMMXBytes(
+              source,
+              byteCount: 8,
+              instruction: instruction,
+              state: state,
+              memory: executionMemory
+            ))
+        }
+        var bytes = Array(state.floatingPoint.x87[Int(destination)].bytes.prefix(8))
+        executeVectorIntegerShift(
+          operation,
+          laneWidth: laneWidth,
+          destination: &bytes,
+          count: count,
+          vectorByteCount: 8
+        )
+        writeMMXRegister(destination, bytes: bytes, state: &state.floatingPoint)
+      case .mmxIntegerInterleave(let high, let laneWidth, let destination, let source):
+        let rhs = try readMMXBytes(
+          source,
+          byteCount: 8,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        let lhs = Array(state.floatingPoint.x87[Int(destination)].bytes.prefix(8))
+        let laneBytes = Int(laneWidth.rawValue)
+        let lanesPerInput = 4 / laneBytes
+        let inputOffset = high ? 4 : 0
+        var bytes: [UInt8] = []
+        for lane in 0..<lanesPerInput {
+          let offset = inputOffset + lane * laneBytes
+          bytes += lhs[offset..<offset + laneBytes]
+          bytes += rhs[offset..<offset + laneBytes]
+        }
+        writeMMXRegister(destination, bytes: bytes, state: &state.floatingPoint)
       case .emptyMMXState:
         state.floatingPoint.x87TagWord = 0xFFFF
       case .moveVector128(let destination, let source, let requiresAlignment):
@@ -2429,10 +2509,11 @@ public struct DoryX86Interpreter: Sendable {
     _ operation: DoryX86VectorIntegerOperation,
     laneWidth: DoryX86VectorLaneWidth,
     destination: inout [UInt8],
-    source: [UInt8]
+    source: [UInt8],
+    vectorByteCount: Int = 16
   ) {
     if operation == .multiplyUnsignedDoubleword {
-      for offset in stride(from: 0, to: 16, by: 8) {
+      for offset in stride(from: 0, to: vectorByteCount, by: 8) {
         let lhs = UInt32(fromLittleEndian(Array(destination[offset..<offset + 4])))
         let rhs = UInt32(fromLittleEndian(Array(source[offset..<offset + 4])))
         replaceLittleEndian(UInt64(lhs) * UInt64(rhs), in: &destination, at: offset)
@@ -2440,7 +2521,7 @@ public struct DoryX86Interpreter: Sendable {
       return
     }
     if operation == .multiplyAddWords {
-      for offset in stride(from: 0, to: 16, by: 4) {
+      for offset in stride(from: 0, to: vectorByteCount, by: 4) {
         let lhsLow = Int32(
           Int16(
             bitPattern: UInt16(
@@ -2469,7 +2550,7 @@ public struct DoryX86Interpreter: Sendable {
     let byteCount = Int(laneWidth.rawValue)
     let laneMask = byteCount == 8 ? UInt64.max : (UInt64(1) << UInt64(byteCount * 8)) - 1
     let signBit = UInt64(1) << UInt64(byteCount * 8 - 1)
-    for offset in stride(from: 0, to: 16, by: byteCount) {
+    for offset in stride(from: 0, to: vectorByteCount, by: byteCount) {
       let lhs = fromLittleEndian(Array(destination[offset..<offset + byteCount]))
       let rhs = fromLittleEndian(Array(source[offset..<offset + byteCount]))
       let result: UInt64 =
@@ -2503,13 +2584,14 @@ public struct DoryX86Interpreter: Sendable {
     _ operation: DoryX86VectorShiftOperation,
     laneWidth: DoryX86VectorLaneWidth,
     destination: inout [UInt8],
-    count: UInt64
+    count: UInt64,
+    vectorByteCount: Int = 16
   ) {
     let byteCount = Int(laneWidth.rawValue)
     let bitCount = UInt64(byteCount * 8)
     let laneMask = byteCount == 8 ? UInt64.max : (UInt64(1) << bitCount) - 1
     let effectiveCount = operation == .arithmeticRight ? min(count, bitCount - 1) : count
-    for offset in stride(from: 0, to: 16, by: byteCount) {
+    for offset in stride(from: 0, to: vectorByteCount, by: byteCount) {
       let lane = fromLittleEndian(Array(destination[offset..<offset + byteCount]))
       let result: UInt64
       if operation != .arithmeticRight, effectiveCount >= bitCount {

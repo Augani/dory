@@ -311,6 +311,29 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   )
   case moveIntegerToMMX(destination: UInt8, source: DoryX86Operand)
   case moveMMXToInteger(destination: DoryX86Operand, source: UInt8)
+  case mmxBitwise(
+    DoryX86VectorBitwiseOperation,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
+  case mmxIntegerBinary(
+    DoryX86VectorIntegerOperation,
+    laneWidth: DoryX86VectorLaneWidth,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
+  case mmxIntegerShift(
+    DoryX86VectorShiftOperation,
+    laneWidth: DoryX86VectorLaneWidth,
+    destination: UInt8,
+    count: DoryX86VectorShiftCount
+  )
+  case mmxIntegerInterleave(
+    high: Bool,
+    laneWidth: DoryX86VectorLaneWidth,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
   case emptyMMXState
   case moveVector128(
     destination: DoryX86VectorOperand,

@@ -600,6 +600,43 @@ import Testing
     #expect(state.floatingPoint.x87TagWord == 0xFFFF)
   }
 
+  @Test func mmxPackedArithmeticUsesOnlyTheAliasedSixtyFourBits() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000,
+      bytes: [
+        0x48, 0x0F, 0x6E, 0xC0,
+        0x48, 0x0F, 0x6E, 0xC9,
+        0x0F, 0xFA, 0xC1,
+        0x0F, 0x72, 0xF0, 0x01,
+        0x48, 0x0F, 0x6E, 0xD2,
+        0x0F, 0xE5, 0xD1,
+        0x0F, 0xEF, 0xC9,
+      ] + .init(repeating: 0, count: 16)
+    )
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(
+        rax: 0x0000_0014_0000_000A,
+        rcx: 0x0000_0004_0000_0003,
+        rdx: 0x0003_0002_7FFF_8000
+      ),
+      rip: 0x1000
+    )
+
+    for _ in 0..<4 {
+      _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    }
+    #expect(
+      try memoryInteger(bytes: Array(state.floatingPoint.x87[0].bytes.prefix(8)))
+        == 0x0000_0020_0000_000E)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.floatingPoint.x87[2].bytes[0..<2] == [0xFE, 0xFF][...])
+    #expect(state.floatingPoint.x87[2].bytes[8..<10] == [0xFF, 0xFF][...])
+    _ = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(state.floatingPoint.x87[1].bytes[0..<8] == Array(repeating: 0, count: 8)[...])
+    #expect(state.floatingPoint.x87TagWord == 0)
+  }
+
   @Test func movdquLoadsLowVectorAndPreservesUpperVector() throws {
     var bytes = [UInt8](repeating: 0, count: 0x30)
     bytes.replaceSubrange(0..<8, with: [0xF3, 0x0F, 0x6F, 0x35, 0x08, 0, 0, 0])

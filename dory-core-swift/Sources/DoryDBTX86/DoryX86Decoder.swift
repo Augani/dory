@@ -980,9 +980,7 @@ public struct DoryX86Decoder: Sendable {
         )
       case 0x54...0x57, 0xDB, 0xDF, 0xEB, 0xEF:
         let packedInteger = second == 0xDB || second == 0xDF || second == 0xEB || second == 0xEF
-        guard prefixes.repeatPrefix == nil,
-          !packedInteger || prefixes.operandSizeOverride
-        else {
+        guard prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "unsupported vector bitwise mandatory prefix")
         }
@@ -995,11 +993,19 @@ public struct DoryX86Decoder: Sendable {
           case 0x56, 0xEB: .or
           default: .xor
           }
-        operation = .vectorBitwise(
-          bitwiseOperation,
-          destination: vectorRegister(operands.reg),
-          source: vectorOperand(operands.rm)
-        )
+        if packedInteger, !prefixes.operandSizeOverride {
+          operation = .mmxBitwise(
+            bitwiseOperation,
+            destination: try mmxRegister(operands.reg, address: address),
+            source: try mmxOperand(operands.rm, address: address)
+          )
+        } else {
+          operation = .vectorBitwise(
+            bitwiseOperation,
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm)
+          )
+        }
       case 0x58, 0x59, 0x5C...0x5F:
         let format = try vectorFloatingFormat(prefixes: prefixes, address: address)
         let operands = try decodeModRM(
@@ -1020,7 +1026,8 @@ public struct DoryX86Decoder: Sendable {
           source: vectorOperand(operands.rm)
         )
       case 0x60...0x62, 0x68...0x6A, 0x6C, 0x6D:
-        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+        let mmx = !prefixes.operandSizeOverride
+        guard prefixes.repeatPrefix == nil, !mmx || second != 0x6C && second != 0x6D else {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "packed integer interleave requires 66 prefix")
         }
@@ -1033,14 +1040,24 @@ public struct DoryX86Decoder: Sendable {
           case 0x62, 0x6A: .doubleword
           default: .quadword
           }
-        operation = .vectorIntegerInterleave(
-          high: second == 0x68 || second == 0x69 || second == 0x6A || second == 0x6D,
-          laneWidth: laneWidth,
-          destination: vectorRegister(operands.reg),
-          source: vectorOperand(operands.rm)
-        )
+        let high = second == 0x68 || second == 0x69 || second == 0x6A || second == 0x6D
+        if mmx {
+          operation = .mmxIntegerInterleave(
+            high: high,
+            laneWidth: laneWidth,
+            destination: try mmxRegister(operands.reg, address: address),
+            source: try mmxOperand(operands.rm, address: address)
+          )
+        } else {
+          operation = .vectorIntegerInterleave(
+            high: high,
+            laneWidth: laneWidth,
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm)
+          )
+        }
       case 0x64...0x66, 0x74...0x76, 0xD4, 0xD5, 0xE4, 0xE5, 0xF4, 0xF5, 0xF8...0xFE:
-        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+        guard prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "packed integer XMM operation requires 66 prefix")
         }
@@ -1069,12 +1086,21 @@ public struct DoryX86Decoder: Sendable {
         case 0xFD: (integerOperation, laneWidth) = (.add, .word)
         default: (integerOperation, laneWidth) = (.add, .doubleword)
         }
-        operation = .vectorIntegerBinary(
-          integerOperation,
-          laneWidth: laneWidth,
-          destination: vectorRegister(operands.reg),
-          source: vectorOperand(operands.rm)
-        )
+        if prefixes.operandSizeOverride {
+          operation = .vectorIntegerBinary(
+            integerOperation,
+            laneWidth: laneWidth,
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm)
+          )
+        } else {
+          operation = .mmxIntegerBinary(
+            integerOperation,
+            laneWidth: laneWidth,
+            destination: try mmxRegister(operands.reg, address: address),
+            source: try mmxOperand(operands.rm, address: address)
+          )
+        }
       case 0x6E:
         guard prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
@@ -1127,7 +1153,7 @@ public struct DoryX86Decoder: Sendable {
           control: try cursor.readByte()
         )
       case 0x71...0x73:
-        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+        guard prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "packed integer immediate shift requires 66 prefix")
         }
@@ -1152,12 +1178,22 @@ public struct DoryX86Decoder: Sendable {
           case 0x72: .doubleword
           default: .quadword
           }
-        operation = .vectorIntegerShift(
-          shiftOperation,
-          laneWidth: laneWidth,
-          destination: vectorRegister(operands.rm),
-          count: .immediate(try cursor.readByte())
-        )
+        let immediate = try cursor.readByte()
+        if prefixes.operandSizeOverride {
+          operation = .vectorIntegerShift(
+            shiftOperation,
+            laneWidth: laneWidth,
+            destination: vectorRegister(operands.rm),
+            count: .immediate(immediate)
+          )
+        } else {
+          operation = .mmxIntegerShift(
+            shiftOperation,
+            laneWidth: laneWidth,
+            destination: try mmxRegister(operands.rm, address: address),
+            count: .immediate(immediate)
+          )
+        }
       case 0x7F:
         let alignedVector = prefixes.operandSizeOverride && prefixes.repeatPrefix == nil
         let unalignedVector = prefixes.repeatPrefix == 0xF3 && !prefixes.operandSizeOverride
@@ -1182,7 +1218,7 @@ public struct DoryX86Decoder: Sendable {
           )
         }
       case 0xD1...0xD3, 0xE1, 0xE2, 0xF1...0xF3:
-        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+        guard prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "packed integer variable shift requires 66 prefix")
         }
@@ -1200,12 +1236,21 @@ public struct DoryX86Decoder: Sendable {
           case 0xD2, 0xE2, 0xF2: .doubleword
           default: .quadword
           }
-        operation = .vectorIntegerShift(
-          shiftOperation,
-          laneWidth: laneWidth,
-          destination: vectorRegister(operands.reg),
-          count: .vector(vectorOperand(operands.rm))
-        )
+        if prefixes.operandSizeOverride {
+          operation = .vectorIntegerShift(
+            shiftOperation,
+            laneWidth: laneWidth,
+            destination: vectorRegister(operands.reg),
+            count: .vector(vectorOperand(operands.rm))
+          )
+        } else {
+          operation = .mmxIntegerShift(
+            shiftOperation,
+            laneWidth: laneWidth,
+            destination: try mmxRegister(operands.reg, address: address),
+            count: .vector(try mmxOperand(operands.rm, address: address))
+          )
+        }
       case 0x7E:
         if prefixes.repeatPrefix == nil {
           let integerWidth: DoryX86OperandWidth =

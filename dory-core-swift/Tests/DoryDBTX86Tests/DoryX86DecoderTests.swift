@@ -829,4 +829,40 @@ import Testing
         == .emptyMMXState
     )
   }
+
+  @Test func decodesMMXPackedArithmeticShiftsAndInterleaves() throws {
+    #expect(
+      try decoder.decode([0x0F, 0xFA, 0xC1], at: 0x1000, mode: .long64).operation
+        == .mmxIntegerBinary(
+          .subtract, laneWidth: .doubleword, destination: 0, source: .register(1))
+    )
+    #expect(
+      try decoder.decode([0x0F, 0xE5, 0xC1], at: 0x1000, mode: .long64).operation
+        == .mmxIntegerBinary(
+          .multiplyHighSigned, laneWidth: .word, destination: 0, source: .register(1))
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x71, 0xF0, 0x04], at: 0x1000, mode: .long64).operation
+        == .mmxIntegerShift(
+          .logicalLeft, laneWidth: .word, destination: 0, count: .immediate(4))
+    )
+    #expect(
+      try decoder.decode([0x0F, 0xD2, 0xC1], at: 0x1000, mode: .long64).operation
+        == .mmxIntegerShift(
+          .logicalRight,
+          laneWidth: .doubleword,
+          destination: 0,
+          count: .vector(.register(1))
+        )
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x60, 0xC1], at: 0x1000, mode: .long64).operation
+        == .mmxIntegerInterleave(
+          high: false, laneWidth: .byte, destination: 0, source: .register(1))
+    )
+    #expect(
+      try decoder.decode([0x0F, 0xEF, 0xC1], at: 0x1000, mode: .long64).operation
+        == .mmxBitwise(.xor, destination: 0, source: .register(1))
+    )
+  }
 }
