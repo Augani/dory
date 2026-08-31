@@ -4353,7 +4353,15 @@ public struct DoryX86Interpreter: Sendable {
       return .init(selector: selector, attributes: 0x93, limit: 0xffff, base: UInt64(selector) << 4)
     }
     if selector & 0xfffc == 0 {
-      return register == .ss || register == .cs ? nil : .init(selector: selector)
+      if register == .ss {
+        let current = currentPrivilegeLevel(state)
+        let requested = UInt8(selector & 3)
+        // Intel permits a null SS selector only in 64-bit mode when CPL is below 3 and its
+        // RPL equals CPL. Linux uses MOV SS, 0 while establishing each 64-bit CPU.
+        guard mode == .long64, current < 3, current == requested else { return nil }
+        return .init(selector: selector)
+      }
+      return register == .cs ? nil : .init(selector: selector)
     }
     let table =
       selector & 4 == 0 ? state.gdtr : .init(limit: UInt16(state.ldtr.limit), base: state.ldtr.base)

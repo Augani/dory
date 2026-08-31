@@ -2226,6 +2226,66 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(protectedState.rip == 0x1234_5678)
   }
 
+  @Test func longModeNullStackSelectorFollowsCPLAndRPLRules() throws {
+    let base: UInt64 = 0x600
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: base,
+      bytes: [0x8E, 0xD0] + .init(repeating: 0, count: 16)
+    )
+
+    for privilege: UInt16 in 0...2 {
+      var allowed = try DoryX86ArchitecturalState(
+        registers: .init(rax: UInt64(privilege)),
+        rip: base,
+        cs: .init(selector: 0x10 | privilege, attributes: 0xA09B, limit: .max),
+        ss: .init(selector: 0x18 | privilege, attributes: 0xC093, limit: .max)
+      )
+      guard case .retired = interpreter.step(
+        state: &allowed, memory: memory, mode: .long64
+      ) else {
+        Issue.record("matching null SS selector faulted at CPL \(privilege)")
+        continue
+      }
+      #expect(allowed.ss == .init(selector: privilege))
+      #expect(allowed.rip == base + 2)
+    }
+
+    for (current, requested): (UInt16, UInt16) in [(1, 0), (2, 0), (3, 3)] {
+      let originalSS = DoryX86SegmentState(
+        selector: 0x18 | current, attributes: 0xC093, limit: .max)
+      var rejected = try DoryX86ArchitecturalState(
+        registers: .init(rax: UInt64(requested)),
+        rip: base,
+        cs: .init(selector: 0x10 | current, attributes: 0xA09B, limit: .max),
+        ss: originalSS
+      )
+      let result = interpreter.step(state: &rejected, memory: memory, mode: .long64)
+      guard case .exception(let exception) = result else {
+        Issue.record("invalid null SS selector retired at CPL \(current)")
+        continue
+      }
+      #expect(exception.kind == .generalProtection)
+      #expect(exception.instructionPointer == base)
+      #expect(rejected.ss == originalSS)
+      #expect(rejected.rip == base)
+    }
+
+    var compatibility = try DoryX86ArchitecturalState(
+      registers: .init(rax: 0),
+      rip: base,
+      cs: .init(selector: 0x10, attributes: 0xC09B, limit: .max),
+      ss: .init(selector: 0x18, attributes: 0xC093, limit: .max)
+    )
+    let compatibilityResult = interpreter.step(
+      state: &compatibility, memory: memory, mode: .protected32)
+    guard case .exception(let exception) = compatibilityResult else {
+      Issue.record("null SS selector unexpectedly retired outside 64-bit mode")
+      return
+    }
+    #expect(exception.kind == .generalProtection)
+    #expect(exception.instructionPointer == base)
+  }
+
   @Test func machineStatusTransitionsPreserveProtectedMode() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x11_000,
