@@ -69,6 +69,32 @@ import Testing
     #expect(try fixture.store.load().snapshot.generation == 2)
   }
 
+  @Test func publishesTheResolvedNetworkIdentityAndMTU() throws {
+    let fixture = try PCUEFIMachineFixture()
+    defer { fixture.remove() }
+    let mac: [UInt8] = [0x02, 0x11, 0x22, 0x33, 0x44, 0x55]
+    let composed = try DoryPCUEFIMachine(
+      plan: fixture.plan,
+      firmware: fixture.firmware,
+      variableStore: .init(file: fixture.store),
+      bootStorage: [
+        .init(
+          logicalID: "system-disk",
+          storage: DoryVirtioInMemoryBlockStorage(byteCount: 512)
+        ),
+        .init(
+          logicalID: "installer-iso",
+          storage: DoryVirtioInMemoryBlockStorage(byteCount: 512, readOnly: true)
+        ),
+      ],
+      memoryBytes: 2 * 1024 * 1024,
+      networkMACAddress: mac,
+      networkMTU: 9_000
+    )
+    #expect(composed.networkDevice.networkDevice.macAddress == mac)
+    #expect(composed.networkDevice.networkDevice.mtu == 9_000)
+  }
+
   @Test func bootPolicyPreservesForeignEntriesAndAvoidsTheirOptionNumbers() throws {
     let fixture = try PCUEFIMachineFixture()
     defer { fixture.remove() }

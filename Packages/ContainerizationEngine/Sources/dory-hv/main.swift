@@ -527,6 +527,7 @@ case "desktop":
         guard let handoffSocket else { fail("DoryPC desktop requires --handoff-sock") }
         guard let consoleSocket else { fail("DoryPC desktop requires --console-sock") }
         guard let controlSocket else { fail("DoryPC desktop requires --control-sock") }
+        guard let gvproxy else { fail("DoryPC desktop requires --gvproxy") }
         do {
             let authority = try DoryPCUEFIRuntimeAuthority.admit(
                 envelope: pcRuntimeLaunchEnvelope
@@ -538,6 +539,7 @@ case "desktop":
                 handoffSocketPath: handoffSocket,
                 consoleSocketPath: consoleSocket,
                 controlSocketPath: controlSocket,
+                gvproxyPath: gvproxy,
                 displayPresentation: displayPresentation
             ))
         } catch {

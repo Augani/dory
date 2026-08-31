@@ -17,6 +17,7 @@ enum DoryPCMode {
         let handoffSocketPath: String
         let consoleSocketPath: String
         let controlSocketPath: String
+        let gvproxyPath: String
         let displayPresentation: DoryMachineDisplayPresentation
     }
 
@@ -82,6 +83,8 @@ enum DoryPCMode {
         private let serialOutput: BoundedSerialConsolePublisher
         private let serialInput: RawHVSerialConsoleInput
         private let lifecycleServer: VmmLifecycleReceiptServer
+        private let networkBackend: any DoryVirtioNetworkBackend
+        private let networkRuntime: DoryPCGVProxyNetworkBackend?
         private let machineState: MachineState
         private let keyboardInput: DoryPCDesktopInputSink
         private let pointerInput: DoryPCDesktopInputSink
@@ -108,7 +111,8 @@ enum DoryPCMode {
                 )
             }
             let devices = envelope.devices
-            guard devices.networkAttachment == .disconnected,
+            guard devices.networkAttachment != .bridged,
+                  envelope.portForwards.isEmpty,
                   !devices.audioInput,
                   !devices.audioOutput,
                   !devices.cameraInput,
@@ -131,6 +135,30 @@ enum DoryPCMode {
                 .init(fileHandle: FileHandle.standardError),
                 .init(fileHandle: serialLog, synchronizeOnStop: true),
             ])
+
+            let networkRuntime: DoryPCGVProxyNetworkBackend?
+            let networkBackend: any DoryVirtioNetworkBackend
+            switch devices.networkAttachment {
+            case .disconnected:
+                networkRuntime = nil
+                networkBackend = DoryVirtioInMemoryNetworkBackend()
+            case .sharedNAT, .isolated:
+                guard let interface = devices.networkInterface else {
+                    throw VMError.invalidConfiguration("DoryPC network identity is missing")
+                }
+                let connected = try DoryPCGVProxyNetworkBackend(
+                    gvproxyPath: configuration.gvproxyPath,
+                    stateDirectory: configuration.stateDirectory,
+                    attachment: devices.networkAttachment,
+                    interface: interface
+                )
+                networkRuntime = connected
+                networkBackend = connected
+            case .bridged:
+                throw VMError.invalidConfiguration("DoryPC bridged networking is not admitted")
+            }
+            self.networkRuntime = networkRuntime
+            self.networkBackend = networkBackend
 
             let mailbox = devices.displays.isEmpty ? nil : DesktopFrameMailbox(scanoutID: 0)
             self.mailbox = mailbox
@@ -165,7 +193,13 @@ enum DoryPCMode {
                 }
             }
             self.displaySink = displaySink
-            let machine = try configuration.authority.makeMachine(displaySink: displaySink)
+            let machine = try configuration.authority.makeMachine(
+                displaySink: displaySink,
+                networkBackend: networkBackend
+            )
+            if devices.networkAttachment == .disconnected {
+                _ = machine.networkDevice.setLinkUp(false)
+            }
             machineState = MachineState(machine: machine)
             keyboardInput = DoryPCDesktopInputSink(device: machine.keyboardDevice)
             pointerInput = DoryPCDesktopInputSink(device: machine.tabletDevice)
@@ -263,8 +297,12 @@ enum DoryPCMode {
                             return
                         }
                         let replacement = try configuration.authority.makeMachine(
-                            displaySink: displaySink
+                            displaySink: displaySink,
+                            networkBackend: networkBackend
                         )
+                        if configuration.envelope.devices.networkAttachment == .disconnected {
+                            _ = replacement.networkDevice.setLinkUp(false)
+                        }
                         keyboardInput.replaceDevice(replacement.keyboardDevice)
                         pointerInput.replaceDevice(replacement.tabletDevice)
                         guard machineState.replace(replacement) else {
@@ -329,6 +367,7 @@ enum DoryPCMode {
             signalSources.forEach { $0.cancel() }
             signalSources.removeAll()
             lifecycleServer.stop()
+            networkRuntime?.stop()
             serialInput.stop()
             _ = serialOutput.stop()
             try? serialLog.close()

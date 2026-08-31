@@ -128,6 +128,9 @@ struct DoryPCUEFIRuntimeAuthority {
         soundBackend: any DoryVirtioSoundBackend = DoryVirtioInMemorySoundBackend(),
         networkBackend: any DoryVirtioNetworkBackend = DoryVirtioInMemoryNetworkBackend()
     ) throws -> DoryPCUEFIMachine {
+        guard let networkInterface = envelope.devices.networkInterface else {
+            throw VMError.invalidConfiguration("DoryPC network identity is missing")
+        }
         let tier: DoryPCExecutionTier = switch envelope.executionResources.tier {
         case .interpreter: .interpreter
         case .baselineJIT: .baselineJIT
@@ -155,6 +158,8 @@ struct DoryPCUEFIRuntimeAuthority {
             gpuAccelerationAuthority: gpuAccelerationAuthority,
             soundBackend: soundBackend,
             networkBackend: networkBackend,
+            networkMACAddress: networkInterface.macAddressOctets!,
+            networkMTU: networkInterface.maximumTransmissionUnit,
             executionTier: tier
         )
         variableGeneration.advance(to: machine.effectiveVariableStoreGeneration)

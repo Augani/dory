@@ -56,6 +56,8 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     gpuAccelerationAuthority: (any DoryVirtioGPUAccelerationAuthority)? = nil,
     soundBackend: any DoryVirtioSoundBackend = DoryVirtioInMemorySoundBackend(),
     networkBackend: any DoryVirtioNetworkBackend = DoryVirtioInMemoryNetworkBackend(),
+    networkMACAddress: [UInt8] = [0x02, 0x44, 0x4F, 0x52, 0x59, 0x01],
+    networkMTU: UInt16 = 1_500,
     interpreter: DoryX86Interpreter = .init(),
     executionTier: DoryPCExecutionTier = .interpreter,
     baselineJITMaximumCodeBytes: Int = 16 * 1024 * 1024
@@ -151,7 +153,8 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
       address: DoryPCV1ABI.networkPCIAddress,
       initialBARAddress: DoryPCV1ABI.networkBARAddress,
       backend: networkBackend,
-      macAddress: [0x02, 0x44, 0x4F, 0x52, 0x59, 0x01]
+      macAddress: networkMACAddress,
+      mtu: networkMTU
     )
     let entropyDevice = try DoryPCVirtioEntropyPCIDevice(
       address: DoryPCV1ABI.entropyPCIAddress,
