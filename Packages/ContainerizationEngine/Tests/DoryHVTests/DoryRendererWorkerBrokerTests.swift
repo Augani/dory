@@ -490,9 +490,11 @@ import Testing
             broker: fixture.broker,
             deviceGeneration: 11
         )
+        let scanoutRecorder = DoryPCVirGLScanoutRecorder()
         let authority = try DoryPCVirGLRendererAuthority(
             lane: lane,
-            deviceGeneration: 11
+            deviceGeneration: 11,
+            scanoutSink: { scanoutRecorder.accept($0) }
         )
 
         #expect(authority.capabilities.features == [
@@ -655,6 +657,90 @@ import Testing
         )
         try await fromHost.value
         #expect(try memory.read(at: 0x1000, byteCount: 32) == rendererUpdate)
+
+        let flush = DoryVirtioGPUAcceleratedScanoutFlush(
+            scanoutID: 0,
+            resourceID: 29,
+            sourceRectangle: .init(x: 0, y: 0, width: 4, height: 2),
+            damagedRectangle: .init(x: 0, y: 0, width: 4, height: 2),
+            resourceWidth: 4,
+            resourceHeight: 2,
+            virglFormat: 1,
+            stride: 16,
+            storageOffset: 0
+        )
+        let present = Task.detached { try authority.flushResource([flush]) }
+        #expect(await rendererEventually { fixture.channel.sendCount == 6 })
+        let acquire = try fixture.channel.command(
+            at: 5,
+            limits: fixture.bootstrap.limits
+        )
+        #expect(acquire.operation == .acquireScanoutLease)
+        #expect(acquire.resourceID == 29)
+        #expect(acquire.resourceGeneration == 41)
+        #expect(
+            try DoryRendererScanoutAcquirePayload.decode(acquire.payload)
+                == DoryRendererScanoutAcquirePayload(
+                    width: 4,
+                    height: 2,
+                    virglFormat: 1,
+                    stride: 16,
+                    storageOffset: 0
+                )
+        )
+        let (scanoutDescriptor, fileSize) = try makeUnlinkedRegion(
+            byteCount: 4_096,
+            readOnly: false
+        )
+        let scanoutLease = try DoryRendererScanoutLease(
+            workerGeneration: fixture.bootstrap.generation,
+            resourceID: 29,
+            resourceGeneration: 41,
+            leaseID: .init(rawValue: UUID()),
+            releaseToken: .init(rawValue: UUID()),
+            sharedRegionID: .random(),
+            sharedMemoryDescriptorIndex: 0,
+            synchronization: .managedGuestProducerCompleteFlush,
+            pixelFormat: .bgra8Unorm,
+            yOriginTop: false,
+            width: 4,
+            height: 2,
+            stride: 16,
+            rowAlignment: 16,
+            storageOffset: 0,
+            declaredFileSize: fileSize,
+            leaseByteCount: 32,
+            limits: fixture.bootstrap.limits
+        )
+        fixture.channel.complete(
+            at: 5,
+            with: .success(
+                DoryRendererWorkerChannelReply(
+                    payload: DoryRendererScanoutLeaseCodec.encode(scanoutLease),
+                    descriptors: [scanoutDescriptor]
+                ))
+        )
+        try await present.value
+        let update = try #require(scanoutRecorder.update)
+        #expect(update.flush == flush)
+        #expect(try update.withSharedMemory { lease, _ in lease } == scanoutLease)
+
+        update.retire()
+        #expect(await rendererEventually { fixture.channel.sendCount == 7 })
+        let release = try fixture.channel.command(
+            at: 6,
+            limits: fixture.bootstrap.limits
+        )
+        #expect(release.operation == .releaseScanoutLease)
+        #expect(
+            try DoryRendererScanoutReleaseToken.decodeCommandPayload(release.payload)
+                == scanoutLease.releaseToken
+        )
+        fixture.channel.complete(
+            at: 6,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        #expect(await rendererEventually { lane.snapshot().liveScanoutLeases == 0 })
     }
 
     @Test func capsetsComeOnlyFromAuthenticatedReceiptBytes() throws {
@@ -4762,6 +4848,18 @@ private final class DoryPCVirGLTestMemory: DoryVirtioGuestMemory, @unchecked Sen
             throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
         }
         return Int(address)..<(Int(address) + count)
+    }
+}
+
+private final class DoryPCVirGLScanoutRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: DoryPCVirGLScanoutUpdate?
+
+    var update: DoryPCVirGLScanoutUpdate? { lock.withLock { stored } }
+
+    func accept(_ update: DoryPCVirGLScanoutUpdate) -> Bool {
+        lock.withLock { stored = update }
+        return true
     }
 }
 

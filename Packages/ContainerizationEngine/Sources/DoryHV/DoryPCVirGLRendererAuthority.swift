@@ -2,6 +2,7 @@ import Darwin
 import DoryRendererWorkerContracts
 import DoryVirtio
 import Foundation
+import Metal
 
 public enum DoryPCVirGLRendererAuthorityError: Error, Sendable, Equatable {
     case rendererUnavailable
@@ -10,6 +11,62 @@ public enum DoryPCVirGLRendererAuthorityError: Error, Sendable, Equatable {
     case missingBacking(UInt32)
     case commandTimedOut
     case workerCommandFailed
+}
+
+public final class DoryPCVirGLScanoutUpdate: @unchecked Sendable {
+    public let flush: DoryVirtioGPUAcceleratedScanoutFlush
+
+    private let lock = NSLock()
+    private var scanout: DoryRendererWorkerScanoutAuthority?
+    private var release: (@Sendable (DoryRendererWorkerScanoutAuthority) -> Void)?
+
+    fileprivate init(
+        flush: DoryVirtioGPUAcceleratedScanoutFlush,
+        scanout: DoryRendererWorkerScanoutAuthority,
+        release: @escaping @Sendable (DoryRendererWorkerScanoutAuthority) -> Void
+    ) {
+        self.flush = flush
+        self.scanout = scanout
+        self.release = release
+    }
+
+    deinit { retire() }
+
+    public func withSharedMemory<T>(
+        _ body: (DoryRendererScanoutLease, Int32) throws -> T
+    ) throws -> T {
+        try lock.withLock {
+            guard case .sharedMemory(let value)? = scanout,
+                value.sharedMemoryDescriptor.fileDescriptor >= 0
+            else { throw DoryPCVirGLRendererAuthorityError.rendererUnavailable }
+            return try body(value.lease, value.sharedMemoryDescriptor.fileDescriptor)
+        }
+    }
+
+    public func withSharedTextureHandle<T>(
+        _ body: (MTLSharedTextureHandle) throws -> T
+    ) throws -> T {
+        try lock.withLock {
+            guard case .sharedTexture(let value)? = scanout else {
+                throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+            }
+            return try body(value.sharedTextureHandle)
+        }
+    }
+
+    public func retire() {
+        let authority = lock.withLock {
+            () -> (
+                DoryRendererWorkerScanoutAuthority,
+                @Sendable (DoryRendererWorkerScanoutAuthority) -> Void
+            )? in
+            guard let scanout, let release else { return nil }
+            self.scanout = nil
+            self.release = nil
+            return (scanout, release)
+        }
+        if let authority { authority.1(authority.0) }
+    }
 }
 
 /// DoryPC adapter for the already-qualified signed renderer worker.
@@ -24,6 +81,7 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
     public let capabilities: DoryVirtioGPUAccelerationCapabilities
 
     private let lane: DoryRendererWorkerVirtioCommandLane
+    private let scanoutSink: (@Sendable (DoryPCVirGLScanoutUpdate) -> Bool)?
     private let lock = NSLock()
     private let commandTimeout: TimeInterval
     private var deviceGeneration: UInt64
@@ -35,7 +93,8 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
     public init(
         lane: DoryRendererWorkerVirtioCommandLane,
         deviceGeneration: UInt64,
-        commandTimeout: TimeInterval = 6
+        commandTimeout: TimeInterval = 6,
+        scanoutSink: (@Sendable (DoryPCVirGLScanoutUpdate) -> Bool)? = nil
     ) throws {
         guard deviceGeneration != 0, commandTimeout > 0 else {
             throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
@@ -53,6 +112,7 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         self.lane = lane
         self.deviceGeneration = deviceGeneration
         self.commandTimeout = commandTimeout
+        self.scanoutSink = scanoutSink
     }
 
     public func reset() {
@@ -266,6 +326,56 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         if transfer.direction == .fromHost { try backing.synchronizeToGuest(memory) }
     }
 
+    public func flushResource(_ scanouts: [DoryVirtioGPUAcceleratedScanoutFlush]) throws {
+        guard !scanouts.isEmpty, let scanoutSink else {
+            throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+        }
+        let deviceGeneration = try admit()
+        var updates: [DoryPCVirGLScanoutUpdate] = []
+        updates.reserveCapacity(scanouts.count)
+        do {
+            for flush in scanouts {
+                let resourceGeneration = try generation(for: flush.resourceID)
+                guard flush.storageOffset <= UInt64(UInt32.max) else {
+                    throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+                }
+                let stride = try resolvedStride(for: flush)
+                let scanout = try waitScanout { completion in
+                    try lane.acquireScanoutLease(
+                        resourceID: flush.resourceID,
+                        resourceGeneration: resourceGeneration,
+                        width: flush.resourceWidth,
+                        height: flush.resourceHeight,
+                        virglFormat: flush.virglFormat,
+                        stride: stride,
+                        storageOffset: UInt32(flush.storageOffset),
+                        deviceGeneration: deviceGeneration,
+                        completion: completion
+                    )
+                }
+                updates.append(
+                    DoryPCVirGLScanoutUpdate(
+                        flush: flush,
+                        scanout: scanout,
+                        release: { [weak self] scanout in
+                            guard let self else {
+                                scanout.discardTransport()
+                                return
+                            }
+                            self.releaseScanout(scanout)
+                        }
+                    )
+                )
+            }
+            guard updates.allSatisfy({ scanoutSink($0) }) else {
+                throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+            }
+        } catch {
+            for update in updates { update.retire() }
+            throw error
+        }
+    }
+
     public func unrefResource(resourceID: UInt32) throws {
         let deviceGeneration = try admit()
         let resourceGeneration = try generation(for: resourceID)
@@ -312,6 +422,68 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         switch result {
         case .success(let value): return value
         case .failure: throw DoryPCVirGLRendererAuthorityError.workerCommandFailed
+        }
+    }
+
+    private func waitScanout(
+        _ submit: (@escaping DoryRendererWorkerVirtioCommandLane.ScanoutCompletion) throws -> Void
+    ) throws -> DoryRendererWorkerScanoutAuthority {
+        let receipt = DoryPCSynchronousRendererReceipt<DoryRendererWorkerScanoutAuthority>()
+        try submit { disposition in
+            switch disposition {
+            case .acquired(let scanout): receipt.complete(.success(scanout))
+            case .provenRejected(let error), .outcomeUnknown(let error):
+                receipt.complete(.failure(error))
+            }
+        }
+        guard let result = receipt.wait(timeout: commandTimeout) else {
+            throw DoryPCVirGLRendererAuthorityError.commandTimedOut
+        }
+        switch result {
+        case .success(let scanout): return scanout
+        case .failure: throw DoryPCVirGLRendererAuthorityError.workerCommandFailed
+        }
+    }
+
+    private func resolvedStride(for flush: DoryVirtioGPUAcceleratedScanoutFlush) throws -> UInt32 {
+        if flush.stride != 0 { return flush.stride }
+        guard flush.virglFormat == 1 || flush.virglFormat == 67 else {
+            throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+        }
+        let (stride, overflow) = flush.resourceWidth.multipliedReportingOverflow(by: 4)
+        guard !overflow, stride != 0 else {
+            throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+        }
+        return stride
+    }
+
+    private func releaseScanout(_ scanout: DoryRendererWorkerScanoutAuthority) {
+        let generation = lock.withLock { active ? deviceGeneration : nil }
+        guard let generation else {
+            scanout.discardTransport()
+            return
+        }
+        do {
+            let completion: DoryRendererWorkerVirtioCommandLane.Completion = { _ in }
+            switch scanout {
+            case .sharedMemory(let value):
+                try lane.releaseScanoutLease(
+                    value.lease,
+                    deviceGeneration: generation,
+                    completion: completion
+                )
+            case .sharedTexture(let value):
+                try lane.releaseScanoutLease(
+                    value.lease,
+                    deviceGeneration: generation,
+                    completion: completion
+                )
+            }
+            scanout.discardTransport()
+        } catch {
+            scanout.discardTransport()
+            lane.revoke(deviceGeneration: generation)
+            lock.withLock { active = false }
         }
     }
 }
