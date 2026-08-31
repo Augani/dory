@@ -1,0 +1,18 @@
+[Defines]
+  INF_VERSION                    = 0x0001001B
+  BASE_NAME                      = DoryBootProbe
+  FILE_GUID                      = fbe81862-a110-4b25-8bc7-b00e7ed72d11
+  MODULE_TYPE                    = UEFI_APPLICATION
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = DoryBootProbeMain
+
+[Sources]
+  DoryBootProbe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  BaseLib
+  IoLib
+  UefiApplicationEntryPoint

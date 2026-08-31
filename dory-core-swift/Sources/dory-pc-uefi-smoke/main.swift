@@ -128,8 +128,55 @@ private func hexadecimalBytes(_ bytes: [UInt8]) -> String {
   bytes.map { String(format: "%02x", $0) }.joined()
 }
 
+private func blockDeviceDiagnostics(
+  _ blockDevices: [DoryPCVirtioBlockPCIDevice],
+  memory: any DoryX86Memory
+) -> [[String: Any]] {
+  blockDevices.map { device in
+    let state = device.transport.deviceState.snapshot()
+    let queue = try? device.transport.queue(at: 0).snapshot()
+    let bar = try? device.configurationFunction.bar(at: 0)
+    return [
+      "identifier": String(decoding: device.blockDevice.identifier, as: UTF8.self),
+      "pciAddress": String(
+        format: "%04x:%02x:%02x.%x",
+        device.pciAddress.segment,
+        device.pciAddress.bus,
+        device.pciAddress.device,
+        device.pciAddress.function
+      ),
+      "offeredFeatures": state.offeredFeatures.rawValue,
+      "negotiatedFeatures": state.negotiatedFeatures.rawValue,
+      "status": state.status.rawValue,
+      "pciCommand": device.configurationFunction.command,
+      "bar0": bar.map { hexadecimal($0.address) } ?? "unavailable",
+      "queueEnabled": queue?.enabled ?? false,
+      "queueSize": queue?.size ?? 0,
+      "queueDescriptorAddress": queue.map { hexadecimal($0.descriptorAddress) } ?? "unavailable",
+      "queueDriverAddress": queue.map { hexadecimal($0.driverAddress) } ?? "unavailable",
+      "queueDeviceAddress": queue.map { hexadecimal($0.deviceAddress) } ?? "unavailable",
+      "guestAvailableIndex": queue.flatMap {
+        queueIndex(memory: memory, address: $0.driverAddress &+ 2)
+      } ?? "unavailable",
+      "guestUsedIndex": queue.flatMap {
+        queueIndex(memory: memory, address: $0.deviceAddress &+ 2)
+      } ?? "unavailable",
+      "queueAvailableIndex": queue?.lastAvailableIndex ?? 0,
+      "queueUsedIndex": queue?.lastUsedIndex ?? 0,
+      "queueOutstandingHeads": queue?.outstandingHeads.count ?? 0,
+    ]
+  }
+}
+
+private func queueIndex(memory: any DoryX86Memory, address: UInt64) -> String? {
+  guard address > 2, let bytes = try? memory.read(at: address, byteCount: 2) else { return nil }
+  let value = UInt16(bytes[0]) | UInt16(bytes[1]) << 8
+  return String(value)
+}
+
 private func runWithProgress(
   machine: DoryPCDirectKernelMachine,
+  blockDevices: [DoryPCVirtioBlockPCIDevice],
   maximumInstructions: UInt64,
   progressInstructions: UInt64,
   exceptionPolicy: DoryPCExceptionPolicy
@@ -149,6 +196,7 @@ private func runWithProgress(
         "interpreterInstructions": statistics.interpreterInstructions,
         "baselineJITInstructions": statistics.baselineJITInstructions,
         "optimizingJITInstructions": statistics.optimizingJITInstructions,
+        "blockDevices": blockDeviceDiagnostics(blockDevices, memory: machine.physicalMemory),
       ]
       let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
       FileHandle.standardError.write(data + Data("\n".utf8))
@@ -281,6 +329,7 @@ private func run() throws {
   )
   let stop = try runWithProgress(
     machine: composed.machine,
+    blockDevices: composed.blockDevices,
     maximumInstructions: arguments.maximumInstructions,
     progressInstructions: arguments.progressInstructions,
     exceptionPolicy: arguments.exceptionPolicy
@@ -301,6 +350,12 @@ private func run() throws {
     state.flatMap {
       (try? composed.machine.memoryBytes(atLinearAddress: $0.registers.rsp, maximumCount: 64)) ?? nil
     }
+  let serialBytes = composed.machine.serial.drainTransmittedBytes()
+  let serialDrops = composed.machine.serial.dropCounts
+  let blockDevices = blockDeviceDiagnostics(
+    composed.blockDevices,
+    memory: composed.machine.physicalMemory
+  )
   let payload: [String: Any] = [
     "cr0": state.map { hexadecimal($0.control.cr0) } ?? "unavailable",
     "cr3": state.map { hexadecimal($0.control.cr3) } ?? "unavailable",
@@ -331,6 +386,9 @@ private func run() throws {
     "pageTableTrace": pageTrace,
     "instructionBytes": instructionBytes.map(hexadecimalBytes) ?? "unmapped",
     "stackBytes": stackBytes.map(hexadecimalBytes) ?? "unmapped",
+    "serialOutput": String(decoding: serialBytes, as: UTF8.self),
+    "serialDroppedBytes": serialDrops.transmitted,
+    "blockDevices": blockDevices,
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
     "rbx": state.map { hexadecimal($0.registers.rbx) } ?? "unavailable",
     "rcx": state.map { hexadecimal($0.registers.rcx) } ?? "unavailable",
