@@ -300,6 +300,14 @@ import Testing
       [0x0F, 0x18, 0x4C, 0x8A, 0x40], at: 0xA000, mode: .long64)
     #expect(prefetch.operation == .noOperation)
     #expect(prefetch.length == 5)
+    let endBranch64 = try decoder.decode(
+      [0xF3, 0x0F, 0x1E, 0xFA], at: 0xA000, mode: .long64)
+    #expect(endBranch64.operation == .noOperation)
+    #expect(endBranch64.length == 4)
+    let endBranch32 = try decoder.decode(
+      [0xF3, 0x0F, 0x1E, 0xFB], at: 0xA000, mode: .protected32)
+    #expect(endBranch32.operation == .noOperation)
+    #expect(endBranch32.length == 4)
     for group in UInt8(0)...UInt8(3) {
       #expect(
         try decoder.decode([0x0F, 0x18, group << 3], at: 0xA000, mode: .long64)
@@ -314,6 +322,15 @@ import Testing
     }
     #expect(throws: DoryX86DecodeError.self) {
       try decoder.decode([0x0F, 0x1F, 0xC8], at: 0xA000, mode: .long64)
+    }
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0x0F, 0x1E, 0xFA], at: 0xA000, mode: .long64)
+    }
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0xF3, 0x0F, 0x1E, 0xF9], at: 0xA000, mode: .long64)
+    }
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0xF0, 0xF3, 0x0F, 0x1E, 0xFA], at: 0xA000, mode: .long64)
     }
   }
 

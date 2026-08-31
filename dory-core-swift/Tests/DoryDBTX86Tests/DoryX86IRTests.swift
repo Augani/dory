@@ -97,4 +97,20 @@ import Testing
     #expect(compiled.tier == .baseline)
     #expect(!compiled.requiresMemoryCallbacks)
   }
+
+  @Test func endBranchWithoutCETRemainsAPureNativeInstruction() throws {
+    let block = try DoryX86IRTranslator().translate(
+      [0xF3, 0x0F, 0x1E, 0xFA, 0xF3, 0x0F, 0x1E, 0xFB, 0x90],
+      at: 0x3500,
+      mode: .long64
+    )
+
+    #expect(block.guestInstructionCount == 3)
+    #expect(block.guestByteCount == 9)
+    #expect(block.statements.isEmpty)
+    #expect(block.terminator == .next(0x3509))
+    let compiled = DoryARM64BaselineEmitter().compile(block)
+    #expect(compiled.tier == .baseline)
+    #expect(!compiled.requiresMemoryCallbacks)
+  }
 }

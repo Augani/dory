@@ -129,6 +129,34 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(state.rflags == flags)
   }
 
+  @Test func endBranchRetiresAsALegacyNoOperationWithoutCET() throws {
+    let base: UInt64 = 0x21C0
+    let program: [UInt8] = [
+      0xF3, 0x0F, 0x1E, 0xFA,
+      0xF3, 0x0F, 0x1E, 0xFB,
+    ]
+    let memory = DoryX86ByteArrayMemory(baseAddress: base, bytes: program)
+    let registers = DoryX86GeneralRegisters(rax: 0x1122_3344_5566_7788, rcx: UInt64.max)
+    let flags: DoryX86RFLAGS = [.reservedOne, .carry, .zero, .overflow]
+    var state = try DoryX86ArchitecturalState(
+      registers: registers,
+      rip: base,
+      rflags: flags
+    )
+
+    for _ in 0..<2 {
+      guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64)
+      else {
+        Issue.record("ENDBR unexpectedly faulted")
+        return
+      }
+    }
+
+    #expect(state.rip == base + UInt64(program.count))
+    #expect(state.registers == registers)
+    #expect(state.rflags == flags)
+  }
+
   @Test func returnWithImmediateReleasesCallerArguments() throws {
     let base: UInt64 = 0x2200
     let memory = DoryX86ByteArrayMemory(

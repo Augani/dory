@@ -783,6 +783,19 @@ public struct DoryX86Decoder: Sendable {
         // PREFETCHh is only a cache hint. Decode its complete addressing form so RIP advances
         // correctly, but deliberately avoid an architectural guest-memory access.
         operation = .noOperation
+      case 0x1E:
+        let endBranchEncoding = try cursor.readByte()
+        guard prefixes.repeatPrefix == 0xF3,
+          endBranchEncoding == 0xFA || endBranchEncoding == 0xFB
+        else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address,
+            detail: "ENDBR requires the F3 0F 1E FA or F3 0F 1E FB encoding"
+          )
+        }
+        // Dory deliberately does not expose CET indirect-branch tracking. Intel specifies both
+        // ENDBR encodings as no-ops when CET IBT is unavailable or disabled.
+        operation = .noOperation
       case 0x1F:
         let operands = try decodeModRM(
           cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
