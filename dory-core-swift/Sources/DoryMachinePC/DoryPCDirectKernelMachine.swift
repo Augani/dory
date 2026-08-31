@@ -54,6 +54,14 @@ public enum DoryPCExceptionPolicy: Sendable, Hashable {
 
 /// Deterministic direct-kernel DoryPC machine shared by interpreter and translated execution tiers.
 public final class DoryPCDirectKernelMachine: @unchecked Sendable {
+  private final class ProcessorState: @unchecked Sendable {
+    var value: DoryX86ArchitecturalState
+
+    init(_ value: DoryX86ArchitecturalState) {
+      self.value = value
+    }
+  }
+
   public let memory: DoryX86ByteArrayMemory
   public let physicalMemory: DoryPCPhysicalMemoryBus
   public let physicalMemories: [DoryPCPhysicalMemoryBus]
@@ -85,7 +93,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let executionTier: DoryPCExecutionTier
 
   private let lock = NSLock()
-  private var loadedStates: [DoryX86ArchitecturalState?]
+  private var loadedStates: [ProcessorState?]
   private var haltedProcessors: [Bool]
   private var processorLifecycles: [DoryPCProcessorLifecycle]
   private var pendingNMIs: Set<Int> = []
@@ -286,7 +294,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       memoryBytes: memoryBytes,
       cpuProfile: interpreter.profile
     )
-    loadedStates = [DoryX86ArchitecturalState?](repeating: nil, count: processorCount)
+    loadedStates = [ProcessorState?](repeating: nil, count: processorCount)
     haltedProcessors = [Bool](repeating: false, count: processorCount)
     processorLifecycles = (0..<processorCount).map {
       $0 == 0 ? .running : .waitingForStartup
@@ -322,8 +330,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         // The machine cannot safely retry a partially loaded kernel with another payload.
         throw error
       }
-      loadedStates[0] = try bootImage.initialState(entryPoint: kernelImage.physicalEntryPoint)
-      for index in 1..<processorCount { loadedStates[index] = applicationProcessorResetState() }
+      loadedStates[0] = ProcessorState(
+        try bootImage.initialState(entryPoint: kernelImage.physicalEntryPoint)
+      )
+      for index in 1..<processorCount {
+        loadedStates[index] = ProcessorState(applicationProcessorResetState())
+      }
       haltedProcessors = [Bool](repeating: false, count: processorCount)
     }
   }
@@ -348,8 +360,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       } catch {
         throw error
       }
-      loadedStates[0] = .reset()
-      for index in 1..<processorCount { loadedStates[index] = applicationProcessorResetState() }
+      loadedStates[0] = ProcessorState(.reset())
+      for index in 1..<processorCount {
+        loadedStates[index] = ProcessorState(applicationProcessorResetState())
+      }
       haltedProcessors = [Bool](repeating: false, count: processorCount)
     }
   }
@@ -369,7 +383,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   }
 
   public func state(forProcessor index: Int) -> DoryX86ArchitecturalState? {
-    lock.withLock { loadedStates.indices.contains(index) ? loadedStates[index] : nil }
+    lock.withLock { loadedStates.indices.contains(index) ? loadedStates[index]?.value : nil }
   }
 
   /// Reads instruction bytes through the processor's current linear-address translation. This is
@@ -381,7 +395,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   ) throws -> [UInt8]? {
     guard maximumCount > 0 else { return [] }
     return try lock.withLock {
-      guard loadedStates.indices.contains(index), let state = loadedStates[index] else { return nil }
+      guard loadedStates.indices.contains(index), let state = loadedStates[index]?.value else {
+        return nil
+      }
       let translatedMemory = translatedMemories[index]
       translatedMemory.updateContext(.init(state: state, mode: executionMode(state)))
       return try translatedMemory.instructionBytes(
@@ -399,7 +415,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   ) throws -> [UInt8]? {
     guard maximumCount > 0 else { return [] }
     return try lock.withLock {
-      guard loadedStates.indices.contains(index), let state = loadedStates[index] else { return nil }
+      guard loadedStates.indices.contains(index), let state = loadedStates[index]?.value else {
+        return nil
+      }
       let translatedMemory = translatedMemories[index]
       translatedMemory.updateContext(.init(state: state, mode: executionMode(state)))
       return try translatedMemory.read(at: address, byteCount: maximumCount)
@@ -427,12 +445,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           if advanceToNextInterrupt() { continue }
           return .halted(instructionCount: completed)
         }
-        guard var state = loadedStates[processor] else { continue }
+        guard let processorState = loadedStates[processor] else { continue }
         let remaining = maximumInstructions - completed
+        let jitInstructionBudget =
+          baselineJIT == nil ? nil : baselineInstructionBudget(maximumInstructions: remaining)
         let execution = try execute(
           processor: processor,
-          state: &state,
-          maximumInstructions: remaining
+          state: &processorState.value,
+          maximumInstructions: remaining,
+          jitInstructionBudget: jitInstructionBudget
         )
         completed += execution.instructionCount
         switch execution.jitTier {
@@ -452,11 +473,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         // here keeps RDTSC deterministic and identical when a translated block retires several
         // guest instructions at once.
         let tscTicks = execution.instructionCount &* Self.tscTicksPerMachineClock
-        state.tsc &+= tscTicks
+        processorState.value.tsc &+= tscTicks
         for index in loadedStates.indices where index != processor {
-          loadedStates[index]?.tsc &+= tscTicks
+          loadedStates[index]?.value.tsc &+= tscTicks
         }
-        loadedStates[processor] = state
         if let stop = powerStop(instructionCount: completed) { return stop }
         switch execution.result {
         case .retired, .yielded:
@@ -472,14 +492,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           do {
             try DoryX86InterruptDelivery().deliverException(
               exception,
-              state: &state,
+              state: &processorState.value,
               physicalMemory: physicalMemories[processor],
               pagingUnit: pagingUnits[processor],
-              mode: executionMode(state)
+              mode: executionMode(processorState.value)
             )
-            loadedStates[processor] = state
           } catch {
-            loadedStates[processor] = state
             return .tripleFault(instructionCount: completed - 1)
           }
         }
@@ -504,14 +522,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private func execute(
     processor: Int,
     state: inout DoryX86ArchitecturalState,
-    maximumInstructions: UInt64
+    maximumInstructions: UInt64,
+    jitInstructionBudget: Int?
   ) throws -> ProcessorExecution {
     let mode = executionMode(state)
     if let baselineJIT,
       mode == .long64 || (mode == .protected32 && state.cs.base == 0),
       !state.rflags.contains(.trap)
     {
-      let budget = baselineInstructionBudget(maximumInstructions: maximumInstructions)
+      let budget = jitInstructionBudget ?? 1
       let translatedMemory = translatedMemories[processor]
       translatedMemory.updateContext(.init(state: state, mode: mode))
       let guestRIP = state.rip
@@ -616,7 +635,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private func ticksUntilNextAcceptedInterrupt() -> UInt64? {
     var deadlines: [UInt64] = []
     for (index, apic) in localAPICs.enumerated() {
-      guard let state = loadedStates[index] else { continue }
+      guard let state = loadedStates[index]?.value else { continue }
       let timer = apic.snapshot().timer
       if !timer.masked, timer.currentCount > 0,
         apic.canAccept(
@@ -628,7 +647,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         deadlines.append(UInt64(timer.currentCount))
       }
     }
-    if let bsp = loadedStates[0] {
+    if let bsp = loadedStates[0]?.value {
       let interruptsEnabled = bsp.rflags.contains(.interruptEnable)
       let pit = legacyPIT.snapshot()
       let picAcceptsTimer = legacyPIC.canAccept(irq: 0, interruptsEnabled: interruptsEnabled)
@@ -671,7 +690,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private func ioAPICCanAccept(pin: Int) -> Bool {
     guard let route = try? ioAPIC.route(for: pin), !route.masked,
       let index = processorIndex(route.destinationAPICID),
-      let state = loadedStates[index]
+      let state = loadedStates[index]?.value
     else { return false }
     return localAPICs[index].canAccept(
       vector: route.vector,
@@ -694,7 +713,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       case .initialize(let apicID):
         guard let index = processorIndex(apicID) else { continue }
         processorLifecycles[index] = .waitingForStartup
-        loadedStates[index] = applicationProcessorResetState()
+        loadedStates[index] = ProcessorState(applicationProcessorResetState())
         haltedProcessors[index] = true
         pendingNMIs.remove(index)
       case .startup(let apicID, let vector):
@@ -708,7 +727,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           limit: 0xFFFF,
           base: UInt64(vector) << 12
         )
-        loadedStates[index] = state
+        loadedStates[index] = ProcessorState(state)
         haltedProcessors[index] = false
       case .nonMaskableInterrupt(let apicID):
         if let index = processorIndex(apicID) { pendingNMIs.insert(index) }
@@ -718,7 +737,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   private func deliverPendingInterrupts(instructionCount: UInt64) -> DoryPCMachineStop? {
     for index in loadedStates.indices {
-      guard var state = loadedStates[index],
+      guard let processorState = loadedStates[index],
         processorLifecycles[index] == .running
       else { continue }
       let source: DoryX86InterruptSource
@@ -728,11 +747,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         vector = 2
       } else {
         source = .externalMaskable
-        let enabled = state.rflags.contains(.interruptEnable)
+        let enabled = processorState.value.rflags.contains(.interruptEnable)
         vector =
           localAPICs[index].acknowledge(
             interruptsEnabled: enabled,
-            externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
+            externalPriority: UInt8(truncatingIfNeeded: processorState.value.control.cr8) << 4
           ) ?? (index == 0 ? legacyPIC.acknowledge(interruptsEnabled: enabled) : nil)
       }
       guard let vector else { continue }
@@ -740,15 +759,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         try DoryX86InterruptDelivery().deliver(
           vector: vector,
           source: source,
-          state: &state,
+          state: &processorState.value,
           physicalMemory: physicalMemories[index],
           pagingUnit: pagingUnits[index],
-          mode: executionMode(state)
+          mode: executionMode(processorState.value)
         )
-        loadedStates[index] = state
         haltedProcessors[index] = false
       } catch {
-        loadedStates[index] = state
         return .tripleFault(instructionCount: instructionCount)
       }
     }
@@ -772,7 +789,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     advanceClocks(by: ticks)
     let tscTicks = ticks &* Self.tscTicksPerMachineClock
     for index in loadedStates.indices {
-      loadedStates[index]?.tsc &+= tscTicks
+      loadedStates[index]?.value.tsc &+= tscTicks
     }
     return true
   }
