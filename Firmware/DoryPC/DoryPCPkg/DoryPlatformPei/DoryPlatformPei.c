@@ -97,6 +97,13 @@ PublishFirmwareVolumes (
     );
   BuildFvHob (PcdGet32 (PcdOvmfPeiMemFvBase), PcdGet32 (PcdOvmfPeiMemFvSize));
   BuildFvHob (PcdGet32 (PcdOvmfDxeMemFvBase), PcdGet32 (PcdOvmfDxeMemFvSize));
+  PeiServicesInstallFvInfoPpi (
+    NULL,
+    (VOID *)(UINTN)PcdGet32 (PcdOvmfDxeMemFvBase),
+    PcdGet32 (PcdOvmfDxeMemFvSize),
+    NULL,
+    NULL
+    );
 }
 
 EFI_STATUS
