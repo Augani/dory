@@ -1081,8 +1081,27 @@ private struct DoryMachineCloneCreationAuthority {
 }
 
 struct RawHVRuntimeLaunchAuthority: @unchecked Sendable {
-    let envelope: RuntimeLaunchEnvelope
+    let envelope: RuntimeLaunchEnvelope?
+    let pcEnvelope: DoryPCRuntimeLaunchEnvelope?
     let inheritedFileDescriptors: [HvProcessInheritedFileDescriptor]
+
+    init(
+        envelope: RuntimeLaunchEnvelope,
+        inheritedFileDescriptors: [HvProcessInheritedFileDescriptor]
+    ) {
+        self.envelope = envelope
+        pcEnvelope = nil
+        self.inheritedFileDescriptors = inheritedFileDescriptors
+    }
+
+    init(
+        pcEnvelope: DoryPCRuntimeLaunchEnvelope,
+        inheritedFileDescriptors: [HvProcessInheritedFileDescriptor]
+    ) {
+        envelope = nil
+        self.pcEnvelope = pcEnvelope
+        self.inheritedFileDescriptors = inheritedFileDescriptors
+    }
 }
 
 private struct DoryQualificationBootstrapLaunchPlan: Codable, Sendable {
@@ -7997,6 +8016,7 @@ public final class MachineManager: @unchecked Sendable {
                 resolvedLaunchBinding: resolvedLaunchBinding,
                 restoreStatePath: restoreStatePath,
                 runtimeLaunchEnvelope: runtimeLaunchAuthority?.envelope,
+                pcRuntimeLaunchEnvelope: runtimeLaunchAuthority?.pcEnvelope,
                 qualificationBootstrapLaunch: qualificationBootstrapLaunch
             ),
             logPath: "\(configuration.logDirectory)/\(machine.id).log",
@@ -8004,6 +8024,7 @@ public final class MachineManager: @unchecked Sendable {
                 ? configuration.startupRestartPolicy
                 : .none,
             runtimeLaunchEnvelope: runtimeLaunchAuthority?.envelope,
+            pcRuntimeLaunchEnvelope: runtimeLaunchAuthority?.pcEnvelope,
             inheritedFileDescriptors: runtimeLaunchAuthority?.inheritedFileDescriptors ?? [],
             launchStyle: Self.processLaunchStyle(
                 executablePath: target.executablePath,
@@ -9186,12 +9207,13 @@ public final class MachineManager: @unchecked Sendable {
         resolvedLaunchBinding: MachineBackendLaunchBinding?,
         restoreStatePath: String?,
         runtimeLaunchEnvelope: RuntimeLaunchEnvelope?,
+        pcRuntimeLaunchEnvelope: DoryPCRuntimeLaunchEnvelope? = nil,
         qualificationBootstrapLaunch: Bool = false
     ) throws -> [String] {
         guard configuration.passMachineArguments else {
-            if runtimeLaunchEnvelope != nil {
+            if runtimeLaunchEnvelope != nil || pcRuntimeLaunchEnvelope != nil {
                 throw MachineManagerError.persistence(
-                    "resolved DoryARMVirt-v1 launch envelope cannot be omitted from helper arguments"
+                    "resolved Dory launch envelope cannot be omitted from helper arguments"
                 )
             }
             return baseArguments
@@ -9212,7 +9234,7 @@ public final class MachineManager: @unchecked Sendable {
             "--control-sock", "\(machineRuntimeDirectory(id: machine.id))/c.sock",
             "--display-mode", machine.displayMode.rawValue,
         ]
-        if runtimeLaunchEnvelope == nil {
+        if runtimeLaunchEnvelope == nil, pcRuntimeLaunchEnvelope == nil {
             arguments.append(contentsOf: [
                 "--memory-mb", String(machine.memoryMB),
                 "--cpus", String(machine.cpuCount),
@@ -9236,6 +9258,18 @@ public final class MachineManager: @unchecked Sendable {
             arguments.append(contentsOf: [
                 "--runtime-launch-envelope",
                 try runtimeLaunchEnvelope.encodedArgument(),
+            ])
+        } else if let pcRuntimeLaunchEnvelope {
+            guard acceleratedDesktop,
+                  resolvedLaunchBinding?.backend.identity == .doryHypervisor,
+                  !qualificationBootstrapLaunch else {
+                throw MachineManagerError.persistence(
+                    "DoryPC runtime launch envelope is not valid for the selected backend"
+                )
+            }
+            arguments.append(contentsOf: [
+                "--pc-runtime-launch-envelope",
+                try pcRuntimeLaunchEnvelope.encodedArgument(),
             ])
         } else {
             if resolvedLaunchBinding?.backend.identity == .doryHypervisor {
@@ -9263,8 +9297,8 @@ public final class MachineManager: @unchecked Sendable {
         // A schema-v3 RawHV helper receives device authority only through the immutable
         // envelope. VZ has no such envelope yet and continues to consume the resolved binding's
         // split argument contract.
-        let removableUSBHotplugEnabled = runtimeLaunchEnvelope?
-            .devices.removableUSBHotplug
+        let removableUSBHotplugEnabled = runtimeLaunchEnvelope?.devices.removableUSBHotplug
+            ?? pcRuntimeLaunchEnvelope?.devices.removableUSBHotplug
             ?? resolvedLaunchBinding?.devices.removableUSBHotplug
             ?? true
         if acceleratedDesktop, removableUSBHotplugEnabled {

@@ -60,4 +60,56 @@ import Testing
       try DoryVirtioFileBlockStorage(existingFileURL: link)
     }
   }
+
+  @Test func duplicatesAnAdmittedDescriptorAndPreservesItsOwnLifetime() throws {
+    let directory = FileManager.default.temporaryDirectory.appending(
+      path: "dory-file-block-descriptor-\(UUID().uuidString)",
+      directoryHint: .isDirectory
+    )
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let disk = directory.appending(path: "disk.raw")
+    _ = try DoryVirtioFileBlockStorage.create(at: disk, capacityBytes: 4096)
+
+    let descriptor = Darwin.open(disk.path, O_RDWR | O_CLOEXEC | O_NOFOLLOW)
+    #expect(descriptor >= 3)
+    let storage = try DoryVirtioFileBlockStorage(
+      duplicatingFileDescriptor: descriptor,
+      expectedCapacityBytes: 4096,
+      readOnly: false
+    )
+    Darwin.close(descriptor)
+
+    try storage.write(offset: 512, bytes: [0x44, 0x4F, 0x52, 0x59])
+    #expect(try storage.read(offset: 512, byteCount: 4) == [0x44, 0x4F, 0x52, 0x59])
+  }
+
+  @Test func rejectsDescriptorCapacityAndAccessMismatches() throws {
+    let directory = FileManager.default.temporaryDirectory.appending(
+      path: "dory-file-block-descriptor-validation-\(UUID().uuidString)",
+      directoryHint: .isDirectory
+    )
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let disk = directory.appending(path: "disk.raw")
+    _ = try DoryVirtioFileBlockStorage.create(at: disk, capacityBytes: 4096)
+
+    let descriptor = Darwin.open(disk.path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+    #expect(descriptor >= 3)
+    defer { Darwin.close(descriptor) }
+    #expect(throws: DoryVirtioFileBlockStorageError.notRegularFile) {
+      _ = try DoryVirtioFileBlockStorage(
+        duplicatingFileDescriptor: descriptor,
+        expectedCapacityBytes: 4096,
+        readOnly: false
+      )
+    }
+    #expect(throws: DoryVirtioFileBlockStorageError.notRegularFile) {
+      _ = try DoryVirtioFileBlockStorage(
+        duplicatingFileDescriptor: descriptor,
+        expectedCapacityBytes: 8192,
+        readOnly: true
+      )
+    }
+  }
 }

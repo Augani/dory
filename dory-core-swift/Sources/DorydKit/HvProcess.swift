@@ -258,6 +258,7 @@ public struct HvProcessConfiguration: Sendable {
     public var logPath: String?
     public var restartPolicy: HvRestartPolicy
     public var runtimeLaunchEnvelope: RuntimeLaunchEnvelope?
+    public var pcRuntimeLaunchEnvelope: DoryPCRuntimeLaunchEnvelope?
     public var inheritedFileDescriptors: [HvProcessInheritedFileDescriptor]
     public var launchStyle: HvProcessLaunchStyle
     /// Populated only by the resolved production RawHV path after decoding the release identity
@@ -271,6 +272,7 @@ public struct HvProcessConfiguration: Sendable {
         logPath: String? = nil,
         restartPolicy: HvRestartPolicy = .none,
         runtimeLaunchEnvelope: RuntimeLaunchEnvelope? = nil,
+        pcRuntimeLaunchEnvelope: DoryPCRuntimeLaunchEnvelope? = nil,
         inheritedFileDescriptors: [HvProcessInheritedFileDescriptor] = [],
         launchStyle: HvProcessLaunchStyle = .directExecutable
     ) {
@@ -280,6 +282,7 @@ public struct HvProcessConfiguration: Sendable {
         self.logPath = logPath
         self.restartPolicy = restartPolicy
         self.runtimeLaunchEnvelope = runtimeLaunchEnvelope
+        self.pcRuntimeLaunchEnvelope = pcRuntimeLaunchEnvelope
         self.inheritedFileDescriptors = inheritedFileDescriptors
         self.launchStyle = launchStyle
         rendererReleaseIdentity = nil
@@ -963,14 +966,23 @@ public final class HvProcess: @unchecked Sendable {
 
     private func validateDescriptorEnvelope(mappings: [InheritedDescriptorMapping]) throws {
         let dockerDiskIndex = try validatedDockerDataDiskDescriptorIndex(mappings: mappings)
-        guard let envelope = configuration.runtimeLaunchEnvelope else {
+        guard configuration.runtimeLaunchEnvelope == nil
+                || configuration.pcRuntimeLaunchEnvelope == nil else {
+            throw ProcessError.descriptorEnvelopeMismatch
+        }
+        let slots: [(String, Int32)]
+        if let envelope = configuration.runtimeLaunchEnvelope {
+            slots = envelope.inheritedFileDescriptors.map { ($0.name, $0.descriptor) }
+                + envelope.inheritedDirectoryDescriptors.map { ($0.name, $0.descriptor) }
+        } else if let envelope = configuration.pcRuntimeLaunchEnvelope {
+            slots = envelope.inheritedFileDescriptors.map { ($0.name, $0.descriptor) }
+                + envelope.inheritedDirectoryDescriptors.map { ($0.name, $0.descriptor) }
+        } else {
             guard mappings.count == (dockerDiskIndex == nil ? 0 : 1) else {
                 throw ProcessError.descriptorEnvelopeMismatch
             }
             return
         }
-        let slots = envelope.inheritedFileDescriptors.map { ($0.name, $0.descriptor) }
-            + envelope.inheritedDirectoryDescriptors.map { ($0.name, $0.descriptor) }
         let envelopeAuthorities = configuration.inheritedFileDescriptors.enumerated().compactMap {
             index, authority in
             index == dockerDiskIndex ? nil : authority
@@ -981,11 +993,15 @@ public final class HvProcess: @unchecked Sendable {
               }) else {
             throw ProcessError.descriptorEnvelopeMismatch
         }
-        switch envelope.boot {
-        case .linuxDirect:
-            _ = try envelope.validatedResolvedARMVirtResources()
-        case .uefi:
-            _ = try envelope.validatedResolvedARMVirtUEFIResources()
+        if let envelope = configuration.runtimeLaunchEnvelope {
+            switch envelope.boot {
+            case .linuxDirect:
+                _ = try envelope.validatedResolvedARMVirtResources()
+            case .uefi:
+                _ = try envelope.validatedResolvedARMVirtUEFIResources()
+            }
+        } else if let envelope = configuration.pcRuntimeLaunchEnvelope {
+            _ = try envelope.validatedResources()
         }
     }
 
@@ -1048,7 +1064,8 @@ public final class HvProcess: @unchecked Sendable {
     }
 
     private func spawnEnvironment() throws -> ([String: String], Bool) {
-        guard configuration.runtimeLaunchEnvelope != nil else {
+        guard configuration.runtimeLaunchEnvelope != nil
+                || configuration.pcRuntimeLaunchEnvelope != nil else {
             return (configuration.environment, true)
         }
         let allowed = Set([

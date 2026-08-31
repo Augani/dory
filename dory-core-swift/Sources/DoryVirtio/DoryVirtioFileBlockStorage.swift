@@ -42,6 +42,35 @@ public final class DoryVirtioFileBlockStorage: DoryVirtioBlockStorage, @unchecke
     }
   }
 
+  /// Duplicates an already admitted file descriptor without resolving a pathname. The caller
+  /// remains responsible for its descriptor; this storage object owns only the duplicate.
+  public init(
+    duplicatingFileDescriptor source: Int32,
+    expectedCapacityBytes: UInt64,
+    logicalBlockSize: UInt32 = 512,
+    readOnly: Bool
+  ) throws {
+    let access = fcntl(source, F_GETFL)
+    var status = stat()
+    guard source >= 3,
+      access >= 0,
+      (readOnly ? access & O_ACCMODE == O_RDONLY : access & O_ACCMODE == O_RDWR),
+      fstat(source, &status) == 0,
+      status.st_mode & S_IFMT == S_IFREG,
+      status.st_size >= 0,
+      UInt64(status.st_size) == expectedCapacityBytes
+    else { throw DoryVirtioFileBlockStorageError.notRegularFile }
+    try Self.validate(capacity: expectedCapacityBytes, logicalBlockSize: logicalBlockSize)
+    let duplicate = fcntl(source, F_DUPFD_CLOEXEC, 3)
+    guard duplicate >= 3 else {
+      throw DoryVirtioFileBlockStorageError.systemCall(operation: "fcntl", code: errno)
+    }
+    descriptor = duplicate
+    capacityBytes = expectedCapacityBytes
+    self.logicalBlockSize = logicalBlockSize
+    self.readOnly = readOnly
+  }
+
   private init(
     descriptor: Int32,
     capacityBytes: UInt64,

@@ -144,8 +144,10 @@ let package = Package(
                 .product(name: "DoryOperations", package: "dory-core-swift"),
                 .product(name: "DoryFirmware", package: "dory-core-swift"),
                 .product(name: "DoryHostCamera", package: "dory-core-swift"),
+                .product(name: "DoryMachinePC", package: "dory-core-swift"),
                 .product(name: "DoryVMContracts", package: "dory-core-swift"),
                 .product(name: "DoryVMMKit", package: "dory-core-swift"),
+                .product(name: "DoryVirtio", package: "dory-core-swift"),
             ],
             linkerSettings: [
                 .linkedFramework("AppKit"),
