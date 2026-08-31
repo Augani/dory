@@ -66,6 +66,17 @@ import Testing
     #expect(uart.dropCounts.transmitted == 1)
   }
 
+  @Test func unclaimedPortsBehaveAsAnOpenBus() throws {
+    let bus = DoryPCPortIOBus()
+    bus.seal()
+
+    #expect(try bus.read(port: 0x2FF, width: .byte) == 0xFF)
+    #expect(try bus.read(port: 0x2FF, width: .word) == 0xFFFF)
+    #expect(try bus.read(port: 0x2FF, width: .doubleword) == 0xFFFF_FFFF)
+    try bus.write(port: 0x2FF, value: 0x5A, width: .byte)
+    #expect(try bus.read(port: 0x2FF, width: .byte) == 0xFF)
+  }
+
   @Test func receiveInterruptTracksTheEnabledFIFOLevel() throws {
     let levels = LockedLevels()
     let uart = DoryPCUART16550()

@@ -6,7 +6,6 @@ public enum DoryPCPortIOError: Error, Sendable, Equatable {
   case invalidRange(base: UInt16, count: UInt16)
   case overlappingRange(base: UInt16, count: UInt16)
   case unsupportedWidth(DoryX86OperandWidth)
-  case unmappedPort(UInt16, width: DoryX86OperandWidth)
 }
 
 public protocol DoryPCPortIODevice: AnyObject, Sendable {
@@ -51,28 +50,37 @@ public final class DoryPCPortIOBus: DoryX86IOBus, @unchecked Sendable {
   public func seal() { lock.withLock { isSealed = true } }
 
   public func read(port: UInt16, width: DoryX86OperandWidth) throws -> UInt32 {
-    let resolved = try resolve(port: port, width: width)
+    guard let resolved = resolve(port: port, width: width) else {
+      // An unclaimed PC I/O cycle reads as an open bus. Optional-device probes rely on this to
+      // discover absence; turning it into a CPU fault makes ordinary firmware enumeration fatal.
+      return switch width {
+      case .byte: 0xFF
+      case .word: 0xFFFF
+      case .doubleword, .quadword: 0xFFFF_FFFF
+      }
+    }
     return try resolved.device.read(portOffset: resolved.offset, width: width)
   }
 
   public func write(port: UInt16, value: UInt32, width: DoryX86OperandWidth) throws {
-    let resolved = try resolve(port: port, width: width)
+    // Writes to an unclaimed PC I/O port are discarded, matching an absent ISA/legacy device.
+    guard let resolved = resolve(port: port, width: width) else { return }
     try resolved.device.write(portOffset: resolved.offset, value: value, width: width)
   }
 
   private func resolve(
     port: UInt16,
     width: DoryX86OperandWidth
-  ) throws -> (device: any DoryPCPortIODevice, offset: UInt16) {
+  ) -> (device: any DoryPCPortIODevice, offset: UInt16)? {
     let lower = UInt32(port)
     let upper = lower + UInt32(width.byteCount)
-    return try lock.withLock {
+    return lock.withLock {
       guard upper <= 0x1_0000,
         let mapping = mappings.first(where: {
           lower >= $0.lowerBound && upper <= $0.upperBound
         })
       else {
-        throw DoryPCPortIOError.unmappedPort(port, width: width)
+        return nil
       }
       return (mapping.device, UInt16(lower - mapping.lowerBound))
     }

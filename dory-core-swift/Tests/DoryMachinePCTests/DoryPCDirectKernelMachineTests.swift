@@ -272,6 +272,37 @@ import Testing
     }
   }
 
+  @Test func optionalLegacySerialProbeObservesAnOpenBusAcrossExecutionTiers() throws {
+    #if arch(arm64)
+      let tiers: [DoryPCExecutionTier] = [.interpreter, .baselineJIT, .optimizingJIT]
+    #else
+      let tiers: [DoryPCExecutionTier] = [.interpreter]
+    #endif
+
+    for tier in tiers {
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        executionTier: tier,
+        baselineJITMaximumCodeBytes: 4096
+      )
+      // Probe the absent COM2 scratch register exactly as the installer loader does.
+      let code: [UInt8] = [
+        0xBA, 0xFF, 0x02, 0x00, 0x00,
+        0xB0, 0x5A,
+        0xEE,
+        0xEC,
+        0x3C, 0x5A,
+        0xF4,
+      ]
+      try machine.load(kernel: makeELF(code: code), commandLine: "x")
+
+      #expect(try machine.run(maximumInstructions: 16) == .halted(instructionCount: 6))
+      let state = try #require(machine.state)
+      #expect(state.registers.rax & 0xFF == 0xFF)
+      #expect(!state.rflags.contains(.zero))
+    }
+  }
+
   @Test func jitUnmappedBlockFetchFallsBackToPreciseInterpreterPageFault() throws {
     #if arch(arm64)
       for tier in [DoryPCExecutionTier.baselineJIT, .optimizingJIT] {
