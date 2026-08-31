@@ -261,6 +261,8 @@ expected = {
         "com.apple.security.network.server": True,
     },
     "runner": {
+        "com.apple.security.cs.allow-jit": True,
+        "com.apple.security.cs.jit-write-allowlist": True,
         "com.apple.security.device.audio-input": True,
         "com.apple.security.device.camera": True,
         "com.apple.security.hypervisor": True,

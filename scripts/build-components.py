@@ -68,6 +68,8 @@ EXPECTED_OUTER_APPLICATION_ENTITLEMENTS = {
     "com.apple.security.network.server": True,
 }
 EXPECTED_RUNNER_ENTITLEMENTS = {
+    "com.apple.security.cs.allow-jit": True,
+    "com.apple.security.cs.jit-write-allowlist": True,
     "com.apple.security.device.audio-input": True,
     "com.apple.security.device.camera": True,
     "com.apple.security.hypervisor": True,

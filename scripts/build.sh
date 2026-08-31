@@ -209,6 +209,8 @@ with open(actual_path, "rb") as handle:
     actual = plistlib.load(handle)
 policies = {
     "DoryHVRunner.app": {
+        "com.apple.security.cs.allow-jit": True,
+        "com.apple.security.cs.jit-write-allowlist": True,
         "com.apple.security.device.audio-input": True,
         "com.apple.security.device.camera": True,
         "com.apple.security.hypervisor": True,

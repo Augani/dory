@@ -195,6 +195,8 @@ cat > "$RUNNER_ENTITLEMENTS" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
+<key>com.apple.security.cs.allow-jit</key><true/>
+<key>com.apple.security.cs.jit-write-allowlist</key><true/>
 <key>com.apple.security.device.audio-input</key><true/>
 <key>com.apple.security.device.camera</key><true/>
 <key>com.apple.security.hypervisor</key><true/>
@@ -644,6 +646,8 @@ assert runner["signedBundle"]["signatureKind"] == "adhoc-test"
 assert runner["signedBundle"]["teamIdentifier"] == "-"
 assert runner["signedBundle"]["hardenedRuntime"] is False
 assert runner["signedBundle"]["entitlements"] == {
+    "com.apple.security.cs.allow-jit": True,
+    "com.apple.security.cs.jit-write-allowlist": True,
     "com.apple.security.device.audio-input": True,
     "com.apple.security.device.camera": True,
     "com.apple.security.hypervisor": True,
