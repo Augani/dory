@@ -1806,6 +1806,71 @@ public struct DoryX86Interpreter: Sendable {
             rawValue: (state.rflags.rawValue & ~UInt64(0xD5)) | (value & 0xD5) | 2
           )
         }
+      case .systemEnter:
+        guard profile.supports(.sysenter) else {
+          return .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: originalRIP))
+        }
+        let selector = UInt16(truncatingIfNeeded: state.modelSpecific.systemEnterCS) & 0xfffc
+        guard mode != .real16, state.control.cr0 & 1 != 0, selector != 0 else {
+          return generalProtection(at: originalRIP)
+        }
+        let inIA32eMode = state.control.efer & (1 << 10) != 0
+        let targetRIP = state.modelSpecific.systemEnterInstructionPointer
+        let targetRSP = state.modelSpecific.systemEnterStackPointer
+        guard !inIA32eMode
+          || (DoryX86ArchitecturalState.isCanonical(targetRIP)
+            && DoryX86ArchitecturalState.isCanonical(targetRSP))
+        else { return generalProtection(at: originalRIP) }
+        state.rflags.remove([.virtual8086, .interruptEnable])
+        state.registers.rsp = inIA32eMode ? targetRSP : UInt64(UInt32(truncatingIfNeeded: targetRSP))
+        state.cs = .init(
+          selector: selector,
+          attributes: inIA32eMode ? 0xA09B : 0xC09B,
+          limit: .max,
+          base: 0
+        )
+        state.ss = .init(
+          selector: selector &+ 8,
+          attributes: 0xC093,
+          limit: .max,
+          base: 0
+        )
+        nextRIP = inIA32eMode ? targetRIP : UInt64(UInt32(truncatingIfNeeded: targetRIP))
+      case .systemExit(let return64Bit):
+        guard profile.supports(.sysenter) else {
+          return .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: originalRIP))
+        }
+        let systemSelector = UInt16(truncatingIfNeeded: state.modelSpecific.systemEnterCS) & 0xfffc
+        guard mode != .real16, state.control.cr0 & 1 != 0, systemSelector != 0,
+          currentPrivilegeLevel(state) == 0
+        else { return generalProtection(at: originalRIP) }
+        let targetRIP = return64Bit
+          ? state.registers.rdx
+          : UInt64(UInt32(truncatingIfNeeded: state.registers.rdx))
+        let targetRSP = return64Bit
+          ? state.registers.rcx
+          : UInt64(UInt32(truncatingIfNeeded: state.registers.rcx))
+        guard !return64Bit
+          || (state.control.efer & (1 << 10) != 0
+            && DoryX86ArchitecturalState.isCanonical(targetRIP)
+            && DoryX86ArchitecturalState.isCanonical(targetRSP))
+        else { return generalProtection(at: originalRIP) }
+        let selectorOffset: UInt16 = return64Bit ? 32 : 16
+        let codeSelector = systemSelector &+ selectorOffset | 3
+        state.registers.rsp = targetRSP
+        state.cs = .init(
+          selector: codeSelector,
+          attributes: return64Bit ? 0xA0FB : 0xC0FB,
+          limit: .max,
+          base: 0
+        )
+        state.ss = .init(
+          selector: codeSelector &+ 8,
+          attributes: 0xC0F3,
+          limit: .max,
+          base: 0
+        )
+        nextRIP = targetRIP
       case .setInterruptsEnabled(let enabled):
         let currentPrivilege = UInt64(state.cs.selector & 3)
         let ioPrivilege = (state.rflags.rawValue >> 12) & 3
@@ -1864,7 +1929,7 @@ public struct DoryX86Interpreter: Sendable {
       let finalMask: UInt64 =
         if mode == .protected16 || mode == .protected32, state.cs != originalCodeSegment {
           if state.cs.attributes & 0x2000 != 0 {
-            0xffff_ffff
+            .max
           } else {
             state.cs.attributes & 0x4000 == 0 ? 0xffff : 0xffff_ffff
           }
@@ -3080,8 +3145,10 @@ public struct DoryX86Interpreter: Sendable {
     case 0x174:
       state.modelSpecific.systemEnterCS = value & 0xffff
     case 0x175:
+      guard DoryX86ArchitecturalState.isCanonical(value) else { return false }
       state.modelSpecific.systemEnterStackPointer = value
     case 0x176:
+      guard DoryX86ArchitecturalState.isCanonical(value) else { return false }
       state.modelSpecific.systemEnterInstructionPointer = value
     case 0x277:
       guard validPageAttributeTable(value) else { return false }

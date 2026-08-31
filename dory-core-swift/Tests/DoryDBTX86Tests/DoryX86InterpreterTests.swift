@@ -1462,6 +1462,136 @@ import Testing
     #expect(state.rflags.contains(.interruptEnable))
   }
 
+  @Test func sysenterAndSysexitUseArchitecturalMSRsAndFixedSegments() throws {
+    let kernelEntry: UInt64 = 0xffff_8000_0000_2000
+    let kernelStack: UInt64 = 0xffff_8000_0000_8000
+    let entryMemory = DoryX86ByteArrayMemory(
+      baseAddress: 0x7100,
+      bytes: [0x0F, 0x34] + .init(repeating: 0, count: 16)
+    )
+    var control = DoryX86ControlState(cr0: 0x6000_0011)
+    control.efer = 1 << 10
+    var state = try DoryX86ArchitecturalState(
+      rip: 0x7100,
+      rflags: [.reservedOne, .interruptEnable, .virtual8086],
+      cs: .init(selector: 0x23, attributes: 0xC0FB, limit: .max),
+      control: control,
+      modelSpecific: .init(
+        systemEnterCS: 8,
+        systemEnterStackPointer: kernelStack,
+        systemEnterInstructionPointer: kernelEntry
+      )
+    )
+
+    let entered = interpreter.step(state: &state, memory: entryMemory, mode: .protected32)
+    guard case .retired = entered else {
+      Issue.record("SYSENTER unexpectedly faulted: \(entered)")
+      return
+    }
+    #expect(state.rip == kernelEntry)
+    #expect(state.registers.rsp == kernelStack)
+    #expect(state.cs == .init(selector: 8, attributes: 0xA09B, limit: .max, base: 0))
+    #expect(state.ss == .init(selector: 16, attributes: 0xC093, limit: .max, base: 0))
+    #expect(!state.rflags.contains(.interruptEnable))
+    #expect(!state.rflags.contains(.virtual8086))
+
+    let returnMemory = DoryX86ByteArrayMemory(
+      baseAddress: kernelEntry,
+      bytes: [0x48, 0x0F, 0x35] + .init(repeating: 0, count: 16)
+    )
+    state.registers.rcx = 0x0000_7fff_ffff_e000
+    state.registers.rdx = 0x0000_7fff_ffff_1000
+    let exited = interpreter.step(state: &state, memory: returnMemory, mode: .long64)
+    guard case .retired = exited else {
+      Issue.record("64-bit SYSEXIT unexpectedly faulted: \(exited)")
+      return
+    }
+    #expect(state.rip == 0x0000_7fff_ffff_1000)
+    #expect(state.registers.rsp == 0x0000_7fff_ffff_e000)
+    #expect(state.cs == .init(selector: 0x2B, attributes: 0xA0FB, limit: .max, base: 0))
+    #expect(state.ss == .init(selector: 0x33, attributes: 0xC0F3, limit: .max, base: 0))
+
+    let compatibilityReturnMemory = DoryX86ByteArrayMemory(
+      baseAddress: 0x7300,
+      bytes: [0x0F, 0x35] + .init(repeating: 0, count: 16)
+    )
+    state.rip = 0x7300
+    state.cs = .init(selector: 8, attributes: 0xA09B, limit: .max)
+    state.registers.rcx = 0xaaaa_bbbb_1234_5000
+    state.registers.rdx = 0xcccc_dddd_7654_3000
+    let compatibilityExit = interpreter.step(
+      state: &state,
+      memory: compatibilityReturnMemory,
+      mode: .long64
+    )
+    guard case .retired = compatibilityExit else {
+      Issue.record("compatibility-mode SYSEXIT unexpectedly faulted: \(compatibilityExit)")
+      return
+    }
+    #expect(state.rip == 0x7654_3000)
+    #expect(state.registers.rsp == 0x1234_5000)
+    #expect(state.cs == .init(selector: 0x1B, attributes: 0xC0FB, limit: .max, base: 0))
+    #expect(state.ss == .init(selector: 0x23, attributes: 0xC0F3, limit: .max, base: 0))
+  }
+
+  @Test func sysexitRejectsPrivilegeAndNoncanonicalReturnsPrecisely() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x7200,
+      bytes: [0x48, 0x0F, 0x35] + .init(repeating: 0, count: 16)
+    )
+    var control = DoryX86ControlState(cr0: 0x6000_0011)
+    control.efer = 1 << 10
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 0x8000_0000_0000, rdx: 0x4000),
+      rip: 0x7200,
+      cs: .init(selector: 0, attributes: 0xA09B, limit: .max),
+      control: control,
+      modelSpecific: .init(systemEnterCS: 8)
+    )
+    let original = state
+    let noncanonical = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      noncanonical
+        == .exception(
+          .init(
+            kind: .generalProtection,
+            vector: 13,
+            errorCode: 0,
+            instructionPointer: 0x7200
+          )))
+    #expect(state == original)
+
+    state.registers.rcx = 0x4000
+    state.cs.selector = 3
+    let userState = state
+    let unprivileged = interpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      unprivileged
+        == .exception(
+          .init(
+            kind: .generalProtection,
+            vector: 13,
+            errorCode: 0,
+            instructionPointer: 0x7200
+          )))
+    #expect(state == userState)
+
+    let restrictedProfile = DoryX86CPUProfile(
+      identifier: "test.no-sysenter",
+      features: [],
+      physicalAddressBits: 40,
+      linearAddressBits: 48,
+      virtualTSCFrequencyHz: 1_000_000_000
+    )
+    let restrictedInterpreter = DoryX86Interpreter(profile: restrictedProfile)
+    let unavailable = restrictedInterpreter.step(state: &state, memory: memory, mode: .long64)
+    #expect(
+      unavailable
+        == .exception(
+          .init(kind: .invalidOpcode, vector: 6, instructionPointer: 0x7200)))
+    #expect(state == userState)
+  }
+
   @Test func executesByteLanesCarryArithmeticAndRotates() throws {
     // mov ah,7f; mov spl,77; stc; adc al,0; rol ah,1
     let memory = DoryX86ByteArrayMemory(

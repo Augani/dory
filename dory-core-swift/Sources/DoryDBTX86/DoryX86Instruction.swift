@@ -483,6 +483,8 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case complementCarry
   case setDirection(Bool)
   case flagByte(load: Bool)
+  case systemEnter
+  case systemExit(return64Bit: Bool)
   case syscall
   case sysret
   case halt

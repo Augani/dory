@@ -806,6 +806,10 @@ public struct DoryX86Decoder: Sendable {
           second == 0x20
           ? .readControlRegister(index: operands.control, destination: operands.general)
           : .writeControlRegister(index: operands.control, source: operands.general)
+      case 0x34:
+        operation = .systemEnter
+      case 0x35:
+        operation = .systemExit(return64Bit: prefixes.rex?.w == true)
       case 0x21, 0x23:
         let operands = try decodeControlRegisterModRM(cursor: &cursor, prefixes: prefixes)
         operation =

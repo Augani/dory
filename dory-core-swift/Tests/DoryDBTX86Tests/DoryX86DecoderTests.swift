@@ -144,6 +144,18 @@ import Testing
       try decoder.decode([0x0F, 0x09], at: 0x7000, mode: .long64).operation
         == .invalidateCaches(writeBack: true)
     )
+    #expect(
+      try decoder.decode([0x0F, 0x34], at: 0x7000, mode: .long64).operation
+        == .systemEnter
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x35], at: 0x7000, mode: .long64).operation
+        == .systemExit(return64Bit: false)
+    )
+    #expect(
+      try decoder.decode([0x48, 0x0F, 0x35], at: 0x7000, mode: .long64).operation
+        == .systemExit(return64Bit: true)
+    )
   }
 
   @Test func decodesNearReturnWithStackCleanup() throws {
