@@ -901,6 +901,12 @@ public struct DoryX86Decoder: Sendable {
           case 1: operation = .restoreFloatingPointState(memory)
           case 2: operation = .loadMXCSR(operands.rm)
           case 3: operation = .storeMXCSR(operands.rm)
+          case 7:
+            guard prefixes.repeatPrefix == nil, !prefixes.operandSizeOverride else {
+              throw DoryX86DecodeError.invalidEncoding(
+                address: address, detail: "unsupported cache-line flush prefix")
+            }
+            operation = .cacheLineFlush(memory)
           default:
             throw DoryX86DecodeError.invalidEncoding(
               address: address, detail: "unsupported 0F AE memory group")

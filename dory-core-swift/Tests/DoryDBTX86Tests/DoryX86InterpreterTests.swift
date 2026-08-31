@@ -133,6 +133,42 @@ import Testing
     #expect(state.registers.rcx & (1 << 28) == 0)
   }
 
+  @Test func cacheLineFlushChecksItsArchitecturalAddressWithoutHostCacheState() throws {
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x3400,
+      bytes: [0x0F, 0xAE, 0x38] + .init(repeating: 0, count: 29)
+    )
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: 0x3408),
+      rip: 0x3400
+    )
+    guard case .retired(let instruction) = interpreter.step(
+      state: &state,
+      memory: memory,
+      mode: .long64
+    ) else {
+      Issue.record("CLFLUSH unexpectedly failed")
+      return
+    }
+    #expect(instruction.length == 3)
+    #expect(state.rip == 0x3403)
+
+    state.rip = 0x3400
+    state.registers.rax = 0xDEAD_0000
+    #expect(
+      interpreter.step(state: &state, memory: memory, mode: .long64)
+        == .exception(
+          .init(
+            kind: .pageFault,
+            vector: 14,
+            errorCode: 0,
+            instructionPointer: 0x3400,
+            linearAddress: 0xDEAD_0000
+          ))
+    )
+    #expect(state.rip == 0x3400)
+  }
+
   @Test func memoryFaultIsPreciseAndLeavesInstructionRestartable() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x4000, bytes: [0x48, 0x8B, 0x00] + .init(repeating: 0, count: 16))

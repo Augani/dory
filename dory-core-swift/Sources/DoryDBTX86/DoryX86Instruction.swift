@@ -274,6 +274,7 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case byteSwap(DoryX86Operand)
   case compareExchangePair(destination: DoryX86MemoryOperand, doubleQuadword: Bool)
   case memoryFence(DoryX86MemoryFence)
+  case cacheLineFlush(DoryX86MemoryOperand)
   case waitForCoprocessor
   case initializeFloatingPoint
   case loadX87ControlWord(DoryX86Operand)

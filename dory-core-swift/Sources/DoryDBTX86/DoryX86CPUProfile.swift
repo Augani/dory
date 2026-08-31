@@ -72,7 +72,7 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
   public static let compatibleV1 = Self(
     identifier: compatibleV1Identifier,
     features: [
-      .x87, .tsc, .msr, .cmpxchg8b, .apic, .cmov, .mmx, .fxsave, .sse, .sse2, .cmpxchg16b,
+      .x87, .tsc, .msr, .cmpxchg8b, .apic, .cmov, .clflush, .mmx, .fxsave, .sse, .sse2, .cmpxchg16b,
       .syscall, .executeDisable, .longMode, .invariantTSC,
     ],
     physicalAddressBits: 40,

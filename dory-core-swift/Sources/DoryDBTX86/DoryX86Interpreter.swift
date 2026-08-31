@@ -506,6 +506,18 @@ public struct DoryX86Interpreter: Sendable {
         }
       case .memoryFence:
         executionMemory.synchronize()
+      case .cacheLineFlush(let operand):
+        try validateSegmentAccess(
+          operand,
+          byteCount: 1,
+          write: false,
+          instruction: instruction,
+          state: state
+        )
+        let address = effectiveAddress(operand, instruction: instruction, state: state)
+        _ = try executionMemory.read(at: address, byteCount: 1)
+        // Guest memory is coherent and has no separately observable interpreter cache. The
+        // architectural memory-access check above is the only visible effect required here.
       case .waitForCoprocessor:
         break
       case .initializeFloatingPoint:
