@@ -9,9 +9,10 @@ reviewed patch under `patches/`, and the Dory-owned platform package in
 The platform discovers RAM, CPU, PCI apertures, ACPI, SMBIOS, immutable flash,
 and the persistent variable bridge through Dory's read-only firmware
 configuration page. It does not consume QEMU fw_cfg or QEMU machine metadata.
-The boot manager connects all Dory devices, enumerates removable block devices
-before fixed disks on zero-state NVRAM, and thereafter honors persistent UEFI
-`BootOrder`.
+The launch authority publishes standard physical-device `Boot####` fallbacks in
+the requested installer/system order without replacing guest-created options.
+The boot manager connects all Dory devices, refreshes file-specific guest
+options, and honors the resulting persistent UEFI `BootOrder`.
 
 Build and atomically publish a four-file firmware bundle:
 

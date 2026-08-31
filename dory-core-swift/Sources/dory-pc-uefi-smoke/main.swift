@@ -7,11 +7,13 @@ import Foundation
 private enum SmokeError: Error, CustomStringConvertible {
   case usage(String)
   case invalidNumber(String)
+  case missingSerialMarker(String)
 
   var description: String {
     switch self {
     case .usage(let message): message
     case .invalidNumber(let value): "invalid unsigned integer: \(value)"
+    case .missingSerialMarker(let marker): "expected serial marker was not observed: \(marker)"
     }
   }
 }
@@ -27,6 +29,8 @@ private struct Arguments {
   let variableStoreDirectory: URL?
   let exceptionPolicy: DoryPCExceptionPolicy
   let executionTier: DoryPCExecutionTier
+  let expectedSerialMarker: String?
+  let initialRTCUnixSeconds: UInt64
 
   init(_ values: [String]) throws {
     var options: [String: String] = [:]
@@ -41,6 +45,8 @@ private struct Arguments {
           "--firmware-bundle", "--max-instructions", "--memory-bytes", "--processor-count",
           "--system-disk", "--installer-media", "--variable-store-directory",
           "--exception-policy", "--execution-tier", "--progress-instructions",
+          "--expected-serial-marker",
+          "--initial-rtc-unix-seconds",
         ].contains(name)
       else { throw SmokeError.usage("unknown option: \(name)") }
       guard options.updateValue(values[index + 1], forKey: name) == nil else {
@@ -55,6 +61,8 @@ private struct Arguments {
           + "[--variable-store-directory /absolute/directory] "
           + "[--processor-count count] [--exception-policy stop|deliver] "
           + "[--execution-tier interpreter|baseline-jit|optimizing-jit] "
+          + "[--expected-serial-marker text] "
+          + "[--initial-rtc-unix-seconds seconds] "
           + "[--max-instructions count] [--progress-instructions count] [--memory-bytes count]"
       )
     }
@@ -62,6 +70,7 @@ private struct Arguments {
     let progressText = options["--progress-instructions"] ?? "10000000"
     let memoryText = options["--memory-bytes"] ?? "268435456"
     let processorText = options["--processor-count"] ?? "1"
+    let rtcText = options["--initial-rtc-unix-seconds"] ?? "0"
     guard let maximumInstructions = UInt64(instructionText), maximumInstructions > 0 else {
       throw SmokeError.invalidNumber(instructionText)
     }
@@ -73,6 +82,9 @@ private struct Arguments {
     }
     guard let processorCount = Int(processorText), (1...255).contains(processorCount) else {
       throw SmokeError.invalidNumber(processorText)
+    }
+    guard let initialRTCUnixSeconds = UInt64(rtcText) else {
+      throw SmokeError.invalidNumber(rtcText)
     }
     let policyText = options["--exception-policy"] ?? "stop"
     switch policyText {
@@ -87,6 +99,11 @@ private struct Arguments {
     case "optimizing-jit": executionTier = .optimizingJIT
     default: throw SmokeError.usage("invalid execution tier: \(tierText)")
     }
+    if let marker = options["--expected-serial-marker"], marker.isEmpty {
+      throw SmokeError.usage("expected serial marker must not be empty")
+    }
+    expectedSerialMarker = options["--expected-serial-marker"]
+    self.initialRTCUnixSeconds = initialRTCUnixSeconds
     firmwareBundle = URL(fileURLWithPath: bundle, isDirectory: true).standardizedFileURL
     self.maximumInstructions = maximumInstructions
     self.progressInstructions = progressInstructions
@@ -325,6 +342,7 @@ private func run() throws {
     bootStorage: storages,
     memoryBytes: arguments.memoryBytes,
     processorCount: arguments.processorCount,
+    initialRTCDate: Date(timeIntervalSince1970: TimeInterval(arguments.initialRTCUnixSeconds)),
     executionTier: arguments.executionTier
   )
   let stop = try runWithProgress(
@@ -348,9 +366,12 @@ private func run() throws {
   let instructionBytes = (try? composed.machine.instructionBytes(maximumCount: 16)) ?? nil
   let stackBytes =
     state.flatMap {
-      (try? composed.machine.memoryBytes(atLinearAddress: $0.registers.rsp, maximumCount: 64)) ?? nil
+      (try? composed.machine.memoryBytes(atLinearAddress: $0.registers.rsp, maximumCount: 64))
+        ?? nil
     }
   let serialBytes = composed.machine.serial.drainTransmittedBytes()
+  let serialOutput = String(decoding: serialBytes, as: UTF8.self)
+  let serialMarkerMatched = arguments.expectedSerialMarker.map(serialOutput.contains) ?? true
   let serialDrops = composed.machine.serial.dropCounts
   let blockDevices = blockDeviceDiagnostics(
     composed.blockDevices,
@@ -368,6 +389,7 @@ private func run() throws {
     "gdtrBase": state.map { hexadecimal($0.gdtr.base) } ?? "unavailable",
     "gdtrLimit": state.map { String(format: "0x%04x", $0.gdtr.limit) } ?? "unavailable",
     "instructionPointer": rip,
+    "initialRTCUnixSeconds": arguments.initialRTCUnixSeconds,
     "machineABIIdentity": artifacts.manifest.machineABIIdentity,
     "maximumInstructions": arguments.maximumInstructions,
     "progressInstructions": arguments.progressInstructions,
@@ -386,7 +408,8 @@ private func run() throws {
     "pageTableTrace": pageTrace,
     "instructionBytes": instructionBytes.map(hexadecimalBytes) ?? "unmapped",
     "stackBytes": stackBytes.map(hexadecimalBytes) ?? "unmapped",
-    "serialOutput": String(decoding: serialBytes, as: UTF8.self),
+    "serialOutput": serialOutput,
+    "serialMarkerMatched": serialMarkerMatched,
     "serialDroppedBytes": serialDrops.transmitted,
     "blockDevices": blockDevices,
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
@@ -409,6 +432,9 @@ private func run() throws {
   ]
   let output = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
   FileHandle.standardOutput.write(output + Data("\n".utf8))
+  if let marker = arguments.expectedSerialMarker, !serialMarkerMatched {
+    throw SmokeError.missingSerialMarker(marker)
+  }
 }
 
 do {
