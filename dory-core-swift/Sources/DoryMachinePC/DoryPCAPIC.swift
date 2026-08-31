@@ -1,3 +1,4 @@
+import DoryPlatformC
 import Foundation
 
 public enum DoryPCAPICError: Error, Sendable, Equatable {
@@ -51,6 +52,7 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   public let apicID: UInt32
 
   private let lock = NSLock()
+  private let hasPendingRequest: UnsafeMutablePointer<UInt8>
   private var softwareEnabled = false
   private var spuriousVector: UInt8 = 0xFF
   private var taskPriority: UInt8 = 0
@@ -59,7 +61,16 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   private var levelTriggered: Set<UInt8> = []
   private var timer = DoryPCLocalAPICTimerState()
 
-  public init(apicID: UInt32) { self.apicID = apicID }
+  public init(apicID: UInt32) {
+    self.apicID = apicID
+    hasPendingRequest = .allocate(capacity: 1)
+    hasPendingRequest.initialize(to: 0)
+  }
+
+  deinit {
+    hasPendingRequest.deinitialize(count: 1)
+    hasPendingRequest.deallocate()
+  }
 
   public func configureSpuriousVector(_ vector: UInt8, softwareEnabled: Bool) throws {
     // Unlike deliverable interrupt vectors, Intel permits the architectural reset/virtual-wire
@@ -85,8 +96,11 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
     interruptsEnabled: Bool,
     externalPriority: UInt8 = 0
   ) -> UInt8? {
-    lock.withLock {
-      guard softwareEnabled, interruptsEnabled else { return nil }
+    guard interruptsEnabled, dory_atomic_u8_load_acquire(hasPendingRequest) != 0 else {
+      return nil
+    }
+    return lock.withLock {
+      guard softwareEnabled else { return nil }
       let processorPriority = processorPriorityLocked(externalPriority: externalPriority)
       guard
         let vector =
@@ -95,6 +109,7 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
           .max()
       else { return nil }
       interruptRequest.remove(vector)
+      dory_atomic_u8_store_release(hasPendingRequest, interruptRequest.isEmpty ? 0 : 1)
       inService.insert(vector)
       return vector
     }
@@ -190,6 +205,7 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
 
   private func injectLocked(vector: UInt8, levelTriggered: Bool) {
     interruptRequest.insert(vector)
+    dory_atomic_u8_store_release(hasPendingRequest, 1)
     if levelTriggered { self.levelTriggered.insert(vector) }
   }
 

@@ -1,4 +1,5 @@
 import DoryDBTX86
+import DoryPlatformC
 import Foundation
 
 public enum DoryPCLegacyInterruptError: Error, Sendable, Equatable {
@@ -33,10 +34,19 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
   }
 
   private let lock = NSLock()
+  private let hasPendingRequest: UnsafeMutablePointer<UInt8>
   private var master = Chip(vectorOffset: 0x08)
   private var slave = Chip(vectorOffset: 0x70)
 
-  public init() {}
+  public init() {
+    hasPendingRequest = .allocate(capacity: 1)
+    hasPendingRequest.initialize(to: 0)
+  }
+
+  deinit {
+    hasPendingRequest.deinitialize(count: 1)
+    hasPendingRequest.deallocate()
+  }
 
   public func raise(irq: UInt8) throws {
     guard irq < 16 else { throw DoryPCLegacyInterruptError.invalidIRQ(irq) }
@@ -47,12 +57,16 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
         slave.request |= UInt8(1) << (irq - 8)
         updateCascadeLocked()
       }
+      publishPendingRequestLocked()
     }
   }
 
   public func acknowledge(interruptsEnabled: Bool) -> UInt8? {
-    lock.withLock {
-      guard interruptsEnabled else { return nil }
+    guard interruptsEnabled, dory_atomic_u8_load_acquire(hasPendingRequest) != 0 else {
+      return nil
+    }
+    return lock.withLock {
+      defer { publishPendingRequestLocked() }
       guard var masterIRQ = highestDeliverable(master) else { return nil }
       if masterIRQ == 2 {
         if let slaveIRQ = highestDeliverable(slave) {
@@ -108,6 +122,7 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
 
   fileprivate func write(_ value: UInt8, controller: Controller, data: Bool) {
     lock.withLock {
+      defer { publishPendingRequestLocked() }
       if data {
         writeDataLocked(value, controller: controller)
       } else {
@@ -182,6 +197,10 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
     } else {
       master.request &= ~(1 << 2)
     }
+  }
+
+  private func publishPendingRequestLocked() {
+    dory_atomic_u8_store_release(hasPendingRequest, master.request == 0 ? 0 : 1)
   }
 
   private func withChip(_ controller: Controller, _ body: (inout Chip) -> Void) {
