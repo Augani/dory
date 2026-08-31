@@ -17,6 +17,7 @@ public enum DoryPCUEFIMachineError: Error, Sendable, Equatable {
   case incompatibleFirmwarePlatform(DoryFirmwarePlatform)
   case firmwareManifestMismatch
   case incompatibleVariableStorePlatform(DoryFirmwarePlatform)
+  case variableStoreRecoveryRequired
   case variableStoreGenerationMismatch(expected: UInt64, actual: UInt64)
   case nonCanonicalBootStorage
   case missingBootStorage(String)
@@ -40,6 +41,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
   public let xhciController: DoryPCXHCIController
   public let networkDevice: DoryPCVirtioNetworkPCIDevice
   public let entropyDevice: DoryPCVirtioEntropyPCIDevice
+  public let effectiveVariableStoreGeneration: UInt64
   public let machine: DoryPCDirectKernelMachine
 
   public init(
@@ -65,6 +67,9 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
       throw DoryPCUEFIMachineError.firmwareManifestMismatch
     }
     let variableLoad = try variableStore.load()
+    guard variableLoad.source == .primary else {
+      throw DoryPCUEFIMachineError.variableStoreRecoveryRequired
+    }
     guard variableLoad.snapshot.platform == .pcV1 else {
       throw DoryPCUEFIMachineError.incompatibleVariableStorePlatform(
         variableLoad.snapshot.platform
@@ -174,6 +179,16 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
       baselineJITMaximumCodeBytes: baselineJITMaximumCodeBytes
     )
     try machine.loadUEFI()
+    let bootVariableSnapshot = try DoryPCUEFIBootVariables.applying(
+      plan: plan,
+      to: variableLoad.snapshot
+    )
+    if bootVariableSnapshot != variableLoad.snapshot {
+      try variableStore.commit(
+        bootVariableSnapshot,
+        expectedGeneration: variableLoad.snapshot.generation
+      )
+    }
 
     self.plan = plan
     self.firmware = firmware
@@ -188,6 +203,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     self.xhciController = xhciController
     self.networkDevice = networkDevice
     self.entropyDevice = entropyDevice
+    self.effectiveVariableStoreGeneration = bootVariableSnapshot.generation
     self.machine = machine
   }
 

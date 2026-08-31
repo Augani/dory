@@ -39,7 +39,76 @@ import Testing
     #expect(composed.xhciController.pciAddress == DoryPCV1ABI.xhciPCIAddress)
     #expect(composed.networkDevice.pciAddress == DoryPCV1ABI.networkPCIAddress)
     #expect(composed.entropyDevice.pciAddress == DoryPCV1ABI.entropyPCIAddress)
+    #expect(composed.effectiveVariableStoreGeneration == 2)
+    let bootSnapshot = try fixture.store.load().snapshot
+    #expect(bootSnapshot.generation == 2)
+    #expect(bootSnapshot.variables.map(\.key.name) == ["BootD000", "BootD001", "BootOrder"])
+    #expect(try bootSnapshot.variable(for: bootKey("BootOrder"))?.data == Data([1, 0xd0, 0, 0xd0]))
+    #expect(
+      try devicePath(in: #require(bootSnapshot.variable(for: bootKey("BootD000"))))
+        == pciDevicePath(device: 1)
+    )
+    #expect(
+      try devicePath(in: #require(bootSnapshot.variable(for: bootKey("BootD001"))))
+        == pciDevicePath(device: 12)
+    )
     #expect(try composed.machine.run(maximumInstructions: 1) == .instructionBudget(1))
+
+    let secondPlan = try fixture.makePlan(generation: 2)
+    let relaunched = try DoryPCUEFIMachine(
+      plan: secondPlan,
+      firmware: fixture.firmware,
+      variableStore: .init(file: fixture.store),
+      bootStorage: [
+        .init(logicalID: "system-disk", storage: systemStorage),
+        .init(logicalID: "installer-iso", storage: installerStorage),
+      ],
+      memoryBytes: 2 * 1024 * 1024
+    )
+    #expect(relaunched.effectiveVariableStoreGeneration == 2)
+    #expect(try fixture.store.load().snapshot.generation == 2)
+  }
+
+  @Test func bootPolicyPreservesForeignEntriesAndAvoidsTheirOptionNumbers() throws {
+    let fixture = try PCUEFIMachineFixture()
+    defer { fixture.remove() }
+    let initial = try fixture.store.load().snapshot
+    let foreignD000 = try bootVariable(name: "BootD000", data: [0xaa])
+    let foreignBEEF = try bootVariable(name: "BootBEEF", data: [0xbb])
+    let foreignOrder = try bootVariable(
+      name: "BootOrder",
+      data: [0x00, 0xd0, 0xef, 0xbe]
+    )
+    let populated = try initial.replacingAllVariables([foreignD000, foreignBEEF, foreignOrder])
+    try fixture.store.commit(populated, expectedGeneration: 1)
+
+    let composed = try DoryPCUEFIMachine(
+      plan: fixture.makePlan(generation: 2),
+      firmware: fixture.firmware,
+      variableStore: .init(file: fixture.store),
+      bootStorage: [
+        .init(
+          logicalID: "system-disk",
+          storage: DoryVirtioInMemoryBlockStorage(byteCount: 512)
+        ),
+        .init(
+          logicalID: "installer-iso",
+          storage: DoryVirtioInMemoryBlockStorage(byteCount: 512, readOnly: true)
+        ),
+      ],
+      memoryBytes: 2 * 1024 * 1024
+    )
+
+    #expect(composed.effectiveVariableStoreGeneration == 3)
+    let result = try fixture.store.load().snapshot
+    #expect(result.variable(for: try bootKey("BootD000")) == foreignD000)
+    #expect(result.variable(for: try bootKey("BootBEEF")) == foreignBEEF)
+    #expect(result.variable(for: try bootKey("BootD001")) != nil)
+    #expect(result.variable(for: try bootKey("BootD002")) != nil)
+    #expect(
+      result.variable(for: try bootKey("BootOrder"))?.data
+        == Data([0x02, 0xd0, 0x01, 0xd0, 0x00, 0xd0, 0xef, 0xbe])
+    )
   }
 
   @Test func rejectsMissingStorageReadOnlyMismatchAndGenerationDrift() throws {
@@ -91,6 +160,28 @@ import Testing
     }
   }
 
+  @Test func rejectsAStoreThatRequiresExplicitBackupRecovery() throws {
+    let fixture = try PCUEFIMachineFixture()
+    defer { fixture.remove() }
+    let initial = try fixture.store.load().snapshot
+    let successor = try initial.setting(try bootVariable(name: "BootOrder", data: [0, 0]))
+    try fixture.store.commit(successor, expectedGeneration: 1)
+    try Data("corrupt".utf8).write(to: URL(fileURLWithPath: fixture.store.primaryPath))
+
+    #expect(throws: DoryPCUEFIMachineError.variableStoreRecoveryRequired) {
+      _ = try fixture.compose([
+        .init(
+          logicalID: "system-disk",
+          storage: DoryVirtioInMemoryBlockStorage(byteCount: 512)
+        ),
+        .init(
+          logicalID: "installer-iso",
+          storage: DoryVirtioInMemoryBlockStorage(byteCount: 512, readOnly: true)
+        ),
+      ])
+    }
+  }
+
   @Test func installsAuthenticatedGPUAccelerationIntoThePCIBootMachine() throws {
     let fixture = try PCUEFIMachineFixture()
     defer { fixture.remove() }
@@ -129,6 +220,34 @@ import Testing
       } & 0xffff_fff0
     )
   }
+}
+
+private func bootKey(_ name: String) throws -> DoryUEFIVariableKey {
+  try .init(vendor: DoryPCUEFIBootVariables.globalVariableVendor, name: name)
+}
+
+private func bootVariable(name: String, data: [UInt8]) throws -> DoryUEFIVariable {
+  try .init(
+    key: bootKey(name),
+    attributes: DoryPCUEFIBootVariables.variableAttributes,
+    data: Data(data)
+  )
+}
+
+private func devicePath(in variable: DoryUEFIVariable) throws -> Data {
+  let bytes = [UInt8](variable.data)
+  let pathLength = Int(bytes[4]) | Int(bytes[5]) << 8
+  var cursor = 6
+  while bytes[cursor] != 0 || bytes[cursor + 1] != 0 { cursor += 2 }
+  cursor += 2
+  return Data(bytes[cursor..<(cursor + pathLength)])
+}
+
+private func pciDevicePath(device: UInt8) -> Data {
+  Data([
+    0x02, 0x01, 0x0c, 0x00, 0xd0, 0x41, 0x03, 0x0a, 0, 0, 0, 0,
+    0x01, 0x01, 0x06, 0x00, 0, device, 0x7f, 0xff, 0x04, 0x00,
+  ])
 }
 
 private final class PCUEFIMachineGPUAuthority: DoryVirtioGPUAccelerationAuthority,
@@ -198,6 +317,18 @@ private final class PCUEFIMachineFixture {
       variableStoreGeneration: 1,
       bootDevices: [system, installer],
       bootOrder: [installer.logicalID, system.logicalID]
+    )
+  }
+
+  func makePlan(
+    generation: UInt64,
+    bootOrder: [String] = ["installer-iso", "system-disk"]
+  ) throws -> DoryPCUEFILaunchPlan {
+    try DoryPCUEFILaunchPlan(
+      firmware: firmware.manifest,
+      variableStoreGeneration: generation,
+      bootDevices: plan.bootDevices,
+      bootOrder: bootOrder
     )
   }
 

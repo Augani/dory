@@ -233,6 +233,24 @@ public struct DoryUEFIVariableStoreSnapshot: Codable, Sendable, Hashable {
     )
   }
 
+  /// Replaces the complete canonical variable set as one durable generation.
+  ///
+  /// Platform launch policy uses this to publish related UEFI variables such as `Boot####` and
+  /// `BootOrder` atomically. An identical replacement is a no-op so merely launching a VM does
+  /// not consume a variable-store generation.
+  public func replacingAllVariables(_ variables: [DoryUEFIVariable]) throws -> Self {
+    let canonical = variables.sorted()
+    guard canonical != self.variables else { return self }
+    guard generation < UInt64.max else { throw DoryFirmwareError.generationExhausted }
+    return try Self(
+      schemaVersion: schemaVersion,
+      formatIdentity: formatIdentity,
+      machineABIIdentity: machineABIIdentity,
+      generation: generation + 1,
+      variables: canonical
+    )
+  }
+
   public func deleting(_ key: DoryUEFIVariableKey) throws -> Self {
     guard generation < UInt64.max else { throw DoryFirmwareError.generationExhausted }
     return try Self(

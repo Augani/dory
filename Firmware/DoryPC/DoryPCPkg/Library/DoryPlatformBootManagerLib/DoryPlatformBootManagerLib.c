@@ -59,8 +59,8 @@ PlatformBootManagerAfterConsole (
   )
 {
   EfiBootManagerConnectAll ();
-  // The generic UEFI rule is exactly Dory's policy: removable Block I/O first, fixed Block I/O
-  // second. Persistent Boot####/BootOrder variables override this default on later boots.
+  // Refresh guest-created file-specific options while retaining the host-published DoryPC
+  // physical-device fallbacks and their launch-plan order in BootOrder.
   EfiBootManagerRefreshAllBootOption ();
 }
 

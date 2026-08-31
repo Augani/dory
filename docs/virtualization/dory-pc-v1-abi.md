@@ -44,3 +44,13 @@ The IOAPIC exposes GSIs 0...23. PCI INTx uses level-triggered, active-low GSIs 1
 ## Boot contract
 
 Direct-kernel PVH remains an engineering and managed-image profile. Product installation starts at the UEFI reset vector, discovers ACPI/SMBIOS, boots removable media according to persistent UEFI boot variables, and then boots the installed system disk. Firmware code is immutable per launch; each VM owns an atomic variable store.
+
+Before UEFI executes, the launch authority atomically projects the validated device order into
+standard `Boot####` and `BootOrder` variables under the EFI global-variable GUID. Dory-owned load
+options contain an active whole-device path of `ACPI(PNP0A03,0)/PCI(function,device)` and private
+optional-data marker `DORYPC1\0<logical-id>`. New Dory options allocate from `BootD000` through
+`BootDFFF` without replacing an occupied guest option. Existing Dory options are reused by marker;
+stale or duplicate Dory-owned options are removed. Guest-created options and their relative
+`BootOrder` are retained after the launch plan's physical-device fallbacks. An unchanged projection
+does not advance the variable-store generation, and a store requiring backup recovery cannot boot
+until recovery is explicitly completed.
