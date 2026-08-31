@@ -771,6 +771,18 @@ public struct DoryX86Decoder: Sendable {
     case 0x0F:
       let second = try cursor.readByte()
       switch second {
+      case 0x18:
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .byte, prefixes: prefixes, mode: mode)
+        guard operands.group <= 3, case .memory = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address,
+            detail: "PREFETCHh requires a memory /0 through /3 operand"
+          )
+        }
+        // PREFETCHh is only a cache hint. Decode its complete addressing form so RIP advances
+        // correctly, but deliberately avoid an architectural guest-memory access.
+        operation = .noOperation
       case 0x1F:
         let operands = try decodeModRM(
           cursor: &cursor, width: width, prefixes: prefixes, mode: mode)

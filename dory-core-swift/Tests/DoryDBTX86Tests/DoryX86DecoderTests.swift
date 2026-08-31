@@ -296,6 +296,22 @@ import Testing
       [0x66, 0x0F, 0x1F, 0x84, 0x00, 0, 0, 0, 0], at: 0xA000, mode: .long64)
     #expect(multiByteNOP.operation == .noOperation)
     #expect(multiByteNOP.length == 9)
+    let prefetch = try decoder.decode(
+      [0x0F, 0x18, 0x4C, 0x8A, 0x40], at: 0xA000, mode: .long64)
+    #expect(prefetch.operation == .noOperation)
+    #expect(prefetch.length == 5)
+    for group in UInt8(0)...UInt8(3) {
+      #expect(
+        try decoder.decode([0x0F, 0x18, group << 3], at: 0xA000, mode: .long64)
+          .operation == .noOperation
+      )
+    }
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0x0F, 0x18, 0x20], at: 0xA000, mode: .long64)
+    }
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0x0F, 0x18, 0xC8], at: 0xA000, mode: .long64)
+    }
     #expect(throws: DoryX86DecodeError.self) {
       try decoder.decode([0x0F, 0x1F, 0xC8], at: 0xA000, mode: .long64)
     }

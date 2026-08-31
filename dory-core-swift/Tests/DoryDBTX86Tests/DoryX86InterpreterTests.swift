@@ -57,6 +57,35 @@ import Testing
     #expect(state.rip == 0x2006)
   }
 
+  @Test func prefetchHintsRetireWithoutAccessingGuestMemory() throws {
+    let base: UInt64 = 0x2180
+    let program: [UInt8] = [
+      0x0F, 0x18, 0x00,
+      0x0F, 0x18, 0x48, 0x40,
+      0x0F, 0x18, 0x90, 0x00, 0x10, 0x00, 0x00,
+      0x0F, 0x18, 0x98, 0x00, 0x00, 0x00, 0x80,
+    ]
+    let memory = DoryX86ByteArrayMemory(baseAddress: base, bytes: program)
+    let flags: DoryX86RFLAGS = [.reservedOne, .carry, .zero, .overflow]
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: UInt64.max),
+      rip: base,
+      rflags: flags
+    )
+
+    for _ in 0..<4 {
+      guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64)
+      else {
+        Issue.record("PREFETCHh unexpectedly faulted")
+        return
+      }
+    }
+
+    #expect(state.rip == base + UInt64(program.count))
+    #expect(state.registers.rax == UInt64.max)
+    #expect(state.rflags == flags)
+  }
+
   @Test func returnWithImmediateReleasesCallerArguments() throws {
     let base: UInt64 = 0x2200
     let memory = DoryX86ByteArrayMemory(

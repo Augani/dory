@@ -81,4 +81,20 @@ import Testing
     #expect(block.guestByteCount == 2)
     #expect(block.terminator == .exit(.instructionBudget, resumeAt: 0x3002))
   }
+
+  @Test func prefetchHintsRemainPureNativeInstructions() throws {
+    let block = try DoryX86IRTranslator().translate(
+      [0x0F, 0x18, 0x0A, 0x0F, 0x18, 0x4A, 0x40, 0x90],
+      at: 0x3400,
+      mode: .long64
+    )
+
+    #expect(block.guestInstructionCount == 3)
+    #expect(block.guestByteCount == 8)
+    #expect(block.statements.isEmpty)
+    #expect(block.terminator == .next(0x3408))
+    let compiled = DoryARM64BaselineEmitter().compile(block)
+    #expect(compiled.tier == .baseline)
+    #expect(!compiled.requiresMemoryCallbacks)
+  }
 }
