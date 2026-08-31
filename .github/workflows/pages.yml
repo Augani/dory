@@ -33,7 +33,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v6
       - name: Configure the job-scoped Sparkle authority cache
         run: echo "DORY_SPARKLE_AUTHORITY_CACHE=$RUNNER_TEMP/dory-sparkle-authority" >> "$GITHUB_ENV"
       - name: Preserve newer live signed release metadata as one transaction
@@ -51,7 +51,7 @@ jobs:
           done
           python3 .github/scripts/verify-pages-release-metadata.py \
             preserve "$live" website/public
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
           cache: npm
@@ -71,12 +71,12 @@ jobs:
           done
           python3 .github/scripts/verify-pages-release-metadata.py \
             verify docs-build docs-build
-      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
-      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: docs-build
       - id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
       - name: Verify all live signed metadata converges to the deployed transaction
         run: |
           set -euo pipefail
