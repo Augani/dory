@@ -34,6 +34,7 @@ private struct Arguments {
   let initialRTCUnixSeconds: UInt64
   let traceAfterInstructions: UInt64?
   let traceCapacity: Int
+  let traceBreakRIPBelow: UInt64?
 
   init(_ values: [String]) throws {
     var options: [String: String] = [:]
@@ -51,7 +52,7 @@ private struct Arguments {
           "--expected-serial-marker",
           "--boot-probe",
           "--initial-rtc-unix-seconds",
-          "--trace-after-instructions", "--trace-capacity",
+          "--trace-after-instructions", "--trace-capacity", "--trace-break-rip-below",
         ].contains(name)
       else { throw SmokeError.usage("unknown option: \(name)") }
       guard options.updateValue(values[index + 1], forKey: name) == nil else {
@@ -70,6 +71,7 @@ private struct Arguments {
           + "[--boot-probe enabled|disabled] "
           + "[--initial-rtc-unix-seconds seconds] "
           + "[--trace-after-instructions count] [--trace-capacity count] "
+          + "[--trace-break-rip-below address] "
           + "[--max-instructions count] [--progress-instructions count] [--memory-bytes count]"
       )
     }
@@ -106,6 +108,14 @@ private struct Arguments {
       traceAfterInstructions = nil
     }
     self.traceCapacity = traceCapacity
+    if let breakText = options["--trace-break-rip-below"] {
+      guard let traceBreakRIPBelow = UInt64(breakText), traceBreakRIPBelow > 0 else {
+        throw SmokeError.invalidNumber(breakText)
+      }
+      self.traceBreakRIPBelow = traceBreakRIPBelow
+    } else {
+      traceBreakRIPBelow = nil
+    }
     let policyText = options["--exception-policy"] ?? "stop"
     switch policyText {
     case "stop": exceptionPolicy = .stop
@@ -224,8 +234,9 @@ private func runWithProgress(
   progressInstructions: UInt64,
   exceptionPolicy: DoryPCExceptionPolicy,
   traceAfterInstructions: UInt64?,
-  traceCapacity: Int
-) throws -> (stop: DoryPCMachineStop, trace: [[String: Any]]) {
+  traceCapacity: Int,
+  traceBreakRIPBelow: UInt64?
+) throws -> (stop: DoryPCMachineStop, trace: [[String: Any]], traceStopReason: String?) {
   var completed: UInt64 = 0
   var trace: [[String: Any]] = []
   while completed < maximumInstructions {
@@ -251,6 +262,9 @@ private func runWithProgress(
         "optimizingJITInstructions": statistics.optimizingJITInstructions,
       ])
       if trace.count > traceCapacity { trace.removeFirst(trace.count - traceCapacity) }
+      if let traceBreakRIPBelow, state.cs.base &+ state.rip < traceBreakRIPBelow {
+        return (.instructionBudget(completed), trace, "instruction-pointer-below-threshold")
+      }
     }
     let distanceToTrace = traceAfterInstructions.map { $0 > completed ? $0 - completed : 0 } ?? 0
     let chunk = min(
@@ -274,15 +288,17 @@ private func runWithProgress(
       ]
       let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
       FileHandle.standardError.write(data + Data("\n".utf8))
-    case .halted(let count): return (.halted(instructionCount: completed &+ count), trace)
+    case .halted(let count): return (.halted(instructionCount: completed &+ count), trace, nil)
     case .exception(let exception, let count):
-      return (.exception(exception, instructionCount: completed &+ count), trace)
-    case .tripleFault(let count): return (.tripleFault(instructionCount: completed &+ count), trace)
-    case .poweredOff(let count): return (.poweredOff(instructionCount: completed &+ count), trace)
-    case .reset(let count): return (.reset(instructionCount: completed &+ count), trace)
+      return (.exception(exception, instructionCount: completed &+ count), trace, nil)
+    case .tripleFault(let count):
+      return (.tripleFault(instructionCount: completed &+ count), trace, nil)
+    case .poweredOff(let count):
+      return (.poweredOff(instructionCount: completed &+ count), trace, nil)
+    case .reset(let count): return (.reset(instructionCount: completed &+ count), trace, nil)
     }
   }
-  return (.instructionBudget(completed), trace)
+  return (.instructionBudget(completed), trace, nil)
 }
 
 private func pageTableTrace(
@@ -410,7 +426,8 @@ private func run() throws {
     progressInstructions: arguments.progressInstructions,
     exceptionPolicy: arguments.exceptionPolicy,
     traceAfterInstructions: arguments.traceAfterInstructions,
-    traceCapacity: arguments.traceCapacity
+    traceCapacity: arguments.traceCapacity,
+    traceBreakRIPBelow: arguments.traceBreakRIPBelow
   )
   let stop = execution.stop
   let executionStatistics = composed.machine.executionStatistics
@@ -455,6 +472,8 @@ private func run() throws {
     "maximumInstructions": arguments.maximumInstructions,
     "progressInstructions": arguments.progressInstructions,
     "traceAfterInstructions": arguments.traceAfterInstructions.map { $0 as Any } ?? NSNull(),
+    "traceBreakRIPBelow": arguments.traceBreakRIPBelow.map { $0 as Any } ?? NSNull(),
+    "traceStopReason": execution.traceStopReason.map { $0 as Any } ?? NSNull(),
     "instructionTrace": execution.trace,
     "processorCount": arguments.processorCount,
     "bootOrder": bootOrder,
