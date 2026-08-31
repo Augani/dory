@@ -1484,7 +1484,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private struct LookupKey: Hashable {
     let guestStart: UInt64
     let addressSpaceID: UInt64
-    let cpuProfileIdentifier: String
     let executionMode: DoryX86ExecutionMode
     let privilegeLevel: UInt8
     let pagingEnabled: Bool
@@ -1588,7 +1587,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       let key = LookupKey(
         guestStart: guestStart,
         addressSpaceID: addressSpaceID,
-        cpuProfileIdentifier: cpuProfileIdentifier,
         executionMode: mode,
         privilegeLevel: UInt8(state.cs.selector & 3),
         pagingEnabled: state.control.cr0 & (1 << 31) != 0,
