@@ -112,6 +112,12 @@ struct HostUsbDeviceTests {
         ) == .blocked(.storageRequiresHostEject))
         #expect(HostUsbCapturePolicy.evaluate(
             descriptor: policyDescriptor(),
+            interfaces: [policyInterface(class: 0x08)],
+            builtIn: false,
+            hostStorageUnmounted: true
+        ) == .allowed)
+        #expect(HostUsbCapturePolicy.evaluate(
+            descriptor: policyDescriptor(),
             interfaces: [policyInterface(class: 0x0b)],
             builtIn: false
         ) == .blocked(.hostSecurityDevice))
@@ -125,6 +131,21 @@ struct HostUsbDeviceTests {
             interfaces: [externalHID],
             builtIn: false
         ) == .allowed)
+    }
+
+    @Test func storageMountAuthorityRequiresMediaAndRejectsAnyMountedDescendant() {
+        #expect(!HostUsbStorageMountAuthority.provesUnmounted(
+            mediaBSDNames: [],
+            mountedDevicePaths: []
+        ))
+        #expect(!HostUsbStorageMountAuthority.provesUnmounted(
+            mediaBSDNames: ["disk7", "disk7s1"],
+            mountedDevicePaths: ["/dev/disk7s1"]
+        ))
+        #expect(HostUsbStorageMountAuthority.provesUnmounted(
+            mediaBSDNames: ["disk7", "disk7s1"],
+            mountedDevicePaths: ["map auto_home", "/dev/disk3s1"]
+        ))
     }
 
     @Test func discoverySurfacesBuiltInCaptureDenial() throws {

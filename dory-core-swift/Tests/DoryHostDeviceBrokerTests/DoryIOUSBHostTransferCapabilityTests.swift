@@ -6,6 +6,21 @@ import Testing
 @testable import DoryHostDeviceBroker
 
 @Suite struct DoryIOUSBHostTransferCapabilityTests {
+  @Test func storageMountAuthorityRequiresMediaAndRejectsAnyMountedDescendant() {
+    #expect(!DoryMacUSBStorageMountAuthority.provesUnmounted(
+      mediaBSDNames: [],
+      mountedDevicePaths: []
+    ))
+    #expect(!DoryMacUSBStorageMountAuthority.provesUnmounted(
+      mediaBSDNames: ["disk7", "disk7s1"],
+      mountedDevicePaths: ["/dev/disk7s1"]
+    ))
+    #expect(DoryMacUSBStorageMountAuthority.provesUnmounted(
+      mediaBSDNames: ["disk7", "disk7s1"],
+      mountedDevicePaths: ["map auto_home", "/dev/disk3s1"]
+    ))
+  }
+
   @Test func mapsEndpointDirectionAndShortPackets() throws {
     let backend = RecordingIOUSBHostBackend()
     backend.completion = .init(payload: [1, 2, 3], bytesTransferred: 3)

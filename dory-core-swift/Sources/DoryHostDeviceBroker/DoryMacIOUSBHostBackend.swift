@@ -1,4 +1,5 @@
 import CoreFoundation
+import Darwin
 import DoryMachinePC
 import DoryVMContracts
 import Foundation
@@ -13,6 +14,7 @@ public enum DoryIOUSBHostCaptureError: Error, Sendable, Equatable {
   case identityUnavailable
   case identityMismatch
   case authorizationFailed(Int32)
+  case storageMounted
   case captureFailed(Int32)
 }
 
@@ -22,7 +24,8 @@ extension DoryIOUSBHostTransferCapability {
   public static func capture(
     expectedIdentityToken: DoryUSBPhysicalIdentityToken,
     speed: DoryPCXHCIPortSpeed,
-    allowUserInteraction: Bool = true
+    allowUserInteraction: Bool = true,
+    requireUnmountedStorage: Bool = false
   ) throws -> DoryIOUSBHostTransferCapability {
     var iterator: io_iterator_t = 0
     let status = IOServiceGetMatchingServices(
@@ -43,7 +46,8 @@ extension DoryIOUSBHostTransferCapability {
         ioService: service,
         expectedIdentityToken: expectedIdentityToken,
         speed: speed,
-        allowUserInteraction: allowUserInteraction
+        allowUserInteraction: allowUserInteraction,
+        requireUnmountedStorage: requireUnmountedStorage
       )
     }
     throw DoryIOUSBHostCaptureError.deviceNotFound
@@ -56,12 +60,14 @@ extension DoryIOUSBHostTransferCapability {
     ioService: io_service_t,
     expectedIdentityToken: DoryUSBPhysicalIdentityToken,
     speed: DoryPCXHCIPortSpeed,
-    allowUserInteraction: Bool = true
+    allowUserInteraction: Bool = true,
+    requireUnmountedStorage: Bool = false
   ) throws -> DoryIOUSBHostTransferCapability {
     let backend = try DoryMacIOUSBHostBackend.capture(
       ioService: ioService,
       expectedIdentityToken: expectedIdentityToken,
-      allowUserInteraction: allowUserInteraction
+      allowUserInteraction: allowUserInteraction,
+      requireUnmountedStorage: requireUnmountedStorage
     )
     return DoryIOUSBHostTransferCapability(
       identityToken: expectedIdentityToken,
@@ -71,9 +77,78 @@ extension DoryIOUSBHostTransferCapability {
       DoryMacIOUSBHostBackend.reopen(
         expectedIdentityToken: expectedIdentityToken,
         allowUserInteraction: allowUserInteraction,
+        requireUnmountedStorage: requireUnmountedStorage,
         deadline: deadline
       )
     }
+  }
+}
+
+enum DoryMacUSBStorageMountAuthority: Sendable {
+  static func provesUnmounted(deviceService: io_registry_entry_t) -> Bool {
+    guard deviceService != 0 else { return false }
+    let media = mediaBSDNames(below: deviceService)
+    guard !media.isEmpty, let mounted = mountedBSDNames() else { return false }
+    return media.isDisjoint(with: mounted)
+  }
+
+  static func provesUnmounted(
+    mediaBSDNames: Set<String>,
+    mountedDevicePaths: Set<String>
+  ) -> Bool {
+    guard !mediaBSDNames.isEmpty else { return false }
+    let mounted = Set(mountedDevicePaths.compactMap { path -> String? in
+      guard path.hasPrefix("/dev/") else { return nil }
+      return String(path.dropFirst(5))
+    })
+    return mediaBSDNames.isDisjoint(with: mounted)
+  }
+
+  private static func mediaBSDNames(below service: io_registry_entry_t) -> Set<String> {
+    var iterator: io_iterator_t = 0
+    guard IORegistryEntryCreateIterator(
+      service,
+      kIOServicePlane,
+      IOOptionBits(kIORegistryIterateRecursively),
+      &iterator
+    ) == KERN_SUCCESS else { return [] }
+    defer { IOObjectRelease(iterator) }
+    var result = Set<String>()
+    while true {
+      let child = IOIteratorNext(iterator)
+      guard child != 0 else { break }
+      defer { IOObjectRelease(child) }
+      guard IOObjectConformsTo(child, "IOMedia") != 0,
+        let value = IORegistryEntryCreateCFProperty(
+          child,
+          "BSD Name" as CFString,
+          kCFAllocatorDefault,
+          0
+        )?.takeRetainedValue() as? String,
+        !value.isEmpty
+      else { continue }
+      result.insert(value)
+    }
+    return result
+  }
+
+  private static func mountedBSDNames() -> Set<String>? {
+    var table: UnsafeMutablePointer<statfs>?
+    let count = getmntinfo(&table, MNT_NOWAIT)
+    guard count >= 0, let table else { return nil }
+    var result = Set<String>()
+    for index in 0..<Int(count) {
+      var mount = table[index]
+      let source = withUnsafePointer(to: &mount.f_mntfromname) { pointer in
+        pointer.withMemoryRebound(to: CChar.self, capacity: Int(MNAMELEN)) {
+          String(cString: $0)
+        }
+      }
+      if source.hasPrefix("/dev/") {
+        result.insert(String(source.dropFirst(5)))
+      }
+    }
+    return result
   }
 }
 
@@ -124,7 +199,8 @@ private final class DoryMacIOUSBHostBackend: DoryIOUSBHostOperating, @unchecked 
   static func capture(
     ioService: io_service_t,
     expectedIdentityToken: DoryUSBPhysicalIdentityToken,
-    allowUserInteraction: Bool
+    allowUserInteraction: Bool,
+    requireUnmountedStorage: Bool
   ) throws -> DoryMacIOUSBHostBackend {
     guard ioService != 0 else { throw DoryIOUSBHostCaptureError.invalidService }
     guard let token = DoryMacUSBIdentity.token(for: ioService) else {
@@ -141,12 +217,18 @@ private final class DoryMacIOUSBHostBackend: DoryIOUSBHostOperating, @unchecked 
     guard DoryMacUSBIdentity.token(for: ioService) == expectedIdentityToken else {
       throw DoryIOUSBHostCaptureError.identityMismatch
     }
+    guard !requireUnmountedStorage
+      || DoryMacUSBStorageMountAuthority.provesUnmounted(deviceService: ioService)
+    else {
+      throw DoryIOUSBHostCaptureError.storageMounted
+    }
     return try DoryMacIOUSBHostBackend(ioService: ioService)
   }
 
   static func reopen(
     expectedIdentityToken: DoryUSBPhysicalIdentityToken,
     allowUserInteraction: Bool,
+    requireUnmountedStorage: Bool,
     deadline: ContinuousClock.Instant
   ) -> DoryMacIOUSBHostBackend? {
     while ContinuousClock.now < deadline {
@@ -165,7 +247,8 @@ private final class DoryMacIOUSBHostBackend: DoryIOUSBHostOperating, @unchecked 
           if let backend = try? capture(
             ioService: service,
             expectedIdentityToken: expectedIdentityToken,
-            allowUserInteraction: allowUserInteraction
+            allowUserInteraction: allowUserInteraction,
+            requireUnmountedStorage: requireUnmountedStorage
           ) {
             return backend
           }

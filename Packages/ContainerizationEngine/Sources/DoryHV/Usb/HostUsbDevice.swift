@@ -14,6 +14,7 @@ public struct HostUsbDeviceCandidate: Codable, Equatable, Sendable {
     public var locationID: UInt32?
     public var interfaces: [HostUsbInterfaceIdentity]
     public var identityToken: DoryUSBPhysicalIdentityToken?
+    public var hostStorageUnmounted: Bool
     public var captureDecision: HostUsbCaptureDecision
 
     public init(
@@ -24,6 +25,7 @@ public struct HostUsbDeviceCandidate: Codable, Equatable, Sendable {
         locationID: UInt32? = nil,
         interfaces: [HostUsbInterfaceIdentity] = [],
         identityToken: DoryUSBPhysicalIdentityToken? = nil,
+        hostStorageUnmounted: Bool = false,
         captureDecision: HostUsbCaptureDecision = .allowed
     ) {
         self.descriptor = descriptor
@@ -33,6 +35,7 @@ public struct HostUsbDeviceCandidate: Codable, Equatable, Sendable {
         self.locationID = locationID
         self.interfaces = interfaces
         self.identityToken = identityToken
+        self.hostStorageUnmounted = hostStorageUnmounted
         self.captureDecision = captureDecision
     }
 }
@@ -81,7 +84,8 @@ public enum HostUsbCapturePolicy: Sendable {
         descriptor: UsbipDeviceDescriptor,
         interfaces: [HostUsbInterfaceIdentity],
         builtIn: Bool,
-        identityAvailable: Bool = true
+        identityAvailable: Bool = true,
+        hostStorageUnmounted: Bool = false
     ) -> HostUsbCaptureDecision {
         let identities = [(descriptor.deviceClass, descriptor.deviceSubClass, descriptor.deviceProtocol)]
             + interfaces.map { ($0.interfaceClass, $0.interfaceSubClass, $0.interfaceProtocol) }
@@ -94,7 +98,7 @@ public enum HostUsbCapturePolicy: Sendable {
         if !identityAvailable {
             return .blocked(.unstableIdentity)
         }
-        if identities.contains(where: { $0.0 == 0x08 }) {
+        if identities.contains(where: { $0.0 == 0x08 }), !hostStorageUnmounted {
             return .blocked(.storageRequiresHostEject)
         }
         if identities.contains(where: { $0.0 == 0x0b }) {
@@ -309,11 +313,17 @@ public enum HostUsbDiscovery: Sendable {
                 serialNumber: serialNumber
             ).token
         }
+        let storageUnmounted = HostUsbStorageMountAuthority.provesUnmounted(
+            deviceService: service,
+            interfaces: interfaces,
+            deviceClass: descriptor.deviceClass
+        )
         let decision = HostUsbCapturePolicy.evaluate(
             descriptor: descriptor,
             interfaces: interfaces,
             builtIn: bool(properties, keys: ["Built-In", "built-in", "Builtin"]),
-            identityAvailable: identityToken != nil
+            identityAvailable: identityToken != nil,
+            hostStorageUnmounted: storageUnmounted
         )
         return HostUsbDeviceCandidate(
             descriptor: descriptor,
@@ -323,6 +333,7 @@ public enum HostUsbDiscovery: Sendable {
             locationID: locationID,
             interfaces: interfaces,
             identityToken: identityToken,
+            hostStorageUnmounted: storageUnmounted,
             captureDecision: decision
         )
     }
@@ -454,6 +465,79 @@ public enum HostUsbDiscovery: Sendable {
             }
         }
         return false
+    }
+}
+
+enum HostUsbStorageMountAuthority: Sendable {
+    static func provesUnmounted(
+        deviceService: io_registry_entry_t,
+        interfaces: [HostUsbInterfaceIdentity],
+        deviceClass: UInt8
+    ) -> Bool {
+        let isStorage = deviceClass == 0x08
+            || interfaces.contains { $0.interfaceClass == 0x08 }
+        guard isStorage, deviceService != 0 else { return false }
+        let media = mediaBSDNames(below: deviceService)
+        guard !media.isEmpty, let mounted = mountedBSDNames() else { return false }
+        return media.isDisjoint(with: mounted)
+    }
+
+    static func provesUnmounted(
+        mediaBSDNames: Set<String>,
+        mountedDevicePaths: Set<String>
+    ) -> Bool {
+        guard !mediaBSDNames.isEmpty else { return false }
+        let mounted = Set(mountedDevicePaths.compactMap { path -> String? in
+            guard path.hasPrefix("/dev/") else { return nil }
+            return String(path.dropFirst(5))
+        })
+        return mediaBSDNames.isDisjoint(with: mounted)
+    }
+
+    private static func mediaBSDNames(below service: io_registry_entry_t) -> Set<String> {
+        var iterator: io_iterator_t = 0
+        guard IORegistryEntryCreateIterator(
+            service,
+            kIOServicePlane,
+            IOOptionBits(kIORegistryIterateRecursively),
+            &iterator
+        ) == KERN_SUCCESS else { return [] }
+        defer { IOObjectRelease(iterator) }
+        var result = Set<String>()
+        while true {
+            let child = IOIteratorNext(iterator)
+            guard child != 0 else { break }
+            defer { IOObjectRelease(child) }
+            guard IOObjectConformsTo(child, "IOMedia") != 0,
+                  let value = IORegistryEntryCreateCFProperty(
+                    child,
+                    "BSD Name" as CFString,
+                    kCFAllocatorDefault,
+                    0
+                  )?.takeRetainedValue() as? String,
+                  !value.isEmpty else { continue }
+            result.insert(value)
+        }
+        return result
+    }
+
+    private static func mountedBSDNames() -> Set<String>? {
+        var table: UnsafeMutablePointer<statfs>?
+        let count = getmntinfo(&table, MNT_NOWAIT)
+        guard count >= 0, let table else { return nil }
+        var result = Set<String>()
+        for index in 0..<Int(count) {
+            var mount = table[index]
+            let source = withUnsafePointer(to: &mount.f_mntfromname) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: Int(MNAMELEN)) {
+                    String(cString: $0)
+                }
+            }
+            if source.hasPrefix("/dev/") {
+                result.insert(String(source.dropFirst(5)))
+            }
+        }
+        return result
     }
 }
 

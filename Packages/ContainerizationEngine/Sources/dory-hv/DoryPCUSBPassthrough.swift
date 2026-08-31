@@ -42,16 +42,21 @@ final class DoryPCUSBControlHandler: UsbControlRequestHandling, @unchecked Senda
             return candidate
         }
         self.openLease = openLease ?? { candidate, identity in
+            let family = Self.family(candidate)
             let capability = try DoryIOUSBHostTransferCapability.capture(
                 expectedIdentityToken: identity,
-                speed: Self.portSpeed(candidate.descriptor.speed)
+                speed: Self.portSpeed(candidate.descriptor.speed),
+                requireUnmountedStorage: family == .storage
             )
             do {
                 return try broker.acquire(
                     machineID: machineID,
                     identityToken: identity,
-                    family: Self.family(candidate),
-                    admission: .init(userSelected: true),
+                    family: family,
+                    admission: .init(
+                        userSelected: true,
+                        hostStorageUnmounted: candidate.hostStorageUnmounted
+                    ),
                     capability: capability
                 )
             } catch {
