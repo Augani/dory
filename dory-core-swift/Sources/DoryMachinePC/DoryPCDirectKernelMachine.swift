@@ -546,6 +546,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       memory: physicalMemories[processor],
       mode: mode,
       pagingUnit: pagingUnits[processor],
+      translatedMemory: translatedMemories[processor],
       ioBus: ioBus
     )
     let machineResult: ProcessorResult =

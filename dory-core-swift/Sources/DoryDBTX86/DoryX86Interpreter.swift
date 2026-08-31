@@ -65,6 +65,7 @@ public struct DoryX86Interpreter: Sendable {
     memory: any DoryX86Memory,
     mode: DoryX86ExecutionMode,
     pagingUnit: DoryX86PagingUnit? = nil,
+    translatedMemory: DoryX86TranslatedMemory? = nil,
     ioBus: (any DoryX86IOBus)? = nil
   ) -> DoryX86InterpreterResult {
     var candidate = state
@@ -73,6 +74,7 @@ public struct DoryX86Interpreter: Sendable {
       memory: memory,
       mode: mode,
       pagingUnit: pagingUnit,
+      translatedMemory: translatedMemory,
       ioBus: ioBus
     )
     switch result {
@@ -92,19 +94,24 @@ public struct DoryX86Interpreter: Sendable {
     memory: any DoryX86Memory,
     mode: DoryX86ExecutionMode,
     pagingUnit: DoryX86PagingUnit?,
+    translatedMemory: DoryX86TranslatedMemory?,
     ioBus: (any DoryX86IOBus)?
   ) -> DoryX86InterpreterResult {
     let originalRIP = state.rip
-    let executionMemory: any DoryX86Memory =
-      if let pagingUnit {
+    let executionMemory: any DoryX86Memory
+    if let translatedMemory {
+      translatedMemory.updateContext(.init(state: state, mode: mode))
+      executionMemory = translatedMemory
+    } else if let pagingUnit {
+      executionMemory =
         DoryX86TranslatedMemory(
           physicalMemory: memory,
           pagingUnit: pagingUnit,
           context: .init(state: state, mode: mode)
         )
-      } else {
-        memory
-      }
+    } else {
+      executionMemory = memory
+    }
     let instruction: DoryX86DecodedInstruction
     let originalCodeSegment = state.cs
     do {
