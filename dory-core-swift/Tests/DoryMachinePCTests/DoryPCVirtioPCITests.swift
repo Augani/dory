@@ -210,6 +210,56 @@ import Testing
     #expect(queueState.size == 0)
   }
 
+  @Test func deferredCompletionPublishesOnlyIntoItsOriginalQueueGeneration() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    let completions = DeferredCompletionRecorder()
+    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+      _, chain, memory, completion in
+      let request = try memory.read(at: chain.descriptors[0].address, byteCount: 4)
+      #expect(request == [1, 2, 3, 4])
+      completions.append(completion)
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try write32(machine, bar + 0x08, 1)
+    try write32(machine, bar + 0x0C, 1)
+    try write8(machine, bar + 0x14, 0x0F)
+    try write16(machine, bar + 0x16, 0)
+    try write16(machine, bar + 0x18, 8)
+    try write64(machine, bar + 0x20, 0x1000)
+    try write64(machine, bar + 0x28, 0x2000)
+    try write64(machine, bar + 0x30, 0x3000)
+    try write16(machine, bar + 0x1C, 1)
+    try machine.physicalMemory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x4000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(1)) + littleEndian(UInt16(1))
+        + littleEndian(UInt64(0x5000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(2)) + littleEndian(UInt16(0))
+    )
+    try machine.physicalMemory.write(at: 0x4000, bytes: [1, 2, 3, 4])
+    try machine.physicalMemory.write(at: 0x5000, bytes: [0, 0, 0, 0])
+    try machine.physicalMemory.write(at: 0x2000, bytes: [0, 0, 1, 0, 0, 0])
+
+    try write16(machine, bar + 0x100, 0)
+    let first = try #require(completions.removeFirst())
+    #expect(first([9, 8, 7]))
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 0])
+    #expect(try read16(machine, 0x3002) == 1)
+
+    try machine.physicalMemory.write(at: 0x2002, bytes: littleEndian(UInt16(2)))
+    try machine.physicalMemory.write(at: 0x2006, bytes: littleEndian(UInt16(0)))
+    try write16(machine, bar + 0x100, 0)
+    let stale = try #require(completions.removeFirst())
+    try write8(machine, bar + 0x14, 0)
+    #expect(!stale([6, 6, 6, 6]))
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 0])
+  }
+
   private func makeFunction() throws -> DoryPCVirtioPCIFunction {
     try .init(
       address: .init(bus: 0, device: 1, function: 0),
@@ -278,6 +328,16 @@ private final class LockedQueueNotifications: @unchecked Sendable {
   private var storage: [UInt16] = []
   var values: [UInt16] { lock.withLock { storage } }
   func append(_ value: UInt16) { lock.withLock { storage.append(value) } }
+}
+
+private final class DeferredCompletionRecorder: @unchecked Sendable {
+  typealias Completion = @Sendable ([UInt8]) -> Bool
+  private let lock = NSLock()
+  private var storage: [Completion] = []
+  func append(_ completion: @escaping Completion) { lock.withLock { storage.append(completion) } }
+  func removeFirst() -> Completion? {
+    lock.withLock { storage.isEmpty ? nil : storage.removeFirst() }
+  }
 }
 
 private func uint32(_ bytes: [UInt8]) -> UInt32 {

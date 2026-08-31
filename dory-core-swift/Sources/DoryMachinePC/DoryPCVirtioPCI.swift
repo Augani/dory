@@ -36,6 +36,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     var descriptorAddress: UInt64 = 0
     var driverAddress: UInt64 = 0
     var deviceAddress: UInt64 = 0
+    var generation: UInt64 = 1
     let queue: DoryVirtioSplitQueue
   }
 
@@ -56,8 +57,15 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   private var guestMemory: (any DoryVirtioGuestMemory)?
   private var queueProcessor:
     (@Sendable (UInt16, DoryVirtioDescriptorChain, any DoryVirtioGuestMemory) throws -> UInt32)?
+  private var deferredQueueProcessor:
+    (@Sendable (
+      UInt16,
+      DoryVirtioDescriptorChain,
+      any DoryVirtioGuestMemory,
+      @escaping @Sendable ([UInt8]) -> Bool
+    ) throws -> Void)?
   private var queueCanProcess: @Sendable (UInt16) -> Bool = { _ in true }
-  private let processingLocks: [NSLock]
+  private let processingLocks: [NSRecursiveLock]
 
   public init(
     queueCount: Int,
@@ -83,7 +91,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
         queue: .init(maximumSize: maximumQueueSize)
       )
     }
-    processingLocks = (0..<queueCount).map { _ in NSLock() }
+    processingLocks = (0..<queueCount).map { _ in NSRecursiveLock() }
     self.deviceConfiguration = deviceConfiguration
   }
 
@@ -111,6 +119,30 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       guestMemory = memory
       queueCanProcess = canProcess
       queueProcessor = processor
+      deferredQueueProcessor = nil
+    }
+  }
+
+  /// Connects a backend that owns host work beyond the queue-notify call. The transport snapshots
+  /// request bytes before the backend returns and publishes a later response only while the exact
+  /// queue generation remains active. Reset/reconfiguration therefore revokes late completions
+  /// before they can write into guest buffers that may already have been reused.
+  public func connectDeferredQueueProcessor(
+    memory: any DoryVirtioGuestMemory,
+    canProcess: @escaping @Sendable (UInt16) -> Bool = { _ in true },
+    processor:
+      @escaping @Sendable (
+        UInt16,
+        DoryVirtioDescriptorChain,
+        any DoryVirtioGuestMemory,
+        @escaping @Sendable ([UInt8]) -> Bool
+      ) throws -> Void
+  ) {
+    lock.withLock {
+      guestMemory = memory
+      queueCanProcess = canProcess
+      queueProcessor = nil
+      deferredQueueProcessor = processor
     }
   }
 
@@ -234,8 +266,11 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
   private func drain(queue index: UInt16) {
     let snapshot = deviceState.snapshot()
     guard snapshot.status.contains(.driverOK) else { return }
-    let processing = lock.withLock { (guestMemory, queueCanProcess, queueProcessor) }
-    guard let memory = processing.0, let processor = processing.2 else { return }
+    let processing = lock.withLock {
+      (guestMemory, queueCanProcess, queueProcessor, deferredQueueProcessor)
+    }
+    guard let memory = processing.0,
+      processing.2 != nil || processing.3 != nil else { return }
     let processingLock = processingLocks[Int(index)]
     processingLock.lock()
     defer { processingLock.unlock() }
@@ -247,15 +282,31 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
           allowIndirectDescriptors: snapshot.negotiatedFeatures.contains(.indirectDescriptors)
         )
       {
-        let bytesWritten = try processor(index, chain, memory)
-        memory.synchronize()
-        let notify = try queue.complete(
-          chain,
-          bytesWritten: bytesWritten,
-          memory: memory,
-          eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
-        )
-        if notify { _ = signalQueueInterrupt(queue: index) }
+        if let processor = processing.2 {
+          let bytesWritten = try processor(index, chain, memory)
+          memory.synchronize()
+          let notify = try queue.complete(
+            chain,
+            bytesWritten: bytesWritten,
+            memory: memory,
+            eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
+          )
+          if notify { _ = signalQueueInterrupt(queue: index) }
+        } else if let processor = processing.3 {
+          let generation = try queueGeneration(at: index)
+          try processor(index, chain, memory) { [weak self, weak queue] response in
+            guard let self, let queue else { return false }
+            return self.completeDeferred(
+              queue: index,
+              generation: generation,
+              chain: chain,
+              response: response,
+              memory: memory,
+              splitQueue: queue,
+              eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
+            )
+          }
+        }
       }
     } catch {
       deviceState.markDeviceNeedsReset()
@@ -312,6 +363,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
           for index in queues.indices {
             queues[index].enabled = false
             queues[index].msixVector = .max
+            queues[index].generation &+= 1
             queues[index].queue.reset()
           }
         }
@@ -336,6 +388,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
             enabled: true
           )
           queue.enabled = true
+          queue.generation &+= 1
         } catch {
           deviceState.markDeviceNeedsReset()
         }
@@ -403,6 +456,66 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
         throw DoryPCVirtioPCIError.invalidQueue(selectedQueue)
       }
       update(&queues[Int(selectedQueue)])
+    }
+  }
+
+  private func queueGeneration(at index: UInt16) throws -> UInt64 {
+    try lock.withLock {
+      guard queues.indices.contains(Int(index)) else {
+        throw DoryPCVirtioPCIError.invalidQueue(index)
+      }
+      return queues[Int(index)].generation
+    }
+  }
+
+  private func completeDeferred(
+    queue index: UInt16,
+    generation: UInt64,
+    chain: DoryVirtioDescriptorChain,
+    response: [UInt8],
+    memory: any DoryVirtioGuestMemory,
+    splitQueue: DoryVirtioSplitQueue,
+    eventIndexNegotiated: Bool
+  ) -> Bool {
+    let processingLock = processingLocks[Int(index)]
+    processingLock.lock()
+    defer { processingLock.unlock() }
+    do {
+      let current = try lock.withLock { () -> QueueRegisters in
+        guard queues.indices.contains(Int(index)) else {
+          throw DoryPCVirtioPCIError.invalidQueue(index)
+        }
+        return queues[Int(index)]
+      }
+      guard current.enabled, current.generation == generation,
+        deviceState.snapshot().status.contains(.driverOK),
+        current.queue === splitQueue,
+        UInt64(response.count) <= chain.writableByteCount else { return false }
+      var responseOffset = 0
+      for descriptor in chain.descriptors where descriptor.deviceWillWrite
+        && responseOffset < response.count
+      {
+        let count = min(Int(descriptor.length), response.count - responseOffset)
+        try memory.write(
+          at: descriptor.address,
+          bytes: Array(response[responseOffset..<(responseOffset + count)])
+        )
+        responseOffset += count
+      }
+      guard responseOffset == response.count else { return false }
+      memory.synchronize()
+      let notify = try splitQueue.complete(
+        chain,
+        bytesWritten: UInt32(response.count),
+        memory: memory,
+        eventIndexNegotiated: eventIndexNegotiated
+      )
+      if notify { _ = signalQueueInterrupt(queue: index) }
+      return true
+    } catch {
+      deviceState.markDeviceNeedsReset()
+      signalConfigurationChange()
+      return false
     }
   }
 
