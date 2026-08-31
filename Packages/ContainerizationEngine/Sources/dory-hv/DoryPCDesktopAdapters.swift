@@ -5,15 +5,21 @@ import Foundation
 
 /// Publishes AppKit's evdev frames into one DoryPC VirtIO-input function.
 final class DoryPCDesktopInputSink: DesktopInputSink, @unchecked Sendable {
-    private let device: DoryPCVirtioInputPCIDevice
+    private let lock = NSLock()
+    private var device: DoryPCVirtioInputPCIDevice
 
     init(device: DoryPCVirtioInputPCIDevice) {
         self.device = device
     }
 
+    func replaceDevice(_ device: DoryPCVirtioInputPCIDevice) {
+        lock.withLock { self.device = device }
+    }
+
     func send(frame events: [VirtioInputEvent]) {
         guard !events.isEmpty else { return }
-        _ = device.enqueueSynchronized(events.map {
+        let current: DoryPCVirtioInputPCIDevice = lock.withLock { self.device }
+        _ = current.enqueueSynchronized(events.map {
             DoryVirtioInputEvent(
                 type: $0.type,
                 code: $0.code,

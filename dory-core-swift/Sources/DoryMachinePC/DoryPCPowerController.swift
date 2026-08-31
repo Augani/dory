@@ -36,6 +36,13 @@ public final class DoryPCPowerController: @unchecked Sendable {
     }
   }
 
+  /// Host lifecycle boundary used by the product runner after it has acknowledged the daemon's
+  /// operation-bound shutdown request. Guest port writes and host requests converge on the same
+  /// single-consumer action latch.
+  public func request(_ action: DoryPCPowerAction) {
+    lock.withLock { pendingAction = action }
+  }
+
   fileprivate func readPM1Control() -> UInt16 {
     lock.withLock { pm1Control & ~(1 << 13) }
   }

@@ -4,6 +4,14 @@ import Foundation
 import Testing
 
 @Suite struct DoryPCPowerControllerTests {
+  @Test func hostLifecycleRequestUsesTheArchitecturalActionLatch() {
+    let controller = DoryPCPowerController()
+    controller.request(.powerOff)
+    #expect(controller.snapshot().pendingAction == .powerOff)
+    #expect(controller.consumeRequestedAction() == .powerOff)
+    #expect(controller.consumeRequestedAction() == nil)
+  }
+
   @Test func softOffRequiresThePublishedSleepTypeAndEnableBit() throws {
     let controller = DoryPCPowerController()
     let port = DoryPCACPIPMControlPort(controller: controller)

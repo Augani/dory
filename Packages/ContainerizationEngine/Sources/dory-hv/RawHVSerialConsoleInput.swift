@@ -30,6 +30,11 @@ enum RawHVSerialConsoleInputError: Error, Equatable, CustomStringConvertible, Se
 /// reaches the UART, so a slow, oversized, or abandoned peer cannot partially inject a command or
 /// retain an admission slot indefinitely.
 final class RawHVSerialConsoleInput: @unchecked Sendable {
+    private final class PL011Receiver: @unchecked Sendable {
+        let uart: PL011
+        init(_ uart: PL011) { self.uart = uart }
+    }
+
     struct Metrics: Equatable, Sendable {
         var activeClientCount = 0
         var acceptedFrameCount: UInt64 = 0
@@ -72,9 +77,36 @@ final class RawHVSerialConsoleInput: @unchecked Sendable {
 
     private let lifetime: Lifetime
 
-    init(
+    convenience init(
         socketPath: String,
         uart: PL011,
+        maximumConcurrentClients: Int = productionMaximumConcurrentClients,
+        maximumFrameBytes: Int = productionMaximumFrameBytes,
+        frameTimeout: TimeInterval = productionFrameTimeout,
+        expectedPeerUID: uid_t = geteuid(),
+        lifecycleHooks: LifecycleHooks = LifecycleHooks(),
+        log: @escaping @Sendable (String) -> Void = { message in
+            FileHandle.standardError.write(
+                Data("dory-hv desktop serial console: \(message)\n".utf8)
+            )
+        }
+    ) throws {
+        let receiver = PL011Receiver(uart)
+        try self.init(
+            socketPath: socketPath,
+            receive: { receiver.uart.receive($0) },
+            maximumConcurrentClients: maximumConcurrentClients,
+            maximumFrameBytes: maximumFrameBytes,
+            frameTimeout: frameTimeout,
+            expectedPeerUID: expectedPeerUID,
+            lifecycleHooks: lifecycleHooks,
+            log: log
+        )
+    }
+
+    init(
+        socketPath: String,
+        receive: @escaping @Sendable ([UInt8]) -> Bool,
         maximumConcurrentClients: Int = productionMaximumConcurrentClients,
         maximumFrameBytes: Int = productionMaximumFrameBytes,
         frameTimeout: TimeInterval = productionFrameTimeout,
@@ -111,7 +143,7 @@ final class RawHVSerialConsoleInput: @unchecked Sendable {
         let lifetime = Lifetime(
             listener: listener,
             socketPath: socketPath,
-            uart: uart,
+            receive: receive,
             maximumConcurrentClients: maximumConcurrentClients,
             maximumFrameBytes: maximumFrameBytes,
             frameTimeout: frameTimeout,
@@ -718,7 +750,7 @@ final class RawHVSerialConsoleInput: @unchecked Sendable {
         private let lock = NSLock()
         private let listenerCompletion = DispatchGroup()
         private let clientCompletion = DispatchGroup()
-        private let uart: PL011
+        private let receive: @Sendable ([UInt8]) -> Bool
         private let maximumConcurrentClients: Int
         private let maximumFrameBytes: Int
         private let frameTimeout: TimeInterval
@@ -731,7 +763,7 @@ final class RawHVSerialConsoleInput: @unchecked Sendable {
         init(
             listener: OwnedListener,
             socketPath: String,
-            uart: PL011,
+            receive: @escaping @Sendable ([UInt8]) -> Bool,
             maximumConcurrentClients: Int,
             maximumFrameBytes: Int,
             frameTimeout: TimeInterval,
@@ -741,7 +773,7 @@ final class RawHVSerialConsoleInput: @unchecked Sendable {
         ) {
             self.listener = listener
             self.socketPath = socketPath
-            self.uart = uart
+            self.receive = receive
             self.maximumConcurrentClients = maximumConcurrentClients
             self.maximumFrameBytes = maximumFrameBytes
             self.frameTimeout = frameTimeout
@@ -790,7 +822,7 @@ final class RawHVSerialConsoleInput: @unchecked Sendable {
             }
             switch outcome {
             case .frame(let bytes) where !stopping:
-                if uart.receive(bytes) {
+                if receive(bytes) {
                     increment(&storedMetrics.acceptedFrameCount)
                     add(UInt64(bytes.count), to: &storedMetrics.acceptedByteCount)
                 } else {

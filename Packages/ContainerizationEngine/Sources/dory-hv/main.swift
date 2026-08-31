@@ -372,6 +372,7 @@ case "desktop":
     var initrd: String?
     var rootfs: String?
     var runtimeLaunchEnvelope: RuntimeLaunchEnvelope?
+    var pcRuntimeLaunchEnvelope: DoryPCRuntimeLaunchEnvelope?
     var legacyGraphicsBackend: DoryDesktopGraphicsBackend?
     var rootDevice = "/dev/vda"
     var rootDeviceWasSpecified = false
@@ -414,6 +415,15 @@ case "desktop":
                 runtimeLaunchEnvelope = try RuntimeLaunchEnvelope.decodeResolvedARMVirtArgument(value)
             } catch {
                 fail("invalid desktop runtime launch envelope: \(error)")
+            }
+        case "--pc-runtime-launch-envelope":
+            guard let value = iterator.next() else {
+                fail("desktop --pc-runtime-launch-envelope requires a value")
+            }
+            do {
+                pcRuntimeLaunchEnvelope = try DoryPCRuntimeLaunchEnvelope.decodeArgument(value)
+            } catch {
+                fail("invalid DoryPC runtime launch envelope: \(error)")
             }
         case "--legacy-graphics":
             guard let value = iterator.next(),
@@ -478,6 +488,9 @@ case "desktop":
     guard let machineID, !machineID.isEmpty else { fail("desktop requires --machine-id") }
     guard let operationID else { fail("desktop requires --operation-id") }
     guard let stateDirectory, !stateDirectory.isEmpty else { fail("desktop requires --state-dir") }
+    guard runtimeLaunchEnvelope == nil || pcRuntimeLaunchEnvelope == nil else {
+        fail("desktop accepts exactly one runtime launch envelope")
+    }
     if let runtimeLaunchEnvelope {
         guard runtimeLaunchEnvelope.machineID == machineID,
               runtimeLaunchEnvelope.operationID == operationID,
@@ -488,8 +501,49 @@ case "desktop":
                 == RawHVSchedulingPolicy.revision else {
             fail("desktop invocation identity does not match the immutable runtime launch envelope")
         }
+    } else if let pcRuntimeLaunchEnvelope {
+        guard pcRuntimeLaunchEnvelope.machineID == machineID,
+              pcRuntimeLaunchEnvelope.operationID == operationID,
+              legacyGraphicsBackend == nil,
+              !memoryWasSpecified,
+              !cpusWereSpecified else {
+            fail("desktop invocation identity does not match the DoryPC runtime envelope")
+        }
     } else if legacyGraphicsBackend == nil {
         fail("desktop legacy launch requires one typed --legacy-graphics selection")
+    }
+    if let pcRuntimeLaunchEnvelope {
+        guard kernel == nil,
+              initrd == nil,
+              rootfs == nil,
+              !rootDeviceWasSpecified,
+              !genericGuest,
+              bootMode == nil,
+              shares.isEmpty,
+              environment.isEmpty,
+              usbControlSocket == nil else {
+            fail("DoryPC resolved launch rejects legacy ARM desktop arguments")
+        }
+        guard let handoffSocket else { fail("DoryPC desktop requires --handoff-sock") }
+        guard let consoleSocket else { fail("DoryPC desktop requires --console-sock") }
+        guard let controlSocket else { fail("DoryPC desktop requires --control-sock") }
+        do {
+            let authority = try DoryPCUEFIRuntimeAuthority.admit(
+                envelope: pcRuntimeLaunchEnvelope
+            )
+            try DoryPCMode.run(.init(
+                envelope: pcRuntimeLaunchEnvelope,
+                authority: authority,
+                stateDirectory: stateDirectory,
+                handoffSocketPath: handoffSocket,
+                consoleSocketPath: consoleSocket,
+                controlSocketPath: controlSocket,
+                displayPresentation: displayPresentation
+            ))
+        } catch {
+            fail("DoryPC desktop failed: \(error)")
+        }
+        break
     }
     // Decoding the envelope performs canonical schema-v5 validation. Legacy pathname mode has no
     // resolved graphics/device/forward authority and deliberately passes nil to DesktopMode.

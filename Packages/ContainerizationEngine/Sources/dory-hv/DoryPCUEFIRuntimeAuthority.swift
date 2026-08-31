@@ -9,11 +9,33 @@ import Foundation
 /// Fully admitted DoryPC-v1 authority. Immutable firmware is consumed into memory; block devices
 /// retain duplicates of the daemon-opened objects, and the NVRAM store retains directory authority.
 struct DoryPCUEFIRuntimeAuthority {
+    private final class VariableGenerationState: @unchecked Sendable {
+        private let lock = NSLock()
+        private var expected: UInt64
+
+        init(expected: UInt64) { self.expected = expected }
+
+        func authorize(_ actual: UInt64) throws {
+            try lock.withLock {
+                guard actual == expected else {
+                    throw VMError.invalidConfiguration(
+                        "DoryPC NVRAM changed outside the admitted runtime generation"
+                    )
+                }
+            }
+        }
+
+        func advance(to generation: UInt64) {
+            lock.withLock { expected = generation }
+        }
+    }
+
     let envelope: DoryPCRuntimeLaunchEnvelope
     let resources: DoryPCRuntimeLaunchEnvelope.ResolvedResources
     let artifacts: DoryVerifiedFirmwareArtifacts
     let variableStore: DoryUEFIVariableStoreAuthority
     let bootStorage: [DoryPCUEFIBootStorage]
+    private let variableGeneration: VariableGenerationState
 
     static func admit(envelope: DoryPCRuntimeLaunchEnvelope) throws -> Self {
         let resources = try envelope.validatedResources()
@@ -93,7 +115,10 @@ struct DoryPCUEFIRuntimeAuthority {
             resources: resources,
             artifacts: artifacts,
             variableStore: DoryUEFIVariableStoreAuthority(directoryDescriptor: descriptorStore),
-            bootStorage: storage
+            bootStorage: storage,
+            variableGeneration: VariableGenerationState(
+                expected: envelope.launchPlan.variableStoreGeneration
+            )
         )
     }
 
@@ -108,8 +133,19 @@ struct DoryPCUEFIRuntimeAuthority {
         case .baselineJIT: .baselineJIT
         case .optimizingJIT: .optimizingJIT
         }
-        return try DoryPCUEFIMachine(
-            plan: envelope.launchPlan,
+        let current = try variableStore.load()
+        guard current.source == .primary, current.snapshot.platform == .pcV1 else {
+            throw VMError.invalidConfiguration("DoryPC NVRAM recovery is required")
+        }
+        try variableGeneration.authorize(current.snapshot.generation)
+        let plan = try DoryPCUEFILaunchPlan(
+            firmware: envelope.launchPlan.firmware,
+            variableStoreGeneration: current.snapshot.generation,
+            bootDevices: envelope.launchPlan.bootDevices,
+            bootOrder: envelope.launchPlan.bootOrder
+        )
+        let machine = try DoryPCUEFIMachine(
+            plan: plan,
             firmware: artifacts,
             variableStore: variableStore,
             bootStorage: bootStorage,
@@ -121,6 +157,8 @@ struct DoryPCUEFIRuntimeAuthority {
             networkBackend: networkBackend,
             executionTier: tier
         )
+        variableGeneration.advance(to: machine.effectiveVariableStoreGeneration)
+        return machine
     }
 
     private static func admittedStorage(
