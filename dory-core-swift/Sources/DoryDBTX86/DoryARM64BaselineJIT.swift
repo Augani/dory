@@ -134,6 +134,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitShift(operation, destination: destination, count: count, into: &words)
     case .signedMultiply(let destination, let lhs, let rhs):
       return emitSignedMultiply(destination: destination, lhs: lhs, rhs: rhs, into: &words)
+    case .extendMove(let destination, let source, let signed):
+      return emitExtendMove(
+        destination: destination, source: source, signed: signed, into: &words)
     case .effectiveAddress(let destination, let address):
       return emitEffectiveAddress(destination: destination, address: address, into: &words)
     default:
@@ -204,6 +207,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
       if case .memory = lhs { return true }
       if case .memory = rhs { return true }
       return false
+    case .extendMove(_, let source, _):
+      if case .memory = source { return true }
+      return false
     case .effectiveAddress, .helper:
       return false
     }
@@ -235,6 +241,36 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeStore64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
     words.append(encodeLogical(.or, is64Bit: false, 31, 11, 12))
     words.append(encodeStore64(register: 12, base: 0, byteOffset: Int(target.index) * 8))
+    return true
+  }
+
+  private func emitExtendMove(
+    destination: DoryIROperand,
+    source: DoryIROperand,
+    signed: Bool,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard !signed, case .register(let target) = destination,
+      target.bank == "x86.gpr", target.index < 16,
+      target.width == .i32 || target.width == .i64
+    else { return false }
+    let sourceWidth: DoryIRIntegerWidth
+    switch source {
+    case .register(let register)
+    where register.bank == "x86.gpr" && register.index < 16
+      && (register.width == .i8 || register.width == .i16):
+      sourceWidth = register.width
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(register.index) * 8))
+    case .memory(let address, let width) where width == .i8 || width == .i16:
+      guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
+      sourceWidth = width
+      emitMemoryRead(addressRegister: 12, width: width, resultRegister: 9, words: &words)
+    default:
+      return false
+    }
+    emitImmediate(sourceWidth == .i8 ? 0xFF : 0xFFFF, register: 10, into: &words)
+    words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
     return true
   }
 
@@ -1225,7 +1261,7 @@ private final class DoryJITMemoryCallbackContext {
 }
 
 private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address, byteCount in
-  guard let opaque, byteCount == 4 || byteCount == 8 else { return 0 }
+  guard let opaque, [1, 2, 4, 8].contains(byteCount) else { return 0 }
   let context = Unmanaged<DoryJITMemoryCallbackContext>.fromOpaque(opaque).takeUnretainedValue()
   do {
     return try context.memory.read(at: address, byteCount: Int(byteCount)).enumerated().reduce(0) {
@@ -1239,7 +1275,7 @@ private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address
 
 private let doryJITMemoryWrite: dory_jit_memory_write_function = {
   opaque, address, value, byteCount in
-  guard let opaque, byteCount == 4 || byteCount == 8 else { return }
+  guard let opaque, [1, 2, 4, 8].contains(byteCount) else { return }
   let context = Unmanaged<DoryJITMemoryCallbackContext>.fromOpaque(opaque).takeUnretainedValue()
   let bytes = (0..<Int(byteCount)).map {
     UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))

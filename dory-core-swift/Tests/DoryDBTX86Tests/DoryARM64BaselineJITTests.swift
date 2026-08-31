@@ -185,6 +185,42 @@ import Testing
     #endif
   }
 
+  @Test func zeroExtendWordMemoryMatchesTheFirmwareHotInstruction() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x46, 0x0F, 0xB7, 0x0C, 0x40]  // movzx r9d,[rax+r8*2]
+      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      try memory.write(at: 0, bytes: bytes)
+      try memory.write(at: 0x26, bytes: [0xCD, 0xAB])
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x20, r8: 3, r9: .max),
+        rip: 0,
+        rflags: .init(
+          rawValue: DoryX86RFLAGS.reservedOne.rawValue | DoryX86RFLAGS.carry.rawValue)
+      )
+      var interpreted = initial
+      _ = DoryX86Interpreter().step(state: &interpreted, memory: memory, mode: .long64)
+
+      var translated = initial
+      let execution = try #require(
+        DoryARM64BaselineExecutor(maximumCodeBytes: 4096).execute(
+          bytes: bytes,
+          at: 0,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &translated,
+          memory: memory
+        )
+      )
+
+      #expect(execution.block.tier == .baseline)
+      #expect(execution.block.requiresMemoryCallbacks)
+      #expect(translated.registers.r9 == interpreted.registers.r9)
+      #expect(translated.rip == interpreted.rip)
+      #expect(translated.rflags == interpreted.rflags)
+    #endif
+  }
+
   @Test func executorPerformsNativeMemoryALUAndReadModifyWrite() throws {
     #if arch(arm64)
       let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
