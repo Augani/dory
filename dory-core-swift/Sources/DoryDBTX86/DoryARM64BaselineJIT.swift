@@ -1329,6 +1329,9 @@ private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address
   guard let opaque, [1, 2, 4, 8].contains(byteCount) else { return 0 }
   let context = Unmanaged<DoryJITMemoryCallbackContext>.fromOpaque(opaque).takeUnretainedValue()
   do {
+    if let scalarMemory = context.memory as? any DoryX86ScalarMemory {
+      return try scalarMemory.readScalar(at: address, byteCount: Int(byteCount))
+    }
     return try context.memory.read(at: address, byteCount: Int(byteCount)).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)
     }
@@ -1342,10 +1345,14 @@ private let doryJITMemoryWrite: dory_jit_memory_write_function = {
   opaque, address, value, byteCount in
   guard let opaque, [1, 2, 4, 8].contains(byteCount) else { return }
   let context = Unmanaged<DoryJITMemoryCallbackContext>.fromOpaque(opaque).takeUnretainedValue()
-  let bytes = (0..<Int(byteCount)).map {
-    UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
-  }
   do {
+    if let scalarMemory = context.memory as? any DoryX86ScalarMemory {
+      try scalarMemory.writeScalar(at: address, value: value, byteCount: Int(byteCount))
+      return
+    }
+    let bytes = (0..<Int(byteCount)).map {
+      UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
+    }
     try context.memory.validateWrite(at: address, byteCount: bytes.count)
     try context.memory.write(at: address, bytes: bytes)
   } catch {

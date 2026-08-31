@@ -4,6 +4,19 @@ import Testing
 @testable import DoryDBTX86
 
 @Suite struct DoryX86PagingTests {
+  @Test func scalarMemoryUsesLittleEndianValuesWithoutWeakeningBounds() throws {
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, byteCount: 16)
+    try memory.writeScalar(at: 0x1004, value: 0x8877_6655_4433_2211, byteCount: 8)
+    #expect(try memory.readScalar(at: 0x1004, byteCount: 8) == 0x8877_6655_4433_2211)
+    #expect(try memory.read(at: 0x1004, byteCount: 8) == [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88])
+    #expect(throws: DoryX86MemoryError.self) {
+      try memory.writeScalar(at: 0x100F, value: 1, byteCount: 2)
+    }
+    #expect(throws: DoryX86ScalarMemoryError.invalidByteCount(3)) {
+      try memory.readScalar(at: 0x1000, byteCount: 3)
+    }
+  }
+
   @Test func memoryAccessKindsKeepStableWireValuesWithDistinctHotPathHashes() throws {
     let kinds: [DoryX86MemoryAccessKind] = [.instructionFetch, .read, .write]
     #expect(Set(kinds).count == 3)
@@ -132,6 +145,44 @@ import Testing
         maximumByteCount: 4
       ) == nil
     )
+  }
+
+  @Test func translatedScalarAccessesCrossPagesPrecisely() throws {
+    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let linear: UInt64 = 0x0040_0000
+    try installFourLevelMapping(
+      linear: linear, physicalPage: 0x8000, flags: 0x7, memory: memory)
+    try installFourLevelMapping(
+      linear: linear + 0x1000, physicalPage: 0x9000, flags: 0x7, memory: memory)
+    let paging = DoryX86PagingUnit()
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: memory,
+      pagingUnit: paging,
+      context: longModeContext(cpl: 3)
+    )
+
+    try translated.writeScalar(
+      at: linear + 0xFFC,
+      value: 0x1122_3344_5566_7788,
+      byteCount: 8
+    )
+    #expect(
+      try translated.readScalar(at: linear + 0xFFC, byteCount: 8)
+        == 0x1122_3344_5566_7788
+    )
+    #expect(try memory.read(at: 0x8FFC, byteCount: 4) == [0x88, 0x77, 0x66, 0x55])
+    #expect(try memory.read(at: 0x9000, byteCount: 4) == [0x44, 0x33, 0x22, 0x11])
+
+    try write64(memory, 0x4008, 0)
+    paging.invalidate(linearAddress: linear + 0x1000)
+    #expect(throws: DoryX86MemoryError.self) {
+      try translated.writeScalar(
+        at: linear + 0xFFC,
+        value: 0xFFFF_EEEE_DDDD_CCCC,
+        byteCount: 8
+      )
+    }
+    #expect(try memory.read(at: 0x8FFC, byteCount: 4) == [0x88, 0x77, 0x66, 0x55])
   }
 
   @Test func walksPAELargePagesAndLegacyPageTables() throws {

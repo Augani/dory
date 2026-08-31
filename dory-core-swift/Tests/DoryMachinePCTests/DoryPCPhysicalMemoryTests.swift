@@ -135,6 +135,10 @@ import Testing
     #expect(throws: DoryX86MemoryError.self) {
       try bus.read(at: 0x2200, byteCount: 1)
     }
+
+    try bus.writeScalar(at: 0x2008, value: 0x8877_6655_4433_2211, byteCount: 8)
+    #expect(try bus.readScalar(at: 0x2008, byteCount: 8) == 0x8877_6655_4433_2211)
+    #expect(try ram.read(at: 0x1008, byteCount: 8) == [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88])
   }
 
   @Test func highRAMDMAAndBulkCopiesUseTheCompactBackingRange() throws {

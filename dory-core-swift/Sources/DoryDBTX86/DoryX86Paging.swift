@@ -505,7 +505,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 
 /// Per-step linear address-space view. It composes paging with physical memory while preserving
 /// the interpreter's exact access kind and handling accesses that cross guest page boundaries.
-public final class DoryX86TranslatedMemory: DoryX86Memory, @unchecked Sendable {
+public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, @unchecked Sendable {
   private let physicalMemory: any DoryX86Memory
   private let pagingUnit: DoryX86PagingUnit
   private let context: DoryX86PagingContext
@@ -529,6 +529,32 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, @unchecked Sendable {
     try readLinear(at: address, byteCount: byteCount, access: .read, allowShortRead: false)
   }
 
+  public func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
+    guard [1, 2, 4, 8].contains(byteCount) else {
+      throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    guard Int(4_096 - (address & 0xfff)) >= byteCount else {
+      return try read(at: address, byteCount: byteCount).enumerated().reduce(0) {
+        $0 | UInt64($1.element) << UInt64($1.offset * 8)
+      }
+    }
+    let translation = try pagingUnit.translate(
+      linearAddress: address,
+      access: .read,
+      context: context,
+      physicalMemory: physicalMemory
+    )
+    if let scalarMemory = physicalMemory as? any DoryX86ScalarMemory {
+      return try scalarMemory.readScalar(
+        at: translation.physicalAddress, byteCount: byteCount)
+    }
+    return try physicalMemory.read(
+      at: translation.physicalAddress, byteCount: byteCount
+    ).enumerated().reduce(0) {
+      $0 | UInt64($1.element) << UInt64($1.offset * 8)
+    }
+  }
+
   public func write(at address: UInt64, bytes: [UInt8]) throws {
     var remaining = bytes[...]
     var cursor = address
@@ -542,6 +568,36 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, @unchecked Sendable {
       remaining = remaining.dropFirst(count)
       cursor &+= UInt64(count)
     }
+  }
+
+  public func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
+    guard [1, 2, 4, 8].contains(byteCount) else {
+      throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    guard Int(4_096 - (address & 0xfff)) >= byteCount else {
+      let bytes = (0..<byteCount).map {
+        UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
+      }
+      try validateWrite(at: address, byteCount: byteCount)
+      try write(at: address, bytes: bytes)
+      return
+    }
+    let translation = try pagingUnit.translate(
+      linearAddress: address,
+      access: .write,
+      context: context,
+      physicalMemory: physicalMemory
+    )
+    if let scalarMemory = physicalMemory as? any DoryX86ScalarMemory {
+      try scalarMemory.writeScalar(
+        at: translation.physicalAddress, value: value, byteCount: byteCount)
+      return
+    }
+    let bytes = (0..<byteCount).map {
+      UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
+    }
+    try physicalMemory.validateWrite(at: translation.physicalAddress, byteCount: byteCount)
+    try physicalMemory.write(at: translation.physicalAddress, bytes: bytes)
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {

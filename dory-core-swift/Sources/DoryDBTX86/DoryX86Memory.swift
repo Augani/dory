@@ -45,6 +45,17 @@ public protocol DoryX86Memory: AnyObject, Sendable {
   func synchronize()
 }
 
+public enum DoryX86ScalarMemoryError: Error, Sendable, Equatable {
+  case invalidByteCount(Int)
+}
+
+/// Optional allocation-free path for the scalar loads and stores emitted by the ARM64 JIT.
+/// Implementations must validate a complete store before committing any byte.
+public protocol DoryX86ScalarMemory: DoryX86Memory {
+  func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64
+  func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws
+}
+
 /// Optional exact fast path for forward, non-overlapping string copies. Implementations return
 /// `nil` before mutation when either starting address is not proven ordinary RAM or when the
 /// resolved backing ranges overlap. A positive result is a fully committed prefix, allowing the
@@ -69,10 +80,32 @@ extension DoryX86Memory {
   public func synchronize() {}
 }
 
+extension DoryX86ScalarMemory {
+  public func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
+    guard [1, 2, 4, 8].contains(byteCount) else {
+      throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    return try read(at: address, byteCount: byteCount).enumerated().reduce(0) {
+      $0 | UInt64($1.element) << UInt64($1.offset * 8)
+    }
+  }
+
+  public func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
+    guard [1, 2, 4, 8].contains(byteCount) else {
+      throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    let bytes = (0..<byteCount).map {
+      UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
+    }
+    try validateWrite(at: address, byteCount: byteCount)
+    try write(at: address, bytes: bytes)
+  }
+}
+
 /// Deterministic flat address space for interpreter conformance, firmware bring-up, and replay.
 /// Product paging composes a translator in front of the same protocol rather than weakening this
 /// exact bounds behavior.
-public final class DoryX86ByteArrayMemory: DoryX86Memory, @unchecked Sendable {
+public final class DoryX86ByteArrayMemory: DoryX86Memory, DoryX86ScalarMemory, @unchecked Sendable {
   public let baseAddress: UInt64
   public let byteCount: Int
   private let lock = NSLock()
@@ -104,12 +137,38 @@ public final class DoryX86ByteArrayMemory: DoryX86Memory, @unchecked Sendable {
     return Array(storage[offset..<(offset + byteCount)])
   }
 
+  public func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
+    guard [1, 2, 4, 8].contains(byteCount) else {
+      throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    lock.lock()
+    defer { lock.unlock() }
+    let offset = try checkedOffset(address: address, byteCount: byteCount, access: .read)
+    var value: UInt64 = 0
+    for index in 0..<byteCount {
+      value |= UInt64(storage[offset + index]) << UInt64(index * 8)
+    }
+    return value
+  }
+
   public func write(at address: UInt64, bytes: [UInt8]) throws {
     guard !bytes.isEmpty else { return }
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
     storage.replaceSubrange(offset..<(offset + bytes.count), with: bytes)
+  }
+
+  public func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
+    guard [1, 2, 4, 8].contains(byteCount) else {
+      throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    lock.lock()
+    defer { lock.unlock() }
+    let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
+    for index in 0..<byteCount {
+      storage[offset + index] = UInt8(truncatingIfNeeded: value >> UInt64(index * 8))
+    }
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {

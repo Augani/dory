@@ -74,6 +74,47 @@ import Testing
     #endif
   }
 
+  @Test func executorUsesAllocationFreeScalarMemoryCallbacksWhenAvailable() throws {
+    #if arch(arm64)
+      let memory = ScalarTrackingMemory(byteCount: 0x100)
+      try memory.backing.writeScalar(
+        at: 0x80, value: 0x1122_3344_5566_7788, byteCount: 8)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(registers: .init(rax: 0x80), rip: 0x3000)
+
+      _ = try #require(
+        executor.execute(
+          bytes: [0x48, 0x8B, 0x18],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+      )
+      state.rip = 0x3010
+      state.registers.rax = 0x88
+      _ = try #require(
+        executor.execute(
+          bytes: [0x48, 0x89, 0x18],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+      )
+
+      #expect(memory.scalarReads == 1)
+      #expect(memory.scalarWrites == 1)
+      #expect(memory.arrayReads == 0)
+      #expect(memory.arrayWrites == 0)
+      #expect(try memory.backing.readScalar(at: 0x88, byteCount: 8) == 0x1122_3344_5566_7788)
+    #endif
+  }
+
   @Test func directCallAndReturnStayNativeAndMatchLongModeStackSemantics() throws {
     #if arch(arm64)
       let memory = DoryX86ByteArrayMemory(byteCount: 0x200)
@@ -766,5 +807,49 @@ import Testing
       #expect(optimizingExecution.block.guestInstructionCount == 5)
       #expect(baselineState == optimizingState)
     #endif
+  }
+}
+
+private final class ScalarTrackingMemory: DoryX86ScalarMemory, @unchecked Sendable {
+  let backing: DoryX86ByteArrayMemory
+  private(set) var scalarReads = 0
+  private(set) var scalarWrites = 0
+  private(set) var arrayReads = 0
+  private(set) var arrayWrites = 0
+
+  init(byteCount: Int) {
+    backing = DoryX86ByteArrayMemory(byteCount: byteCount)
+  }
+
+  func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    try backing.instructionBytes(at: address, maximumCount: maximumCount)
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    arrayReads += 1
+    return try backing.read(at: address, byteCount: byteCount)
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    arrayWrites += 1
+    try backing.write(at: address, bytes: bytes)
+  }
+
+  func validateWrite(at address: UInt64, byteCount: Int) throws {
+    try backing.validateWrite(at: address, byteCount: byteCount)
+  }
+
+  func synchronize() {
+    backing.synchronize()
+  }
+
+  func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
+    scalarReads += 1
+    return try backing.readScalar(at: address, byteCount: byteCount)
+  }
+
+  func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
+    scalarWrites += 1
+    try backing.writeScalar(at: address, value: value, byteCount: byteCount)
   }
 }

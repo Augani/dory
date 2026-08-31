@@ -35,7 +35,7 @@ extension DoryPCMMIODevice {
 
 /// Sealed physical address router. RAM and devices share one DoryX86Memory boundary, so paging,
 /// interpreter, and every future JIT helper observe an identical DoryPC-v1 memory map.
-public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
+public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory, @unchecked Sendable {
   private struct Mapping {
     let lowerBound: UInt64
     let upperBound: UInt64
@@ -128,6 +128,21 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
     return try ram.read(at: resolved.backingAddress, byteCount: byteCount)
   }
 
+  public func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
+    guard [1, 2, 4, 8].contains(byteCount) else {
+      throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    if let resolved = try resolve(address: address, byteCount: byteCount) {
+      return try resolved.device.read(
+        offset: resolved.offset, byteCount: byteCount
+      ).enumerated().reduce(0) {
+        $0 | UInt64($1.element) << UInt64($1.offset * 8)
+      }
+    }
+    let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
+    return try ram.readScalar(at: resolved.backingAddress, byteCount: byteCount)
+  }
+
   public func write(at address: UInt64, bytes: [UInt8]) throws {
     guard !bytes.isEmpty else { return }
     if let resolved = try resolve(address: address, byteCount: bytes.count) {
@@ -136,6 +151,22 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
     }
     let resolved = try resolveRAM(address: address, byteCount: bytes.count, access: .write)
     try ram.write(at: resolved.backingAddress, bytes: bytes)
+  }
+
+  public func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
+    guard [1, 2, 4, 8].contains(byteCount) else {
+      throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    if let resolved = try resolve(address: address, byteCount: byteCount) {
+      let bytes = (0..<byteCount).map {
+        UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
+      }
+      try resolved.device.validateWrite(offset: resolved.offset, byteCount: byteCount)
+      try resolved.device.write(offset: resolved.offset, bytes: bytes)
+      return
+    }
+    let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .write)
+    try ram.writeScalar(at: resolved.backingAddress, value: value, byteCount: byteCount)
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {
