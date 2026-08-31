@@ -7,6 +7,7 @@ import Testing
   @Test func publishesModernCapabilitiesAndVirtioIdentity() throws {
     let function = try makeFunction()
     #expect(try function.readConfiguration(offset: 0, byteCount: 4) == [0xF4, 0x1A, 0x42, 0x10])
+    #expect(try function.readConfiguration(offset: 0x2C, byteCount: 4) == [0xF4, 0x1A, 0x42, 0])
     #expect(try function.readConfiguration(offset: 0x50, byteCount: 2) == [0x05, 0x60])
     #expect(try function.readConfiguration(offset: 0x60, byteCount: 4) == [0x11, 0x70, 2, 0])
     #expect(try function.readConfiguration(offset: 0x70, byteCount: 4) == [0x09, 0x80, 16, 1])
