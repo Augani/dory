@@ -505,13 +505,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         pagingUnit: pagingUnits[processor],
         context: .init(state: state, mode: mode)
       )
-      if let bytes = try? translatedMemory.instructionBytes(
-        at: state.rip,
-        maximumCount: budget * 15
-      ),
-        let execution = try baselineJIT.execute(
-          bytes: bytes,
-          at: state.rip,
+      let guestRIP = state.rip
+      if let execution = try baselineJIT.execute(
+          byteProvider: { maximumCount in
+            // A speculative block fetch can cross an unmapped guest page even when the current
+            // instruction itself is valid. Preserve the architectural path by declining JIT
+            // execution and letting the interpreter perform its precise instruction fetch/fault.
+            (try? translatedMemory.instructionBytes(at: guestRIP, maximumCount: maximumCount)) ?? []
+          },
+          at: guestRIP,
           mode: mode,
           addressSpaceID: state.control.cr3,
           maximumInstructions: budget,

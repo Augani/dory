@@ -209,6 +209,44 @@ import Testing
     #endif
   }
 
+  @Test func jitUnmappedBlockFetchFallsBackToPreciseInterpreterPageFault() throws {
+    #if arch(arm64)
+      for tier in [DoryPCExecutionTier.baselineJIT, .optimizingJIT] {
+        let machine = try DoryPCDirectKernelMachine(
+          memoryBytes: 2 * 1024 * 1024,
+          executionTier: tier,
+          baselineJITMaximumCodeBytes: 4096
+        )
+        // Enable 32-bit paging with a single identity-mapped 4 MiB page, then jump to the
+        // deliberately unmapped next page. The JIT's speculative block fetch must decline and
+        // allow the interpreter to produce the architectural page fault.
+        let code: [UInt8] = [
+          0xB8, 0x10, 0x00, 0x00, 0x00,  // mov eax,CR4.PSE
+          0x0F, 0x22, 0xE0,  // mov cr4,eax
+          0xB8, 0x00, 0x00, 0x08, 0x00,  // mov eax,0x80000
+          0x0F, 0x22, 0xD8,  // mov cr3,eax
+          0x0F, 0x20, 0xC0,  // mov eax,cr0
+          0x0D, 0x00, 0x00, 0x00, 0x80,  // or eax,CR0.PG
+          0x0F, 0x22, 0xC0,  // mov cr0,eax
+          0xB8, 0x00, 0x00, 0x40, 0x00,  // mov eax,0x400000
+          0xFF, 0xE0,  // jmp eax
+        ]
+        try machine.load(
+          kernel: makeELF(code: code),
+          commandLine: "x"
+        )
+        try machine.memory.write(at: 0x80000, bytes: [0x83, 0x00, 0x00, 0x00])
+
+        guard case .exception(let exception, _) = try machine.run(maximumInstructions: 16) else {
+          Issue.record("expected page fault")
+          continue
+        }
+        #expect(exception.kind == .pageFault)
+        #expect(exception.linearAddress == 0x400000)
+      }
+    #endif
+  }
+
   @Test func directKernelCanProgramTheStandardLocalAPICWindow() throws {
     let layout = DoryPCPVHBootLayout(
       startInfo: 0x90000,

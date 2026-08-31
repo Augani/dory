@@ -1441,9 +1441,20 @@ public struct DoryARM64BaselineExecution: Sendable, Hashable {
 /// Unsupported blocks never enter executable memory and return `nil` so the caller can execute
 /// the instruction at the unchanged guest RIP with the interpreter.
 public final class DoryARM64BaselineExecutor: @unchecked Sendable {
+  private struct LookupKey: Hashable {
+    let guestStart: UInt64
+    let addressSpaceID: UInt64
+    let cpuProfileIdentifier: String
+    let executionMode: DoryX86ExecutionMode
+    let privilegeLevel: UInt8
+    let pagingEnabled: Bool
+    let maximumInstructions: Int
+  }
+
   private struct ResidentBlock {
     let block: DoryARM64CompiledBlock
     let offset: Int
+    let codeGeneration: UInt64
   }
 
   public let maximumCodeBytes: Int
@@ -1454,7 +1465,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let optimization: DoryARM64JITOptimization
   private let optimizer: DoryIROptimizer
   private let region: DoryJITExecutableRegion
-  private var entries: [DoryJITBlockKey: ResidentBlock] = [:]
+  private var entries: [LookupKey: ResidentBlock] = [:]
   private var nextOffset = 0
 
   public init(
@@ -1507,52 +1518,69 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state: inout DoryX86ArchitecturalState,
     memory: (any DoryX86Memory)? = nil
   ) throws -> DoryARM64BaselineExecution? {
-    guard !bytes.isEmpty, maximumInstructions > 0 else { return nil }
+    try execute(
+      byteProvider: { count in Array(bytes.prefix(count)) },
+      at: guestStart,
+      mode: mode,
+      addressSpaceID: addressSpaceID,
+      maximumInstructions: maximumInstructions,
+      state: &state,
+      memory: memory
+    )
+  }
+
+  /// Fetches only the exact resident guest bytes on a cache hit. Callers backed by translated
+  /// memory avoid re-reading and hashing the full worst-case 15 bytes per instruction on every
+  /// dispatch while still detecting self-modifying code before native execution.
+  public func execute(
+    byteProvider: (_ maximumCount: Int) throws -> [UInt8],
+    at guestStart: UInt64,
+    mode: DoryX86ExecutionMode,
+    addressSpaceID: UInt64,
+    maximumInstructions: Int,
+    state: inout DoryX86ArchitecturalState,
+    memory: (any DoryX86Memory)? = nil
+  ) throws -> DoryARM64BaselineExecution? {
+    guard maximumInstructions > 0 else { return nil }
     return try lock.withLock {
-      let generation = Self.fingerprint(
-        bytes: bytes,
-        mode: mode,
-        maximumInstructions: maximumInstructions
-      )
-      let key = DoryJITBlockKey(
+      let key = LookupKey(
         guestStart: guestStart,
         addressSpaceID: addressSpaceID,
-        codeGeneration: generation,
         cpuProfileIdentifier: cpuProfileIdentifier,
         executionMode: mode,
         privilegeLevel: UInt8(state.cs.selector & 3),
-        pagingEnabled: state.control.cr0 & (1 << 31) != 0
+        pagingEnabled: state.control.cr0 & (1 << 31) != 0,
+        maximumInstructions: maximumInstructions
       )
       let resident: ResidentBlock
       if let cached = entries[key], cached.block.guestInstructionCount <= maximumInstructions {
-        resident = cached
-      } else {
-        let translated = try DoryX86IRTranslator(
-          decoder: decoder,
-          instructionBudget: maximumInstructions
-        ).translate(bytes, at: guestStart, mode: mode)
-        let block =
-          optimization == .optimizing ? optimizer.optimize(translated).block : translated
-        let compiled = emitter.compile(
-          block,
-          tier: optimization == .optimizing ? .optimizing : .baseline
-        )
-        guard compiled.tier != .interpreterFallback,
-          compiled.guestInstructionCount > 0,
-          compiled.guestInstructionCount <= maximumInstructions,
-          !compiled.requiresMemoryCallbacks || memory != nil
-        else { return nil }
-        let byteCount = compiled.machineBytes.count
-        guard byteCount <= region.capacity else { return nil }
-        if nextOffset > region.capacity - byteCount {
-          entries.removeAll(keepingCapacity: true)
-          nextOffset = 0
+        let currentBytes = try byteProvider(Int(cached.block.guestByteCount))
+        guard currentBytes.count == Int(cached.block.guestByteCount) else { return nil }
+        let generation = Self.fingerprint(bytes: currentBytes, mode: mode)
+        if generation == cached.codeGeneration {
+          resident = cached
+        } else {
+          entries.removeValue(forKey: key)
+          guard let refreshed = try compileResident(
+            key: key,
+            bytes: byteProvider(maximumInstructions * 15),
+            guestStart: guestStart,
+            mode: mode,
+            maximumInstructions: maximumInstructions,
+            memory: memory
+          ) else { return nil }
+          resident = refreshed
         }
-        let offset = nextOffset
-        try region.publish(compiled, at: offset)
-        nextOffset += byteCount
-        resident = .init(block: compiled, offset: offset)
-        entries[key] = resident
+      } else {
+        guard let compiled = try compileResident(
+          key: key,
+          bytes: byteProvider(maximumInstructions * 15),
+          guestStart: guestStart,
+          mode: mode,
+          maximumInstructions: maximumInstructions,
+          memory: memory
+        ) else { return nil }
+        resident = compiled
       }
 
       var context = Self.executionContext(from: state)
@@ -1563,6 +1591,48 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       Self.apply(context: context, to: &state)
       return .init(block: resident.block, exitCode: exit)
     }
+  }
+
+  private func compileResident(
+    key: LookupKey,
+    bytes: [UInt8],
+    guestStart: UInt64,
+    mode: DoryX86ExecutionMode,
+    maximumInstructions: Int,
+    memory: (any DoryX86Memory)?
+  ) throws -> ResidentBlock? {
+    guard !bytes.isEmpty else { return nil }
+    let translated = try DoryX86IRTranslator(
+      decoder: decoder,
+      instructionBudget: maximumInstructions
+    ).translate(bytes, at: guestStart, mode: mode)
+    let block = optimization == .optimizing ? optimizer.optimize(translated).block : translated
+    let compiled = emitter.compile(
+      block,
+      tier: optimization == .optimizing ? .optimizing : .baseline
+    )
+    guard compiled.tier != .interpreterFallback,
+      compiled.guestInstructionCount > 0,
+      compiled.guestInstructionCount <= maximumInstructions,
+      !compiled.requiresMemoryCallbacks || memory != nil
+    else { return nil }
+    let byteCount = compiled.machineBytes.count
+    guard byteCount <= region.capacity else { return nil }
+    if nextOffset > region.capacity - byteCount {
+      entries.removeAll(keepingCapacity: true)
+      nextOffset = 0
+    }
+    let offset = nextOffset
+    try region.publish(compiled, at: offset)
+    nextOffset += byteCount
+    let guestBytes = Array(bytes.prefix(Int(compiled.guestByteCount)))
+    let resident = ResidentBlock(
+      block: compiled,
+      offset: offset,
+      codeGeneration: Self.fingerprint(bytes: guestBytes, mode: mode)
+    )
+    entries[key] = resident
+    return resident
   }
 
   private static func executionContext(from state: DoryX86ArchitecturalState) -> [UInt64] {
@@ -1581,21 +1651,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state.rflags = DoryX86RFLAGS(rawValue: context[17])
   }
 
-  private static func fingerprint(
-    bytes: [UInt8],
-    mode: DoryX86ExecutionMode,
-    maximumInstructions: Int
-  ) -> UInt64 {
+  private static func fingerprint(bytes: [UInt8], mode: DoryX86ExecutionMode) -> UInt64 {
     var value: UInt64 = 0xcbf2_9ce4_8422_2325
     for byte in bytes + Array(mode.rawValue.utf8) {
       value ^= UInt64(byte)
       value &*= 0x0000_0100_0000_01b3
-    }
-    var budget = UInt64(maximumInstructions)
-    for _ in 0..<8 {
-      value ^= UInt64(UInt8(truncatingIfNeeded: budget))
-      value &*= 0x0000_0100_0000_01b3
-      budget >>= 8
     }
     return value
   }

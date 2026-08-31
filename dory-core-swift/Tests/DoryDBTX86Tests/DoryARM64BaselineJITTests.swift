@@ -605,7 +605,7 @@ import Testing
     #endif
   }
 
-  @Test func boundedExecutorRecompilesChangedGuestCode() throws {
+  @Test func boundedExecutorReplacesChangedGuestCode() throws {
     #if arch(arm64)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       var state = try DoryX86ArchitecturalState(rip: 0x5000)
@@ -636,7 +636,36 @@ import Testing
       )
       #expect(second.block.guestInstructionCount == 1)
       #expect(state.registers.rax == 2)
-      #expect(executor.residentBlockCount == 2)
+      #expect(executor.residentBlockCount == 1)
+    #endif
+  }
+
+  @Test func cachedExecutionFetchesOnlyTheResidentGuestBytes() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let program: [UInt8] = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0]
+      var requestedCounts: [Int] = []
+      var state = try DoryX86ArchitecturalState(rip: 0x6000)
+      func execute() throws -> DoryARM64BaselineExecution? {
+        try executor.execute(
+          byteProvider: { count in
+            requestedCounts.append(count)
+            return Array(program.prefix(count))
+          },
+          at: 0x6000,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state
+        )
+      }
+
+      _ = try #require(try execute())
+      state.rip = 0x6000
+      _ = try #require(try execute())
+
+      #expect(requestedCounts == [15, program.count])
+      #expect(executor.residentBlockCount == 1)
     #endif
   }
 
