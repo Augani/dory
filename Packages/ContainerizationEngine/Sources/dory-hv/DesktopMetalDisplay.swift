@@ -32,6 +32,14 @@ enum DesktopAppRunLoop {
     }
 }
 
+/// Narrow AppKit input boundary shared by the native ARM transport and DoryPC's PCI transport.
+/// The view owns evdev semantics; each machine adapter owns only transport publication.
+protocol DesktopInputSink: AnyObject {
+    func send(frame events: [VirtioInputEvent])
+}
+
+extension VirtioInput: DesktopInputSink {}
+
 /// Maps one window-local absolute pointer into the guest's deterministic horizontal scanout
 /// layout. Virtio-input exposes one tablet for the whole desktop rather than one per connector.
 final class DesktopPointerTopology: @unchecked Sendable {
@@ -1170,8 +1178,8 @@ struct DesktopScrollEventState: Sendable {
 /// they cannot silently substitute another renderer when their own validation or device fails.
 @MainActor
 class DesktopDisplayView: NSView {
-    private let keyboardInput: VirtioInput
-    private let pointerInput: VirtioInput
+    private let keyboardInput: any DesktopInputSink
+    private let pointerInput: any DesktopInputSink
     private let guestBackingScaleFactor: CGFloat
     let scanoutID: UInt32
     private let pointerTopology: DesktopPointerTopology?
@@ -1189,8 +1197,8 @@ class DesktopDisplayView: NSView {
 
     init(
         frame: NSRect,
-        keyboardInput: VirtioInput,
-        pointerInput: VirtioInput,
+        keyboardInput: any DesktopInputSink,
+        pointerInput: any DesktopInputSink,
         guestBackingScaleFactor: CGFloat,
         scanoutID: UInt32,
         pointerTopology: DesktopPointerTopology?
@@ -2317,8 +2325,8 @@ final class DesktopMetalView: DesktopDisplayView {
 
     init(
         frame: NSRect,
-        keyboardInput: VirtioInput,
-        pointerInput: VirtioInput,
+        keyboardInput: any DesktopInputSink,
+        pointerInput: any DesktopInputSink,
         guestBackingScaleFactor: CGFloat = 2,
         scanoutID: UInt32 = 0,
         pointerTopology: DesktopPointerTopology? = nil,
