@@ -221,6 +221,40 @@ import Testing
     #endif
   }
 
+  @Test func narrowStoreMatchesTheFirmwareDictionaryCopyInstruction() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x44, 0x88, 0x06]  // mov [rsi],r8b
+      let interpretedMemory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      try interpretedMemory.write(at: 0, bytes: bytes)
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rsi: 0x80, r8: 0x1234_5678_9ABC_DEFF), rip: 0)
+      var interpreted = initial
+      _ = DoryX86Interpreter().step(
+        state: &interpreted, memory: interpretedMemory, mode: .long64)
+
+      let translatedMemory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      var translated = initial
+      let execution = try #require(
+        DoryARM64BaselineExecutor(maximumCodeBytes: 4096).execute(
+          bytes: bytes,
+          at: 0,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &translated,
+          memory: translatedMemory
+        )
+      )
+
+      #expect(execution.block.tier == .baseline)
+      #expect(try translatedMemory.read(at: 0x80, byteCount: 1) == [0xFF])
+      #expect(try translatedMemory.read(at: 0x80, byteCount: 1)
+        == interpretedMemory.read(at: 0x80, byteCount: 1))
+      #expect(translated.rip == interpreted.rip)
+      #expect(translated.rflags == interpreted.rflags)
+    #endif
+  }
+
   @Test func executorPerformsNativeMemoryALUAndReadModifyWrite() throws {
     #if arch(arm64)
       let memory = DoryX86ByteArrayMemory(byteCount: 0x100)

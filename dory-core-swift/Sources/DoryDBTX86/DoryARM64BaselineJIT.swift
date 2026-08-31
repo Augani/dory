@@ -177,10 +177,20 @@ public struct DoryARM64BaselineEmitter: Sendable {
         encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8)
       )
       return true
-    case .memory(let address, let width) where width == .i32 || width == .i64:
-      guard emitMemoryAddress(address, into: 9, words: &words),
-        load(source, matching: width, into: 10, words: &words)
-      else { return false }
+    case .memory(let address, let width)
+    where width == .i8 || width == .i16 || width == .i32 || width == .i64:
+      guard emitMemoryAddress(address, into: 9, words: &words) else { return false }
+      if width == .i8 || width == .i16 {
+        guard case .register(let register) = source,
+          register.bank == "x86.gpr", register.index < 16, register.width == width
+        else { return false }
+        words.append(
+          encodeLoad64(register: 10, base: 0, byteOffset: Int(register.index) * 8))
+        emitImmediate(width == .i8 ? 0xFF : 0xFFFF, register: 11, into: &words)
+        words.append(encodeLogical(.and, left: 10, right: 11, destination: 10))
+      } else {
+        guard load(source, matching: width, into: 10, words: &words) else { return false }
+      }
       emitMemoryWrite(addressRegister: 9, valueRegister: 10, width: width, words: &words)
       return true
     default:

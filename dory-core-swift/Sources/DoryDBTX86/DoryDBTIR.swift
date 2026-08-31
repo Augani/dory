@@ -343,9 +343,14 @@ public struct DoryX86IRTranslator: Sendable {
           return width == target.width && isJITMemoryAddress(address)
         }
       case .memory(let address, let width)
-      where (width == .i32 || width == .i64) && isJITMemoryAddress(address):
+      where (width == .i8 || width == .i16 || width == .i32 || width == .i64)
+        && isJITMemoryAddress(address):
         switch source {
         case .register(let register):
+          if width == .i8 || width == .i16 {
+            return register.bank == "x86.gpr" && register.index < 16
+              && register.width == width
+          }
           return isJITGeneralRegister(register) && register.width == width
         case .immediate(_, let immediateWidth):
           return immediateWidth == width
