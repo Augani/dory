@@ -656,7 +656,8 @@ final class DoryMacAudioBackend: VirtioSoundHost, @unchecked Sendable {
     private static func valid(_ parameters: VirtioSoundPCMParameters) -> Bool {
         parameters.bytesPerSample == 2
             && (parameters.channels == 1 || parameters.channels == 2)
-            && (parameters.sampleRate == 44_100 || parameters.sampleRate == 48_000)
+            && (parameters.sampleRate == 44_100 || parameters.sampleRate == 48_000
+                || parameters.sampleRate == 96_000)
             && DoryMacAudioQueueCapacity.accepts(parameters: parameters)
             && parameters.periodBytes % parameters.bytesPerFrame == 0
     }

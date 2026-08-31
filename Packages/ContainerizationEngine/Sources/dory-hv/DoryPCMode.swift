@@ -90,6 +90,7 @@ enum DoryPCMode {
         private let pointerInput: DoryPCDesktopInputSink
         private let displaySink: DoryPCSoftwareDisplaySink?
         private let cameraBridge: DoryPCCameraBridge?
+        private let audioBackend: DoryPCMacAudioBackend?
         private let mailbox: DesktopFrameMailbox?
         private let window: NSWindow?
         private let readyPublisher: ReadyPublisher
@@ -113,8 +114,6 @@ enum DoryPCMode {
             }
             let devices = envelope.devices
             guard devices.networkAttachment != .bridged,
-                  !devices.audioInput,
-                  !devices.audioOutput,
                   !devices.clipboard,
                   !devices.clockSynchronization,
                   !devices.dynamicDisplay,
@@ -193,8 +192,16 @@ enum DoryPCMode {
                 }
             }
             self.displaySink = displaySink
+            let audioBackend = devices.audioInput || devices.audioOutput
+                ? DoryPCMacAudioBackend { message in
+                    FileHandle.standardError.write(
+                        Data("dory-hv DoryPC audio: \(message)\n".utf8)
+                    )
+                } : nil
+            self.audioBackend = audioBackend
             let machine = try configuration.authority.makeMachine(
                 displaySink: displaySink,
+                soundBackend: audioBackend ?? DoryVirtioInMemorySoundBackend(),
                 networkBackend: networkBackend
             )
             if devices.networkAttachment == .disconnected {
@@ -314,8 +321,11 @@ enum DoryPCMode {
                             finish(nil)
                             return
                         }
+                        audioBackend?.reset()
                         let replacement = try configuration.authority.makeMachine(
                             displaySink: displaySink,
+                            soundBackend: audioBackend
+                                ?? DoryVirtioInMemorySoundBackend(),
                             networkBackend: networkBackend
                         )
                         try cameraBridge?.attach(to: replacement.xhciController)
@@ -388,6 +398,7 @@ enum DoryPCMode {
             lifecycleServer.stop()
             networkRuntime?.stop()
             cameraBridge?.stop()
+            audioBackend?.reset()
             serialInput.stop()
             _ = serialOutput.stop()
             try? serialLog.close()

@@ -1,4 +1,5 @@
 import CoreGraphics
+import DoryHV
 import DoryVirtio
 import Foundation
 import ImageIO
@@ -6,6 +7,59 @@ import Testing
 @testable import dory_hv
 
 @Suite struct DoryPCDesktopAdapterTests {
+    @Test func macAudioAdapterPacesAndMapsDoryPCStreams() throws {
+        let host = RecordingPCMacAudioHost()
+        let adapter = DoryPCMacAudioBackend(log: { _ in }, host: host)
+        let output = DoryVirtioSoundPCMParameters(
+            bufferBytes: 16_384,
+            periodBytes: 4_096,
+            channels: 2,
+            format: .signed16,
+            rate: .hz96000
+        )
+        try adapter.configure(streamID: 0, direction: .output, parameters: output)
+        try adapter.prepare(streamID: 0)
+        try adapter.start(streamID: 0)
+        try adapter.play(streamID: 0, pcmBytes: [UInt8](repeating: 7, count: 4_096))
+        #expect(host.sampleRate == 96_000)
+        #expect(host.playedByteCount == 4_096)
+
+        let input = DoryVirtioSoundPCMParameters(
+            bufferBytes: 16_384,
+            periodBytes: 4_096,
+            channels: 1,
+            format: .signed16,
+            rate: .hz48000
+        )
+        try adapter.configure(streamID: 1, direction: .input, parameters: input)
+        try adapter.prepare(streamID: 1)
+        try adapter.start(streamID: 1)
+        #expect(try adapter.capture(streamID: 1, byteCount: 64)
+            == [UInt8](repeating: 0x55, count: 64))
+        try adapter.release(streamID: 0)
+        try adapter.release(streamID: 1)
+    }
+
+    @Test func macAudioAdapterRejectsFormatsItsCoreAudioPathCannotRepresent() {
+        let adapter = DoryPCMacAudioBackend(
+            log: { _ in },
+            host: RecordingPCMacAudioHost()
+        )
+        #expect(throws: DoryPCMacAudioError.unsupportedFormat) {
+            try adapter.configure(
+                streamID: 0,
+                direction: .output,
+                parameters: DoryVirtioSoundPCMParameters(
+                    bufferBytes: 16_384,
+                    periodBytes: 4_096,
+                    channels: 2,
+                    format: .float32,
+                    rate: .hz48000
+                )
+            )
+        }
+    }
+
     @Test func cameraBridgeConvertsJPEGToExactYUY2Frame() throws {
         var pixels: [UInt8] = [255, 0, 0, 255, 255, 0, 0, 255]
         let image = try pixels.withUnsafeMutableBytes { bytes -> CGImage in
@@ -101,4 +155,44 @@ import Testing
         )
         #expect(sink.convert(frame) == nil)
     }
+}
+
+private final class RecordingPCMacAudioHost: VirtioSoundHost, @unchecked Sendable {
+    private let lock = NSLock()
+    private var recordedSampleRate: Double?
+    private var recordedPlayedByteCount = 0
+
+    var sampleRate: Double? { lock.withLock { recordedSampleRate } }
+    var playedByteCount: Int { lock.withLock { recordedPlayedByteCount } }
+
+    func configure(
+        streamID: Int,
+        direction: VirtioSoundDirection,
+        parameters: VirtioSoundPCMParameters
+    ) -> Bool {
+        lock.withLock { recordedSampleRate = parameters.sampleRate }
+        return true
+    }
+    func prepare(streamID: Int, direction: VirtioSoundDirection) -> Bool { true }
+    func start(streamID: Int, direction: VirtioSoundDirection) -> Bool { true }
+    func stop(streamID: Int, direction: VirtioSoundDirection) -> Bool { true }
+    func release(streamID: Int, direction: VirtioSoundDirection) {}
+    func enqueuePlayback(
+        _ data: Data,
+        parameters: VirtioSoundPCMParameters,
+        completion: @escaping @Sendable (Bool, UInt32) -> Void
+    ) -> Bool {
+        lock.withLock { recordedPlayedByteCount += data.count }
+        completion(true, 0)
+        return true
+    }
+    func requestCapture(
+        byteCount: Int,
+        parameters: VirtioSoundPCMParameters,
+        completion: @escaping @Sendable (Data?, UInt32) -> Void
+    ) -> Bool {
+        completion(Data(repeating: 0x55, count: byteCount), 0)
+        return true
+    }
+    func reset() {}
 }
