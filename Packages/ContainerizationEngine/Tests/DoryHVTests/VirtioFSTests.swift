@@ -1,5 +1,7 @@
 import CoreServices
 import DoryFSWorkerContracts
+import DoryMachinePC
+import DoryVirtio
 import Foundation
 import Testing
 @testable import DoryFSWorkerServiceCore
@@ -7,6 +9,142 @@ import Testing
 
 @Suite(.serialized)
 struct VirtioFSTests {
+    @Test func doryPCFrontendPublishesStandardIdentityAndConfiguration() throws {
+        let root = try TestVirtioFSRoot()
+        let channel = DoryFSWorkerTestChannel(hostFS: try HostFS(rootPath: root.url.path))
+        let broker = DoryFSWorkerBroker(
+            shareCapabilityID: DoryFSWorkerTestChannel.capabilityID,
+            generation: DoryFSWorkerTestChannel.generation,
+            channel: channel
+        )
+        let fs = try DoryPCVirtioFSPCIDevice(
+            address: DoryPCV1ABI.fileSystemPCIAddresses[0],
+            initialBARAddress: DoryPCV1ABI.fileSystemBARAddresses[0],
+            tag: "home",
+            broker: broker,
+            requestQueueCount: 4
+        )
+
+        #expect(try fs.readConfiguration(offset: 0, byteCount: 4) == [0xF4, 0x1A, 0x5A, 0x10])
+        let config = try fs.readBAR(offset: 0x300, byteCount: 40)
+        #expect(String(decoding: config[0..<4], as: UTF8.self) == "home")
+        #expect(config[4..<36].allSatisfy { $0 == 0 })
+        #expect(config[36..<40].elementsEqual([4, 0, 0, 0]))
+        #expect(fs.transport.queueCount == 5)
+    }
+
+    @Test func doryPCRequestAdmissionUsesTheSameFailClosedFuseContract() {
+        let request = makeFuseRequest(opcode: .statfs, unique: 700)
+        let chain = DoryVirtioDescriptorChain(
+            headIndex: 0,
+            descriptors: [
+                .init(
+                    address: 0x1000,
+                    length: UInt32(request.count),
+                    flags: DoryVirtioDescriptor.nextFlag,
+                    next: 1
+                ),
+                .init(
+                    address: 0x2000,
+                    length: 256,
+                    flags: DoryVirtioDescriptor.writeFlag,
+                    next: 0
+                ),
+            ],
+            readableByteCount: UInt64(request.count),
+            writableByteCount: 256
+        )
+        guard case .execute(let admitted) = VirtioFSRequestAdmission.inspect(
+            chain: chain,
+            request: request,
+            queue: 1
+        ) else {
+            Issue.record("valid DoryPC FUSE request was rejected")
+            return
+        }
+        #expect(admitted.header.unique == 700)
+        #expect(admitted.maximumResponseBytes == FuseOutHeader.byteCount + 80)
+
+        let reversed = DoryVirtioDescriptorChain(
+            headIndex: 0,
+            descriptors: [chain.descriptors[1], chain.descriptors[0]],
+            readableByteCount: UInt64(request.count),
+            writableByteCount: 256
+        )
+        guard case .reject(let rejection) = VirtioFSRequestAdmission.inspect(
+            chain: reversed,
+            request: request,
+            queue: 1
+        ) else {
+            Issue.record("readable-after-writable DoryPC chain was accepted")
+            return
+        }
+        #expect(rejection.reason == .readableAfterWritable)
+    }
+
+    @Test func doryPCDeferredQueueExecutesFuseRequestEndToEnd() async throws {
+        let root = try TestVirtioFSRoot()
+        let channel = DoryFSWorkerTestChannel(hostFS: try HostFS(rootPath: root.url.path))
+        let broker = DoryFSWorkerBroker(
+            shareCapabilityID: DoryFSWorkerTestChannel.capabilityID,
+            generation: DoryFSWorkerTestChannel.generation,
+            channel: channel
+        )
+        let fs = try DoryPCVirtioFSPCIDevice(
+            address: DoryPCV1ABI.fileSystemPCIAddresses[0],
+            initialBARAddress: DoryPCV1ABI.fileSystemBARAddresses[0],
+            tag: "home",
+            broker: broker,
+            requestQueueCount: 1
+        )
+        let machine = try DoryPCDirectKernelMachine(
+            memoryBytes: 2 * 1_024 * 1_024,
+            pciFunctions: [fs]
+        )
+        let request = makeFuseRequest(opcode: .statfs, unique: 701)
+        // Linux clears status while initializing a modern VirtIO function. That cold status write
+        // must not consume the filesystem worker generation before the first FUSE request.
+        try fs.transport.writeBAR(offset: 0x14, bytes: [0])
+        try fs.transport.writeBAR(offset: 0x08, bytes: pcLittleEndian(UInt32(1)))
+        try fs.transport.writeBAR(offset: 0x0C, bytes: pcLittleEndian(UInt32(1)))
+        try fs.transport.writeBAR(offset: 0x14, bytes: [0x0F])
+        try fs.transport.writeBAR(offset: 0x16, bytes: pcLittleEndian(UInt16(1)))
+        try fs.transport.writeBAR(offset: 0x18, bytes: pcLittleEndian(UInt16(8)))
+        try fs.transport.writeBAR(offset: 0x20, bytes: pcLittleEndian(UInt64(0x1000)))
+        try fs.transport.writeBAR(offset: 0x28, bytes: pcLittleEndian(UInt64(0x2000)))
+        try fs.transport.writeBAR(offset: 0x30, bytes: pcLittleEndian(UInt64(0x3000)))
+        try fs.transport.writeBAR(offset: 0x1C, bytes: pcLittleEndian(UInt16(1)))
+        try machine.physicalMemory.write(
+            at: 0x1000,
+            bytes: pcLittleEndian(UInt64(0x4000))
+                + pcLittleEndian(UInt32(request.count))
+                + pcLittleEndian(UInt16(DoryVirtioDescriptor.nextFlag))
+                + pcLittleEndian(UInt16(1))
+                + pcLittleEndian(UInt64(0x5000))
+                + pcLittleEndian(UInt32(256))
+                + pcLittleEndian(UInt16(DoryVirtioDescriptor.writeFlag))
+                + pcLittleEndian(UInt16(0))
+        )
+        try machine.physicalMemory.write(at: 0x4000, bytes: request)
+        try machine.physicalMemory.write(at: 0x2000, bytes: [0, 0, 1, 0, 0, 0])
+        try fs.transport.writeBAR(offset: 0x104, bytes: pcLittleEndian(UInt16(1)))
+
+        let deadline = ContinuousClock.now.advanced(by: .seconds(2))
+        while ContinuousClock.now < deadline {
+            let used = try machine.physicalMemory.read(at: 0x3002, byteCount: 2)
+            if used == [1, 0] { break }
+            try await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(try machine.physicalMemory.read(at: 0x3002, byteCount: 2) == [1, 0])
+        let usedLengthBytes = try machine.physicalMemory.read(at: 0x3008, byteCount: 4)
+        let usedLength = Int(usedLengthBytes.enumerated().reduce(UInt32(0)) {
+            $0 | UInt32($1.element) << UInt32($1.offset * 8)
+        })
+        let response = try machine.physicalMemory.read(at: 0x5000, byteCount: usedLength)
+        #expect(try FuseProtocol.decodeOutHeader(response).unique == 701)
+        await broker.invalidate()
+    }
+
     @Test func exposesVirtioFSDeviceIdentityAndQueues() throws {
         let root = try TestVirtioFSRoot()
         let fs = try VirtioFS(tag: "home", hostFS: HostFS(rootPath: root.url.path), requestQueueCount: 4)
@@ -2477,6 +2615,12 @@ private func semaphoreSignals(
         DispatchQueue.global().async {
             continuation.resume(returning: semaphore.wait(timeout: .now() + timeout) == .success)
         }
+    }
+}
+
+private func pcLittleEndian<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
+    (0..<MemoryLayout<T>.size).map {
+        UInt8(truncatingIfNeeded: value >> T($0 * 8))
     }
 }
 

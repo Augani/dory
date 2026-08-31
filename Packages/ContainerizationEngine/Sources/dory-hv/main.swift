@@ -2,6 +2,7 @@ import DoryHV
 import DoryCore
 import DorydKit
 import DoryOperations
+import DoryMachinePC
 import DoryVMContracts
 import Foundation
 
@@ -519,9 +520,12 @@ case "desktop":
               !rootDeviceWasSpecified,
               !genericGuest,
               bootMode == nil,
-              shares.isEmpty,
               environment.isEmpty else {
             fail("DoryPC resolved launch rejects legacy ARM desktop arguments")
+        }
+        guard pcRuntimeLaunchEnvelope.devices.directorySharing == !shares.isEmpty,
+              shares.count <= DoryPCV1ABI.maximumFileSystemShareCount else {
+            fail("DoryPC directory shares do not match the immutable device contract")
         }
         guard let handoffSocket else { fail("DoryPC desktop requires --handoff-sock") }
         guard let agentSocket else { fail("DoryPC desktop requires --agent-sock") }
@@ -553,6 +557,7 @@ case "desktop":
                 usbControlSocketPath: usbControlSocket,
                 sshAgentSocketPath: sshAgentSocket,
                 gvproxyPath: gvproxy,
+                shares: shares,
                 displayPresentation: displayPresentation
             ))
         } catch {

@@ -83,6 +83,17 @@ public enum DoryPCV1ABI {
   public static let networkPCIAddress = DoryPCPCIAddress(bus: 0, device: 8, function: 0)
   public static let entropyPCIAddress = DoryPCPCIAddress(bus: 0, device: 9, function: 0)
   public static let vsockPCIAddress = DoryPCPCIAddress(bus: 0, device: 10, function: 0)
+  public static let maximumFileSystemShareCount = 8
+  public static let fileSystemPCIAddresses: [DoryPCPCIAddress] = [
+    DoryPCPCIAddress(bus: 0, device: 11, function: 0),
+    DoryPCPCIAddress(bus: 0, device: 13, function: 0),
+    DoryPCPCIAddress(bus: 0, device: 14, function: 0),
+    DoryPCPCIAddress(bus: 0, device: 15, function: 0),
+    DoryPCPCIAddress(bus: 0, device: 16, function: 0),
+    DoryPCPCIAddress(bus: 0, device: 17, function: 0),
+    DoryPCPCIAddress(bus: 0, device: 18, function: 0),
+    DoryPCPCIAddress(bus: 0, device: 19, function: 0),
+  ]
   public static let removableMediaPCIAddress = DoryPCPCIAddress(bus: 0, device: 12, function: 0)
   public static let systemDiskBARAddress = pcieMMIOBase
   public static let removableMediaBARAddress = pcieMMIOBase + 0x1000
@@ -95,6 +106,9 @@ public enum DoryPCV1ABI {
   public static let networkBARAddress = pcieMMIOBase + 0xC000
   public static let entropyBARAddress = pcieMMIOBase + 0xD000
   public static let vsockBARAddress = pcieMMIOBase + 0xE000
+  public static let fileSystemBARAddresses: [UInt64] = (0..<maximumFileSystemShareCount).map {
+    pcieMMIOBase + 0xF000 + UInt64($0) * 0x1000
+  }
 
   public static let regions: [DoryPCV1Region] = [
     fixedRegion(kind: .pvhHandoff, base: pvhStartInfo, byteCount: pvhHandoffBytes),
@@ -188,6 +202,8 @@ public enum DoryPCV1ABI {
     | VirtIO network | `0000:00:08.0` | `0xd000c000` |
     | VirtIO entropy | `0000:00:09.0` | `0xd000d000` |
     | VirtIO socket | `0000:00:0a.0` | `0xd000e000` |
+    | VirtIO filesystem share 0 | `0000:00:0b.0` | `0xd000f000` |
+    | VirtIO filesystem shares 1...7 | `0000:00:0d.0`...`0000:00:13.0` | `0xd0010000`...`0xd0016000` |
 
     ## Boot contract
 

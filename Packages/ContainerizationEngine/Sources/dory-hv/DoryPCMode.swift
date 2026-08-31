@@ -22,6 +22,7 @@ enum DoryPCMode {
         let usbControlSocketPath: String?
         let sshAgentSocketPath: String?
         let gvproxyPath: String
+        let shares: [DoryMachineShareConfiguration]
         let displayPresentation: DoryMachineDisplayPresentation
     }
 
@@ -33,6 +34,31 @@ enum DoryPCMode {
 
     @MainActor
     private final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
+        private final class FilesystemFailureRelay: @unchecked Sendable {
+            private let lock = NSLock()
+            private var failureStorage: String?
+            private var stop: (@Sendable () -> Void)?
+
+            var failure: String? { lock.withLock { failureStorage } }
+
+            func installStop(_ operation: @escaping @Sendable () -> Void) {
+                let shouldStop = lock.withLock { () -> Bool in
+                    stop = operation
+                    return failureStorage != nil
+                }
+                if shouldStop { operation() }
+            }
+
+            func report(_ event: VirtioFSWorkerLifecycleEvent) {
+                guard case .failure(let reason) = event else { return }
+                let operation = lock.withLock { () -> (@Sendable () -> Void)? in
+                    if failureStorage == nil { failureStorage = reason }
+                    return stop
+                }
+                operation?()
+            }
+        }
+
         private final class MachineState: @unchecked Sendable {
             private let lock = NSLock()
             private var machine: DoryPCUEFIMachine
@@ -193,6 +219,8 @@ enum DoryPCMode {
         private let agentBridge: GuestVsockSocketBridge
         private let shellBridge: GuestVsockSocketBridge
         private let sshAgentBridge: HostSSHAgentBridge?
+        private let filesystemRuntime: DoryPCFilesystemRuntime?
+        private let filesystemFailureRelay: FilesystemFailureRelay
         private let clipboard: DoryDesktopClipboardCoordinator?
         private let machineState: MachineState
         private let keyboardInput: DoryPCDesktopInputSink
@@ -245,6 +273,29 @@ enum DoryPCMode {
                 clipboardPolicy = nil
             }
             self.configuration = configuration
+            guard devices.directorySharing == !configuration.shares.isEmpty else {
+                throw VMError.invalidConfiguration(
+                    "DoryPC directory-sharing contract does not match launch shares"
+                )
+            }
+            let rawShares = try configuration.shares.map { share in
+                try VirtioFSShareConfiguration(
+                    tag: share.tag,
+                    path: share.hostPath,
+                    readOnly: share.readOnly,
+                    guestMountPoint: share.guestPath
+                )
+            }
+            let filesystemFailureRelay = FilesystemFailureRelay()
+            self.filesystemFailureRelay = filesystemFailureRelay
+            let filesystemRuntime = rawShares.isEmpty ? nil : try DoryPCFilesystemRuntime(
+                shares: rawShares,
+                virtualCPUCount: Int(envelope.executionResources.virtualCPUCount),
+                onWorkerLifecycle: { [filesystemFailureRelay] event in
+                    filesystemFailureRelay.report(event)
+                }
+            )
+            self.filesystemRuntime = filesystemRuntime
             try FileManager.default.createDirectory(
                 atPath: configuration.stateDirectory,
                 withIntermediateDirectories: true
@@ -287,6 +338,7 @@ enum DoryPCMode {
                 envelope.launchPlan.bootDevices.first { $0.logicalID == firstID }?.kind
             } == .removableMedia
             let requestedGuestServices = devices.clipboard || devices.clockSynchronization
+                || devices.directorySharing
             let readyPublisher = ReadyPublisher(
                 requiresGuestServices: requestedGuestServices && !installerIsFirst
             ) {
@@ -334,11 +386,12 @@ enum DoryPCMode {
                 initialBARAddress: DoryPCV1ABI.vsockBARAddress,
                 vsock: vsock
             )
+            let filesystemFunctions = try filesystemRuntime?.start() ?? []
             let machine = try configuration.authority.makeMachine(
                 displaySink: displaySink,
                 soundBackend: audioBackend ?? DoryVirtioInMemorySoundBackend(),
                 networkBackend: networkBackend,
-                additionalPCIFunctions: [vsockPCI]
+                additionalPCIFunctions: [vsockPCI] + filesystemFunctions
             )
             if devices.networkAttachment == .disconnected {
                 _ = machine.networkDevice.setLinkUp(false)
@@ -352,6 +405,9 @@ enum DoryPCMode {
                 machine: machine,
                 dynamicDisplaySize: dynamicDisplaySize
             )
+            filesystemFailureRelay.installStop { [machineState] in
+                machineState.current().machine.powerController.request(.powerOff)
+            }
             let keyboardInput = DoryPCDesktopInputSink(device: machine.keyboardDevice)
             self.keyboardInput = keyboardInput
             pointerInput = DoryPCDesktopInputSink(device: machine.tabletDevice)
@@ -543,7 +599,8 @@ enum DoryPCMode {
 
         private func startGuestServicePreparation() {
             let devices = configuration.envelope.devices
-            guard devices.clipboard || devices.clockSynchronization else { return }
+            guard devices.clipboard || devices.clockSynchronization || devices.directorySharing
+            else { return }
             let installerIsFirst = configuration.envelope.launchPlan.bootOrder.first.flatMap {
                 firstID in
                 configuration.envelope.launchPlan.bootDevices.first {
@@ -554,6 +611,7 @@ enum DoryPCMode {
             let readyPublisher = self.readyPublisher
             let clipboard = self.clipboard
             let machineState = self.machineState
+            let directoryShares = configuration.shares
             guestServiceQueue.async { [weak self] in
                 let deadline = Date().addingTimeInterval(90)
                 var lastError: Error?
@@ -594,6 +652,20 @@ enum DoryPCMode {
                             guard probe.exitCode == 0, !probe.timedOut else {
                                 throw VMError.bootFailure(
                                     "DoryPC guest clipboard helper is unavailable"
+                                )
+                            }
+                        }
+                        if devices.directorySharing {
+                            guard info.supports("virtiofs-mount", minimumVersion: 1) else {
+                                throw VMError.bootFailure(
+                                    "DoryPC guest lacks virtio-fs mount capability"
+                                )
+                            }
+                            for share in directoryShares {
+                                _ = try control.virtioFSMount(
+                                    tag: share.tag,
+                                    mountPath: share.guestPath,
+                                    readOnly: share.readOnly
                                 )
                             }
                         }
@@ -646,12 +718,14 @@ enum DoryPCMode {
                             initialBARAddress: DoryPCV1ABI.vsockBARAddress,
                             vsock: vsock
                         )
+                        let filesystemFunctions = try filesystemRuntime?
+                            .replaceAfterMachineReset() ?? []
                         let replacement = try configuration.authority.makeMachine(
                             displaySink: displaySink,
                             soundBackend: audioBackend
                                 ?? DoryVirtioInMemorySoundBackend(),
                             networkBackend: networkBackend,
-                            additionalPCIFunctions: [vsockPCI]
+                            additionalPCIFunctions: [vsockPCI] + filesystemFunctions
                         )
                         try usbControlHandler?.replaceController(replacement.xhciController)
                         try cameraBridge?.attach(to: replacement.xhciController)
@@ -665,6 +739,9 @@ enum DoryPCMode {
                             return
                         }
                     case .poweredOff:
+                        if let failure = filesystemFailureRelay.failure {
+                            throw VMError.bootFailure(failure)
+                        }
                         finish(nil)
                         return
                     case .halted(let count):
@@ -737,6 +814,7 @@ enum DoryPCMode {
             agentBridge.stop()
             shellBridge.stop()
             sshAgentBridge?.stop()
+            filesystemRuntime?.stop()
             _ = vsock.quiesce()
             _ = usbControlServer?.stop()
             usbControlHandler?.stop()

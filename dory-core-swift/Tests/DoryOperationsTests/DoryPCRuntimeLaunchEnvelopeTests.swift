@@ -48,6 +48,17 @@ final class DoryPCRuntimeLaunchEnvelopeTests: XCTestCase {
         ])
     }
 
+    func testDirectorySharingIsAnAdmittedDoryPCDeviceContract() throws {
+        let envelope = try makeEnvelope(directorySharing: true)
+        XCTAssertTrue(envelope.devices.directorySharing)
+        XCTAssertNoThrow(try envelope.validatedResources())
+        XCTAssertEqual(
+            try DoryPCRuntimeLaunchEnvelope.decodeArgument(envelope.encodedArgument()).devices
+                .directorySharing,
+            true
+        )
+    }
+
     func testPlatformAndDescriptorSubstitutionFailClosed() throws {
         let envelope = try makeEnvelope(installer: true)
         var object = try XCTUnwrap(
@@ -113,7 +124,8 @@ final class DoryPCRuntimeLaunchEnvelopeTests: XCTestCase {
     }
 
     private func makeEnvelope(
-        installer: Bool = false
+        installer: Bool = false,
+        directorySharing: Bool = false
     ) throws -> DoryPCRuntimeLaunchEnvelope {
         let firmware = Data(repeating: 0xA5, count: 4_096)
         let variables = Data("variables".utf8)
@@ -168,7 +180,8 @@ final class DoryPCRuntimeLaunchEnvelopeTests: XCTestCase {
                 networkInterface: .stable(machineID: "x86-linux"),
                 display: .init(widthPixels: 1_280, heightPixels: 800),
                 keyboard: true,
-                pointer: true
+                pointer: true,
+                directorySharing: directorySharing
             ),
             portForwards: [],
             executionResources: .init(

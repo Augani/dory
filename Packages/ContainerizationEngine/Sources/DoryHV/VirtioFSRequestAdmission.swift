@@ -1,4 +1,5 @@
 import DoryFSWorkerContracts
+import DoryVirtio
 import Foundation
 
 /// Host-owned request envelope produced while the exact virtqueue lease is held. Execution code
@@ -283,6 +284,128 @@ enum VirtioFSRequestAdmission {
             )
         }
 
+        return .execute(VirtioFSAdmittedRequest(
+            bytes: request,
+            header: header,
+            opcode: opcode,
+            writableCapacity: writableBytes,
+            maximumResponseBytes: opcode == .readlink
+                ? min(writableBytes, responseLimit)
+                : requiredCapacity,
+            expectsReply: !replylessForget
+        ))
+    }
+
+    /// Inspects the host-owned request snapshot produced by the DoryPC PCI transport. Unlike the
+    /// MMIO path, the PCI split queue exposes descriptor metadata rather than lease-held pointers;
+    /// its generation-checked deferred completion owns publication safety after this snapshot.
+    static func inspect(
+        chain: DoryVirtioDescriptorChain,
+        request: [UInt8],
+        queue: Int,
+        maximumRequestBytes requestLimit: Int = maximumRequestBytes,
+        maximumResponseBytes responseLimit: Int = maximumResponseBytes
+    ) -> VirtioFSRequestAdmissionDecision {
+        guard !chain.descriptors.isEmpty else { return reject(.emptyChain) }
+        var sawReadable = false
+        var sawWritable = false
+        var readableBytes = 0
+        var writableBytes = 0
+        for descriptor in chain.descriptors {
+            guard descriptor.length > 0 else { return reject(.zeroLengthDescriptor) }
+            guard let length = Int(exactly: descriptor.length) else {
+                return reject(.requestTooLarge(limit: requestLimit, actual: Int.max))
+            }
+            if descriptor.deviceWillWrite {
+                sawWritable = true
+                guard let total = checkedAdd(writableBytes, length) else {
+                    return reject(.responseTooLarge(limit: responseLimit, requested: Int.max))
+                }
+                writableBytes = total
+            } else {
+                guard !sawWritable else { return reject(.readableAfterWritable) }
+                sawReadable = true
+                guard let total = checkedAdd(readableBytes, length) else {
+                    return reject(.requestTooLarge(limit: requestLimit, actual: Int.max))
+                }
+                readableBytes = total
+            }
+        }
+        guard sawReadable else { return reject(.missingReadablePrefix) }
+        guard readableBytes >= FuseInHeader.byteCount else { return reject(.shortHeader) }
+        guard request.count >= FuseInHeader.byteCount,
+              let header = try? FuseProtocol.decodeInHeader(request) else {
+            return reject(.shortHeader)
+        }
+        guard readableBytes <= requestLimit else {
+            return reject(
+                .requestTooLarge(limit: requestLimit, actual: readableBytes),
+                header: header,
+                writableCapacity: sawWritable ? writableBytes : 0,
+                errno: E2BIG
+            )
+        }
+        guard request.count == readableBytes,
+              header.length == UInt32(readableBytes) else {
+            return reject(
+                .lengthMismatch(declared: header.length, actual: request.count),
+                header: header,
+                writableCapacity: sawWritable ? writableBytes : 0,
+                errno: EINVAL
+            )
+        }
+        let opcode = FuseOpcode(rawValue: header.opcode)
+        let replylessForget = opcode == .forget || opcode == .batchForget
+        let isHighPriority = replylessForget || opcode == .interrupt
+        guard (queue == 0) == isHighPriority else {
+            return reject(
+                .wrongQueue(queue: queue, opcode: header.opcode),
+                header: header,
+                writableCapacity: sawWritable ? writableBytes : 0,
+                errno: EPROTO
+            )
+        }
+        if !replylessForget, !sawWritable {
+            return reject(.missingWritableSuffix, header: header, writableCapacity: 0, errno: EIO)
+        }
+        let requiredCapacity: Int
+        do {
+            requiredCapacity = try requiredResponseCapacity(
+                opcode: opcode,
+                request: request,
+                maximumResponseBytes: responseLimit
+            )
+        } catch let reason as VirtioFSRequestRejection {
+            return reject(
+                reason,
+                header: header,
+                writableCapacity: sawWritable ? writableBytes : 0,
+                errno: EINVAL
+            )
+        } catch {
+            return reject(
+                .responseTooLarge(limit: responseLimit, requested: Int.max),
+                header: header,
+                writableCapacity: sawWritable ? writableBytes : 0,
+                errno: EINVAL
+            )
+        }
+        guard writableBytes >= requiredCapacity else {
+            return reject(
+                .insufficientResponseCapacity(required: requiredCapacity, actual: writableBytes),
+                header: header,
+                writableCapacity: writableBytes,
+                errno: EIO
+            )
+        }
+        guard requiredCapacity <= responseLimit else {
+            return reject(
+                .responseTooLarge(limit: responseLimit, requested: requiredCapacity),
+                header: header,
+                writableCapacity: writableBytes,
+                errno: E2BIG
+            )
+        }
         return .execute(VirtioFSAdmittedRequest(
             bytes: request,
             header: header,

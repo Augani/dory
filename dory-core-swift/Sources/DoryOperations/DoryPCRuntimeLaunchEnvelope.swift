@@ -215,7 +215,6 @@ public struct DoryPCRuntimeLaunchEnvelope: Codable, Sendable, Equatable {
               devices.networkAttachment != .bridged,
               devices.displays.count <= 1,
               (devices.displays.isEmpty ? graphics == .none : graphics != .none),
-              !devices.directorySharing,
               !devices.intelApplicationTranslation else {
             throw DoryPCRuntimeLaunchEnvelopeError.invalidDeviceContract
         }

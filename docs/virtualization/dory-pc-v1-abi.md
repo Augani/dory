@@ -41,6 +41,8 @@ The IOAPIC exposes GSIs 0...23. PCI INTx uses level-triggered, active-low GSIs 1
 | VirtIO network | `0000:00:08.0` | `0xd000c000` |
 | VirtIO entropy | `0000:00:09.0` | `0xd000d000` |
 | VirtIO socket | `0000:00:0a.0` | `0xd000e000` |
+| VirtIO filesystem share 0 | `0000:00:0b.0` | `0xd000f000` |
+| VirtIO filesystem shares 1...7 | `0000:00:0d.0`...`0000:00:13.0` | `0xd0010000`...`0xd0016000` |
 
 ## Boot contract
 
