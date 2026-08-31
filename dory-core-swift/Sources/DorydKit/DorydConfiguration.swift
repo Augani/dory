@@ -338,6 +338,7 @@ public struct DorydEnvironment: Sendable {
             vmmExecutablePath: helper,
             acceleratedDesktopExecutablePath: acceleratedDesktop?.executablePath,
             armVirtFirmwareBundlePath: string("DORYD_ARMVIRT_FIRMWARE_BUNDLE"),
+            pcFirmwareBundlePath: string("DORYD_PC_FIRMWARE_BUNDLE"),
             stateDirectory: stateDirectory,
             runtimeDirectory: string("DORYD_MACHINE_RUNTIME_DIR") ?? "\(home)/.dory/machines",
             // The journal store derives `Library/Application Support/Dory/operations` from a

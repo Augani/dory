@@ -8,6 +8,89 @@ import Foundation
 import XCTest
 
 final class RuntimeUEFIAuthorityIntegrationTests: XCTestCase {
+    func testPCInstallerAdmissionPinsFixedPCIPlanAndPlatform() throws {
+        let fixture = try makeFixture(includeInstaller: true, platform: .pcV1)
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.firmwareDirectory) }
+        let systemID = try DoryVirtualDeviceID.derived(
+            namespace: .systemDisk,
+            stableID: "root-disk"
+        )
+        let installerID = try DoryVirtualDeviceID.derived(
+            namespace: .removableStorage,
+            stableID: "installer-media"
+        )
+
+        let admitted = try fixture.lease.withBorrowedDescriptor { descriptor in
+            try MachineManager.admitResolvedDoryPCUEFIResources(
+                machineDirectoryDescriptor: descriptor,
+                machineDirectoryGeneration: fixture.lease.generation,
+                expectedDiskCapacityBytes: UInt64(fixture.disk.count),
+                firmwareBundlePath: fixture.firmwareDirectory,
+                systemDiskLogicalID: systemID,
+                installerMediaLogicalID: installerID,
+                mediaKind: .installerISO,
+                expectedInstallerSHA256: digest(fixture.installer!)
+            )
+        }
+        defer { admitted.close() }
+
+        XCTAssertEqual(
+            [admitted.disk.authority.childDescriptor]
+                + admitted.boot.authorities.map(\.childDescriptor),
+            [3, 4, 5, 6, 7, 8]
+        )
+        XCTAssertEqual(admitted.boot.launchPlan.firmware.platform, .pcV1)
+        XCTAssertEqual(
+            admitted.boot.launchPlan.bootDevices.map(\.pciAddress),
+            [DoryPCUEFIBootDevice.systemDiskAddress,
+             DoryPCUEFIBootDevice.removableMediaAddress]
+        )
+        XCTAssertEqual(
+            admitted.boot.launchPlan.bootOrder,
+            [installerID.rawValue, systemID.rawValue]
+        )
+        try admitted.boot.variableStoreDirectory.withBorrowedDescriptor { descriptor in
+            let store = try DoryUEFIVariableStoreDirectoryDescriptor(
+                inheritedDescriptor: descriptor
+            )
+            XCTAssertEqual(try store.load().snapshot.platform, .pcV1)
+        }
+    }
+
+    func testPCAdmissionRejectsARMFirmwareBeforeLeasingDisk() throws {
+        let fixture = try makeFixture(includeInstaller: false)
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        defer { try? FileManager.default.removeItem(atPath: fixture.firmwareDirectory) }
+
+        XCTAssertThrowsError(try fixture.lease.withBorrowedDescriptor { descriptor in
+            try MachineManager.admitResolvedDoryPCUEFIResources(
+                machineDirectoryDescriptor: descriptor,
+                machineDirectoryGeneration: fixture.lease.generation,
+                expectedDiskCapacityBytes: UInt64(fixture.disk.count),
+                firmwareBundlePath: fixture.firmwareDirectory,
+                systemDiskLogicalID: try DoryVirtualDeviceID.derived(
+                    namespace: .systemDisk,
+                    stableID: "root-disk"
+                ),
+                installerMediaLogicalID: nil,
+                mediaKind: .virtualDisk,
+                expectedInstallerSHA256: nil
+            )
+        }) { error in
+            XCTAssertTrue("\(error)".contains("firmware bundle admission failed"), "\(error)")
+        }
+
+        let disk = try fixture.lease.withBorrowedDescriptor { descriptor in
+            try MachineManager.admitResolvedRawHVSystemDisk(
+                machineDirectoryDescriptor: descriptor,
+                machineDirectoryGeneration: fixture.lease.generation,
+                expectedCapacityBytes: UInt64(fixture.disk.count)
+            )
+        }
+        disk.authority.close()
+    }
+
     func testInstallerAdmissionPinsFirmwareMediaAndVariableDirectory() throws {
         let fixture = try makeFixture(includeInstaller: true)
         defer { try? FileManager.default.removeItem(atPath: fixture.root) }
@@ -99,7 +182,10 @@ final class RuntimeUEFIAuthorityIntegrationTests: XCTestCase {
         disk.authority.close()
     }
 
-    private func makeFixture(includeInstaller: Bool) throws -> (
+    private func makeFixture(
+        includeInstaller: Bool,
+        platform: DoryFirmwarePlatform = .armVirtV1
+    ) throws -> (
         root: String,
         directory: String,
         lease: DoryMachineDirectoryLease,
@@ -136,16 +222,21 @@ final class RuntimeUEFIAuthorityIntegrationTests: XCTestCase {
         )
         XCTAssertEqual(chmod(firmwareDirectory, 0o755), 0)
         let firmware = Data(repeating: 0xa5, count: 4_096)
-        let variables = try DoryUEFIVariableStoreSnapshot().canonicalData()
+        let variables = try DoryUEFIVariableStoreSnapshot(
+            platform: platform,
+            generation: 1,
+            variables: []
+        ).canonicalData()
         let sbom = Data(#"{"bomFormat":"CycloneDX","specVersion":"1.6"}"#.utf8)
         let manifest = try DoryFirmwareArtifactManifest(
+            platform: platform,
             buildIdentifier: "dory-armvirt-fw-admission-test.1",
             source: DoryFirmwareSourcePin(
                 repository: "https://github.com/tianocore/edk2.git",
                 revision: String(repeating: "a", count: 40)
             ),
             sourceDateEpoch: 1_788_048_000,
-            platformConfigurationSHA256: digest(Data("DoryARMVirt.dsc".utf8)),
+            platformConfigurationSHA256: digest(Data("DoryPlatform.dsc".utf8)),
             toolchainSHA256: digest(Data("clang-17F109".utf8)),
             firmwareCodeSHA256: digest(firmware),
             firmwareCodeByteCount: UInt64(firmware.count),

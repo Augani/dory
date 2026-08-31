@@ -36,7 +36,9 @@ public struct DoryARMVirtFirmwareBundle: Sendable, Equatable {
         self.directory = directory
     }
 
-    public func loadVerified() throws -> DoryVerifiedFirmwareArtifacts {
+    public func loadVerified(
+        expectedPlatform: DoryFirmwarePlatform? = nil
+    ) throws -> DoryVerifiedFirmwareArtifacts {
         let descriptor = directory.withCString {
             open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW)
         }
@@ -80,7 +82,15 @@ public struct DoryARMVirtFirmwareBundle: Sendable, Equatable {
             maximumByteCount: 16 * 1_024 * 1_024
         )
         do {
-            _ = try DoryUEFIVariableStoreSnapshot.decodeCanonicalTemplate(variableTemplate)
+            let template = try DoryUEFIVariableStoreSnapshot.decodeCanonicalTemplate(
+                variableTemplate
+            )
+            if let expectedPlatform,
+               manifest.platform != expectedPlatform || template.platform != expectedPlatform {
+                throw DoryARMVirtFirmwareBundleError.verificationFailed(
+                    "firmware bundle platform does not match \(expectedPlatform.rawValue)"
+                )
+            }
             return try DoryVerifiedFirmwareArtifacts(
                 manifest: manifest,
                 firmwareCode: firmware,

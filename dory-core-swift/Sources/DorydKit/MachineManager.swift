@@ -12,6 +12,8 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
     public var acceleratedDesktopExecutablePath: String?
     /// Verified DoryARMVirt UEFI release bundle resolved only by the trusted daemon.
     public var armVirtFirmwareBundlePath: String?
+    /// Verified DoryPC UEFI release bundle resolved only by the trusted daemon.
+    public var pcFirmwareBundlePath: String?
     public var stateDirectory: String
     public var runtimeDirectory: String
     /// Home used to derive durable mutation authority. The daemon supplies the Dory user home so
@@ -42,6 +44,7 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
         vmmExecutablePath: String,
         acceleratedDesktopExecutablePath: String? = nil,
         armVirtFirmwareBundlePath: String? = nil,
+        pcFirmwareBundlePath: String? = nil,
         stateDirectory: String,
         runtimeDirectory: String? = nil,
         lifecycleJournalHome: String? = nil,
@@ -64,6 +67,7 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
         self.vmmExecutablePath = vmmExecutablePath
         self.acceleratedDesktopExecutablePath = acceleratedDesktopExecutablePath
         self.armVirtFirmwareBundlePath = armVirtFirmwareBundlePath
+        self.pcFirmwareBundlePath = pcFirmwareBundlePath
         self.stateDirectory = stateDirectory
         self.runtimeDirectory = runtimeDirectory ?? stateDirectory
         self.lifecycleJournalHome = lifecycleJournalHome
@@ -1248,6 +1252,35 @@ struct RawHVAdmittedUEFIBoot: @unchecked Sendable {
 struct RawHVAdmittedUEFIRuntimeResources: @unchecked Sendable {
     let disk: RawHVAdmittedSystemDisk
     let boot: RawHVAdmittedUEFIBoot
+
+    func close() {
+        disk.authority.close()
+        boot.close()
+    }
+}
+
+struct RawHVAdmittedPCUEFIBoot: @unchecked Sendable {
+    let launchPlan: DoryPCUEFILaunchPlan
+    let firmwareCode: RawHVAdmittedImmutableBootBlob
+    let variableStoreTemplate: RawHVAdmittedImmutableBootBlob
+    let firmwareSBOM: RawHVAdmittedImmutableBootBlob
+    let installerMedia: RawHVAdmittedImmutableBootBlob?
+    let variableStoreDirectory: HvProcessInheritedFileDescriptor
+
+    var authorities: [HvProcessInheritedFileDescriptor] {
+        [firmwareCode.authority, variableStoreTemplate.authority, firmwareSBOM.authority]
+            + (installerMedia.map { [$0.authority] } ?? [])
+            + [variableStoreDirectory]
+    }
+
+    func close() {
+        authorities.forEach { $0.close() }
+    }
+}
+
+struct RawHVAdmittedPCUEFIRuntimeResources: @unchecked Sendable {
+    let disk: RawHVAdmittedSystemDisk
+    let boot: RawHVAdmittedPCUEFIBoot
 
     func close() {
         disk.authority.close()
@@ -8246,7 +8279,7 @@ public final class MachineManager: @unchecked Sendable {
         do {
             artifacts = try DoryARMVirtFirmwareBundle(
                 directory: firmwareBundlePath
-            ).loadVerified()
+            ).loadVerified(expectedPlatform: .armVirtV1)
         } catch {
             throw MachineManagerError.persistence(
                 "resolved UEFI firmware bundle admission failed: \(error)"
@@ -8255,7 +8288,7 @@ public final class MachineManager: @unchecked Sendable {
         let template = try DoryUEFIVariableStoreSnapshot.decodeCanonicalTemplate(
             artifacts.variableStoreTemplate
         )
-        guard template.generation == 1 else {
+        guard template.platform == .armVirtV1, template.generation == 1 else {
             throw MachineManagerError.persistence(
                 "resolved UEFI variable template must begin at generation 1"
             )
@@ -8302,7 +8335,8 @@ public final class MachineManager: @unchecked Sendable {
             try store.initialize(template)
         }
         let variableLoad = try store.load()
-        guard variableLoad.source == .primary else {
+        guard variableLoad.source == .primary,
+              variableLoad.snapshot.platform == .armVirtV1 else {
             throw MachineManagerError.persistence(
                 "UEFI variable store requires explicit recovery"
             )
@@ -8376,6 +8410,194 @@ public final class MachineManager: @unchecked Sendable {
                         return RawHVAdmittedUEFIRuntimeResources(
                             disk: disk,
                             boot: RawHVAdmittedUEFIBoot(
+                                launchPlan: launchPlan,
+                                firmwareCode: firmwareCode,
+                                variableStoreTemplate: variableTemplate,
+                                firmwareSBOM: sbom,
+                                installerMedia: installer,
+                                variableStoreDirectory: directoryAuthority
+                            )
+                        )
+                    } catch {
+                        sbom.authority.close()
+                        throw error
+                    }
+                } catch {
+                    variableTemplate.authority.close()
+                    throw error
+                }
+            } catch {
+                firmwareCode.authority.close()
+                throw error
+            }
+        } catch {
+            disk.authority.close()
+            throw error
+        }
+    }
+
+    static func admitResolvedDoryPCUEFIResources(
+        machineDirectoryDescriptor: Int32,
+        machineDirectoryGeneration: DoryTrustedDirectoryIdentity,
+        expectedDiskCapacityBytes: UInt64,
+        firmwareBundlePath: String,
+        systemDiskLogicalID: DoryVirtualDeviceID,
+        installerMediaLogicalID: DoryVirtualDeviceID?,
+        mediaKind: DoryBootMediaKind,
+        expectedInstallerSHA256: String?
+    ) throws -> RawHVAdmittedPCUEFIRuntimeResources {
+        guard mediaKind == .installerISO || mediaKind == .virtualDisk else {
+            throw MachineManagerError.persistence(
+                "resolved DoryPC UEFI launch requires installer-ISO or virtual-disk boot media"
+            )
+        }
+        let expectsInstaller = mediaKind == .installerISO
+        guard (expectedInstallerSHA256 != nil) == expectsInstaller,
+              (installerMediaLogicalID != nil) == expectsInstaller else {
+            throw MachineManagerError.persistence(
+                "resolved DoryPC UEFI installer authority does not match its boot plan"
+            )
+        }
+        try validateRawHVMachineDirectoryDescriptor(
+            machineDirectoryDescriptor,
+            generation: machineDirectoryGeneration
+        )
+
+        let artifacts: DoryVerifiedFirmwareArtifacts
+        do {
+            artifacts = try DoryARMVirtFirmwareBundle(
+                directory: firmwareBundlePath
+            ).loadVerified(expectedPlatform: .pcV1)
+        } catch {
+            throw MachineManagerError.persistence(
+                "resolved DoryPC UEFI firmware bundle admission failed: \(error)"
+            )
+        }
+        let template = try DoryUEFIVariableStoreSnapshot.decodeCanonicalTemplate(
+            artifacts.variableStoreTemplate
+        )
+        guard template.platform == .pcV1, template.generation == 1 else {
+            throw MachineManagerError.persistence(
+                "resolved DoryPC UEFI variable template must be PC-v1 generation 1"
+            )
+        }
+
+        let variableDirectoryName = "uefi-variables"
+        if mkdirat(machineDirectoryDescriptor, variableDirectoryName, mode_t(0o700)) != 0,
+           errno != EEXIST {
+            throw MachineManagerError.persistence(
+                "could not create DoryPC UEFI variable directory: \(String(cString: strerror(errno)))"
+            )
+        }
+        let variableDirectory = openat(
+            machineDirectoryDescriptor,
+            variableDirectoryName,
+            O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW
+        )
+        guard variableDirectory >= 3 else {
+            throw MachineManagerError.persistence(
+                "could not open DoryPC UEFI variable directory: \(String(cString: strerror(errno)))"
+            )
+        }
+        var variableDirectoryTransferred = false
+        defer {
+            if !variableDirectoryTransferred { close(variableDirectory) }
+        }
+        var variableStatus = stat()
+        guard fstat(variableDirectory, &variableStatus) == 0,
+              variableStatus.st_mode & S_IFMT == S_IFDIR,
+              variableStatus.st_uid == geteuid(),
+              variableStatus.st_mode & mode_t(0o7777) == mode_t(0o700),
+              UInt64(truncatingIfNeeded: variableStatus.st_dev)
+                == machineDirectoryGeneration.device else {
+            throw MachineManagerError.persistence(
+                "DoryPC UEFI variable directory failed owner/mode/device validation"
+            )
+        }
+        let store = try DoryUEFIVariableStoreDirectoryDescriptor(
+            inheritedDescriptor: variableDirectory
+        )
+        do {
+            _ = try store.load()
+        } catch DoryUEFIVariableStoreFileError.storeNotInitialized {
+            try store.initialize(template)
+        }
+        let variableLoad = try store.load()
+        guard variableLoad.source == .primary,
+              variableLoad.snapshot.platform == .pcV1 else {
+            throw MachineManagerError.persistence(
+                "DoryPC UEFI variable store requires explicit recovery"
+            )
+        }
+
+        let disk = try admitResolvedRawHVSystemDisk(
+            machineDirectoryDescriptor: machineDirectoryDescriptor,
+            machineDirectoryGeneration: machineDirectoryGeneration,
+            expectedCapacityBytes: expectedDiskCapacityBytes
+        )
+        do {
+            let firmwareCode = try stageResolvedRawHVImmutableData(
+                artifacts.firmwareCode,
+                name: RuntimeLaunchEnvelope.firmwareCodeSlotName,
+                childDescriptor: RuntimeLaunchEnvelope.firmwareCodeDescriptor,
+                machineDirectoryDescriptor: machineDirectoryDescriptor,
+                machineDirectoryGeneration: machineDirectoryGeneration
+            )
+            do {
+                let variableTemplate = try stageResolvedRawHVImmutableData(
+                    artifacts.variableStoreTemplate,
+                    name: RuntimeLaunchEnvelope.variableStoreTemplateSlotName,
+                    childDescriptor: RuntimeLaunchEnvelope.variableStoreTemplateDescriptor,
+                    machineDirectoryDescriptor: machineDirectoryDescriptor,
+                    machineDirectoryGeneration: machineDirectoryGeneration
+                )
+                do {
+                    let sbom = try stageResolvedRawHVImmutableData(
+                        artifacts.sbom,
+                        name: RuntimeLaunchEnvelope.firmwareSBOMSlotName,
+                        childDescriptor: RuntimeLaunchEnvelope.firmwareSBOMDescriptor,
+                        machineDirectoryDescriptor: machineDirectoryDescriptor,
+                        machineDirectoryGeneration: machineDirectoryGeneration
+                    )
+                    do {
+                        let installer = try expectedInstallerSHA256.map { digest in
+                            try stageResolvedRawHVInstallerMedia(
+                                machineDirectoryDescriptor: machineDirectoryDescriptor,
+                                machineDirectoryGeneration: machineDirectoryGeneration,
+                                expectedSHA256: digest
+                            )
+                        }
+                        let systemDevice = try DoryPCUEFIBootDevice(
+                            logicalID: systemDiskLogicalID.rawValue,
+                            kind: .systemDisk,
+                            pciAddress: DoryPCUEFIBootDevice.systemDiskAddress,
+                            readOnly: false
+                        )
+                        let removableDevice = try installerMediaLogicalID.map { logicalID in
+                            try DoryPCUEFIBootDevice(
+                                logicalID: logicalID.rawValue,
+                                kind: .removableMedia,
+                                pciAddress: DoryPCUEFIBootDevice.removableMediaAddress,
+                                readOnly: true
+                            )
+                        }
+                        let devices = [systemDevice] + (removableDevice.map { [$0] } ?? [])
+                        let launchPlan = try DoryPCUEFILaunchPlan(
+                            firmware: artifacts.manifest,
+                            variableStoreGeneration: variableLoad.snapshot.generation,
+                            bootDevices: devices.sorted(),
+                            bootOrder: (removableDevice.map { [$0.logicalID] } ?? [])
+                                + [systemDevice.logicalID]
+                        )
+                        let directoryAuthority = HvProcessInheritedFileDescriptor(
+                            name: RuntimeLaunchEnvelope.variableStoreDirectorySlotName,
+                            takingOwnershipOf: variableDirectory,
+                            childDescriptor: RuntimeLaunchEnvelope.variableStoreDirectoryDescriptor
+                        )
+                        variableDirectoryTransferred = true
+                        return RawHVAdmittedPCUEFIRuntimeResources(
+                            disk: disk,
+                            boot: RawHVAdmittedPCUEFIBoot(
                                 launchPlan: launchPlan,
                                 firmwareCode: firmwareCode,
                                 variableStoreTemplate: variableTemplate,
