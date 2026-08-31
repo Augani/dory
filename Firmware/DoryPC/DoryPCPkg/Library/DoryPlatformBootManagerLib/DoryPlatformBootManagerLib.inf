@@ -10,14 +10,18 @@
   DoryPlatformBootManagerLib.c
 
 [Packages]
+  DoryPCPkg/DoryPCPkg.dec
   MdePkg/MdePkg.dec
   MdeModulePkg/MdeModulePkg.dec
 
 [LibraryClasses]
+  IoLib
+  PcdLib
   UefiLib
   UefiBootManagerLib
 
 [FixedPcd]
+  gDoryPCTokenSpaceGuid.PcdFirmwareConfigurationBase
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultBaudRate
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultDataBits
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultParity

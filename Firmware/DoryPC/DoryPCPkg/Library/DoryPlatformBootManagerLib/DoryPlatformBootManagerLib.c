@@ -1,14 +1,56 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 #include <Uefi.h>
+#include <DoryPCFirmwareConfiguration.h>
 #include <Guid/EventGroup.h>
 #include <Guid/SerialPortLibVendor.h>
+#include <Library/IoLib.h>
 #include <Library/PcdLib.h>
 #include <Library/PlatformBootManagerLib.h>
 #include <Library/UefiBootManagerLib.h>
 #include <Library/UefiLib.h>
 
 #define DP_NODE_LEN(Type)  { (UINT8)sizeof (Type), (UINT8)(sizeof (Type) >> 8) }
+#define DORY_PC_PM1_CONTROL_PORT  0x0604
+#define DORY_PC_SERIAL_PORT       0x03F8
+#define DORY_PC_SOFT_OFF_TYPE     5
+
+STATIC CONST CHAR8  mDoryBootMarker[] = "DORY-PC-UEFI-BOOT\r\n";
+
+STATIC
+BOOLEAN
+DoryBootProbeRequested (
+  VOID
+  )
+{
+  UINTN  Base;
+
+  Base = (UINTN)FixedPcdGet64 (PcdFirmwareConfigurationBase);
+  return (MmioRead64 (Base + DORY_PC_CONFIGURATION_MAGIC_OFFSET) == DORY_PC_CONFIGURATION_MAGIC) &&
+         (MmioRead32 (Base + DORY_PC_CONFIGURATION_VERSION_OFFSET) == DORY_PC_CONFIGURATION_VERSION) &&
+         (MmioRead32 (Base + DORY_PC_CONFIGURATION_HEADER_SIZE_OFFSET) >= DORY_PC_CONFIGURATION_HEADER_SIZE) &&
+         ((MmioRead32 (Base + DORY_PC_CONFIGURATION_FLAGS_OFFSET) &
+           DORY_PC_CONFIGURATION_FLAG_BOOT_PROBE) != 0);
+}
+
+STATIC
+VOID
+DoryRunBootProbe (
+  VOID
+  )
+{
+  UINTN  Index;
+
+  for (Index = 0; Index < sizeof (mDoryBootMarker) - 1; Index++) {
+    IoWrite8 (DORY_PC_SERIAL_PORT, mDoryBootMarker[Index]);
+  }
+
+  IoWrite16 (
+    DORY_PC_PM1_CONTROL_PORT,
+    (DORY_PC_SOFT_OFF_TYPE << 10) | BIT13
+    );
+  CpuDeadLoop ();
+}
 
 #pragma pack (1)
 typedef struct {
@@ -62,6 +104,13 @@ PlatformBootManagerAfterConsole (
   // Refresh guest-created file-specific options while retaining the host-published DoryPC
   // physical-device fallbacks and their launch-plan order in BootOrder.
   EfiBootManagerRefreshAllBootOption ();
+
+  // The production image contains a dormant BDS probe so the exact shipped firmware can be
+  // qualified under every execution tier. The immutable flag defaults to zero, and the hook does
+  // not create a boot option or touch persistent NVRAM during a normal VM launch.
+  if (DoryBootProbeRequested ()) {
+    DoryRunBootProbe ();
+  }
 }
 
 VOID

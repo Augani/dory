@@ -78,10 +78,21 @@ def verify_platform_contract() -> None:
     if PLATFORM["platform"] != "dory-pc-v1":
         return
     configuration = PLATFORM_ROOT / "DoryPC.dsc"
+    flash_definition = PLATFORM_ROOT / "DoryPC.fdf"
+    memory_definition = PLATFORM_ROOT / "DoryMemFd.fdf.inc"
+    boot_manager = (
+        PLATFORM_ROOT
+        / "Library"
+        / "DoryPlatformBootManagerLib"
+        / "DoryPlatformBootManagerLib.c"
+    )
     try:
         lines = configuration.read_text(encoding="utf-8").splitlines()
+        flash_contents = flash_definition.read_text(encoding="utf-8")
+        memory_contents = memory_definition.read_text(encoding="utf-8")
+        boot_manager_contents = boot_manager.read_text(encoding="utf-8")
     except OSError as error:
-        raise BuildFailure(f"cannot read {configuration}: {error}") from error
+        raise BuildFailure(f"cannot read DoryPC platform definition: {error}") from error
     for line in lines:
         binding = line.strip()
         if binding.startswith("QemuFwCfgLib|") and not binding.endswith(
@@ -122,6 +133,58 @@ def verify_platform_contract() -> None:
         raise BuildFailure("DoryPC production firmware must not embed the UEFI shell")
     if "gEfiMdeModulePkgTokenSpaceGuid.PcdUse1GPageTable|FALSE" not in contents:
         raise BuildFailure("DoryPC firmware must stay inside the compatible-v1 page-size profile")
+    tiano_library = (
+        "MdePkg/Library/BaseUefiDecompressLib/BaseUefiTianoCustomDecompressLib.inf"
+    )
+    if contents.count(tiano_library) != 1:
+        raise BuildFailure("DoryPC SEC must bind the deterministic Tiano decompressor exactly once")
+    if "LzmaCustomDecompressLib" in contents:
+        raise BuildFailure("DoryPC production firmware must not bind the slow LZMA decompressor")
+    if "DoryBootProbe" in contents:
+        raise BuildFailure("DoryPC must not compile the superseded boot-probe application")
+    if "A31280AD-481E-41B6-95E8-127F4C984779" not in flash_contents:
+        raise BuildFailure("DoryPC compact firmware volume must use Tiano compression")
+    if "EE4E5898-3914-4259-9D6E-DC7BD79403CF" in flash_contents:
+        raise BuildFailure("DoryPC compact firmware volume must not use LZMA compression")
+    if "!include DoryPCPkg/DoryMemFd.fdf.inc" not in flash_contents:
+        raise BuildFailure("DoryPC firmware must use its right-sized memory firmware volumes")
+    required_memory_regions = (
+        "0x030000|0x030000",
+        "0x060000|0x2C0000",
+    )
+    if any(region not in memory_contents for region in required_memory_regions):
+        raise BuildFailure("DoryPC memory firmware-volume layout has drifted")
+    required_probe_contract = (
+        "DORY_PC_CONFIGURATION_FLAG_BOOT_PROBE",
+        "DORY-PC-UEFI-BOOT",
+        "DORY_PC_PM1_CONTROL_PORT",
+    )
+    if any(value not in boot_manager_contents for value in required_probe_contract):
+        raise BuildFailure("DoryPC firmware qualification probe contract has drifted")
+    unsupported_firmware_drivers = (
+        "EbcDxe",
+        "VirtioScsiDxe",
+        "RamDiskDxe",
+        "ScsiBusDxe",
+        "ScsiDiskDxe",
+        "SataControllerDxe",
+        "AtaAtapiPassThru",
+        "AtaBusDxe",
+        "NvmExpressDxe",
+        "CxlDxe",
+        "S3SaveStateDxe",
+        "BootScriptExecutorDxe",
+        "UhciDxe",
+        "EhciDxe",
+    )
+    present_unsupported = [
+        driver for driver in unsupported_firmware_drivers if driver in flash_contents
+    ]
+    if present_unsupported:
+        raise BuildFailure(
+            "DoryPC firmware embeds drivers for absent machine devices: "
+            + ", ".join(present_unsupported)
+        )
 
 
 configure_platform("armvirt")

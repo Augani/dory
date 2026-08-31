@@ -60,7 +60,7 @@ FV = SECFV
 
 ################################################################################
 
-!include OvmfPkg/Include/Fdf/MemFd.fdf.inc
+!include DoryPCPkg/DoryMemFd.fdf.inc
 
 ################################################################################
 
@@ -197,7 +197,6 @@ INF  MdeModulePkg/Universal/PCD/Dxe/Pcd.inf
 
 INF  MdeModulePkg/Core/RuntimeDxe/RuntimeDxe.inf
 INF  MdeModulePkg/Universal/SecurityStubDxe/SecurityStubDxe.inf
-INF  MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
 INF  UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
 
 INF  UefiCpuPkg/CpuDxe/CpuDxe.inf
@@ -213,7 +212,6 @@ INF  PcAtChipsetPkg/PcatRealTimeClockRuntimeDxe/PcatRealTimeClockRuntimeDxe.inf
 INF  OvmfPkg/VirtioPciDeviceDxe/VirtioPciDeviceDxe.inf
 INF  OvmfPkg/Virtio10Dxe/Virtio10.inf
 INF  OvmfPkg/VirtioBlkDxe/VirtioBlk.inf
-INF  OvmfPkg/VirtioScsiDxe/VirtioScsi.inf
 INF  OvmfPkg/VirtioSerialDxe/VirtioSerial.inf
 INF  OvmfPkg/VirtioInputDxe/VirtioInput.inf
 
@@ -236,23 +234,10 @@ INF  MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
 INF  MdeModulePkg/Universal/DevicePathDxe/DevicePathDxe.inf
 INF  MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
 INF  MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
-INF  MdeModulePkg/Universal/Disk/RamDiskDxe/RamDiskDxe.inf
 INF  MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
-INF  MdeModulePkg/Bus/Scsi/ScsiBusDxe/ScsiBusDxe.inf
-INF  MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe.inf
-INF  MdeModulePkg/Bus/Pci/SataControllerDxe/SataControllerDxe.inf
-INF  MdeModulePkg/Bus/Ata/AtaAtapiPassThru/AtaAtapiPassThru.inf
-INF  MdeModulePkg/Bus/Ata/AtaBusDxe/AtaBusDxe.inf
-INF  MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe.inf
-INF  MdeModulePkg/Bus/Pci/CxlDxe/CxlDxe.inf
 INF  MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf
 INF  MdeModulePkg/Universal/SetupBrowserDxe/SetupBrowserDxe.inf
 INF  MdeModulePkg/Universal/DisplayEngineDxe/DisplayEngineDxe.inf
-INF  MdeModulePkg/Universal/Acpi/S3SaveStateDxe/S3SaveStateDxe.inf
-
-!if $(STANDALONE_MM_ENABLE) != TRUE
-INF  MdeModulePkg/Universal/Acpi/BootScriptExecutorDxe/BootScriptExecutorDxe.inf
-!endif
 INF  MdeModulePkg/Universal/Acpi/BootGraphicsResourceTableDxe/BootGraphicsResourceTableDxe.inf
 
 INF  FatPkg/EnhancedFatDxe/Fat.inf
@@ -284,8 +269,6 @@ INF MdeModulePkg/Logo/LogoDxe.inf
 #
 # Usb Support
 #
-INF  MdeModulePkg/Bus/Pci/UhciDxe/UhciDxe.inf
-INF  MdeModulePkg/Bus/Pci/EhciDxe/EhciDxe.inf
 INF  MdeModulePkg/Bus/Pci/XhciDxe/XhciDxe.inf
 INF  MdeModulePkg/Bus/Usb/UsbBusDxe/UsbBusDxe.inf
 INF  MdeModulePkg/Bus/Usb/UsbKbDxe/UsbKbDxe.inf
@@ -395,7 +378,9 @@ READ_LOCK_CAP      = TRUE
 READ_LOCK_STATUS   = TRUE
 
 FILE FV_IMAGE = 9E21FD93-9C72-4c15-8C4B-E77F1DB2D792 {
-   SECTION GUIDED EE4E5898-3914-4259-9D6E-DC7BD79403CF PROCESSING_REQUIRED = TRUE {
+   # Tiano trades some flash space for a much smaller deterministic instruction budget during
+   # SEC decompression. DoryPC's 4 MiB flash layout has enough compact-volume headroom for it.
+   SECTION GUIDED A31280AD-481E-41B6-95E8-127F4C984779 PROCESSING_REQUIRED = TRUE {
      #
      # These firmware volumes will have files placed in them uncompressed,
      # and then both firmware volumes will be compressed in a single

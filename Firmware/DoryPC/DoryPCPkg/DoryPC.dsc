@@ -772,7 +772,10 @@
   #
   OvmfPkg/Sec/SecMain.inf {
     <LibraryClasses>
-      NULL|MdeModulePkg/Library/LzmaCustomDecompressLib/LzmaCustomDecompressLib.inf
+      # Tiano decompression is deliberately used for the compact firmware volume. The Dory DBT
+      # executes the substantially more branch-heavy LZMA decoder too slowly for an interactive
+      # cold boot, while the compact volume has ample room for Tiano's larger output.
+      NULL|MdePkg/Library/BaseUefiDecompressLib/BaseUefiTianoCustomDecompressLib.inf
       BaseCryptLib|CryptoPkg/Library/BaseCryptLib/SecCryptLib.inf
   }
 
@@ -851,7 +854,6 @@
   #
   MdeModulePkg/Core/Dxe/DxeMain.inf {
     <LibraryClasses>
-      NULL|MdeModulePkg/Library/LzmaCustomDecompressLib/LzmaCustomDecompressLib.inf
       DevicePathLib|MdePkg/Library/UefiDevicePathLib/UefiDevicePathLib.inf
   }
 
@@ -873,7 +875,6 @@
 !include OvmfPkg/Include/Dsc/OvmfTpmSecurityStub.dsc.inc
   }
 
-  MdeModulePkg/Universal/EbcDxe/EbcDxe.inf
   UefiCpuPkg/CpuIo2Dxe/CpuIo2Dxe.inf
 
   UefiCpuPkg/CpuDxe/CpuDxe.inf {
@@ -926,11 +927,9 @@
       NULL|MdeModulePkg/Library/BootMaintenanceManagerUiLib/BootMaintenanceManagerUiLib.inf
   }
   MdeModulePkg/Application/BootManagerMenuApp/BootManagerMenuApp.inf
-  DoryPCPkg/Application/DoryBootProbe/DoryBootProbe.inf
   OvmfPkg/VirtioPciDeviceDxe/VirtioPciDeviceDxe.inf
   OvmfPkg/Virtio10Dxe/Virtio10.inf
   OvmfPkg/VirtioBlkDxe/VirtioBlk.inf
-  OvmfPkg/VirtioScsiDxe/VirtioScsi.inf
   OvmfPkg/VirtioSerialDxe/VirtioSerial.inf
   OvmfPkg/VirtioInputDxe/VirtioInput.inf
   MdeModulePkg/Universal/WatchdogTimerDxe/WatchdogTimer.inf
@@ -953,22 +952,13 @@
   }
   MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
-  MdeModulePkg/Universal/Disk/RamDiskDxe/RamDiskDxe.inf
   MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
   FatPkg/EnhancedFatDxe/Fat.inf
   MdeModulePkg/Universal/Disk/UdfDxe/UdfDxe.inf
   OvmfPkg/VirtioFsDxe/VirtioFsDxe.inf
-  MdeModulePkg/Bus/Scsi/ScsiBusDxe/ScsiBusDxe.inf
-  MdeModulePkg/Bus/Scsi/ScsiDiskDxe/ScsiDiskDxe.inf
-  MdeModulePkg/Bus/Pci/SataControllerDxe/SataControllerDxe.inf
-  MdeModulePkg/Bus/Ata/AtaAtapiPassThru/AtaAtapiPassThru.inf
-  MdeModulePkg/Bus/Ata/AtaBusDxe/AtaBusDxe.inf
-  MdeModulePkg/Bus/Pci/NvmExpressDxe/NvmExpressDxe.inf
-  MdeModulePkg/Bus/Pci/CxlDxe/CxlDxe.inf
   MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf
   MdeModulePkg/Universal/SetupBrowserDxe/SetupBrowserDxe.inf
   MdeModulePkg/Universal/DisplayEngineDxe/DisplayEngineDxe.inf
-  MdeModulePkg/Universal/Acpi/S3SaveStateDxe/S3SaveStateDxe.inf
 
   OvmfPkg/VirtioGpuDxe/VirtioGpu.inf
   OvmfPkg/VirtHstiDxe/VirtHstiDxe.inf
@@ -983,9 +973,6 @@
   #
   # ACPI Support
   #
-!if $(STANDALONE_MM_ENABLE) != TRUE
-  MdeModulePkg/Universal/Acpi/BootScriptExecutorDxe/BootScriptExecutorDxe.inf
-!endif
   MdeModulePkg/Universal/Acpi/BootGraphicsResourceTableDxe/BootGraphicsResourceTableDxe.inf
   OvmfPkg/WsmtDxe/WsmtDxe.inf
 
