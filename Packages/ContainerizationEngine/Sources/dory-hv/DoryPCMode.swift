@@ -77,11 +77,63 @@ enum DoryPCMode {
             }
 
             func requestStop() {
-                let current = lock.withLock { () -> DoryPCUEFIMachine in
+                let current = lock.withLock { () -> DoryPCUEFIMachine? in
+                    guard !stopping else { return nil }
                     stopping = true
                     return machine
                 }
-                current.machine.powerController.request(.powerOff)
+                current?.machine.powerController.request(.powerOff)
+            }
+
+            func requestGuestShutdown(
+                graceful: Bool,
+                agentSocketPath: String,
+                keyboardInput: DoryPCDesktopInputSink,
+                log: @escaping @Sendable (String) -> Void
+            ) {
+                let current = lock.withLock { () -> DoryPCUEFIMachine? in
+                    guard !stopping else { return nil }
+                    stopping = true
+                    return machine
+                }
+                guard let current else { return }
+                guard graceful else {
+                    current.machine.powerController.request(.powerOff)
+                    return
+                }
+                DispatchQueue.global(qos: .userInitiated).async {
+                    do {
+                        let control = DorydKit.AgentControl(configuration: .init(
+                            directSocketPath: agentSocketPath
+                        ))
+                        defer { control.disconnect() }
+                        let result = try control.exec(
+                            argv: [
+                                "/bin/sh", "-c",
+                                GuestShutdownCommand.detachedDesktopRequest(),
+                            ],
+                            timeoutMs: 5_000,
+                            outputLimitBytes: 64 * 1_024
+                        )
+                        guard result.exitCode == 0, !result.timedOut else {
+                            throw VMError.bootFailure(
+                                "guest shutdown request exited \(result.exitCode)"
+                            )
+                        }
+                    } catch {
+                        log("graceful shutdown RPC failed; sending ACPI power key: \(error)")
+                        keyboardInput.send(frame: [
+                            .init(type: 1, code: 116, value: 1),
+                            .init(type: 1, code: 116, value: 0),
+                        ])
+                    }
+                    DispatchQueue.global(qos: .userInitiated).asyncAfter(
+                        deadline: .now() + DoryEngineShutdownTiming.helperWatchdogSeconds
+                    ) {
+                        log("graceful guest shutdown timed out; forcing power off")
+                        current.machine.powerController.request(.powerOff)
+                    }
+                }
             }
 
             var isStopping: Bool { lock.withLock { stopping } }
@@ -90,19 +142,41 @@ enum DoryPCMode {
         private final class ReadyPublisher: @unchecked Sendable {
             private let lock = NSLock()
             private var published = false
+            private var presentationReady = false
+            private var guestServicesReady: Bool
             private let publishOperation: @Sendable () throws -> Void
 
-            init(_ publishOperation: @escaping @Sendable () throws -> Void) {
+            init(
+                requiresGuestServices: Bool,
+                _ publishOperation: @escaping @Sendable () throws -> Void
+            ) {
+                guestServicesReady = !requiresGuestServices
                 self.publishOperation = publishOperation
             }
 
-            func publishOnce() throws {
+            func markPresentationReady() throws {
+                try markReady { presentationReady = true }
+            }
+
+            func markGuestServicesReady() throws {
+                try markReady { guestServicesReady = true }
+            }
+
+            private func markReady(_ mutation: () -> Void) throws {
                 let shouldPublish = lock.withLock { () -> Bool in
+                    mutation()
                     guard !published else { return false }
+                    guard presentationReady, guestServicesReady else { return false }
                     published = true
                     return true
                 }
-                if shouldPublish { try publishOperation() }
+                guard shouldPublish else { return }
+                do {
+                    try publishOperation()
+                } catch {
+                    lock.withLock { published = false }
+                    throw error
+                }
             }
         }
 
@@ -119,6 +193,7 @@ enum DoryPCMode {
         private let agentBridge: GuestVsockSocketBridge
         private let shellBridge: GuestVsockSocketBridge
         private let sshAgentBridge: HostSSHAgentBridge?
+        private let clipboard: DoryDesktopClipboardCoordinator?
         private let machineState: MachineState
         private let keyboardInput: DoryPCDesktopInputSink
         private let pointerInput: DoryPCDesktopInputSink
@@ -138,6 +213,10 @@ enum DoryPCMode {
             label: "dev.dory.dory-hv.dorypc.signals",
             qos: .userInitiated
         )
+        private let guestServiceQueue = DispatchQueue(
+            label: "dev.dory.dory-hv.dorypc.guest-services",
+            qos: .userInitiated
+        )
         private var signalSources = [DispatchSourceSignal]()
         private var stopError: Error?
 
@@ -149,12 +228,21 @@ enum DoryPCMode {
                 )
             }
             let devices = envelope.devices
-            guard devices.networkAttachment != .bridged,
-                  !devices.clipboard,
-                  !devices.clockSynchronization else {
+            guard devices.networkAttachment != .bridged else {
                 throw VMError.invalidConfiguration(
                     "DoryPC launch requested a host device backend that is not admitted by this runner"
                 )
+            }
+            let clipboardPolicy: DoryVMClipboardPolicy?
+            if devices.clipboard {
+                guard let policy = devices.clipboardPolicy, policy.isEnabled else {
+                    throw VMError.invalidConfiguration(
+                        "DoryPC clipboard requires an explicit enabled transfer policy"
+                    )
+                }
+                clipboardPolicy = policy
+            } else {
+                clipboardPolicy = nil
             }
             self.configuration = configuration
             try FileManager.default.createDirectory(
@@ -195,7 +283,13 @@ enum DoryPCMode {
 
             let mailbox = devices.displays.isEmpty ? nil : DesktopFrameMailbox(scanoutID: 0)
             self.mailbox = mailbox
-            let readyPublisher = ReadyPublisher {
+            let installerIsFirst = envelope.launchPlan.bootOrder.first.flatMap { firstID in
+                envelope.launchPlan.bootDevices.first { $0.logicalID == firstID }?.kind
+            } == .removableMedia
+            let requestedGuestServices = devices.clipboard || devices.clockSynchronization
+            let readyPublisher = ReadyPublisher(
+                requiresGuestServices: requestedGuestServices && !installerIsFirst
+            ) {
                 let graphics = envelope.graphics == .software
                     ? DoryRuntimeGraphicsSelection.resolvedSoftware(
                         operationID: envelope.operationID,
@@ -217,7 +311,7 @@ enum DoryPCMode {
             self.readyPublisher = readyPublisher
             let displaySink = mailbox.map { mailbox in
                 DoryPCSoftwareDisplaySink(mailbox: mailbox) {
-                    do { try readyPublisher.publishOnce() }
+                    do { try readyPublisher.markPresentationReady() }
                     catch {
                         FileHandle.standardError.write(
                             Data("dory-hv DoryPC readiness failed: \(error)\n".utf8)
@@ -258,6 +352,9 @@ enum DoryPCMode {
                 machine: machine,
                 dynamicDisplaySize: dynamicDisplaySize
             )
+            let keyboardInput = DoryPCDesktopInputSink(device: machine.keyboardDevice)
+            self.keyboardInput = keyboardInput
+            pointerInput = DoryPCDesktopInputSink(device: machine.tabletDevice)
             let agentBridge = GuestVsockSocketBridge(
                 socketPath: configuration.agentSocketPath,
                 guestPort: VsockPorts.agent,
@@ -291,6 +388,34 @@ enum DoryPCMode {
                 }
             } else {
                 sshAgentBridge = nil
+            }
+            clipboard = clipboardPolicy.map { policy in
+                DoryDesktopClipboardCoordinator(
+                    policy: policy,
+                    execute: { argv, stdin, timeoutMs, outputLimitBytes in
+                        let control = DorydKit.AgentControl(configuration: .init(
+                            directSocketPath: configuration.agentSocketPath
+                        ))
+                        defer { control.disconnect() }
+                        return try control.execWithInput(
+                            argv: argv,
+                            stdin: stdin,
+                            timeoutMs: timeoutMs,
+                            outputLimitBytes: outputLimitBytes
+                        )
+                    },
+                    sendShortcut: { keyCode in
+                        keyboardInput.send(frame: [
+                            .init(type: 1, code: 125, value: 0),
+                            .init(type: 1, code: 126, value: 0),
+                            .init(type: 1, code: 29, value: 1),
+                            .init(type: 1, code: keyCode, value: 1),
+                            .init(type: 1, code: keyCode, value: 0),
+                            .init(type: 1, code: 29, value: 0),
+                        ])
+                    },
+                    log: Self.log
+                )
             }
             if devices.removableUSBHotplug {
                 guard let socketPath = configuration.usbControlSocketPath else {
@@ -331,8 +456,6 @@ enum DoryPCMode {
             } else {
                 cameraBridge = nil
             }
-            keyboardInput = DoryPCDesktopInputSink(device: machine.keyboardDevice)
-            pointerInput = DoryPCDesktopInputSink(device: machine.tabletDevice)
             serialInput = try RawHVSerialConsoleInput(
                 socketPath: configuration.consoleSocketPath,
                 receive: { [machineState] bytes in
@@ -362,6 +485,9 @@ enum DoryPCMode {
                         machineState.updateDisplaySize(width: width, height: height)
                     }
                 }
+                view.onMacShortcut = { [weak clipboard] event in
+                    clipboard?.handleMacShortcut(event) ?? false
+                }
                 mailbox.view = view
                 let window = NSWindow(
                     contentRect: NSRect(origin: .zero, size: size),
@@ -381,6 +507,7 @@ enum DoryPCMode {
             }
             super.init()
             window?.delegate = self
+            clipboard?.start()
         }
 
         func run() throws {
@@ -393,24 +520,104 @@ enum DoryPCMode {
             installSignals()
             window?.makeKeyAndOrderFront(nil)
             if window != nil { application.activate() }
-            if window == nil { try readyPublisher.publishOnce() }
+            if window == nil { try readyPublisher.markPresentationReady() }
             startExecution()
+            startGuestServicePreparation()
             application.run()
             if let stopError { throw stopError }
         }
 
         func windowShouldClose(_ sender: NSWindow) -> Bool {
-            machineState.requestStop()
+            requestGuestShutdown()
             return false
         }
 
         func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-            machineState.requestStop()
+            requestGuestShutdown()
             return .terminateCancel
         }
 
         private func startExecution() {
             executionQueue.async { [weak self] in self?.execute() }
+        }
+
+        private func startGuestServicePreparation() {
+            let devices = configuration.envelope.devices
+            guard devices.clipboard || devices.clockSynchronization else { return }
+            let installerIsFirst = configuration.envelope.launchPlan.bootOrder.first.flatMap {
+                firstID in
+                configuration.envelope.launchPlan.bootDevices.first {
+                    $0.logicalID == firstID
+                }?.kind
+            } == .removableMedia
+            let agentSocketPath = configuration.agentSocketPath
+            let readyPublisher = self.readyPublisher
+            let clipboard = self.clipboard
+            let machineState = self.machineState
+            guestServiceQueue.async { [weak self] in
+                let deadline = Date().addingTimeInterval(90)
+                var lastError: Error?
+                while !machineState.isStopping,
+                      installerIsFirst || Date() < deadline {
+                    do {
+                        let control = DorydKit.AgentControl(configuration: .init(
+                            directSocketPath: agentSocketPath
+                        ))
+                        defer { control.disconnect() }
+                        let info = try control.info()
+                        guard info.protocolVersion == DoryCore.protocolVersion(),
+                              info.capabilitiesAreCanonical else {
+                            throw VMError.bootFailure(
+                                "DoryPC guest agent protocol identity is incompatible"
+                            )
+                        }
+                        if devices.clockSynchronization {
+                            guard info.supports("clock-sync", minimumVersion: 1),
+                                  try control.clockSync() else {
+                                throw VMError.bootFailure(
+                                    "DoryPC guest declined clock synchronization"
+                                )
+                            }
+                        }
+                        if devices.clipboard {
+                            guard info.supports("exec", minimumVersion: 1),
+                                  info.supports("exec-stdin", minimumVersion: 1) else {
+                                throw VMError.bootFailure(
+                                    "DoryPC guest lacks clipboard RPC capabilities"
+                                )
+                            }
+                            let probe = try control.exec(
+                                argv: ["/usr/bin/test", "-x", "/usr/lib/dory/clipboard"],
+                                timeoutMs: 5_000,
+                                outputLimitBytes: 4_096
+                            )
+                            guard probe.exitCode == 0, !probe.timedOut else {
+                                throw VMError.bootFailure(
+                                    "DoryPC guest clipboard helper is unavailable"
+                                )
+                            }
+                        }
+                        if let clipboard {
+                            DesktopAppRunLoop.perform { clipboard.markGuestReady() }
+                        }
+                        try readyPublisher.markGuestServicesReady()
+                        Self.log("requested guest services are ready")
+                        return
+                    } catch {
+                        lastError = error
+                        Thread.sleep(forTimeInterval: installerIsFirst ? 1 : 0.25)
+                    }
+                }
+                guard !machineState.isStopping else { return }
+                let failure = lastError ?? VMError.bootFailure(
+                    "DoryPC guest services did not become ready"
+                )
+                if installerIsFirst {
+                    Self.log("installer guest services remain deferred: \(failure)")
+                } else {
+                    self?.finish(failure)
+                }
+            }
         }
 
         private nonisolated func execute() {
@@ -501,10 +708,21 @@ enum DoryPCMode {
         }
 
         private func installSignals() {
+            let graceful = configuration.envelope.devices.gracefulShutdown
+            let agentSocketPath = configuration.agentSocketPath
+            let keyboardInput = self.keyboardInput
+            let machineState = self.machineState
             for number in [SIGTERM, SIGINT] {
                 signal(number, SIG_IGN)
                 let source = DispatchSource.makeSignalSource(signal: number, queue: signalQueue)
-                source.setEventHandler { [weak machineState] in machineState?.requestStop() }
+                source.setEventHandler {
+                    machineState.requestGuestShutdown(
+                        graceful: graceful,
+                        agentSocketPath: agentSocketPath,
+                        keyboardInput: keyboardInput,
+                        log: Self.log
+                    )
+                }
                 source.resume()
                 signalSources.append(source)
             }
@@ -515,6 +733,7 @@ enum DoryPCMode {
             signalSources.forEach { $0.cancel() }
             signalSources.removeAll()
             lifecycleServer.stop()
+            clipboard?.stop()
             agentBridge.stop()
             shellBridge.stop()
             sshAgentBridge?.stop()
@@ -553,6 +772,16 @@ enum DoryPCMode {
 
         private nonisolated static func log(_ message: String) {
             FileHandle.standardError.write(Data("dory-hv DoryPC: \(message)\n".utf8))
+        }
+
+        private func requestGuestShutdown() {
+            window?.orderOut(nil)
+            machineState.requestGuestShutdown(
+                graceful: configuration.envelope.devices.gracefulShutdown,
+                agentSocketPath: configuration.agentSocketPath,
+                keyboardInput: keyboardInput,
+                log: Self.log
+            )
         }
     }
 }
