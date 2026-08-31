@@ -4,6 +4,40 @@ import Foundation
 import Testing
 
 @Suite struct DoryPCVirtioGPUPCITests {
+  @Test func dynamicModePublishesDisplayEventAndGuestCanClearIt() throws {
+    let gpu = try DoryPCVirtioGPUPCIDevice(
+      address: DoryPCV1ABI.displayPCIAddress,
+      initialBARAddress: DoryPCV1ABI.displayBARAddress,
+      scanouts: [
+        .init(id: 0, rectangle: .init(x: 0, y: 0, width: 1_280, height: 800))
+      ]
+    )
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [gpu]
+    )
+    try gpu.writeConfiguration(offset: 4, bytes: [2, 0])
+    try gpu.writeConfiguration(offset: 0x54, bytes: littleEndian(UInt32(0xFEE0_0000)))
+    try gpu.writeConfiguration(offset: 0x5C, bytes: [0x79, 0])
+    try gpu.writeConfiguration(offset: 0x52, bytes: [1, 0])
+
+    #expect(gpu.updateScanoutSize(scanoutID: 0, width: 2_560, height: 1_440))
+    #expect(!gpu.updateScanoutSize(scanoutID: 0, width: 2_560, height: 1_440))
+    #expect(!gpu.updateScanoutSize(scanoutID: 1, width: 2_560, height: 1_440))
+    let bar = DoryPCV1ABI.displayBARAddress
+    let published = try machine.physicalMemory.read(at: bar + 0x300, byteCount: 16)
+    #expect(read32(published, 0) == 1)
+    #expect(read32(published, 8) == 1)
+    #expect(gpu.gpuDevice.scanouts[0].rectangle.width == 2_560)
+    #expect(gpu.gpuDevice.scanouts[0].rectangle.height == 1_440)
+    #expect(machine.localAPIC.snapshot().interruptRequest.contains(0x79))
+
+    try write32(machine, bar + 0x304, 1)
+    let cleared = try machine.physicalMemory.read(at: bar + 0x300, byteCount: 16)
+    #expect(read32(cleared, 0) == 0)
+    #expect(read32(cleared, 4) == 0)
+  }
+
   @Test func pciQueueReturnsDisplayInfoAndRaisesMSI() throws {
     let gpu = try DoryPCVirtioGPUPCIDevice(
       address: DoryPCV1ABI.displayPCIAddress,

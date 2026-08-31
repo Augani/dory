@@ -175,6 +175,12 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     if signalChange { signalConfigurationChange() }
   }
 
+  /// Restores read-only/write-only device configuration semantics after a guest write without
+  /// manufacturing a host-side configuration generation change.
+  public func normalizeDeviceConfigurationAfterGuestWrite(_ bytes: [UInt8]) {
+    lock.withLock { deviceConfiguration = bytes }
+  }
+
   public func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8] {
     try validate(offset: offset, byteCount: byteCount, write: false)
     if offset < 0x40 {
@@ -644,6 +650,7 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
 {
   public let pciFunction: DoryPCVirtioPCIFunction
   public let gpuDevice: DoryVirtioGPUDevice
+  private let configurationLock = NSLock()
 
   public var pciAddress: DoryPCPCIAddress { pciFunction.pciAddress }
   public var configurationFunction: DoryPCPCIConfigurationFunction {
@@ -688,6 +695,16 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
     }
   }
 
+  @discardableResult
+  public func updateScanoutSize(scanoutID: UInt32, width: UInt32, height: UInt32) -> Bool {
+    configurationLock.withLock {
+      guard gpuDevice.updateScanoutSize(scanoutID: scanoutID, width: width, height: height)
+      else { return false }
+      transport.updateDeviceConfiguration(gpuDevice.configuration)
+      return true
+    }
+  }
+
   public func readConfiguration(offset: Int, byteCount: Int) throws -> [UInt8] {
     try pciFunction.readConfiguration(offset: offset, byteCount: byteCount)
   }
@@ -707,7 +724,15 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
   }
 
   public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
-    try pciFunction.writeBAR(offset: offset, bytes: bytes)
+    if offset < 0x310, offset + UInt64(bytes.count) > 0x304 {
+      try configurationLock.withLock {
+        try pciFunction.writeBAR(offset: offset, bytes: bytes)
+        gpuDevice.writeConfiguration(offset: Int(offset) - 0x300, bytes: bytes)
+        transport.normalizeDeviceConfigurationAfterGuestWrite(gpuDevice.configuration)
+      }
+    } else {
+      try pciFunction.writeBAR(offset: offset, bytes: bytes)
+    }
   }
 }
 

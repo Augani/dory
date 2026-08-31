@@ -33,17 +33,43 @@ enum DoryPCMode {
         private final class MachineState: @unchecked Sendable {
             private let lock = NSLock()
             private var machine: DoryPCUEFIMachine
+            private var dynamicDisplaySize: (width: UInt32, height: UInt32)?
             private var stopping = false
 
-            init(machine: DoryPCUEFIMachine) { self.machine = machine }
+            init(
+                machine: DoryPCUEFIMachine,
+                dynamicDisplaySize: (width: UInt32, height: UInt32)?
+            ) {
+                self.machine = machine
+                self.dynamicDisplaySize = dynamicDisplaySize
+            }
 
             func current() -> DoryPCUEFIMachine { lock.withLock { machine } }
 
             func replace(_ replacement: DoryPCUEFIMachine) -> Bool {
                 lock.withLock {
                     guard !stopping else { return false }
+                    if let dynamicDisplaySize {
+                        _ = replacement.displayDevice.updateScanoutSize(
+                            scanoutID: 0,
+                            width: dynamicDisplaySize.width,
+                            height: dynamicDisplaySize.height
+                        )
+                    }
                     machine = replacement
                     return true
+                }
+            }
+
+            func updateDisplaySize(width: UInt32, height: UInt32) {
+                lock.withLock {
+                    guard dynamicDisplaySize != nil,
+                          machine.displayDevice.updateScanoutSize(
+                            scanoutID: 0,
+                            width: width,
+                            height: height
+                          ) else { return }
+                    dynamicDisplaySize = (width, height)
                 }
             }
 
@@ -118,8 +144,7 @@ enum DoryPCMode {
             let devices = envelope.devices
             guard devices.networkAttachment != .bridged,
                   !devices.clipboard,
-                  !devices.clockSynchronization,
-                  !devices.dynamicDisplay else {
+                  !devices.clockSynchronization else {
                 throw VMError.invalidConfiguration(
                     "DoryPC launch requested a host device backend that is not admitted by this runner"
                 )
@@ -209,7 +234,15 @@ enum DoryPCMode {
             if devices.networkAttachment == .disconnected {
                 _ = machine.networkDevice.setLinkUp(false)
             }
-            machineState = MachineState(machine: machine)
+            let dynamicDisplaySize = devices.dynamicDisplay
+                ? devices.displays.first.map {
+                    (width: $0.widthPixels, height: $0.heightPixels)
+                }
+                : nil
+            machineState = MachineState(
+                machine: machine,
+                dynamicDisplaySize: dynamicDisplaySize
+            )
             if devices.removableUSBHotplug {
                 guard let socketPath = configuration.usbControlSocketPath else {
                     throw VMError.invalidConfiguration(
@@ -275,6 +308,11 @@ enum DoryPCMode {
                     guestBackingScaleFactor: scale,
                     scanoutID: 0
                 )
+                if devices.dynamicDisplay {
+                    view.onDrawableSizeChange = { [machineState] width, height in
+                        machineState.updateDisplaySize(width: width, height: height)
+                    }
+                }
                 mailbox.view = view
                 let window = NSWindow(
                     contentRect: NSRect(origin: .zero, size: size),

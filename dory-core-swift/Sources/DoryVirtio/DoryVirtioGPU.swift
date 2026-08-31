@@ -223,11 +223,13 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     let rectangle: DoryVirtioGPURectangle
   }
 
-  public let scanouts: [DoryVirtioGPUScanout]
   public let maximumResourceBytes: UInt64
   public let maximumBackingEntries: Int
 
   private let lock = NSLock()
+  private let scanoutCount: Int
+  private var scanoutState: [DoryVirtioGPUScanout]
+  private var pendingDisplayEvents: UInt32 = 0
   private weak var displaySink: (any DoryVirtioGPUDisplaySink)?
   private let accelerationAuthority: (any DoryVirtioGPUAccelerationAuthority)?
   private var resources: [UInt32: Resource] = [:]
@@ -254,7 +256,8 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
         height: invalid.height
       )
     }
-    self.scanouts = scanouts
+    scanoutCount = scanouts.count
+    scanoutState = scanouts
     self.maximumResourceBytes = max(4, maximumResourceBytes)
     self.maximumBackingEntries = max(1, maximumBackingEntries)
     self.displaySink = displaySink
@@ -267,9 +270,50 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
 
   /// `events_read`, `events_clear`, `num_scanouts`, `num_capsets`.
   public var configuration: [UInt8] {
-    littleEndian(UInt32(0)) + littleEndian(UInt32(0))
-      + littleEndian(UInt32(scanouts.count))
+    let display = lock.withLock { (pendingDisplayEvents, scanoutCount) }
+    return littleEndian(display.0) + littleEndian(UInt32(0))
+      + littleEndian(UInt32(display.1))
       + littleEndian(UInt32(accelerationAuthority?.capabilities.capsets.count ?? 0))
+  }
+
+  public var scanouts: [DoryVirtioGPUScanout] { lock.withLock { scanoutState } }
+
+  /// Publishes a new preferred mode. The PCI wrapper refreshes device configuration and raises the
+  /// standard VIRTIO_GPU_EVENT_DISPLAY configuration interrupt when this returns true.
+  @discardableResult
+  public func updateScanoutSize(scanoutID: UInt32, width: UInt32, height: UInt32) -> Bool {
+    guard Self.valid(.init(x: 0, y: 0, width: width, height: height)) else { return false }
+    return lock.withLock {
+      let index = Int(scanoutID)
+      guard scanoutState.indices.contains(index) else { return false }
+      let current = scanoutState[index]
+      let rectangle = DoryVirtioGPURectangle(
+        x: current.rectangle.x,
+        y: current.rectangle.y,
+        width: width,
+        height: height
+      )
+      guard current.rectangle != rectangle else { return false }
+      scanoutState[index] = .init(
+        id: current.id,
+        rectangle: rectangle,
+        enabled: current.enabled
+      )
+      pendingDisplayEvents |= 1
+      return true
+    }
+  }
+
+  /// Implements the write-only `events_clear` field in the VirtIO GPU device configuration.
+  public func writeConfiguration(offset: Int, bytes: [UInt8]) {
+    guard offset < 8, offset + bytes.count > 4 else { return }
+    var cleared: UInt32 = 0
+    for (index, byte) in bytes.enumerated() {
+      let position = offset + index
+      guard (4..<8).contains(position) else { continue }
+      cleared |= UInt32(byte) << UInt32((position - 4) * 8)
+    }
+    lock.withLock { pendingDisplayEvents &= ~cleared }
   }
 
   public func connectDisplaySink(_ sink: (any DoryVirtioGPUDisplaySink)?) {
@@ -283,6 +327,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       rendererContexts.removeAll(keepingCapacity: true)
       resourceUUIDs.removeAll(keepingCapacity: true)
       bindings.removeAll(keepingCapacity: true)
+      pendingDisplayEvents = 0
     }
     accelerationAuthority?.reset()
   }
@@ -336,6 +381,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     switch command {
     case .getDisplayInfo:
       guard request.count == 24 else { return response(.errorInvalidParameter, header: header) }
+      let scanouts = lock.withLock { scanoutState }
       var result = response(.okDisplayInfo, header: header)
       for index in 0..<16 {
         if index < scanouts.count {
@@ -685,7 +731,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       let rectangle = readRectangle(request, 24)
       let scanoutID = read32(request, 40)
       let resourceID = read32(request, 44)
-      guard Int(scanoutID) < scanouts.count else {
+      guard Int(scanoutID) < scanoutCount else {
         return response(.errorInvalidScanout, header: header)
       }
       if resourceID == 0 {
@@ -772,7 +818,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       // composition is layered above the 2D framebuffer sink and does not alter scanout pixels.
       guard request.count == 56 else { return response(.errorInvalidParameter, header: header) }
       let scanoutID = read32(request, 24)
-      guard Int(scanoutID) < scanouts.count else {
+      guard Int(scanoutID) < scanoutCount else {
         return response(.errorInvalidScanout, header: header)
       }
       let resourceID = read32(request, 40)
@@ -790,7 +836,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       guard request.count == 56 else { return response(.errorInvalidParameter, header: header) }
       let scanoutID = read32(request, 24)
       return response(
-        Int(scanoutID) < scanouts.count ? .okNoData : .errorInvalidScanout,
+        Int(scanoutID) < scanoutCount ? .okNoData : .errorInvalidScanout,
         header: header
       )
     }
