@@ -132,6 +132,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitUnary(operation, operand: operand, into: &words)
     case .shift(let operation, let destination, let count):
       return emitShift(operation, destination: destination, count: count, into: &words)
+    case .signedMultiply(let destination, let lhs, let rhs):
+      return emitSignedMultiply(destination: destination, lhs: lhs, rhs: rhs, into: &words)
     case .effectiveAddress(let destination, let address):
       return emitEffectiveAddress(destination: destination, address: address, into: &words)
     default:
@@ -197,9 +199,43 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .shift(_, let destination, _):
       if case .memory = destination { return true }
       return false
+    case .signedMultiply(let destination, let lhs, let rhs):
+      if case .memory = destination { return true }
+      if case .memory = lhs { return true }
+      if case .memory = rhs { return true }
+      return false
     case .effectiveAddress, .helper:
       return false
     }
+  }
+
+  private func emitSignedMultiply(
+    destination: DoryIROperand,
+    lhs: DoryIROperand,
+    rhs: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard case .register(let target) = destination, target.width == .i32,
+      case .register(let left) = lhs, left.width == .i32,
+      case .register(let right) = rhs, right.width == .i32,
+      load(left, into: 9, words: &words),
+      load(right, into: 10, words: &words)
+    else { return false }
+
+    words.append(encodeSignedMultiplyLong32(left: 9, right: 10, destination: 11))
+    words.append(encodeSignExtend32To64(source: 11, destination: 12))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 11, 12, 31))
+    words.append(encodeConditionalSet(register: 13, condition: .notEqual))
+    words.append(encodeLoad64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
+    let overflowMask = DoryX86RFLAGS.carry.rawValue | DoryX86RFLAGS.overflow.rawValue
+    emitImmediate(~overflowMask, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.or, left: 14, right: 13, destination: 14))
+    words.append(encodeLogical(.or, left: 14, right: 13, shiftAmount: 11, destination: 14))
+    words.append(encodeStore64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
+    words.append(encodeLogical(.or, is64Bit: false, 31, 11, 12))
+    words.append(encodeStore64(register: 12, base: 0, byteOffset: Int(target.index) * 8))
+    return true
   }
 
   private func emitShift(
@@ -918,6 +954,18 @@ public struct DoryARM64BaselineEmitter: Sendable {
       case (.arithmeticRight, true): 0x9AC0_2800
       }
     return base | count << 16 | value << 5 | destination
+  }
+
+  private func encodeSignedMultiplyLong32(
+    left: UInt32,
+    right: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    0x9B20_7C00 | right << 16 | left << 5 | destination
+  }
+
+  private func encodeSignExtend32To64(source: UInt32, destination: UInt32) -> UInt32 {
+    0x9340_7C00 | source << 5 | destination
   }
 
   private func encodeMoveWideZero64(

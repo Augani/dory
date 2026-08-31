@@ -146,6 +146,45 @@ import Testing
     #endif
   }
 
+  @Test func signedMultiply32MatchesInterpreterLowResultAndOverflowFlags() throws {
+    #if arch(arm64)
+      for (left, right) in [(UInt64(2), UInt64(3)), (0x7FFF_FFFF, 2), (0xFFFF_FFFF, 2)] {
+        let bytes: [UInt8] = [0x0F, 0xAF, 0xD8]  // imul ebx,eax
+        let initialFlags = DoryX86RFLAGS(
+          rawValue: DoryX86RFLAGS.reservedOne.rawValue
+            | DoryX86RFLAGS.carry.rawValue
+            | DoryX86RFLAGS.zero.rawValue
+            | DoryX86RFLAGS.overflow.rawValue
+        )
+        var interpreted = try DoryX86ArchitecturalState(
+          registers: .init(rax: right, rbx: left), rip: 0, rflags: initialFlags)
+        _ = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: DoryX86ByteArrayMemory(bytes: bytes),
+          mode: .long64
+        )
+
+        var translated = try DoryX86ArchitecturalState(
+          registers: .init(rax: right, rbx: left), rip: 0, rflags: initialFlags)
+        let execution = try #require(
+          DoryARM64BaselineExecutor(maximumCodeBytes: 4096).execute(
+            bytes: bytes,
+            at: 0,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &translated
+          )
+        )
+
+        #expect(execution.block.tier == .baseline)
+        #expect(translated.registers.rbx == interpreted.registers.rbx)
+        #expect(translated.rip == interpreted.rip)
+        #expect(translated.rflags == interpreted.rflags)
+      }
+    #endif
+  }
+
   @Test func executorPerformsNativeMemoryALUAndReadModifyWrite() throws {
     #if arch(arm64)
       let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
