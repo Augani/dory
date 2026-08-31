@@ -280,6 +280,9 @@ public enum DoryAppleSiliconVirtualMachineBackendPlanner {
         for guest: DoryGuestPlatform,
         bootMedia: DoryBootMediaKind
     ) -> [DoryVirtualizationBackendIdentity] {
+        if guest.family == .linux, guest.architecture == .x86_64 {
+            return [.doryHypervisor]
+        }
         switch (guest.family, bootMedia) {
         case (.linux, .linuxKernel), (.linux, .installedLinuxBootBundle):
             return [.doryHypervisor]

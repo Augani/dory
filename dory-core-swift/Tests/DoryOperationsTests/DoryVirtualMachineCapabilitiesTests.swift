@@ -334,8 +334,8 @@ struct VirtualMachineCapabilitiesTests {
         #expect(installer.availability.isUsable)
     }
 
-    @Test("Apple Silicon never labels x86_64 execution as virtualization")
-    func x86RequiresEmulation() {
+    @Test("non-DBT backends reject x86_64 execution on Apple Silicon")
+    func x86RequiresDBT() {
         let descriptor = evaluate(
             family: .linux,
             architecture: .x86_64,
@@ -349,6 +349,26 @@ struct VirtualMachineCapabilitiesTests {
         #expect(descriptor.availability.state == .unavailable)
         #expect(descriptor.availability.reason?.code == .guestArchitectureRequiresEmulation)
         #expect(!descriptor.availability.isUsable)
+    }
+
+    @Test("Dory translated execution admits qualified x86_64 Linux")
+    func x86LinuxUsesDoryDBT() {
+        let descriptor = evaluate(
+            family: .linux,
+            architecture: .x86_64,
+            media: .installerISO,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .software,
+            mediaArtifactSHA256: Self.guestArtifactSHA256
+        )
+
+        #expect(descriptor.availability.supportTier == .supported)
+        #expect(descriptor.availability.isUsable)
+        #expect(DoryAppleSiliconVirtualMachineBackendPlanner.defaultBackends(
+            for: .init(family: .linux, architecture: .x86_64),
+            bootMedia: .installerISO
+        ) == [.doryHypervisor])
     }
 
     @Test("QEMU/HVF is not a Linux backend even for an ARM64 guest")

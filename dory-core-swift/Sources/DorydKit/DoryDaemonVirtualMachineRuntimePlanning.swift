@@ -454,6 +454,8 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         }
 
         let timing: (revision: UInt64, created: Int64, updated: Int64)
+        let usesARMVirt = definition.platform?.machineModel == .armVirtV1
+            && selected.request.guest.architecture == .arm64
         let previousARMVirtTopology: DoryARMVirtV1Topology?
         switch input.publication {
         case .create:
@@ -469,12 +471,12 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             }
             timing = (expected + 1, current.createdAtUnixMilliseconds,
                       max(now(), current.createdAtUnixMilliseconds))
-            previousARMVirtTopology = current.backend == .doryHypervisor
+            previousARMVirtTopology = current.backend == .doryHypervisor && usesARMVirt
                 ? current.armVirtTopology : nil
         }
 
         let armVirtTopology: DoryARMVirtV1Topology?
-        if selected.request.backend == .doryHypervisor {
+        if selected.request.backend == .doryHypervisor, usesARMVirt {
             do {
                 armVirtTopology = try DoryARMVirtV1TopologyPlanner.resolve(
                     definition: definition,
@@ -662,7 +664,7 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         let preferences: [DoryVirtualizationBackendIdentity]? = switch definition.platform?.executionEngine {
         case .nativeARM64?: [.doryHypervisor]
         case .vzMac?: [.appleVirtualizationFramework]
-        case .x86ToARM64?: nil
+        case .x86ToARM64?: [.doryHypervisor]
         case nil: nil
         }
         return DoryVirtualMachineBackendPlanRequest(

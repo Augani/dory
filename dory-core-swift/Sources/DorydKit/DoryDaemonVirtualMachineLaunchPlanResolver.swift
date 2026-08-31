@@ -427,7 +427,7 @@ public final class DoryDaemonVirtualMachineLaunchPlanResolver:
         } catch {
             throw failure(.planRepositoryRejected, "The durable plan record could not be read.")
         }
-        if plan.backend == .doryHypervisor {
+        if plan.backend == .doryHypervisor, plan.guest.architecture == .arm64 {
             guard let topology = plan.armVirtTopology else {
                 throw failure(
                     .virtualHardwareTopologyMismatch,

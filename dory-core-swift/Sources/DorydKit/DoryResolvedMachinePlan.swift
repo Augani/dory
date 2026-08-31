@@ -510,8 +510,8 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     public var backendImplementationIdentifier: String
     public var backendRuntimeBuildIdentifier: String
     public var virtualHardwareABIVersion: UInt16
-    /// Exact guest-visible addresses selected by the resolver. RawHV plans require this field;
-    /// other backends must omit it until their own versioned topology contract is introduced.
+    /// Exact guest-visible addresses selected by the resolver. DoryARMVirt plans require this
+    /// field. DoryPC has a fixed PCI/physical-memory ABI and therefore omits it.
     public var armVirtTopology: DoryARMVirtV1Topology?
     public var bootMedia: DoryResolvedMachineBootMedia
     public var launchArtifacts: [DoryResolvedMachineLaunchArtifact]
@@ -960,6 +960,13 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             if armVirtTopology != nil { reject() }
             return
         }
+        if guest.family == .linux, guest.architecture == .x86_64 {
+            if armVirtTopology != nil { reject() }
+            if virtualHardwareABIVersion != 1 {
+                reject("virtualHardwareABIVersion")
+            }
+            return
+        }
         guard let topology = armVirtTopology,
               virtualHardwareABIVersion == 1,
               topology.machineABIIdentity == DoryMachineModelIdentity.armVirtV1.rawValue else {
@@ -1065,10 +1072,8 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         func add(_ code: DoryResolvedMachinePlanValidationCode, _ field: String) {
             issues.append(DoryResolvedMachinePlanValidationIssue(code: code, field: field))
         }
-        // Dory has no whole-machine x86 Linux emulator. Keep that product boundary in the
-        // persisted authority itself: Rosetta/FEX application translation inside an ARM64 guest
-        // must never make an x86_64 Linux plan structurally valid or durable.
-        if guest.family == .linux, guest.architecture != .arm64 {
+        if guest.family == .linux, guest.architecture == .x86_64,
+           backend != .doryHypervisor {
             add(.unsupportedRuntimeCombination, "guest.architecture")
         }
         if let reference = bootMedia.resolverReference,

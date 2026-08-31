@@ -1206,10 +1206,15 @@ public enum DoryAppleSiliconCapabilityEvaluator {
             )
         }
 
-        guard request.guest.architecture == .arm64 else {
+        let executionArchitectureIsImplemented =
+            request.guest.architecture == .arm64
+            || (request.guest.family == .linux
+                && request.guest.architecture == .x86_64
+                && request.backend == .doryHypervisor)
+        guard executionArchitectureIsImplemented else {
             return unsupported(
                 .guestArchitectureRequiresEmulation,
-                "Apple Silicon can virtualize ARM64 guests; x86_64 guests require a CPU emulation backend."
+                "Apple Silicon can virtualize ARM64 guests; x86_64 guests require Dory's translated execution backend."
             )
         }
 
