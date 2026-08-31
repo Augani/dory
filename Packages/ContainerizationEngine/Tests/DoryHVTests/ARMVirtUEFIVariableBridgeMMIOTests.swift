@@ -10,9 +10,10 @@ import Testing
         let fixture = try BridgeFixture()
         defer { fixture.remove() }
         let device = try ARMVirtUEFIVariableBridgeMMIO(store: fixture.store)
+        let binding = try DoryUEFIVariableBridgeV1Binding(platform: .armVirtV1)
 
-        #expect(device.baseAddress == DoryUEFIVariableBridgeV1ABI.baseAddress)
-        #expect(device.size == DoryUEFIVariableBridgeV1ABI.byteCount)
+        #expect(device.baseAddress == binding.baseAddress)
+        #expect(device.size == binding.byteCount)
         #expect(device.read(offset: DoryUEFIVariableBridgeV1ABI.magicOffset, width: 8)
             == DoryUEFIVariableBridgeV1ABI.magic)
         #expect(device.read(offset: DoryUEFIVariableBridgeV1ABI.versionOffset, width: 4)
