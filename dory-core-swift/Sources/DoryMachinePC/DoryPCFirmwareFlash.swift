@@ -56,6 +56,20 @@ public final class DoryPCFirmwareFlash: DoryPCMMIODevice, @unchecked Sendable {
     return result
   }
 
+  public func codeGeneration(offset: UInt64, byteCount: Int) throws -> UInt64? {
+    guard byteCount > 0, offset <= self.byteCount,
+      UInt64(byteCount) <= self.byteCount - offset
+    else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset,
+        byteCount: byteCount,
+        write: false
+      )
+    }
+    // The flash image and its erased-byte padding are immutable for this device's lifetime.
+    return 0
+  }
+
   public func write(offset: UInt64, bytes: [UInt8]) throws {
     throw DoryPCPhysicalMemoryError.unsupportedAccess(
       offset: offset,

@@ -21,6 +21,12 @@ import Testing
       try bus.instructionBytes(at: DoryPCV1ABI.uefiResetAddress, maximumCount: 16)
         == Array(0..<16)
     )
+    let generation = try #require(
+      try bus.codeGeneration(at: DoryPCV1ABI.uefiResetAddress, byteCount: 16)
+    )
+    #expect(
+      try bus.codeGeneration(at: DoryPCV1ABI.uefiResetAddress, byteCount: 16) == generation
+    )
     #expect(throws: DoryPCPhysicalMemoryError.self) {
       try bus.write(at: DoryPCV1ABI.uefiResetAddress, bytes: [0])
     }

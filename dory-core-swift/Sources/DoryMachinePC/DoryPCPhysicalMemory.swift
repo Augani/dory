@@ -15,6 +15,7 @@ public protocol DoryPCMMIODevice: AnyObject, Sendable {
   var byteCount: UInt64 { get }
   var allowsInstructionFetch: Bool { get }
   func read(offset: UInt64, byteCount: Int) throws -> [UInt8]
+  func codeGeneration(offset: UInt64, byteCount: Int) throws -> UInt64?
   func write(offset: UInt64, bytes: [UInt8]) throws
   func validateWrite(offset: UInt64, byteCount: Int) throws
   func synchronize()
@@ -22,6 +23,10 @@ public protocol DoryPCMMIODevice: AnyObject, Sendable {
 
 extension DoryPCMMIODevice {
   public var allowsInstructionFetch: Bool { false }
+
+  /// Returns a stable token only when the device can prove that instruction bytes in the range
+  /// have not changed. Mutable and side-effectful MMIO remains conservatively uncacheable.
+  public func codeGeneration(offset: UInt64, byteCount: Int) throws -> UInt64? { nil }
 
   public func validateWrite(offset: UInt64, byteCount: Int) throws {
     guard byteCount > 0, offset <= self.byteCount, UInt64(byteCount) <= self.byteCount - offset
@@ -185,7 +190,13 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
       return try ram.codeGeneration(at: resolved.backingAddress, byteCount: byteCount)
     }
-    guard try resolve(address: address, byteCount: byteCount) == nil else { return nil }
+    if let resolved = try resolve(address: address, byteCount: byteCount) {
+      guard resolved.device.allowsInstructionFetch else { return nil }
+      return try resolved.device.codeGeneration(
+        offset: resolved.offset,
+        byteCount: byteCount
+      )
+    }
     let resolved = try resolveRAM(
       address: address,
       byteCount: byteCount,
