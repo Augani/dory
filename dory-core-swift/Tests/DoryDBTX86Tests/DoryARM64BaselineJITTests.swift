@@ -103,6 +103,49 @@ import Testing
     #endif
   }
 
+  @Test func immediateShiftsMatchInterpreterResultsAndFlags() throws {
+    #if arch(arm64)
+      let cases: [([UInt8], UInt64)] = [
+        ([0xC1, 0xE0, 0x01], 0x8000_0001),
+        ([0xC1, 0xE8, 0x05], 0xF123_4567),
+        ([0xC1, 0xF8, 0x1F], 0x8000_0001),
+        ([0x48, 0xC1, 0xE0, 0x01], 0x8000_0000_0000_0001),
+        ([0x48, 0xC1, 0xE8, 0x11], 0xF123_4567_89AB_CDEF),
+        ([0x48, 0xC1, 0xF8, 0x3F], 0x8000_0000_0000_0001),
+      ]
+      for (bytes, value) in cases {
+        let initialFlags = DoryX86RFLAGS(
+          rawValue: DoryX86RFLAGS.reservedOne.rawValue
+            | DoryX86RFLAGS.carry.rawValue
+            | DoryX86RFLAGS.auxiliaryCarry.rawValue
+            | DoryX86RFLAGS.overflow.rawValue
+        )
+        var interpreted = try DoryX86ArchitecturalState(
+          registers: .init(rax: value), rip: 0, rflags: initialFlags)
+        let memory = DoryX86ByteArrayMemory(bytes: bytes)
+        _ = DoryX86Interpreter().step(state: &interpreted, memory: memory, mode: .long64)
+
+        var translated = try DoryX86ArchitecturalState(
+          registers: .init(rax: value), rip: 0, rflags: initialFlags)
+        let execution = try #require(
+          DoryARM64BaselineExecutor(maximumCodeBytes: 4096).execute(
+            bytes: bytes,
+            at: 0,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &translated
+          )
+        )
+
+        #expect(execution.block.tier == .baseline)
+        #expect(translated.registers.rax == interpreted.registers.rax)
+        #expect(translated.rip == interpreted.rip)
+        #expect(translated.rflags == interpreted.rflags)
+      }
+    #endif
+  }
+
   @Test func executorPerformsNativeMemoryALUAndReadModifyWrite() throws {
     #if arch(arm64)
       let memory = DoryX86ByteArrayMemory(byteCount: 0x100)

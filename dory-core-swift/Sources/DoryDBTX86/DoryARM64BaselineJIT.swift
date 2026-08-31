@@ -130,6 +130,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       )
     case .unary(let operation, let operand):
       return emitUnary(operation, operand: operand, into: &words)
+    case .shift(let operation, let destination, let count):
+      return emitShift(operation, destination: destination, count: count, into: &words)
     case .effectiveAddress(let destination, let address):
       return emitEffectiveAddress(destination: destination, address: address, into: &words)
     default:
@@ -192,9 +194,157 @@ public struct DoryARM64BaselineEmitter: Sendable {
       _ = operation
       if case .memory = operand { return true }
       return false
+    case .shift(_, let destination, _):
+      if case .memory = destination { return true }
+      return false
     case .effectiveAddress, .helper:
       return false
     }
+  }
+
+  private func emitShift(
+    _ operation: DoryIRShiftOperation,
+    destination: DoryIROperand,
+    count rawCount: UInt8,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard case .register(let target) = destination,
+      target.bank == "x86.gpr", target.index < 16,
+      target.width == .i32 || target.width == .i64,
+      load(target, into: 9, words: &words)
+    else { return false }
+    let is64Bit = target.width == .i64
+    let bitCount: UInt32 = is64Bit ? 64 : 32
+    let count = UInt32(rawCount) & (is64Bit ? 0x3f : 0x1f)
+    guard count != 0 else { return true }
+
+    emitImmediate(UInt64(count), register: 10, into: &words)
+    words.append(
+      encodeVariableShift(
+        operation,
+        is64Bit: is64Bit,
+        value: 9,
+        count: 10,
+        destination: 11
+      ))
+    emitShiftFlags(
+      operation,
+      is64Bit: is64Bit,
+      bitCount: bitCount,
+      count: count,
+      original: 9,
+      result: 11,
+      words: &words
+    )
+    words.append(encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8))
+    return true
+  }
+
+  private func emitShiftFlags(
+    _ operation: DoryIRShiftOperation,
+    is64Bit: Bool,
+    bitCount: UInt32,
+    count: UInt32,
+    original: UInt32,
+    result: UInt32,
+    words: inout [UInt32]
+  ) {
+    let carryShift = operation == .left ? bitCount - count : count - 1
+    words.append(
+      encodeLogical(
+        .or,
+        is64Bit: is64Bit,
+        left: 31,
+        right: original,
+        shiftAmount: carryShift,
+        logicalRightShift: true,
+        destination: 13
+      ))
+    emitImmediate(1, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 13, right: 15, destination: 13))
+
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, result, 31, 31))
+    words.append(encodeConditionalSet(register: 14, condition: .equal))
+    words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 6, destination: 13))
+    words.append(
+      encodeLogical(
+        .or,
+        is64Bit: is64Bit,
+        left: 31,
+        right: result,
+        shiftAmount: bitCount - 1,
+        logicalRightShift: true,
+        destination: 14
+      ))
+    words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 7, destination: 13))
+
+    words.append(
+      encodeLogical(
+        .xor,
+        is64Bit: is64Bit,
+        left: result,
+        right: result,
+        shiftAmount: 4,
+        logicalRightShift: true,
+        destination: 14
+      ))
+    words.append(
+      encodeLogical(
+        .xor, left: 14, right: 14, shiftAmount: 2, logicalRightShift: true, destination: 14))
+    words.append(
+      encodeLogical(
+        .xor, left: 14, right: 14, shiftAmount: 1, logicalRightShift: true, destination: 14))
+    words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.xor, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 2, destination: 13))
+
+    if count == 1 {
+      switch operation {
+      case .left:
+        words.append(
+          encodeLogical(
+            .or,
+            is64Bit: is64Bit,
+            left: 31,
+            right: result,
+            shiftAmount: bitCount - 1,
+            logicalRightShift: true,
+            destination: 14
+          ))
+        words.append(encodeLogical(.xor, left: 14, right: 13, destination: 14))
+        words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+      case .logicalRight:
+        words.append(
+          encodeLogical(
+            .or,
+            is64Bit: is64Bit,
+            left: 31,
+            right: original,
+            shiftAmount: bitCount - 1,
+            logicalRightShift: true,
+            destination: 14
+          ))
+      case .arithmeticRight:
+        emitImmediate(0, register: 14, into: &words)
+      }
+      words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 11, destination: 13))
+    }
+
+    words.append(encodeLoad64(register: 12, base: 0, byteOffset: Self.rflagsOffset))
+    var mask =
+      DoryX86RFLAGS.carry.rawValue
+      | DoryX86RFLAGS.parity.rawValue
+      | DoryX86RFLAGS.auxiliaryCarry.rawValue
+      | DoryX86RFLAGS.zero.rawValue
+      | DoryX86RFLAGS.sign.rawValue
+    if count == 1 { mask |= DoryX86RFLAGS.overflow.rawValue }
+    emitImmediate(~mask, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 12, right: 15, destination: 12))
+    words.append(encodeLogical(.or, left: 12, right: 13, destination: 12))
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 15, into: &words)
+    words.append(encodeLogical(.or, left: 12, right: 15, destination: 12))
+    words.append(encodeStore64(register: 12, base: 0, byteOffset: Self.rflagsOffset))
   }
 
   private func emitMemoryPrologue(into words: inout [UInt32]) {
@@ -749,6 +899,25 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private func encodeStore64(register: UInt32, base: UInt32, byteOffset: Int) -> UInt32 {
     0xF900_0000 | UInt32(byteOffset / 8) << 10 | base << 5 | register
+  }
+
+  private func encodeVariableShift(
+    _ operation: DoryIRShiftOperation,
+    is64Bit: Bool,
+    value: UInt32,
+    count: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    let base: UInt32 =
+      switch (operation, is64Bit) {
+      case (.left, false): 0x1AC0_2000
+      case (.left, true): 0x9AC0_2000
+      case (.logicalRight, false): 0x1AC0_2400
+      case (.logicalRight, true): 0x9AC0_2400
+      case (.arithmeticRight, false): 0x1AC0_2800
+      case (.arithmeticRight, true): 0x9AC0_2800
+      }
+    return base | count << 16 | value << 5 | destination
   }
 
   private func encodeMoveWideZero64(

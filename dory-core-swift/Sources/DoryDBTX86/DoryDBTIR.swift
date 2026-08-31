@@ -61,6 +61,10 @@ public enum DoryIRUnaryOperation: String, Codable, Sendable, Hashable {
   case increment, decrement, bitwiseNot, negate
 }
 
+public enum DoryIRShiftOperation: String, Codable, Sendable, Hashable {
+  case left, logicalRight, arithmeticRight
+}
+
 public enum DoryIRStatement: Codable, Sendable, Hashable {
   case copy(destination: DoryIROperand, source: DoryIROperand)
   case binary(
@@ -70,6 +74,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
     writesDestination: Bool
   )
   case unary(DoryIRUnaryOperation, operand: DoryIROperand)
+  case shift(DoryIRShiftOperation, destination: DoryIROperand, count: UInt8)
   case effectiveAddress(destination: DoryIROperand, address: DoryIRMemoryAddress)
   case helper(identifier: String, payload: [UInt8])
 }
@@ -251,6 +256,27 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .shift(let operation, let destination, .immediate(let count)):
+      let loweredOperation: DoryIRShiftOperation
+      switch operation {
+      case .shiftLeft: loweredOperation = .left
+      case .shiftRight: loweredOperation = .logicalRight
+      case .arithmeticShiftRight: loweredOperation = .arithmeticRight
+      default: return fallback(instruction, reason: .interpreter)
+      }
+      return (
+        [
+          .shift(
+            loweredOperation,
+            destination: operand(
+              destination,
+              instructionRelativeBase: instruction.nextInstructionAddress
+            ),
+            count: count
+          )
+        ],
+        nil
+      )
     case .jump(let relative):
       return ([], .branch(addRelative(instruction.nextInstructionAddress, relative)))
     case .conditionalJump(let condition, let relative):
@@ -334,6 +360,9 @@ public struct DoryX86IRTranslator: Sendable {
       case .immediate:
         return false
       }
+    case .shift(_, let destination, _):
+      guard case .register(let register) = destination else { return false }
+      return isJITGeneralRegister(register)
     case .effectiveAddress(let destination, let address):
       guard case .register(let target) = destination, isJITGeneralRegister(target),
         address.segment == nil,
@@ -377,6 +406,8 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(source) ? .read : .none
     case .unary(_, let operand):
       return isMemory(operand) ? .write : .none
+    case .shift(_, let destination, _):
+      return isMemory(destination) ? .write : .none
     case .effectiveAddress, .helper:
       return .none
     }

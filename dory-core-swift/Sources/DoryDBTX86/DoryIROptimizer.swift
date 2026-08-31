@@ -75,6 +75,10 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         invalidate(operand, knownConstants: &knownConstants)
 
+      case .shift(_, let destination, _):
+        statements.append(statement)
+        invalidate(destination, knownConstants: &knownConstants)
+
       case .effectiveAddress(let destination, _):
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)
