@@ -463,7 +463,7 @@ public final class RawHVLinuxMachineBackend: MachineBackend, @unchecked Sendable
         identity: .doryHypervisor,
         implementationIdentifier: "dory.raw-hv-linux.compatibility.v1",
         guestFamilies: [.linux],
-        guestArchitectures: [.arm64],
+        guestArchitectures: [.arm64, .x86_64],
         bootMediaKinds: [
             .linuxKernel, .installedLinuxBootBundle, .installerISO, .virtualDisk,
         ],
@@ -490,6 +490,11 @@ public final class RawHVLinuxMachineBackend: MachineBackend, @unchecked Sendable
             validateMachine: { machine, capability in
                 if let display = capability.request.devices.display, !display.isValid {
                     return "The raw-HV display geometry is outside the supported pixel bounds."
+                }
+                if capability.request.guest.architecture == .x86_64,
+                   capability.request.bootMedia.kind != .installerISO,
+                   capability.request.bootMedia.kind != .virtualDisk {
+                    return "A translated x86_64 Linux plan requires DoryPC UEFI installer or disk media."
                 }
                 switch capability.request.bootMedia.kind {
                 case .linuxKernel:

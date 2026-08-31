@@ -3621,8 +3621,21 @@ public final class MachineManager: @unchecked Sendable {
             let runtimeLaunchAuthority: RawHVRuntimeLaunchAuthority?
             var qualificationBootstrapLaunch = false
             if launchBinding?.backend.identity == .doryHypervisor {
-                guard let resolvedPlan,
-                      let launchBinding,
+                guard let resolvedPlan, let launchBinding else {
+                    throw MachineManagerError.persistence(
+                        "resolved Dory launch is missing its plan or backend binding"
+                    )
+                }
+                if resolvedPlan.guest.family == .linux,
+                   resolvedPlan.guest.architecture == .x86_64 {
+                    runtimeLaunchAuthority = try resolvedDoryPCRuntimeLaunchAuthority(
+                        machine: launchMachine,
+                        operationID: operationID,
+                        resolvedPlan: resolvedPlan,
+                        launchBinding: launchBinding
+                    )
+                } else {
+                guard
                       let armVirtTopology =
                         resolvedPlan.armVirtTopology,
                       let admittedVirtualCPUCount =
@@ -3858,6 +3871,7 @@ public final class MachineManager: @unchecked Sendable {
                     throw MachineManagerError.persistence(
                         "resolved DoryARMVirt-v1 machine-directory authority changed before spawn: \(error)"
                     )
+                }
                 }
             } else if let bootstrapAuthority = try qualificationBootstrapRuntimeAuthority(
                 machine: launchMachine,
@@ -8020,6 +8034,181 @@ public final class MachineManager: @unchecked Sendable {
                 launchPlanSHA256: launchPlanSHA256,
                 planRevision: definition.lifecycle.revision
             )
+        )
+    }
+
+    private func resolvedDoryPCRuntimeLaunchAuthority(
+        machine: DoryMachineConfiguration,
+        operationID: UUID,
+        resolvedPlan: DoryResolvedMachinePlan,
+        launchBinding: MachineBackendLaunchBinding
+    ) throws -> RawHVRuntimeLaunchAuthority {
+        guard resolvedPlan.guest.family == .linux,
+              resolvedPlan.guest.architecture == .x86_64,
+              resolvedPlan.armVirtTopology == nil,
+              resolvedPlan.graphics == launchBinding.graphics,
+              resolvedPlan.virtualHardwareABIVersion == 1,
+              let admittedVirtualCPUCount =
+                resolvedPlan.resourceAdmission?.admittedVirtualCPUCount,
+              let admittedMemoryBytes =
+                resolvedPlan.resourceAdmission?.admittedMemoryBytes,
+              let admittedStorageBytes =
+                resolvedPlan.resourceAdmission?.admittedStorageBytes else {
+            throw MachineManagerError.persistence(
+                "resolved DoryPC-v1 launch is missing admitted resources or exact backend authority"
+            )
+        }
+        let bytesPerMiB: UInt64 = 1_048_576
+        guard admittedMemoryBytes.isMultiple(of: bytesPerMiB),
+              admittedVirtualCPUCount <= UInt64(UInt16.max) else {
+            throw MachineManagerError.persistence(
+                "resolved DoryPC-v1 compute resources cannot be represented by the runtime envelope"
+            )
+        }
+        let executionResources = DoryPCRuntimeLaunchEnvelope.ExecutionResources(
+            memoryMB: admittedMemoryBytes / bytesPerMiB,
+            virtualCPUCount: UInt16(admittedVirtualCPUCount),
+            tier: .optimizingJIT
+        )
+        let managedMachineDirectory = machineStateDirectory(id: machine.id)
+        guard machine.rootfsPath == managedMachineDirectory + "/rootfs.ext4",
+              machine.bootMode == .efi,
+              let machineStateBroker,
+              let firmwareBundlePath = configuration.pcFirmwareBundlePath else {
+            throw MachineManagerError.persistence(
+                "resolved DoryPC-v1 launch requires managed EFI storage and configured PC firmware"
+            )
+        }
+        guard launchBinding.graphics == .none || launchBinding.graphics == .software else {
+            throw MachineManagerError.persistence(
+                "resolved DoryPC-v1 hardware graphics requires the signed PC renderer admission path"
+            )
+        }
+        guard launchBinding.portForwards.isEmpty else {
+            throw MachineManagerError.persistence(
+                "resolved DoryPC-v1 port forwards require the PC gvproxy forwarding adapter"
+            )
+        }
+
+        let storageUsages = resolvedPlan.launchArtifacts.flatMap { artifact in
+            artifact.usages.compactMap { usage in
+                usage.kind == .storage ? (artifact, usage) : nil
+            }
+        }
+        guard storageUsages.count == 1,
+              storageUsages[0].0.media.kind == .virtualDisk,
+              storageUsages[0].0.media.mutableProvenance != nil,
+              !storageUsages[0].1.readOnly else {
+            throw MachineManagerError.persistence(
+                "resolved DoryPC-v1 launch requires one mutable system-storage artifact"
+            )
+        }
+        let systemDiskLogicalID = try DoryVirtualDeviceID.derived(
+            namespace: .systemDisk,
+            stableID: storageUsages[0].1.identifier
+        )
+
+        let installerSHA256: String?
+        let installerMediaLogicalID: DoryVirtualDeviceID?
+        switch resolvedPlan.bootMedia.media.kind {
+        case .installerISO:
+            let installerUsages = resolvedPlan.launchArtifacts
+                .filter {
+                    $0.resolverReference == resolvedPlan.bootMedia.resolverReference
+                        && $0.media.kind == .installerISO
+                }
+                .flatMap(\.usages)
+                .filter { $0.kind == .boot && $0.readOnly }
+            guard installerUsages.count == 1,
+                  machine.installerISOPath == managedMachineDirectory + "/installer.iso",
+                  let digest = resolvedPlan.bootMedia.media.artifactSHA256 else {
+                throw MachineManagerError.persistence(
+                    "resolved DoryPC-v1 installer is missing managed immutable media authority"
+                )
+            }
+            installerSHA256 = digest
+            installerMediaLogicalID = try DoryVirtualDeviceID.derived(
+                namespace: .removableStorage,
+                stableID: installerUsages[0].identifier
+            )
+        case .virtualDisk:
+            guard storageUsages[0].0.resolverReference
+                    == resolvedPlan.bootMedia.resolverReference,
+                  machine.installerISOPath == nil,
+                  resolvedPlan.bootMedia.media.artifactSHA256 == nil else {
+                throw MachineManagerError.persistence(
+                    "resolved DoryPC-v1 disk boot retained installer or mismatched disk authority"
+                )
+            }
+            installerSHA256 = nil
+            installerMediaLogicalID = nil
+        default:
+            throw MachineManagerError.persistence(
+                "DoryPC-v1 production launch requires installer-ISO or virtual-disk boot media"
+            )
+        }
+
+        let lease: DoryMachineDirectoryLease
+        do {
+            lease = try machineStateBroker.acquireMachineDirectoryLease(machineID: machine.id)
+        } catch {
+            throw MachineManagerError.persistence(
+                "resolved DoryPC-v1 machine-directory authority is unavailable: \(error)"
+            )
+        }
+        let admitted = try lease.withBorrowedDescriptor { descriptor in
+            try Self.admitResolvedDoryPCUEFIResources(
+                machineDirectoryDescriptor: descriptor,
+                machineDirectoryGeneration: lease.generation,
+                expectedDiskCapacityBytes: admittedStorageBytes,
+                firmwareBundlePath: firmwareBundlePath,
+                systemDiskLogicalID: systemDiskLogicalID,
+                installerMediaLogicalID: installerMediaLogicalID,
+                mediaKind: resolvedPlan.bootMedia.media.kind,
+                expectedInstallerSHA256: installerSHA256
+            )
+        }
+        var transferred = false
+        defer { if !transferred { admitted.close() } }
+        let planSHA256 = try Self.canonicalResolvedPlanSHA256(resolvedPlan)
+        let envelope = DoryPCRuntimeLaunchEnvelope.resolvedUEFI(
+            machineID: machine.id,
+            operationID: operationID,
+            resolvedPlanSHA256: planSHA256,
+            planRevision: resolvedPlan.planRevision,
+            executionComponentBuildIdentifier:
+                resolvedPlan.backendRuntimeBuildIdentifier,
+            virtualHardwareABIVersion: resolvedPlan.virtualHardwareABIVersion,
+            graphics: launchBinding.graphics,
+            devices: launchBinding.devices,
+            portForwards: launchBinding.portForwards,
+            executionResources: executionResources,
+            systemDiskCapacityBytes: admitted.disk.capacityBytes,
+            systemDiskLogicalID: systemDiskLogicalID,
+            launchPlan: admitted.boot.launchPlan,
+            firmwareSBOMByteCount: admitted.boot.firmwareSBOM.byteCount,
+            installerMediaByteCount: admitted.boot.installerMedia?.byteCount,
+            installerMediaSHA256: admitted.boot.installerMedia?.sha256,
+            installerMediaLogicalID: installerMediaLogicalID
+        )
+        _ = try envelope.validatedResources()
+#if DEBUG
+        let stateAuthorityTestHook = managerStateLock.withLock {
+            rawHVStateAuthorityPreFinalRevalidationTestHook
+        }
+        try stateAuthorityTestHook?(machine.id)
+#endif
+        do {
+            _ = try lease.revalidate()
+        } catch {
+            throw MachineManagerError.persistence(
+                "resolved DoryPC-v1 machine-directory authority changed before spawn: \(error)"
+            )
+        }
+        transferred = true
+        return RawHVRuntimeLaunchAuthority(
+            pcEnvelope: envelope,
+            inheritedFileDescriptors: [admitted.disk.authority] + admitted.boot.authorities
         )
     }
 

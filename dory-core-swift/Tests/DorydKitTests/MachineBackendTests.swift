@@ -7,7 +7,7 @@ final class MachineBackendTests: XCTestCase {
         let raw = RawHVLinuxMachineBackend.backendDescriptor
         XCTAssertEqual(raw.identity, .doryHypervisor)
         XCTAssertEqual(raw.guestFamilies, [.linux])
-        XCTAssertEqual(raw.guestArchitectures, [.arm64])
+        XCTAssertEqual(raw.guestArchitectures, [.arm64, .x86_64])
         XCTAssertEqual(
             raw.bootMediaKinds,
             [.linuxKernel, .installedLinuxBootBundle, .installerISO, .virtualDisk]
@@ -307,6 +307,34 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(result.plan?.backend.identity, .doryHypervisor)
     }
 
+    func testRawAdapterPlansX86UEFIAndRejectsDirectKernelBoot() {
+        let backend = availableRawBackend(operations: recordingOperations().operations)
+        var machine = rawMachine()
+        machine.bootMode = .efi
+        machine.installerISOPath = "/fixture/installer.iso"
+        let installer = backend.plan(MachineBackendPlanRequest(
+            machine: machine,
+            capabilityPlan: capabilityPlan(
+                backend: .doryHypervisor,
+                media: .installerISO,
+                architecture: .x86_64
+            )
+        ))
+        XCTAssertTrue(installer.isSuccess)
+
+        machine.bootMode = .linuxKernel
+        machine.installerISOPath = nil
+        let direct = backend.plan(MachineBackendPlanRequest(
+            machine: machine,
+            capabilityPlan: capabilityPlan(
+                backend: .doryHypervisor,
+                media: .linuxKernel,
+                architecture: .x86_64
+            )
+        ))
+        XCTAssertEqual(direct.failure?.code, .machineConfigurationIncompatible)
+    }
+
     func testPauseAndResumeDispatchThroughTheSelectedBackend() {
         let recorder = recordingOperations()
         let backend = availableRawBackend(operations: recorder.operations)
@@ -404,9 +432,14 @@ final class MachineBackendTests: XCTestCase {
 
     private func capabilityPlan(
         backend: DoryVirtualizationBackendIdentity,
-        media: DoryBootMediaKind
+        media: DoryBootMediaKind,
+        architecture: DoryGuestArchitecture = .arm64
     ) -> DoryVirtualMachineBackendPlanResult {
-        let descriptor = capabilityDescriptor(backend: backend, media: media)
+        let descriptor = capabilityDescriptor(
+            backend: backend,
+            media: media,
+            architecture: architecture
+        )
         return DoryVirtualMachineBackendPlanResult(
             selectedDescriptor: descriptor,
             evaluatedDescriptors: [descriptor],
@@ -416,10 +449,11 @@ final class MachineBackendTests: XCTestCase {
 
     private func capabilityDescriptor(
         backend: DoryVirtualizationBackendIdentity,
-        media: DoryBootMediaKind
+        media: DoryBootMediaKind,
+        architecture: DoryGuestArchitecture = .arm64
     ) -> DoryVirtualMachineCapabilityDescriptor {
         let request = DoryVirtualMachineCapabilityRequest(
-            guest: DoryGuestPlatform(family: .linux, architecture: .arm64),
+            guest: DoryGuestPlatform(family: .linux, architecture: architecture),
             bootMedia: DoryBootMedia(kind: media, source: .userProvided),
             backend: backend,
             graphics: .hostAcceleratedDisplay,
