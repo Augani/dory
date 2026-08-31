@@ -61,6 +61,8 @@ import Testing
     try bus.writeScalar(at: 0x1000, value: 2, byteCount: 1)
     #expect(try bus.codeGeneration(at: 0x1000, byteCount: 16) != original)
     #expect(try bus.codeGeneration(at: 0x2000, byteCount: 16) == nil)
+    #expect(try bus.readRestartableScalar(at: 0x1000, byteCount: 1) == 2)
+    #expect(try bus.readRestartableScalar(at: 0x2000, byteCount: 1) == nil)
   }
 
   @Test func localAPICMMIOProgramsPrioritySpuriousVectorAndTimer() throws {

@@ -56,6 +56,13 @@ public protocol DoryX86ScalarMemory: DoryX86Memory {
   func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws
 }
 
+/// Optional proof that a scalar read has no externally visible side effects and may therefore be
+/// replayed if a later callback in the same translated block fails. Returning `nil` declines the
+/// native block before touching MMIO or another non-restartable mapping.
+public protocol DoryX86RestartableScalarMemory: DoryX86Memory {
+  func readRestartableScalar(at address: UInt64, byteCount: Int) throws -> UInt64?
+}
+
 /// Optional change token for translated code resident in ordinary RAM. A token is valid only for
 /// the exact address range supplied by the caller. Returning `nil` keeps the conservative byte
 /// comparison path for MMIO, firmware flash, or memory implementations without write tracking.
@@ -255,6 +262,12 @@ extension DoryX86ByteArrayMemory: DoryX86CodeGenerationMemory {
       token ^= UInt64(byteCount)
       return token
     }
+  }
+}
+
+extension DoryX86ByteArrayMemory: DoryX86RestartableScalarMemory {
+  public func readRestartableScalar(at address: UInt64, byteCount: Int) throws -> UInt64? {
+    try readScalar(at: address, byteCount: byteCount)
   }
 }
 

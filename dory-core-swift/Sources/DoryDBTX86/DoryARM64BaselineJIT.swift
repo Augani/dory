@@ -28,6 +28,7 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
   public let tier: DoryARM64CompilationTier
   public let exitCode: DoryJITExitCode
   public let requiresMemoryCallbacks: Bool
+  public let requiresRestartableMemoryReads: Bool
 
   public init(
     guestStart: UInt64,
@@ -36,7 +37,8 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
     machineWords: [UInt32],
     tier: DoryARM64CompilationTier,
     exitCode: DoryJITExitCode,
-    requiresMemoryCallbacks: Bool = false
+    requiresMemoryCallbacks: Bool = false,
+    requiresRestartableMemoryReads: Bool = false
   ) {
     self.guestStart = guestStart
     self.guestByteCount = guestByteCount
@@ -45,6 +47,7 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
     self.tier = tier
     self.exitCode = exitCode
     self.requiresMemoryCallbacks = requiresMemoryCallbacks
+    self.requiresRestartableMemoryReads = requiresRestartableMemoryReads
   }
 
   public var machineBytes: [UInt8] {
@@ -76,9 +79,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
   ) -> DoryARM64CompiledBlock {
     precondition(tier != .interpreterFallback)
     var words: [UInt32] = []
-    let usesMemory =
-      block.statements.contains(where: requiresMemoryCallbacks)
-      || requiresMemoryCallbacks(block.terminator)
+    let memoryCallbackCount =
+      block.statements.reduce(0) { $0 + self.memoryCallbackCount($1) }
+      + memoryCallbackCount(block.terminator)
+    let usesMemory = memoryCallbackCount > 0
     if usesMemory { emitMemoryPrologue(into: &words) }
     for statement in block.statements {
       guard emit(statement, into: &words) else {
@@ -98,7 +102,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       machineWords: words,
       tier: tier,
       exitCode: exit,
-      requiresMemoryCallbacks: usesMemory
+      requiresMemoryCallbacks: usesMemory,
+      requiresRestartableMemoryReads: memoryCallbackCount > 1
     )
   }
 
@@ -201,41 +206,46 @@ public struct DoryARM64BaselineEmitter: Sendable {
     }
   }
 
-  private func requiresMemoryCallbacks(_ statement: DoryIRStatement) -> Bool {
+  private func memoryCallbackCount(_ statement: DoryIRStatement) -> Int {
     switch statement {
-    case .copy(let destination, let source),
-      .binary(_, let destination, let source, _):
-      if case .memory = destination { return true }
-      if case .memory = source { return true }
-      return false
+    case .copy(let destination, let source):
+      if case .memory = destination { return 1 }
+      if case .memory = source { return 1 }
+      return 0
+    case .binary(_, let destination, let source, let writesDestination):
+      if case .memory = destination { return writesDestination ? 2 : 1 }
+      if case .memory = source { return 1 }
+      return 0
     case .unary(let operation, let operand):
       _ = operation
-      if case .memory = operand { return true }
-      return false
+      if case .memory = operand { return 2 }
+      return 0
     case .shift(_, let destination, _):
-      if case .memory = destination { return true }
-      return false
+      if case .memory = destination { return 2 }
+      return 0
     case .signedMultiply(let destination, let lhs, let rhs):
-      if case .memory = destination { return true }
-      if case .memory = lhs { return true }
-      if case .memory = rhs { return true }
-      return false
+      if case .memory = destination { return 1 }
+      if case .memory = lhs { return 1 }
+      if case .memory = rhs { return 1 }
+      return 0
     case .extendMove(_, let source, _):
-      if case .memory = source { return true }
-      return false
+      if case .memory = source { return 1 }
+      return 0
     case .effectiveAddress, .helper:
-      return false
+      return 0
     }
   }
 
-  private func requiresMemoryCallbacks(_ terminator: DoryIRTerminator) -> Bool {
+  private func memoryCallbackCount(_ terminator: DoryIRTerminator) -> Int {
     switch terminator {
-    case .call, .indirectCall, .returnFromCall:
-      true
+    case .call, .returnFromCall:
+      1
+    case .indirectCall(let target, _):
+      if case .memory = target { 2 } else { 1 }
     case .indirect(let target):
-      if case .memory = target { true } else { false }
+      if case .memory = target { 1 } else { 0 }
     case .next, .branch, .conditional, .exit:
-      false
+      0
     }
   }
 
@@ -1321,18 +1331,35 @@ public enum DoryJITRuntimeError: Error, Sendable, Equatable {
 private struct DoryJITMemoryCallbackContext {
   let memory: any DoryX86Memory
   let scalarMemory: (any DoryX86ScalarMemory)?
+  let restartableScalarMemory: (any DoryX86RestartableScalarMemory)?
+  let requiresRestartableReads: Bool
   var failed = false
 
-  init(memory: any DoryX86Memory) {
+  init(memory: any DoryX86Memory, requiresRestartableReads: Bool) {
     self.memory = memory
     scalarMemory = memory as? any DoryX86ScalarMemory
+    restartableScalarMemory = memory as? any DoryX86RestartableScalarMemory
+    self.requiresRestartableReads = requiresRestartableReads
   }
 }
 
 private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address, byteCount in
   guard let opaque, [1, 2, 4, 8].contains(byteCount) else { return 0 }
   let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
+  guard !context.pointee.failed else { return 0 }
   do {
+    if context.pointee.requiresRestartableReads {
+      guard let restartableScalarMemory = context.pointee.restartableScalarMemory,
+        let value = try restartableScalarMemory.readRestartableScalar(
+          at: address,
+          byteCount: Int(byteCount)
+        )
+      else {
+        context.pointee.failed = true
+        return 0
+      }
+      return value
+    }
     if let scalarMemory = context.pointee.scalarMemory {
       return try scalarMemory.readScalar(at: address, byteCount: Int(byteCount))
     }
@@ -1352,6 +1379,7 @@ private let doryJITMemoryWrite: dory_jit_memory_write_function = {
   opaque, address, value, byteCount in
   guard let opaque, [1, 2, 4, 8].contains(byteCount) else { return }
   let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
+  guard !context.pointee.failed else { return }
   do {
     if let scalarMemory = context.pointee.scalarMemory {
       try scalarMemory.writeScalar(at: address, value: value, byteCount: Int(byteCount))
@@ -1412,17 +1440,24 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
   public func execute(
     at offset: Int,
     context: inout [UInt64],
-    memory: (any DoryX86Memory)? = nil
+    memory: (any DoryX86Memory)? = nil,
+    requiresRestartableReads: Bool = false
   ) throws -> DoryJITExitCode {
     try context.withUnsafeMutableBufferPointer { buffer in
-      try execute(at: offset, context: buffer, memory: memory)
+      try execute(
+        at: offset,
+        context: buffer,
+        memory: memory,
+        requiresRestartableReads: requiresRestartableReads
+      )
     }
   }
 
   func execute(
     at offset: Int,
     context: UnsafeMutableBufferPointer<UInt64>,
-    memory: (any DoryX86Memory)? = nil
+    memory: (any DoryX86Memory)? = nil,
+    requiresRestartableReads: Bool = false
   ) throws -> DoryJITExitCode {
     guard offset >= 0, offset.isMultiple(of: 4), offset < capacity else {
       throw DoryJITRuntimeError.invalidOffset(offset)
@@ -1434,7 +1469,10 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     let result: Int32
     var memoryFailed = false
     if let memory {
-      var memoryContext = DoryJITMemoryCallbackContext(memory: memory)
+      var memoryContext = DoryJITMemoryCallbackContext(
+        memory: memory,
+        requiresRestartableReads: requiresRestartableReads
+      )
       result = withUnsafeMutablePointer(to: &memoryContext) { memoryContext in
         dory_jit_region_execute(
           region,
@@ -1745,7 +1783,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         capacity: DoryJITExecutableRegion.contextWordCount
       ) { context in
         Self.populateExecutionContext(context, from: state)
-        let exit = try region.execute(at: resident.offset, context: context, memory: memory)
+        let exit = try region.execute(
+          at: resident.offset,
+          context: context,
+          memory: memory,
+          requiresRestartableReads: resident.block.requiresRestartableMemoryReads
+        )
         if exit == .interpreter, resident.block.requiresMemoryCallbacks {
           return ResidentExecution(resident: resident, exitCode: exit)
         }

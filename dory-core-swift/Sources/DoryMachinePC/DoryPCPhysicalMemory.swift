@@ -435,6 +435,20 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 }
 
+extension DoryPCPhysicalMemoryBus: DoryX86RestartableScalarMemory {
+  public func readRestartableScalar(at address: UInt64, byteCount: Int) throws -> UInt64? {
+    guard [1, 2, 4, 8].contains(byteCount) else {
+      throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
+      return try ram.readScalar(at: resolved.backingAddress, byteCount: byteCount)
+    }
+    if try resolve(address: address, byteCount: byteCount) != nil { return nil }
+    let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
+    return try ram.readScalar(at: resolved.backingAddress, byteCount: byteCount)
+  }
+}
+
 extension DoryPCPhysicalMemoryBus: DoryX86BulkMemory {
   public func bulkCopyRAMSpan(at address: UInt64, maximumByteCount: Int) -> Int? {
     guard maximumByteCount > 0 else { return 0 }

@@ -39,7 +39,7 @@ import Testing
     #expect(block.terminator == .exit(.interpreter, resumeAt: 0x2000))
   }
 
-  @Test func packsOneReadWithRegisterWorkButStopsBeforeASecondAccess() throws {
+  @Test func packsMultipleReadsWithRegisterWorkIntoOneRestartableBlock() throws {
     let block = try DoryX86IRTranslator().translate(
       [
         0xB8, 1, 0, 0, 0,
@@ -51,11 +51,13 @@ import Testing
       mode: .long64
     )
 
-    #expect(block.guestByteCount == 12)
-    #expect(block.guestInstructionCount == 3)
-    #expect(block.statements.count == 3)
-    #expect(block.terminator == .next(0x240C))
-    #expect(DoryARM64BaselineEmitter().compile(block).tier == .baseline)
+    #expect(block.guestByteCount == 15)
+    #expect(block.guestInstructionCount == 4)
+    #expect(block.statements.count == 4)
+    #expect(block.terminator == .next(0x240F))
+    let compiled = DoryARM64BaselineEmitter().compile(block)
+    #expect(compiled.tier == .baseline)
+    #expect(compiled.requiresRestartableMemoryReads)
   }
 
   @Test func memoryWriteRemainsASelfModifyingCodeBoundary() throws {

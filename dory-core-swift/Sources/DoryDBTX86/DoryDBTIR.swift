@@ -141,7 +141,6 @@ public struct DoryX86IRTranslator: Sendable {
     var instructionCount = 0
     var statements: [DoryIRStatement] = []
     var terminator: DoryIRTerminator?
-    var containsMemoryAccess = false
 
     while offset < bytes.count, instructionCount < instructionBudget {
       let instructionAddress = address &+ UInt64(offset)
@@ -156,28 +155,20 @@ public struct DoryX86IRTranslator: Sendable {
       let statementMemoryBehavior = lowering.statements.reduce(MemoryBehavior.none) {
         max($0, self.memoryBehavior($1))
       }
-      let memoryBehavior = max(
-        statementMemoryBehavior,
-        lowering.terminator.map(terminatorMemoryBehavior) ?? .none
-      )
-      if instructionCount > 1,
-        requiresJITFallback(lowering)
-          || (memoryBehavior != .none && containsMemoryAccess)
-      {
+      if instructionCount > 1, requiresJITFallback(lowering) {
         offset -= Int(instruction.length)
         instructionCount -= 1
         terminator = .next(instructionAddress)
         break
       }
       statements.append(contentsOf: lowering.statements)
-      containsMemoryAccess = containsMemoryAccess || memoryBehavior != .none
       if let end = lowering.terminator {
         terminator = end
         break
       }
-      // A write may modify bytes already decoded later in this block, so it remains a hard
-      // boundary. One read can safely share a block with pure register work: callback failure
-      // discards the native context and replays the unchanged block through the interpreter.
+      // A write may modify bytes decoded later in this block, so it remains a hard boundary.
+      // Read-only prefixes are restartable: multi-access native blocks use the explicit ordinary-
+      // RAM callback contract and discard their temporary context if any read cannot be replayed.
       if statementMemoryBehavior == .write {
         terminator = .next(instruction.nextInstructionAddress)
         break
@@ -501,19 +492,6 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(source) ? .read : .none
     case .effectiveAddress, .helper:
       return .none
-    }
-  }
-
-  private func terminatorMemoryBehavior(_ terminator: DoryIRTerminator) -> MemoryBehavior {
-    switch terminator {
-    case .call, .indirectCall:
-      .write
-    case .returnFromCall:
-      .read
-    case .indirect(let target):
-      isMemory(target) ? .read : .none
-    case .next, .branch, .conditional, .exit:
-      .none
     }
   }
 

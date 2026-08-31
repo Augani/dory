@@ -115,6 +115,105 @@ import Testing
     #endif
   }
 
+  @Test func executorRunsMultipleOrdinaryRAMReadsAsOneRestartableBlock() throws {
+    #if arch(arm64)
+      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      try memory.writeScalar(at: 0x80, value: 11, byteCount: 8)
+      try memory.writeScalar(at: 0x88, value: 31, byteCount: 8)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(registers: .init(rax: 0x80), rip: 0x3500)
+
+      let execution = try #require(
+        executor.execute(
+          bytes: [
+            0x48, 0x8B, 0x08,  // mov rcx,[rax]
+            0x48, 0x8B, 0x58, 0x08,  // mov rbx,[rax+8]
+            0x48, 0x01, 0xD9,  // add rcx,rbx
+            0xF4,
+          ],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 4,
+          state: &state,
+          memory: memory
+        )
+      )
+
+      #expect(execution.block.guestInstructionCount == 4)
+      #expect(execution.block.requiresRestartableMemoryReads)
+      #expect(execution.exitCode == .halt)
+      #expect(state.registers.rcx == 42)
+      #expect(state.rip == 0x350B)
+    #endif
+  }
+
+  @Test func multiAccessBlockDeclinesBeforeNonrestartableReadsOrWrites() throws {
+    #if arch(arm64)
+      let memory = ScalarTrackingMemory(byteCount: 0x100)
+      try memory.backing.writeScalar(at: 0x80, value: 0xA5, byteCount: 8)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x80, rcx: 0x55),
+        rip: 0x3600
+      )
+      var state = initial
+
+      let execution = try #require(
+        executor.execute(
+          bytes: [
+            0x48, 0x8B, 0x08,  // mov rcx,[rax]
+            0x48, 0x89, 0x48, 0x08,  // mov [rax+8],rcx
+          ],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 2,
+          state: &state,
+          memory: memory
+        )
+      )
+
+      #expect(execution.block.requiresRestartableMemoryReads)
+      #expect(execution.exitCode == .interpreter)
+      #expect(state == initial)
+      #expect(memory.scalarReads == 0)
+      #expect(memory.scalarWrites == 0)
+    #endif
+  }
+
+  @Test func failedLaterRestartableReadSuppressesTheRemainingNativeWrite() throws {
+    #if arch(arm64)
+      let memory = SelectiveRestartableMemory(byteCount: 0x100, declinedAddress: 0x88)
+      try memory.backing.writeScalar(at: 0x80, value: 0xA5, byteCount: 8)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let initial = try DoryX86ArchitecturalState(registers: .init(rax: 0x80), rip: 0x3700)
+      var state = initial
+
+      let execution = try #require(
+        executor.execute(
+          bytes: [
+            0x48, 0x8B, 0x08,  // mov rcx,[rax]
+            0x48, 0x8B, 0x58, 0x08,  // mov rbx,[rax+8]
+            0x48, 0x89, 0x48, 0x10,  // mov [rax+16],rcx
+          ],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 3,
+          state: &state,
+          memory: memory
+        )
+      )
+
+      #expect(execution.exitCode == .interpreter)
+      #expect(state == initial)
+      #expect(memory.restartableReads == 2)
+      #expect(memory.scalarWrites == 0)
+      #expect(try memory.backing.readScalar(at: 0x90, byteCount: 8) == 0)
+    #endif
+  }
+
   @Test func directCallAndReturnStayNativeAndMatchLongModeStackSemantics() throws {
     #if arch(arm64)
       let memory = DoryX86ByteArrayMemory(byteCount: 0x200)
@@ -886,6 +985,47 @@ private final class ScalarTrackingMemory: DoryX86ScalarMemory, @unchecked Sendab
 
   func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
     scalarReads += 1
+    return try backing.readScalar(at: address, byteCount: byteCount)
+  }
+
+  func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
+    scalarWrites += 1
+    try backing.writeScalar(at: address, value: value, byteCount: byteCount)
+  }
+}
+
+private final class SelectiveRestartableMemory: DoryX86ScalarMemory,
+  DoryX86RestartableScalarMemory, @unchecked Sendable
+{
+  let backing: DoryX86ByteArrayMemory
+  let declinedAddress: UInt64
+  private(set) var restartableReads = 0
+  private(set) var scalarWrites = 0
+
+  init(byteCount: Int, declinedAddress: UInt64) {
+    backing = DoryX86ByteArrayMemory(byteCount: byteCount)
+    self.declinedAddress = declinedAddress
+  }
+
+  func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    try backing.instructionBytes(at: address, maximumCount: maximumCount)
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    try backing.read(at: address, byteCount: byteCount)
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    try backing.write(at: address, bytes: bytes)
+  }
+
+  func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
+    try backing.readScalar(at: address, byteCount: byteCount)
+  }
+
+  func readRestartableScalar(at address: UInt64, byteCount: Int) throws -> UInt64? {
+    restartableReads += 1
+    guard address != declinedAddress else { return nil }
     return try backing.readScalar(at: address, byteCount: byteCount)
   }
 

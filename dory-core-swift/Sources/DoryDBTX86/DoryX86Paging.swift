@@ -544,6 +544,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, @unchecked Sendable {
   private let physicalMemory: any DoryX86Memory
   private let scalarPhysicalMemory: (any DoryX86ScalarMemory)?
+  private let restartableScalarPhysicalMemory: (any DoryX86RestartableScalarMemory)?
   private let bulkPhysicalMemory: (any DoryX86BulkMemory)?
   private let codeGenerationPhysicalMemory: (any DoryX86CodeGenerationMemory)?
   private let pagingUnit: DoryX86PagingUnit
@@ -556,6 +557,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
   ) {
     self.physicalMemory = physicalMemory
     scalarPhysicalMemory = physicalMemory as? any DoryX86ScalarMemory
+    restartableScalarPhysicalMemory = physicalMemory as? any DoryX86RestartableScalarMemory
     bulkPhysicalMemory = physicalMemory as? any DoryX86BulkMemory
     codeGenerationPhysicalMemory = physicalMemory as? any DoryX86CodeGenerationMemory
     self.pagingUnit = pagingUnit
@@ -693,6 +695,27 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
       }
     }
     return result
+  }
+}
+
+extension DoryX86TranslatedMemory: DoryX86RestartableScalarMemory {
+  public func readRestartableScalar(at address: UInt64, byteCount: Int) throws -> UInt64? {
+    guard [1, 2, 4, 8].contains(byteCount) else {
+      throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    guard Int(4_096 - (address & 0xfff)) >= byteCount,
+      let restartableScalarPhysicalMemory
+    else { return nil }
+    let translation = try pagingUnit.translate(
+      linearAddress: address,
+      access: .read,
+      context: context,
+      physicalMemory: physicalMemory
+    )
+    return try restartableScalarPhysicalMemory.readRestartableScalar(
+      at: translation.physicalAddress,
+      byteCount: byteCount
+    )
   }
 }
 
