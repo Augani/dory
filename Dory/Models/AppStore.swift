@@ -78,6 +78,7 @@ struct ContainerGroup: Identifiable, Sendable {
 @MainActor
 final class AppStore {
     var appearance: DoryAppearance = .dark
+    let systemAppearance = DorySystemAppearance.shared
     var section: AppSection = .containers {
         didSet { if oldValue != section { filter = "" } }
     }
@@ -391,7 +392,7 @@ final class AppStore {
         }
         if let raw = env["DORY_SETTINGS_TAB"], let parsed = SettingsTab(rawValue: raw) { settingsTab = parsed }
         if let raw = env["DORY_DETAIL_TAB"], let parsed = DetailTab(rawValue: raw) { detailTab = parsed }
-        if env["DORY_APPEARANCE"] == "light" { appearance = .light }
+        if let raw = env["DORY_APPEARANCE"], let parsed = DoryAppearance(rawValue: raw) { appearance = parsed }
         if let raw = env["DORY_SHEET"], let parsed = AppSheet(rawValue: raw) {
             activeSheet = parsed
             if parsed == .inspectImage { inspectedImage = images.first }
@@ -728,7 +729,7 @@ final class AppStore {
     func setAppearance(_ value: DoryAppearance) {
         appearance = value
         UserDefaults.standard.set(value.rawValue, forKey: Self.appearanceKey)
-        showSettingsSuccess("\(value.rawValue.capitalized) appearance applied.")
+        showSettingsSuccess(value == .system ? "Appearance now follows macOS." : "\(value.label) appearance applied.")
     }
 
     func setLaunchAtLogin(_ on: Bool) {
@@ -760,7 +761,11 @@ final class AppStore {
         UserDefaults.standard.set(true, forKey: Self.onboardingDoneKey)
     }
 
-    var palette: DoryPalette { appearance.palette }
+    var resolvedAppearance: DoryAppearance {
+        appearance.resolved(systemIsDark: systemAppearance.isDark)
+    }
+
+    var palette: DoryPalette { resolvedAppearance.palette }
 
     func clearSettingsNotice() {
         settingsNotice = nil
@@ -5306,7 +5311,7 @@ final class AppStore {
     }
 
     func toggleTheme() {
-        appearance = appearance == .dark ? .light : .dark
+        appearance = resolvedAppearance == .dark ? .light : .dark
     }
 
     @discardableResult

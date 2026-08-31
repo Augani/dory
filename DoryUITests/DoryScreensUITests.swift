@@ -69,8 +69,9 @@ final class DoryScreensUITests: XCTestCase {
 
     func testThemeToggleAndAppearancePicker() {
         nav("settings")
-        // Appearance picker selects light/dark without crashing.
+        // Appearance picker selects light/dark/system without crashing.
         app.buttons["appearance-light"].click()
+        app.buttons["appearance-system"].click()
         app.buttons["appearance-dark"].click()
         // The sidebar theme toggle flips appearance.
         let toggle = app.buttons["theme-toggle"]

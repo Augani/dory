@@ -864,8 +864,16 @@ struct SettingsView: View {
 
             groupLabel("APPEARANCE")
             HStack(spacing: 10) {
-                appearanceCard(.light, "Light", LinearGradient(colors: [Color(hex: 0xDCE9F7), .white], startPoint: .topLeading, endPoint: .bottomTrailing))
-                appearanceCard(.dark, "Dark", LinearGradient(colors: [Color(hex: 0x1B1D21), Color(hex: 0x2A2C33)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                appearanceCard(.light, "Always light", LinearGradient(colors: [Color(hex: 0xDCE9F7), .white], startPoint: .topLeading, endPoint: .bottomTrailing))
+                appearanceCard(.dark, "Always dark", LinearGradient(colors: [Color(hex: 0x1B1D21), Color(hex: 0x2A2C33)], startPoint: .topLeading, endPoint: .bottomTrailing))
+                appearanceCard(.system, "Follows macOS", LinearGradient(
+                    stops: [
+                        .init(color: Color(hex: 0xDCE9F7), location: 0.5),
+                        .init(color: Color(hex: 0x1B1D21), location: 0.5)
+                    ],
+                    startPoint: .topLeading,
+                    endPoint: .bottomTrailing
+                ))
             }
         }
     }
@@ -949,13 +957,16 @@ struct SettingsView: View {
         .overlay(alignment: .bottom) { if divider { Rectangle().fill(p.border).frame(height: 1) } }
     }
 
-    private func appearanceCard(_ appearance: DoryAppearance, _ label: String, _ preview: LinearGradient) -> some View {
+    private func appearanceCard(_ appearance: DoryAppearance, _ subtitle: String, _ preview: LinearGradient) -> some View {
         let selected = store.appearance == appearance
         return Button { store.setAppearance(appearance) } label: {
             VStack(alignment: .leading, spacing: 9) {
                 RoundedRectangle(cornerRadius: 7).fill(preview).frame(height: 46)
                     .overlay(RoundedRectangle(cornerRadius: 7).strokeBorder(p.border))
-                Text(label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(appearance.label).font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
+                    Text(subtitle).font(.system(size: 11)).foregroundStyle(p.text3)
+                }
             }
             .padding(13)
             .frame(maxWidth: .infinity)
