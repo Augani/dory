@@ -507,6 +507,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 /// the interpreter's exact access kind and handling accesses that cross guest page boundaries.
 public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, @unchecked Sendable {
   private let physicalMemory: any DoryX86Memory
+  private let scalarPhysicalMemory: (any DoryX86ScalarMemory)?
+  private let bulkPhysicalMemory: (any DoryX86BulkMemory)?
   private let pagingUnit: DoryX86PagingUnit
   private let context: DoryX86PagingContext
 
@@ -516,6 +518,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
     context: DoryX86PagingContext
   ) {
     self.physicalMemory = physicalMemory
+    scalarPhysicalMemory = physicalMemory as? any DoryX86ScalarMemory
+    bulkPhysicalMemory = physicalMemory as? any DoryX86BulkMemory
     self.pagingUnit = pagingUnit
     self.context = context
   }
@@ -544,7 +548,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
       context: context,
       physicalMemory: physicalMemory
     )
-    if let scalarMemory = physicalMemory as? any DoryX86ScalarMemory {
+    if let scalarMemory = scalarPhysicalMemory {
       return try scalarMemory.readScalar(
         at: translation.physicalAddress, byteCount: byteCount)
     }
@@ -588,7 +592,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
       context: context,
       physicalMemory: physicalMemory
     )
-    if let scalarMemory = physicalMemory as? any DoryX86ScalarMemory {
+    if let scalarMemory = scalarPhysicalMemory {
       try scalarMemory.writeScalar(
         at: translation.physicalAddress, value: value, byteCount: byteCount)
       return
@@ -660,7 +664,7 @@ extension DoryX86TranslatedMemory: DoryX86BulkMemory {
     maximumByteCount: Int
   ) throws -> Int? {
     guard maximumByteCount > 0,
-      let physicalMemory = physicalMemory as? any DoryX86BulkMemory
+      let physicalMemory = bulkPhysicalMemory
     else { return maximumByteCount == 0 ? 0 : nil }
     let source = try pagingUnit.translate(
       linearAddress: sourceAddress,

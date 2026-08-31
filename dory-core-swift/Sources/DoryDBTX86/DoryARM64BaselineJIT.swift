@@ -1318,25 +1318,32 @@ public enum DoryJITRuntimeError: Error, Sendable, Equatable {
   case invalidExitCode(UInt32)
 }
 
-private final class DoryJITMemoryCallbackContext {
+private struct DoryJITMemoryCallbackContext {
   let memory: any DoryX86Memory
+  let scalarMemory: (any DoryX86ScalarMemory)?
   var failed = false
 
-  init(memory: any DoryX86Memory) { self.memory = memory }
+  init(memory: any DoryX86Memory) {
+    self.memory = memory
+    scalarMemory = memory as? any DoryX86ScalarMemory
+  }
 }
 
 private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address, byteCount in
   guard let opaque, [1, 2, 4, 8].contains(byteCount) else { return 0 }
-  let context = Unmanaged<DoryJITMemoryCallbackContext>.fromOpaque(opaque).takeUnretainedValue()
+  let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
   do {
-    if let scalarMemory = context.memory as? any DoryX86ScalarMemory {
+    if let scalarMemory = context.pointee.scalarMemory {
       return try scalarMemory.readScalar(at: address, byteCount: Int(byteCount))
     }
-    return try context.memory.read(at: address, byteCount: Int(byteCount)).enumerated().reduce(0) {
-      $0 | UInt64($1.element) << UInt64($1.offset * 8)
-    }
+    return try context.pointee.memory.read(
+      at: address,
+      byteCount: Int(byteCount)
+    ).enumerated().reduce(0) {
+        $0 | UInt64($1.element) << UInt64($1.offset * 8)
+      }
   } catch {
-    context.failed = true
+    context.pointee.failed = true
     return 0
   }
 }
@@ -1344,19 +1351,19 @@ private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address
 private let doryJITMemoryWrite: dory_jit_memory_write_function = {
   opaque, address, value, byteCount in
   guard let opaque, [1, 2, 4, 8].contains(byteCount) else { return }
-  let context = Unmanaged<DoryJITMemoryCallbackContext>.fromOpaque(opaque).takeUnretainedValue()
+  let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
   do {
-    if let scalarMemory = context.memory as? any DoryX86ScalarMemory {
+    if let scalarMemory = context.pointee.scalarMemory {
       try scalarMemory.writeScalar(at: address, value: value, byteCount: Int(byteCount))
       return
     }
     let bytes = (0..<Int(byteCount)).map {
       UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
     }
-    try context.memory.validateWrite(at: address, byteCount: bytes.count)
-    try context.memory.write(at: address, bytes: bytes)
+    try context.pointee.memory.validateWrite(at: address, byteCount: bytes.count)
+    try context.pointee.memory.write(at: address, bytes: bytes)
   } catch {
-    context.failed = true
+    context.pointee.failed = true
   }
 }
 
@@ -1407,6 +1414,16 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     context: inout [UInt64],
     memory: (any DoryX86Memory)? = nil
   ) throws -> DoryJITExitCode {
+    try context.withUnsafeMutableBufferPointer { buffer in
+      try execute(at: offset, context: buffer, memory: memory)
+    }
+  }
+
+  func execute(
+    at offset: Int,
+    context: UnsafeMutableBufferPointer<UInt64>,
+    memory: (any DoryX86Memory)? = nil
+  ) throws -> DoryJITExitCode {
     guard offset >= 0, offset.isMultiple(of: 4), offset < capacity else {
       throw DoryJITRuntimeError.invalidOffset(offset)
     }
@@ -1414,20 +1431,35 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
       throw DoryJITRuntimeError.invalidContextWordCount(context.count)
     }
     var rawExit: UInt32 = 0
-    let memoryContext = memory.map(DoryJITMemoryCallbackContext.init)
-    let result = context.withUnsafeMutableBufferPointer { buffer in
-      dory_jit_region_execute(
+    let result: Int32
+    var memoryFailed = false
+    if let memory {
+      var memoryContext = DoryJITMemoryCallbackContext(memory: memory)
+      result = withUnsafeMutablePointer(to: &memoryContext) { memoryContext in
+        dory_jit_region_execute(
+          region,
+          offset,
+          context.baseAddress,
+          UnsafeMutableRawPointer(memoryContext),
+          doryJITMemoryRead,
+          doryJITMemoryWrite,
+          &rawExit
+        )
+      }
+      memoryFailed = memoryContext.failed
+    } else {
+      result = dory_jit_region_execute(
         region,
         offset,
-        buffer.baseAddress,
-        memoryContext.map { Unmanaged.passUnretained($0).toOpaque() },
+        context.baseAddress,
+        nil,
         doryJITMemoryRead,
         doryJITMemoryWrite,
         &rawExit
       )
     }
     guard result == 0 else { throw DoryJITRuntimeError.executionFailed(result) }
-    if memoryContext?.failed == true { return .interpreter }
+    if memoryFailed { return .interpreter }
     guard let exit = DoryJITExitCode(rawValue: rawExit) else {
       throw DoryJITRuntimeError.invalidExitCode(rawExit)
     }
@@ -1591,13 +1623,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         resident = compiled
       }
 
-      var context = Self.executionContext(from: state)
-      let exit = try region.execute(at: resident.offset, context: &context, memory: memory)
-      if exit == .interpreter, resident.block.requiresMemoryCallbacks {
+      return try withUnsafeTemporaryAllocation(
+        of: UInt64.self,
+        capacity: DoryJITExecutableRegion.contextWordCount
+      ) { context in
+        Self.populateExecutionContext(context, from: state)
+        let exit = try region.execute(at: resident.offset, context: context, memory: memory)
+        if exit == .interpreter, resident.block.requiresMemoryCallbacks {
+          return .init(block: resident.block, exitCode: exit)
+        }
+        Self.apply(context: context, to: &state)
         return .init(block: resident.block, exitCode: exit)
       }
-      Self.apply(context: context, to: &state)
-      return .init(block: resident.block, exitCode: exit)
     }
   }
 
@@ -1643,18 +1680,52 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     return resident
   }
 
-  private static func executionContext(from state: DoryX86ArchitecturalState) -> [UInt64] {
-    var context = DoryX86GeneralRegister.allCases.map { state.registers[$0] }
-    context.append(state.rip)
-    context.append(state.rflags.rawValue)
-    return context
+  private static func populateExecutionContext(
+    _ context: UnsafeMutableBufferPointer<UInt64>,
+    from state: DoryX86ArchitecturalState
+  ) {
+    precondition(context.count == DoryJITExecutableRegion.contextWordCount)
+    context[0] = state.registers.rax
+    context[1] = state.registers.rcx
+    context[2] = state.registers.rdx
+    context[3] = state.registers.rbx
+    context[4] = state.registers.rsp
+    context[5] = state.registers.rbp
+    context[6] = state.registers.rsi
+    context[7] = state.registers.rdi
+    context[8] = state.registers.r8
+    context[9] = state.registers.r9
+    context[10] = state.registers.r10
+    context[11] = state.registers.r11
+    context[12] = state.registers.r12
+    context[13] = state.registers.r13
+    context[14] = state.registers.r14
+    context[15] = state.registers.r15
+    context[16] = state.rip
+    context[17] = state.rflags.rawValue
   }
 
-  private static func apply(context: [UInt64], to state: inout DoryX86ArchitecturalState) {
+  private static func apply(
+    context: UnsafeMutableBufferPointer<UInt64>,
+    to state: inout DoryX86ArchitecturalState
+  ) {
     precondition(context.count == DoryJITExecutableRegion.contextWordCount)
-    for (index, register) in DoryX86GeneralRegister.allCases.enumerated() {
-      state.registers[register] = context[index]
-    }
+    state.registers.rax = context[0]
+    state.registers.rcx = context[1]
+    state.registers.rdx = context[2]
+    state.registers.rbx = context[3]
+    state.registers.rsp = context[4]
+    state.registers.rbp = context[5]
+    state.registers.rsi = context[6]
+    state.registers.rdi = context[7]
+    state.registers.r8 = context[8]
+    state.registers.r9 = context[9]
+    state.registers.r10 = context[10]
+    state.registers.r11 = context[11]
+    state.registers.r12 = context[12]
+    state.registers.r13 = context[13]
+    state.registers.r14 = context[14]
+    state.registers.r15 = context[15]
     state.rip = context[16]
     state.rflags = DoryX86RFLAGS(rawValue: context[17])
   }
