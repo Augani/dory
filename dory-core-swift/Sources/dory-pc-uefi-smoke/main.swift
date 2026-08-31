@@ -1,3 +1,4 @@
+import CryptoKit
 import DoryDBTX86
 import DoryFirmware
 import DoryMachinePC
@@ -16,6 +17,24 @@ private enum SmokeError: Error, CustomStringConvertible {
     case .missingSerialMarker(let marker): "expected serial marker was not observed: \(marker)"
     }
   }
+}
+
+private struct FileIdentity {
+  let byteCount: UInt64
+  let sha256: String
+}
+
+private func identity(of file: URL) throws -> FileIdentity {
+  let handle = try FileHandle(forReadingFrom: file)
+  defer { try? handle.close() }
+  var hasher = SHA256()
+  var byteCount: UInt64 = 0
+  while let bytes = try handle.read(upToCount: 1024 * 1024), !bytes.isEmpty {
+    hasher.update(data: bytes)
+    byteCount += UInt64(bytes.count)
+  }
+  let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+  return FileIdentity(byteCount: byteCount, sha256: digest)
 }
 
 private struct Arguments {
@@ -344,6 +363,8 @@ private func prepareVariableStore(
 
 private func run() throws {
   let arguments = try Arguments(CommandLine.arguments)
+  let runnerIdentity = try identity(of: URL(fileURLWithPath: CommandLine.arguments[0]))
+  let installerIdentity = try arguments.installerMedia.map { try identity(of: $0) }
   let artifacts = try loadArtifacts(from: arguments.firmwareBundle)
   guard artifacts.manifest.platform == .pcV1 else {
     throw SmokeError.usage("firmware bundle is not DoryPC-v1")
@@ -463,7 +484,10 @@ private func run() throws {
     "csBase": state.map { hexadecimal($0.cs.base) } ?? "unavailable",
     "csSelector": state.map { String(format: "0x%04x", $0.cs.selector) } ?? "unavailable",
     "efer": state.map { hexadecimal($0.control.efer) } ?? "unavailable",
+    "firmwareABIIdentity": artifacts.manifest.firmwareABIIdentity,
     "firmwareBuildIdentifier": artifacts.manifest.buildIdentifier,
+    "firmwareCodeByteCount": artifacts.manifest.firmwareCodeByteCount,
+    "firmwareCodeSHA256": artifacts.manifest.firmwareCodeSHA256,
     "gdtrBase": state.map { hexadecimal($0.gdtr.base) } ?? "unavailable",
     "gdtrLimit": state.map { String(format: "0x%04x", $0.gdtr.limit) } ?? "unavailable",
     "instructionPointer": rip,
@@ -486,6 +510,13 @@ private func run() throws {
     "optimizingJITBlocks": executionStatistics.optimizingJITBlocks,
     "persistentSystemDisk": arguments.systemDisk?.path ?? "in-memory",
     "installerMedia": arguments.installerMedia?.path ?? "none",
+    "installerMediaByteCount": installerIdentity.map { $0.byteCount as Any } ?? NSNull(),
+    "installerMediaSHA256": installerIdentity.map { $0.sha256 as Any } ?? NSNull(),
+    "runnerByteCount": runnerIdentity.byteCount,
+    "runnerSHA256": runnerIdentity.sha256,
+    "sbomSHA256": artifacts.manifest.sbomSHA256,
+    "variableStoreTemplateByteCount": artifacts.manifest.variableStoreTemplateByteCount,
+    "variableStoreTemplateSHA256": artifacts.manifest.variableStoreTemplateSHA256,
     "variableStoreDirectory": ownsVariableDirectory ? "temporary" : variableDirectory.path,
     "pageTableTrace": pageTrace,
     "instructionBytes": instructionBytes.map(hexadecimalBytes) ?? "unmapped",
