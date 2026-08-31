@@ -78,6 +78,26 @@ import Testing
     #expect(!pit.snapshot().armed)
   }
 
+  @Test func systemControlPortDrivesAndReportsPITChannel2() throws {
+    let pit = DoryPCPIT8254 {}
+    let systemControl = DoryPCSystemControlPortB(pit: pit)
+
+    // Gate channel 2 off, select channel 2 / low-high / mode 0, and load a three-clock count.
+    try systemControl.write(portOffset: 0, value: 0, width: .byte)
+    try pit.write(portOffset: 3, value: 0xB0, width: .byte)
+    try pit.write(portOffset: 2, value: 3, width: .byte)
+    try pit.write(portOffset: 2, value: 0, width: .byte)
+    pit.advance(by: 10)
+    #expect(try systemControl.read(portOffset: 0, width: .byte) & 0x20 == 0)
+
+    try systemControl.write(portOffset: 0, value: 3, width: .byte)
+    #expect(try systemControl.read(portOffset: 0, width: .byte) & 0x03 == 3)
+    pit.advance(by: 2)
+    #expect(try systemControl.read(portOffset: 0, width: .byte) & 0x20 == 0)
+    pit.advance(by: 1)
+    #expect(try systemControl.read(portOffset: 0, width: .byte) & 0x20 != 0)
+  }
+
   private func initialize(
     _ port: DoryPCPIC8259Port,
     offset: UInt8,

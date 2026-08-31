@@ -65,6 +65,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let ioAPIC: DoryPCIOAPIC
   public let legacyPIC: DoryPCPIC8259Pair
   public let legacyPIT: DoryPCPIT8254
+  public let systemControlPort: DoryPCSystemControlPortB
   public let rtc: DoryPCRTC146818
   public let hpet: DoryPCHPET
   public let pciExpress: DoryPCPCIExpressECAM
@@ -175,6 +176,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       try? ioAPIC.setAsserted(true, pin: 2)
       try? ioAPIC.setAsserted(false, pin: 2)
     }
+    systemControlPort = DoryPCSystemControlPortB(pit: legacyPIT)
     serial = DoryPCUART16550()
     serial.connectInterruptSink { [legacyPIC, ioAPIC] asserted in
       if asserted { try? legacyPIC.raise(irq: 4) }
@@ -226,6 +228,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: false))
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: true))
     try ioBus.attach(legacyPIT)
+    try ioBus.attach(systemControlPort)
     try ioBus.attach(rtc)
     try ioBus.attach(serial)
     try ioBus.attach(DoryPCACPIPMControlPort(controller: powerController))

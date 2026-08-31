@@ -236,6 +236,42 @@ import Testing
     #endif
   }
 
+  @Test func installerPITCalibrationPortSequenceRetiresAcrossExecutionTiers() throws {
+    #if arch(arm64)
+      let tiers: [DoryPCExecutionTier] = [.interpreter, .baselineJIT, .optimizingJIT]
+    #else
+      let tiers: [DoryPCExecutionTier] = [.interpreter]
+    #endif
+
+    for tier in tiers {
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        executionTier: tier,
+        baselineJITMaximumCodeBytes: 4096
+      )
+      // in al,0x61; and eax,-4; out 0x61,al; program PIT channel 2; enable its gate; hlt
+      let code: [UInt8] = [
+        0xE4, 0x61,
+        0x83, 0xE0, 0xFC,
+        0xE6, 0x61,
+        0xB0, 0xB0,
+        0xE6, 0x43,
+        0xB0, 0x03,
+        0xE6, 0x42,
+        0x30, 0xC0,
+        0xE6, 0x42,
+        0xE4, 0x61,
+        0x0C, 0x01,
+        0xE6, 0x61,
+        0xF4,
+      ]
+      try machine.load(kernel: makeELF(code: code), commandLine: "x")
+
+      #expect(try machine.run(maximumInstructions: 32) == .halted(instructionCount: 13))
+      #expect(try machine.ioBus.read(port: 0x61, width: .byte) & 0x01 == 1)
+    }
+  }
+
   @Test func jitUnmappedBlockFetchFallsBackToPreciseInterpreterPageFault() throws {
     #if arch(arm64)
       for tier in [DoryPCExecutionTier.baselineJIT, .optimizingJIT] {

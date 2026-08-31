@@ -233,7 +233,7 @@ public struct DoryPCPITSnapshot: Sendable, Hashable {
   public let armed: Bool
 }
 
-/// Channel-0 PC interval timer. Channels 1/2 remain inert until their owning devices are added.
+/// PC interval timer with the interrupting channel 0 and the system-control-port-backed channel 2.
 public final class DoryPCPIT8254: DoryPCPortIODevice, @unchecked Sendable {
   public let basePort: UInt16 = 0x40
   public let portCount: UInt16 = 4
@@ -248,6 +248,17 @@ public final class DoryPCPIT8254: DoryPCPortIODevice, @unchecked Sendable {
   private var writeLowByte: UInt8?
   private var readHighNext = false
   private var latchedCount: UInt32?
+  private var channel2Mode: DoryPCPITMode = .interruptOnTerminalCount
+  private var channel2AccessMode: UInt8 = 3
+  private var channel2Reload: UInt32 = 65_536
+  private var channel2Current: UInt32 = 0
+  private var channel2Armed = false
+  private var channel2Gate = false
+  private var channel2Output = false
+  private var channel2WriteLowByte: UInt8?
+  private var channel2ReadHighNext = false
+  private var channel2LatchedCount: UInt32?
+  private var elapsedClocks: UInt64 = 0
 
   public init(onInterrupt: @escaping @Sendable () -> Void) {
     self.onInterrupt = onInterrupt
@@ -256,6 +267,8 @@ public final class DoryPCPIT8254: DoryPCPortIODevice, @unchecked Sendable {
   public func advance(by clocks: UInt64) {
     guard clocks > 0 else { return }
     let shouldInterrupt = lock.withLock {
+      elapsedClocks &+= clocks
+      advanceChannel2Locked(by: clocks)
       guard armed, current > 0 else { return false }
       guard clocks >= UInt64(current) else {
         current -= UInt32(clocks)
@@ -278,12 +291,36 @@ public final class DoryPCPIT8254: DoryPCPortIODevice, @unchecked Sendable {
     lock.withLock { .init(mode: mode, reload: reload, current: current, armed: armed) }
   }
 
+  public func setChannel2Gate(_ enabled: Bool) {
+    lock.withLock {
+      let risingEdge = !channel2Gate && enabled
+      channel2Gate = enabled
+      if risingEdge, channel2Mode == .rateGenerator || channel2Mode == .squareWave {
+        channel2Current = channel2Reload
+        channel2Armed = true
+        channel2Output = true
+      }
+    }
+  }
+
+  public var channel2OutputHigh: Bool { lock.withLock { channel2Output } }
+
+  /// The AT system-control port exposes the DRAM refresh divider on bit 4. A deterministic
+  /// 18-input-clock half period is sufficiently precise for firmware delay/probe loops.
+  public var refreshToggleHigh: Bool { lock.withLock { (elapsedClocks / 18) & 1 != 0 } }
+
   public func read(portOffset: UInt16, width: DoryX86OperandWidth) throws -> UInt32 {
     guard width == .byte else {
       throw DoryPCLegacyInterruptError.unsupportedPortWidth(width)
     }
-    guard portOffset == 0 else { return 0 }
-    return UInt32(lock.withLock { readCounterLocked() })
+    let value: UInt8 = lock.withLock {
+      return switch portOffset {
+      case 0: readCounterLocked()
+      case 2: readChannel2CounterLocked()
+      default: 0
+      }
+    }
+    return UInt32(value)
   }
 
   public func write(
@@ -300,23 +337,41 @@ public final class DoryPCPIT8254: DoryPCPortIODevice, @unchecked Sendable {
         writeControlLocked(byte)
       } else if portOffset == 0 {
         writeCounterLocked(byte)
+      } else if portOffset == 2 {
+        writeChannel2CounterLocked(byte)
       }
     }
   }
 
   private func writeControlLocked(_ value: UInt8) {
-    guard value >> 6 == 0 else { return }
+    let channel = value >> 6
+    guard channel == 0 || channel == 2 else { return }
     let access = (value >> 4) & 3
     if access == 0 {
-      latchedCount = current
-      readHighNext = false
+      if channel == 0 {
+        latchedCount = current
+        readHighNext = false
+      } else {
+        channel2LatchedCount = channel2Current
+        channel2ReadHighNext = false
+      }
       return
     }
-    accessMode = access
     let rawMode = (value >> 1) & 7
-    mode = DoryPCPITMode(rawValue: rawMode & 3) ?? .interruptOnTerminalCount
-    writeLowByte = nil
-    readHighNext = false
+    let selectedMode = DoryPCPITMode(rawValue: rawMode & 3) ?? .interruptOnTerminalCount
+    if channel == 0 {
+      accessMode = access
+      mode = selectedMode
+      writeLowByte = nil
+      readHighNext = false
+    } else {
+      channel2AccessMode = access
+      channel2Mode = selectedMode
+      channel2WriteLowByte = nil
+      channel2ReadHighNext = false
+      channel2Armed = false
+      channel2Output = selectedMode != .interruptOnTerminalCount
+    }
   }
 
   private func writeCounterLocked(_ value: UInt8) {
@@ -355,5 +410,98 @@ public final class DoryPCPIT8254: DoryPCPortIODevice, @unchecked Sendable {
       return UInt8(truncatingIfNeeded: value)
     default: return UInt8(truncatingIfNeeded: value)
     }
+  }
+
+  private func writeChannel2CounterLocked(_ value: UInt8) {
+    switch channel2AccessMode {
+    case 1:
+      loadChannel2Locked(UInt16(value))
+    case 2:
+      loadChannel2Locked(UInt16(value) << 8)
+    default:
+      if let low = channel2WriteLowByte {
+        loadChannel2Locked(UInt16(low) | UInt16(value) << 8)
+        channel2WriteLowByte = nil
+      } else {
+        channel2WriteLowByte = value
+      }
+    }
+  }
+
+  private func loadChannel2Locked(_ value: UInt16) {
+    channel2Reload = value == 0 ? 65_536 : UInt32(value)
+    channel2Current = channel2Reload
+    channel2Armed = true
+    channel2Output = channel2Mode != .interruptOnTerminalCount
+  }
+
+  private func readChannel2CounterLocked() -> UInt8 {
+    let value = channel2LatchedCount ?? channel2Current
+    switch channel2AccessMode {
+    case 2: return UInt8(truncatingIfNeeded: value >> 8)
+    case 3:
+      if channel2ReadHighNext {
+        channel2ReadHighNext = false
+        channel2LatchedCount = nil
+        return UInt8(truncatingIfNeeded: value >> 8)
+      }
+      channel2ReadHighNext = true
+      return UInt8(truncatingIfNeeded: value)
+    default: return UInt8(truncatingIfNeeded: value)
+    }
+  }
+
+  private func advanceChannel2Locked(by clocks: UInt64) {
+    guard channel2Gate, channel2Armed, channel2Current > 0 else { return }
+    guard clocks >= UInt64(channel2Current) else {
+      channel2Current -= UInt32(clocks)
+      return
+    }
+    switch channel2Mode {
+    case .interruptOnTerminalCount:
+      channel2Current = 0
+      channel2Armed = false
+      channel2Output = true
+    case .rateGenerator, .squareWave:
+      let remaining = (clocks - UInt64(channel2Current)) % UInt64(channel2Reload)
+      channel2Current = remaining == 0 ? channel2Reload : channel2Reload - UInt32(remaining)
+      channel2Output = true
+    }
+  }
+}
+
+/// AT-compatible system control port B. Bits 0/1 are software controlled; bits 4/5 expose the
+/// refresh divider and PIT channel-2 output used by firmware and boot-loader calibration loops.
+public final class DoryPCSystemControlPortB: DoryPCPortIODevice, @unchecked Sendable {
+  public let basePort: UInt16 = 0x61
+  public let portCount: UInt16 = 1
+
+  private let lock = NSLock()
+  private let pit: DoryPCPIT8254
+  private var control: UInt8 = 0
+
+  public init(pit: DoryPCPIT8254) { self.pit = pit }
+
+  public func read(portOffset: UInt16, width: DoryX86OperandWidth) throws -> UInt32 {
+    guard width == .byte else {
+      throw DoryPCLegacyInterruptError.unsupportedPortWidth(width)
+    }
+    let writable = lock.withLock { control }
+    let status = (pit.refreshToggleHigh ? UInt8(0x10) : 0)
+      | (pit.channel2OutputHigh ? UInt8(0x20) : 0)
+    return UInt32(writable | status)
+  }
+
+  public func write(
+    portOffset: UInt16,
+    value: UInt32,
+    width: DoryX86OperandWidth
+  ) throws {
+    guard width == .byte else {
+      throw DoryPCLegacyInterruptError.unsupportedPortWidth(width)
+    }
+    let next = UInt8(truncatingIfNeeded: value) & 0x03
+    lock.withLock { control = next }
+    pit.setChannel2Gate(next & 1 != 0)
   }
 }
