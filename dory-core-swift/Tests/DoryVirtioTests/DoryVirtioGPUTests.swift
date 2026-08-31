@@ -81,7 +81,7 @@ import Testing
 
   @Test func routesContextResourceSubmitAndTransferCommandsToRendererAuthority() throws {
     let authority = try GPUAccelerationAuthority(
-      features: [.gpuVirgl, .gpuContextInit],
+      features: [.gpuVirgl, .gpuResourceUUID, .gpuContextInit],
       capsets: [.init(id: 2, maximumVersion: 2, data: [1, 2, 3])]
     )
     let device = try makeDevice(authority: authority)
@@ -101,6 +101,23 @@ import Testing
       + [resourceID, 2, 1, 2, 64, 32, 1, 1, 0, 0, 0, 0]
       .flatMap(littleEndian)
     #expect(read32(try command(device, bytes: createResource, memory: memory), 0) == 0x1100)
+
+    let assignUUID = header(0x010B) + littleEndian(resourceID) + [0, 0, 0, 0]
+    let firstUUID = try command(
+      device,
+      bytes: assignUUID,
+      responseBytes: 40,
+      memory: memory
+    )
+    let secondUUID = try command(
+      device,
+      bytes: assignUUID,
+      responseBytes: 40,
+      memory: memory
+    )
+    #expect(read32(firstUUID, 0) == 0x1105)
+    #expect(Array(firstUUID[24..<40]) == Array(secondUUID[24..<40]))
+    #expect(firstUUID[24..<40].contains(where: { $0 != 0 }))
 
     let attachBacking =
       header(0x0106) + littleEndian(resourceID) + littleEndian(UInt32(1))

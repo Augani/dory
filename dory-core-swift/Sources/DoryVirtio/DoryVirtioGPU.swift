@@ -161,6 +161,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     case resourceDetachBacking = 0x0107
     case getCapsetInfo = 0x0108
     case getCapset = 0x0109
+    case resourceAssignUUID = 0x010B
     case contextCreate = 0x0200
     case contextDestroy = 0x0201
     case contextAttachResource = 0x0202
@@ -178,6 +179,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     case okDisplayInfo = 0x1101
     case okCapsetInfo = 0x1102
     case okCapset = 0x1103
+    case okResourceUUID = 0x1105
     case errorUnspecified = 0x1200
     case errorOutOfMemory = 0x1201
     case errorInvalidScanout = 0x1202
@@ -221,6 +223,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
   private var resources: [UInt32: Resource] = [:]
   private var rendererResources: [UInt32: RendererResource] = [:]
   private var rendererContexts: Set<UInt32> = []
+  private var resourceUUIDs: [UInt32: [UInt8]] = [:]
   private var bindings: [UInt32: ScanoutBinding] = [:]
 
   public init(
@@ -268,6 +271,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       resources.removeAll(keepingCapacity: true)
       rendererResources.removeAll(keepingCapacity: true)
       rendererContexts.removeAll(keepingCapacity: true)
+      resourceUUIDs.removeAll(keepingCapacity: true)
       bindings.removeAll(keepingCapacity: true)
     }
     accelerationAuthority?.reset()
@@ -361,6 +365,22 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       else { return response(.errorInvalidParameter, header: header) }
       return response(.okCapset, header: header) + capset.data
 
+    case .resourceAssignUUID:
+      guard request.count == 32, offeredFeatures.contains(.gpuResourceUUID) else {
+        return response(.errorInvalidParameter, header: header)
+      }
+      let resourceID = read32(request, 24)
+      guard lock.withLock({ resources[resourceID] != nil || rendererResources[resourceID] != nil })
+      else { return response(.errorInvalidResource, header: header) }
+      let uuid = lock.withLock { () -> [UInt8] in
+        if let existing = resourceUUIDs[resourceID] { return existing }
+        var value = UUID().uuid
+        let bytes = withUnsafeBytes(of: &value) { Array($0) }
+        resourceUUIDs[resourceID] = bytes
+        return bytes
+      }
+      return response(.okResourceUUID, header: header) + uuid
+
     case .resourceCreate2D:
       guard request.count == 40 else { return response(.errorInvalidParameter, header: header) }
       let id = read32(request, 24)
@@ -400,6 +420,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
           resources.removeValue(forKey: id) != nil
           || rendererResources.removeValue(forKey: id) != nil
         guard removed else { return false }
+        resourceUUIDs.removeValue(forKey: id)
         bindings = bindings.filter { $0.value.resourceID != id }
         return true
       }
