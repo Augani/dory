@@ -6,8 +6,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/sparkle-project/Sparkle",
       "state" : {
-        "revision" : "b6496a74a087257ef5e6da1c5b29a447a60f5bd7",
-        "version" : "2.9.4"
+        "revision" : "ac2def288cbff5cfc7df3ffef6abdf45b72bcb0a",
+        "version" : "2.9.6"
       }
     },
     {
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/migueldeicaza/SwiftTerm",
       "state" : {
-        "revision" : "8e7a1e154f470e19c709a00a8768df348ba5fc43",
-        "version" : "1.13.0"
+        "revision" : "464df5207fc2432e16c9a23abe538187196daf5f",
+        "version" : "1.19.0"
       }
     }
   ],
