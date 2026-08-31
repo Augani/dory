@@ -113,6 +113,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     smbiosLayout: DoryPCSMBIOSLayout = .init(),
     smbiosIdentity: DoryPCSMBIOSIdentity = .init(),
     initialRTCDate: Date = Date(),
+    firmwareConfigurationFlags: DoryPCFirmwareConfiguration.Flags = [],
     pciFunctions: [any DoryPCPCIFunction] = [],
     platformMMIODevices: [any DoryPCMMIODevice] = [],
     interpreter: DoryX86Interpreter = .init(),
@@ -149,6 +150,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     firmwareConfiguration = DoryPCFirmwareConfiguration(
       totalRAMBytes: UInt64(memoryBytes),
       processorCount: processorCount,
+      flags: firmwareConfigurationFlags,
       acpiRSDPAddress: acpiLayout.rsdp,
       smbiosEntryAddress: smbiosLayout.entryPoint
     )

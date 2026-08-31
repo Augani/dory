@@ -30,6 +30,7 @@ private struct Arguments {
   let exceptionPolicy: DoryPCExceptionPolicy
   let executionTier: DoryPCExecutionTier
   let expectedSerialMarker: String?
+  let bootProbe: Bool
   let initialRTCUnixSeconds: UInt64
 
   init(_ values: [String]) throws {
@@ -46,6 +47,7 @@ private struct Arguments {
           "--system-disk", "--installer-media", "--variable-store-directory",
           "--exception-policy", "--execution-tier", "--progress-instructions",
           "--expected-serial-marker",
+          "--boot-probe",
           "--initial-rtc-unix-seconds",
         ].contains(name)
       else { throw SmokeError.usage("unknown option: \(name)") }
@@ -62,6 +64,7 @@ private struct Arguments {
           + "[--processor-count count] [--exception-policy stop|deliver] "
           + "[--execution-tier interpreter|baseline-jit|optimizing-jit] "
           + "[--expected-serial-marker text] "
+          + "[--boot-probe enabled|disabled] "
           + "[--initial-rtc-unix-seconds seconds] "
           + "[--max-instructions count] [--progress-instructions count] [--memory-bytes count]"
       )
@@ -103,6 +106,12 @@ private struct Arguments {
       throw SmokeError.usage("expected serial marker must not be empty")
     }
     expectedSerialMarker = options["--expected-serial-marker"]
+    let bootProbeText = options["--boot-probe"] ?? "disabled"
+    switch bootProbeText {
+    case "enabled": bootProbe = true
+    case "disabled": bootProbe = false
+    default: throw SmokeError.usage("invalid boot probe policy: \(bootProbeText)")
+    }
     self.initialRTCUnixSeconds = initialRTCUnixSeconds
     firmwareBundle = URL(fileURLWithPath: bundle, isDirectory: true).standardizedFileURL
     self.maximumInstructions = maximumInstructions
@@ -343,6 +352,7 @@ private func run() throws {
     memoryBytes: arguments.memoryBytes,
     processorCount: arguments.processorCount,
     initialRTCDate: Date(timeIntervalSince1970: TimeInterval(arguments.initialRTCUnixSeconds)),
+    firmwareConfigurationFlags: arguments.bootProbe ? [.qualificationBootProbe] : [],
     executionTier: arguments.executionTier
   )
   let stop = try runWithProgress(
@@ -371,7 +381,7 @@ private func run() throws {
     }
   let serialBytes = composed.machine.serial.drainTransmittedBytes()
   let serialOutput = String(decoding: serialBytes, as: UTF8.self)
-  let serialMarkerMatched = arguments.expectedSerialMarker.map(serialOutput.contains) ?? true
+  let serialMarkerMatched = arguments.expectedSerialMarker.map(serialOutput.contains)
   let serialDrops = composed.machine.serial.dropCounts
   let blockDevices = blockDeviceDiagnostics(
     composed.blockDevices,
@@ -409,7 +419,9 @@ private func run() throws {
     "instructionBytes": instructionBytes.map(hexadecimalBytes) ?? "unmapped",
     "stackBytes": stackBytes.map(hexadecimalBytes) ?? "unmapped",
     "serialOutput": serialOutput,
-    "serialMarkerMatched": serialMarkerMatched,
+    "serialMarkerExpected": arguments.expectedSerialMarker.map { $0 as Any } ?? NSNull(),
+    "serialMarkerMatched": serialMarkerMatched.map { $0 as Any } ?? NSNull(),
+    "bootProbe": arguments.bootProbe,
     "serialDroppedBytes": serialDrops.transmitted,
     "blockDevices": blockDevices,
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
@@ -432,7 +444,7 @@ private func run() throws {
   ]
   let output = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
   FileHandle.standardOutput.write(output + Data("\n".utf8))
-  if let marker = arguments.expectedSerialMarker, !serialMarkerMatched {
+  if let marker = arguments.expectedSerialMarker, serialMarkerMatched != true {
     throw SmokeError.missingSerialMarker(marker)
   }
 }

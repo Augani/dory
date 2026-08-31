@@ -3,6 +3,16 @@ import Foundation
 /// Dory-owned, read-only PEI discovery page. Firmware consumes this instead of probing an
 /// emulated legacy chipset or another VMM's private configuration transport.
 public final class DoryPCFirmwareConfiguration: DoryPCMMIODevice, @unchecked Sendable {
+  public struct Flags: OptionSet, Sendable, Hashable {
+    public let rawValue: UInt32
+
+    public init(rawValue: UInt32) { self.rawValue = rawValue }
+
+    /// Runs the non-persistent firmware BDS qualification hook. Production launches leave this
+    /// clear; the read-only configuration page prevents a guest from enabling it.
+    public static let qualificationBootProbe = Self(rawValue: 1 << 0)
+  }
+
   public enum ABI {
     public static let magic: UInt64 = 0x3146_4350_5952_4f44  // "DORYPCF1"
     public static let version: UInt32 = 1
@@ -35,12 +45,14 @@ public final class DoryPCFirmwareConfiguration: DoryPCMMIODevice, @unchecked Sen
   public let byteCount = DoryPCV1ABI.firmwareConfigurationBytes
   public let totalRAMBytes: UInt64
   public let processorCount: UInt32
+  public let flags: Flags
 
   private let page: [UInt8]
 
   public init(
     totalRAMBytes: UInt64,
     processorCount: Int,
+    flags: Flags = [],
     acpiRSDPAddress: UInt64 = DoryPCV1ABI.acpiBase,
     smbiosEntryAddress: UInt64 = DoryPCV1ABI.smbiosBase
   ) {
@@ -48,6 +60,7 @@ public final class DoryPCFirmwareConfiguration: DoryPCMMIODevice, @unchecked Sen
     precondition((1...DoryPCV1ABI.maximumVCPUCount).contains(processorCount))
     self.totalRAMBytes = totalRAMBytes
     self.processorCount = UInt32(processorCount)
+    self.flags = flags
 
     let lowRAMBytes = min(totalRAMBytes, DoryPCV1ABI.mmioHoleStart)
     let highRAMBytes =
@@ -58,7 +71,7 @@ public final class DoryPCFirmwareConfiguration: DoryPCMMIODevice, @unchecked Sen
     Self.store(ABI.version, at: ABI.versionOffset, in: &bytes)
     Self.store(ABI.headerByteCount, at: ABI.headerByteCountOffset, in: &bytes)
     Self.store(DoryPCV1ABI.schemaVersion, at: ABI.machineSchemaVersionOffset, in: &bytes)
-    Self.store(UInt32(0), at: ABI.flagsOffset, in: &bytes)
+    Self.store(flags.rawValue, at: ABI.flagsOffset, in: &bytes)
     Self.store(totalRAMBytes, at: ABI.totalRAMBytesOffset, in: &bytes)
     Self.store(lowRAMBytes, at: ABI.lowRAMBytesOffset, in: &bytes)
     Self.store(highRAMBytes, at: ABI.highRAMBytesOffset, in: &bytes)

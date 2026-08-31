@@ -5,11 +5,19 @@ import Testing
 @Suite struct DoryPCFirmwareConfigurationTests {
   @Test func publishesFrozenDiscoveryPage() throws {
     let totalRAM: UInt64 = DoryPCV1ABI.mmioHoleStart + (768 << 20)
-    let device = DoryPCFirmwareConfiguration(totalRAMBytes: totalRAM, processorCount: 8)
+    let device = DoryPCFirmwareConfiguration(
+      totalRAMBytes: totalRAM,
+      processorCount: 8,
+      flags: [.qualificationBootProbe]
+    )
 
     #expect(try read(UInt64.self, device, at: 0) == DoryPCFirmwareConfiguration.ABI.magic)
     #expect(try read(UInt32.self, device, at: 8) == 1)
     #expect(try read(UInt32.self, device, at: 12) == 144)
+    #expect(
+      try read(UInt32.self, device, at: 20)
+        == DoryPCFirmwareConfiguration.Flags.qualificationBootProbe.rawValue
+    )
     #expect(try read(UInt64.self, device, at: 24) == totalRAM)
     #expect(try read(UInt64.self, device, at: 32) == DoryPCV1ABI.mmioHoleStart)
     #expect(try read(UInt64.self, device, at: 40) == 768 << 20)
