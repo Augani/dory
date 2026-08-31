@@ -764,6 +764,75 @@ import Testing
         #expect(await rendererEventually { lane.snapshot().liveScanoutLeases == 0 })
     }
 
+    @Test func doryPCVirGLPristineResetRebindsBeforeTheFirstWorkerCommand() async throws {
+        let fixture = try rendererBrokerFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: 11
+        )
+
+        authority.reset()
+        let context = Task.detached {
+            try authority.createContext(id: 7, capsetID: 2, name: "mesa")
+        }
+        #expect(await rendererEventually { fixture.channel.sendCount == 1 })
+        fixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        try await context.value
+    }
+
+    @Test func doryPCVirGLGenerationOverflowRevokesThePristineWorker() async throws {
+        let fixture = try rendererBrokerFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: UInt64.max
+        )
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: UInt64.max
+        )
+
+        authority.reset()
+        #expect(throws: DoryPCVirGLRendererAuthorityError.rendererUnavailable) {
+            try authority.createContext(id: 7, capsetID: 2, name: "mesa")
+        }
+        #expect(await rendererEventually { fixture.channel.invalidateCount == 1 })
+    }
+
+    @Test func doryPCVirGLTimeoutRevokesAnOutcomeUnknownGeneration() async throws {
+        let fixture = try rendererBrokerFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: 11,
+            commandTimeout: 0.01
+        )
+
+        let context = Task.detached {
+            try authority.createContext(id: 7, capsetID: 2, name: "mesa")
+        }
+        #expect(await rendererEventually { fixture.channel.sendCount == 1 })
+        do {
+            try await context.value
+            Issue.record("expected the renderer command to time out")
+        } catch let error as DoryPCVirGLRendererAuthorityError {
+            #expect(error == .commandTimedOut)
+        }
+        #expect(throws: DoryPCVirGLRendererAuthorityError.rendererUnavailable) {
+            try authority.createContext(id: 8, capsetID: 2, name: "mesa")
+        }
+        #expect(await rendererEventually { fixture.channel.invalidateCount == 1 })
+    }
+
     @Test func capsetsComeOnlyFromAuthenticatedReceiptBytes() throws {
         let fixture = try rendererBrokerFixture()
         let lane = try DoryRendererWorkerVirtioCommandLane(
