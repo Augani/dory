@@ -93,6 +93,10 @@ public enum DoryIRExitReason: String, Codable, Sendable, Hashable {
 public enum DoryIRTerminator: Codable, Sendable, Hashable {
   case next(UInt64)
   case branch(UInt64)
+  case call(target: UInt64, returnAddress: UInt64)
+  case indirectCall(target: DoryIROperand, returnAddress: UInt64)
+  case indirect(DoryIROperand)
+  case returnFromCall(popBytes: UInt16)
   case conditional(condition: String, taken: UInt64, notTaken: UInt64)
   case exit(DoryIRExitReason, resumeAt: UInt64)
 }
@@ -148,10 +152,14 @@ public struct DoryX86IRTranslator: Sendable {
       )
       offset += Int(instruction.length)
       instructionCount += 1
-      let lowering = lower(instruction)
-      let memoryBehavior = lowering.statements.reduce(MemoryBehavior.none) {
+      let lowering = lower(instruction, mode: mode)
+      let statementMemoryBehavior = lowering.statements.reduce(MemoryBehavior.none) {
         max($0, self.memoryBehavior($1))
       }
+      let memoryBehavior = max(
+        statementMemoryBehavior,
+        lowering.terminator.map(terminatorMemoryBehavior) ?? .none
+      )
       if instructionCount > 1,
         requiresJITFallback(lowering)
           || (memoryBehavior != .none && containsMemoryAccess)
@@ -163,15 +171,15 @@ public struct DoryX86IRTranslator: Sendable {
       }
       statements.append(contentsOf: lowering.statements)
       containsMemoryAccess = containsMemoryAccess || memoryBehavior != .none
+      if let end = lowering.terminator {
+        terminator = end
+        break
+      }
       // A write may modify bytes already decoded later in this block, so it remains a hard
       // boundary. One read can safely share a block with pure register work: callback failure
       // discards the native context and replays the unchanged block through the interpreter.
-      if memoryBehavior == .write {
+      if statementMemoryBehavior == .write {
         terminator = .next(instruction.nextInstructionAddress)
-        break
-      }
-      if let end = lowering.terminator {
-        terminator = end
         break
       }
     }
@@ -193,7 +201,8 @@ public struct DoryX86IRTranslator: Sendable {
   }
 
   private func lower(
-    _ instruction: DoryX86DecodedInstruction
+    _ instruction: DoryX86DecodedInstruction,
+    mode: DoryX86ExecutionMode
   ) -> (statements: [DoryIRStatement], terminator: DoryIRTerminator?) {
     switch instruction.operation {
     case .noOperation, .processorPause, .memoryFence:
@@ -303,6 +312,33 @@ public struct DoryX86IRTranslator: Sendable {
       )
     case .jump(let relative):
       return ([], .branch(addRelative(instruction.nextInstructionAddress, relative)))
+    case .call(let relative) where mode == .long64:
+      return (
+        [],
+        .call(
+          target: addRelative(instruction.nextInstructionAddress, relative),
+          returnAddress: instruction.nextInstructionAddress
+        )
+      )
+    case .callIndirect(let target) where mode == .long64:
+      return (
+        [],
+        .indirectCall(
+          target: operand(target, instructionRelativeBase: instruction.nextInstructionAddress),
+          returnAddress: instruction.nextInstructionAddress
+        )
+      )
+    case .jumpIndirect(let target) where mode == .long64:
+      return (
+        [],
+        .indirect(
+          operand(target, instructionRelativeBase: instruction.nextInstructionAddress)
+        )
+      )
+    case .return where mode == .long64:
+      return ([], .returnFromCall(popBytes: 0))
+    case .returnAndPop(let popBytes) where mode == .long64:
+      return ([], .returnFromCall(popBytes: popBytes))
     case .conditionalJump(let condition, let relative):
       return (
         [],
@@ -316,7 +352,7 @@ public struct DoryX86IRTranslator: Sendable {
       return ([], .exit(.halt, resumeAt: instruction.nextInstructionAddress))
     case .input, .output, .string(.input, _), .string(.output, _):
       return fallback(instruction, reason: .portIO)
-    case .callIndirect, .jumpIndirect, .return, .farCall, .farJump, .farReturn:
+    case .callIndirect, .jumpIndirect, .return, .returnAndPop, .farCall, .farJump, .farReturn:
       return fallback(instruction, reason: .indirectControl)
     default:
       return fallback(instruction, reason: .interpreter)
@@ -465,6 +501,19 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(source) ? .read : .none
     case .effectiveAddress, .helper:
       return .none
+    }
+  }
+
+  private func terminatorMemoryBehavior(_ terminator: DoryIRTerminator) -> MemoryBehavior {
+    switch terminator {
+    case .call, .indirectCall:
+      .write
+    case .returnFromCall:
+      .read
+    case .indirect(let target):
+      isMemory(target) ? .read : .none
+    case .next, .branch, .conditional, .exit:
+      .none
     }
   }
 

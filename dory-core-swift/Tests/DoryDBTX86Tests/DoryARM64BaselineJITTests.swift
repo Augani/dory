@@ -74,6 +74,140 @@ import Testing
     #endif
   }
 
+  @Test func directCallAndReturnStayNativeAndMatchLongModeStackSemantics() throws {
+    #if arch(arm64)
+      let memory = DoryX86ByteArrayMemory(byteCount: 0x200)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(registers: .init(rsp: 0x100), rip: 0x4000)
+
+      let call = try #require(
+        executor.execute(
+          bytes: [0xE8, 0x10, 0, 0, 0],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+      )
+      #expect(call.block.tier == .baseline)
+      #expect(call.block.requiresMemoryCallbacks)
+      #expect(call.exitCode == .dispatch)
+      #expect(state.rip == 0x4015)
+      #expect(state.registers.rsp == 0xF8)
+      #expect(try memory.read(at: 0xF8, byteCount: 8) == [0x05, 0x40, 0, 0, 0, 0, 0, 0])
+
+      let returned = try #require(
+        executor.execute(
+          bytes: [0xC3],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+      )
+      #expect(returned.block.tier == .baseline)
+      #expect(returned.block.requiresMemoryCallbacks)
+      #expect(returned.exitCode == .dispatch)
+      #expect(state.rip == 0x4005)
+      #expect(state.registers.rsp == 0x100)
+    #endif
+  }
+
+  @Test func returnAndPopAndIndirectJumpStayNativeInLongMode() throws {
+    #if arch(arm64)
+      let memory = DoryX86ByteArrayMemory(byteCount: 0x200)
+      try memory.write(at: 0x80, bytes: [0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0])
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0xCAFE_BABE, rsp: 0x80), rip: 0x5000)
+
+      let returned = try #require(
+        executor.execute(
+          bytes: [0xC2, 0x10, 0x00],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+      )
+      #expect(returned.block.tier == .baseline)
+      #expect(state.rip == 0x1234_5678)
+      #expect(state.registers.rsp == 0x98)
+
+      state.rip = 0x6000
+      let jumped = try #require(
+        executor.execute(
+          bytes: [0xFF, 0xE0],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state
+        )
+      )
+      #expect(jumped.block.tier == .baseline)
+      #expect(!jumped.block.requiresMemoryCallbacks)
+      #expect(state.rip == 0xCAFE_BABE)
+    #endif
+  }
+
+  @Test func memoryIndirectCallEvaluatesItsTargetBeforeTheNativeStackPush() throws {
+    #if arch(arm64)
+      let memory = DoryX86ByteArrayMemory(byteCount: 0x200)
+      try memory.write(at: 0x88, bytes: [0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0])
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x80, rsp: 0x100), rip: 0x6100)
+
+      let execution = try #require(
+        executor.execute(
+          bytes: [0xFF, 0x50, 0x08],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+      )
+      #expect(execution.block.tier == .baseline)
+      #expect(execution.block.requiresMemoryCallbacks)
+      #expect(execution.exitCode == .dispatch)
+      #expect(state.rip == 0x1234_5678)
+      #expect(state.registers.rsp == 0xF8)
+      #expect(try memory.read(at: 0xF8, byteCount: 8) == [0x03, 0x61, 0, 0, 0, 0, 0, 0])
+    #endif
+  }
+
+  @Test func failedNativeCallPushLeavesArchitecturalStateRestartable() throws {
+    #if arch(arm64)
+      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let initial = try DoryX86ArchitecturalState(registers: .init(rsp: 4), rip: 0x7000)
+      var state = initial
+
+      let execution = try #require(
+        executor.execute(
+          bytes: [0xE8, 0, 0, 0, 0],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+      )
+      #expect(execution.exitCode == .interpreter)
+      #expect(state == initial)
+    #endif
+  }
+
   @Test func failedPackedNativeReadLeavesTheWholeBlockRestartable() throws {
     #if arch(arm64)
       let memory = DoryX86ByteArrayMemory(byteCount: 0x100)

@@ -59,6 +59,7 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
 public struct DoryARM64BaselineEmitter: Sendable {
   private static let ripOffset = 16 * 8
   private static let rflagsOffset = 17 * 8
+  private static let rspOffset = 4 * 8
   private static let arithmeticFlagMask: UInt64 =
     DoryX86RFLAGS.carry.rawValue
     | DoryX86RFLAGS.parity.rawValue
@@ -75,7 +76,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
   ) -> DoryARM64CompiledBlock {
     precondition(tier != .interpreterFallback)
     var words: [UInt32] = []
-    let usesMemory = block.statements.contains(where: requiresMemoryCallbacks)
+    let usesMemory =
+      block.statements.contains(where: requiresMemoryCallbacks)
+      || requiresMemoryCallbacks(block.terminator)
     if usesMemory { emitMemoryPrologue(into: &words) }
     for statement in block.statements {
       guard emit(statement, into: &words) else {
@@ -222,6 +225,17 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return false
     case .effectiveAddress, .helper:
       return false
+    }
+  }
+
+  private func requiresMemoryCallbacks(_ terminator: DoryIRTerminator) -> Bool {
+    switch terminator {
+    case .call, .indirectCall, .returnFromCall:
+      true
+    case .indirect(let target):
+      if case .memory = target { true } else { false }
+    case .next, .branch, .conditional, .exit:
+      false
     }
   }
 
@@ -833,6 +847,46 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .next(let address), .branch(let address):
       target = address
       exit = .dispatch
+    case .call(let address, let returnAddress):
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
+      emitImmediate(UInt64(bitPattern: -8), register: 10, into: &words)
+      words.append(
+        encodeAdd(is64Bit: true, left: 9, right: 10, destination: 11)
+      )
+      words.append(encodeStore64(register: 11, base: 0, byteOffset: Self.rspOffset))
+      emitImmediate(returnAddress, register: 10, into: &words)
+      emitMemoryWrite(addressRegister: 11, valueRegister: 10, width: .i64, words: &words)
+      target = address
+      exit = .dispatch
+    case .indirectCall(let operand, let returnAddress):
+      guard load(operand, matching: .i64, into: 9, words: &words) else { return nil }
+      // Preserve the evaluated target in the restartable native context. A failed stack write
+      // returns through the interpreter path without committing this temporary RIP.
+      words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.ripOffset))
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
+      emitImmediate(UInt64(bitPattern: -8), register: 10, into: &words)
+      words.append(
+        encodeAdd(is64Bit: true, left: 9, right: 10, destination: 11)
+      )
+      words.append(encodeStore64(register: 11, base: 0, byteOffset: Self.rspOffset))
+      emitImmediate(returnAddress, register: 10, into: &words)
+      emitMemoryWrite(addressRegister: 11, valueRegister: 10, width: .i64, words: &words)
+      return .dispatch
+    case .indirect(let operand):
+      guard load(operand, matching: .i64, into: 9, words: &words) else { return nil }
+      words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.ripOffset))
+      return .dispatch
+    case .returnFromCall(let popBytes):
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
+      emitMemoryRead(addressRegister: 9, width: .i64, resultRegister: 10, words: &words)
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
+      emitImmediate(UInt64(8) &+ UInt64(popBytes), register: 11, into: &words)
+      words.append(
+        encodeAdd(is64Bit: true, left: 9, right: 11, destination: 9)
+      )
+      words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.rspOffset))
+      words.append(encodeStore64(register: 10, base: 0, byteOffset: Self.ripOffset))
+      return .dispatch
     case .exit(let reason, let resumeAt):
       target = resumeAt
       exit =
