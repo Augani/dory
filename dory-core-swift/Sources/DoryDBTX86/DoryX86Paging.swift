@@ -61,8 +61,14 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     let executable: Bool
   }
 
+  private struct TLBEntry {
+    let key: TLBKey
+    let value: TLBValue
+  }
+
   private let lock = NSLock()
   private var entries: [TLBKey: TLBValue] = [:]
+  private var recentEntries: [TLBEntry?] = [nil, nil, nil]
   private var generation: UInt64 = 0
   public let physicalAddressBits: UInt8
   public let maximumEntryCount: Int
@@ -76,7 +82,11 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 
   public func invalidate(linearAddress: UInt64) {
     lock.lock()
-    entries = entries.filter { $0.key.linearPage != linearAddress >> 12 }
+    let linearPage = linearAddress >> 12
+    entries = entries.filter { $0.key.linearPage != linearPage }
+    for index in recentEntries.indices where recentEntries[index]?.key.linearPage == linearPage {
+      recentEntries[index] = nil
+    }
     lock.unlock()
   }
 
@@ -84,6 +94,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     lock.lock()
     generation &+= 1
     entries.removeAll(keepingCapacity: true)
+    recentEntries = [nil, nil, nil]
     lock.unlock()
   }
 
@@ -127,15 +138,16 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       alignmentCheck: context.rflags.contains(.alignmentCheck),
       generation: generation
     )
-    if let cached = entries[key] {
-      return .init(
+    let recentIndex = recentEntryIndex(access)
+    if let recent = recentEntries[recentIndex], recent.key == key {
+      return makeTranslation(
         linearAddress: linearAddress,
-        physicalAddress: cached.physicalPage | (linearAddress & 0xfff),
-        pageSize: cached.pageSize,
-        userAccessible: cached.userAccessible,
-        writable: cached.writable,
-        executable: cached.executable
+        value: recent.value
       )
+    }
+    if let cached = entries[key] {
+      recentEntries[recentIndex] = .init(key: key, value: cached)
+      return makeTranslation(linearAddress: linearAddress, value: cached)
     }
 
     let translation: DoryX86Translation
@@ -162,14 +174,38 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       )
     }
     if entries.count >= maximumEntryCount { entries.removeAll(keepingCapacity: true) }
-    entries[key] = .init(
+    let value = TLBValue(
       physicalPage: translation.physicalAddress & ~0xfff,
       pageSize: translation.pageSize,
       userAccessible: translation.userAccessible,
       writable: translation.writable,
       executable: translation.executable
     )
+    entries[key] = value
+    recentEntries[recentIndex] = .init(key: key, value: value)
     return translation
+  }
+
+  private func recentEntryIndex(_ access: DoryX86MemoryAccessKind) -> Int {
+    switch access {
+    case .instructionFetch: 0
+    case .read: 1
+    case .write: 2
+    }
+  }
+
+  private func makeTranslation(
+    linearAddress: UInt64,
+    value: TLBValue
+  ) -> DoryX86Translation {
+    .init(
+      linearAddress: linearAddress,
+      physicalAddress: value.physicalPage | (linearAddress & 0xfff),
+      pageSize: value.pageSize,
+      userAccessible: value.userAccessible,
+      writable: value.writable,
+      executable: value.executable
+    )
   }
 
   private func walkIA32e(
