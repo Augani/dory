@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
 
 #include <Uefi.h>
+#include <Guid/EventGroup.h>
 #include <Guid/SerialPortLibVendor.h>
 #include <Library/PcdLib.h>
 #include <Library/PlatformBootManagerLib.h>
 #include <Library/UefiBootManagerLib.h>
+#include <Library/UefiLib.h>
 
 #define DP_NODE_LEN(Type)  { (UINT8)sizeof (Type), (UINT8)(sizeof (Type) >> 8) }
 
@@ -42,6 +44,11 @@ PlatformBootManagerBeforeConsole (
   VOID
   )
 {
+  // External boot images must not be dispatched until DXE construction is complete. SecurityStub
+  // intentionally rejects non-FV images before this event, even when Secure Boot is disabled.
+  EfiEventGroupSignal (&gEfiEndOfDxeEventGroupGuid);
+  EfiBootManagerDispatchDeferredImages ();
+
   EfiBootManagerUpdateConsoleVariable (ConOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
   EfiBootManagerUpdateConsoleVariable (ErrOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
 }

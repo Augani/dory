@@ -177,6 +177,13 @@ APRIORI DXE {
   # Otherwise #VC handler terminates the guest for trying to do MMIO to an
   # encrypted region (Since the range has not been marked shared/unencrypted).
   INF  DoryPCPkg/DoryVariableRuntimeDxe/DoryVariableRuntimeDxe.inf
+  INF  MdeModulePkg/Bus/Pci/PciBusDxe/PciBusDxe.inf
+  INF  OvmfPkg/Virtio10Dxe/Virtio10.inf
+  INF  OvmfPkg/VirtioBlkDxe/VirtioBlk.inf
+  INF  MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
+  INF  MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
+  INF  MdeModulePkg/Universal/Disk/UnicodeCollation/EnglishDxe/EnglishDxe.inf
+  INF  FatPkg/EnhancedFatDxe/Fat.inf
 }
 
 #

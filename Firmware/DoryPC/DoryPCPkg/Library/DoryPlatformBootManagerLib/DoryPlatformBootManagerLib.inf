@@ -14,6 +14,7 @@
   MdeModulePkg/MdeModulePkg.dec
 
 [LibraryClasses]
+  UefiLib
   UefiBootManagerLib
 
 [FixedPcd]
@@ -23,4 +24,5 @@
   gEfiMdePkgTokenSpaceGuid.PcdUartDefaultStopBits
 
 [Guids]
+  gEfiEndOfDxeEventGroupGuid
   gEdkiiSerialPortLibVendorGuid
