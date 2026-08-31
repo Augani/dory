@@ -2325,6 +2325,39 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(virtualException.kind == .invalidOpcode)
   }
 
+  @Test func segmentVerificationChecksVisibilityAndReadWriteRights() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x300)
+    bytes.replaceSubrange(0x100..<0x106, with: [0x0F, 0x00, 0xE1, 0x0F, 0x00, 0xE9])
+    // DPL 3 read/write data, DPL 3 read-only data, and DPL 3 execute-only code.
+    bytes.replaceSubrange(0x208..<0x210, with: [0, 0, 0, 0, 0, 0xF2, 0, 0])
+    bytes.replaceSubrange(0x210..<0x218, with: [0, 0, 0, 0, 0, 0xF0, 0, 0])
+    bytes.replaceSubrange(0x218..<0x220, with: [0, 0, 0, 0, 0, 0xF8, 0, 0])
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 0x0B),
+      rip: 0x100,
+      rflags: [.reservedOne, .carry],
+      cs: .init(selector: 3, attributes: 0xFA, limit: .max),
+      gdtr: .init(limit: 0x1F, base: 0x200)
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.rflags.contains(.zero))
+    #expect(state.rflags.contains(.carry))
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(state.rflags.contains(.zero))
+
+    state.rip = 0x103
+    state.registers.rcx = 0x13
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(!state.rflags.contains(.zero))
+
+    state.rip = 0x100
+    state.registers.rcx = 0x1B
+    _ = interpreter.step(state: &state, memory: memory, mode: .protected32)
+    #expect(!state.rflags.contains(.zero))
+  }
+
   @Test func systemSegmentStoresExposeSelectorsAndHonorUMIP() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x1_000,

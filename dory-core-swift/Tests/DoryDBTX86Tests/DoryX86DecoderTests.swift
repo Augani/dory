@@ -428,6 +428,17 @@ import Testing
           selector: .memory(.init(base: .rax, width: .word))
         )
     )
+    #expect(
+      try decoder.decode([0x0F, 0x00, 0xE1], at: 0x240, mode: .protected32).operation
+        == .verifySegment(readable: true, selector: .register(.rcx, width: .word))
+    )
+    #expect(
+      try decoder.decode([0x0F, 0x00, 0x29], at: 0x240, mode: .long64).operation
+        == .verifySegment(
+          readable: false,
+          selector: .memory(.init(base: .rcx, width: .word))
+        )
+    )
   }
 
   @Test func decodesSegmentLoadsAndFarControlTransfer() throws {

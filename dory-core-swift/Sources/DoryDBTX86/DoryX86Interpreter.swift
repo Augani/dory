@@ -1605,6 +1605,33 @@ public struct DoryX86Interpreter: Sendable {
           // A rejected selector is a probe result, not a fault. The destination is unchanged.
           setFlag(.zero, false, in: &state.rflags)
         }
+      case .verifySegment(let readable, let source):
+        guard mode != .real16, !state.rflags.contains(.virtual8086) else {
+          return invalidOpcode(at: originalRIP)
+        }
+        let selector = UInt16(
+          truncatingIfNeeded: try read(
+            source, instruction: instruction, state: state, memory: executionMemory))
+        let descriptor = try descriptorForInspection(
+          selector: selector,
+          accessRights: true,
+          mode: mode,
+          state: state,
+          memory: executionMemory
+        )
+        let allowed: Bool
+        if let descriptor {
+          let access = UInt8(truncatingIfNeeded: descriptor.raw >> 40)
+          let type = access & 0x0f
+          let codeOrData = access & 0x10 != 0
+          let executable = type & 8 != 0
+          allowed =
+            codeOrData
+            && (readable ? (!executable || type & 2 != 0) : (!executable && type & 2 != 0))
+        } else {
+          allowed = false
+        }
+        setFlag(.zero, allowed, in: &state.rflags)
       case .readSegment(let segment, let destination):
         try write(
           UInt64(segmentState(segment, state: state).selector),

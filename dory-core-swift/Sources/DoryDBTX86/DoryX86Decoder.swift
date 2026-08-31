@@ -821,6 +821,12 @@ public struct DoryX86Decoder: Sendable {
             task: operands.group == 1, destination: operands.rm)
         case 2, 3:
           operation = .loadSystemSegment(task: operands.group == 3, source: operands.rm)
+        case 4, 5:
+          guard prefixes.repeatPrefix == nil else {
+            throw DoryX86DecodeError.invalidEncoding(
+              address: address, detail: "VERR and VERW do not accept repeat prefixes")
+          }
+          operation = .verifySegment(readable: operands.group == 4, selector: operands.rm)
         default:
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "unsupported 0F 00 system instruction")
