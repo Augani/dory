@@ -85,9 +85,26 @@ import Testing
     #expect(throws: DoryX86DecodeError.instructionTooLong(address: 0x4000)) {
       try decoder.decode(prefixes + [0x90], at: 0x4000, mode: .long64)
     }
-    #expect(throws: DoryX86DecodeError.unsupportedOpcode(address: 0x5000, bytes: [0x0F, 0x0B])) {
-      try decoder.decode([0x0F, 0x0B], at: 0x5000, mode: .long64)
+    #expect(throws: DoryX86DecodeError.unsupportedOpcode(address: 0x5000, bytes: [0x0F, 0x0C])) {
+      try decoder.decode([0x0F, 0x0C], at: 0x5000, mode: .long64)
     }
+  }
+
+  @Test func decodesArchitecturalUndefinedInstructionsAtTheirFullLength() throws {
+    #expect(
+      try decoder.decode([0x0F, 0x0B], at: 0x140, mode: .long64).operation
+        == .undefinedInstruction
+    )
+    let ud1 = try decoder.decode(
+      [0x0F, 0xB9, 0x84, 0x24, 0x78, 0x56, 0x34, 0x12],
+      at: 0x140,
+      mode: .long64
+    )
+    #expect(ud1.operation == .undefinedInstruction)
+    #expect(ud1.bytes.count == 8)
+    let ud0 = try decoder.decode([0x0F, 0xFF, 0xC0], at: 0x140, mode: .protected32)
+    #expect(ud0.operation == .undefinedInstruction)
+    #expect(ud0.bytes.count == 3)
   }
 
   @Test func rejectsRegisterFormLEAInsteadOfInventingSemantics() throws {

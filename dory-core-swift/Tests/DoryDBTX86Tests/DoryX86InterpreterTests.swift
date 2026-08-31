@@ -289,6 +289,25 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(state.control.cr2 == 0xDEAD_0000)
   }
 
+  @Test func architecturalUndefinedInstructionsRaisePreciseInvalidOpcodeFaults() throws {
+    let memory = DoryX86ByteArrayMemory(bytes: [0x0F, 0x0B])
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: 0x1122),
+      rip: 0,
+      cs: .init(selector: 0, attributes: 0xA09B, limit: .max, base: 0)
+    )
+    guard case .exception(let exception) =
+      interpreter.step(state: &state, memory: memory, mode: .long64)
+    else {
+      Issue.record("UD2 did not raise #UD")
+      return
+    }
+    #expect(exception.kind == .invalidOpcode)
+    #expect(exception.instructionPointer == 0)
+    #expect(state.rip == 0)
+    #expect(state.registers.rax == 0x1122)
+  }
+
   @Test func faultingStackWriteDoesNotLeakTheSpeculativeStackPointer() throws {
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x4800,

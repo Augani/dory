@@ -771,6 +771,14 @@ public struct DoryX86Decoder: Sendable {
     case 0x0F:
       let second = try cursor.readByte()
       switch second {
+      case 0x0B:
+        operation = .undefinedInstruction
+      case 0xB9, 0xFF:
+        // UD0 and UD1 include a ModRM byte solely to define the complete faulting instruction
+        // length. Their operands are never read because retirement always raises #UD.
+        _ = try decodeModRM(
+          cursor: &cursor, width: .doubleword, prefixes: prefixes, mode: mode)
+        operation = .undefinedInstruction
       case 0x18:
         let operands = try decodeModRM(
           cursor: &cursor, width: .byte, prefixes: prefixes, mode: mode)

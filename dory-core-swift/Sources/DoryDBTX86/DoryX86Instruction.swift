@@ -503,6 +503,7 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case halt
   case setInterruptsEnabled(Bool)
   case noOperation
+  case undefinedInstruction
 }
 
 public struct DoryX86DecodedInstruction: Codable, Sendable, Hashable {

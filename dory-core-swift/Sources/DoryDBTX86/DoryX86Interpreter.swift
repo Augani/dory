@@ -135,6 +135,8 @@ public struct DoryX86Interpreter: Sendable {
       switch instruction.operation {
       case .noOperation:
         break
+      case .undefinedInstruction:
+        return invalidOpcode(at: originalRIP)
       case .halt:
         state.rip = nextRIP
         return .halted(instruction)
