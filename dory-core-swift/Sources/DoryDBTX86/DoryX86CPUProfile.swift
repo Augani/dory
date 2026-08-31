@@ -73,7 +73,7 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     identifier: compatibleV1Identifier,
     features: [
       .x87, .tsc, .msr, .cmpxchg8b, .apic, .cmov, .clflush, .mmx, .fxsave, .sse, .sse2, .cmpxchg16b,
-      .syscall, .executeDisable, .longMode, .invariantTSC,
+      .syscall, .executeDisable, .longMode, .lahf64, .invariantTSC,
     ],
     physicalAddressBits: 40,
     linearAddressBits: 48,

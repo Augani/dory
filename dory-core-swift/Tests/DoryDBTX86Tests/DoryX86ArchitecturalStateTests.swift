@@ -70,6 +70,7 @@ import Testing
     #expect(profile.supports(.sse))
     #expect(profile.supports(.sse2))
     #expect(profile.supports(.clflush))
+    #expect(profile.supports(.lahf64))
     #expect(!profile.supports(.sse3))
     #expect(!profile.supports(.sse42))
     #expect(profile.supports(.syscall))
@@ -91,6 +92,7 @@ import Testing
     #expect(profile.cpuid(leaf: 1).edx & (1 << 19) != 0)
     #expect(profile.cpuid(leaf: 7).ebx & (1 << 5) == 0)
     #expect(profile.cpuid(leaf: 0x8000_0001).edx & (1 << 29) != 0)
+    #expect(profile.cpuid(leaf: 0x8000_0001).ecx & (1 << 0) != 0)
     #expect(profile.cpuid(leaf: 0x8000_0008).eax == 40 | (48 << 8))
 
     let topology = profile.cpuid(

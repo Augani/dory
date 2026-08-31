@@ -1793,6 +1793,9 @@ public struct DoryX86Interpreter: Sendable {
       case .setDirection(let enabled):
         setFlag(.direction, enabled, in: &state.rflags)
       case .flagByte(let load):
+        guard mode != .long64 || profile.supports(.lahf64) else {
+          return .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: originalRIP))
+        }
         if load {
           let value = (state.rflags.rawValue & 0xD5) | 2
           state.registers.rax =

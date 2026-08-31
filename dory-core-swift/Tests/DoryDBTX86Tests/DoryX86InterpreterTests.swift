@@ -2352,6 +2352,28 @@ import Testing
     #expect(state.rflags.contains(.auxiliaryCarry))
     #expect(!state.rflags.contains(.zero))
     #expect(!state.rflags.contains(.sign))
+
+    let restrictedProfile = DoryX86CPUProfile(
+      identifier: "test.no-lahf64",
+      features: [],
+      physicalAddressBits: 40,
+      linearAddressBits: 48,
+      virtualTSCFrequencyHz: 1_000_000_000
+    )
+    let restrictedInterpreter = DoryX86Interpreter(profile: restrictedProfile)
+    var restrictedState = try DoryX86ArchitecturalState(rip: 0x100)
+    let restrictedResult = restrictedInterpreter.step(
+      state: &restrictedState,
+      memory: memory,
+      mode: .long64
+    )
+    guard case .exception(let exception) = restrictedResult else {
+      Issue.record("64-bit LAHF unexpectedly executed without its advertised feature")
+      return
+    }
+    #expect(exception.kind == .invalidOpcode)
+    #expect(exception.instructionPointer == 0x100)
+    #expect(restrictedState.rip == 0x100)
   }
 
   private func readQuadword(_ memory: DoryX86ByteArrayMemory, at address: UInt64) -> UInt64 {
