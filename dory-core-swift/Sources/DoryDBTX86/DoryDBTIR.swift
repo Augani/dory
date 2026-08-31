@@ -130,6 +130,7 @@ public struct DoryX86IRTranslator: Sendable {
     var instructionCount = 0
     var statements: [DoryIRStatement] = []
     var terminator: DoryIRTerminator?
+    var containsMemoryAccess = false
 
     while offset < bytes.count, instructionCount < instructionBudget {
       let instructionAddress = address &+ UInt64(offset)
@@ -141,15 +142,24 @@ public struct DoryX86IRTranslator: Sendable {
       offset += Int(instruction.length)
       instructionCount += 1
       let lowering = lower(instruction)
-      let isolatesMemoryAccess = lowering.statements.contains(where: containsMemory)
-      if instructionCount > 1, requiresJITFallback(lowering) || isolatesMemoryAccess {
+      let memoryBehavior = lowering.statements.reduce(MemoryBehavior.none) {
+        max($0, self.memoryBehavior($1))
+      }
+      if instructionCount > 1,
+        requiresJITFallback(lowering)
+          || (memoryBehavior != .none && containsMemoryAccess)
+      {
         offset -= Int(instruction.length)
         instructionCount -= 1
         terminator = .next(instructionAddress)
         break
       }
       statements.append(contentsOf: lowering.statements)
-      if isolatesMemoryAccess {
+      containsMemoryAccess = containsMemoryAccess || memoryBehavior != .none
+      // A write may modify bytes already decoded later in this block, so it remains a hard
+      // boundary. One read can safely share a block with pure register work: callback failure
+      // discards the native context and replays the unchanged block through the interpreter.
+      if memoryBehavior == .write {
         terminator = .next(instruction.nextInstructionAddress)
         break
       }
@@ -351,16 +361,24 @@ public struct DoryX86IRTranslator: Sendable {
       }
   }
 
-  private func containsMemory(_ statement: DoryIRStatement) -> Bool {
+  private enum MemoryBehavior: Int, Comparable {
+    case none, read, write
+
+    static func < (lhs: Self, rhs: Self) -> Bool { lhs.rawValue < rhs.rawValue }
+  }
+
+  private func memoryBehavior(_ statement: DoryIRStatement) -> MemoryBehavior {
     switch statement {
     case .copy(let destination, let source):
-      return isMemory(destination) || isMemory(source)
-    case .binary(_, let destination, let source, _):
-      return isMemory(destination) || isMemory(source)
+      if isMemory(destination) { return .write }
+      return isMemory(source) ? .read : .none
+    case .binary(_, let destination, let source, let writesDestination):
+      if isMemory(destination) { return writesDestination ? .write : .read }
+      return isMemory(source) ? .read : .none
     case .unary(_, let operand):
-      return isMemory(operand)
+      return isMemory(operand) ? .write : .none
     case .effectiveAddress, .helper:
-      return false
+      return .none
     }
   }
 

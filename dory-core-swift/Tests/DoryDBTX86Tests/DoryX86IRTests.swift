@@ -39,22 +39,35 @@ import Testing
     #expect(block.terminator == .exit(.interpreter, resumeAt: 0x2000))
   }
 
-  @Test func endsNativeBlockBeforeAnInterpreterInstruction() throws {
+  @Test func packsOneReadWithRegisterWorkButStopsBeforeASecondAccess() throws {
     let block = try DoryX86IRTranslator().translate(
       [
         0xB8, 1, 0, 0, 0,
         0x48, 0x8B, 0x08,
-        0x90,
+        0x48, 0x83, 0xC2, 0x01,
+        0x48, 0x8B, 0x18,
       ],
       at: 0x2400,
       mode: .long64
     )
 
-    #expect(block.guestByteCount == 5)
-    #expect(block.guestInstructionCount == 1)
-    #expect(block.statements.count == 1)
-    #expect(block.terminator == .next(0x2405))
+    #expect(block.guestByteCount == 12)
+    #expect(block.guestInstructionCount == 3)
+    #expect(block.statements.count == 3)
+    #expect(block.terminator == .next(0x240C))
     #expect(DoryARM64BaselineEmitter().compile(block).tier == .baseline)
+  }
+
+  @Test func memoryWriteRemainsASelfModifyingCodeBoundary() throws {
+    let block = try DoryX86IRTranslator().translate(
+      [0x48, 0x89, 0x08, 0x48, 0x83, 0xC2, 0x01],
+      at: 0x2500,
+      mode: .long64
+    )
+
+    #expect(block.guestByteCount == 3)
+    #expect(block.guestInstructionCount == 1)
+    #expect(block.terminator == .next(0x2503))
   }
 
   @Test func instructionBudgetCreatesAStableResumeBoundary() throws {

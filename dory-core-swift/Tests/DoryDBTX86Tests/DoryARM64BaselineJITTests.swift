@@ -74,7 +74,7 @@ import Testing
     #endif
   }
 
-  @Test func failedNativeMemoryAccessLeavesTheInstructionRestartable() throws {
+  @Test func failedPackedNativeReadLeavesTheWholeBlockRestartable() throws {
     #if arch(arm64)
       let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
@@ -84,15 +84,20 @@ import Testing
 
       let execution = try #require(
         executor.execute(
-          bytes: [0x48, 0x8B, 0x18],
+          bytes: [
+            0x48, 0x83, 0xC3, 0x01,  // add rbx,1
+            0x48, 0x8B, 0x18,  // mov rbx,[rax] -- faults
+            0x48, 0x83, 0xC1, 0x01,  // add rcx,1
+          ],
           at: state.rip,
           mode: .long64,
           addressSpaceID: 0,
-          maximumInstructions: 1,
+          maximumInstructions: 3,
           state: &state,
           memory: memory
         )
       )
+      #expect(execution.block.guestInstructionCount == 3)
       #expect(execution.exitCode == .interpreter)
       #expect(state == initial)
     #endif
