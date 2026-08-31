@@ -96,7 +96,8 @@ private struct Arguments {
     }
     let instructionText = options["--max-instructions"] ?? "1000000"
     let progressText = options["--progress-instructions"] ?? "10000000"
-    let memoryText = options["--memory-bytes"] ?? "268435456"
+    let memoryText =
+      options["--memory-bytes"] ?? String(DoryPCV1ABI.minimumProductMemoryBytes)
     let processorText = options["--processor-count"] ?? "1"
     let rtcText = options["--initial-rtc-unix-seconds"] ?? "0"
     let traceCapacityText = options["--trace-capacity"] ?? "256"
@@ -106,9 +107,12 @@ private struct Arguments {
     guard let progressInstructions = UInt64(progressText), progressInstructions > 0 else {
       throw SmokeError.invalidNumber(progressText)
     }
-    guard let memoryBytes = Int(memoryText), memoryBytes >= 128 * 1024 * 1024 else {
+    guard let parsedMemoryBytes = UInt64(memoryText), parsedMemoryBytes <= UInt64(Int.max),
+      (try? DoryPCV1ABI.validateProductMemoryBytes(parsedMemoryBytes)) != nil
+    else {
       throw SmokeError.invalidNumber(memoryText)
     }
+    let memoryBytes = Int(parsedMemoryBytes)
     guard let processorCount = Int(processorText), (1...255).contains(processorCount) else {
       throw SmokeError.invalidNumber(processorText)
     }
@@ -493,6 +497,7 @@ private func run() throws {
     "instructionPointer": rip,
     "initialRTCUnixSeconds": arguments.initialRTCUnixSeconds,
     "machineABIIdentity": artifacts.manifest.machineABIIdentity,
+    "memoryBytes": arguments.memoryBytes,
     "maximumInstructions": arguments.maximumInstructions,
     "progressInstructions": arguments.progressInstructions,
     "traceAfterInstructions": arguments.traceAfterInstructions.map { $0 as Any } ?? NSNull(),
