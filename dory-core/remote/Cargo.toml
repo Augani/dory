@@ -12,7 +12,7 @@ tokio = { workspace = true, features = ["fs"] }
 thiserror = { workspace = true }
 prost = { workspace = true }
 libc = "0.2"
-russh = { version = "0.60.3", default-features = false, features = ["aws-lc-rs", "flate2"] }
+russh = { version = "0.63.1", default-features = false, features = ["aws-lc-rs", "flate2"] }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["full"] }
