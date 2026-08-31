@@ -36,7 +36,9 @@ extension DoryPCMMIODevice {
 
 /// Sealed physical address router. RAM and devices share one DoryX86Memory boundary, so paging,
 /// interpreter, and every future JIT helper observe an identical DoryPC-v1 memory map.
-public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory, @unchecked Sendable {
+public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
+  DoryX86CodeGenerationMemory, @unchecked Sendable
+{
   private struct Mapping {
     let lowerBound: UInt64
     let upperBound: UInt64
@@ -154,6 +156,17 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory, 
     }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
     return try ram.read(at: resolved.backingAddress, byteCount: byteCount)
+  }
+
+  public func codeGeneration(at address: UInt64, byteCount: Int) throws -> UInt64? {
+    guard byteCount > 0 else { return nil }
+    guard try resolve(address: address, byteCount: byteCount) == nil else { return nil }
+    let resolved = try resolveRAM(
+      address: address,
+      byteCount: byteCount,
+      access: .instructionFetch
+    )
+    return try ram.codeGeneration(at: resolved.backingAddress, byteCount: byteCount)
   }
 
   public func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {

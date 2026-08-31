@@ -519,6 +519,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             // execution and letting the interpreter perform its precise instruction fetch/fault.
             (try? translatedMemory.instructionBytes(at: guestRIP, maximumCount: maximumCount)) ?? []
           },
+          codeGenerationProvider: { byteCount in
+            try translatedMemory.codeGeneration(at: guestRIP, byteCount: byteCount)
+          },
           at: guestRIP,
           mode: mode,
           addressSpaceID: state.control.cr3,

@@ -56,6 +56,13 @@ public protocol DoryX86ScalarMemory: DoryX86Memory {
   func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws
 }
 
+/// Optional change token for translated code resident in ordinary RAM. A token is valid only for
+/// the exact address range supplied by the caller. Returning `nil` keeps the conservative byte
+/// comparison path for MMIO, firmware flash, or memory implementations without write tracking.
+public protocol DoryX86CodeGenerationMemory: DoryX86Memory {
+  func codeGeneration(at address: UInt64, byteCount: Int) throws -> UInt64?
+}
+
 /// Optional exact fast path for forward, non-overlapping string copies. Implementations return
 /// `nil` before mutation when either starting address is not proven ordinary RAM or when the
 /// resolved backing ranges overlap. A positive result is a fully committed prefix, allowing the
@@ -110,11 +117,13 @@ public final class DoryX86ByteArrayMemory: DoryX86Memory, DoryX86ScalarMemory, @
   public let byteCount: Int
   private let lock = NSLock()
   private var storage: [UInt8]
+  private var codePageGenerations: [UInt64]
 
   public init(baseAddress: UInt64 = 0, bytes: [UInt8]) {
     self.baseAddress = baseAddress
     byteCount = bytes.count
     storage = bytes
+    codePageGenerations = .init(repeating: 0, count: (bytes.count + 4_095) / 4_096)
   }
 
   public convenience init(baseAddress: UInt64 = 0, byteCount: Int) {
@@ -157,6 +166,7 @@ public final class DoryX86ByteArrayMemory: DoryX86Memory, DoryX86ScalarMemory, @
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
     storage.replaceSubrange(offset..<(offset + bytes.count), with: bytes)
+    markCodePagesWritten(offset: offset, byteCount: bytes.count)
   }
 
   public func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
@@ -169,6 +179,7 @@ public final class DoryX86ByteArrayMemory: DoryX86Memory, DoryX86ScalarMemory, @
     for index in 0..<byteCount {
       storage[offset + index] = UInt8(truncatingIfNeeded: value >> UInt64(index * 8))
     }
+    markCodePagesWritten(offset: offset, byteCount: byteCount)
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {
@@ -212,6 +223,39 @@ public final class DoryX86ByteArrayMemory: DoryX86Memory, DoryX86ScalarMemory, @
     }
     return offset
   }
+
+  private func markCodePagesWritten(offset: Int, byteCount: Int) {
+    guard byteCount > 0 else { return }
+    let first = offset / 4_096
+    let last = (offset + byteCount - 1) / 4_096
+    for page in first...last { codePageGenerations[page] &+= 1 }
+  }
+}
+
+extension DoryX86ByteArrayMemory: DoryX86CodeGenerationMemory {
+  public func codeGeneration(at address: UInt64, byteCount: Int) throws -> UInt64? {
+    guard byteCount > 0 else { return nil }
+    return try lock.withLock {
+      let offset = try checkedOffset(
+        address: address,
+        byteCount: byteCount,
+        access: .instructionFetch
+      )
+      let first = offset / 4_096
+      let last = (offset + byteCount - 1) / 4_096
+      var token: UInt64 = 0xcbf2_9ce4_8422_2325
+      for page in first...last {
+        token ^= UInt64(page)
+        token &*= 0x0000_0100_0000_01b3
+        token ^= codePageGenerations[page]
+        token &*= 0x0000_0100_0000_01b3
+      }
+      token ^= UInt64(offset & 0xfff)
+      token &*= 0x0000_0100_0000_01b3
+      token ^= UInt64(byteCount)
+      return token
+    }
+  }
 }
 
 extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
@@ -250,6 +294,7 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
       else { return nil }
       let bytes = Array(storage[sourceOffset..<(sourceOffset + count)])
       storage.replaceSubrange(destinationOffset..<(destinationOffset + count), with: bytes)
+      markCodePagesWritten(offset: destinationOffset, byteCount: count)
       return count
     }
   }

@@ -509,6 +509,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
   private let physicalMemory: any DoryX86Memory
   private let scalarPhysicalMemory: (any DoryX86ScalarMemory)?
   private let bulkPhysicalMemory: (any DoryX86BulkMemory)?
+  private let codeGenerationPhysicalMemory: (any DoryX86CodeGenerationMemory)?
   private let pagingUnit: DoryX86PagingUnit
   private let context: DoryX86PagingContext
 
@@ -520,6 +521,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
     self.physicalMemory = physicalMemory
     scalarPhysicalMemory = physicalMemory as? any DoryX86ScalarMemory
     bulkPhysicalMemory = physicalMemory as? any DoryX86BulkMemory
+    codeGenerationPhysicalMemory = physicalMemory as? any DoryX86CodeGenerationMemory
     self.pagingUnit = pagingUnit
     self.context = context
   }
@@ -649,6 +651,36 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
       }
     }
     return result
+  }
+}
+
+extension DoryX86TranslatedMemory: DoryX86CodeGenerationMemory {
+  public func codeGeneration(at address: UInt64, byteCount: Int) throws -> UInt64? {
+    guard byteCount > 0, let codeGenerationPhysicalMemory else { return nil }
+    var cursor = address
+    var remaining = byteCount
+    var token: UInt64 = 0xcbf2_9ce4_8422_2325
+    while remaining > 0 {
+      let translation = try pagingUnit.translate(
+        linearAddress: cursor,
+        access: .instructionFetch,
+        context: context,
+        physicalMemory: physicalMemory
+      )
+      let count = min(Int(4_096 - (cursor & 0xfff)), remaining)
+      guard let physicalGeneration = try codeGenerationPhysicalMemory.codeGeneration(
+        at: translation.physicalAddress,
+        byteCount: count
+      ) else { return nil }
+      token ^= translation.physicalAddress
+      token &*= 0x0000_0100_0000_01b3
+      token ^= physicalGeneration
+      token &*= 0x0000_0100_0000_01b3
+      cursor &+= UInt64(count)
+      remaining -= count
+    }
+    token ^= UInt64(byteCount)
+    return token
   }
 }
 

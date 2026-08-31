@@ -49,6 +49,20 @@ import Testing
     }
   }
 
+  @Test func codeGenerationsCoverOnlyOrdinaryRAMPages() throws {
+    let ram = DoryX86ByteArrayMemory(byteCount: 0x4000)
+    let bus = DoryPCPhysicalMemoryBus(ram: ram)
+    try bus.attach(TestMMIODevice(baseAddress: 0x2000, byteCount: 0x100))
+    bus.seal()
+
+    let original = try #require(try bus.codeGeneration(at: 0x1000, byteCount: 16))
+    try bus.writeScalar(at: 0x3000, value: 1, byteCount: 1)
+    #expect(try bus.codeGeneration(at: 0x1000, byteCount: 16) == original)
+    try bus.writeScalar(at: 0x1000, value: 2, byteCount: 1)
+    #expect(try bus.codeGeneration(at: 0x1000, byteCount: 16) != original)
+    #expect(try bus.codeGeneration(at: 0x2000, byteCount: 16) == nil)
+  }
+
   @Test func localAPICMMIOProgramsPrioritySpuriousVectorAndTimer() throws {
     let local = DoryPCLocalAPIC(apicID: 0)
     let mmio = DoryPCLocalAPICMMIO(apic: local)

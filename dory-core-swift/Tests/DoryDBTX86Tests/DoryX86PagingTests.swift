@@ -24,6 +24,42 @@ import Testing
       == #"["instructionFetch","read","write"]"#)
   }
 
+  @Test func codeGenerationsTrackOnlyTheTouchedBackingPages() throws {
+    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, byteCount: 0x3000)
+    let first = try #require(try memory.codeGeneration(at: 0x1800, byteCount: 16))
+    try memory.writeScalar(at: 0x3000, value: 1, byteCount: 1)
+    #expect(try memory.codeGeneration(at: 0x1800, byteCount: 16) == first)
+    try memory.writeScalar(at: 0x180F, value: 2, byteCount: 1)
+    #expect(try memory.codeGeneration(at: 0x1800, byteCount: 16) != first)
+  }
+
+  @Test func translatedCodeGenerationsFollowPhysicalRemapsAndWrites() throws {
+    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let linear: UInt64 = 0x0040_0000
+    try installFourLevelMapping(
+      linear: linear,
+      physicalPage: 0x8000,
+      flags: 0x7,
+      memory: memory
+    )
+    let paging = DoryX86PagingUnit()
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: memory,
+      pagingUnit: paging,
+      context: longModeContext(cpl: 3)
+    )
+    let original = try #require(try translated.codeGeneration(at: linear, byteCount: 16))
+    try memory.writeScalar(at: 0x9000, value: 1, byteCount: 1)
+    #expect(try translated.codeGeneration(at: linear, byteCount: 16) == original)
+    try memory.writeScalar(at: 0x8000, value: 2, byteCount: 1)
+    #expect(try translated.codeGeneration(at: linear, byteCount: 16) != original)
+
+    try write64(memory, 0x4000 + ((linear >> 12) & 0x1ff) * 8, 0x9000 | 0x7)
+    paging.invalidate(linearAddress: linear)
+    let remapped = try #require(try translated.codeGeneration(at: linear, byteCount: 16))
+    #expect(remapped != original)
+  }
+
   @Test func walksFourLevelsAndSetsAccessedAndDirtyBits() throws {
     let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0040_0123

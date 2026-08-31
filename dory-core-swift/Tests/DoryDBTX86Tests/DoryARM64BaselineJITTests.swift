@@ -710,6 +710,47 @@ import Testing
     #endif
   }
 
+  @Test func unchangedMemoryGenerationSkipsResidentCodeCopies() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var program: [UInt8] = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0]
+      var generation: UInt64 = 1
+      var requestedCounts: [Int] = []
+      var state = try DoryX86ArchitecturalState(rip: 0x7000)
+      func execute() throws -> DoryARM64BaselineExecution? {
+        try executor.execute(
+          byteProvider: { count in
+            requestedCounts.append(count)
+            return Array(program.prefix(count))
+          },
+          codeGenerationProvider: { _ in generation },
+          at: 0x7000,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state
+        )
+      }
+
+      _ = try #require(try execute())
+      state.rip = 0x7000
+      _ = try #require(try execute())
+      #expect(requestedCounts == [15])
+      #expect(state.registers.rax == 1)
+
+      program[2] = 2
+      generation = 2
+      state.rip = 0x7000
+      _ = try #require(try execute())
+      #expect(requestedCounts == [15, program.count, 15])
+      #expect(state.registers.rax == 2)
+
+      state.rip = 0x7000
+      _ = try #require(try execute())
+      #expect(requestedCounts == [15, program.count, 15])
+    #endif
+  }
+
   @Test func optimizingTierPropagatesConstantsAndEliminatesExactSelfCopies() throws {
     let translated = try DoryX86IRTranslator().translate(
       [

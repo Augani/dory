@@ -1495,6 +1495,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let block: DoryARM64CompiledBlock
     let offset: Int
     let codeGeneration: UInt64
+    let memoryCodeGeneration: UInt64?
   }
 
   public let maximumCodeBytes: Int
@@ -1574,6 +1575,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   /// dispatch while still detecting self-modifying code before native execution.
   public func execute(
     byteProvider: (_ maximumCount: Int) throws -> [UInt8],
+    codeGenerationProvider: ((_ byteCount: Int) throws -> UInt64?)? = nil,
     at guestStart: UInt64,
     mode: DoryX86ExecutionMode,
     addressSpaceID: UInt64,
@@ -1592,29 +1594,45 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         pagingEnabled: state.control.cr0 & (1 << 31) != 0,
         maximumInstructions: maximumInstructions
       )
-      let resident: ResidentBlock
+      var resident: ResidentBlock
       if let cached = entries[key], cached.block.guestInstructionCount <= maximumInstructions {
-        let currentBytes = try byteProvider(Int(cached.block.guestByteCount))
-        guard currentBytes.count == Int(cached.block.guestByteCount) else { return nil }
-        let generation = Self.fingerprint(bytes: currentBytes, mode: mode)
-        if generation == cached.codeGeneration {
+        let byteCount = Int(cached.block.guestByteCount)
+        let memoryGeneration = try codeGenerationProvider?(byteCount) ?? nil
+        if let cachedMemoryGeneration = cached.memoryCodeGeneration,
+          cachedMemoryGeneration == memoryGeneration
+        {
           resident = cached
         } else {
-          entries.removeValue(forKey: key)
-          guard let refreshed = try compileResident(
-            key: key,
-            bytes: byteProvider(maximumInstructions * 15),
-            guestStart: guestStart,
-            mode: mode,
-            maximumInstructions: maximumInstructions,
-            memory: memory
-          ) else { return nil }
-          resident = refreshed
+          let currentBytes = try byteProvider(byteCount)
+          guard currentBytes.count == byteCount else { return nil }
+          let generation = Self.fingerprint(bytes: currentBytes, mode: mode)
+          if generation == cached.codeGeneration {
+            resident = ResidentBlock(
+              block: cached.block,
+              offset: cached.offset,
+              codeGeneration: cached.codeGeneration,
+              memoryCodeGeneration: memoryGeneration
+            )
+            entries[key] = resident
+          } else {
+            entries.removeValue(forKey: key)
+            guard let refreshed = try compileResident(
+              key: key,
+              bytes: byteProvider(maximumInstructions * 15),
+              codeGenerationProvider: codeGenerationProvider,
+              guestStart: guestStart,
+              mode: mode,
+              maximumInstructions: maximumInstructions,
+              memory: memory
+            ) else { return nil }
+            resident = refreshed
+          }
         }
       } else {
         guard let compiled = try compileResident(
           key: key,
           bytes: byteProvider(maximumInstructions * 15),
+          codeGenerationProvider: codeGenerationProvider,
           guestStart: guestStart,
           mode: mode,
           maximumInstructions: maximumInstructions,
@@ -1641,6 +1659,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private func compileResident(
     key: LookupKey,
     bytes: [UInt8],
+    codeGenerationProvider: ((_ byteCount: Int) throws -> UInt64?)?,
     guestStart: UInt64,
     mode: DoryX86ExecutionMode,
     maximumInstructions: Int,
@@ -1671,10 +1690,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     try region.publish(compiled, at: offset)
     nextOffset += byteCount
     let guestBytes = Array(bytes.prefix(Int(compiled.guestByteCount)))
+    let memoryCodeGeneration = try codeGenerationProvider?(guestBytes.count) ?? nil
     let resident = ResidentBlock(
       block: compiled,
       offset: offset,
-      codeGeneration: Self.fingerprint(bytes: guestBytes, mode: mode)
+      codeGeneration: Self.fingerprint(bytes: guestBytes, mode: mode),
+      memoryCodeGeneration: memoryCodeGeneration
     )
     entries[key] = resident
     return resident
