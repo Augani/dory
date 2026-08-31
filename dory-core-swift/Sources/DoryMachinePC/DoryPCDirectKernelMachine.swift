@@ -91,6 +91,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var roundRobinCursor = 0
   private var consumedPayload = false
   private let baselineJIT: DoryARM64BaselineExecutor?
+  private let translatedMemories: [DoryX86TranslatedMemory]
   private var interpreterInstructionCount: UInt64 = 0
   private var baselineJITInstructionCount: UInt64 = 0
   private var baselineJITBlockCount: UInt64 = 0
@@ -259,6 +260,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     pagingUnits = (0..<processorCount).map { _ in DoryX86PagingUnit() }
     pagingUnit = pagingUnits[0]
+    translatedMemories = zip(physicalMemories, pagingUnits).map { physicalMemory, pagingUnit in
+      DoryX86TranslatedMemory(
+        physicalMemory: physicalMemory,
+        pagingUnit: pagingUnit,
+        context: .init(state: .reset(), mode: .real16)
+      )
+    }
     interpreters = (0..<processorCount).map {
       DoryX86Interpreter(
         profile: interpreter.profile,
@@ -370,11 +378,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     guard maximumCount > 0 else { return [] }
     return try lock.withLock {
       guard loadedStates.indices.contains(index), let state = loadedStates[index] else { return nil }
-      let translatedMemory = DoryX86TranslatedMemory(
-        physicalMemory: physicalMemories[index],
-        pagingUnit: pagingUnits[index],
-        context: .init(state: state, mode: executionMode(state))
-      )
+      let translatedMemory = translatedMemories[index]
+      translatedMemory.updateContext(.init(state: state, mode: executionMode(state)))
       return try translatedMemory.instructionBytes(
         at: state.cs.base &+ state.rip,
         maximumCount: maximumCount
@@ -391,11 +396,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     guard maximumCount > 0 else { return [] }
     return try lock.withLock {
       guard loadedStates.indices.contains(index), let state = loadedStates[index] else { return nil }
-      let translatedMemory = DoryX86TranslatedMemory(
-        physicalMemory: physicalMemories[index],
-        pagingUnit: pagingUnits[index],
-        context: .init(state: state, mode: executionMode(state))
-      )
+      let translatedMemory = translatedMemories[index]
+      translatedMemory.updateContext(.init(state: state, mode: executionMode(state)))
       return try translatedMemory.read(at: address, byteCount: maximumCount)
     }
   }
@@ -506,11 +508,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       !state.rflags.contains(.trap)
     {
       let budget = baselineInstructionBudget(maximumInstructions: maximumInstructions)
-      let translatedMemory = DoryX86TranslatedMemory(
-        physicalMemory: physicalMemories[processor],
-        pagingUnit: pagingUnits[processor],
-        context: .init(state: state, mode: mode)
-      )
+      let translatedMemory = translatedMemories[processor]
+      translatedMemory.updateContext(.init(state: state, mode: mode))
       let guestRIP = state.rip
       if let execution = try baselineJIT.execute(
           byteProvider: { maximumCount in

@@ -511,7 +511,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
   private let bulkPhysicalMemory: (any DoryX86BulkMemory)?
   private let codeGenerationPhysicalMemory: (any DoryX86CodeGenerationMemory)?
   private let pagingUnit: DoryX86PagingUnit
-  private let context: DoryX86PagingContext
+  private var context: DoryX86PagingContext
 
   public init(
     physicalMemory: any DoryX86Memory,
@@ -523,6 +523,12 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
     bulkPhysicalMemory = physicalMemory as? any DoryX86BulkMemory
     codeGenerationPhysicalMemory = physicalMemory as? any DoryX86CodeGenerationMemory
     self.pagingUnit = pagingUnit
+    self.context = context
+  }
+
+  /// Refreshes the architectural view before a serialized vCPU dispatch. The owning machine must
+  /// never mutate this context concurrently with a memory operation.
+  public func updateContext(_ context: DoryX86PagingContext) {
     self.context = context
   }
 
