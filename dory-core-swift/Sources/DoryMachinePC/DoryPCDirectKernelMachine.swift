@@ -95,6 +95,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var baselineJITBlockCount: UInt64 = 0
   private var optimizingJITInstructionCount: UInt64 = 0
   private var optimizingJITBlockCount: UInt64 = 0
+  private var pitClockRemainder: UInt64 = 0
+  private var rtcClockRemainder: UInt64 = 0
+
+  // HPET exposes a 100 ns period, so one deterministic machine-clock tick is 100 ns. Keeping the
+  // execution tiers on this shared timebase makes the 1 GHz invariant TSC advance by 100 cycles
+  // per tick while the PIT and RTC receive their independently advertised oscillator rates.
+  private static let machineClockFrequencyHz: UInt64 = 10_000_000
+  private static let tscTicksPerMachineClock: UInt64 = 100
+  private static let pitFrequencyHz: UInt64 = 1_193_182
 
   public init(
     memoryBytes: Int,
@@ -430,7 +439,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         // The architectural TSC is a machine clock, not an interpreter side effect. Advancing it
         // here keeps RDTSC deterministic and identical when a translated block retires several
         // guest instructions at once.
-        state.tsc &+= execution.instructionCount
+        let tscTicks = execution.instructionCount &* Self.tscTicksPerMachineClock
+        state.tsc &+= tscTicks
+        for index in loadedStates.indices where index != processor {
+          loadedStates[index]?.tsc &+= tscTicks
+        }
         loadedStates[processor] = state
         if let stop = powerStop(instructionCount: completed) { return stop }
         switch execution.result {
@@ -546,9 +559,43 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private func advanceClocks(by ticks: UInt64) {
     guard ticks > 0 else { return }
     for apic in localAPICs { apic.advanceTimer(by: ticks) }
-    legacyPIT.advance(by: ticks)
-    rtc.advance(by: ticks)
+    let pitTicks = scaledDeviceTicks(
+      machineTicks: ticks,
+      frequencyHz: Self.pitFrequencyHz,
+      remainder: &pitClockRemainder
+    )
+    let rtcTicks = scaledDeviceTicks(
+      machineTicks: ticks,
+      frequencyHz: DoryPCRTC146818.oscillatorFrequency,
+      remainder: &rtcClockRemainder
+    )
+    legacyPIT.advance(by: pitTicks)
+    rtc.advance(by: rtcTicks)
     hpet.advance(by: ticks)
+  }
+
+  private func scaledDeviceTicks(
+    machineTicks: UInt64,
+    frequencyHz: UInt64,
+    remainder: inout UInt64
+  ) -> UInt64 {
+    let wholeSeconds = machineTicks / Self.machineClockFrequencyHz
+    let fractionalMachineTicks = machineTicks % Self.machineClockFrequencyHz
+    let fractional = remainder &+ fractionalMachineTicks &* frequencyHz
+    remainder = fractional % Self.machineClockFrequencyHz
+    return wholeSeconds &* frequencyHz &+ fractional / Self.machineClockFrequencyHz
+  }
+
+  private func machineTicks(
+    untilDeviceTicks deviceTicks: UInt64,
+    frequencyHz: UInt64,
+    remainder: UInt64
+  ) -> UInt64 {
+    guard deviceTicks > 0 else { return 0 }
+    let numerator = deviceTicks &* Self.machineClockFrequencyHz
+    guard numerator > remainder else { return 1 }
+    let remaining = numerator - remainder
+    return (remaining &+ frequencyHz - 1) / frequencyHz
   }
 
   private func ticksUntilNextAcceptedInterrupt() -> UInt64? {
@@ -572,13 +619,25 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       let picAcceptsTimer = legacyPIC.canAccept(irq: 0, interruptsEnabled: interruptsEnabled)
       let ioAPICAcceptsTimer = ioAPICCanAccept(pin: 2)
       if pit.armed, pit.current > 0, picAcceptsTimer || ioAPICAcceptsTimer {
-        deadlines.append(UInt64(pit.current))
+        deadlines.append(
+          machineTicks(
+            untilDeviceTicks: UInt64(pit.current),
+            frequencyHz: Self.pitFrequencyHz,
+            remainder: pitClockRemainder
+          )
+        )
       }
       if let ticks = rtc.ticksUntilNextInterrupt(), ticks > 0,
         legacyPIC.canAccept(irq: 8, interruptsEnabled: interruptsEnabled)
           || ioAPICCanAccept(pin: 8)
       {
-        deadlines.append(ticks)
+        deadlines.append(
+          machineTicks(
+            untilDeviceTicks: ticks,
+            frequencyHz: DoryPCRTC146818.oscillatorFrequency,
+            remainder: rtcClockRemainder
+          )
+        )
       }
       for deadline in hpet.interruptDeadlines()
       where
@@ -695,6 +754,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private func advanceToNextInterrupt() -> Bool {
     guard let ticks = ticksUntilNextAcceptedInterrupt() else { return false }
     advanceClocks(by: ticks)
+    let tscTicks = ticks &* Self.tscTicksPerMachineClock
+    for index in loadedStates.indices {
+      loadedStates[index]?.tsc &+= tscTicks
+    }
     return true
   }
 

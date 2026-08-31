@@ -183,8 +183,8 @@ import Testing
       )
 
       #expect(try machine.run(maximumInstructions: 16) == .halted(instructionCount: 7))
-      #expect(machine.state?.registers.rax == 4)
-      #expect(machine.state?.tsc == 7)
+      #expect(machine.state?.registers.rax == 400)
+      #expect(machine.state?.tsc == 700)
     }
   }
 
