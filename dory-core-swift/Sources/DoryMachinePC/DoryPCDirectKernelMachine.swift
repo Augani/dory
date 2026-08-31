@@ -126,12 +126,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         try DoryARM64BaselineExecutor(
           maximumCodeBytes: baselineJITMaximumCodeBytes,
           decoder: interpreter.decoder,
+          cpuProfileIdentifier: interpreter.profile.identifier,
           optimization: .baseline
         )
       case .optimizingJIT:
         try DoryARM64BaselineExecutor(
           maximumCodeBytes: baselineJITMaximumCodeBytes,
           decoder: interpreter.decoder,
+          cpuProfileIdentifier: interpreter.profile.identifier,
           optimization: .optimizing
         )
       }

@@ -888,11 +888,27 @@ public struct DoryJITBlockKey: Codable, Sendable, Hashable {
   public let guestStart: UInt64
   public let addressSpaceID: UInt64
   public let codeGeneration: UInt64
+  public let cpuProfileIdentifier: String
+  public let executionMode: DoryX86ExecutionMode
+  public let privilegeLevel: UInt8
+  public let pagingEnabled: Bool
 
-  public init(guestStart: UInt64, addressSpaceID: UInt64, codeGeneration: UInt64) {
+  public init(
+    guestStart: UInt64,
+    addressSpaceID: UInt64,
+    codeGeneration: UInt64,
+    cpuProfileIdentifier: String = DoryX86CPUProfile.compatibleV1Identifier,
+    executionMode: DoryX86ExecutionMode = .long64,
+    privilegeLevel: UInt8 = 0,
+    pagingEnabled: Bool = false
+  ) {
     self.guestStart = guestStart
     self.addressSpaceID = addressSpaceID
     self.codeGeneration = codeGeneration
+    self.cpuProfileIdentifier = cpuProfileIdentifier
+    self.executionMode = executionMode
+    self.privilegeLevel = privilegeLevel & 3
+    self.pagingEnabled = pagingEnabled
   }
 }
 
@@ -1116,6 +1132,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   public let maximumCodeBytes: Int
   private let lock = NSLock()
   private let decoder: DoryX86Decoder
+  private let cpuProfileIdentifier: String
   private let emitter: DoryARM64BaselineEmitter
   private let optimization: DoryARM64JITOptimization
   private let optimizer: DoryIROptimizer
@@ -1126,12 +1143,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   public init(
     maximumCodeBytes: Int = 16 * 1024 * 1024,
     decoder: DoryX86Decoder = .init(),
+    cpuProfileIdentifier: String = DoryX86CPUProfile.compatibleV1Identifier,
     emitter: DoryARM64BaselineEmitter = .init(),
     optimization: DoryARM64JITOptimization = .baseline,
     optimizer: DoryIROptimizer = .init()
   ) throws {
     self.maximumCodeBytes = max(4_096, maximumCodeBytes)
     self.decoder = decoder
+    self.cpuProfileIdentifier = cpuProfileIdentifier
     self.emitter = emitter
     self.optimization = optimization
     self.optimizer = optimizer
@@ -1145,6 +1164,20 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     lock.withLock {
       entries.removeAll(keepingCapacity: true)
       nextOffset = 0
+    }
+  }
+
+  /// Removes lookup visibility while holding the same lock used for native execution. Retired
+  /// slots are not reused individually; a whole-region wrap happens only under this lock, after
+  /// every execution using the prior generation has quiesced.
+  public func invalidate(addressSpaceID: UInt64, guestRange: Range<UInt64>) {
+    lock.withLock {
+      let victims = entries.filter { key, resident in
+        guard key.addressSpaceID == addressSpaceID else { return false }
+        let blockRange = key.guestStart..<(key.guestStart &+ UInt64(resident.block.guestByteCount))
+        return blockRange.overlaps(guestRange)
+      }.map(\.key)
+      for key in victims { entries.removeValue(forKey: key) }
     }
   }
 
@@ -1167,7 +1200,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       let key = DoryJITBlockKey(
         guestStart: guestStart,
         addressSpaceID: addressSpaceID,
-        codeGeneration: generation
+        codeGeneration: generation,
+        cpuProfileIdentifier: cpuProfileIdentifier,
+        executionMode: mode,
+        privilegeLevel: UInt8(state.cs.selector & 3),
+        pagingEnabled: state.control.cr0 & (1 << 31) != 0
       )
       let resident: ResidentBlock
       if let cached = entries[key], cached.block.guestInstructionCount <= maximumInstructions {

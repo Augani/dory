@@ -187,6 +187,114 @@ import Testing
     #expect(cache.residentByteCount == 0)
   }
 
+  @Test func blockIdentityIncludesEveryArchitecturalTranslationContext() {
+    let base = DoryJITBlockKey(
+      guestStart: 0x1000,
+      addressSpaceID: 7,
+      codeGeneration: 3,
+      cpuProfileIdentifier: "profile-a",
+      executionMode: .long64,
+      privilegeLevel: 0,
+      pagingEnabled: true
+    )
+    #expect(
+      base
+        != .init(
+          guestStart: 0x1000,
+          addressSpaceID: 7,
+          codeGeneration: 3,
+          cpuProfileIdentifier: "profile-b",
+          executionMode: .long64,
+          privilegeLevel: 0,
+          pagingEnabled: true
+        ))
+    #expect(
+      base
+        != .init(
+          guestStart: 0x1000,
+          addressSpaceID: 7,
+          codeGeneration: 3,
+          cpuProfileIdentifier: "profile-a",
+          executionMode: .protected32,
+          privilegeLevel: 0,
+          pagingEnabled: true
+        ))
+    #expect(
+      base
+        != .init(
+          guestStart: 0x1000,
+          addressSpaceID: 7,
+          codeGeneration: 3,
+          cpuProfileIdentifier: "profile-a",
+          executionMode: .long64,
+          privilegeLevel: 3,
+          pagingEnabled: true
+        ))
+    #expect(
+      base
+        != .init(
+          guestStart: 0x1000,
+          addressSpaceID: 7,
+          codeGeneration: 3,
+          cpuProfileIdentifier: "profile-a",
+          executionMode: .long64,
+          privilegeLevel: 0,
+          pagingEnabled: false
+        ))
+  }
+
+  @Test func executorInvalidatesOnlyOverlappingAddressSpaceBlocks() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(rip: 0x9000)
+      _ = try #require(
+        executor.execute(
+          bytes: [0x90],
+          at: 0x9000,
+          mode: .long64,
+          addressSpaceID: 1,
+          maximumInstructions: 1,
+          state: &state
+        ))
+      state.rip = 0xA000
+      _ = try #require(
+        executor.execute(
+          bytes: [0x90],
+          at: 0xA000,
+          mode: .long64,
+          addressSpaceID: 1,
+          maximumInstructions: 1,
+          state: &state
+        ))
+      state.rip = 0x9000
+      _ = try #require(
+        executor.execute(
+          bytes: [0x90],
+          at: 0x9000,
+          mode: .long64,
+          addressSpaceID: 2,
+          maximumInstructions: 1,
+          state: &state
+        ))
+      #expect(executor.residentBlockCount == 3)
+
+      executor.invalidate(addressSpaceID: 1, guestRange: 0x8FFF..<0x9001)
+      #expect(executor.residentBlockCount == 2)
+
+      state.rip = 0x9000
+      _ = try #require(
+        executor.execute(
+          bytes: [0x90],
+          at: 0x9000,
+          mode: .long64,
+          addressSpaceID: 1,
+          maximumInstructions: 1,
+          state: &state
+        ))
+      #expect(executor.residentBlockCount == 3)
+    #endif
+  }
+
   @Test func publishesAndExecutesThroughTheGuardedMAPJITRegion() throws {
     #if arch(arm64)
       let block = try DoryX86IRTranslator().translate(
