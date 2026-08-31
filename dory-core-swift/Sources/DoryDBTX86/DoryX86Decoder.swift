@@ -1064,7 +1064,8 @@ public struct DoryX86Decoder: Sendable {
             source: vectorOperand(operands.rm)
           )
         }
-      case 0x64...0x66, 0x74...0x76, 0xD4, 0xD5, 0xE4, 0xE5, 0xF4, 0xF5, 0xF8...0xFE:
+      case 0x64...0x66, 0x74...0x76, 0xD4, 0xD5, 0xD8...0xDA, 0xDC...0xDE, 0xE0, 0xE3,
+        0xE4, 0xE5, 0xE8...0xEA, 0xEC...0xEE, 0xF4...0xFE:
         guard prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "packed integer XMM operation requires 66 prefix")
@@ -1082,10 +1083,25 @@ public struct DoryX86Decoder: Sendable {
         case 0x76: (integerOperation, laneWidth) = (.equal, .doubleword)
         case 0xD4: (integerOperation, laneWidth) = (.add, .quadword)
         case 0xD5: (integerOperation, laneWidth) = (.multiplyLow, .word)
+        case 0xD8: (integerOperation, laneWidth) = (.subtractUnsignedSaturating, .byte)
+        case 0xD9: (integerOperation, laneWidth) = (.subtractUnsignedSaturating, .word)
+        case 0xDA: (integerOperation, laneWidth) = (.minimumUnsigned, .byte)
+        case 0xDC: (integerOperation, laneWidth) = (.addUnsignedSaturating, .byte)
+        case 0xDD: (integerOperation, laneWidth) = (.addUnsignedSaturating, .word)
+        case 0xDE: (integerOperation, laneWidth) = (.maximumUnsigned, .byte)
+        case 0xE0: (integerOperation, laneWidth) = (.averageUnsigned, .byte)
+        case 0xE3: (integerOperation, laneWidth) = (.averageUnsigned, .word)
         case 0xE4: (integerOperation, laneWidth) = (.multiplyHighUnsigned, .word)
         case 0xE5: (integerOperation, laneWidth) = (.multiplyHighSigned, .word)
+        case 0xE8: (integerOperation, laneWidth) = (.subtractSignedSaturating, .byte)
+        case 0xE9: (integerOperation, laneWidth) = (.subtractSignedSaturating, .word)
+        case 0xEA: (integerOperation, laneWidth) = (.minimumSigned, .word)
+        case 0xEC: (integerOperation, laneWidth) = (.addSignedSaturating, .byte)
+        case 0xED: (integerOperation, laneWidth) = (.addSignedSaturating, .word)
+        case 0xEE: (integerOperation, laneWidth) = (.maximumSigned, .word)
         case 0xF4: (integerOperation, laneWidth) = (.multiplyUnsignedDoubleword, .doubleword)
         case 0xF5: (integerOperation, laneWidth) = (.multiplyAddWords, .word)
+        case 0xF6: (integerOperation, laneWidth) = (.sumAbsoluteDifferences, .byte)
         case 0xF8: (integerOperation, laneWidth) = (.subtract, .byte)
         case 0xF9: (integerOperation, laneWidth) = (.subtract, .word)
         case 0xFA: (integerOperation, laneWidth) = (.subtract, .doubleword)

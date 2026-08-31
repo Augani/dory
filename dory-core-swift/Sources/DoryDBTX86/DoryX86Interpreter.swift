@@ -2512,6 +2512,19 @@ public struct DoryX86Interpreter: Sendable {
     source: [UInt8],
     vectorByteCount: Int = 16
   ) {
+    if operation == .sumAbsoluteDifferences {
+      for groupOffset in stride(from: 0, to: vectorByteCount, by: 8) {
+        var sum: UInt16 = 0
+        for offset in groupOffset..<groupOffset + 8 {
+          sum += UInt16(abs(Int(destination[offset]) - Int(source[offset])))
+        }
+        destination.replaceSubrange(
+          groupOffset..<groupOffset + 8,
+          with: littleEndian(UInt64(sum), width: .quadword)
+        )
+      }
+      return
+    }
     if operation == .multiplyUnsignedDoubleword {
       for offset in stride(from: 0, to: vectorByteCount, by: 8) {
         let lhs = UInt32(fromLittleEndian(Array(destination[offset..<offset + 4])))
@@ -2557,6 +2570,31 @@ public struct DoryX86Interpreter: Sendable {
         switch operation {
         case .add: (lhs &+ rhs) & laneMask
         case .subtract: (lhs &- rhs) & laneMask
+        case .addSignedSaturating:
+          unsignedVectorLane(
+            saturatingSignedVectorLane(
+              signedVectorLane(lhs, bitCount: byteCount * 8)
+                + signedVectorLane(rhs, bitCount: byteCount * 8),
+              bitCount: byteCount * 8),
+            bitCount: byteCount * 8)
+        case .addUnsignedSaturating: min(lhs + rhs, laneMask)
+        case .subtractSignedSaturating:
+          unsignedVectorLane(
+            saturatingSignedVectorLane(
+              signedVectorLane(lhs, bitCount: byteCount * 8)
+                - signedVectorLane(rhs, bitCount: byteCount * 8),
+              bitCount: byteCount * 8),
+            bitCount: byteCount * 8)
+        case .subtractUnsignedSaturating: lhs >= rhs ? lhs - rhs : 0
+        case .minimumSigned:
+          signedVectorLane(lhs, bitCount: byteCount * 8)
+            < signedVectorLane(rhs, bitCount: byteCount * 8) ? lhs : rhs
+        case .maximumSigned:
+          signedVectorLane(lhs, bitCount: byteCount * 8)
+            > signedVectorLane(rhs, bitCount: byteCount * 8) ? lhs : rhs
+        case .minimumUnsigned: min(lhs, rhs)
+        case .maximumUnsigned: max(lhs, rhs)
+        case .averageUnsigned: (lhs + rhs + 1) >> 1
         case .equal: lhs == rhs ? laneMask : 0
         case .greaterThan: (lhs ^ signBit) > (rhs ^ signBit) ? laneMask : 0
         case .multiplyLow: (lhs &* rhs) & laneMask
@@ -2566,7 +2604,7 @@ public struct DoryX86Interpreter: Sendable {
             bitPattern: signedVectorLane(lhs, bitCount: byteCount * 8)
               * signedVectorLane(rhs, bitCount: byteCount * 8))
             >> UInt64(byteCount * 8) & laneMask
-        case .multiplyUnsignedDoubleword, .multiplyAddWords:
+        case .multiplyUnsignedDoubleword, .multiplyAddWords, .sumAbsoluteDifferences:
           preconditionFailure("wide packed multiply handled before lane loop")
         }
       for index in 0..<byteCount {
@@ -2578,6 +2616,17 @@ public struct DoryX86Interpreter: Sendable {
   private func signedVectorLane(_ value: UInt64, bitCount: Int) -> Int64 {
     let signBit = UInt64(1) << UInt64(bitCount - 1)
     return Int64(bitPattern: (value ^ signBit) &- signBit)
+  }
+
+  private func saturatingSignedVectorLane(_ value: Int64, bitCount: Int) -> Int64 {
+    let maximum = (Int64(1) << Int64(bitCount - 1)) - 1
+    let minimum = -(Int64(1) << Int64(bitCount - 1))
+    return min(max(value, minimum), maximum)
+  }
+
+  private func unsignedVectorLane(_ value: Int64, bitCount: Int) -> UInt64 {
+    let mask = (UInt64(1) << UInt64(bitCount)) - 1
+    return UInt64(bitPattern: value) & mask
   }
 
   private func executeVectorIntegerShift(

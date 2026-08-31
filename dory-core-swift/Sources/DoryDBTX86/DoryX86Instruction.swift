@@ -146,6 +146,10 @@ public enum DoryX86VectorFloatingFormat: String, Codable, Sendable, Hashable {
 
 public enum DoryX86VectorIntegerOperation: String, Codable, Sendable, Hashable {
   case add, subtract, equal, greaterThan
+  case addSignedSaturating, addUnsignedSaturating
+  case subtractSignedSaturating, subtractUnsignedSaturating
+  case minimumSigned, maximumSigned, minimumUnsigned, maximumUnsigned
+  case averageUnsigned, sumAbsoluteDifferences
   case multiplyLow, multiplyHighSigned, multiplyHighUnsigned
   case multiplyUnsignedDoubleword, multiplyAddWords
 }

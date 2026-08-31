@@ -658,6 +658,21 @@ import Testing
           source: .register(1)
         )
     )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0xEC, 0xC1], at: 0x1000, mode: .long64).operation
+        == .vectorIntegerBinary(
+          .addSignedSaturating, laneWidth: .byte, destination: 0, source: .register(1))
+    )
+    #expect(
+      try decoder.decode([0x0F, 0xDA, 0xC1], at: 0x1000, mode: .long64).operation
+        == .mmxIntegerBinary(
+          .minimumUnsigned, laneWidth: .byte, destination: 0, source: .register(1))
+    )
+    #expect(
+      try decoder.decode([0x66, 0x0F, 0xF6, 0xC1], at: 0x1000, mode: .long64).operation
+        == .vectorIntegerBinary(
+          .sumAbsoluteDifferences, laneWidth: .byte, destination: 0, source: .register(1))
+    )
   }
 
   @Test func decodesX87StackDataTransfers() throws {
