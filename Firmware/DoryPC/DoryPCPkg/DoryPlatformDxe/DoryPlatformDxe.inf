@@ -12,6 +12,7 @@
 [Packages]
   DoryPCPkg/DoryPCPkg.dec
   MdePkg/MdePkg.dec
+  OvmfPkg/OvmfPkg.dec
 
 [LibraryClasses]
   DebugLib
@@ -23,6 +24,11 @@
 [Guids]
   gEfiAcpi20TableGuid
   gEfiSmbios3TableGuid
+
+[Protocols]
+  gEfiMpInitLibMpDepProtocolGuid  ## SOMETIMES_PRODUCES
+  gEfiMpInitLibUpDepProtocolGuid  ## SOMETIMES_PRODUCES
+  gIoMmuAbsentProtocolGuid        ## PRODUCES
 
 [FixedPcd]
   gDoryPCTokenSpaceGuid.PcdFirmwareConfigurationBase
