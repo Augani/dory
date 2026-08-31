@@ -9,6 +9,7 @@
 #include <Library/PcdLib.h>
 #include <Library/PeiServicesLib.h>
 #include <Library/ResourcePublicationLib.h>
+#include <Ppi/MasterBootMode.h>
 
 #define DORY_LEGACY_MEMORY_END  0x000A0000ULL
 #define DORY_HIGH_MEMORY_BASE   0x00100000ULL
@@ -19,6 +20,12 @@
 #define DORY_PEI_MEMORY_SIZE    0x04000000ULL
 
 STATIC UINTN mConfigurationBase;
+
+STATIC EFI_PEI_PPI_DESCRIPTOR mMasterBootModePpi = {
+  EFI_PEI_PPI_DESCRIPTOR_PPI | EFI_PEI_PPI_DESCRIPTOR_TERMINATE_LIST,
+  &gEfiPeiMasterBootModePpiGuid,
+  NULL
+};
 
 STATIC
 UINT32
@@ -124,6 +131,11 @@ DoryPlatformPeiEntryPoint (
   }
 
   Status = PeiServicesSetBootMode (BOOT_WITH_FULL_CONFIGURATION);
+  if (EFI_ERROR (Status)) {
+    return Status;
+  }
+
+  Status = PeiServicesInstallPpi (&mMasterBootModePpi);
   if (EFI_ERROR (Status)) {
     return Status;
   }
