@@ -524,6 +524,8 @@ case "desktop":
             fail("DoryPC resolved launch rejects legacy ARM desktop arguments")
         }
         guard let handoffSocket else { fail("DoryPC desktop requires --handoff-sock") }
+        guard let agentSocket else { fail("DoryPC desktop requires --agent-sock") }
+        guard let shellSocket else { fail("DoryPC desktop requires --shell-sock") }
         guard let consoleSocket else { fail("DoryPC desktop requires --console-sock") }
         guard let controlSocket else { fail("DoryPC desktop requires --control-sock") }
         guard let gvproxy else { fail("DoryPC desktop requires --gvproxy") }
@@ -544,9 +546,12 @@ case "desktop":
                 authority: authority,
                 stateDirectory: stateDirectory,
                 handoffSocketPath: handoffSocket,
+                agentSocketPath: agentSocket,
+                shellSocketPath: shellSocket,
                 consoleSocketPath: consoleSocket,
                 controlSocketPath: controlSocket,
                 usbControlSocketPath: usbControlSocket,
+                sshAgentSocketPath: sshAgentSocket,
                 gvproxyPath: gvproxy,
                 displayPresentation: displayPresentation
             ))

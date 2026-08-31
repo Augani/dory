@@ -41,6 +41,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
   public let xhciController: DoryPCXHCIController
   public let networkDevice: DoryPCVirtioNetworkPCIDevice
   public let entropyDevice: DoryPCVirtioEntropyPCIDevice
+  public let additionalPCIFunctions: [any DoryPCPCIFunction]
   public let effectiveVariableStoreGeneration: UInt64
   public let machine: DoryPCDirectKernelMachine
 
@@ -58,6 +59,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     networkBackend: any DoryVirtioNetworkBackend = DoryVirtioInMemoryNetworkBackend(),
     networkMACAddress: [UInt8] = [0x02, 0x44, 0x4F, 0x52, 0x59, 0x01],
     networkMTU: UInt16 = 1_500,
+    additionalPCIFunctions: [any DoryPCPCIFunction] = [],
     interpreter: DoryX86Interpreter = .init(),
     executionTier: DoryPCExecutionTier = .interpreter,
     baselineJITMaximumCodeBytes: Int = 16 * 1024 * 1024
@@ -171,6 +173,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
       networkDevice,
       entropyDevice,
     ]
+    pciFunctions += additionalPCIFunctions
     let machine = try DoryPCDirectKernelMachine(
       memoryBytes: memoryBytes,
       processorCount: processorCount,
@@ -206,6 +209,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     self.xhciController = xhciController
     self.networkDevice = networkDevice
     self.entropyDevice = entropyDevice
+    self.additionalPCIFunctions = additionalPCIFunctions
     self.effectiveVariableStoreGeneration = bootVariableSnapshot.generation
     self.machine = machine
   }

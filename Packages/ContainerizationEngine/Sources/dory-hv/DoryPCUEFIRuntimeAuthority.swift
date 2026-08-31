@@ -126,7 +126,8 @@ struct DoryPCUEFIRuntimeAuthority {
         displaySink: (any DoryVirtioGPUDisplaySink)? = nil,
         gpuAccelerationAuthority: (any DoryVirtioGPUAccelerationAuthority)? = nil,
         soundBackend: any DoryVirtioSoundBackend = DoryVirtioInMemorySoundBackend(),
-        networkBackend: any DoryVirtioNetworkBackend = DoryVirtioInMemoryNetworkBackend()
+        networkBackend: any DoryVirtioNetworkBackend = DoryVirtioInMemoryNetworkBackend(),
+        additionalPCIFunctions: [any DoryPCPCIFunction] = []
     ) throws -> DoryPCUEFIMachine {
         guard let networkInterface = envelope.devices.networkInterface else {
             throw VMError.invalidConfiguration("DoryPC network identity is missing")
@@ -160,6 +161,7 @@ struct DoryPCUEFIRuntimeAuthority {
             networkBackend: networkBackend,
             networkMACAddress: networkInterface.macAddressOctets!,
             networkMTU: networkInterface.maximumTransmissionUnit,
+            additionalPCIFunctions: additionalPCIFunctions,
             executionTier: tier
         )
         variableGeneration.advance(to: machine.effectiveVariableStoreGeneration)

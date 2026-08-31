@@ -290,6 +290,13 @@ public enum VirtioVsockListenerRegistrationError: Error, Equatable, Sendable {
     case listenerCapacityReached(limit: Int)
 }
 
+public enum VirtioVsockTransportNeutralError: Error, Equatable, Sendable {
+    case malformedTransmitPacket
+    case controlResponseCapacityReached
+    case responseInvariantViolation
+    case receivePublicationRevoked
+}
+
 public struct VirtioVsockResourceSnapshot: Equatable, Sendable {
     public let connections: Int
     public let listeners: Int
@@ -399,6 +406,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
     private let shutdownReaperQueue = DispatchQueue(label: "com.dory.vsock.shutdown-reaper")
     private var shutdownReaper: DispatchSourceTimer?
     private weak var lastTransport: VirtioMMIOTransport?
+    private var transportNeutralReceiveReadySink: (@Sendable () -> Void)?
 
     private struct ConnectionKey: Hashable, Sendable {
         var guestPort: UInt32
@@ -538,6 +546,113 @@ public final class VirtioVsock: VirtioDeviceBackend {
 
     public var serviceAdmissionSnapshot: VirtioVsockServiceAdmissionSnapshot {
         serviceAdmissionAuthority.snapshot
+    }
+
+    /// Installs the receive-queue wake edge for a non-MMIO VirtIO transport such as DoryPC PCI.
+    public func setTransportNeutralReceiveReadySink(_ sink: (@Sendable () -> Void)?) {
+        let shouldWake = withLock { () -> Bool in
+            transportNeutralReceiveReadySink = sink
+            return sink != nil && pendingGuestPacketCountLocked > 0
+        }
+        if shouldWake { sink?() }
+    }
+
+    public var hasPendingTransportNeutralPacket: Bool {
+        withLock { pendingGuestPacketCountLocked > 0 && !isQuiesced && !isResetting }
+    }
+
+    /// Conservative TX admission edge for transports that cannot inspect a chain before popping
+    /// it. A full response queue stalls all TX, including RST, so no guest chain is consumed merely
+    /// because the host cannot reserve the control response its packet may require.
+    public var hasTransportNeutralControlResponseCapacity: Bool {
+        withLock {
+            guard !isQuiesced, !isResetting,
+                  pendingGuestPacketCountLocked + controlResponseReservations.count
+                    < limits.maximumPendingGuestPackets else { return false }
+            let (usedBytes, usedOverflow) = pendingGuestBytes.addingReportingOverflow(
+                reservedControlResponseBytes
+            )
+            guard !usedOverflow else { return false }
+            let (nextBytes, overflow) = usedBytes.addingReportingOverflow(
+                VirtioVsockHeader.byteCount
+            )
+            return !overflow && nextBytes <= limits.maximumPendingGuestBytes
+        }
+    }
+
+    /// Processes one already-bounded, device-readable TX packet from a transport-neutral queue.
+    /// Required control-response capacity is reserved before mutating connection state.
+    public func consumeTransportNeutralGuestPacket(_ packet: [UInt8]) throws {
+        guard packet.count >= VirtioVsockHeader.byteCount else {
+            throw VirtioVsockTransportNeutralError.malformedTransmitPacket
+        }
+        let header = try VirtioVsockHeader(decoding: packet)
+        let reservation: ControlResponseReservation?
+        if requiresControlResponse(header) {
+            guard let admitted = reserveControlResponse() else {
+                throw VirtioVsockTransportNeutralError.controlResponseCapacityReached
+            }
+            reservation = admitted
+        } else {
+            reservation = nil
+        }
+        let result: GuestPacketResult
+        do {
+            result = try processGuestPacket(
+                packet,
+                transactionEpoch: reservation?.epoch
+            )
+        } catch {
+            if let reservation { releaseControlResponse(reservation) }
+            throw error
+        }
+
+        let responseCommitted: Bool
+        if let reservation, result.responses.count == 1 {
+            responseCommitted = commitControlResponse(
+                result.responses[0],
+                reservation: reservation,
+                terminalResetKey: result.terminalResetKey
+            )
+        } else if let reservation, result.responses.isEmpty {
+            releaseControlResponse(reservation)
+            responseCommitted = true
+        } else if reservation == nil, result.responses.isEmpty {
+            responseCommitted = true
+        } else {
+            if let reservation { releaseControlResponse(reservation) }
+            throw VirtioVsockTransportNeutralError.responseInvariantViolation
+        }
+        guard responseCommitted else {
+            throw VirtioVsockTransportNeutralError.controlResponseCapacityReached
+        }
+        withLock { statisticsState.receivedGuestPackets &+= 1 }
+        result.invokeListener?()
+        flushIfAttached(nil)
+    }
+
+    /// Publishes the exact pending RX authority while holding the vsock lifecycle lock. The writer
+    /// must synchronously copy into the current queue chain and may not retain guest memory.
+    public func publishTransportNeutralGuestPacket(
+        maximumBytes: Int,
+        writer: (_ bytes: [UInt8]) throws -> Void
+    ) throws -> Int? {
+        try withLock {
+            guard !isQuiesced, !isResetting,
+                  let delivery = try pendingGuestDeliveryLocked(maximumBytes: maximumBytes),
+                  peekPendingGuestPacketLocked()?.id == delivery.packetID else { return nil }
+            try writer(delivery.bytes)
+            guard peekPendingGuestPacketLocked()?.id == delivery.packetID else {
+                throw VirtioVsockTransportNeutralError.receivePublicationRevoked
+            }
+            commitPendingGuestDeliveryLocked(delivery)
+            statisticsState.publishedGuestPackets &+= 1
+            return delivery.bytes.count
+        }
+    }
+
+    public func resetTransportNeutralDevice() {
+        resetTransportState(preserveListeners: true, remainQuiesced: false)
     }
 
     private static func isValidGuestCID(_ cid: UInt32) -> Bool {
@@ -1054,10 +1169,13 @@ public final class VirtioVsock: VirtioDeviceBackend {
     }
 
     private func flushIfAttached(_ transport: VirtioMMIOTransport?) {
-        guard let transport else { return }
-        transport.withQueueLock {
-            flushPendingGuestPackets(transport: transport)
+        if let transport {
+            transport.withQueueLock {
+                flushPendingGuestPackets(transport: transport)
+            }
         }
+        let sink = withLock { transportNeutralReceiveReadySink }
+        sink?()
     }
 
     private func flushPendingGuestPackets(transport: VirtioMMIOTransport) {
@@ -1987,6 +2105,7 @@ public final class VirtioVsock: VirtioDeviceBackend {
             terminalQueues.removeAll(keepingCapacity: true)
             nextHostPort = limits.hostPortRange.lowerBound
             lastTransport = nil
+            if terminallyQuiesced { transportNeutralReceiveReadySink = nil }
             closingConnections.removeAll(keepingCapacity: true)
             shutdownReaper?.cancel()
             shutdownReaper = nil

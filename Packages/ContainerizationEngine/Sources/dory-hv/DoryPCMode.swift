@@ -15,9 +15,12 @@ enum DoryPCMode {
         let authority: DoryPCUEFIRuntimeAuthority
         let stateDirectory: String
         let handoffSocketPath: String
+        let agentSocketPath: String
+        let shellSocketPath: String
         let consoleSocketPath: String
         let controlSocketPath: String
         let usbControlSocketPath: String?
+        let sshAgentSocketPath: String?
         let gvproxyPath: String
         let displayPresentation: DoryMachineDisplayPresentation
     }
@@ -112,6 +115,10 @@ enum DoryPCMode {
         private let lifecycleServer: VmmLifecycleReceiptServer
         private let networkBackend: any DoryVirtioNetworkBackend
         private let networkRuntime: DoryPCGVProxyNetworkBackend?
+        private let vsock: VirtioVsock
+        private let agentBridge: GuestVsockSocketBridge
+        private let shellBridge: GuestVsockSocketBridge
+        private let sshAgentBridge: HostSSHAgentBridge?
         private let machineState: MachineState
         private let keyboardInput: DoryPCDesktopInputSink
         private let pointerInput: DoryPCDesktopInputSink
@@ -226,10 +233,18 @@ enum DoryPCMode {
                     )
                 } : nil
             self.audioBackend = audioBackend
+            let vsock = VirtioVsock(guestCID: 3)
+            self.vsock = vsock
+            let vsockPCI = try DoryPCVirtioVsockPCIDevice(
+                address: DoryPCV1ABI.vsockPCIAddress,
+                initialBARAddress: DoryPCV1ABI.vsockBARAddress,
+                vsock: vsock
+            )
             let machine = try configuration.authority.makeMachine(
                 displaySink: displaySink,
                 soundBackend: audioBackend ?? DoryVirtioInMemorySoundBackend(),
-                networkBackend: networkBackend
+                networkBackend: networkBackend,
+                additionalPCIFunctions: [vsockPCI]
             )
             if devices.networkAttachment == .disconnected {
                 _ = machine.networkDevice.setLinkUp(false)
@@ -243,6 +258,40 @@ enum DoryPCMode {
                 machine: machine,
                 dynamicDisplaySize: dynamicDisplaySize
             )
+            let agentBridge = GuestVsockSocketBridge(
+                socketPath: configuration.agentSocketPath,
+                guestPort: VsockPorts.agent,
+                service: .agentSocket,
+                log: Self.log
+            )
+            let shellBridge = GuestVsockSocketBridge(
+                socketPath: configuration.shellSocketPath,
+                guestPort: 1_027,
+                service: .shell,
+                log: Self.log
+            )
+            try agentBridge.attach(to: vsock)
+            do {
+                try shellBridge.attach(to: vsock)
+            } catch {
+                agentBridge.stop()
+                throw error
+            }
+            self.agentBridge = agentBridge
+            self.shellBridge = shellBridge
+            if let socketPath = configuration.sshAgentSocketPath {
+                do {
+                    let bridge = try HostSSHAgentBridge(socketPath: socketPath, log: Self.log)
+                    try bridge.attach(to: vsock)
+                    sshAgentBridge = bridge
+                } catch {
+                    agentBridge.stop()
+                    shellBridge.stop()
+                    throw error
+                }
+            } else {
+                sshAgentBridge = nil
+            }
             if devices.removableUSBHotplug {
                 guard let socketPath = configuration.usbControlSocketPath else {
                     throw VMError.invalidConfiguration(
@@ -384,11 +433,18 @@ enum DoryPCMode {
                             return
                         }
                         audioBackend?.reset()
+                        vsock.resetTransportNeutralDevice()
+                        let vsockPCI = try DoryPCVirtioVsockPCIDevice(
+                            address: DoryPCV1ABI.vsockPCIAddress,
+                            initialBARAddress: DoryPCV1ABI.vsockBARAddress,
+                            vsock: vsock
+                        )
                         let replacement = try configuration.authority.makeMachine(
                             displaySink: displaySink,
                             soundBackend: audioBackend
                                 ?? DoryVirtioInMemorySoundBackend(),
-                            networkBackend: networkBackend
+                            networkBackend: networkBackend,
+                            additionalPCIFunctions: [vsockPCI]
                         )
                         try usbControlHandler?.replaceController(replacement.xhciController)
                         try cameraBridge?.attach(to: replacement.xhciController)
@@ -459,6 +515,10 @@ enum DoryPCMode {
             signalSources.forEach { $0.cancel() }
             signalSources.removeAll()
             lifecycleServer.stop()
+            agentBridge.stop()
+            shellBridge.stop()
+            sshAgentBridge?.stop()
+            _ = vsock.quiesce()
             _ = usbControlServer?.stop()
             usbControlHandler?.stop()
             networkRuntime?.stop()
@@ -489,6 +549,10 @@ enum DoryPCMode {
                 )
             }
             return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        }
+
+        private nonisolated static func log(_ message: String) {
+            FileHandle.standardError.write(Data("dory-hv DoryPC: \(message)\n".utf8))
         }
     }
 }

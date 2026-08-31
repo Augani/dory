@@ -82,6 +82,7 @@ public enum DoryPCV1ABI {
   public static let xhciPCIAddress = DoryPCPCIAddress(bus: 0, device: 7, function: 0)
   public static let networkPCIAddress = DoryPCPCIAddress(bus: 0, device: 8, function: 0)
   public static let entropyPCIAddress = DoryPCPCIAddress(bus: 0, device: 9, function: 0)
+  public static let vsockPCIAddress = DoryPCPCIAddress(bus: 0, device: 10, function: 0)
   public static let removableMediaPCIAddress = DoryPCPCIAddress(bus: 0, device: 12, function: 0)
   public static let systemDiskBARAddress = pcieMMIOBase
   public static let removableMediaBARAddress = pcieMMIOBase + 0x1000
@@ -93,6 +94,7 @@ public enum DoryPCV1ABI {
   public static let xhciBARAddress = pcieMMIOBase + 0x8000
   public static let networkBARAddress = pcieMMIOBase + 0xC000
   public static let entropyBARAddress = pcieMMIOBase + 0xD000
+  public static let vsockBARAddress = pcieMMIOBase + 0xE000
 
   public static let regions: [DoryPCV1Region] = [
     fixedRegion(kind: .pvhHandoff, base: pvhStartInfo, byteCount: pvhHandoffBytes),
@@ -185,10 +187,21 @@ public enum DoryPCV1ABI {
     | xHCI USB controller | `0000:00:07.0` | `0xd0008000` |
     | VirtIO network | `0000:00:08.0` | `0xd000c000` |
     | VirtIO entropy | `0000:00:09.0` | `0xd000d000` |
+    | VirtIO socket | `0000:00:0a.0` | `0xd000e000` |
 
     ## Boot contract
 
     Direct-kernel PVH remains an engineering and managed-image profile. Product installation starts at the UEFI reset vector, discovers ACPI/SMBIOS, boots removable media according to persistent UEFI boot variables, and then boots the installed system disk. Firmware code is immutable per launch; each VM owns an atomic variable store.
+
+    Before UEFI executes, the launch authority atomically projects the validated device order into
+    standard `Boot####` and `BootOrder` variables under the EFI global-variable GUID. Dory-owned load
+    options contain an active whole-device path of `ACPI(PNP0A03,0)/PCI(function,device)` and private
+    optional-data marker `DORYPC1\\0<logical-id>`. New Dory options allocate from `BootD000` through
+    `BootDFFF` without replacing an occupied guest option. Existing Dory options are reused by marker;
+    stale or duplicate Dory-owned options are removed. Guest-created options and their relative
+    `BootOrder` are retained after the launch plan's physical-device fallbacks. An unchanged projection
+    does not advance the variable-store generation, and a store requiring backup recovery cannot boot
+    until recovery is explicitly completed.
     """
 
   private static func fixedRegion(

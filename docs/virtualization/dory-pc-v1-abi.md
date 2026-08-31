@@ -40,6 +40,7 @@ The IOAPIC exposes GSIs 0...23. PCI INTx uses level-triggered, active-low GSIs 1
 | xHCI USB controller | `0000:00:07.0` | `0xd0008000` |
 | VirtIO network | `0000:00:08.0` | `0xd000c000` |
 | VirtIO entropy | `0000:00:09.0` | `0xd000d000` |
+| VirtIO socket | `0000:00:0a.0` | `0xd000e000` |
 
 ## Boot contract
 
