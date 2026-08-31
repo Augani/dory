@@ -13,6 +13,14 @@ private struct AuditResult {
   var failures: [AuditFailure: Int] = [:]
 }
 
+private struct AuditOptions {
+  let mode: DoryX86ExecutionMode
+  let inputArguments: [String]
+  let startAddress: UInt64?
+  let stopAddress: UInt64?
+  let skipUnknownMnemonics: Bool
+}
+
 private enum AuditError: Error, CustomStringConvertible {
   case usage
   case noInputs(String)
@@ -21,7 +29,9 @@ private enum AuditError: Error, CustomStringConvertible {
   var description: String {
     switch self {
     case .usage:
-      "usage: dory-x86-decode-audit [--mode real16|protected16|protected32|long64] <module-or-directory> [...]"
+      "usage: dory-x86-decode-audit [--mode real16|protected16|protected32|long64] "
+        + "[--start-address <integer>] [--stop-address <integer>] [--skip-unknown-mnemonics] "
+        + "<module-or-directory> [...]"
     case .noInputs(let path):
       "no .debug modules found at \(path)"
     case .objdumpFailed(let path, let status, let stderr):
@@ -33,20 +43,26 @@ private enum AuditError: Error, CustomStringConvertible {
 @main
 private enum DoryX86DecodeAudit {
   static func main() throws {
-    let (mode, inputArguments) = try arguments(Array(CommandLine.arguments.dropFirst()))
-    let inputs = try inputArguments.flatMap(resolveModules)
+    let options = try arguments(Array(CommandLine.arguments.dropFirst()))
+    let inputs = try options.inputArguments.flatMap(resolveModules)
     guard !inputs.isEmpty else {
-      throw AuditError.noInputs(inputArguments.joined(separator: ", "))
+      throw AuditError.noInputs(options.inputArguments.joined(separator: ", "))
     }
 
     let decoder = DoryX86Decoder()
     var result = AuditResult()
     for input in inputs {
-      let output = try disassemble(input)
-      audit(output, mode: mode, decoder: decoder, result: &result)
+      let output = try disassemble(input, options: options)
+      audit(
+        output,
+        mode: options.mode,
+        skipUnknownMnemonics: options.skipUnknownMnemonics,
+        decoder: decoder,
+        result: &result
+      )
     }
 
-    print("mode: \(mode.rawValue)")
+    print("mode: \(options.mode.rawValue)")
     print("modules: \(inputs.count)")
     print("decoded: \(result.decoded)/\(result.total)")
     print("unique failures: \(result.failures.count)")
@@ -62,9 +78,12 @@ private enum DoryX86DecodeAudit {
 
   private static func arguments(
     _ values: [String]
-  ) throws -> (DoryX86ExecutionMode, [String]) {
+  ) throws -> AuditOptions {
     var mode = DoryX86ExecutionMode.long64
     var inputs: [String] = []
+    var startAddress: UInt64?
+    var stopAddress: UInt64?
+    var skipUnknownMnemonics = false
     var index = 0
     while index < values.count {
       if values[index] == "--mode" {
@@ -75,6 +94,19 @@ private enum DoryX86DecodeAudit {
         }
         mode = requestedMode
         index += 2
+      } else if values[index] == "--start-address" || values[index] == "--stop-address" {
+        guard index + 1 < values.count, let address = integer(values[index + 1]) else {
+          throw AuditError.usage
+        }
+        if values[index] == "--start-address" {
+          startAddress = address
+        } else {
+          stopAddress = address
+        }
+        index += 2
+      } else if values[index] == "--skip-unknown-mnemonics" {
+        skipUnknownMnemonics = true
+        index += 1
       } else if values[index].hasPrefix("-") {
         throw AuditError.usage
       } else {
@@ -83,7 +115,23 @@ private enum DoryX86DecodeAudit {
       }
     }
     guard !inputs.isEmpty else { throw AuditError.usage }
-    return (mode, inputs)
+    if let startAddress, let stopAddress, startAddress >= stopAddress {
+      throw AuditError.usage
+    }
+    return AuditOptions(
+      mode: mode,
+      inputArguments: inputs,
+      startAddress: startAddress,
+      stopAddress: stopAddress,
+      skipUnknownMnemonics: skipUnknownMnemonics
+    )
+  }
+
+  private static func integer(_ text: String) -> UInt64? {
+    if text.hasPrefix("0x") || text.hasPrefix("0X") {
+      return UInt64(text.dropFirst(2), radix: 16)
+    }
+    return UInt64(text)
   }
 
   private static func resolveModules(_ path: String) throws -> [String] {
@@ -99,12 +147,20 @@ private enum DoryX86DecodeAudit {
       .map { URL(fileURLWithPath: path).appendingPathComponent($0).path }
   }
 
-  private static func disassemble(_ path: String) throws -> String {
+  private static func disassemble(_ path: String, options: AuditOptions) throws -> String {
     let process = Process()
     let output = Pipe()
     let errors = Pipe()
     process.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
-    process.arguments = ["llvm-objdump", "-d", path]
+    var arguments = ["llvm-objdump", "-d"]
+    if let startAddress = options.startAddress {
+      arguments.append("--start-address=0x\(String(startAddress, radix: 16))")
+    }
+    if let stopAddress = options.stopAddress {
+      arguments.append("--stop-address=0x\(String(stopAddress, radix: 16))")
+    }
+    arguments.append(path)
+    process.arguments = arguments
     process.standardOutput = output
     process.standardError = errors
     try process.run()
@@ -126,6 +182,7 @@ private enum DoryX86DecodeAudit {
   private static func audit(
     _ disassembly: String,
     mode: DoryX86ExecutionMode,
+    skipUnknownMnemonics: Bool,
     decoder: DoryX86Decoder,
     result: inout AuditResult
   ) {
@@ -142,6 +199,7 @@ private enum DoryX86DecodeAudit {
 
       let mnemonic = fields[1].trimmingCharacters(in: .whitespaces)
       guard !mnemonic.isEmpty else { continue }
+      if skipUnknownMnemonics, mnemonic == "<unknown>" { continue }
       result.total += 1
 
       do {
