@@ -87,6 +87,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private let lock = NSLock()
   private var loadedStates: [DoryX86ArchitecturalState?]
   private var haltedProcessors: [Bool]
+  private var processorLifecycles: [DoryPCProcessorLifecycle]
   private var pendingNMIs: Set<Int> = []
   private var roundRobinCursor = 0
   private var consumedPayload = false
@@ -287,6 +288,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     )
     loadedStates = [DoryX86ArchitecturalState?](repeating: nil, count: processorCount)
     haltedProcessors = [Bool](repeating: false, count: processorCount)
+    processorLifecycles = (0..<processorCount).map {
+      $0 == 0 ? .running : .waitingForStartup
+    }
   }
 
   public func load(
@@ -689,11 +693,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       switch event {
       case .initialize(let apicID):
         guard let index = processorIndex(apicID) else { continue }
+        processorLifecycles[index] = .waitingForStartup
         loadedStates[index] = applicationProcessorResetState()
         haltedProcessors[index] = true
         pendingNMIs.remove(index)
       case .startup(let apicID, let vector):
         guard let index = processorIndex(apicID) else { continue }
+        processorLifecycles[index] = .running
         var state = applicationProcessorResetState()
         state.rip = 0
         state.cs = .init(
@@ -713,7 +719,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private func deliverPendingInterrupts(instructionCount: UInt64) -> DoryPCMachineStop? {
     for index in loadedStates.indices {
       guard var state = loadedStates[index],
-        multiprocessorController.snapshot().lifecycles[localAPICs[index].apicID] == .running
+        processorLifecycles[index] == .running
       else { continue }
       let source: DoryX86InterruptSource
       let vector: UInt8?
@@ -750,11 +756,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   }
 
   private func nextRunnableProcessor() -> Int? {
-    let lifecycles = multiprocessorController.snapshot().lifecycles
     for displacement in 0..<processorCount {
       let index = (roundRobinCursor + displacement) % processorCount
       guard loadedStates[index] != nil, !haltedProcessors[index],
-        lifecycles[localAPICs[index].apicID] == .running
+        processorLifecycles[index] == .running
       else { continue }
       roundRobinCursor = (index + 1) % processorCount
       return index
