@@ -184,9 +184,13 @@ public enum DoryPCPVHBootBuilder {
   }
 
   public static func memoryMap(memoryBytes: UInt64) -> [DoryPCMemoryMapEntry] {
-    let ramTop = min(memoryBytes, DoryPCV1Layout.mmioHoleStart)
-    let highSize =
-      ramTop > DoryPCV1Layout.highRAMStart ? ramTop - DoryPCV1Layout.highRAMStart : 0
+    let lowRAMTop = min(memoryBytes, DoryPCV1Layout.mmioHoleStart)
+    let lowHighSize =
+      lowRAMTop > DoryPCV1Layout.highRAMStart
+      ? lowRAMTop - DoryPCV1Layout.highRAMStart : 0
+    let above4GSize =
+      memoryBytes > DoryPCV1Layout.mmioHoleStart
+      ? memoryBytes - DoryPCV1Layout.mmioHoleStart : 0
     return [
       .init(address: 0, size: DoryPCV1Layout.lowRAMEnd, kind: .ram),
       .init(
@@ -194,7 +198,8 @@ public enum DoryPCPVHBootBuilder {
         size: DoryPCV1Layout.lowReservedEnd - DoryPCV1Layout.pvhStartInfo,
         kind: .reserved
       ),
-      .init(address: DoryPCV1Layout.highRAMStart, size: highSize, kind: .ram),
+      .init(address: DoryPCV1Layout.highRAMStart, size: lowHighSize, kind: .ram),
+      .init(address: DoryPCV1ABI.above4GRAMStart, size: above4GSize, kind: .ram),
     ].filter { $0.size > 0 }
   }
 

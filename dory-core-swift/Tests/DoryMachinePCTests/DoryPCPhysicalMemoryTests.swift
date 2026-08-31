@@ -109,4 +109,57 @@ import Testing
         from: 0x100, to: 0x102, maximumByteCount: 4) == nil
     )
   }
+
+  @Test func remapsCompactRAMAboveTheGuestMMIOHole() throws {
+    let ram = DoryX86ByteArrayMemory(byteCount: 0x1200)
+    let bus = DoryPCPhysicalMemoryBus(
+      ram: ram,
+      mmioHoleStart: 0x1000,
+      above4GRAMStart: 0x2000
+    )
+    bus.seal()
+
+    try bus.write(at: 0x0FFE, bytes: [1, 2])
+    try bus.write(at: 0x2000, bytes: [3, 4, 5, 6])
+
+    #expect(try ram.read(at: 0x0FFE, byteCount: 2) == [1, 2])
+    #expect(try ram.read(at: 0x1000, byteCount: 4) == [3, 4, 5, 6])
+    #expect(try bus.read(at: 0x2000, byteCount: 4) == [3, 4, 5, 6])
+    #expect(bus.bulkCopyRAMSpan(at: 0x2000, maximumByteCount: 0x400) == 0x200)
+    #expect(throws: DoryX86MemoryError.self) {
+      try bus.read(at: 0x1000, byteCount: 1)
+    }
+    #expect(throws: DoryX86MemoryError.self) {
+      try bus.read(at: 0x0FFF, byteCount: 2)
+    }
+    #expect(throws: DoryX86MemoryError.self) {
+      try bus.read(at: 0x2200, byteCount: 1)
+    }
+  }
+
+  @Test func highRAMDMAAndBulkCopiesUseTheCompactBackingRange() throws {
+    let ram = DoryX86ByteArrayMemory(byteCount: 0x1200)
+    let bus = DoryPCPhysicalMemoryBus(
+      ram: ram,
+      mmioHoleStart: 0x1000,
+      above4GRAMStart: 0x2000
+    )
+    try bus.attach(
+      DoryPCLocalAPICMMIO(apic: .init(apicID: 0), baseAddress: 0x800)
+    )
+    bus.seal()
+    try ram.write(at: 0x1000, bytes: [9, 8, 7, 6])
+
+    try bus.validateDMA(at: 0x2000, byteCount: 4, deviceWillWrite: false)
+    #expect(
+      try bus.copyForwardNonoverlapping(
+        from: 0x2000, to: 0x100, maximumByteCount: 4) == 4
+    )
+    #expect(try ram.read(at: 0x100, byteCount: 4) == [9, 8, 7, 6])
+    #expect(bus.bulkCopyRAMSpan(at: 0x7FF, maximumByteCount: 4) == 1)
+    #expect(bus.bulkCopyRAMSpan(at: 0x800, maximumByteCount: 4) == nil)
+    #expect(throws: DoryX86MemoryError.self) {
+      try bus.validateDMA(at: 0x1000, byteCount: 1, deviceWillWrite: true)
+    }
+  }
 }

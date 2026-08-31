@@ -74,11 +74,13 @@ extension DoryX86Memory {
 /// exact bounds behavior.
 public final class DoryX86ByteArrayMemory: DoryX86Memory, @unchecked Sendable {
   public let baseAddress: UInt64
+  public let byteCount: Int
   private let lock = NSLock()
   private var storage: [UInt8]
 
   public init(baseAddress: UInt64 = 0, bytes: [UInt8]) {
     self.baseAddress = baseAddress
+    byteCount = bytes.count
     storage = bytes
   }
 

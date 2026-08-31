@@ -44,6 +44,25 @@ import Testing
     #expect(map[2].size == 511 * 1024 * 1024)
   }
 
+  @Test func remapsRAMHiddenByTheDoryPCV1MMIOHoleAboveFourGiB() {
+    let memoryBytes: UInt64 = 4 << 30
+    let map = DoryPCPVHBootBuilder.memoryMap(memoryBytes: memoryBytes)
+
+    #expect(map[2].address == DoryPCV1ABI.highRAMStart)
+    #expect(
+      map[2].size
+        == DoryPCV1ABI.mmioHoleStart - DoryPCV1ABI.highRAMStart
+    )
+    #expect(
+      map[3]
+        == .init(
+          address: DoryPCV1ABI.above4GRAMStart,
+          size: memoryBytes - DoryPCV1ABI.mmioHoleStart,
+          kind: .ram
+        )
+    )
+  }
+
   @Test func rejectsOverlappingArtifactsAndPreflightsBeforeInstallation() throws {
     let overlapping = DoryPCPVHBootLayout(
       startInfo: 0x1000,

@@ -43,11 +43,31 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
   }
 
   public let ram: DoryX86ByteArrayMemory
+  private let mmioHoleStart: UInt64
+  private let above4GRAMStart: UInt64
   private let lock = NSLock()
   private var mappings: [Mapping] = []
   private var isSealed = false
 
-  public init(ram: DoryX86ByteArrayMemory) { self.ram = ram }
+  public convenience init(ram: DoryX86ByteArrayMemory) {
+    self.init(
+      ram: ram,
+      mmioHoleStart: DoryPCV1ABI.mmioHoleStart,
+      above4GRAMStart: DoryPCV1ABI.above4GRAMStart
+    )
+  }
+
+  init(
+    ram: DoryX86ByteArrayMemory,
+    mmioHoleStart: UInt64,
+    above4GRAMStart: UInt64
+  ) {
+    precondition(ram.baseAddress == 0)
+    precondition(above4GRAMStart > mmioHoleStart)
+    self.ram = ram
+    self.mmioHoleStart = mmioHoleStart
+    self.above4GRAMStart = above4GRAMStart
+  }
 
   public func attach(_ device: any DoryPCMMIODevice) throws {
     try lock.withLock {
@@ -73,6 +93,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
   public func seal() { lock.withLock { isSealed = true } }
 
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    guard maximumCount > 0 else { return [] }
     if let resolved = try resolve(address: address, byteCount: 1) {
       guard resolved.device.allowsInstructionFetch else {
         throw DoryX86MemoryError.unmapped(
@@ -87,7 +108,15 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
         byteCount: min(maximumCount, Int(available))
       )
     }
-    return try ram.instructionBytes(at: address, maximumCount: maximumCount)
+    let resolved = try resolveRAM(
+      address: address,
+      byteCount: 1,
+      access: .instructionFetch
+    )
+    return try ram.instructionBytes(
+      at: resolved.backingAddress,
+      maximumCount: min(maximumCount, resolved.availableByteCount)
+    )
   }
 
   public func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
@@ -95,7 +124,8 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
     if let resolved = try resolve(address: address, byteCount: byteCount) {
       return try resolved.device.read(offset: resolved.offset, byteCount: byteCount)
     }
-    return try ram.read(at: address, byteCount: byteCount)
+    let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
+    return try ram.read(at: resolved.backingAddress, byteCount: byteCount)
   }
 
   public func write(at address: UInt64, bytes: [UInt8]) throws {
@@ -104,7 +134,8 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
       try resolved.device.write(offset: resolved.offset, bytes: bytes)
       return
     }
-    try ram.write(at: address, bytes: bytes)
+    let resolved = try resolveRAM(address: address, byteCount: bytes.count, access: .write)
+    try ram.write(at: resolved.backingAddress, bytes: bytes)
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {
@@ -113,7 +144,8 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
       try resolved.device.validateWrite(offset: resolved.offset, byteCount: byteCount)
       return
     }
-    try ram.validateWrite(at: address, byteCount: byteCount)
+    let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .write)
+    try ram.validateWrite(at: resolved.backingAddress, byteCount: byteCount)
   }
 
   public func synchronize() {
@@ -133,10 +165,67 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
       )
     }
     if deviceWillWrite {
-      try ram.validateWrite(at: address, byteCount: byteCount)
+      let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .write)
+      try ram.validateWrite(at: resolved.backingAddress, byteCount: byteCount)
     } else {
-      _ = try ram.read(at: address, byteCount: byteCount)
+      let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
+      _ = try ram.read(at: resolved.backingAddress, byteCount: byteCount)
     }
+  }
+
+  private func resolveRAM(
+    address: UInt64,
+    byteCount: Int,
+    access: DoryX86MemoryAccessKind
+  ) throws -> (backingAddress: UInt64, availableByteCount: Int) {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
+    let ramBytes = UInt64(ram.byteCount)
+    let lowRAMBytes = min(ramBytes, mmioHoleStart)
+    let backingAddress: UInt64
+    let available: UInt64
+    if address < lowRAMBytes {
+      backingAddress = address
+      available = lowRAMBytes - address
+    } else if ramBytes > mmioHoleStart, address >= above4GRAMStart {
+      let highOffset = address - above4GRAMStart
+      let highRAMBytes = ramBytes - mmioHoleStart
+      guard highOffset < highRAMBytes else {
+        throw DoryX86MemoryError.unmapped(
+          address: address, byteCount: byteCount, access: access)
+      }
+      backingAddress = mmioHoleStart + highOffset
+      available = highRAMBytes - highOffset
+    } else {
+      throw DoryX86MemoryError.unmapped(
+        address: address, byteCount: byteCount, access: access)
+    }
+    guard UInt64(byteCount) <= available else {
+      throw DoryX86MemoryError.unmapped(
+        address: address, byteCount: byteCount, access: access)
+    }
+    let mappingBoundary = lock.withLock {
+      (
+        startsInDevice: mappings.contains {
+          address >= $0.lowerBound && address < $0.upperBound
+        },
+        nextDevice: mappings.first { $0.lowerBound > address }?.lowerBound
+      )
+    }
+    guard !mappingBoundary.startsInDevice else {
+      throw DoryX86MemoryError.unmapped(
+        address: address, byteCount: byteCount, access: access)
+    }
+    let ordinaryRAMBytes = min(
+      available,
+      mappingBoundary.nextDevice.map { $0 - address } ?? available
+    )
+    guard UInt64(byteCount) <= ordinaryRAMBytes else {
+      throw DoryX86MemoryError.unmapped(
+        address: address, byteCount: byteCount, access: access)
+    }
+    return (backingAddress, Int(ordinaryRAMBytes))
   }
 
   private func resolve(
@@ -171,15 +260,14 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, @unchecked Sendable {
 extension DoryPCPhysicalMemoryBus: DoryX86BulkMemory {
   public func bulkCopyRAMSpan(at address: UInt64, maximumByteCount: Int) -> Int? {
     guard maximumByteCount > 0 else { return 0 }
-    let mappedSpan: Int? = lock.withLock {
-      if mappings.contains(where: { address >= $0.lowerBound && address < $0.upperBound }) {
-        return nil
-      }
-      let nextDevice = mappings.first { $0.lowerBound > address }?.lowerBound ?? UInt64.max
-      return Int(min(UInt64(maximumByteCount), nextDevice - address))
-    }
-    guard let mappedSpan else { return nil }
-    return ram.bulkCopyRAMSpan(at: address, maximumByteCount: mappedSpan)
+    guard
+      let resolved = try? resolveRAM(
+        address: address,
+        byteCount: 1,
+        access: .read
+      )
+    else { return nil }
+    return min(maximumByteCount, resolved.availableByteCount)
   }
 
   public func copyForwardNonoverlapping(
@@ -194,9 +282,17 @@ extension DoryPCPhysicalMemoryBus: DoryX86BulkMemory {
       let destinationSpan = bulkCopyRAMSpan(
         at: destinationAddress, maximumByteCount: maximumByteCount)
     else { return nil }
+    guard
+      let source = try? resolveRAM(address: sourceAddress, byteCount: sourceSpan, access: .read),
+      let destination = try? resolveRAM(
+        address: destinationAddress,
+        byteCount: destinationSpan,
+        access: .write
+      )
+    else { return nil }
     return try ram.copyForwardNonoverlapping(
-      from: sourceAddress,
-      to: destinationAddress,
+      from: source.backingAddress,
+      to: destination.backingAddress,
       maximumByteCount: min(maximumByteCount, sourceSpan, destinationSpan)
     )
   }
