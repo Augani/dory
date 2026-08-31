@@ -656,6 +656,10 @@
   # Keep firmware page tables inside the frozen compatible-v1 CPU profile.
   gEfiMdeModulePkgTokenSpaceGuid.PcdUse1GPageTable|FALSE
 
+  # DoryPC does not publish a platform-recovery image. Keep BDS on the standard removable-media
+  # fallback instead of enumerating every variable to manufacture PlatformRecovery#### metadata.
+  gEfiMdeModulePkgTokenSpaceGuid.PcdPlatformRecoverySupport|FALSE
+
   #
   # Network Pcds
   #
