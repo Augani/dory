@@ -139,6 +139,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public let executionTier: DoryPCExecutionTier
 
   private let lock = NSLock()
+  // `run` intentionally owns `lock` for a deterministic execution quantum. Observability must not
+  // contend for that lock: a lifecycle telemetry request is served on another queue while the VM
+  // is executing and would otherwise wait until the full quantum retired (or deadlock its socket
+  // deadline). Publish an immutable snapshot after every quantum under a dedicated short lock.
+  private let executionStatisticsLock = NSLock()
   private var loadedStates: [ProcessorState?]
   private var haltedProcessors: [Bool]
   private var processorLifecycles: [DoryPCProcessorLifecycle]
@@ -152,6 +157,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var baselineJITBlockCount: UInt64 = 0
   private var optimizingJITInstructionCount: UInt64 = 0
   private var optimizingJITBlockCount: UInt64 = 0
+  private var publishedExecutionStatistics = DoryPCExecutionStatistics(
+    interpreterInstructions: 0,
+    baselineJITInstructions: 0,
+    baselineJITBlocks: 0,
+    optimizingJITInstructions: 0,
+    optimizingJITBlocks: 0
+  )
   private var pitClockRemainder: UInt64 = 0
   private var rtcClockRemainder: UInt64 = 0
 
@@ -417,15 +429,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public var state: DoryX86ArchitecturalState? { state(forProcessor: 0) }
 
   public var executionStatistics: DoryPCExecutionStatistics {
-    lock.withLock {
-      .init(
-        interpreterInstructions: interpreterInstructionCount,
-        baselineJITInstructions: baselineJITInstructionCount,
-        baselineJITBlocks: baselineJITBlockCount,
-        optimizingJITInstructions: optimizingJITInstructionCount,
-        optimizingJITBlocks: optimizingJITBlockCount
-      )
-    }
+    executionStatisticsLock.withLock { publishedExecutionStatistics }
   }
 
   public func state(forProcessor index: Int) -> DoryX86ArchitecturalState? {
@@ -489,6 +493,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   ) throws -> DoryPCMachineStop {
     guard maximumInstructions > 0 else { return .instructionBudget(0) }
     return try lock.withLock {
+      defer { publishExecutionStatistics() }
       guard loadedStates[0] != nil else { throw DoryPCMachineError.notLoaded }
       var completed: UInt64 = 0
       while completed < maximumInstructions {
@@ -586,6 +591,17 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       }
       return .instructionBudget(maximumInstructions)
     }
+  }
+
+  private func publishExecutionStatistics() {
+    let snapshot = DoryPCExecutionStatistics(
+      interpreterInstructions: interpreterInstructionCount,
+      baselineJITInstructions: baselineJITInstructionCount,
+      baselineJITBlocks: baselineJITBlockCount,
+      optimizingJITInstructions: optimizingJITInstructionCount,
+      optimizingJITBlocks: optimizingJITBlockCount
+    )
+    executionStatisticsLock.withLock { publishedExecutionStatistics = snapshot }
   }
 
   private enum ProcessorResult {
