@@ -240,6 +240,32 @@ private func sha256(of bytes: [UInt8]) -> String {
     .joined()
 }
 
+private func jitDiagnostics(_ diagnostics: DoryPCJITCacheStatistics?) -> Any {
+  guard let diagnostics else { return NSNull() }
+  return [
+    "recentLookupHits": diagnostics.recentLookupHits,
+    "dictionaryLookupHits": diagnostics.dictionaryLookupHits,
+    "lookupMisses": diagnostics.lookupMisses,
+    "memoryGenerationHits": diagnostics.memoryGenerationHits,
+    "byteValidationHits": diagnostics.byteValidationHits,
+    "sharedCodeHits": diagnostics.sharedCodeHits,
+    "compiledBlocks": diagnostics.compiledBlocks,
+    "declinedCompilations": diagnostics.declinedCompilations,
+    "negativeCacheHits": diagnostics.negativeCacheHits,
+    "negativeCacheMisses": diagnostics.negativeCacheMisses,
+    "negativeGenerationMismatches": diagnostics.negativeGenerationMismatches,
+    "negativeEntryCount": diagnostics.negativeEntryCount,
+    "codeCacheWraps": diagnostics.codeCacheWraps,
+    "nativeTraceAttempts": diagnostics.nativeTraceAttempts,
+    "nativeTraceReplays": diagnostics.nativeTraceReplays,
+    "codeGenerationChecks": diagnostics.codeGenerationChecks,
+    "codeGenerationMismatches": diagnostics.codeGenerationMismatches,
+    "chainedExecutionCalls": diagnostics.chainedExecutionCalls,
+    "chainedRequestedInstructions": diagnostics.chainedRequestedInstructions,
+    "chainedRetiredInstructions": diagnostics.chainedRetiredInstructions,
+  ]
+}
+
 private func completedInstructions(for stop: DoryPCMachineStop) -> UInt64 {
   switch stop {
   case .halted(let instructionCount), .exception(_, let instructionCount),
@@ -716,8 +742,10 @@ private func run() throws {
     "interpreterInstructions": executionStatistics.interpreterInstructions,
     "baselineJITInstructions": executionStatistics.baselineJITInstructions,
     "baselineJITBlocks": executionStatistics.baselineJITBlocks,
+    "baselineJITDiagnostics": jitDiagnostics(composed.machine.baselineJITDiagnostics),
     "optimizingJITInstructions": executionStatistics.optimizingJITInstructions,
     "optimizingJITBlocks": executionStatistics.optimizingJITBlocks,
+    "optimizingJITDiagnostics": jitDiagnostics(composed.machine.optimizingJITDiagnostics),
     "persistentSystemDisk": arguments.systemDisk?.path ?? "in-memory",
     "installerMedia": arguments.installerMedia?.path ?? "none",
     "installerMediaByteCount": installerIdentity.map { $0.byteCount as Any } ?? NSNull(),
