@@ -163,6 +163,15 @@ def verify_platform_contract() -> None:
         raise BuildFailure("DoryPC console drivers must be dispatched before BDS")
     if console_dispatch_positions != sorted(console_dispatch_positions):
         raise BuildFailure("DoryPC console drivers must preserve their dependency order")
+    graphics_apriori_order = (
+        "MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf",
+        "MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf",
+    )
+    graphics_apriori_positions = [apriori.find(driver) for driver in graphics_apriori_order]
+    if any(position < 0 for position in graphics_apriori_positions):
+        raise BuildFailure("DoryPC graphics console dependencies must be dispatched before BDS")
+    if graphics_apriori_positions != sorted(graphics_apriori_positions):
+        raise BuildFailure("DoryPC graphics console dependencies must preserve their order")
     virtio_dispatch_order = (
         "MdeModulePkg/Bus/Pci/PciBusDxe/PciBusDxe.inf",
         "OvmfPkg/Virtio10Dxe/Virtio10.inf",
@@ -173,6 +182,18 @@ def verify_platform_contract() -> None:
         raise BuildFailure("DoryPC display drivers must be dispatched before BDS")
     if virtio_dispatch_positions != sorted(virtio_dispatch_positions):
         raise BuildFailure("DoryPC display drivers must preserve their dependency order")
+    graphics_console_dispatch_order = (
+        "MdeModulePkg/Universal/HiiDatabaseDxe/HiiDatabaseDxe.inf",
+        "MdeModulePkg/Universal/Console/GraphicsConsoleDxe/GraphicsConsoleDxe.inf",
+        "MdeModulePkg/Universal/BdsDxe/BdsDxe.inf",
+    )
+    graphics_console_dispatch_positions = [
+        flash_contents.find(driver) for driver in graphics_console_dispatch_order
+    ]
+    if any(position < 0 for position in graphics_console_dispatch_positions):
+        raise BuildFailure("DoryPC graphics console dependencies must be present")
+    if graphics_console_dispatch_positions != sorted(graphics_console_dispatch_positions):
+        raise BuildFailure("DoryPC graphics console dependencies must be dispatched before BDS")
     if "A31280AD-481E-41B6-95E8-127F4C984779" not in flash_contents:
         raise BuildFailure("DoryPC compact firmware volume must use Tiano compression")
     if "EE4E5898-3914-4259-9D6E-DC7BD79403CF" in flash_contents:
