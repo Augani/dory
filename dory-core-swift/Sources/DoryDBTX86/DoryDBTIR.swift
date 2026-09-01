@@ -86,6 +86,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
     source: DoryIROperand
   )
   case setCondition(DoryX86Condition, destination: DoryIROperand)
+  case bitScan(reverse: Bool, destination: DoryIROperand, source: DoryIROperand)
   case signedMultiply(destination: DoryIROperand, lhs: DoryIROperand, rhs: DoryIROperand)
   case extendMove(destination: DoryIROperand, source: DoryIROperand, signed: Bool)
   case effectiveAddress(destination: DoryIROperand, address: DoryIRMemoryAddress)
@@ -321,6 +322,17 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .bitScan(let reverse, let destination, let source):
+      return (
+        [
+          .bitScan(
+            reverse: reverse,
+            destination: operand(destination),
+            source: operand(source, instructionRelativeBase: instruction.nextInstructionAddress)
+          )
+        ],
+        nil
+      )
     case .signedMultiply(let destination, let lhs, let rhs):
       return (
         [
@@ -482,6 +494,12 @@ public struct DoryX86IRTranslator: Sendable {
     case .setCondition(_, let destination):
       guard case .register(let target) = destination else { return false }
       return isJITLowByteRegister(target)
+    case .bitScan(let reverse, let destination, let source):
+      guard reverse,
+        case .register(let target) = destination, target.width == .i32,
+        case .register(let origin) = source, origin.width == .i32
+      else { return false }
+      return isJITGeneralRegister(target) && isJITGeneralRegister(origin)
     case .signedMultiply(let destination, let lhs, let rhs):
       guard case .register(let target) = destination,
         target.width == .i32 || target.width == .i64,
@@ -557,6 +575,9 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(source) ? .read : .none
     case .setCondition(_, let destination):
       return isMemory(destination) ? .write : .none
+    case .bitScan(_, let destination, let source):
+      if isMemory(destination) { return .write }
+      return isMemory(source) ? .read : .none
     case .signedMultiply(let destination, let lhs, let rhs):
       if isMemory(destination) { return .write }
       return isMemory(lhs) || isMemory(rhs) ? .read : .none

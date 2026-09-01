@@ -1294,6 +1294,168 @@ import Testing
     #expect(DoryARM64BaselineEmitter().compile(crafted).tier == .interpreterFallback)
   }
 
+  @Test func reverseBitScan32MatchesInterpreterAcrossZeroWidthAndAliasCases() throws {
+    #if arch(arm64)
+      let preservedFlags: DoryX86RFLAGS = [
+        .reservedOne, .carry, .parity, .auxiliaryCarry, .sign, .direction, .interruptEnable,
+        .overflow,
+      ]
+      let initialFlagCases = [preservedFlags, preservedFlags.union(.zero)]
+      let values: [UInt64] = [0, 1, 2, 0x00F0_0000, 0x8000_0000, 0xFFFF_FFFF]
+
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          optimization: optimization
+        )
+        for flags in initialFlagCases {
+          for value in values {
+            let bytes: [UInt8] = [0x0F, 0xBD, 0xC8]  // bsr ecx,eax
+            let registers = DoryX86GeneralRegisters(
+              rax: value,
+              rcx: 0xAABB_CCDD_EEFF_0011
+            )
+            var interpreted = try DoryX86ArchitecturalState(
+              registers: registers,
+              rip: 0,
+              rflags: flags
+            )
+            _ = DoryX86Interpreter().step(
+              state: &interpreted,
+              memory: DoryX86ByteArrayMemory(bytes: bytes),
+              mode: .long64
+            )
+
+            var translated = try DoryX86ArchitecturalState(
+              registers: registers,
+              rip: 0,
+              rflags: flags
+            )
+            let execution = try #require(
+              executor.execute(
+                bytes: bytes,
+                at: 0,
+                mode: .long64,
+                addressSpaceID: 0,
+                maximumInstructions: 1,
+                state: &translated
+              )
+            )
+
+            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(translated == interpreted)
+            #expect(translated.rflags.subtracting(.zero) == preservedFlags)
+            if value == 0 {
+              #expect(translated.registers.rcx == registers.rcx)
+              #expect(translated.rflags.contains(.zero))
+            } else {
+              #expect(translated.registers.rcx <= 31)
+              #expect(!translated.rflags.contains(.zero))
+            }
+          }
+
+          for value in [UInt64(0), 1, 0x8000_0000] {
+            let bytes: [UInt8] = [0x0F, 0xBD, 0xC0]  // bsr eax,eax
+            let registers = DoryX86GeneralRegisters(rax: 0xAABB_CCDD_0000_0000 | value)
+            var interpreted = try DoryX86ArchitecturalState(
+              registers: registers,
+              rip: 0,
+              rflags: flags
+            )
+            _ = DoryX86Interpreter().step(
+              state: &interpreted,
+              memory: DoryX86ByteArrayMemory(bytes: bytes),
+              mode: .long64
+            )
+
+            var translated = try DoryX86ArchitecturalState(
+              registers: registers,
+              rip: 0,
+              rflags: flags
+            )
+            let execution = try #require(
+              executor.execute(
+                bytes: bytes,
+                at: 0,
+                mode: .long64,
+                addressSpaceID: 0,
+                maximumInstructions: 1,
+                state: &translated
+              )
+            )
+            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(translated == interpreted)
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func nativeTranslationSpansMeasuredKernelReverseBitScanSlice() throws {
+    let bytes: [UInt8] = [
+      0x8B, 0x7E, 0x04,  // mov edi,[rsi+4]
+      0x41, 0x0F, 0xB7, 0x04, 0x79,  // movzx eax,word ptr [r9+rdi*2]
+      0x0F, 0xBD, 0xC8,  // bsr ecx,eax
+      0x44, 0x8D, 0x58, 0x01,  // lea r11d,[rax+1]
+      0x48, 0x83, 0xC6, 0x08,  // add rsi,8
+      0x83, 0xF1, 0x1F,  // xor ecx,31
+      0x66, 0x45, 0x89, 0x1C, 0x79,  // mov word ptr [r9+rdi*2],r11w
+    ]
+    let block = try DoryX86IRTranslator().translate(
+      bytes,
+      at: 0x12E4_23200,
+      mode: .long64
+    )
+
+    #expect(block.guestInstructionCount == 7)
+    #expect(block.guestByteCount == bytes.count)
+    #expect(block.terminator == .next(0x12E4_2321B))
+    #expect(
+      block.statements.contains {
+        if case .bitScan(reverse: true, _, _) = $0 { return true }
+        return false
+      })
+    for tier in [DoryARM64CompilationTier.baseline, .optimizing] {
+      let candidate =
+        tier == .optimizing
+        ? DoryIROptimizer().optimize(block).block
+        : block
+      let compiled = DoryARM64BaselineEmitter().compile(candidate, tier: tier)
+      #expect(compiled.tier == tier)
+      #expect(compiled.requiresRestartableMemoryReads)
+    }
+  }
+
+  @Test func reverseBitScanCoverageExcludesOtherWidthsDirectionsAndMemory() throws {
+    let excluded: [[UInt8]] = [
+      [0x0F, 0xBC, 0xC8],  // bsf ecx,eax
+      [0x66, 0x0F, 0xBD, 0xC8],  // bsr cx,ax
+      [0x48, 0x0F, 0xBD, 0xC8],  // bsr rcx,rax
+      [0x0F, 0xBD, 0x08],  // bsr ecx,[rax]
+    ]
+    for bytes in excluded {
+      let block = try DoryX86IRTranslator().translate(bytes, at: 0, mode: .long64)
+      #expect(DoryARM64BaselineEmitter().compile(block).tier == .interpreterFallback)
+    }
+
+    let valid = DoryIRRegister(bank: "x86.gpr", index: 0, width: .i32)
+    let invalid = DoryIRRegister(bank: "not.x86.gpr", index: 0, width: .i32)
+    let crafted = DoryIRBasicBlock(
+      guestStart: 0,
+      guestByteCount: 1,
+      guestInstructionCount: 1,
+      statements: [
+        .bitScan(
+          reverse: true,
+          destination: .register(invalid),
+          source: .register(valid)
+        )
+      ],
+      terminator: .next(1)
+    )
+    #expect(DoryARM64BaselineEmitter().compile(crafted).tier == .interpreterFallback)
+  }
+
   @Test func clShiftsMatchInterpreterResultsAndFlags() throws {
     #if arch(arm64)
       let instructions: [([UInt8], DoryX86GeneralRegister)] = [

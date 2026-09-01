@@ -87,6 +87,10 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)
 
+      case .bitScan(_, let destination, _):
+        statements.append(statement)
+        invalidate(destination, knownConstants: &knownConstants)
+
       case .signedMultiply(let destination, _, _):
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)
