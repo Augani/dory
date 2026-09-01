@@ -32,6 +32,11 @@ final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Se
     private let receiveSource: any DispatchSourceRead
     private let portForwardReconciler: ResolvedPortForwardReconciler?
     private let receiveCompletion = DispatchSemaphore(value: 0)
+    private let stopCompletion: DispatchGroup = {
+        let completion = DispatchGroup()
+        completion.enter()
+        return completion
+    }()
     private let maximumFrameBytes: Int
     private var receiveSink: (@Sendable ([UInt8]) -> Void)?
     private var stopped = false
@@ -174,13 +179,20 @@ final class DoryPCGVProxyNetworkBackend: DoryVirtioNetworkBackend, @unchecked Se
     }
 
     func stop() {
-        let shouldStop = lock.withLock { () -> Bool in
+        let ownsStop = lock.withLock { () -> Bool in
             guard !stopped else { return false }
             stopped = true
             receiveSink = nil
             return true
         }
-        guard shouldStop else { return }
+        guard ownsStop else {
+            // A receive failure, host signal, and the AppKit cleanup path may converge here. The
+            // first caller owns teardown; every other caller must wait for it rather than letting
+            // the runner exit while that queue still holds an unreaped gvproxy child.
+            _ = stopCompletion.wait(timeout: .now() + 5)
+            return
+        }
+        defer { stopCompletion.leave() }
         receiveSource.cancel()
         _ = receiveCompletion.wait(timeout: .now() + 2)
         portForwardReconciler?.stop()
