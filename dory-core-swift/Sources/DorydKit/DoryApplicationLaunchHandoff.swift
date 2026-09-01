@@ -239,6 +239,33 @@ final class DoryApplicationLaunchHandoffServer: @unchecked Sendable {
         mappings: [InheritedDescriptorMapping],
         authenticateLiveProcess: () throws -> Void
     ) throws -> audit_token_t {
+        try transfer(
+            expectedPID: expectedPID,
+            mappings: mappings,
+            authenticateLiveProcess: { _ in try authenticateLiveProcess() }
+        ).auditToken
+    }
+
+    /// LaunchServices is allowed to report an application object with no PID. In that case the
+    /// authenticated Unix-domain peer is the authoritative live process: LOCAL_PEERPID identifies
+    /// the exact socket endpoint, the invitation token binds it to this launch, and the dynamic
+    /// code check runs before any descriptor authority is released.
+    func transfer(
+        mappings: [InheritedDescriptorMapping],
+        authenticateLiveProcess: (pid_t) throws -> Void
+    ) throws -> DoryApplicationLaunchPeerIdentity {
+        try transfer(
+            expectedPID: nil,
+            mappings: mappings,
+            authenticateLiveProcess: authenticateLiveProcess
+        )
+    }
+
+    private func transfer(
+        expectedPID: pid_t?,
+        mappings: [InheritedDescriptorMapping],
+        authenticateLiveProcess: (pid_t) throws -> Void
+    ) throws -> DoryApplicationLaunchPeerIdentity {
         try DoryApplicationLaunchHandoffProtocol.validateTargets(
             mappings.map(\.childDescriptor)
         )
@@ -258,7 +285,7 @@ final class DoryApplicationLaunchHandoffServer: @unchecked Sendable {
         let peer = try DoryApplicationLaunchHandoffProtocol.peerIdentity(
             descriptor: connection
         )
-        guard peer.pid == expectedPID else {
+        if let expectedPID, peer.pid != expectedPID {
             throw DoryApplicationLaunchHandoffError.peerIdentityMismatch(
                 expectedPID: expectedPID,
                 actualPID: peer.pid
@@ -285,7 +312,7 @@ final class DoryApplicationLaunchHandoffServer: @unchecked Sendable {
 
         // This callback performs the dynamic Security.framework check for this exact PID. The
         // client is blocked waiting for the manifest and owns no admitted descriptors yet.
-        try authenticateLiveProcess()
+        try authenticateLiveProcess(peer.pid)
         let manifest = DoryApplicationLaunchDescriptorManifest(
             targetDescriptors: mappings.map(\.childDescriptor)
         )
@@ -310,7 +337,10 @@ final class DoryApplicationLaunchHandoffServer: @unchecked Sendable {
         guard acknowledgement.first == DoryApplicationLaunchHandoffProtocol.acknowledgement else {
             throw DoryApplicationLaunchHandoffError.closed("acknowledgement")
         }
-        return peer.auditToken
+        return DoryApplicationLaunchPeerIdentity(
+            processIdentifier: peer.pid,
+            auditToken: peer.auditToken
+        )
     }
 
     func cleanup() {
@@ -336,6 +366,11 @@ final class DoryApplicationLaunchHandoffServer: @unchecked Sendable {
         }
         return bytes.map { String(format: "%02x", $0) }.joined()
     }
+}
+
+struct DoryApplicationLaunchPeerIdentity {
+    let processIdentifier: pid_t
+    let auditToken: audit_token_t
 }
 
 private struct DoryApplicationLaunchDescriptorManifest: Codable, Equatable {

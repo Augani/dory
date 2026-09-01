@@ -8,6 +8,7 @@ enum DoryApplicationProcessLaunchError: Error, CustomStringConvertible {
     case launchFailed(String)
     case launchTimedOut
     case invalidProcessIdentifier
+    case processIdentityMismatch(expected: pid_t, actual: pid_t)
     case monitorFailed(Int32)
 
     var description: String {
@@ -20,6 +21,8 @@ enum DoryApplicationProcessLaunchError: Error, CustomStringConvertible {
             return "LaunchServices timed out while starting DoryHVRunner"
         case .invalidProcessIdentifier:
             return "LaunchServices returned an invalid DoryHVRunner process identifier"
+        case let .processIdentityMismatch(expected, actual):
+            return "LaunchServices reported DoryHVRunner PID \(actual), expected authenticated peer PID \(expected)"
         case .monitorFailed(let code):
             return "could not monitor DoryHVRunner: \(String(cString: strerror(code)))"
         }
@@ -155,7 +158,30 @@ final class DoryApplicationTerminalRetirement: @unchecked Sendable {
 /// signed DoryHVRunner or DoryVMM bundle as the responsible Camera/Microphone identity. The helper
 /// still receives no runtime object authority until the authenticated descriptor gate completes.
 final class DoryWorkspaceApplicationLauncher: @unchecked Sendable {
-    private final class Completion: @unchecked Sendable {
+    final class Request: @unchecked Sendable {
+        fileprivate let completion = Completion()
+        fileprivate let completed = DispatchSemaphore(value: 0)
+
+        func finish(timeout: TimeInterval = 30) throws -> DoryWorkspaceApplicationLaunch {
+            let deadline = Date().addingTimeInterval(max(1, timeout))
+            if Thread.isMainThread {
+                while completion.takeResult() == nil, Date() < deadline {
+                    _ = RunLoop.current.run(
+                        mode: .default,
+                        before: Date().addingTimeInterval(0.01)
+                    )
+                }
+            } else {
+                _ = completed.wait(timeout: .now() + max(1, timeout))
+            }
+            if completion.markTimedOutIfPending() {
+                throw DoryApplicationProcessLaunchError.launchTimedOut
+            }
+            return try completion.takeResult()!.get()
+        }
+    }
+
+    fileprivate final class Completion: @unchecked Sendable {
         private let lock = NSLock()
         private var result: Result<DoryWorkspaceApplicationLaunch, Error>?
         private var timedOut = false
@@ -209,8 +235,22 @@ final class DoryWorkspaceApplicationLauncher: @unchecked Sendable {
         environment: [String: String],
         timeout: TimeInterval = 30
     ) throws -> DoryWorkspaceApplicationLaunch {
-        let completion = Completion()
-        let completed = DispatchSemaphore(value: 0)
+        try beginLaunch(
+            bundle: bundle,
+            arguments: arguments,
+            environment: environment
+        ).finish(timeout: timeout)
+    }
+
+    /// Begins the LaunchServices request without waiting for its completion callback. The caller
+    /// can therefore complete Dory's authenticated descriptor handoff while the new app is still
+    /// establishing its AppKit identity; this avoids a launch-completion/handoff dependency cycle.
+    func beginLaunch(
+        bundle: DoryRunnerApplicationBundle,
+        arguments: [String],
+        environment: [String: String]
+    ) -> Request {
+        let request = Request()
         let invoke: @MainActor @Sendable () -> Void = {
             let configuration = NSWorkspace.OpenConfiguration()
             configuration.arguments = arguments
@@ -224,33 +264,18 @@ final class DoryWorkspaceApplicationLauncher: @unchecked Sendable {
                 at: bundle.applicationURL,
                 configuration: configuration
             ) { application, error in
-                if completion.finish(application: application, error: error) {
-                    completed.signal()
+                if request.completion.finish(application: application, error: error) {
+                    request.completed.signal()
                 }
             }
         }
 
-        let deadline = Date().addingTimeInterval(max(1, timeout))
         if Thread.isMainThread {
             MainActor.assumeIsolated { invoke() }
-            while completion.takeResult() == nil, Date() < deadline {
-                _ = RunLoop.current.run(
-                    mode: .default,
-                    before: Date().addingTimeInterval(0.01)
-                )
-            }
         } else {
             DispatchQueue.main.async { invoke() }
-            _ = completed.wait(timeout: .now() + max(1, timeout))
         }
-        if completion.markTimedOutIfPending() {
-            throw DoryApplicationProcessLaunchError.launchTimedOut
-        }
-        let launch = try completion.takeResult()!.get()
-        guard launch.processIdentifier > 0 else {
-            throw DoryApplicationProcessLaunchError.invalidProcessIdentifier
-        }
-        return launch
+        return request
     }
 }
 

@@ -158,6 +158,44 @@ final class DoryApplicationLaunchHandoffTests: XCTestCase {
         XCTAssertThrowsError(try clientResult.get().get())
     }
 
+    func testAuthenticatedPeerCanSupplyLaunchIdentityWhenLaunchServicesHasNoPID() throws {
+        let server = try DoryApplicationLaunchHandoffServer()
+        defer { server.cleanup() }
+        let clientResult = LockedLaunchHandoffResult()
+        let clientFinished = DispatchGroup()
+        clientFinished.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { clientFinished.leave() }
+            clientResult.set(Result {
+                try DoryApplicationLaunchHandoffClient.receiveIfRequested(
+                    arguments: [
+                        "desktop",
+                        DoryApplicationLaunchHandoffClient.socketArgument, server.path,
+                        DoryApplicationLaunchHandoffClient.tokenArgument, server.token,
+                    ],
+                    authenticateDaemon: { XCTAssertEqual($0, getpid()) }
+                )
+            })
+        }
+
+        var authenticatedPID: pid_t?
+        let peer = try server.transfer(mappings: []) { peerPID in
+            authenticatedPID = peerPID
+        }
+
+        XCTAssertEqual(clientFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(try clientResult.get().get(), ["desktop"])
+        XCTAssertEqual(peer.processIdentifier, getpid())
+        XCTAssertEqual(authenticatedPID, getpid())
+        XCTAssertEqual(
+            DoryApplicationLaunchHandoffProtocol.signal(
+                SIGCONT,
+                auditToken: peer.auditToken
+            ),
+            .delivered
+        )
+    }
+
     func testRunnerRejectsUnauthenticatedDaemonBeforeSendingLaunchToken() throws {
         let server = try DoryApplicationLaunchHandoffServer()
         defer { server.cleanup() }

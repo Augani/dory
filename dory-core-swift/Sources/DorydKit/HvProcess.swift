@@ -1,3 +1,4 @@
+import AppKit
 import Darwin
 import DoryOperations
 import Foundation
@@ -822,29 +823,6 @@ public final class HvProcess: @unchecked Sendable {
             let launchEnvironment = inheritParentEnvironment
                 ? ProcessInfo.processInfo.environment.merging(environment) { _, explicit in explicit }
                 : environment
-            let applicationLaunch: DoryWorkspaceApplicationLaunch
-            do {
-                applicationLaunch = try applicationLauncher.launch(
-                    bundle: bundle,
-                    arguments: launchArguments,
-                    environment: launchEnvironment
-                )
-            } catch {
-                if let log { Darwin.close(log) }
-                throw ProcessError.applicationRunnerLaunchFailed("\(error)")
-            }
-            let childPID = applicationLaunch.processIdentifier
-            let monitor: DoryApplicationProcessMonitor
-            do {
-                monitor = try DoryApplicationProcessMonitor(pid: childPID) {
-                    applicationLaunch.isTerminated
-                }
-            } catch {
-                _ = applicationLaunch.forceTerminate()
-                beginTerminalRetirement(application: applicationLaunch)
-                if let log { Darwin.close(log) }
-                throw ProcessError.applicationRunnerLaunchFailed("\(error)")
-            }
             var launchMappings = mappings
             launchMappings.append(InheritedDescriptorMapping(
                 parentDescriptor: standardInput,
@@ -859,15 +837,19 @@ public final class HvProcess: @unchecked Sendable {
                 childDescriptor: STDERR_FILENO
             ))
             var identityFailure: Error?
-            let applicationAuditToken: audit_token_t
+            let launchRequest = applicationLauncher.beginLaunch(
+                bundle: bundle,
+                arguments: launchArguments,
+                environment: launchEnvironment
+            )
+            let peerIdentity: DoryApplicationLaunchPeerIdentity
             do {
-                applicationAuditToken = try handoff.transfer(
-                    toExpectedPID: childPID,
+                peerIdentity = try handoff.transfer(
                     mappings: launchMappings
-                ) {
+                ) { peerPID in
                     do {
                         try launchGatedChildCodeValidator.validateLaunchGatedChild(
-                            pid: childPID,
+                            pid: peerPID,
                             expectedIdentity: expectedIdentity
                         )
                     } catch {
@@ -876,10 +858,11 @@ public final class HvProcess: @unchecked Sendable {
                     }
                 }
             } catch {
-                _ = applicationLaunch.forceTerminate()
-                if monitor.waitForTermination(
+                handoff.cleanup()
+                if let applicationLaunch = try? launchRequest.finish(
                     timeout: Self.applicationLaunchCleanupTimeoutSeconds
-                ) == nil {
+                ) {
+                    _ = applicationLaunch.forceTerminate()
                     beginTerminalRetirement(application: applicationLaunch)
                 }
                 if let log { Darwin.close(log) }
@@ -895,11 +878,65 @@ public final class HvProcess: @unchecked Sendable {
                 lastLaunchError = wrapped.description
                 throw wrapped
             }
+            let childPID = peerIdentity.processIdentifier
+            guard let exactApplication = NSRunningApplication(
+                processIdentifier: childPID
+            ) else {
+                _ = DoryApplicationLaunchHandoffProtocol.signal(
+                    SIGKILL,
+                    auditToken: peerIdentity.auditToken
+                )
+                if let log { Darwin.close(log) }
+                throw ProcessError.applicationRunnerLaunchFailed(
+                    DoryApplicationProcessLaunchError.invalidProcessIdentifier.description
+                )
+            }
+            let applicationLaunch = DoryWorkspaceApplicationLaunch(
+                application: exactApplication
+            )
+            let monitor: DoryApplicationProcessMonitor
+            do {
+                monitor = try DoryApplicationProcessMonitor(pid: childPID) {
+                    applicationLaunch.isTerminated
+                }
+            } catch {
+                _ = DoryApplicationLaunchHandoffProtocol.signal(
+                    SIGKILL,
+                    auditToken: peerIdentity.auditToken
+                )
+                beginTerminalRetirement(application: applicationLaunch)
+                if let log { Darwin.close(log) }
+                throw ProcessError.applicationRunnerLaunchFailed("\(error)")
+            }
+            do {
+                let reportedApplication = try launchRequest.finish()
+                let reportedPID = reportedApplication.processIdentifier
+                guard reportedPID <= 0 || reportedPID == childPID else {
+                    throw DoryApplicationProcessLaunchError.processIdentityMismatch(
+                        expected: childPID,
+                        actual: reportedPID
+                    )
+                }
+            } catch {
+                _ = DoryApplicationLaunchHandoffProtocol.signal(
+                    SIGKILL,
+                    auditToken: peerIdentity.auditToken
+                )
+                if monitor.waitForTermination(
+                    timeout: Self.applicationLaunchCleanupTimeoutSeconds
+                ) == nil {
+                    beginTerminalRetirement(application: applicationLaunch)
+                }
+                if let log { Darwin.close(log) }
+                let wrapped = ProcessError.applicationRunnerLaunchFailed("\(error)")
+                lastLaunchError = wrapped.description
+                throw wrapped
+            }
             child = SupervisedChild(
                 pid: childPID,
                 applicationMonitor: monitor,
                 applicationLaunch: applicationLaunch,
-                applicationAuditToken: applicationAuditToken
+                applicationAuditToken: peerIdentity.auditToken
             )
         }
 
