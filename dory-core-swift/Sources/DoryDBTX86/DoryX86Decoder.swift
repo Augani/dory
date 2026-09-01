@@ -28,6 +28,14 @@ public struct DoryX86Decoder: Sendable {
     at address: UInt64,
     mode: DoryX86ExecutionMode
   ) throws -> DoryX86DecodedInstruction {
+    try decode(input[...], at: address, mode: mode)
+  }
+
+  func decode(
+    _ input: ArraySlice<UInt8>,
+    at address: UInt64,
+    mode: DoryX86ExecutionMode
+  ) throws -> DoryX86DecodedInstruction {
     var cursor = Cursor(input: input, address: address)
     var prefixes = DoryX86InstructionPrefixes()
     while let byte = cursor.peek() {
@@ -2047,18 +2055,20 @@ public struct DoryX86Decoder: Sendable {
 }
 
 private struct Cursor {
-  let input: [UInt8]
+  let input: ArraySlice<UInt8>
   let address: UInt64
   var offset = 0
 
   var consumedBytes: [UInt8] { Array(input.prefix(offset)) }
-  func peek() -> UInt8? { offset < input.count ? input[offset] : nil }
+  func peek() -> UInt8? {
+    offset < input.count ? input[input.startIndex + offset] : nil
+  }
 
   mutating func readByte() throws -> UInt8 {
     guard offset < input.count else { throw DoryX86DecodeError.truncated(address: address) }
     guard offset < 15 else { throw DoryX86DecodeError.instructionTooLong(address: address) }
     defer { offset += 1 }
-    return input[offset]
+    return input[input.startIndex + offset]
   }
 
   mutating func readUnsigned(byteCount: Int) throws -> UInt64 {

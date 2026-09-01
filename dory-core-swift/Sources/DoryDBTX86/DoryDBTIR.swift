@@ -145,7 +145,7 @@ public struct DoryX86IRTranslator: Sendable {
     while offset < bytes.count, instructionCount < instructionBudget {
       let instructionAddress = address &+ UInt64(offset)
       let instruction = try decoder.decode(
-        Array(bytes.dropFirst(offset).prefix(15)),
+        bytes.dropFirst(offset).prefix(15),
         at: instructionAddress,
         mode: mode
       )
