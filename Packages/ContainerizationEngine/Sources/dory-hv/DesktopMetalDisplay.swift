@@ -1638,6 +1638,7 @@ final class DesktopFrameMailbox: @unchecked Sendable {
     private var uploadedFrameByteCount: UInt64 = 0
     private var droppedFrameByteCount: UInt64 = 0
     private var workerScanoutProgressStages = Set<String>()
+    private var cpuFramePresentationObserver: (@Sendable (VirtioGPUScanoutFrame) -> Void)?
     nonisolated(unsafe) weak var view: DesktopDisplayView?
 
     init(
@@ -1654,6 +1655,12 @@ final class DesktopFrameMailbox: @unchecked Sendable {
             maximumDrainBytes: maximumInFlightCPUFrameBytes,
             sharedBudget: sharedCPUPresentationBudget
         )
+    }
+
+    func installCPUFramePresentationObserver(
+        _ observer: @escaping @Sendable (VirtioGPUScanoutFrame) -> Void
+    ) {
+        lock.withLock { cpuFramePresentationObserver = observer }
     }
 
     func submit(_ frame: VirtioGPUScanoutFrame) {
@@ -1836,6 +1843,15 @@ final class DesktopFrameMailbox: @unchecked Sendable {
                 presented: [Bool](repeating: false, count: frames.count),
                 uploadedByteCount: 0
             )
+        }
+        let presentationObserver = lock.withLock { cpuFramePresentationObserver }
+        if let presentationObserver {
+            for index in frames.indices
+            where framePresentation.presented.indices.contains(index)
+                && framePresentation.presented[index]
+            {
+                presentationObserver(frames[index])
+            }
         }
         var presentedInputs: UInt64 = 0
         var droppedInputs: UInt64 = 0

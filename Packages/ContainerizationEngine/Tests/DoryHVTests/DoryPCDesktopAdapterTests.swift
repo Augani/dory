@@ -250,7 +250,7 @@ import Testing
         #expect(replacement.resourceGeneration == first.resourceGeneration + 1)
     }
 
-    @Test func softwareDisplayReadinessWaitsForVisibleFramebufferContent() {
+    @Test func softwareDisplayReadinessWaitsForHostPresentedVisibleFramebufferContent() throws {
         final class DeliveryCounter: @unchecked Sendable {
             private let lock = NSLock()
             private var storage = 0
@@ -277,12 +277,22 @@ import Testing
             )
         }
 
-        sink.present(frame([0, 0, 0, 0, 0, 0, 0, 0]))
-        sink.present(frame([0, 0, 0, 255, 0, 0, 0, 255]))
+        let clear = frame([0, 0, 0, 0, 0, 0, 0, 0])
+        let opaqueBlack = frame([0, 0, 0, 255, 0, 0, 0, 255])
+        let varied = frame([0, 0, 0, 255, 255, 255, 255, 255])
+        let uniformWhite = frame([255, 255, 255, 255, 255, 255, 255, 255])
+        sink.present(clear)
+        sink.present(opaqueBlack)
+        sink.present(varied)
+        sink.present(uniformWhite)
         #expect(deliveries.value == 0)
 
-        sink.present(frame([0, 0, 0, 255, 255, 255, 255, 255]))
-        sink.present(frame([255, 255, 255, 255, 255, 255, 255, 255]))
+        sink.hostDidPresent(try #require(sink.convert(clear)))
+        sink.hostDidPresent(try #require(sink.convert(opaqueBlack)))
+        #expect(deliveries.value == 0)
+
+        sink.hostDidPresent(try #require(sink.convert(varied)))
+        sink.hostDidPresent(try #require(sink.convert(uniformWhite)))
         #expect(deliveries.value == 1)
         #expect(sink.metrics == DoryPCSoftwareDisplayMetrics(
             receivedFrames: 4,

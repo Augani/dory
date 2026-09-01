@@ -64,17 +64,22 @@ final class DoryPCSoftwareDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Send
     func present(_ frame: DoryVirtioGPUFrame) {
         guard let converted = convert(frame) else { return }
         mailbox.submit(converted)
-        let visible = Self.containsVisibleContent(converted.bytes)
-        let shouldDeliver = lock.withLock { () -> Bool in
+        lock.withLock {
             metricStorage.receivedFrames = Self.saturatingAdd(metricStorage.receivedFrames, 1)
             metricStorage.receivedFrameBytes = Self.saturatingAdd(
                 metricStorage.receivedFrameBytes,
                 UInt64(converted.bytes.count)
             )
-            if visible {
-                metricStorage.visibleFrames = Self.saturatingAdd(metricStorage.visibleFrames, 1)
-            }
-            guard !deliveredVisibleFrame, visible else { return false }
+        }
+    }
+
+    /// A submitted frame is not evidence of a working host display. The mailbox calls this only
+    /// after AppKit's display view accepts the CPU frame for Metal upload.
+    func hostDidPresent(_ frame: VirtioGPUScanoutFrame) {
+        guard Self.containsVisibleContent(frame.bytes) else { return }
+        let shouldDeliver = lock.withLock { () -> Bool in
+            metricStorage.visibleFrames = Self.saturatingAdd(metricStorage.visibleFrames, 1)
+            guard !deliveredVisibleFrame else { return false }
             deliveredVisibleFrame = true
             return true
         }

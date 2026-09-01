@@ -408,7 +408,7 @@ enum DoryPCMode {
                         operationID: DoryOperationIdentity.canonical(envelope.operationID),
                         controlSocketPath: configuration.controlSocketPath,
                         graphicsSelection: graphics,
-                        detail: "DoryPC-v1 x86_64 Linux firmware is running through DoryDBT"
+                        detail: "DoryPC-v1 x86_64 Linux firmware has begun executing through DoryDBT"
                     )
                 )
             }
@@ -418,6 +418,11 @@ enum DoryPCMode {
                 DoryPCSoftwareDisplaySink(mailbox: mailbox) { firstFrameRelay.deliver() }
             }
             self.displaySink = displaySink
+            if let mailbox, let displaySink {
+                mailbox.installCPUFramePresentationObserver { [weak displaySink] frame in
+                    displaySink?.hostDidPresent(frame)
+                }
+            }
             let audioBackend = devices.audioInput || devices.audioOutput
                 ? DoryPCMacAudioBackend { message in
                     FileHandle.standardError.write(
@@ -647,13 +652,6 @@ enum DoryPCMode {
             try installSignals()
             window?.makeKeyAndOrderFront(nil)
             if window != nil { application.activate() }
-            // A translated first boot can spend several minutes in immutable UEFI work before a
-            // GPU driver submits its first scanout. The admitted runner, lifecycle socket, and
-            // visible presentation boundary are ready now; tying daemon liveness to guest pixels
-            // killed healthy VMs at the desktop readiness deadline. The startup overlay remains
-            // until the first real frame arrives, while headless machines publish the same runner
-            // readiness without a window.
-            try readyPublisher.markPresentationReady()
             startExecution()
             startGuestServicePreparation()
             application.run()
@@ -780,6 +778,7 @@ enum DoryPCMode {
             let progressLogIntervalNanoseconds: UInt64 = 30_000_000_000
             var nextProgressLogNanoseconds = DispatchTime.now().uptimeNanoseconds
                 &+ progressLogIntervalNanoseconds
+            var publishedExecutionReadiness = false
             do {
                 while true {
                     let composed = machineState.current()
@@ -787,6 +786,14 @@ enum DoryPCMode {
                         maximumInstructions: 250_000,
                         exceptionPolicy: .deliver
                     )
+                    if !publishedExecutionReadiness {
+                        // Runner admission alone is not guest readiness. Publish only after the
+                        // machine has completed an execution slice, proving that reset-state,
+                        // firmware fetch, translation, and lifecycle supervision are live. Pixel
+                        // readiness remains a separate host-presentation boundary.
+                        try readyPublisher.markPresentationReady()
+                        publishedExecutionReadiness = true
+                    }
                     for byte in composed.machine.serial.drainTransmittedBytes() {
                         serialOutput.enqueue(byte)
                     }
@@ -798,6 +805,7 @@ enum DoryPCMode {
                                 + "baseline=\(statistics.baselineJITInstructions) "
                                 + "optimizing=\(statistics.optimizingJITInstructions)"
                         )
+                        Self.log(Self.blockDeviceProgress(composed))
                         nextProgressLogNanoseconds = now &+ progressLogIntervalNanoseconds
                     }
                     switch stop {
@@ -1039,6 +1047,29 @@ enum DoryPCMode {
 
         private nonisolated static func log(_ message: String) {
             FileHandle.standardError.write(Data("dory-hv DoryPC: \(message)\n".utf8))
+        }
+
+        private nonisolated static func blockDeviceProgress(
+            _ composed: DoryPCUEFIMachine
+        ) -> String {
+            let devices = zip(composed.plan.bootDevices, composed.blockDevices).map {
+                planned, attached in
+                let state = attached.transport.deviceState.snapshot()
+                let queue = try? attached.transport.queueSnapshot(at: 0)
+                let registers = attached.transport.registerDiagnostics
+                let requests = attached.blockDevice.diagnostics
+                let ranges = requests.recentReadRanges.suffix(4).map {
+                    "\($0.offset)+\($0.byteCount)"
+                }.joined(separator: ",")
+                return "\(planned.logicalID){kind=\(planned.kind),status=\(state.status.rawValue),"
+                    + "queue-enabled=\(queue?.enabled == true),register-reads=\(registers.readCount),"
+                    + "register-writes=\(registers.writeCount),requests=\(requests.requestCount),"
+                    + "reads=\(requests.readRequestCount),read-bytes=\(requests.readByteCount),"
+                    + "writes=\(requests.writeRequestCount),write-bytes=\(requests.writeByteCount),"
+                    + "flushes=\(requests.flushRequestCount),failures=\(requests.failedRequestCount),"
+                    + "unsupported=\(requests.unsupportedRequestCount),recent-reads=[\(ranges)]}"
+            }
+            return "block progress " + devices.joined(separator: " ")
         }
 
         private func requestGuestShutdown() {
