@@ -929,6 +929,254 @@ import Testing
     #endif
   }
 
+  @Test func kernelHashMultiplyAndRotateMatchInterpreterAcrossTiers() throws {
+    #if arch(arm64)
+      let initialFlags = DoryX86RFLAGS(
+        rawValue: DoryX86RFLAGS.reservedOne.rawValue
+          | DoryX86RFLAGS.carry.rawValue
+          | DoryX86RFLAGS.parity.rawValue
+          | DoryX86RFLAGS.auxiliaryCarry.rawValue
+          | DoryX86RFLAGS.zero.rawValue
+          | DoryX86RFLAGS.sign.rawValue
+          | DoryX86RFLAGS.direction.rawValue
+          | DoryX86RFLAGS.interruptEnable.rawValue
+          | DoryX86RFLAGS.overflow.rawValue
+      )
+      let multiplyCases: [([UInt8], DoryX86GeneralRegisters)] = [
+        ([0x48, 0x0F, 0xAF, 0xD6], .init(rdx: 0, rsi: 0)),
+        ([0x48, 0x0F, 0xAF, 0xD6], .init(rdx: 1, rsi: UInt64.max)),
+        ([0x48, 0x0F, 0xAF, 0xD6], .init(rdx: UInt64.max, rsi: 2)),
+        ([0x48, 0x0F, 0xAF, 0xD6], .init(rdx: 0x8000_0000_0000_0000, rsi: UInt64.max)),
+        ([0x48, 0x0F, 0xAF, 0xD6], .init(rdx: 0x7FFF_FFFF_FFFF_FFFF, rsi: 2)),
+        ([0x48, 0x0F, 0xAF, 0xD6], .init(rdx: 0x8000_0000_0000_0000, rsi: 1)),
+        ([0x48, 0x0F, 0xAF, 0xD6], .init(rdx: UInt64(bitPattern: -3), rsi: 7)),
+        ([0x48, 0x0F, 0xAF, 0xD2], .init(rdx: 0x7FFF_FFFF_FFFF_FFFF)),
+      ]
+      let rotateValues: [UInt64] = [
+        0,
+        1,
+        0x8000_0000_0000_0001,
+        0xF123_4567_89AB_CDEF,
+      ]
+
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          optimization: optimization
+        )
+        for (bytes, registers) in multiplyCases {
+          var interpreted = try DoryX86ArchitecturalState(
+            registers: registers,
+            rip: 0,
+            rflags: initialFlags
+          )
+          _ = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: DoryX86ByteArrayMemory(bytes: bytes),
+            mode: .long64
+          )
+
+          var translated = try DoryX86ArchitecturalState(
+            registers: registers,
+            rip: 0,
+            rflags: initialFlags
+          )
+          let execution = try #require(
+            executor.execute(
+              bytes: bytes,
+              at: 0,
+              mode: .long64,
+              addressSpaceID: 0,
+              maximumInstructions: 1,
+              state: &translated
+            )
+          )
+
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(translated == interpreted)
+        }
+
+        for count in [UInt8(0), 1, 2, 31, 63, 64, 65, 255] {
+          for value in rotateValues {
+            let bytes: [UInt8] = [0x48, 0xC1, 0xC2, count]  // rol rdx,imm8
+            var interpreted = try DoryX86ArchitecturalState(
+              registers: .init(rdx: value),
+              rip: 0,
+              rflags: initialFlags
+            )
+            _ = DoryX86Interpreter().step(
+              state: &interpreted,
+              memory: DoryX86ByteArrayMemory(bytes: bytes),
+              mode: .long64
+            )
+
+            var translated = try DoryX86ArchitecturalState(
+              registers: .init(rdx: value),
+              rip: 0,
+              rflags: initialFlags
+            )
+            let execution = try #require(
+              executor.execute(
+                bytes: bytes,
+                at: 0,
+                mode: .long64,
+                addressSpaceID: 0,
+                maximumInstructions: 1,
+                state: &translated
+              )
+            )
+
+            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(translated == interpreted)
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func kernelHashArithmeticSetsCarryAndOverflowFromClearState() throws {
+    #if arch(arm64)
+      let preservedFlags: DoryX86RFLAGS = [
+        .reservedOne, .parity, .auxiliaryCarry, .zero, .sign, .direction, .interruptEnable,
+      ]
+      let cases: [([UInt8], DoryX86GeneralRegisters)] = [
+        (
+          [0x48, 0x0F, 0xAF, 0xD6],  // imul rdx,rsi
+          .init(rdx: 0x7FFF_FFFF_FFFF_FFFF, rsi: 2)
+        ),
+        (
+          [0x48, 0xC1, 0xC2, 0x01],  // rol rdx,1
+          .init(rdx: 0x8000_0000_0000_0000)
+        ),
+      ]
+
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          optimization: optimization
+        )
+        for (bytes, registers) in cases {
+          var interpreted = try DoryX86ArchitecturalState(
+            registers: registers,
+            rip: 0,
+            rflags: preservedFlags
+          )
+          _ = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: DoryX86ByteArrayMemory(bytes: bytes),
+            mode: .long64
+          )
+
+          var translated = try DoryX86ArchitecturalState(
+            registers: registers,
+            rip: 0,
+            rflags: preservedFlags
+          )
+          let execution = try #require(
+            executor.execute(
+              bytes: bytes,
+              at: 0,
+              mode: .long64,
+              addressSpaceID: 0,
+              maximumInstructions: 1,
+              state: &translated
+            )
+          )
+
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(translated == interpreted)
+          #expect(translated.rflags.contains(.carry))
+          #expect(translated.rflags.contains(.overflow))
+          #expect(translated.rflags.isSuperset(of: preservedFlags))
+        }
+      }
+    #endif
+  }
+
+  @Test func nativeTranslationSpansMeasuredKernelHashLoop() throws {
+    let bytes: [UInt8] = [
+      0x48, 0x8B, 0x10, 0x48, 0x83, 0xC0, 0x20, 0x48, 0x0F, 0xAF, 0xD6,
+      0x4C, 0x01, 0xDA, 0x48, 0xC1, 0xC2, 0x1F, 0x48, 0x0F, 0xAF, 0xD1,
+      0x49, 0x89, 0xD3, 0x48, 0x8B, 0x50, 0xE8, 0x48, 0x0F, 0xAF, 0xD6,
+      0x48, 0x01, 0xFA, 0x48, 0xC1, 0xC2, 0x1F, 0x48, 0x89, 0xD7,
+      0x48, 0x8B, 0x50, 0xF0, 0x48, 0x0F, 0xAF, 0xF9, 0x48, 0x0F, 0xAF, 0xD6,
+      0x4C, 0x01, 0xEA, 0x48, 0xC1, 0xC2, 0x1F, 0x48, 0x0F, 0xAF, 0xD1,
+      0x49, 0x89, 0xD5, 0x48, 0x8B, 0x50, 0xF8, 0x48, 0x0F, 0xAF, 0xD6,
+      0x4C, 0x01, 0xE2, 0x48, 0xC1, 0xC2, 0x1F, 0x48, 0x0F, 0xAF, 0xD1,
+      0x49, 0x89, 0xD4, 0x48, 0x39, 0xC3, 0x73, 0xA0,
+    ]
+    let block = try DoryX86IRTranslator().translate(
+      bytes,
+      at: 0x12E4_35EB0,
+      mode: .long64
+    )
+
+    #expect(bytes.count == 96)
+    #expect(block.guestInstructionCount == 27)
+    #expect(block.guestByteCount == bytes.count)
+    #expect(
+      block.terminator == .conditional(
+        condition: "x86.condition.3",
+        taken: 0x12E4_35EB0,
+        notTaken: 0x12E4_35F10
+      ))
+    #expect(block.statements.count == 26)
+    #expect(
+      block.statements.filter {
+        if case .signedMultiply = $0 { return true }
+        return false
+      }.count == 8)
+    #expect(
+      block.statements.filter {
+        if case .shift(.rotateLeft, _, .immediate(31)) = $0 { return true }
+        return false
+      }.count == 4)
+    for tier in [DoryARM64CompilationTier.baseline, .optimizing] {
+      let candidate =
+        tier == .optimizing
+        ? DoryIROptimizer().optimize(block).block
+        : block
+      let compiled = DoryARM64BaselineEmitter().compile(candidate, tier: tier)
+      #expect(candidate.guestInstructionCount == 27)
+      #expect(candidate.statements.count == 26)
+      #expect(compiled.tier == tier)
+      #expect(compiled.requiresRestartableMemoryReads)
+    }
+  }
+
+  @Test func kernelHashArithmeticCoverageRemainsNarrowAndFailClosed() throws {
+    let excluded: [[UInt8]] = [
+      [0x48, 0x0F, 0xAF, 0x10],  // imul rdx,[rax]
+      [0x48, 0x6B, 0xD6, 0x03],  // imul rdx,rsi,3
+      [0xC1, 0xC0, 0x1F],  // rol eax,31
+      [0x48, 0xC1, 0x00, 0x1F],  // rol qword ptr [rax],31
+      [0x48, 0xD3, 0xC2],  // rol rdx,cl
+      [0x48, 0xC1, 0xCA, 0x1F],  // ror rdx,31
+    ]
+
+    for bytes in excluded {
+      let block = try DoryX86IRTranslator().translate(bytes, at: 0, mode: .long64)
+      #expect(DoryARM64BaselineEmitter().compile(block).tier == .interpreterFallback)
+    }
+
+    let invalidDestination = DoryIRRegister(bank: "not.x86.gpr", index: 0, width: .i64)
+    let validSource = DoryIRRegister(bank: "x86.gpr", index: 0, width: .i64)
+    let crafted = DoryIRBasicBlock(
+      guestStart: 0,
+      guestByteCount: 1,
+      guestInstructionCount: 1,
+      statements: [
+        .signedMultiply(
+          destination: .register(invalidDestination),
+          lhs: .register(validSource),
+          rhs: .register(validSource)
+        )
+      ],
+      terminator: .next(1)
+    )
+    #expect(DoryARM64BaselineEmitter().compile(crafted).tier == .interpreterFallback)
+  }
+
   @Test func clShiftsMatchInterpreterResultsAndFlags() throws {
     #if arch(arm64)
       let instructions: [([UInt8], DoryX86GeneralRegister)] = [

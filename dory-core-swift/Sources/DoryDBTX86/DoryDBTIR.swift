@@ -62,7 +62,7 @@ public enum DoryIRUnaryOperation: String, Codable, Sendable, Hashable {
 }
 
 public enum DoryIRShiftOperation: String, Codable, Sendable, Hashable {
-  case left, logicalRight, arithmeticRight
+  case left, logicalRight, arithmeticRight, rotateLeft
 }
 
 public enum DoryIRShiftCount: Codable, Sendable, Hashable {
@@ -278,6 +278,7 @@ public struct DoryX86IRTranslator: Sendable {
       case .shiftLeft: loweredOperation = .left
       case .shiftRight: loweredOperation = .logicalRight
       case .arithmeticShiftRight: loweredOperation = .arithmeticRight
+      case .rotateLeft: loweredOperation = .rotateLeft
       default: return fallback(instruction, reason: .interpreter)
       }
       let loweredCount: DoryIRShiftCount =
@@ -454,8 +455,11 @@ public struct DoryX86IRTranslator: Sendable {
       case .immediate:
         return false
       }
-    case .shift(_, let destination, _):
+    case .shift(let operation, let destination, let count):
       guard case .register(let register) = destination else { return false }
+      if operation == .rotateLeft {
+        guard register.width == .i64, case .immediate = count else { return false }
+      }
       return isJITGeneralRegister(register)
     case .conditionalMove(_, let destination, let source):
       guard case .register(let target) = destination,
@@ -465,9 +469,10 @@ public struct DoryX86IRTranslator: Sendable {
       else { return false }
       return isJITGeneralRegister(target) && isJITGeneralRegister(origin)
     case .signedMultiply(let destination, let lhs, let rhs):
-      guard case .register(let target) = destination, target.width == .i32,
-        case .register(let left) = lhs, left.width == .i32,
-        case .register(let right) = rhs, right.width == .i32
+      guard case .register(let target) = destination,
+        target.width == .i32 || target.width == .i64,
+        case .register(let left) = lhs, left.width == target.width,
+        case .register(let right) = rhs, right.width == target.width
       else { return false }
       return isJITGeneralRegister(target) && isJITGeneralRegister(left)
         && isJITGeneralRegister(right)
