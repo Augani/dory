@@ -386,17 +386,12 @@ READ_LOCK_CAP      = TRUE
 READ_LOCK_STATUS   = TRUE
 
 FILE FV_IMAGE = 9E21FD93-9C72-4c15-8C4B-E77F1DB2D792 {
-   # Tiano trades some flash space for a much smaller deterministic instruction budget during
-   # SEC decompression. DoryPC's 4 MiB flash layout has enough compact-volume headroom for it.
-   SECTION GUIDED A31280AD-481E-41B6-95E8-127F4C984779 PROCESSING_REQUIRED = TRUE {
-     #
-     # These firmware volumes will have files placed in them uncompressed,
-     # and then both firmware volumes will be compressed in a single
-     # compression operation in order to achieve better overall compression.
-     #
-     SECTION FV_IMAGE = PEIFV
-     SECTION FV_IMAGE = DXEFV
-   }
+   # Dory's DBT can bulk-copy REP MOVSB directly, while guest-side Tiano expansion spends tens of
+   # millions of instructions in a scalar byte loop. Keep both memory FVs directly addressable in
+   # flash; the Dory SEC patch validates their exact sizes and copies them to the standard OVMF
+   # memory-FV addresses before entering PEI.
+   SECTION FV_IMAGE = PEIFV
+   SECTION FV_IMAGE = DXEFV
  }
 
 !include OvmfPkg/Include/Fdf/FvmainCompactScratchEnd.fdf.inc

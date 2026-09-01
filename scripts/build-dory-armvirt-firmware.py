@@ -135,13 +135,10 @@ def verify_platform_contract() -> None:
         raise BuildFailure(
             "DoryPC firmware must use the compatible-v1 1 GiB page-table capability"
         )
-    tiano_library = (
-        "MdePkg/Library/BaseUefiDecompressLib/BaseUefiTianoCustomDecompressLib.inf"
-    )
-    if contents.count(tiano_library) != 1:
-        raise BuildFailure("DoryPC SEC must bind the deterministic Tiano decompressor exactly once")
-    if "LzmaCustomDecompressLib" in contents:
-        raise BuildFailure("DoryPC production firmware must not bind the slow LZMA decompressor")
+    if "CustomDecompressLib" in contents:
+        raise BuildFailure("DoryPC production firmware must not perform guest-side FV decompression")
+    if "DORY_PC_UNCOMPRESSED_MAIN_FV" not in contents:
+        raise BuildFailure("DoryPC SEC must select its uncompressed memory-FV path")
     if "DoryBootProbe" in contents:
         raise BuildFailure("DoryPC must not compile the superseded boot-probe application")
     serial_console_driver = "MdeModulePkg/Universal/SerialDxe/SerialDxe.inf"
@@ -196,10 +193,11 @@ def verify_platform_contract() -> None:
         raise BuildFailure("DoryPC graphics console dependencies must be present")
     if graphics_console_dispatch_positions != sorted(graphics_console_dispatch_positions):
         raise BuildFailure("DoryPC graphics console dependencies must be dispatched before BDS")
-    if "A31280AD-481E-41B6-95E8-127F4C984779" not in flash_contents:
-        raise BuildFailure("DoryPC compact firmware volume must use Tiano compression")
-    if "EE4E5898-3914-4259-9D6E-DC7BD79403CF" in flash_contents:
-        raise BuildFailure("DoryPC compact firmware volume must not use LZMA compression")
+    if "SECTION GUIDED" in flash_contents:
+        raise BuildFailure("DoryPC compact firmware volume must not use guest-side extraction")
+    direct_memory_fvs = ("SECTION FV_IMAGE = PEIFV", "SECTION FV_IMAGE = DXEFV")
+    if any(fv not in flash_contents for fv in direct_memory_fvs):
+        raise BuildFailure("DoryPC compact firmware volume must contain direct PEI and DXE FVs")
     if "!include DoryPCPkg/DoryMemFd.fdf.inc" not in flash_contents:
         raise BuildFailure("DoryPC firmware must use its right-sized memory firmware volumes")
     required_memory_regions = (

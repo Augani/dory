@@ -1,0 +1,227 @@
+diff --git a/OvmfPkg/Sec/SecMain.c b/OvmfPkg/Sec/SecMain.c
+index 60a00ce..2e5751e 100644
+--- a/OvmfPkg/Sec/SecMain.c
++++ b/OvmfPkg/Sec/SecMain.c
+@@ -324,6 +324,194 @@ FindFfsFileAndSection (
+   }
+ }
+ 
++#if defined (DORY_PC_UNCOMPRESSED_MAIN_FV)
++/**
++  Finds an indexed section in one specific FFS file. If RequiredFile is NULL,
++  the first file of FileType containing that section instance is selected.
++  Otherwise only RequiredFile is searched. Every indexed-section lookup is
++  bounded by the selected FFS file's declared size.
++**/
++STATIC
++EFI_STATUS
++DoryFindFfsSectionInstance (
++  IN  EFI_FIRMWARE_VOLUME_HEADER  *Fv,
++  IN  EFI_FV_FILETYPE             FileType,
++  IN  EFI_SECTION_TYPE            SectionType,
++  IN  UINTN                       Instance,
++  IN  EFI_FFS_FILE_HEADER         *RequiredFile OPTIONAL,
++  OUT EFI_FFS_FILE_HEADER         **FoundFile OPTIONAL,
++  OUT EFI_COMMON_SECTION_HEADER   **FoundSection
++  )
++{
++  EFI_STATUS            Status;
++  EFI_PHYSICAL_ADDRESS  CurrentAddress;
++  EFI_PHYSICAL_ADDRESS  EndOfFirmwareVolume;
++  EFI_FFS_FILE_HEADER   *File;
++  UINT32                Size;
++  EFI_PHYSICAL_ADDRESS  EndOfFile;
++
++  if ((Fv->Signature != EFI_FVH_SIGNATURE) ||
++      (Fv->HeaderLength < sizeof (*Fv)) ||
++      (Fv->HeaderLength > Fv->FvLength))
++  {
++    return EFI_VOLUME_CORRUPTED;
++  }
++
++  CurrentAddress      = (EFI_PHYSICAL_ADDRESS)(UINTN)Fv;
++  EndOfFirmwareVolume = CurrentAddress + Fv->FvLength;
++  for (EndOfFile = CurrentAddress + Fv->HeaderLength; ; ) {
++    CurrentAddress = (EndOfFile + 7) & ~(7ULL);
++    if ((CurrentAddress > EndOfFirmwareVolume) ||
++        ((EndOfFirmwareVolume - CurrentAddress) < sizeof (*File)))
++    {
++      return EFI_VOLUME_CORRUPTED;
++    }
++
++    File = (EFI_FFS_FILE_HEADER *)(UINTN)CurrentAddress;
++    Size = FFS_FILE_SIZE (File);
++    if (Size < (sizeof (*File) + sizeof (EFI_COMMON_SECTION_HEADER))) {
++      return EFI_VOLUME_CORRUPTED;
++    }
++
++    EndOfFile = CurrentAddress + Size;
++    if (EndOfFile > EndOfFirmwareVolume) {
++      return EFI_VOLUME_CORRUPTED;
++    }
++
++    if ((File->Type != FileType) ||
++        ((RequiredFile != NULL) && (File != RequiredFile)))
++    {
++      continue;
++    }
++
++    Status = FindFfsSectionInstance (
++               (VOID *)(File + 1),
++               (UINTN)EndOfFile - (UINTN)(File + 1),
++               SectionType,
++               Instance,
++               FoundSection
++               );
++    if (!EFI_ERROR (Status)) {
++      if (FoundFile != NULL) {
++        *FoundFile = File;
++      }
++
++      return EFI_SUCCESS;
++    }
++
++    if ((Status == EFI_VOLUME_CORRUPTED) || (RequiredFile != NULL)) {
++      return Status;
++    }
++  }
++}
++
++STATIC
++BOOLEAN
++DoryValidateMemFv (
++  IN EFI_FIRMWARE_VOLUME_HEADER  *MemFv,
++  IN UINT32                      ExpectedSize
++  )
++{
++  return (BOOLEAN)(
++                    (MemFv->Signature == EFI_FVH_SIGNATURE) &&
++                    (MemFv->FvLength == ExpectedSize) &&
++                    (MemFv->HeaderLength >= sizeof (*MemFv)) &&
++                    (MemFv->HeaderLength <= ExpectedSize) &&
++                    ((MemFv->HeaderLength & 1) == 0) &&
++                    (CalculateSum16 ((CONST UINT16 *)MemFv, MemFv->HeaderLength) == 0)
++                    );
++}
++
++/**
++  Copies Dory's directly embedded PEI and DXE firmware volumes to their
++  standard OVMF memory locations.
++
++  Dory authenticates the containing flash image before reset. Keeping these
++  volumes uncompressed lets its DBT use the REP MOVSB bulk-memory path instead
++  of spending tens of millions of guest instructions in TianoDecompress.
++**/
++STATIC
++EFI_STATUS
++DoryLoadUncompressedMemFvs (
++  IN OUT EFI_FIRMWARE_VOLUME_HEADER  **Fv
++  )
++{
++  EFI_STATUS                  Status;
++  EFI_FFS_FILE_HEADER         *FvFile;
++  EFI_COMMON_SECTION_HEADER   *FvSection;
++  EFI_FIRMWARE_VOLUME_HEADER  *MemFv;
++  UINT32                      FvHeaderSize;
++  UINT32                      FvSectionSize;
++
++  Status = DoryFindFfsSectionInstance (
++             *Fv,
++             EFI_FV_FILETYPE_FIRMWARE_VOLUME_IMAGE,
++             EFI_SECTION_FIRMWARE_VOLUME_IMAGE,
++             0,
++             NULL,
++             &FvFile,
++             &FvSection
++             );
++  if (EFI_ERROR (Status)) {
++    DEBUG ((DEBUG_ERROR, "Unable to find direct PEI FV section\n"));
++    return Status;
++  }
++
++  FvHeaderSize  = IS_SECTION2 (FvSection) ?
++                  sizeof (EFI_COMMON_SECTION_HEADER2) : sizeof (EFI_COMMON_SECTION_HEADER);
++  FvSectionSize = IS_SECTION2 (FvSection) ? SECTION2_SIZE (FvSection) : SECTION_SIZE (FvSection);
++  if ((FvSection->Type != EFI_SECTION_FIRMWARE_VOLUME_IMAGE) ||
++      (FvSectionSize != (PcdGet32 (PcdOvmfPeiMemFvSize) + FvHeaderSize)))
++  {
++    DEBUG ((DEBUG_ERROR, "Direct PEI FV section has an invalid size\n"));
++    return EFI_VOLUME_CORRUPTED;
++  }
++
++  MemFv = (EFI_FIRMWARE_VOLUME_HEADER *)(UINTN)PcdGet32 (PcdOvmfPeiMemFvBase);
++  CopyMem (MemFv, (UINT8 *)FvSection + FvHeaderSize, PcdGet32 (PcdOvmfPeiMemFvSize));
++  if (!DoryValidateMemFv (MemFv, PcdGet32 (PcdOvmfPeiMemFvSize)))
++  {
++    DEBUG ((DEBUG_ERROR, "Direct PEI FV has an invalid header checksum or size\n"));
++    return EFI_VOLUME_CORRUPTED;
++  }
++
++  Status = DoryFindFfsSectionInstance (
++             *Fv,
++             EFI_FV_FILETYPE_FIRMWARE_VOLUME_IMAGE,
++             EFI_SECTION_FIRMWARE_VOLUME_IMAGE,
++             1,
++             FvFile,
++             NULL,
++             &FvSection
++             );
++  if (EFI_ERROR (Status)) {
++    DEBUG ((DEBUG_ERROR, "Unable to find direct DXE FV section in the PEI FV FFS file\n"));
++    return Status;
++  }
++
++  FvHeaderSize   = IS_SECTION2 (FvSection) ?
++                   sizeof (EFI_COMMON_SECTION_HEADER2) : sizeof (EFI_COMMON_SECTION_HEADER);
++  FvSectionSize  = IS_SECTION2 (FvSection) ? SECTION2_SIZE (FvSection) : SECTION_SIZE (FvSection);
++  if ((FvSection->Type != EFI_SECTION_FIRMWARE_VOLUME_IMAGE) ||
++      (FvSectionSize != (PcdGet32 (PcdOvmfDxeMemFvSize) + FvHeaderSize)))
++  {
++    DEBUG ((DEBUG_ERROR, "Direct DXE FV section has an invalid size\n"));
++    return EFI_VOLUME_CORRUPTED;
++  }
++
++  MemFv = (EFI_FIRMWARE_VOLUME_HEADER *)(UINTN)PcdGet32 (PcdOvmfDxeMemFvBase);
++  CopyMem (MemFv, (UINT8 *)FvSection + FvHeaderSize, PcdGet32 (PcdOvmfDxeMemFvSize));
++  if (!DoryValidateMemFv (MemFv, PcdGet32 (PcdOvmfDxeMemFvSize)))
++  {
++    DEBUG ((DEBUG_ERROR, "Direct DXE FV has an invalid header checksum or size\n"));
++    return EFI_VOLUME_CORRUPTED;
++  }
++
++  *Fv = (EFI_FIRMWARE_VOLUME_HEADER *)(UINTN)PcdGet32 (PcdOvmfPeiMemFvBase);
++  return EFI_SUCCESS;
++}
++#endif
++
+ /**
+   Locates the compressed main firmware volume and decompresses it.
+ 
+@@ -339,7 +527,18 @@ EFI_STATUS
+ DecompressMemFvs (
+   IN OUT EFI_FIRMWARE_VOLUME_HEADER  **Fv
+   )
+-{
++{
++#if defined (DORY_PC_UNCOMPRESSED_MAIN_FV)
++  EFI_STATUS  Status;
++
++  Status = DoryLoadUncompressedMemFvs (Fv);
++  if (EFI_ERROR (Status)) {
++    DEBUG ((DEBUG_ERROR, "Direct PEI/DXE FV load failed: %r\n", Status));
++    CpuDeadLoop ();
++  }
++
++  return Status;
++#else
+   EFI_STATUS                  Status;
+   EFI_GUID_DEFINED_SECTION    *Section;
+   UINT32                      OutputBufferSize;
+@@ -470,6 +669,7 @@ DecompressMemFvs (
+ 
+   *Fv = PeiMemFv;
+   return EFI_SUCCESS;
++#endif
+ }
+ 
+ /**

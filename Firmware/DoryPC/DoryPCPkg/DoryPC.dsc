@@ -773,11 +773,9 @@
   #
   OvmfPkg/Sec/SecMain.inf {
     <LibraryClasses>
-      # Tiano decompression is deliberately used for the compact firmware volume. The Dory DBT
-      # executes the substantially more branch-heavy LZMA decoder too slowly for an interactive
-      # cold boot, while the compact volume has ample room for Tiano's larger output.
-      NULL|MdePkg/Library/BaseUefiDecompressLib/BaseUefiTianoCustomDecompressLib.inf
       BaseCryptLib|CryptoPkg/Library/BaseCryptLib/SecCryptLib.inf
+    <BuildOptions>
+      *_*_*_CC_FLAGS = -DDORY_PC_UNCOMPRESSED_MAIN_FV
   }
 
   #
