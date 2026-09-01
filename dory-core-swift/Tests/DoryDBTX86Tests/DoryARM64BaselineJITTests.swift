@@ -841,6 +841,42 @@ import Testing
     #endif
   }
 
+  @Test func residentCacheIdentityIgnoresTransientInstructionBudgets() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let program: [UInt8] = [0x90, 0x90, 0x90, 0xF4]
+      var state = try DoryX86ArchitecturalState(rip: 0x6800)
+
+      let first = try #require(
+        executor.execute(
+          bytes: program,
+          at: 0x6800,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 2,
+          state: &state
+        )
+      )
+      #expect(first.block.guestInstructionCount == 2)
+      #expect(executor.residentBlockCount == 1)
+
+      state.rip = 0x6800
+      let reused = try #require(
+        executor.execute(
+          bytes: program,
+          at: 0x6800,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 4,
+          state: &state
+        )
+      )
+      #expect(reused.block.guestInstructionCount == 2)
+      #expect(state.rip == 0x6802)
+      #expect(executor.residentBlockCount == 1)
+    #endif
+  }
+
   @Test func unchangedMemoryGenerationSkipsResidentCodeCopies() throws {
     #if arch(arm64)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)

@@ -1545,7 +1545,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let executionMode: DoryX86ExecutionMode
     let privilegeLevel: UInt8
     let pagingEnabled: Bool
-    let maximumInstructions: Int
   }
 
   private final class ResidentBlock {
@@ -1869,12 +1868,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       addressSpaceID: addressSpaceID,
       executionMode: mode,
       privilegeLevel: UInt8(state.cs.selector & 3),
-      pagingEnabled: state.control.cr0 & (1 << 31) != 0,
-      maximumInstructions: maximumInstructions
+      pagingEnabled: state.control.cr0 & (1 << 31) != 0
     )
-    if let cached = lookupResident(for: key),
-      cached.block.guestInstructionCount <= maximumInstructions
-    {
+    if let cached = lookupResident(for: key) {
+      // The interrupt deadline is an execution constraint, not part of guest code identity. A
+      // previously compiled shorter block is safe to reuse under a larger budget. If the resident
+      // block is longer than this dispatch may retire, take one precise interpreter step instead
+      // of compiling and replacing the same RIP for every transient deadline.
+      guard cached.block.guestInstructionCount <= maximumInstructions else { return nil }
       let byteCount = Int(cached.block.guestByteCount)
       let memoryGeneration = try codeGenerationProvider?(byteCount) ?? nil
       if let cachedMemoryGeneration = cached.memoryCodeGeneration,
@@ -1976,7 +1977,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private func recentIndex(for key: LookupKey) -> Int {
     var value = key.guestStart
     value ^= key.addressSpaceID &* 0x9e37_79b9_7f4a_7c15
-    value ^= UInt64(truncatingIfNeeded: key.maximumInstructions) &* 0xbf58_476d_1ce4_e5b9
     value ^= UInt64(key.privilegeLevel) << 5
     value ^= key.pagingEnabled ? 1 << 9 : 0
     switch key.executionMode {
