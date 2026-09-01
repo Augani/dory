@@ -1600,7 +1600,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   /// translated code than an application-process DBT. Keep the executable region bounded, but
   /// large enough that a normal installer boot does not continuously discard and recompile its
   /// cold-start working set.
-  public static let defaultMaximumCodeBytes = 512 * 1024 * 1024
+  public static let defaultMaximumCodeBytes = 128 * 1024 * 1024
 
   private struct LookupKey: Hashable {
     let guestStart: UInt64
