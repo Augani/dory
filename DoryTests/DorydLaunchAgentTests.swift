@@ -79,9 +79,14 @@ struct DorydLaunchAgentTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dorydURL.path)
         let bundle = try #require(Bundle(url: bundleURL))
         let configuration = DorydLaunchAgent.Configuration()
+        let daemonRuntimeDirectory = temporaryDirectory.appendingPathComponent("DaemonRuntime", isDirectory: true)
+        let stagedDorydURL = try DorydLaunchAgent.stageDaemon(
+            dorydURL,
+            beneath: daemonRuntimeDirectory
+        )
         let plistURL = launchAgentsDirectory.appendingPathComponent("\(DorydLaunchAgent.label).plist")
         try DorydLaunchAgent.launchAgentPlist(
-            program: dorydURL.path,
+            program: stagedDorydURL.path,
             helpersDirectory: helpersURL,
             configuration: configuration
         ).write(to: plistURL, atomically: true, encoding: .utf8)
@@ -90,7 +95,7 @@ struct DorydLaunchAgentTests {
             gui/501/dev.dory.doryd = {
                 path = \(plistURL.path)
                 state = waiting
-                program = \(dorydURL.path)
+                program = \(stagedDorydURL.path)
             }
             """
         )
@@ -98,6 +103,7 @@ struct DorydLaunchAgentTests {
         let ok = await DorydLaunchAgent.ensureCurrent(
             bundle: bundle,
             launchAgentsDirectory: launchAgentsDirectory,
+            daemonRuntimeDirectory: daemonRuntimeDirectory,
             configuration: configuration
         ) { arguments in
             recorder.run(arguments)
@@ -211,7 +217,11 @@ struct DorydLaunchAgentTests {
             """
         )
 
-        let ok = await DorydLaunchAgent.ensureCurrent(bundle: .main, launchAgentsDirectory: launchAgentsDirectory) { arguments in
+        let ok = await DorydLaunchAgent.ensureCurrent(
+            bundle: .main,
+            launchAgentsDirectory: launchAgentsDirectory,
+            daemonRuntimeDirectory: temporaryDirectory.appendingPathComponent("DaemonRuntime")
+        ) { arguments in
             recorder.run(arguments)
         }
 
@@ -220,7 +230,7 @@ struct DorydLaunchAgentTests {
         #expect(recorder.commands.first { $0.first == "bootstrap" }?.last == currentPlist)
     }
 
-    @Test func ensureCurrentWritesLaunchAgentForInstalledBundlePath() async throws {
+    @Test func ensureCurrentWritesLaunchAgentForPinnedDaemonPath() async throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DorydLaunchAgentTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
@@ -240,15 +250,37 @@ struct DorydLaunchAgentTests {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dorydURL.path)
         let bundle = try #require(Bundle(url: bundleURL))
 
+        let daemonRuntimeDirectory = temporaryDirectory.appendingPathComponent("DaemonRuntime", isDirectory: true)
         let recorder = LaunchctlRecorder(printStatus: 1, printOutput: "")
-        let ok = await DorydLaunchAgent.ensureCurrent(bundle: bundle, launchAgentsDirectory: launchAgentsDirectory) { arguments in
+        let ok = await DorydLaunchAgent.ensureCurrent(
+            bundle: bundle,
+            launchAgentsDirectory: launchAgentsDirectory,
+            daemonRuntimeDirectory: daemonRuntimeDirectory
+        ) { arguments in
             recorder.run(arguments)
         }
 
         let plistURL = launchAgentsDirectory.appendingPathComponent("\(DorydLaunchAgent.label).plist")
         let plist = try String(contentsOf: plistURL, encoding: .utf8)
         #expect(ok)
-        #expect(plist.contains("<string>\(dorydURL.path)</string>"))
+        let stagedDoryd = try #require(
+            FileManager.default.contentsOfDirectory(at: daemonRuntimeDirectory, includingPropertiesForKeys: nil)
+                .first { !$0.lastPathComponent.hasPrefix(".") }?
+                .appendingPathComponent("doryd")
+        )
+        let plistObject = try #require(
+            PropertyListSerialization.propertyList(
+                from: Data(plist.utf8),
+                options: [],
+                format: nil
+            ) as? [String: Any]
+        )
+        let stagedProgram = try #require((plistObject["ProgramArguments"] as? [String])?.first)
+        #expect(
+            URL(fileURLWithPath: stagedProgram).resolvingSymlinksInPath().path
+                == stagedDoryd.resolvingSymlinksInPath().path
+        )
+        #expect(try Data(contentsOf: stagedDoryd) == Data(contentsOf: dorydURL))
         #expect(plist.contains("<string>\(helpersURL.appendingPathComponent("dory-vmm").path)</string>"))
         #expect(plist.contains("<key>DORYD_HELPERS_DIR</key>"))
         #expect(plist.contains("<string>\(helpersURL.path)</string>"))
@@ -345,6 +377,7 @@ struct DorydLaunchAgentTests {
         let ok = await DorydLaunchAgent.ensureCurrent(
             bundle: bundle,
             launchAgentsDirectory: launchAgentsDirectory,
+            daemonRuntimeDirectory: temporaryDirectory.appendingPathComponent("DaemonRuntime"),
             configuration: DorydLaunchAgent.Configuration(domainSuffix: "team.dory.local")
         ) { arguments in
             recorder.run(arguments)
@@ -370,6 +403,7 @@ struct DorydLaunchAgentTests {
         let rejected = await DorydLaunchAgent.ensureCurrent(
             bundle: bundle,
             launchAgentsDirectory: launchAgentsDirectory,
+            daemonRuntimeDirectory: temporaryDirectory.appendingPathComponent("DaemonRuntime"),
             configuration: DorydLaunchAgent.Configuration(domainSuffix: "rejected.dory.local")
         ) { arguments in
             rejectingRecorder.run(arguments)
@@ -414,6 +448,7 @@ struct DorydLaunchAgentTests {
         let ok = await DorydLaunchAgent.ensureCurrent(
             bundle: bundle,
             launchAgentsDirectory: launchAgentsDirectory,
+            daemonRuntimeDirectory: temporaryDirectory.appendingPathComponent("DaemonRuntime"),
             bootstrapRetryDelay: .milliseconds(0)
         ) { arguments in
             recorder.run(arguments)

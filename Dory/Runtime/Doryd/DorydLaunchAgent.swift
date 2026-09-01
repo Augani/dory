@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import DoryOperations
 import Foundation
 
@@ -6,6 +7,10 @@ enum DorydLaunchAgent {
     static let label = "dev.dory.doryd"
     static let stateDirectory = "\(NSHomeDirectory())/.dory"
     static let logPath = "\(NSHomeDirectory())/.dory/doryd.log"
+    static var daemonRuntimeDirectory: URL? {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?
+            .appendingPathComponent("Dory/Runtime/doryd", isDirectory: true)
+    }
     /// dory-hv and Linux Machine helpers create private Unix sockets and disposable boot assets.
     /// Keep those beneath Darwin's per-user 0700 temporary directory rather than the user's home:
     /// a permissive or network-backed home is not a trustworthy Unix-socket ancestor, and the
@@ -137,6 +142,7 @@ enum DorydLaunchAgent {
     static func ensureCurrent(
         bundle: Bundle = .main,
         launchAgentsDirectory: URL? = nil,
+        daemonRuntimeDirectory: URL? = nil,
         configuration: Configuration = Configuration(),
         bootstrapRetryDelay: Duration = .milliseconds(250),
         runner: @escaping Runner = runLaunchctl
@@ -144,6 +150,7 @@ enum DorydLaunchAgent {
         guard let current = currentInstall(
             bundle: bundle,
             launchAgentsDirectory: launchAgentsDirectory,
+            daemonRuntimeDirectory: daemonRuntimeDirectory,
             configuration: configuration
         ) else { return false }
         let plistChanged: Bool
@@ -271,11 +278,13 @@ enum DorydLaunchAgent {
     static func writeCurrentPlist(
         bundle: Bundle = .main,
         launchAgentsDirectory: URL? = nil,
+        daemonRuntimeDirectory: URL? = nil,
         configuration: Configuration = Configuration()
     ) -> Bool {
         guard let current = currentInstall(
             bundle: bundle,
             launchAgentsDirectory: launchAgentsDirectory,
+            daemonRuntimeDirectory: daemonRuntimeDirectory,
             configuration: configuration
         ) else { return false }
         do {
@@ -327,14 +336,21 @@ enum DorydLaunchAgent {
     static func currentInstall(
         bundle: Bundle,
         launchAgentsDirectory: URL? = nil,
+        daemonRuntimeDirectory: URL? = nil,
         configuration: Configuration = Configuration()
     ) -> Install? {
         let bundleURL = bundle.bundleURL
-        let program = bundleURL.appendingPathComponent("Contents/Helpers/doryd").path
+        let bundledProgram = bundleURL.appendingPathComponent("Contents/Helpers/doryd")
         let helpersDirectory = bundleURL.appendingPathComponent("Contents/Helpers", isDirectory: true)
         let fileManager = FileManager.default
-        guard fileManager.isExecutableFile(atPath: program),
-              let launchAgentsDirectory = launchAgentsDirectory ?? defaultLaunchAgentsDirectory() else {
+        guard fileManager.isExecutableFile(atPath: bundledProgram.path),
+              let launchAgentsDirectory = launchAgentsDirectory ?? defaultLaunchAgentsDirectory(),
+              let daemonRuntimeDirectory = daemonRuntimeDirectory ?? self.daemonRuntimeDirectory,
+              let program = try? stageDaemon(
+                  bundledProgram,
+                  beneath: daemonRuntimeDirectory,
+                  fileManager: fileManager
+              ).path else {
             return nil
         }
         let plist = launchAgentsDirectory.appendingPathComponent("\(label).plist").path
@@ -347,6 +363,60 @@ enum DorydLaunchAgent {
                 configuration: configuration
             )
         )
+    }
+
+    /// Keeps the live daemon's signed executable linked for its entire lifetime. Replacing
+    /// Dory.app unlinks the old bundle vnode; macOS then rejects that otherwise-valid process at
+    /// the XPC code-signing boundary. Content-addressed generations are immutable and deliberately
+    /// retained, so app updates can stage the next daemon without disturbing the active one.
+    static func stageDaemon(
+        _ source: URL,
+        beneath root: URL,
+        fileManager: FileManager = .default
+    ) throws -> URL {
+        let sourceDigest = try sha256(of: source)
+        let generation = root.appendingPathComponent(sourceDigest, isDirectory: true)
+        let destination = generation.appendingPathComponent("doryd")
+        if fileManager.isExecutableFile(atPath: destination.path),
+           try sha256(of: destination) == sourceDigest {
+            return destination
+        }
+
+        try fileManager.createDirectory(
+            at: root,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try fileManager.setAttributes([.posixPermissions: 0o700], ofItemAtPath: root.path)
+        let staging = root.appendingPathComponent(".stage-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(
+            at: staging,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? fileManager.removeItem(at: staging) }
+        let stagedProgram = staging.appendingPathComponent("doryd")
+        try fileManager.copyItem(at: source, to: stagedProgram)
+        guard fileManager.isExecutableFile(atPath: stagedProgram.path),
+              try sha256(of: stagedProgram) == sourceDigest else {
+            throw CocoaError(.fileReadCorruptFile)
+        }
+        do {
+            try fileManager.moveItem(at: staging, to: generation)
+        } catch where fileManager.isExecutableFile(atPath: destination.path) {
+            guard try sha256(of: destination) == sourceDigest else { throw error }
+        }
+        return destination
+    }
+
+    private static func sha256(of url: URL) throws -> String {
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var digest = SHA256()
+        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+            digest.update(data: chunk)
+        }
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
     static func serviceTarget(uid: uid_t = getuid()) -> String {
