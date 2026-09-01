@@ -639,6 +639,62 @@ public final class DorydService: NSObject, DorydControl {
                 config
             )
             let machine = try DoryMachineConfiguration(xpcDictionary: config)
+            if machine.guestFamily == .macOS {
+                guard sandboxPolicy == nil else {
+                    throw MachineManagerError.persistence(
+                        "sandbox policy is supported only for headless Linux machines"
+                    )
+                }
+                let replyBox = StatusReply(reply)
+                let productionPlanningController = productionPlanningController
+                let incidentWriter = incidentWriter
+                Task.detached {
+                    var created = false
+                    do {
+                        var status = try await machineManager.createNativeMacOS(
+                            machine,
+                            typedSettings: typedSettings.isEmpty ? nil : typedSettings
+                        )
+                        created = true
+                        if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
+                            guard let productionPlanningController else {
+                                throw MachineManagerError.persistence(
+                                    "production planning controller is not configured"
+                                )
+                            }
+                            status = try machineManager.resolveAndPublishProductionPlan(
+                                id: machine.id,
+                                controller: productionPlanningController
+                            )
+                        }
+                        incidentWriter?.record(type: "machine.create", detail: machine.id)
+                        replyBox.reply(true, status.xpcDictionary, "")
+                    } catch {
+                        var message = "\(error)"
+                        if created {
+                            do {
+                                try machineManager.delete(id: machine.id)
+                                incidentWriter?.record(
+                                    type: "machine.create_rolled_back",
+                                    detail: machine.id
+                                )
+                            } catch let rollbackError {
+                                message += "; failed to remove the incomplete machine: \(rollbackError)"
+                                incidentWriter?.record(
+                                    type: "machine.create_rollback_failed",
+                                    detail: "\(machine.id): \(rollbackError)"
+                                )
+                            }
+                        }
+                        incidentWriter?.record(
+                            type: "machine.create_failed",
+                            detail: message
+                        )
+                        replyBox.reply(false, [:], message)
+                    }
+                }
+                return
+            }
             if machine.bootMode == .efi, let installerISOPath = machine.installerISOPath {
                 do {
                     _ = try DoryInstallerISOInspector

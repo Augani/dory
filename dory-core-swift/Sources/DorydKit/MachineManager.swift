@@ -3,6 +3,7 @@ import DoryCore
 import DoryFirmware
 import DoryOperations
 import DoryRendererWorkerWireContracts
+import DoryVZMacCore
 import DoryVMContracts
 import Foundation
 
@@ -1444,6 +1445,7 @@ public final class MachineManager: @unchecked Sendable {
     public static let maximumMachineCPUCount = 8
     public static let minimumEFIDiskSizeBytes: UInt64 = 8 * 1024 * 1024 * 1024
     public static let maximumEFIDiskSizeBytes: UInt64 = 2 * 1024 * 1024 * 1024 * 1024
+    public static let defaultMacOSDiskSizeBytes: UInt64 = 80 * 1024 * 1024 * 1024
 
     private let configuration: MachineManagerConfiguration
     private let agentConnector: AgentConnector
@@ -1873,7 +1875,116 @@ public final class MachineManager: @unchecked Sendable {
             machine,
             typedSettings: typedSettings,
             sandboxPolicy: sandboxPolicy,
-            cloneAuthority: nil
+            cloneAuthority: nil,
+            acquiresMutationLease: true
+        )
+    }
+
+    /// Creates a native Apple-silicon macOS machine as one daemon-owned transaction. The IPSW is
+    /// inspected by Virtualization.framework before any discoverable workspace is published, and
+    /// both the restore image and prepared platform identity are imported into private managed
+    /// storage by `createMachine` before machine.json becomes visible.
+    @discardableResult
+    public func createNativeMacOS(
+        _ requestedMachine: DoryMachineConfiguration,
+        typedSettings: DoryMachineTypedSettingsPatch? = nil
+    ) async throws -> DoryMachineStatus {
+        guard requestedMachine.guestFamily == .macOS,
+              requestedMachine.bootMode == .macOSRestore,
+              requestedMachine.guestArchitecture == nil
+                || requestedMachine.guestArchitecture == .arm64,
+              requestedMachine.displayMode == .desktop,
+              requestedMachine.kernelPath.isEmpty,
+              requestedMachine.rootfsPath.isEmpty,
+              requestedMachine.installerISOPath == nil,
+              requestedMachine.shares.isEmpty,
+              let restorePath = requestedMachine.macOSRestoreImagePath,
+              Self.isRegularNonemptyFile(path: restorePath) else {
+            throw MachineManagerError.persistence(
+                "native macOS creation requires an ARM64 desktop and a local Apple restore image"
+            )
+        }
+        guard requestedMachine.macOSMachineBundlePath == nil else {
+            throw MachineManagerError.persistence(
+                "native macOS platform identity is prepared only by the Dory daemon"
+            )
+        }
+        guard Self.isValidID(requestedMachine.id) else {
+            throw MachineManagerError.invalidID(requestedMachine.id)
+        }
+
+        let mutationLease = mutationCoordinator.acquire(workspaceID: requestedMachine.id)
+        defer { mutationLease.release() }
+        let exists = lock.withLock {
+            machines[requestedMachine.id] != nil
+                || deletingMachineIDs.contains(requestedMachine.id)
+        }
+        guard !exists else {
+            throw MachineManagerError.duplicateMachine(requestedMachine.id)
+        }
+
+        let fileManager = FileManager.default
+        try fileManager.createDirectory(
+            atPath: configuration.stateDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        Self.restrictWorkspaceProjectionRootIfOwned(configuration.stateDirectory)
+        let stagingURL = URL(fileURLWithPath: configuration.stateDirectory, isDirectory: true)
+            .appendingPathComponent(
+                ".dory-vzmac-create-\(UUID().uuidString.lowercased())",
+                isDirectory: true
+            )
+        try fileManager.createDirectory(
+            at: stagingURL,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        defer { try? fileManager.removeItem(at: stagingURL) }
+
+        let memoryBytes = requestedMachine.memoryMB.multipliedReportingOverflow(by: 1_048_576)
+        guard !memoryBytes.overflow else {
+            throw MachineManagerError.persistence("native macOS memory size overflows bytes")
+        }
+        let diskBytes = requestedMachine.diskSizeBytes ?? Self.defaultMacOSDiskSizeBytes
+        let stagedBundleURL = stagingURL.appendingPathComponent(
+            "Machine.dorymac",
+            isDirectory: true
+        )
+        let restoreURL = URL(fileURLWithPath: restorePath, isDirectory: false)
+            .standardizedFileURL
+        let bundle: DoryVZMacMachineBundle
+        do {
+            bundle = try await DoryVZMacMachineBundle.prepare(
+                at: stagedBundleURL,
+                restoreImageURL: restoreURL,
+                restoreImageSourceURL: restoreURL,
+                requestedCPUCount: requestedMachine.cpuCount,
+                requestedMemoryBytes: memoryBytes.partialValue,
+                diskBytes: diskBytes
+            )
+            try fileManager.setAttributes(
+                [.posixPermissions: 0o700],
+                ofItemAtPath: stagedBundleURL.path
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "could not prepare native macOS platform artifacts: \(error)"
+            )
+        }
+
+        var machine = requestedMachine
+        machine.guestArchitecture = .arm64
+        machine.cpuCount = bundle.manifest.resources.cpuCount
+        machine.memoryMB = bundle.manifest.resources.memoryBytes / 1_048_576
+        machine.diskSizeBytes = bundle.manifest.resources.diskBytes
+        machine.macOSMachineBundlePath = stagedBundleURL.path
+        return try createMachine(
+            machine,
+            typedSettings: typedSettings,
+            sandboxPolicy: nil,
+            cloneAuthority: nil,
+            acquiresMutationLease: false
         )
     }
 
@@ -1881,10 +1992,12 @@ public final class MachineManager: @unchecked Sendable {
         _ requestedMachine: DoryMachineConfiguration,
         typedSettings: DoryMachineTypedSettingsPatch?,
         sandboxPolicy: DoryVMSandboxPolicy?,
-        cloneAuthority: DoryMachineCloneCreationAuthority?
+        cloneAuthority: DoryMachineCloneCreationAuthority?,
+        acquiresMutationLease: Bool = true
     ) throws -> DoryMachineStatus {
-        let mutationLease = mutationCoordinator.acquire(workspaceID: requestedMachine.id)
-        defer { mutationLease.release() }
+        let mutationLease = acquiresMutationLease
+            ? mutationCoordinator.acquire(workspaceID: requestedMachine.id) : nil
+        defer { mutationLease?.release() }
         if launchPolicy == .legacyCompatibility,
            !allowsNewMachinesInLegacyCompatibility {
             throw MachineManagerError.persistence(
@@ -1987,7 +2100,9 @@ public final class MachineManager: @unchecked Sendable {
                   machine.kernelPath.isEmpty,
                   machine.rootfsPath.isEmpty,
                   machine.installerISOPath == nil,
-                  machine.diskSizeBytes == nil,
+                  let diskSizeBytes = machine.diskSizeBytes,
+                  (DoryVZMacResourcePlan.minimumDiskBytes...Self.maximumEFIDiskSizeBytes)
+                    .contains(diskSizeBytes),
                   let restoreImagePath = machine.macOSRestoreImagePath,
                   Self.isRegularNonemptyFile(path: restoreImagePath),
                   let machineBundlePath = machine.macOSMachineBundlePath,
@@ -2063,13 +2178,18 @@ public final class MachineManager: @unchecked Sendable {
             .encodeLegacy(preparedMachine)
         var nativeDefinition: DoryVirtualMachineDefinition?
         if launchPolicy == .perWorkspaceAuthority {
-            let facts = try workspaceMigrationFacts(for: preparedMachine)
-            let migration = try DoryMachineConfigurationMigrationBridge.migrate(
-                preparedMachine,
-                facts: facts
-            )
+            let baseDefinition: DoryVirtualMachineDefinition
+            if preparedMachine.guestFamily == .macOS {
+                baseDefinition = try nativeMacOSDefinition(for: preparedMachine)
+            } else {
+                let facts = try workspaceMigrationFacts(for: preparedMachine)
+                baseDefinition = try DoryMachineConfigurationMigrationBridge.migrate(
+                    preparedMachine,
+                    facts: facts
+                ).definition
+            }
             var definition = try (typedSettings ?? DoryMachineTypedSettingsPatch()).applying(
-                to: migration.definition,
+                to: baseDefinition,
                 displayMode: preparedMachine.displayMode
             )
             definition.sandboxPolicy = sandboxPolicy
@@ -12112,6 +12232,14 @@ public final class MachineManager: @unchecked Sendable {
         "\(machineStateDirectory(id: id))/installer.iso"
     }
 
+    private func machineMacOSRestoreImagePath(id: String) -> String {
+        "\(machineStateDirectory(id: id))/Restore.ipsw"
+    }
+
+    private func machineMacOSBundlePath(id: String) -> String {
+        "\(machineStateDirectory(id: id))/Machine.dorymac"
+    }
+
     /// Legacy installed-Linux acceleration is the only launch contract that consumes stable
     /// kernel/initrd pathnames. Resolved RawHV launches instead admit the boot bundle into fresh,
     /// immutable descriptor-backed objects at the final spawn boundary.
@@ -12882,13 +13010,52 @@ public final class MachineManager: @unchecked Sendable {
                     copy.installerISOPath = installerDestination
                 }
             case .macOSRestore:
-                throw MachineManagerError.persistence(
-                    "native macOS bundles require the VZMac artifact transaction"
+                guard cloneAuthority == nil,
+                      let restoreSource = machine.macOSRestoreImagePath,
+                      let bundleSource = machine.macOSMachineBundlePath else {
+                    throw MachineManagerError.persistence(
+                        "native macOS bundles require the VZMac artifact transaction"
+                    )
+                }
+                let restoreDestination = machineMacOSRestoreImagePath(id: machine.id)
+                let bundleDestination = machineMacOSBundlePath(id: machine.id)
+                guard restoreSource != restoreDestination,
+                      bundleSource != bundleDestination else {
+                    throw MachineManagerError.persistence(
+                        "native macOS artifacts must be imported into managed storage"
+                    )
+                }
+                try Self.cloneOrCopyFile(
+                    source: restoreSource,
+                    destination: restoreDestination
                 )
+                try FileManager.default.moveItem(
+                    atPath: bundleSource,
+                    toPath: bundleDestination
+                )
+                try FileManager.default.setAttributes(
+                    [.posixPermissions: 0o700],
+                    ofItemAtPath: bundleDestination
+                )
+                let bundle = try DoryVZMacMachineBundle.load(
+                    from: URL(fileURLWithPath: bundleDestination, isDirectory: true)
+                )
+                guard bundle.manifest.resources.cpuCount == machine.cpuCount,
+                      bundle.manifest.resources.memoryBytes
+                        == machine.memoryMB * 1_048_576,
+                      bundle.manifest.resources.diskBytes == machine.diskSizeBytes else {
+                    throw MachineManagerError.persistence(
+                        "native macOS bundle resources differ from workspace intent"
+                    )
+                }
+                copy.macOSRestoreImagePath = restoreDestination
+                copy.macOSMachineBundlePath = bundleDestination
             }
-            copy.rootfsPath = rootfsDestination
-            copy.kernelPath = kernelDestination
-            copy.diskSizeBytes = nil
+            if machine.bootMode != .macOSRestore {
+                copy.rootfsPath = rootfsDestination
+                copy.kernelPath = kernelDestination
+                copy.diskSizeBytes = nil
+            }
             return copy
         } catch {
             throw MachineManagerError.persistence("could not prepare artifacts for \(machine.id): \(error)")
@@ -12898,6 +13065,31 @@ public final class MachineManager: @unchecked Sendable {
     private func validateManagedMachineArtifacts(_ machine: DoryMachineConfiguration) throws {
         guard Self.isPrivateDirectory(path: machineStateDirectory(id: machine.id)) else {
             throw MachineManagerError.persistence("machine state directory failed managed-storage validation")
+        }
+        if machine.bootMode == .macOSRestore {
+            let restorePath = machineMacOSRestoreImagePath(id: machine.id)
+            let bundlePath = machineMacOSBundlePath(id: machine.id)
+            guard machine.guestFamily == .macOS,
+                  machine.guestArchitecture == .arm64,
+                  machine.macOSRestoreImagePath == restorePath,
+                  Self.isPrivateRegularFile(path: restorePath),
+                  machine.macOSMachineBundlePath == bundlePath,
+                  Self.isPrivateDirectory(path: bundlePath) else {
+                throw MachineManagerError.persistence(
+                    "native macOS artifacts failed managed-storage validation"
+                )
+            }
+            let bundle = try DoryVZMacMachineBundle.load(
+                from: URL(fileURLWithPath: bundlePath, isDirectory: true)
+            )
+            guard bundle.manifest.resources.cpuCount == machine.cpuCount,
+                  bundle.manifest.resources.memoryBytes == machine.memoryMB * 1_048_576,
+                  bundle.manifest.resources.diskBytes == machine.diskSizeBytes else {
+                throw MachineManagerError.persistence(
+                    "native macOS managed resources differ from workspace intent"
+                )
+            }
+            return
         }
         let expectedRootfsPath = machineRootfsPath(id: machine.id)
         let expectedKernelPath = machineKernelPath(id: machine.id)
@@ -13508,6 +13700,123 @@ public final class MachineManager: @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         return try encoder.encode(definition)
+    }
+
+    private func nativeMacOSDefinition(
+        for machine: DoryMachineConfiguration
+    ) throws -> DoryVirtualMachineDefinition {
+        guard machine.guestFamily == .macOS,
+              machine.guestArchitecture == .arm64,
+              machine.bootMode == .macOSRestore,
+              machine.displayMode == .desktop,
+              let restorePath = machine.macOSRestoreImagePath,
+              restorePath == machineMacOSRestoreImagePath(id: machine.id),
+              let bundlePath = machine.macOSMachineBundlePath,
+              bundlePath == machineMacOSBundlePath(id: machine.id) else {
+            throw MachineManagerError.persistence(
+                "native macOS definition requires managed VZMac artifacts"
+            )
+        }
+        let bundle = try DoryVZMacMachineBundle.load(
+            from: URL(fileURLWithPath: bundlePath, isDirectory: true)
+        )
+        let resources = bundle.manifest.resources
+        let restoreReference = Self.stableManagedArtifactReference(
+            namespace: "macos-restore",
+            machineID: machine.id,
+            role: "restore-image",
+            digest: bundle.manifest.restoreImageSHA256
+        )
+        let systemReference = Self.stableManagedArtifactReference(
+            namespace: "macos-machine",
+            machineID: machine.id,
+            role: "system-disk",
+            digest: bundle.manifest.machineIdentifierSHA256
+        )
+        let guest = DoryGuestPlatform(family: .macOS, architecture: .arm64)
+        let platform = try DoryVirtualizationPlatformResolver.resolve(
+            DoryVirtualizationResolutionRequest(
+                hostArchitecture: .arm64,
+                guest: guest,
+                translationConsent: .notRequired
+            )
+        ).get().platform
+        let created = workspaceCreationTimestamp(id: machine.id)
+        let definition = DoryVirtualMachineDefinition(
+            identity: DoryVirtualMachineIdentity(id: machine.id, name: machine.id),
+            guest: guest,
+            workload: .desktop,
+            boot: DoryVMBootConfiguration(
+                phase: .install,
+                devices: [DoryVMBootMediaReference(
+                    id: "restore",
+                    role: .recovery,
+                    kind: .macOSRestoreImage,
+                    source: .userProvided,
+                    artifact: restoreReference,
+                    removable: true
+                )],
+                order: ["restore"]
+            ),
+            platform: platform,
+            translationConsent: .notRequired,
+            graphics: DoryVMGraphicsPolicy(
+                acceptableLevels: [.hostAcceleratedDisplay]
+            ),
+            resources: DoryVMResourceRequest(
+                virtualCPUCount: UInt64(resources.cpuCount),
+                memoryBytes: resources.memoryBytes,
+                diskBytes: resources.diskBytes
+            ),
+            storage: [DoryVMStorageAttachment(
+                id: "system",
+                role: .system,
+                artifact: systemReference,
+                source: .userProvided,
+                capacityBytes: resources.diskBytes
+            )],
+            networkMode: .sharedNAT,
+            display: DoryVMDisplayConfiguration(),
+            audio: DoryVMAudioConfiguration(inputEnabled: true, outputEnabled: true),
+            camera: DoryVMCameraConfiguration(
+                enabled: machine.environment[
+                    DoryVMCameraConfiguration.legacyEnabledEnvironmentKey
+                ] == "1"
+            ),
+            input: DoryVMInputConfiguration(),
+            integrations: [
+                .clipboard,
+                .clockSynchronization,
+                .dynamicDisplay,
+                .gracefulShutdown,
+            ],
+            clipboardPolicy: .legacyDesktop(.bidirectional),
+            lifecycle: DoryVMLifecycleMetadata(
+                revision: 1,
+                createdAtUnixMilliseconds: created,
+                updatedAtUnixMilliseconds: created
+            )
+        )
+        let issues = definition.validate()
+        guard issues.isEmpty else {
+            throw MachineManagerError.persistence(
+                "native macOS definition is invalid: \(issues)"
+            )
+        }
+        return definition
+    }
+
+    private static func stableManagedArtifactReference(
+        namespace: String,
+        machineID: String,
+        role: String,
+        digest: String
+    ) -> DoryVMResolverReference {
+        let material = Data("\(machineID)\0\(role)\0\(digest)".utf8)
+        let identifier = SHA256.hash(data: material).map {
+            String(format: "%02x", $0)
+        }.joined()
+        return DoryVMResolverReference(namespace: namespace, identifier: identifier)
     }
 
     private func workspaceMigrationFacts(

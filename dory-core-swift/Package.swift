@@ -237,6 +237,7 @@ let package = Package(
         "DoryCore",
         "DoryOperations",
         "DoryRendererWorkerWireContracts",
+        "DoryVZMacCore",
         "DoryVMContracts",
       ],
       linkerSettings: [
