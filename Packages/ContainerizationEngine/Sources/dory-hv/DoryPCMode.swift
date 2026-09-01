@@ -558,8 +558,20 @@ enum DoryPCMode {
                     return true
                 }
             )
+            let telemetrySampler = DoryPCDeviceTelemetrySampler(
+                machineID: envelope.machineID,
+                operationID: envelope.operationID
+            ) { [machineState, displaySink] in
+                let current = machineState.current()
+                return .init(
+                    execution: current.machine.executionStatistics,
+                    graphics: current.displayDevice.gpuDevice.commandDiagnostics,
+                    display: displaySink?.metrics
+                )
+            }
             lifecycleServer = VmmLifecycleReceiptServer(
-                socketPath: configuration.controlSocketPath
+                socketPath: configuration.controlSocketPath,
+                deviceTelemetryProvider: { telemetrySampler.snapshot() }
             )
 
             if let display = devices.displays.first, let mailbox {

@@ -1,6 +1,7 @@
 import DoryHV
 import DoryMachinePC
 import DoryVirtio
+import DorydKit
 import Foundation
 
 /// Publishes AppKit's evdev frames into one DoryPC VirtIO-input function.
@@ -31,6 +32,12 @@ final class DoryPCDesktopInputSink: DesktopInputSink, @unchecked Sendable {
 
 /// Converts DoryPC's complete transport-neutral resource snapshot into the bounded dirty-row
 /// representation already consumed by the native Metal desktop mailbox.
+struct DoryPCSoftwareDisplayMetrics: Equatable, Sendable {
+    var receivedFrames: UInt64 = 0
+    var visibleFrames: UInt64 = 0
+    var receivedFrameBytes: UInt64 = 0
+}
+
 final class DoryPCSoftwareDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Sendable {
     private struct ResourceIdentity: Equatable {
         let width: UInt32
@@ -44,6 +51,7 @@ final class DoryPCSoftwareDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Send
     private var identities = [UInt32: ResourceIdentity]()
     private var generations = [UInt32: UInt64]()
     private var deliveredVisibleFrame = false
+    private var metricStorage = DoryPCSoftwareDisplayMetrics()
 
     init(
         mailbox: DesktopFrameMailbox,
@@ -56,14 +64,24 @@ final class DoryPCSoftwareDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Send
     func present(_ frame: DoryVirtioGPUFrame) {
         guard let converted = convert(frame) else { return }
         mailbox.submit(converted)
+        let visible = Self.containsVisibleContent(converted.bytes)
         let shouldDeliver = lock.withLock { () -> Bool in
-            guard !deliveredVisibleFrame,
-                  Self.containsVisibleContent(converted.bytes) else { return false }
+            metricStorage.receivedFrames = Self.saturatingAdd(metricStorage.receivedFrames, 1)
+            metricStorage.receivedFrameBytes = Self.saturatingAdd(
+                metricStorage.receivedFrameBytes,
+                UInt64(converted.bytes.count)
+            )
+            if visible {
+                metricStorage.visibleFrames = Self.saturatingAdd(metricStorage.visibleFrames, 1)
+            }
+            guard !deliveredVisibleFrame, visible else { return false }
             deliveredVisibleFrame = true
             return true
         }
         if shouldDeliver { onFirstFrame() }
     }
+
+    var metrics: DoryPCSoftwareDisplayMetrics { lock.withLock { metricStorage } }
 
     /// A modeset commonly flushes one uniformly cleared resource before firmware or a bootloader
     /// has drawn anything. Keep the startup presentation over that clear instead of turning a
@@ -167,5 +185,126 @@ final class DoryPCSoftwareDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Send
     private static func sum(_ lhs: UInt32, _ rhs: UInt32) -> UInt32? {
         let (value, overflow) = lhs.addingReportingOverflow(rhs)
         return overflow ? nil : value
+    }
+
+    private static func saturatingAdd(_ value: UInt64, _ increment: UInt64) -> UInt64 {
+        let (sum, overflow) = value.addingReportingOverflow(increment)
+        return overflow ? UInt64.max : sum
+    }
+}
+
+/// Publishes enough live DoryPC execution and display truth to diagnose a translated boot without
+/// requiring guest tools or debugger attachment. The sampler observes only bounded counters; the
+/// lifecycle server remains the authority for when and to whom a snapshot is disclosed.
+final class DoryPCDeviceTelemetrySampler: @unchecked Sendable {
+    struct Source: Sendable {
+        let execution: DoryPCExecutionStatistics
+        let graphics: DoryVirtioGPUCommandDiagnostics
+        let display: DoryPCSoftwareDisplayMetrics?
+    }
+
+    private let machineID: String
+    private let operationID: String
+    private let source: @Sendable () -> Source
+    private let lock = NSLock()
+    private var sampleSequence: UInt64 = 0
+
+    init(
+        machineID: String,
+        operationID: UUID,
+        source: @escaping @Sendable () -> Source
+    ) {
+        self.machineID = machineID
+        self.operationID = DoryOperationIdentity.canonical(operationID)
+        self.source = source
+    }
+
+    func snapshot() -> DoryDeviceTelemetrySnapshot {
+        let sequence = lock.withLock { () -> UInt64 in
+            sampleSequence = sampleSequence == UInt64.max ? 1 : sampleSequence + 1
+            return sampleSequence
+        }
+        let current = source()
+        let execution = current.execution
+        let totalInstructions = Self.saturatingSum([
+            execution.interpreterInstructions,
+            execution.baselineJITInstructions,
+            execution.optimizingJITInstructions,
+        ])
+        let graphicsHealth: DoryDeviceTelemetryHealth =
+            current.graphics.failedCommandCount == 0 ? .healthy : .degraded
+        let displayMetrics: [DoryDeviceTelemetryMetric]
+        if let display = current.display {
+            displayMetrics = [
+                .measured(.displayFrames, value: display.receivedFrames),
+                .measured(.displayVisibleFrames, value: display.visibleFrames),
+                .measured(.displayReceivedFrameBytes, value: display.receivedFrameBytes),
+            ]
+        } else {
+            let reason = "headless launch has no presentation surface"
+            displayMetrics = [
+                .unavailable(.displayFrames, reason: reason),
+                .unavailable(.displayVisibleFrames, reason: reason),
+                .unavailable(.displayReceivedFrameBytes, reason: reason),
+            ]
+        }
+        return DoryDeviceTelemetrySnapshot(
+            machineID: machineID,
+            operationID: operationID,
+            backend: .doryHypervisor,
+            sampleSequence: sequence,
+            sampledAtUnixMilliseconds: UInt64(max(
+                1,
+                Int64(Date().timeIntervalSince1970 * 1_000)
+            )),
+            monotonicNanoseconds: max(1, DispatchTime.now().uptimeNanoseconds),
+            devices: [
+                DoryDeviceTelemetryDevice(
+                    id: "dorypc-execution",
+                    kind: .platform,
+                    health: .healthy,
+                    metrics: [
+                        .measured(.guestInstructions, value: totalInstructions),
+                        .measured(
+                            .interpreterInstructions,
+                            value: execution.interpreterInstructions
+                        ),
+                        .measured(
+                            .baselineJITInstructions,
+                            value: execution.baselineJITInstructions
+                        ),
+                        .measured(.baselineJITBlocks, value: execution.baselineJITBlocks),
+                        .measured(
+                            .optimizingJITInstructions,
+                            value: execution.optimizingJITInstructions
+                        ),
+                        .measured(.optimizingJITBlocks, value: execution.optimizingJITBlocks),
+                    ]
+                ),
+                DoryDeviceTelemetryDevice(
+                    id: "dorypc-display-0",
+                    kind: .graphics,
+                    health: graphicsHealth,
+                    metrics: [
+                        .measured(
+                            .graphicsCommands,
+                            value: current.graphics.completedCommandCount
+                        ),
+                        .measured(
+                            .graphicsCommandFailures,
+                            value: current.graphics.failedCommandCount
+                        ),
+                        .measured(.deviceResets, value: current.graphics.resetCount),
+                    ] + displayMetrics
+                ),
+            ]
+        )
+    }
+
+    private static func saturatingSum(_ values: [UInt64]) -> UInt64 {
+        values.reduce(0) { value, increment in
+            let (sum, overflow) = value.addingReportingOverflow(increment)
+            return overflow ? UInt64.max : sum
+        }
     }
 }

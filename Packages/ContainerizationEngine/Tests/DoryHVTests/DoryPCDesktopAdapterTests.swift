@@ -4,6 +4,7 @@ import DoryHV
 import DoryMachinePC
 import DoryVirtio
 import DoryVMContracts
+import DorydKit
 import Foundation
 import ImageIO
 import Testing
@@ -283,6 +284,55 @@ import Testing
         sink.present(frame([0, 0, 0, 255, 255, 255, 255, 255]))
         sink.present(frame([255, 255, 255, 255, 255, 255, 255, 255]))
         #expect(deliveries.value == 1)
+        #expect(sink.metrics == DoryPCSoftwareDisplayMetrics(
+            receivedFrames: 4,
+            visibleFrames: 2,
+            receivedFrameBytes: 32
+        ))
+    }
+
+    @Test func pcTelemetryPublishesExecutionGPUAndVisibleFrameProgress() throws {
+        let operationID = UUID()
+        let sampler = DoryPCDeviceTelemetrySampler(
+            machineID: "pc-test",
+            operationID: operationID
+        ) {
+            .init(
+                execution: DoryPCExecutionStatistics(
+                    interpreterInstructions: 5,
+                    baselineJITInstructions: 0,
+                    baselineJITBlocks: 0,
+                    optimizingJITInstructions: 95,
+                    optimizingJITBlocks: 40
+                ),
+                graphics: DoryVirtioGPUCommandDiagnostics(
+                    completedCommandCount: 10,
+                    failedCommandCount: 0,
+                    resetCount: 1,
+                    recentCommands: []
+                ),
+                display: .init(
+                    receivedFrames: 2,
+                    visibleFrames: 1,
+                    receivedFrameBytes: 8_192
+                )
+            )
+        }
+
+        let first = sampler.snapshot()
+        let second = sampler.snapshot()
+        #expect(first.isValid)
+        #expect(first.backend == .doryHypervisor)
+        #expect(first.sampleSequence == 1)
+        #expect(second.sampleSequence == 2)
+        let execution = try #require(first.devices.first { $0.id == "dorypc-execution" })
+        #expect(execution.metrics.first { $0.kind == .guestInstructions }?.value == 100)
+        #expect(execution.metrics.first { $0.kind == .optimizingJITBlocks }?.value == 40)
+        let graphics = try #require(first.devices.first { $0.id == "dorypc-display-0" })
+        #expect(graphics.health == .healthy)
+        #expect(graphics.metrics.first { $0.kind == .graphicsCommands }?.value == 10)
+        #expect(graphics.metrics.first { $0.kind == .displayFrames }?.value == 2)
+        #expect(graphics.metrics.first { $0.kind == .displayVisibleFrames }?.value == 1)
     }
 
     @Test func softwareFrameConversionRejectsTruncatedResources() {
