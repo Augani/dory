@@ -57,6 +57,29 @@ enum DoryPCMode {
 
     @MainActor
     private final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
+        private final class FirstFrameRelay: @unchecked Sendable {
+            private let lock = NSLock()
+            private var delivered = false
+            private var operation: (@Sendable () -> Void)?
+
+            func install(_ operation: @escaping @Sendable () -> Void) {
+                let deliverNow = lock.withLock { () -> Bool in
+                    self.operation = operation
+                    return delivered
+                }
+                if deliverNow { operation() }
+            }
+
+            func deliver() {
+                let operation = lock.withLock { () -> (@Sendable () -> Void)? in
+                    guard !delivered else { return nil }
+                    delivered = true
+                    return self.operation
+                }
+                operation?()
+            }
+        }
+
         private final class FilesystemFailureRelay: @unchecked Sendable {
             private let lock = NSLock()
             private var failureStorage: String?
@@ -390,15 +413,9 @@ enum DoryPCMode {
                 )
             }
             self.readyPublisher = readyPublisher
+            let firstFrameRelay = FirstFrameRelay()
             let displaySink = mailbox.map { mailbox in
-                DoryPCSoftwareDisplaySink(mailbox: mailbox) {
-                    do { try readyPublisher.markPresentationReady() }
-                    catch {
-                        FileHandle.standardError.write(
-                            Data("dory-hv DoryPC readiness failed: \(error)\n".utf8)
-                        )
-                    }
-                }
+                DoryPCSoftwareDisplaySink(mailbox: mailbox) { firstFrameRelay.deliver() }
             }
             self.displaySink = displaySink
             let audioBackend = devices.audioInput || devices.audioOutput
@@ -574,7 +591,22 @@ enum DoryPCMode {
                     defer: false
                 )
                 window.title = "\(envelope.machineID) — Dory Desktop"
-                window.contentView = view
+                let content = NSView(frame: NSRect(origin: .zero, size: size))
+                content.autoresizesSubviews = true
+                view.frame = content.bounds
+                view.autoresizingMask = [.width, .height]
+                content.addSubview(view)
+
+                let startup = Self.makeStartupOverlay(frame: content.bounds)
+                content.addSubview(startup)
+                firstFrameRelay.install { [weak startup, weak window] in
+                    DesktopAppRunLoop.perform {
+                        startup?.removeFromSuperview()
+                        window?.title = "\(envelope.machineID) — Dory Desktop"
+                    }
+                }
+                window.title = "\(envelope.machineID) — Starting x86_64 Linux"
+                window.contentView = content
                 window.minSize = NSSize(width: 640, height: 400)
                 window.collectionBehavior.insert(.fullScreenPrimary)
                 window.tabbingMode = .disallowed
@@ -598,7 +630,13 @@ enum DoryPCMode {
             installSignals()
             window?.makeKeyAndOrderFront(nil)
             if window != nil { application.activate() }
-            if window == nil { try readyPublisher.markPresentationReady() }
+            // A translated first boot can spend several minutes in immutable UEFI work before a
+            // GPU driver submits its first scanout. The admitted runner, lifecycle socket, and
+            // visible presentation boundary are ready now; tying daemon liveness to guest pixels
+            // killed healthy VMs at the desktop readiness deadline. The startup overlay remains
+            // until the first real frame arrives, while headless machines publish the same runner
+            // readiness without a window.
+            try readyPublisher.markPresentationReady()
             startExecution()
             startGuestServicePreparation()
             application.run()
@@ -868,6 +906,48 @@ enum DoryPCMode {
                 )
             }
             return FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        }
+
+        private static func makeStartupOverlay(frame: NSRect) -> NSView {
+            let overlay = NSVisualEffectView(frame: frame)
+            overlay.autoresizingMask = [.width, .height]
+            overlay.blendingMode = .withinWindow
+            overlay.material = .underWindowBackground
+            overlay.state = .active
+
+            let progress = NSProgressIndicator()
+            progress.style = .spinning
+            progress.controlSize = .regular
+            progress.startAnimation(nil)
+
+            let title = NSTextField(labelWithString: "Starting x86_64 Linux")
+            title.font = .systemFont(ofSize: 17, weight: .semibold)
+            title.textColor = .labelColor
+            title.alignment = .center
+
+            let detail = NSTextField(
+                wrappingLabelWithString:
+                    "Translating UEFI firmware. The installer will appear automatically."
+            )
+            detail.font = .systemFont(ofSize: 13)
+            detail.textColor = .secondaryLabelColor
+            detail.alignment = .center
+            detail.maximumNumberOfLines = 2
+            detail.preferredMaxLayoutWidth = 420
+
+            let stack = NSStackView(views: [progress, title, detail])
+            stack.orientation = .vertical
+            stack.alignment = .centerX
+            stack.spacing = 10
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            overlay.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+                stack.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
+                stack.leadingAnchor.constraint(greaterThanOrEqualTo: overlay.leadingAnchor, constant: 32),
+                stack.trailingAnchor.constraint(lessThanOrEqualTo: overlay.trailingAnchor, constant: -32),
+            ])
+            return overlay
         }
 
         private nonisolated static func log(_ message: String) {
