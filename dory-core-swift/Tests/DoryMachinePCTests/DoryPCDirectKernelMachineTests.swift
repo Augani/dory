@@ -216,6 +216,37 @@ import Testing
     #endif
   }
 
+  @Test func multiprocessorOptimizingJITUsesABoundedInstructionBatch() throws {
+    #if arch(arm64)
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        processorCount: 4,
+        executionTier: .optimizingJIT,
+        baselineJITMaximumCodeBytes: 4096
+      )
+      // mov eax,1; mov ebx,eax; add ebx,2; nop; hlt
+      try machine.load(
+        kernel: makeELF(code: [
+          0xB8, 1, 0, 0, 0,
+          0x89, 0xC3,
+          0x83, 0xC3, 2,
+          0x90,
+          0xF4,
+        ]),
+        commandLine: "x"
+      )
+
+      #expect(try machine.run(maximumInstructions: 16) == .halted(instructionCount: 5))
+      #expect(machine.state?.registers.rbx == 3)
+      #expect(machine.executionStatistics.optimizingJITInstructions == 5)
+      #expect(machine.executionStatistics.optimizingJITBlocks == 1)
+      #expect(machine.executionStatistics.interpreterInstructions == 0)
+      #expect(machine.processorExecutionSnapshots.dropFirst().allSatisfy {
+        $0.lifecycle == .waitingForStartup
+      })
+    #endif
+  }
+
   @Test func guestTSCAdvancesIdenticallyAcrossExecutionTiers() throws {
     #if arch(arm64)
       let tiers: [DoryPCExecutionTier] = [.interpreter, .baselineJIT, .optimizingJIT]
