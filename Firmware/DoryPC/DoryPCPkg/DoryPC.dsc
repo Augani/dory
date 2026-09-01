@@ -655,8 +655,9 @@
   gEmbeddedTokenSpaceGuid.PcdMemoryTypeEfiRuntimeServicesData|0x100
 
   #
-  # Keep firmware page tables inside the frozen compatible-v1 CPU profile.
-  gEfiMdeModulePkgTokenSpaceGuid.PcdUse1GPageTable|FALSE
+  # The compatible-v1 CPU profile exposes architectural 1 GiB pages. Let DXE use them for its
+  # temporary identity map so translated guests do not spend minutes constructing 2 MiB entries.
+  gEfiMdeModulePkgTokenSpaceGuid.PcdUse1GPageTable|TRUE
 
   # DoryPC does not publish a platform-recovery image. Keep BDS on the standard removable-media
   # fallback instead of enumerating every variable to manufacture PlatformRecovery#### metadata.

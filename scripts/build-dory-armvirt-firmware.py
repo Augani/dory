@@ -131,8 +131,10 @@ def verify_platform_contract() -> None:
         raise BuildFailure("DoryPC must not compile a confidential-guest execution path")
     if "DEFINE BUILD_SHELL             = FALSE" not in contents:
         raise BuildFailure("DoryPC production firmware must not embed the UEFI shell")
-    if "gEfiMdeModulePkgTokenSpaceGuid.PcdUse1GPageTable|FALSE" not in contents:
-        raise BuildFailure("DoryPC firmware must stay inside the compatible-v1 page-size profile")
+    if "gEfiMdeModulePkgTokenSpaceGuid.PcdUse1GPageTable|TRUE" not in contents:
+        raise BuildFailure(
+            "DoryPC firmware must use the compatible-v1 1 GiB page-table capability"
+        )
     tiano_library = (
         "MdePkg/Library/BaseUefiDecompressLib/BaseUefiTianoCustomDecompressLib.inf"
     )
