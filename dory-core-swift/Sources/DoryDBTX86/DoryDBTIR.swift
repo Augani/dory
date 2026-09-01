@@ -140,6 +140,10 @@ public struct DoryX86IRTranslator: Sendable {
     var offset = 0
     var instructionCount = 0
     var statements: [DoryIRStatement] = []
+    // Most decoded instructions lower to one or two statements. Reserving the bounded block
+    // shape avoids repeatedly reallocating and copying the comparatively large statement enum
+    // while translating cold firmware and kernel code.
+    statements.reserveCapacity(min(instructionBudget * 2, 128))
     var terminator: DoryIRTerminator?
 
     while offset < bytes.count, instructionCount < instructionBudget {
