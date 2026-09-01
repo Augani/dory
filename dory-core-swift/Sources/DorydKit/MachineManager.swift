@@ -32,6 +32,10 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
     /// the helper can publish readiness. This must exceed the desktop helper's own preparation
     /// budget, while still remaining bounded.
     public var desktopHandoffReadyTimeoutSeconds: TimeInterval
+    /// A first native macOS restore may legitimately take hours. Normal starts retain the
+    /// desktop timeout; this longer bound is selected only while the VZMac bundle is prepared or
+    /// retrying an interrupted installation.
+    public var macOSRestoreHandoffReadyTimeoutSeconds: TimeInterval
     /// Bounded helper retries are active only until the ready handoff. This absorbs transient
     /// Virtualization.framework resource release races without masking a later VM crash.
     public var startupRestartPolicy: HvRestartPolicy
@@ -56,6 +60,7 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
         requiresReadyHandoff: Bool = true,
         handoffReadyTimeoutSeconds: TimeInterval = 60,
         desktopHandoffReadyTimeoutSeconds: TimeInterval = 180,
+        macOSRestoreHandoffReadyTimeoutSeconds: TimeInterval = 4 * 60 * 60,
         startupRestartPolicy: HvRestartPolicy = HvRestartPolicy(
             maxRestarts: 4,
             delaySeconds: 0.25,
@@ -80,6 +85,7 @@ public struct MachineManagerConfiguration: Sendable, Equatable {
         self.requiresReadyHandoff = requiresReadyHandoff
         self.handoffReadyTimeoutSeconds = handoffReadyTimeoutSeconds
         self.desktopHandoffReadyTimeoutSeconds = desktopHandoffReadyTimeoutSeconds
+        self.macOSRestoreHandoffReadyTimeoutSeconds = macOSRestoreHandoffReadyTimeoutSeconds
         self.startupRestartPolicy = startupRestartPolicy
         self.guestArchitecture = guestArchitecture ?? Self.currentGuestArchitecture
         self.sshAgentSocketPath = sshAgentSocketPath
@@ -2394,7 +2400,7 @@ public final class MachineManager: @unchecked Sendable {
                 "workspace launch artifacts are not representable"
             )
         }
-        let bindings = Dictionary(grouping: authority.migration.artifactBindings, by: \.reference)
+        let bindings = Dictionary(grouping: authority.artifactBindings, by: \.reference)
         var publications: [DoryDaemonVirtualMachinePlanningArtifactPublication] = []
         publications.reserveCapacity(requirements.count)
         for requirement in requirements {
@@ -2426,7 +2432,17 @@ public final class MachineManager: @unchecked Sendable {
                 definition: definition,
                 canonicalDefinitionData: canonicalDefinitionData,
                 machine: authority.runtimeMachine,
-                publication: planPublication
+                publication: planPublication,
+                experimentalAuthorization: definition.guest.family == .macOS
+                    ? DoryResolvedExperimentalSupportAuthorization(
+                        authorizationIdentity: "explicit-native-macos-create",
+                        definitionRevision: definition.lifecycle.revision,
+                        backend: .appleVirtualizationFramework,
+                        authorizedAtUnixMilliseconds: Int64(
+                            (Date().timeIntervalSince1970 * 1_000).rounded(.towardZero)
+                        )
+                    )
+                    : nil
             ),
             workspacePublication: .retainExistingExact
         )
@@ -4362,7 +4378,20 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     private func handoffReadyTimeout(for machine: DoryMachineConfiguration) -> TimeInterval {
-        handoffReadyTimeout(displayMode: machine.displayMode, bootMode: machine.bootMode)
+        if machine.guestFamily == .macOS,
+           let bundlePath = machine.macOSMachineBundlePath,
+           let bundle = try? DoryVZMacMachineBundle.load(
+                from: URL(fileURLWithPath: bundlePath, isDirectory: true)
+           ),
+           bundle.manifest.installationState == .prepared
+                || bundle.manifest.installationState == .installFailed
+                || bundle.manifest.installationState == .installing {
+            return configuration.macOSRestoreHandoffReadyTimeoutSeconds
+        }
+        return handoffReadyTimeout(
+            displayMode: machine.displayMode,
+            bootMode: machine.bootMode
+        )
     }
 
     private func handoffReadyTimeout(
@@ -10355,6 +10384,68 @@ public final class MachineManager: @unchecked Sendable {
             }
             return baseArguments
         }
+        if machine.guestFamily == .macOS {
+            guard !acceleratedDesktop,
+                  machine.bootMode == .macOSRestore,
+                  machine.guestArchitecture == .arm64,
+                  machine.displayMode == .desktop,
+                  runtimeLaunchEnvelope == nil,
+                  pcRuntimeLaunchEnvelope == nil,
+                  resolvedLaunchBinding?.backend.identity
+                    == .appleVirtualizationFramework,
+                  resolvedLaunchBinding?.graphics == .hostAcceleratedDisplay,
+                  let bundlePath = machine.macOSMachineBundlePath,
+                  let restoreImagePath = machine.macOSRestoreImagePath,
+                  let handoffPath else {
+                throw MachineManagerError.persistence(
+                    "native macOS launch requires its exact VZMac bundle, restore media, display, and handoff contract"
+                )
+            }
+            let bundle = try DoryVZMacMachineBundle.load(
+                from: URL(fileURLWithPath: bundlePath, isDirectory: true)
+            )
+            let operation: String
+            switch bundle.manifest.installationState {
+            case .prepared, .installFailed:
+                guard restoreStatePath == nil else {
+                    throw MachineManagerError.persistence(
+                        "prepared native macOS cannot consume a saved-state receipt"
+                    )
+                }
+                operation = "install"
+            case .stopped:
+                guard restoreStatePath == nil else {
+                    throw MachineManagerError.persistence(
+                        "stopped native macOS cannot consume a saved-state receipt"
+                    )
+                }
+                operation = "run"
+            case .suspended:
+                guard restoreStatePath == savedStateStore.statePath(machineID: machine.id) else {
+                    throw MachineManagerError.persistence(
+                        "suspended native macOS requires its exact saved-state receipt"
+                    )
+                }
+                operation = "resume"
+            case .installing, .suspending, .restoring:
+                throw MachineManagerError.persistence(
+                    "native macOS has an interrupted \(bundle.manifest.installationState.rawValue) operation that requires recovery"
+                )
+            }
+            var arguments = baseArguments + [
+                "vzmac", operation,
+                "--machine", bundlePath,
+                "--machine-id", machine.id,
+                "--operation-id", DoryOperationIdentity.canonical(operationID),
+                "--state-dir", machineStateDirectory(id: machine.id),
+                "--control-sock", "\(machineRuntimeDirectory(id: machine.id))/c.sock",
+                "--handoff-sock", handoffPath,
+            ]
+            if operation == "install" {
+                arguments.append(contentsOf: ["--ipsw", restoreImagePath])
+            }
+            return arguments
+        }
         let acceleratedInstalledLinux = acceleratedDesktop
             && machine.bootMode == .efi
             && machine.installerISOPath == nil
@@ -13535,6 +13626,53 @@ public final class MachineManager: @unchecked Sendable {
         machine: DoryMachineConfiguration,
         authoritativeLegacyData: Data
     ) throws -> MachineWorkspaceAuthority {
+        if machine.guestFamily == .macOS {
+            guard machine.bootMode == .macOSRestore,
+                  let restorePath = machine.macOSRestoreImagePath,
+                  let bundlePath = machine.macOSMachineBundlePath else {
+                throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
+            }
+            let record = try workspaceRepository.readPersistedRecord(id: machine.id)
+            let definition = record.definition
+            guard record.legacyConfigurationSHA256 == nil,
+                  record.legacyMigrationFactsSHA256 == nil,
+                  definition.identity.id == machine.id,
+                  definition.guest == DoryGuestPlatform(family: .macOS, architecture: .arm64),
+                  definition.boot.devices.count == 1,
+                  let restore = definition.boot.devices.first,
+                  restore.kind == .macOSRestoreImage,
+                  definition.storage.count == 1,
+                  let system = definition.storage.first,
+                  system.role == .system,
+                  definition.validate().isEmpty else {
+                throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
+            }
+            let bundle = try DoryVZMacMachineBundle.load(
+                from: URL(fileURLWithPath: bundlePath, isDirectory: true)
+            )
+            guard bundle.diskURL.path.hasPrefix(bundlePath + "/") else {
+                throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
+            }
+            return MachineWorkspaceAuthority(
+                definition: definition,
+                artifactBindings: [
+                    DoryMachineConfigurationArtifactBinding(
+                        role: .installerISO,
+                        reference: restore.artifact,
+                        path: restorePath
+                    ),
+                    DoryMachineConfigurationArtifactBinding(
+                        role: .systemDisk,
+                        reference: system.artifact,
+                        path: bundle.diskURL.path
+                    ),
+                ],
+                migrationFactsData: try Self.canonicalDefinitionData(definition),
+                runtimeMachine: machine,
+                isNative: true,
+                reconcileState: .unchanged
+            )
+        }
         let facts = try workspaceMigrationFacts(for: machine)
         var migration = try DoryMachineConfigurationMigrationBridge.migrate(
             machine,
@@ -13610,7 +13748,7 @@ public final class MachineManager: @unchecked Sendable {
         migration.definition = definition
         return MachineWorkspaceAuthority(
             definition: definition,
-            migration: migration,
+            artifactBindings: migration.artifactBindings,
             migrationFactsData: factsData,
             runtimeMachine: try runtimeMigration.legacyConfiguration(),
             isNative: isNative,
@@ -18386,7 +18524,7 @@ private struct DoryMachineShareRuntimeAuthority {
 
 private struct MachineWorkspaceAuthority {
     var definition: DoryVirtualMachineDefinition
-    var migration: DoryMachineConfigurationMigrationResult
+    var artifactBindings: [DoryMachineConfigurationArtifactBinding]
     var migrationFactsData: Data
     var runtimeMachine: DoryMachineConfiguration
     var isNative: Bool

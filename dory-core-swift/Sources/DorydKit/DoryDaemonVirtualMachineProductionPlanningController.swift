@@ -1,5 +1,6 @@
 import Darwin
 import DoryOperations
+import DoryVZMacCore
 import Foundation
 
 public enum DoryDaemonVirtualMachineProductionPlanningControllerFailureCode:
@@ -220,8 +221,12 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
                 case .virtualDisk:
                     paths.insert(machine.rootfsPath)
                 case .macOSRestoreImage:
-                    // MachineManager has no macOS restore-media launch contract yet.
-                    return nil
+                    guard machine.guestFamily == .macOS,
+                          machine.bootMode == .macOSRestore,
+                          let restoreImagePath = machine.macOSRestoreImagePath else {
+                        return nil
+                    }
+                    paths.insert(restoreImagePath)
                 }
             case .storage:
                 guard let storage = definition.storage.first(where: {
@@ -230,7 +235,17 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
                     // Compatibility MachineManager cannot launch auxiliary typed disks yet.
                     return nil
                 }
-                paths.insert(machine.rootfsPath)
+                if machine.guestFamily == .macOS {
+                    guard machine.bootMode == .macOSRestore,
+                          let bundlePath = machine.macOSMachineBundlePath else {
+                        return nil
+                    }
+                    paths.insert(
+                        bundlePath + "/" + DoryVZMacMachineBundle.diskName
+                    )
+                } else {
+                    paths.insert(machine.rootfsPath)
+                }
             case .firmware:
                 // Firmware resolver paths are not represented by DoryMachineConfiguration yet.
                 return nil

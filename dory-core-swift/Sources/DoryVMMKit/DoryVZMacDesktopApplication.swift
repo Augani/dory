@@ -1,4 +1,9 @@
 import AppKit
+import Darwin
+import DoryCore
+import DorydKit
+import DoryOperations
+import DoryVZMacCore
 import Foundation
 
 public enum DoryVZMacDesktopOperation: String, Sendable, Equatable {
@@ -14,6 +19,11 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
     public var guestToolsURL: URL?
     public var usbDiskURL: URL?
     public var usbDiskReadOnly: Bool
+    public var machineID: String?
+    public var operationID: UUID?
+    public var stateDirectoryURL: URL?
+    public var controlSocketPath: String?
+    public var handoffSocketPath: String?
 
     public init(
         operation: DoryVZMacDesktopOperation,
@@ -21,7 +31,12 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
         restoreImageURL: URL? = nil,
         guestToolsURL: URL? = nil,
         usbDiskURL: URL? = nil,
-        usbDiskReadOnly: Bool = true
+        usbDiskReadOnly: Bool = true,
+        machineID: String? = nil,
+        operationID: UUID? = nil,
+        stateDirectoryURL: URL? = nil,
+        controlSocketPath: String? = nil,
+        handoffSocketPath: String? = nil
     ) {
         self.operation = operation
         self.machineBundleURL = machineBundleURL.standardizedFileURL
@@ -29,6 +44,16 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
         self.guestToolsURL = guestToolsURL?.standardizedFileURL
         self.usbDiskURL = usbDiskURL?.standardizedFileURL
         self.usbDiskReadOnly = usbDiskReadOnly
+        self.machineID = machineID
+        self.operationID = operationID
+        self.stateDirectoryURL = stateDirectoryURL?.standardizedFileURL
+        self.controlSocketPath = controlSocketPath
+        self.handoffSocketPath = handoffSocketPath
+    }
+
+    public var hasManagedLifecycleContract: Bool {
+        machineID != nil && operationID != nil && stateDirectoryURL != nil
+            && controlSocketPath != nil && handoffSocketPath != nil
     }
 }
 
@@ -43,6 +68,9 @@ public enum DoryVZMacDesktopArgumentError: Error, Sendable, Equatable, CustomStr
     case restoreImageUnexpected
     case usbReadOnlyWithoutDisk
     case pathMustBeAbsolute(String)
+    case incompleteManagedLifecycleContract
+    case invalidMachineID
+    case invalidOperationID
 
     public var description: String {
         switch self {
@@ -56,6 +84,10 @@ public enum DoryVZMacDesktopArgumentError: Error, Sendable, Equatable, CustomStr
         case .restoreImageUnexpected: "--ipsw is accepted only for VZMac installation"
         case .usbReadOnlyWithoutDisk: "--usb-disk-read-only requires --usb-disk"
         case .pathMustBeAbsolute(let flag): "\(flag) must name an absolute path"
+        case .incompleteManagedLifecycleContract:
+            "managed VZMac launch requires machine, operation, state, control, and handoff identity"
+        case .invalidMachineID: "--machine-id is not a safe machine identifier"
+        case .invalidOperationID: "--operation-id is not a canonical UUID"
         }
     }
 }
@@ -83,7 +115,10 @@ public func parseDoryVZMacDesktopArguments(
             index += 1
             continue
         }
-        guard ["--machine", "--ipsw", "--guest-tools", "--usb-disk"].contains(flag) else {
+        guard [
+            "--machine", "--ipsw", "--guest-tools", "--usb-disk", "--machine-id",
+            "--operation-id", "--state-dir", "--control-sock", "--handoff-sock",
+        ].contains(flag) else {
             throw DoryVZMacDesktopArgumentError.unknownArgument(flag)
         }
         guard values[flag] == nil else {
@@ -118,13 +153,56 @@ public func parseDoryVZMacDesktopArguments(
     if sawUSBReadOnlyFlag, usbURL == nil {
         throw DoryVZMacDesktopArgumentError.usbReadOnlyWithoutDisk
     }
+    let machineID = values["--machine-id"]
+    if let machineID,
+       machineID.isEmpty || machineID.utf8.count > 63
+        || !machineID.utf8.allSatisfy({ byte in
+            (48...57).contains(byte) || (65...90).contains(byte)
+                || (97...122).contains(byte) || byte == 45 || byte == 95
+        }) {
+        throw DoryVZMacDesktopArgumentError.invalidMachineID
+    }
+    let operationID: UUID?
+    if let rawOperationID = values["--operation-id"] {
+        guard let parsed = DoryOperationIdentity.parseCanonical(rawOperationID) else {
+            throw DoryVZMacDesktopArgumentError.invalidOperationID
+        }
+        operationID = parsed
+    } else {
+        operationID = nil
+    }
+    let stateDirectoryURL = try values["--state-dir"].map {
+        try absoluteFileURL($0, flag: "--state-dir", isDirectory: true)
+    }
+    let controlSocketPath = try values["--control-sock"].map {
+        try absoluteFileURL($0, flag: "--control-sock", isDirectory: false).path
+    }
+    let handoffSocketPath = try values["--handoff-sock"].map {
+        try absoluteFileURL($0, flag: "--handoff-sock", isDirectory: false).path
+    }
+    let managedValuesPresent = [
+        machineID != nil,
+        operationID != nil,
+        stateDirectoryURL != nil,
+        controlSocketPath != nil,
+        handoffSocketPath != nil,
+    ]
+    guard managedValuesPresent.allSatisfy({ $0 })
+            || managedValuesPresent.allSatisfy({ !$0 }) else {
+        throw DoryVZMacDesktopArgumentError.incompleteManagedLifecycleContract
+    }
     return DoryVZMacDesktopArguments(
         operation: operation,
         machineBundleURL: machineURL,
         restoreImageURL: restoreURL,
         guestToolsURL: toolsURL,
         usbDiskURL: usbURL,
-        usbDiskReadOnly: usbDiskReadOnly
+        usbDiskReadOnly: usbDiskReadOnly,
+        machineID: machineID,
+        operationID: operationID,
+        stateDirectoryURL: stateDirectoryURL,
+        controlSocketPath: controlSocketPath,
+        handoffSocketPath: handoffSocketPath
     )
 }
 
@@ -172,6 +250,8 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
     private let window: NSWindow
     private var terminalError: Error?
     private var stopRequested = false
+    private var controlServer: DoryVZMacControlServer?
+    private var handoffPublished = false
 
     init(application: NSApplication, arguments: DoryVZMacDesktopArguments) throws {
         self.application = application
@@ -222,6 +302,10 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
                     try await adapter.install(from: restoreImageURL) { [weak self] fraction in
                         self?.window.title = "\(self?.machineName ?? "macOS") — Installing macOS \(Int(fraction * 100))%"
                     }
+                    // Apple's installer leaves the VM stopped after restore. Keep creation and
+                    // first boot one supervised operation and publish readiness only after the
+                    // installed guest is actually running.
+                    try await adapter.start()
                 case .run:
                     try await adapter.start()
                 case .resume:
@@ -257,6 +341,7 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
             window.title = "\(machineName) — Starting macOS"
         case .running:
             window.title = "\(machineName) — macOS"
+            publishManagedReadyIfNeeded()
         case .pausing:
             window.title = "\(machineName) — Pausing macOS"
         case .paused:
@@ -265,7 +350,9 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
             window.title = "\(machineName) — Suspending macOS"
         case .suspended:
             window.title = "\(machineName) — macOS suspended"
-            finish()
+            if !arguments.hasManagedLifecycleContract {
+                finish()
+            }
         case .restoring:
             window.title = "\(machineName) — Restoring macOS"
         case .stopping:
@@ -285,6 +372,8 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
     }
 
     private func finish() {
+        controlServer?.stop()
+        controlServer = nil
         application.stop(nil)
         if let event = NSEvent.otherEvent(
             with: .applicationDefined,
@@ -310,6 +399,171 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
             terminalError = error
             finish()
         }
+    }
+
+    private func publishManagedReadyIfNeeded() {
+        guard !handoffPublished, arguments.hasManagedLifecycleContract,
+              let machineID = arguments.machineID,
+              let operationID = arguments.operationID,
+              let stateDirectoryURL = arguments.stateDirectoryURL,
+              let controlSocketPath = arguments.controlSocketPath,
+              let handoffSocketPath = arguments.handoffSocketPath else {
+            return
+        }
+        do {
+            let server = try DoryVZMacControlServer(
+                machineID: machineID,
+                launchOperationID: operationID,
+                stateDirectory: stateDirectoryURL.path,
+                socketPath: controlSocketPath
+            ) { [weak self] request in
+                guard let self else {
+                    return VmmControlResponse(ok: false, message: "VZMac controller exited")
+                }
+                return await self.handleManagedControlRequest(request)
+            }
+            try server.start()
+            controlServer = server
+            try VmmHandoffClient.send(
+                path: handoffSocketPath,
+                ready: VmmReadyMessage(
+                    machineID: machineID,
+                    operationID: DoryOperationIdentity.canonical(operationID),
+                    agentBuild: "dory-vmm/vzmac",
+                    controlSocketPath: controlSocketPath,
+                    detail: "native ARM64 macOS is running through Virtualization.framework"
+                )
+            )
+            handoffPublished = true
+        } catch {
+            terminalError = error
+            requestStop()
+        }
+    }
+
+    private func handleManagedControlRequest(
+        _ request: VmmControlRequest
+    ) async -> VmmControlResponse {
+        switch request.command {
+        case "pauseMachine":
+            guard let receipt = lifecycleReceipt(request, expected: .preparePause) else {
+                return VmmControlResponse(ok: false, message: "invalid VZMac pause request")
+            }
+            do {
+                try await adapter.pause()
+                return receipt
+            } catch {
+                return VmmControlResponse(ok: false, message: "\(error)")
+            }
+        case "resumeMachine":
+            guard let receipt = lifecycleReceipt(request, expected: .resumed) else {
+                return VmmControlResponse(ok: false, message: "invalid VZMac resume request")
+            }
+            do {
+                try await adapter.resume()
+                return receipt
+            } catch {
+                return VmmControlResponse(ok: false, message: "\(error)")
+            }
+        case "acknowledgeLifecycle":
+            guard let action = request.lifecycleAction,
+                  let receipt = lifecycleReceipt(request, expected: action) else {
+                return VmmControlResponse(
+                    ok: false,
+                    message: "invalid VZMac lifecycle acknowledgement"
+                )
+            }
+            return receipt
+        case "deviceTelemetry":
+            guard request.targetMB == nil, request.statePath == nil,
+                  request.lifecycleAction == nil, request.operationID == nil,
+                  request.directoryShares == nil else {
+                return VmmControlResponse(
+                    ok: false,
+                    message: "invalid VZMac telemetry request"
+                )
+            }
+            return VmmControlResponse(
+                ok: true,
+                deviceTelemetry: controlServer?.nextTelemetrySnapshot()
+            )
+        case "saveMachineState":
+            guard request.targetMB == nil,
+                  request.lifecycleAction == nil,
+                  request.operationID == nil,
+                  request.directoryShares == nil,
+                  let statePath = request.statePath,
+                  let acceptedStateURL = acceptedSavedStateURL(statePath) else {
+                return VmmControlResponse(
+                    ok: false,
+                    message: "native macOS saved-state receipt is outside private machine state"
+                )
+            }
+            do {
+                if adapter.observation.state == .paused {
+                    try await adapter.resume()
+                }
+                try await adapter.suspend()
+                let bundle = try DoryVZMacMachineBundle.load(
+                    from: arguments.machineBundleURL
+                )
+                guard bundle.manifest.installationState == .suspended else {
+                    throw DoryVZMacMachineBundleError.invalidBundle(
+                        "suspend completed without a durable suspended manifest"
+                    )
+                }
+                let receipt = DoryVZMacSavedStateReceipt(
+                    schema: "dory.vzmac-saved-state@1",
+                    machineID: arguments.machineID ?? "",
+                    bundlePath: bundle.rootURL.path,
+                    restoreImageSHA256: bundle.manifest.restoreImageSHA256,
+                    hardwareModelSHA256: bundle.manifest.hardwareModelSHA256,
+                    machineIdentifierSHA256: bundle.manifest.machineIdentifierSHA256
+                )
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+                try encoder.encode(receipt).write(to: acceptedStateURL, options: [.atomic])
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                    self?.finish()
+                }
+                return VmmControlResponse(ok: true)
+            } catch {
+                return VmmControlResponse(ok: false, message: "\(error)")
+            }
+        default:
+            return VmmControlResponse(
+                ok: false,
+                message: "VZMac does not support control command \(request.command)"
+            )
+        }
+    }
+
+    private func lifecycleReceipt(
+        _ request: VmmControlRequest,
+        expected action: DoryLifecycleReceiptAction
+    ) -> VmmControlResponse? {
+        guard request.targetMB == nil, request.statePath == nil,
+              request.directoryShares == nil,
+              request.lifecycleAction == action,
+              let operationID = request.operationID,
+              DoryOperationIdentity.parseCanonical(operationID) != nil else {
+            return nil
+        }
+        return VmmControlResponse(
+            ok: true,
+            lifecycleAction: action,
+            operationID: operationID
+        )
+    }
+
+    private func acceptedSavedStateURL(_ path: String) -> URL? {
+        guard let root = arguments.stateDirectoryURL?.standardizedFileURL else { return nil }
+        let candidate = URL(fileURLWithPath: path).standardizedFileURL
+        guard candidate.path.hasPrefix(root.path + "/"),
+              candidate.deletingLastPathComponent().path == root.path else {
+            return nil
+        }
+        return candidate
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -357,5 +611,231 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
         viewRoot.submenu = viewMenu
         mainMenu.addItem(viewRoot)
         application.mainMenu = mainMenu
+    }
+}
+
+private struct DoryVZMacSavedStateReceipt: Codable {
+    var schema: String
+    var machineID: String
+    var bundlePath: String
+    var restoreImageSHA256: String
+    var hardwareModelSHA256: String
+    var machineIdentifierSHA256: String
+}
+
+private final class DoryVZMacControlServer: @unchecked Sendable {
+    typealias Handler = @Sendable (VmmControlRequest) async -> VmmControlResponse
+
+    private let machineID: String
+    private let launchOperationID: UUID
+    private let stateDirectory: String
+    private let socketPath: String
+    private let handler: Handler
+    private let queue = DispatchQueue(label: "dev.dory.dory-vmm.vzmac-control")
+    private let lock = NSLock()
+    private var listenerFD: Int32 = -1
+    private var sampleSequence: UInt64 = 0
+
+    init(
+        machineID: String,
+        launchOperationID: UUID,
+        stateDirectory: String,
+        socketPath: String,
+        handler: @escaping Handler
+    ) throws {
+        let canonicalState = URL(fileURLWithPath: stateDirectory, isDirectory: true)
+            .standardizedFileURL.path
+        guard canonicalState == stateDirectory,
+              socketPath.hasPrefix("/"), !socketPath.contains("\0") else {
+            throw VmmControlError.rejected("invalid managed VZMac control paths")
+        }
+        self.machineID = machineID
+        self.launchOperationID = launchOperationID
+        self.stateDirectory = canonicalState
+        self.socketPath = socketPath
+        self.handler = handler
+    }
+
+    func start() throws {
+        let parent = (socketPath as NSString).deletingLastPathComponent
+        try FileManager.default.createDirectory(
+            atPath: parent,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        unlink(socketPath)
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw VmmControlError.syscall("socket", errno) }
+        do {
+            var noPipe: Int32 = 1
+            guard setsockopt(
+                fd,
+                SOL_SOCKET,
+                SO_NOSIGPIPE,
+                &noPipe,
+                socklen_t(MemoryLayout<Int32>.size)
+            ) == 0 else {
+                throw VmmControlError.syscall("setsockopt(SO_NOSIGPIPE)", errno)
+            }
+            var address = try Self.unixAddress(path: socketPath)
+            let result = withUnsafePointer(to: &address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            guard result == 0 else { throw VmmControlError.syscall("bind", errno) }
+            guard chmod(socketPath, 0o600) == 0 else {
+                throw VmmControlError.syscall("chmod", errno)
+            }
+            guard listen(fd, 16) == 0 else {
+                throw VmmControlError.syscall("listen", errno)
+            }
+            lock.withLock { listenerFD = fd }
+            queue.async { [weak self] in self?.acceptLoop(listenerFD: fd) }
+        } catch {
+            close(fd)
+            unlink(socketPath)
+            throw error
+        }
+    }
+
+    func stop() {
+        let fd = lock.withLock { () -> Int32 in
+            let current = listenerFD
+            listenerFD = -1
+            return current
+        }
+        if fd >= 0 {
+            shutdown(fd, SHUT_RDWR)
+            close(fd)
+        }
+        unlink(socketPath)
+    }
+
+    func nextTelemetrySnapshot() -> DoryDeviceTelemetrySnapshot {
+        let sequence = lock.withLock { () -> UInt64 in
+            sampleSequence = sampleSequence == UInt64.max ? 1 : sampleSequence + 1
+            return sampleSequence
+        }
+        return DoryDeviceTelemetrySnapshot(
+            machineID: machineID,
+            operationID: DoryOperationIdentity.canonical(launchOperationID),
+            backend: .appleVirtualizationFramework,
+            sampleSequence: sequence,
+            sampledAtUnixMilliseconds: UInt64(max(
+                1,
+                Int64(Date().timeIntervalSince1970 * 1_000)
+            )),
+            monotonicNanoseconds: max(1, DispatchTime.now().uptimeNanoseconds),
+            devices: [DoryDeviceTelemetryDevice(
+                id: "vzmac-platform",
+                kind: .platform,
+                health: .healthy,
+                metrics: [.measured(.queueStateChanges, value: 0)]
+            )]
+        )
+    }
+
+    private func acceptLoop(listenerFD: Int32) {
+        while lock.withLock({ self.listenerFD == listenerFD }) {
+            let client = accept(listenerFD, nil, nil)
+            if client < 0 {
+                if errno == EINTR { continue }
+                break
+            }
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                self?.handle(clientFD: client)
+            }
+        }
+    }
+
+    private func handle(clientFD: Int32) {
+        defer { close(clientFD) }
+        let response: VmmControlResponse
+        do {
+            let data = try Self.readAll(from: clientFD)
+            let request = try JSONDecoder().decode(VmmControlRequest.self, from: data)
+            let box = DoryVZMacControlResponseBox()
+            Task {
+                let response = await handler(request)
+                box.publish(response)
+            }
+            response = box.wait()
+        } catch {
+            response = VmmControlResponse(ok: false, message: "\(error)")
+        }
+        do {
+            try Self.writeAll(try JSONEncoder().encode(response), to: clientFD)
+        } catch {
+            FileHandle.standardError.write(Data(
+                "dory-vmm VZMac control response failed: \(error)\n".utf8
+            ))
+        }
+    }
+
+    private static func readAll(from fd: Int32) throws -> Data {
+        var result = Data()
+        var buffer = [UInt8](repeating: 0, count: 8_192)
+        while true {
+            let count = read(fd, &buffer, buffer.count)
+            if count < 0, errno == EINTR { continue }
+            guard count >= 0 else { throw VmmControlError.syscall("read", errno) }
+            if count == 0 { break }
+            guard result.count + count <= 1_048_576 else {
+                throw VmmControlError.rejected("VZMac control request is too large")
+            }
+            result.append(buffer, count: count)
+        }
+        guard !result.isEmpty else { throw VmmControlError.emptyResponse }
+        return result
+    }
+
+    private static func writeAll(_ data: Data, to fd: Int32) throws {
+        try data.withUnsafeBytes { bytes in
+            var offset = 0
+            while offset < bytes.count {
+                let count = write(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
+                if count < 0, errno == EINTR { continue }
+                guard count > 0 else { throw VmmControlError.syscall("write", errno) }
+                offset += count
+            }
+        }
+    }
+
+    private static func unixAddress(path: String) throws -> sockaddr_un {
+        let bytes = Array(path.utf8)
+        guard !bytes.isEmpty,
+              bytes.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else {
+            throw VmmControlError.pathTooLong(path)
+        }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        withUnsafeMutableBytes(of: &address.sun_path) { destination in
+            destination.initializeMemory(as: UInt8.self, repeating: 0)
+            destination.copyBytes(from: bytes)
+        }
+        return address
+    }
+
+    deinit { stop() }
+}
+
+private final class DoryVZMacControlResponseBox: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var response: VmmControlResponse?
+
+    func publish(_ response: VmmControlResponse) {
+        condition.lock()
+        self.response = response
+        condition.broadcast()
+        condition.unlock()
+    }
+
+    func wait() -> VmmControlResponse {
+        condition.lock()
+        while response == nil { condition.wait() }
+        let result = response!
+        condition.unlock()
+        return result
     }
 }

@@ -843,6 +843,65 @@ public enum DoryQualifiedBootMediaInspector {
         )
     }
 
+    /// Issues a digest-bound inspection receipt for an IPSW that the daemon has already prepared
+    /// through Virtualization.framework. The caller must first validate the exact byte count and
+    /// digest against a private VZMac bundle whose hardware model and auxiliary storage decode
+    /// successfully; this method deliberately cannot turn a pathname or extension into trust.
+    public static func inspectPreparedNativeMacOSRestoreImage(
+        artifactSHA256: String,
+        byteCount: UInt64,
+        buildIdentifier: String
+    ) throws -> (
+        media: DoryBootMedia,
+        inspection: DoryTrustedBootMediaInspection,
+        auditEvidence: DoryBootMediaInspectionAuditEvidence
+    ) {
+        let digestValue = artifactSHA256.lowercased()
+        guard digestValue.utf8.count == 64,
+              digestValue.utf8.allSatisfy({ byte in
+                  (48...57).contains(byte) || (97...102).contains(byte)
+              }), byteCount > 0,
+              !buildIdentifier.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              buildIdentifier.utf8.count <= 128 else {
+            throw DoryVirtualMachineQualificationAuthorityError.mediaInspectionFailed
+        }
+        let guest = DoryGuestPlatform(family: .macOS, architecture: .arm64)
+        let report = NativeMacOSRestoreInspectionReport(
+            artifactSHA256: digestValue,
+            byteCount: byteCount,
+            buildIdentifier: buildIdentifier,
+            declaredGuest: guest,
+            hardwareModelCompatible: true,
+            auxiliaryStorageCompatible: true
+        )
+        let nativeInspectorID = "dory.vzmac-prepared-restore-inspector"
+        let evidence = DoryBootMediaInspectionAuditEvidence(
+            inspectionIdentity: "\(nativeInspectorID):\(digestValue)",
+            artifactSHA256: digestValue,
+            inspectionReportSHA256: digest(canonicalData(report)),
+            inspectorID: nativeInspectorID,
+            inspectorVersion: 1
+        )
+        return (
+            DoryBootMedia(
+                kind: .macOSRestoreImage,
+                source: .userProvided,
+                artifactSHA256: digestValue
+            ),
+            DoryTrustedBootMediaInspection(
+                auditEvidence: evidence,
+                detectedKind: .macOSRestoreImage,
+                detectedGuestFamily: .macOS,
+                detectedArchitecture: .arm64,
+                isEFIBootable: false,
+                macOSBuildIdentifier: buildIdentifier,
+                macOSHardwareModelCompatible: true,
+                macOSAuxiliaryStorageCompatible: true
+            ),
+            evidence
+        )
+    }
+
     private struct ISOInspectionReport: Codable {
         var artifactSHA256: String
         var byteCount: UInt64
@@ -853,6 +912,15 @@ public enum DoryQualifiedBootMediaInspector {
         /// inspection proves the loader architecture, but deliberately leaves this nil.
         var detectedGuestFamily: DoryGuestFamily?
         var efiBootable: Bool
+    }
+
+    private struct NativeMacOSRestoreInspectionReport: Codable {
+        var artifactSHA256: String
+        var byteCount: UInt64
+        var buildIdentifier: String
+        var declaredGuest: DoryGuestPlatform
+        var hardwareModelCompatible: Bool
+        var auxiliaryStorageCompatible: Bool
     }
 
     private static func canonicalData<T: Encodable>(_ value: T) -> Data {

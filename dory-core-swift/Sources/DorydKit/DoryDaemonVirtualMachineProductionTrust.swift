@@ -2,6 +2,7 @@ import CryptoKit
 import Darwin
 import DoryOperations
 import DoryRendererWorkerWireContracts
+import DoryVZMacCore
 import Foundation
 import Security
 @preconcurrency import Virtualization
@@ -658,7 +659,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                 }
             }
         }
-        let portableRuntime = Self.portableLinuxEFIRuntime(
+        let portableRuntime = Self.portableRuntime(
             for: request,
             media: artifact.media,
             runtimes: runtimes
@@ -704,7 +705,14 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             }
             inspection = nil
         case .macOSRestoreImage:
-            throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+            do {
+                inspection = try preparedNativeMacOSRestoreInspection(
+                    artifact: artifact,
+                    launchArtifacts: launchArtifacts
+                ).inspection
+            } catch {
+                throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+            }
         }
 
         let runtimeByIdentity = Dictionary(uniqueKeysWithValues: runtimes.map {
@@ -765,7 +773,12 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                 mutableProvenance: artifact.mutableProvenance
             ),
             backendInventories: inventories,
-            hostFacts: hostFacts(host: host, runtimes: runtimes)
+            hostFacts: hostFacts(
+                host: host,
+                runtimes: runtimes,
+                nativeMacOSBaselineAvailable: request.guest.family == .macOS
+                    && portableRuntime != nil
+            )
         )
     }
 
@@ -835,6 +848,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
         }
 
         let usesPortableBaseline = Self.planUsesPortableLinuxEFIBaseline(plan)
+            || Self.planUsesPreparedNativeMacOSBaseline(plan)
         let qualification: DoryResolvedTrustedVirtualMachineQualification?
         if usesPortableBaseline {
             qualification = nil
@@ -890,8 +904,18 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             }
             inspection = nil
         case .macOSRestoreImage:
-            // The current product has no daemon-owned VZMac restore-image inspector.
-            throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+            do {
+                let prepared = try preparedNativeMacOSRestoreInspection(
+                    artifact: artifact,
+                    launchArtifacts: launchArtifacts
+                )
+                guard prepared.auditEvidence == plan.bootMedia.inspectionEvidence else {
+                    throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+                }
+                inspection = prepared.inspection
+            } catch {
+                throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+            }
         }
 
         let admission: DoryResolvedMachineResourceAdmissionEvidence
@@ -938,7 +962,12 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             hostQualification: hostQualification
         )
         return DoryDaemonVirtualMachineTrustedInventorySnapshot(
-            hostFacts: hostFacts(host: host, runtime: runtime),
+            hostFacts: hostFacts(
+                host: host,
+                runtime: runtime,
+                nativeMacOSBaselineAvailable:
+                    Self.planUsesPreparedNativeMacOSBaseline(plan)
+            ),
             media: DoryDaemonVirtualMachineResolvedMedia(
                 reference: artifact.reference,
                 media: artifact.media,
@@ -971,19 +1000,25 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
         }
     }
 
-    private static func portableLinuxEFIRuntime(
+    private static func portableRuntime(
         for request: DoryDaemonVirtualMachineInventoryRequest,
         media: DoryBootMedia,
         runtimes: [DoryDaemonVerifiedBackendRuntime]
     ) -> DoryDaemonVerifiedBackendRuntime? {
-        guard request.guest == DoryGuestPlatform(family: .linux, architecture: .arm64),
-              request.bootMedia.kind == media.kind,
+        guard request.bootMedia.kind == media.kind,
               request.bootMedia.source == media.source,
-              media.source == .userProvided,
-              media.kind == .installerISO || media.kind == .virtualDisk,
-              request.acceptableGraphics.contains(.software) else {
+              media.source == .userProvided else {
             return nil
         }
+        let isPortableLinux = request.guest
+            == DoryGuestPlatform(family: .linux, architecture: .arm64)
+            && (media.kind == .installerISO || media.kind == .virtualDisk)
+            && request.acceptableGraphics.contains(.software)
+        let isPreparedNativeMacOS = request.guest
+            == DoryGuestPlatform(family: .macOS, architecture: .arm64)
+            && media.kind == .macOSRestoreImage
+            && request.acceptableGraphics.contains(.hostAcceleratedDisplay)
+        guard isPortableLinux || isPreparedNativeMacOS else { return nil }
         let candidates = runtimes.filter {
             $0.descriptor.identity == .appleVirtualizationFramework
         }
@@ -1009,6 +1044,72 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             return plan.bootMedia.inspectionEvidence?.catalogManifestEvidence == nil
         }
         return plan.bootMedia.inspectionEvidence == nil
+    }
+
+    private static func planUsesPreparedNativeMacOSBaseline(
+        _ plan: DoryResolvedMachinePlan
+    ) -> Bool {
+        plan.guest == DoryGuestPlatform(family: .macOS, architecture: .arm64)
+            && plan.backend == .appleVirtualizationFramework
+            && plan.graphics == .hostAcceleratedDisplay
+            && plan.supportTier == .experimental
+            && plan.bootMedia.media.source == .userProvided
+            && plan.bootMedia.media.kind == .macOSRestoreImage
+            && plan.bootMedia.inspectionEvidence?.catalogManifestEvidence == nil
+            && plan.qualificationEvidence.graphics == nil
+            && plan.qualificationEvidence.runtime == nil
+            && plan.hostQualification == nil
+            && plan.experimentalAuthorization != nil
+    }
+
+    private func preparedNativeMacOSRestoreInspection(
+        artifact: DoryVerifiedVirtualMachineArtifact,
+        launchArtifacts: [DoryResolvedMachineLaunchArtifact]
+    ) throws -> (
+        media: DoryBootMedia,
+        inspection: DoryTrustedBootMediaInspection,
+        auditEvidence: DoryBootMediaInspectionAuditEvidence
+    ) {
+        guard artifact.media.kind == .macOSRestoreImage,
+              artifact.media.source == .userProvided,
+              let restoreDigest = artifact.media.artifactSHA256 else {
+            throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+        }
+        let systemArtifacts = launchArtifacts.filter { resolved in
+            resolved.usages.contains {
+                $0.kind == .storage && $0.identifier == "system" && !$0.readOnly
+            }
+        }
+        guard systemArtifacts.count == 1, let systemArtifact = systemArtifacts.first else {
+            throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+        }
+        let verifiedDisk = try artifactAuthority.resolve(
+            reference: systemArtifact.resolverReference,
+            kind: systemArtifact.media.kind,
+            source: systemArtifact.media.source
+        )
+        let diskURL = URL(fileURLWithPath: verifiedDisk.path).standardizedFileURL
+        guard diskURL.lastPathComponent == DoryVZMacMachineBundle.diskName else {
+            throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+        }
+        let bundle = try DoryVZMacMachineBundle.load(
+            from: diskURL.deletingLastPathComponent()
+        )
+        guard bundle.diskURL.standardizedFileURL == diskURL,
+              bundle.manifest.restoreImageSHA256 == restoreDigest.lowercased(),
+              bundle.manifest.restoreImageBytes > 0 else {
+            throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+        }
+        let result = try DoryQualifiedBootMediaInspector
+            .inspectPreparedNativeMacOSRestoreImage(
+                artifactSHA256: restoreDigest,
+                byteCount: bundle.manifest.restoreImageBytes,
+                buildIdentifier: bundle.manifest.restoreImageBuild
+            )
+        guard result.media == artifact.media else {
+            throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+        }
+        return result
     }
 
     private func resolveLaunchArtifacts(
@@ -1056,7 +1157,8 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
 
     private func hostFacts(
         host: DoryDaemonProductionHostObservation,
-        runtime: DoryDaemonVerifiedBackendRuntime
+        runtime: DoryDaemonVerifiedBackendRuntime,
+        nativeMacOSBaselineAvailable: Bool = false
     ) -> DoryAppleSiliconHostFacts {
         let rawBuild = runtime.descriptor.identity == .doryHypervisor
             ? runtime.runtimeBuildIdentifier : ""
@@ -1079,10 +1181,12 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                 displayAvailable: false,
                 inputAvailable: false
             ),
-            macOSGuestVirtualizationSupported: false,
-            macOSRestoreImageInstallationSupported: false,
-            doryMacOSBackendAvailable: false,
-            doryMacOSBackendQualified: false,
+            macOSGuestVirtualizationSupported: nativeMacOSBaselineAvailable
+                && host.virtualizationFrameworkAvailable && !vzBuild.isEmpty,
+            macOSRestoreImageInstallationSupported: nativeMacOSBaselineAvailable
+                && host.virtualizationFrameworkAvailable && !vzBuild.isEmpty,
+            doryMacOSBackendAvailable: nativeMacOSBaselineAvailable && !vzBuild.isEmpty,
+            doryMacOSBackendQualified: nativeMacOSBaselineAvailable && !vzBuild.isEmpty,
             metalAvailable: host.metalAvailable,
             doryAcceleratedRendererAvailable:
                 host.metalAvailable && runtime.productionAccelerationIsAdmissible(
@@ -1102,7 +1206,8 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
 
     private func hostFacts(
         host: DoryDaemonProductionHostObservation,
-        runtimes: [DoryDaemonVerifiedBackendRuntime]
+        runtimes: [DoryDaemonVerifiedBackendRuntime],
+        nativeMacOSBaselineAvailable: Bool = false
     ) -> DoryAppleSiliconHostFacts {
         let rawBuild = runtimes.first {
             $0.descriptor.identity == .doryHypervisor
@@ -1134,10 +1239,12 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
                 displayAvailable: false,
                 inputAvailable: false
             ),
-            macOSGuestVirtualizationSupported: false,
-            macOSRestoreImageInstallationSupported: false,
-            doryMacOSBackendAvailable: false,
-            doryMacOSBackendQualified: false,
+            macOSGuestVirtualizationSupported: nativeMacOSBaselineAvailable
+                && host.virtualizationFrameworkAvailable && !vzBuild.isEmpty,
+            macOSRestoreImageInstallationSupported: nativeMacOSBaselineAvailable
+                && host.virtualizationFrameworkAvailable && !vzBuild.isEmpty,
+            doryMacOSBackendAvailable: nativeMacOSBaselineAvailable && !vzBuild.isEmpty,
+            doryMacOSBackendQualified: nativeMacOSBaselineAvailable && !vzBuild.isEmpty,
             metalAvailable: host.metalAvailable,
             doryAcceleratedRendererAvailable:
                 host.metalAvailable && rawAccelerationAdmissible,

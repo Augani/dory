@@ -29,6 +29,42 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
         XCTAssertEqual(arguments.operation, .run)
         XCTAssertNil(arguments.restoreImageURL)
         XCTAssertTrue(arguments.usbDiskReadOnly)
+        XCTAssertFalse(arguments.hasManagedLifecycleContract)
+    }
+
+    func testParsesCompleteManagedLifecycleContract() throws {
+        let arguments = try parseDoryVZMacDesktopArguments([
+            "run",
+            "--machine", "/tmp/test.dorymac",
+            "--machine-id", "mac-work",
+            "--operation-id", "d1ec76d2-a4a0-42dc-a725-643167a06f52",
+            "--state-dir", "/tmp/machines/mac-work",
+            "--control-sock", "/tmp/runtime/c.sock",
+            "--handoff-sock", "/tmp/runtime/h.sock",
+        ])
+
+        XCTAssertTrue(arguments.hasManagedLifecycleContract)
+        XCTAssertEqual(arguments.machineID, "mac-work")
+        XCTAssertEqual(
+            arguments.operationID?.uuidString.lowercased(),
+            "d1ec76d2-a4a0-42dc-a725-643167a06f52"
+        )
+        XCTAssertEqual(arguments.stateDirectoryURL?.path, "/tmp/machines/mac-work")
+        XCTAssertEqual(arguments.controlSocketPath, "/tmp/runtime/c.sock")
+        XCTAssertEqual(arguments.handoffSocketPath, "/tmp/runtime/h.sock")
+    }
+
+    func testRejectsPartialManagedLifecycleContract() {
+        XCTAssertThrowsError(try parseDoryVZMacDesktopArguments([
+            "run",
+            "--machine", "/tmp/test.dorymac",
+            "--machine-id", "mac-work",
+        ])) { error in
+            XCTAssertEqual(
+                error as? DoryVZMacDesktopArgumentError,
+                .incompleteManagedLifecycleContract
+            )
+        }
     }
 
     func testRequiresRestoreImageOnlyForInstall() {
