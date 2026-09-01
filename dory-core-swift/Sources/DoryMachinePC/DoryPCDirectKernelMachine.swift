@@ -267,6 +267,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   )
   private var pitClockRemainder: UInt64 = 0
   private var rtcClockRemainder: UInt64 = 0
+  private var localAPICClockRemainder: UInt64 = 0
   private let clockSource: DoryPCClockSource
   private var lastHostClockNanoseconds: UInt64?
   private var hostClockNanosecondRemainder: UInt64 = 0
@@ -277,6 +278,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   // per tick while the PIT and RTC receive their independently advertised oscillator rates.
   private static let machineClockFrequencyHz: UInt64 = 10_000_000
   private static let tscTicksPerMachineClock: UInt64 = 100
+  private static let localAPICClockFrequencyHz: UInt64 = 1_000_000_000
   private static let pitFrequencyHz: UInt64 = 1_193_182
 
   public init(
@@ -868,7 +870,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   private func advanceClocks(by ticks: UInt64) {
     guard ticks > 0 else { return }
-    for apic in localAPICs { apic.advanceTimer(by: ticks) }
+    let localAPICTicks = scaledDeviceTicks(
+      machineTicks: ticks,
+      frequencyHz: Self.localAPICClockFrequencyHz,
+      remainder: &localAPICClockRemainder
+    )
+    for apic in localAPICs { apic.advanceTimer(byBaseClockTicks: localAPICTicks) }
     let pitTicks = scaledDeviceTicks(
       machineTicks: ticks,
       frequencyHz: Self.pitFrequencyHz,
@@ -957,7 +964,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
         )
       {
-        deadlines.append(UInt64(timer.currentCount))
+        if let baseClockTicks = apic.baseClockTicksUntilTimerExpiration() {
+          deadlines.append(
+            machineTicks(
+              untilDeviceTicks: baseClockTicks,
+              frequencyHz: Self.localAPICClockFrequencyHz,
+              remainder: localAPICClockRemainder
+            )
+          )
+        }
       }
     }
     if let bsp = loadedStates[0]?.value {

@@ -86,6 +86,26 @@ import Testing
     #expect(try mmio.read(offset: 0x200 + 0x20, byteCount: 4) == [0, 0, 4, 0])
   }
 
+  @Test func localAPICTimerHonorsDivideByOneAndDivideBySixteen() throws {
+    let divideByOne = DoryPCLocalAPIC(apicID: 0)
+    let divideByOneMMIO = DoryPCLocalAPICMMIO(apic: divideByOne)
+    try divideByOneMMIO.write(offset: 0x3E0, bytes: [0x0B, 0, 0, 0])
+    try divideByOneMMIO.write(offset: 0x320, bytes: [0x40, 0, 1, 0])
+    try divideByOneMMIO.write(offset: 0x380, bytes: [100, 0, 0, 0])
+
+    let divideBySixteen = DoryPCLocalAPIC(apicID: 1)
+    let divideBySixteenMMIO = DoryPCLocalAPICMMIO(apic: divideBySixteen)
+    try divideBySixteenMMIO.write(offset: 0x3E0, bytes: [0x03, 0, 0, 0])
+    try divideBySixteenMMIO.write(offset: 0x320, bytes: [0x41, 0, 1, 0])
+    try divideBySixteenMMIO.write(offset: 0x380, bytes: [100, 0, 0, 0])
+
+    divideByOne.advanceTimer(byBaseClockTicks: 32)
+    divideBySixteen.advanceTimer(byBaseClockTicks: 32)
+
+    #expect(divideByOne.snapshot().timer.currentCount == 68)
+    #expect(divideBySixteen.snapshot().timer.currentCount == 98)
+  }
+
   @Test func ioAPICWindowProgramsRedirectionEntries() throws {
     let local = DoryPCLocalAPIC(apicID: 3)
     try local.configureSpuriousVector(0xFF, softwareEnabled: true)

@@ -295,6 +295,34 @@ import Testing
     }
   }
 
+  @Test func machineClockAdvancesLocalAPICTimerAtItsOneGigahertzBusFrequency() throws {
+    func currentCount(divideConfiguration: UInt32) throws -> UInt32 {
+      let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+      try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+      try machine.physicalMemory.writeScalar(
+        at: DoryPCV1ABI.localAPICBase + 0x3E0,
+        value: UInt64(divideConfiguration),
+        byteCount: 4
+      )
+      try machine.physicalMemory.writeScalar(
+        at: DoryPCV1ABI.localAPICBase + 0x320,
+        value: UInt64(0x0001_0040),
+        byteCount: 4
+      )
+      try machine.physicalMemory.writeScalar(
+        at: DoryPCV1ABI.localAPICBase + 0x380,
+        value: UInt64(1_000),
+        byteCount: 4
+      )
+
+      #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+      return machine.localAPIC.snapshot().timer.currentCount
+    }
+
+    #expect(try currentCount(divideConfiguration: 0xB) == 900)
+    #expect(try currentCount(divideConfiguration: 0x3) == 994)
+  }
+
   @Test func productionClockAdvancesTSCAndDevicesFromHostMonotonicTime() throws {
     final class ManualClock: @unchecked Sendable {
       private let lock = NSLock()
@@ -639,7 +667,9 @@ import Testing
       vector: 0x30,
       masked: false,
       mode: .oneShot,
-      initialCount: 5
+      // The reset divide-by-two setting yields 50 LAPIC counts per 100 ns machine tick. Keep the
+      // expiry after STI;HLT so this test exercises the halted-vCPU wake path.
+      initialCount: 250
     )
 
     let stop = try machine.run(maximumInstructions: 16, exceptionPolicy: .deliver)

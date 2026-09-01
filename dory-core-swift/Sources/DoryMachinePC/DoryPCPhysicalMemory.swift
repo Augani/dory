@@ -628,7 +628,9 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
         applyTimerConfiguration()
       }
     case 0x3E0:
-      lock.withLock { timerDivideConfiguration = value & 0xB }
+      let configuration = value & 0xB
+      lock.withLock { timerDivideConfiguration = configuration }
+      apic.configureTimerDivideValue(Self.timerDivideValue(configuration: configuration))
     default:
       break
     }
@@ -653,6 +655,20 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
       mode: mode,
       initialCount: timerInitialCount
     )
+  }
+
+  private static func timerDivideValue(configuration: UInt32) -> UInt32 {
+    switch configuration & 0xB {
+    case 0x0: 2
+    case 0x1: 4
+    case 0x2: 8
+    case 0x3: 16
+    case 0x8: 32
+    case 0x9: 64
+    case 0xA: 128
+    case 0xB: 1
+    default: preconditionFailure("masked xAPIC timer divide configuration is exhaustive")
+    }
   }
 
   private func bitmapRegister(_ values: Set<UInt8>, offset: UInt64, base: UInt64) -> UInt32 {

@@ -60,6 +60,8 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   private var inService: Set<UInt8> = []
   private var levelTriggered: Set<UInt8> = []
   private var timer = DoryPCLocalAPICTimerState()
+  private var timerDivideValue: UInt64 = 2
+  private var timerBaseClockRemainder: UInt64 = 0
 
   public init(apicID: UInt32) {
     self.apicID = apicID
@@ -157,34 +159,64 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
     }
   }
 
+  /// Updates the architectural xAPIC timer divisor without reloading the current count.
+  public func configureTimerDivideValue(_ divideValue: UInt32) {
+    precondition([1, 2, 4, 8, 16, 32, 64, 128].contains(divideValue))
+    lock.withLock {
+      timerDivideValue = UInt64(divideValue)
+      timerBaseClockRemainder = 0
+    }
+  }
+
+  /// Advances the timer from its undivided bus clock while retaining partial divider periods.
+  public func advanceTimer(byBaseClockTicks ticks: UInt64) {
+    guard ticks > 0 else { return }
+    lock.withLock {
+      let wholeTicks = ticks / timerDivideValue
+      let fractionalTicks = timerBaseClockRemainder + ticks % timerDivideValue
+      timerBaseClockRemainder = fractionalTicks % timerDivideValue
+      advanceTimerLocked(by: wholeTicks + fractionalTicks / timerDivideValue)
+    }
+  }
+
+  /// Undivided bus-clock ticks remaining before the current one-shot or periodic expiry.
+  public func baseClockTicksUntilTimerExpiration() -> UInt64? {
+    lock.withLock {
+      guard timer.currentCount > 0 else { return nil }
+      return UInt64(timer.currentCount) * timerDivideValue - timerBaseClockRemainder
+    }
+  }
+
   /// Advances the already-divided APIC timer clock. Multiple expirations coalesce in the IRR bit,
   /// matching the APIC's bounded pending representation.
   public func advanceTimer(by ticks: UInt64) {
     guard ticks > 0 else { return }
-    lock.withLock {
-      guard timer.currentCount > 0 else { return }
-      let current = UInt64(timer.currentCount)
-      guard ticks >= current else {
-        timer.currentCount -= UInt32(ticks)
+    lock.withLock { advanceTimerLocked(by: ticks) }
+  }
+
+  private func advanceTimerLocked(by ticks: UInt64) {
+    guard ticks > 0, timer.currentCount > 0 else { return }
+    let current = UInt64(timer.currentCount)
+    guard ticks >= current else {
+      timer.currentCount -= UInt32(ticks)
+      return
+    }
+
+    if !timer.masked {
+      injectLocked(vector: timer.vector, levelTriggered: false)
+    }
+    switch timer.mode {
+    case .oneShot:
+      timer.currentCount = 0
+    case .periodic:
+      guard timer.initialCount > 0 else {
+        timer.currentCount = 0
         return
       }
-
-      if !timer.masked {
-        injectLocked(vector: timer.vector, levelTriggered: false)
-      }
-      switch timer.mode {
-      case .oneShot:
-        timer.currentCount = 0
-      case .periodic:
-        guard timer.initialCount > 0 else {
-          timer.currentCount = 0
-          return
-        }
-        let period = UInt64(timer.initialCount)
-        let ticksAfterFirstExpiry = ticks - current
-        let phase = ticksAfterFirstExpiry % period
-        timer.currentCount = phase == 0 ? timer.initialCount : UInt32(period - phase)
-      }
+      let period = UInt64(timer.initialCount)
+      let ticksAfterFirstExpiry = ticks - current
+      let phase = ticksAfterFirstExpiry % period
+      timer.currentCount = phase == 0 ? timer.initialCount : UInt32(period - phase)
     }
   }
 
