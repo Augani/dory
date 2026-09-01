@@ -445,6 +445,41 @@ final class DoryInstallerISOTests: XCTestCase {
                        Data("EFI/BOOT/BOOTX64.EFI".utf8))
     }
 
+    func testDaemonAdmissionStagesX86MediaWithoutMintingLaunchAuthority() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-x86-daemon-admission-\(UUID().uuidString)")
+        let source = base.appendingPathComponent("linux-x86_64.iso")
+        let ordinaryStaging = base.appendingPathComponent("ordinary", isDirectory: true)
+        let daemonStaging = base.appendingPathComponent("daemon", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        let contents = Data("EFI/BOOT/BOOTX64.EFI\ndaemon-decides-launch-policy".utf8)
+        try contents.write(to: source)
+
+        XCTAssertThrowsError(try DoryInstallerISOStager.stage(
+            atPath: source.path,
+            stagingDirectory: ordinaryStaging,
+            hostArchitecture: "arm64"
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: ordinaryStaging.path))
+
+        let staged = try DoryInstallerISOStager.stageForDaemonAdmission(
+            atPath: source.path,
+            stagingDirectory: daemonStaging,
+            hostArchitecture: "arm64"
+        )
+        XCTAssertEqual(staged.architecture, .x86_64)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: staged.path)),
+            contents
+        )
+        XCTAssertEqual(
+            (try FileManager.default.attributesOfItem(atPath: staged.path)[.posixPermissions]
+                as? NSNumber)?.intValue,
+            0o600
+        )
+    }
+
     func testRejectsOptInRealX86InstallerBeforeStaging() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let sourcePath = environment["DORY_TEST_X86_64_INSTALLER_ISO"],

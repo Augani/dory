@@ -1880,6 +1880,26 @@ public struct DoryStagedInstallerISO: Sendable, Equatable {
 /// locations such as Downloads, while a launch agent intentionally cannot. This staging boundary
 /// keeps those permissions in the selecting process and gives doryd only a short-lived private copy.
 public enum DoryInstallerISOStager {
+    /// Stages media for a signed daemon create request without treating host ISA as the final
+    /// launch authority. This permits an x86_64 ISO to cross the user-selected-file boundary on
+    /// Apple silicon, but it does not authorize a DoryPC launch: doryd still performs structural
+    /// EFI inspection and rejects the create before workspace or disk allocation unless its exact
+    /// build policy admits translated x86_64 guests.
+    public static func stageForDaemonAdmission(
+        atPath sourcePath: String,
+        stagingDirectory requestedDirectory: URL? = nil,
+        hostArchitecture: String = DoryInstallerISOInspector.currentHostArchitecture,
+        hostRuntime requestedHostRuntime: DoryInstallerHostRuntime? = nil
+    ) throws -> DoryStagedInstallerISO {
+        try stage(
+            atPath: sourcePath,
+            stagingDirectory: requestedDirectory,
+            hostArchitecture: hostArchitecture,
+            hostRuntime: requestedHostRuntime,
+            allowsTranslatedX86_64OnARM64: true
+        )
+    }
+
     public static func stage(
         atPath sourcePath: String,
         stagingDirectory requestedDirectory: URL? = nil,

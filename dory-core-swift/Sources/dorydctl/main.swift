@@ -1372,9 +1372,16 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
                 try? FileManager.default.removeItem(atPath: stagedInstallerISOPath)
             }
         }
+        var stagedInstallerArchitecture: DoryInstallerISOArchitecture?
         if let installerISO {
-            let staged = try DoryInstallerISOStager.stage(atPath: installerISO)
+            // The selecting CLI owns Downloads access; the signed daemon owns launch policy.
+            // Stage x86_64 media so doryd can make the same explicit DoryPC admission decision as
+            // the desktop UI. This copy is temporary and cannot itself authorize a translated VM.
+            let staged = try DoryInstallerISOStager.stageForDaemonAdmission(
+                atPath: installerISO
+            )
             stagedInstallerISOPath = staged.path
+            stagedInstallerArchitecture = staged.architecture
         }
         var config: [String: Any] = [
             "id": name,
@@ -1391,6 +1398,14 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             }
             config["installerISOPath"] = stagedInstallerISOPath
             config["diskSizeBytes"] = diskSizeGB * 1024 * 1024 * 1024
+            switch stagedInstallerArchitecture {
+            case .arm64:
+                config["guestArchitecture"] = DoryGuestArchitecture.arm64.rawValue
+            case .x86_64:
+                config["guestArchitecture"] = DoryGuestArchitecture.x86_64.rawValue
+            case .multiArchitecture, .unknown, nil:
+                break
+            }
         }
         if let address {
             config["address"] = address
