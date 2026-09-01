@@ -92,58 +92,6 @@ import Testing
     #endif
   }
 
-  @Test func nativeTraceReplaysReadOnlyMemoryLoopsWithOneRestartableBridge() throws {
-    #if arch(arm64)
-      let base: UInt64 = 0x2000
-      // mov rax,0x80; mov ebx,[rax]; dec ecx; jne -6; hlt
-      let bytes: [UInt8] = [
-        0x48, 0xB8, 0x80, 0, 0, 0, 0, 0, 0, 0,
-        0x8B, 0x18,
-        0xFF, 0xC9,
-        0x75, 0xFA,
-        0xF4,
-      ]
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
-      try memory.writeScalar(at: 0x80, value: 0x1234_5678, byteCount: 4)
-      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
-
-      func run() throws -> (DoryARM64ExecutionSummary, DoryX86ArchitecturalState) {
-        var state = try DoryX86ArchitecturalState(
-          registers: .init(rcx: 3),
-          rip: base
-        )
-        let summary = try #require(
-          executor.executeChainedSummary(
-            byteProvider: { address, maximumCount in
-              guard address >= base else { return [] }
-              let offset = Int(address - base)
-              guard bytes.indices.contains(offset) else { return [] }
-              return Array(bytes[offset..<min(bytes.count, offset + maximumCount)])
-            },
-            at: base,
-            mode: .long64,
-            addressSpaceID: 0,
-            maximumInstructions: 16,
-            state: &state,
-            memory: memory
-          )
-        )
-        return (summary, state)
-      }
-
-      let first = try run()
-      #expect(first.0.exitCode == .halt)
-      #expect(first.0.guestInstructionCount == 11)
-      #expect(first.1.registers.rbx == 0x1234_5678)
-      #expect(executor.nativeBatchExecutionCount == 0)
-
-      let replay = try run()
-      #expect(replay.0 == first.0)
-      #expect(replay.1 == first.1)
-      #expect(executor.nativeBatchExecutionCount == 1)
-    #endif
-  }
-
   @Test func executorLoadsAndStoresGuestMemoryThroughBoundedCallbacks() throws {
     #if arch(arm64)
       let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
@@ -886,7 +834,6 @@ import Testing
           offsets: [0, secondOffset],
           expectedGuestRIPs: [0x5000, 0x5007],
           guestInstructionCounts: [first.guestInstructionCount, second.guestInstructionCount],
-          requiresMemoryCallbacks: [0, 0],
           context: context
         )
       }
@@ -905,7 +852,6 @@ import Testing
           offsets: [0, secondOffset],
           expectedGuestRIPs: [0x5000, 0x5007],
           guestInstructionCounts: [first.guestInstructionCount, second.guestInstructionCount],
-          requiresMemoryCallbacks: [0, 0],
           context: context
         )
       }

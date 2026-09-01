@@ -5,10 +5,6 @@
 #include <stdint.h>
 
 typedef struct dory_jit_region dory_jit_region;
-typedef struct dory_jit_memory_context {
-    void *swift_context;
-    uint8_t failed;
-} dory_jit_memory_context;
 typedef uint64_t (*dory_jit_memory_read_function)(
     void *memory_context,
     uint64_t address,
@@ -45,12 +41,8 @@ int dory_jit_region_execute_batch(
     const size_t *offsets,
     const uint64_t *expected_guest_rips,
     const uint32_t *guest_instruction_counts,
-    const uint8_t *requires_memory_callbacks,
     size_t block_count,
     uint64_t *context,
-    dory_jit_memory_context *memory_context,
-    dory_jit_memory_read_function memory_read,
-    dory_jit_memory_write_function memory_write,
     uint32_t *exit_code_out,
     uint32_t *executed_block_count_out,
     uint32_t *guest_instruction_count_out

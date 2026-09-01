@@ -29,7 +29,6 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
   public let exitCode: DoryJITExitCode
   public let requiresMemoryCallbacks: Bool
   public let requiresRestartableMemoryReads: Bool
-  public let requiresMemoryWrites: Bool
 
   public init(
     guestStart: UInt64,
@@ -39,8 +38,7 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
     tier: DoryARM64CompilationTier,
     exitCode: DoryJITExitCode,
     requiresMemoryCallbacks: Bool = false,
-    requiresRestartableMemoryReads: Bool = false,
-    requiresMemoryWrites: Bool = false
+    requiresRestartableMemoryReads: Bool = false
   ) {
     self.guestStart = guestStart
     self.guestByteCount = guestByteCount
@@ -50,7 +48,6 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
     self.exitCode = exitCode
     self.requiresMemoryCallbacks = requiresMemoryCallbacks
     self.requiresRestartableMemoryReads = requiresRestartableMemoryReads
-    self.requiresMemoryWrites = requiresMemoryWrites
   }
 
   public var machineBytes: [UInt8] {
@@ -85,9 +82,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
     let memoryCallbackCount =
       block.statements.reduce(0) { $0 + self.memoryCallbackCount($1) }
       + memoryCallbackCount(block.terminator)
-    let requiresMemoryWrites =
-      block.statements.contains(where: memoryWrites)
-      || memoryWrites(block.terminator)
     let usesMemory = memoryCallbackCount > 0
     if usesMemory { emitMemoryPrologue(into: &words) }
     for statement in block.statements {
@@ -109,8 +103,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       tier: tier,
       exitCode: exit,
       requiresMemoryCallbacks: usesMemory,
-      requiresRestartableMemoryReads: memoryCallbackCount > 1,
-      requiresMemoryWrites: requiresMemoryWrites
+      requiresRestartableMemoryReads: memoryCallbackCount > 1
     )
   }
 
@@ -253,34 +246,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
       if case .memory = target { 1 } else { 0 }
     case .next, .branch, .conditional, .exit:
       0
-    }
-  }
-
-  private func memoryWrites(_ statement: DoryIRStatement) -> Bool {
-    switch statement {
-    case .copy(let destination, _):
-      if case .memory = destination { return true }
-      return false
-    case .binary(_, let destination, _, let writesDestination):
-      if case .memory = destination { return writesDestination }
-      return false
-    case .unary(_, let operand), .shift(_, let operand, _):
-      if case .memory = operand { return true }
-      return false
-    case .signedMultiply(let destination, _, _):
-      if case .memory = destination { return true }
-      return false
-    case .extendMove, .effectiveAddress, .helper:
-      return false
-    }
-  }
-
-  private func memoryWrites(_ terminator: DoryIRTerminator) -> Bool {
-    switch terminator {
-    case .call, .indirectCall:
-      return true
-    case .next, .branch, .indirect, .returnFromCall, .conditional, .exit:
-      return false
     }
   }
 
@@ -1368,6 +1333,7 @@ private struct DoryJITMemoryCallbackContext {
   let scalarMemory: (any DoryX86ScalarMemory)?
   let restartableScalarMemory: (any DoryX86RestartableScalarMemory)?
   let requiresRestartableReads: Bool
+  var failed = false
 
   init(memory: any DoryX86Memory, requiresRestartableReads: Bool) {
     self.memory = memory
@@ -1379,9 +1345,8 @@ private struct DoryJITMemoryCallbackContext {
 
 private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address, byteCount in
   guard let opaque, [1, 2, 4, 8].contains(byteCount) else { return 0 }
-  let bridge = opaque.assumingMemoryBound(to: dory_jit_memory_context.self)
-  guard bridge.pointee.failed == 0, let swiftContext = bridge.pointee.swift_context else { return 0 }
-  let context = swiftContext.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
+  let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
+  guard !context.pointee.failed else { return 0 }
   do {
     if context.pointee.requiresRestartableReads {
       guard let restartableScalarMemory = context.pointee.restartableScalarMemory,
@@ -1390,7 +1355,7 @@ private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address
           byteCount: Int(byteCount)
         )
       else {
-        bridge.pointee.failed = 1
+        context.pointee.failed = true
         return 0
       }
       return value
@@ -1405,7 +1370,7 @@ private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address
       $0 | UInt64($1.element) << UInt64($1.offset * 8)
     }
   } catch {
-    bridge.pointee.failed = 1
+    context.pointee.failed = true
     return 0
   }
 }
@@ -1413,9 +1378,8 @@ private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address
 private let doryJITMemoryWrite: dory_jit_memory_write_function = {
   opaque, address, value, byteCount in
   guard let opaque, [1, 2, 4, 8].contains(byteCount) else { return }
-  let bridge = opaque.assumingMemoryBound(to: dory_jit_memory_context.self)
-  guard bridge.pointee.failed == 0, let swiftContext = bridge.pointee.swift_context else { return }
-  let context = swiftContext.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
+  let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
+  guard !context.pointee.failed else { return }
   do {
     if let scalarMemory = context.pointee.scalarMemory {
       try scalarMemory.writeScalar(at: address, value: value, byteCount: Int(byteCount))
@@ -1427,7 +1391,7 @@ private let doryJITMemoryWrite: dory_jit_memory_write_function = {
     try context.pointee.memory.validateWrite(at: address, byteCount: bytes.count)
     try context.pointee.memory.write(at: address, bytes: bytes)
   } catch {
-    bridge.pointee.failed = 1
+    context.pointee.failed = true
   }
 }
 
@@ -1510,24 +1474,17 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
         requiresRestartableReads: requiresRestartableReads
       )
       result = withUnsafeMutablePointer(to: &memoryContext) { memoryContext in
-        var bridge = dory_jit_memory_context(
-          swift_context: UnsafeMutableRawPointer(memoryContext),
-          failed: 0
+        dory_jit_region_execute(
+          region,
+          offset,
+          context.baseAddress,
+          UnsafeMutableRawPointer(memoryContext),
+          doryJITMemoryRead,
+          doryJITMemoryWrite,
+          &rawExit
         )
-        let result = withUnsafeMutablePointer(to: &bridge) { bridge in
-          dory_jit_region_execute(
-            region,
-            offset,
-            context.baseAddress,
-            UnsafeMutableRawPointer(bridge),
-            doryJITMemoryRead,
-            doryJITMemoryWrite,
-            &rawExit
-          )
-        }
-        memoryFailed = bridge.failed != 0
-        return result
       }
+      memoryFailed = memoryContext.failed
     } else {
       result = dory_jit_region_execute(
         region,
@@ -1554,18 +1511,11 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     offsets: [Int],
     expectedGuestRIPs: [UInt64],
     guestInstructionCounts: [UInt32],
-    requiresMemoryCallbacks: [UInt8],
-    context: UnsafeMutableBufferPointer<UInt64>,
-    memory: (any DoryX86Memory)? = nil,
-    requiresRestartableReads: Bool = false
+    context: UnsafeMutableBufferPointer<UInt64>
   ) throws -> DoryARM64NativeBatchExecution {
     guard !offsets.isEmpty, offsets.count == expectedGuestRIPs.count,
-      offsets.count == guestInstructionCounts.count,
-      offsets.count == requiresMemoryCallbacks.count
+      offsets.count == guestInstructionCounts.count
     else { throw DoryJITRuntimeError.executionFailed(EINVAL) }
-    guard !requiresMemoryCallbacks.contains(where: { $0 != 0 }) || memory != nil else {
-      throw DoryJITRuntimeError.executionFailed(EINVAL)
-    }
     guard context.count == Self.contextWordCount else {
       throw DoryJITRuntimeError.invalidContextWordCount(context.count)
     }
@@ -1577,46 +1527,22 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     var rawExit: UInt32 = 0
     var executedBlocks: UInt32 = 0
     var executedInstructions: UInt32 = 0
-    func invoke(memoryContext: UnsafeMutablePointer<dory_jit_memory_context>?) -> Int32 {
-      offsets.withUnsafeBufferPointer { offsets in
-        expectedGuestRIPs.withUnsafeBufferPointer { expectedGuestRIPs in
-          guestInstructionCounts.withUnsafeBufferPointer { guestInstructionCounts in
-            requiresMemoryCallbacks.withUnsafeBufferPointer { requiresMemoryCallbacks in
-              dory_jit_region_execute_batch(
-                region,
-                offsets.baseAddress,
-                expectedGuestRIPs.baseAddress,
-                guestInstructionCounts.baseAddress,
-                requiresMemoryCallbacks.baseAddress,
-                offsets.count,
-                context.baseAddress,
-                memoryContext,
-                doryJITMemoryRead,
-                doryJITMemoryWrite,
-                &rawExit,
-                &executedBlocks,
-                &executedInstructions
-              )
-            }
-          }
+    let result = offsets.withUnsafeBufferPointer { offsets in
+      expectedGuestRIPs.withUnsafeBufferPointer { expectedGuestRIPs in
+        guestInstructionCounts.withUnsafeBufferPointer { guestInstructionCounts in
+          dory_jit_region_execute_batch(
+            region,
+            offsets.baseAddress,
+            expectedGuestRIPs.baseAddress,
+            guestInstructionCounts.baseAddress,
+            offsets.count,
+            context.baseAddress,
+            &rawExit,
+            &executedBlocks,
+            &executedInstructions
+          )
         }
       }
-    }
-    let result: Int32
-    if let memory {
-      var swiftContext = DoryJITMemoryCallbackContext(
-        memory: memory,
-        requiresRestartableReads: requiresRestartableReads
-      )
-      result = withUnsafeMutablePointer(to: &swiftContext) { swiftContext in
-        var bridge = dory_jit_memory_context(
-          swift_context: UnsafeMutableRawPointer(swiftContext),
-          failed: 0
-        )
-        return withUnsafeMutablePointer(to: &bridge) { invoke(memoryContext: $0) }
-      }
-    } else {
-      result = invoke(memoryContext: nil)
     }
     guard result == 0 else { throw DoryJITRuntimeError.executionFailed(result) }
     guard let exit = DoryJITExitCode(rawValue: rawExit) else {
@@ -1960,7 +1886,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             }
 
             if recordsTrace {
-              if resident.block.requiresMemoryWrites {
+              if resident.block.requiresMemoryCallbacks {
                 publishNativeTrace(newTrace, for: traceKey, if: true)
                 recordsTrace = false
               } else {
@@ -2191,12 +2117,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     var offsets: [Int] = []
     var expectedRIPs: [UInt64] = []
     var instructionCounts: [UInt32] = []
-    var memoryCallbackFlags: [UInt8] = []
     offsets.reserveCapacity(guestStarts.count)
     expectedRIPs.reserveCapacity(guestStarts.count)
     instructionCounts.reserveCapacity(guestStarts.count)
-    memoryCallbackFlags.reserveCapacity(guestStarts.count)
-    var requiresRestartableReads = false
     var admittedInstructions = 0
     for currentRIP in guestStarts {
       let resident: ResidentBlock
@@ -2215,7 +2138,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             maximumInstructions: maximumInstructions - admittedInstructions,
             state: state,
             memory: memory
-          ), !resolved.block.requiresMemoryWrites
+          ), !resolved.block.requiresMemoryCallbacks
         else { return nil }
         resident = resolved
         resolvedByRIP[currentRIP] = resolved
@@ -2225,9 +2148,6 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       offsets.append(resident.offset)
       expectedRIPs.append(currentRIP)
       instructionCounts.append(resident.block.guestInstructionCount)
-      memoryCallbackFlags.append(resident.block.requiresMemoryCallbacks ? 1 : 0)
-      requiresRestartableReads =
-        requiresRestartableReads || resident.block.requiresRestartableMemoryReads
       admittedInstructions += count
     }
     guard offsets.count >= 2 else { return nil }
@@ -2235,10 +2155,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       offsets: offsets,
       expectedGuestRIPs: expectedRIPs,
       guestInstructionCounts: instructionCounts,
-      requiresMemoryCallbacks: memoryCallbackFlags,
-      context: context,
-      memory: memory,
-      requiresRestartableReads: requiresRestartableReads
+      context: context
     )
     guard execution.residentBlockCount > 0 else { return nil }
     nativeBatchExecutionCountValue &+= 1

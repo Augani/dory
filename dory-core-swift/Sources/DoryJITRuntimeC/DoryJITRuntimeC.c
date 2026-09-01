@@ -3,7 +3,6 @@
 #include <errno.h>
 #include <libkern/OSCacheControl.h>
 #include <pthread.h>
-#include <stdbool.h>
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -211,19 +210,14 @@ int dory_jit_region_execute_batch(
     const size_t *offsets,
     const uint64_t *expected_guest_rips,
     const uint32_t *guest_instruction_counts,
-    const uint8_t *requires_memory_callbacks,
     size_t block_count,
     uint64_t *context,
-    dory_jit_memory_context *memory_context,
-    dory_jit_memory_read_function memory_read,
-    dory_jit_memory_write_function memory_write,
     uint32_t *exit_code_out,
     uint32_t *executed_block_count_out,
     uint32_t *guest_instruction_count_out
 ) {
     if (region == NULL || offsets == NULL || expected_guest_rips == NULL ||
-        guest_instruction_counts == NULL || requires_memory_callbacks == NULL ||
-        block_count == 0 || context == NULL ||
+        guest_instruction_counts == NULL || block_count == 0 || context == NULL ||
         exit_code_out == NULL || executed_block_count_out == NULL ||
         guest_instruction_count_out == NULL) {
         return EINVAL;
@@ -237,7 +231,6 @@ int dory_jit_region_execute_batch(
     uint32_t executed = 0;
     uint32_t instructions = 0;
     uint32_t exit_code = 0;
-    uint64_t checkpoint[18];
     for (size_t index = 0; index < block_count; index++) {
         if (context[16] != expected_guest_rips[index]) {
             break;
@@ -251,20 +244,9 @@ int dory_jit_region_execute_batch(
             void *pointer;
             dory_jit_function function;
         } callable = {.pointer = entry};
-        const bool uses_memory = requires_memory_callbacks[index] != 0;
-        if (uses_memory) {
-            if (memory_context == NULL || memory_read == NULL || memory_write == NULL) {
-                return EINVAL;
-            }
-            memcpy(checkpoint, context, sizeof(checkpoint));
-            memory_context->failed = 0;
-        }
-        exit_code = callable.function(context, memory_context, memory_read, memory_write);
-        if (uses_memory && memory_context->failed != 0) {
-            memcpy(context, checkpoint, sizeof(checkpoint));
-            exit_code = 1;
-            break;
-        }
+        // Batch callers admit only blocks without memory callbacks. Keeping callback authority
+        // absent makes that contract fail closed if a mismatched block ever reaches this path.
+        exit_code = callable.function(context, NULL, NULL, NULL);
         executed++;
         instructions += guest_instruction_counts[index];
         if (exit_code != 0) {
@@ -334,12 +316,8 @@ int dory_jit_region_execute_batch(
     const size_t *offsets,
     const uint64_t *expected_guest_rips,
     const uint32_t *guest_instruction_counts,
-    const uint8_t *requires_memory_callbacks,
     size_t block_count,
     uint64_t *context,
-    dory_jit_memory_context *memory_context,
-    dory_jit_memory_read_function memory_read,
-    dory_jit_memory_write_function memory_write,
     uint32_t *exit_code_out,
     uint32_t *executed_block_count_out,
     uint32_t *guest_instruction_count_out
@@ -348,12 +326,8 @@ int dory_jit_region_execute_batch(
     (void)offsets;
     (void)expected_guest_rips;
     (void)guest_instruction_counts;
-    (void)requires_memory_callbacks;
     (void)block_count;
     (void)context;
-    (void)memory_context;
-    (void)memory_read;
-    (void)memory_write;
     (void)exit_code_out;
     (void)executed_block_count_out;
     (void)guest_instruction_count_out;
