@@ -510,6 +510,12 @@ public enum DoryMachineConfigurationMigrationBridge {
         _ configuration: DoryMachineConfiguration,
         facts: DoryMachineConfigurationMigrationFacts
     ) throws -> DoryMachineConfigurationMigrationResult {
+        guard configuration.guestFamily == .linux,
+              configuration.bootMode != .macOSRestore else {
+            throw DoryMachineConfigurationMigrationError.invalidLegacyConfiguration(
+                "native macOS uses the typed VZMac definition and has no legacy Linux projection"
+            )
+        }
         guard configuration.cpuCount > 0 else {
             throw DoryMachineConfigurationMigrationError.invalidLegacyConfiguration(
                 "cpuCount must be positive"
@@ -829,6 +835,10 @@ public enum DoryMachineConfigurationMigrationBridge {
             case .installedLinuxBootBundle?: return .efiInstalledDirectBoot
             case nil: throw DoryMachineConfigurationMigrationError.missingInstalledEFIBootFact
             }
+        case .macOSRestore:
+            throw DoryMachineConfigurationMigrationError.invalidLegacyConfiguration(
+                "native macOS uses the typed VZMac definition and has no legacy Linux projection"
+            )
         }
     }
 

@@ -637,6 +637,10 @@ public enum DoryVZConfigurationBuilder {
             )
             configuration.platform = platform
             configuration.bootLoader = bootLoader
+        case .macOSRestore:
+            throw DoryVZMachineError.validation(
+                "native macOS must launch through the VZMac adapter entry point"
+            )
         }
         configuration.cpuCount = spec.cpuCount
         configuration.memorySize = memorySize

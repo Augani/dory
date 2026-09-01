@@ -472,6 +472,10 @@ struct DoryMachineConfigurationMigrationTests {
     @Test("old legacy JSON defaults decode and retain the canonical machine.json wire shape")
     func legacyGoldenWireCompatibility() throws {
         let oldData = Data(#"{"id":"legacy","kernelPath":"/m/legacy/kernel","rootfsPath":"/m/legacy/rootfs.ext4"}"#.utf8)
+        let decoded = try JSONDecoder().decode(DoryMachineConfiguration.self, from: oldData)
+        #expect(decoded.guestFamily == .linux)
+        #expect(decoded.macOSRestoreImagePath == nil)
+        #expect(decoded.macOSMachineBundlePath == nil)
         let migrated = try DoryMachineConfigurationMigrationBridge.decodeAndMigrate(
             oldData,
             facts: facts(capacity: 32 * gibibyte)
@@ -495,6 +499,34 @@ struct DoryMachineConfigurationMigrationTests {
           ]
         }
         """#)
+    }
+
+    @Test("native macOS fields round trip but never project into the legacy Linux schema")
+    func nativeMacFieldsRoundTripWithoutLegacyProjection() throws {
+        let machine = DoryMachineConfiguration(
+            id: "mac-dev",
+            guestFamily: .macOS,
+            guestArchitecture: .arm64,
+            kernelPath: "",
+            rootfsPath: "",
+            bootMode: .macOSRestore,
+            macOSRestoreImagePath: "/managed/mac-dev/Restore.ipsw",
+            macOSMachineBundlePath: "/managed/mac-dev/mac-dev.dorymac",
+            memoryMB: 8_192,
+            cpuCount: 6,
+            displayMode: .desktop
+        )
+
+        let data = try JSONEncoder().encode(machine)
+        #expect(try JSONDecoder().decode(DoryMachineConfiguration.self, from: data) == machine)
+        #expect(throws: DoryMachineConfigurationMigrationError.invalidLegacyConfiguration(
+            "native macOS uses the typed VZMac definition and has no legacy Linux projection"
+        )) {
+            try DoryMachineConfigurationMigrationBridge.migrate(
+                machine,
+                facts: facts(capacity: 64 * gibibyte)
+            )
+        }
     }
 
     @Test("explicit mixed-architecture intent round trips without changing older records")

@@ -545,10 +545,16 @@ public final class RawHVLinuxMachineBackend: MachineBackend, @unchecked Sendable
 public final class VirtualizationFrameworkLinuxMachineBackend: MachineBackend, @unchecked Sendable {
     public static let backendDescriptor = MachineBackendDescriptor(
         identity: .appleVirtualizationFramework,
-        implementationIdentifier: "dory.vz-linux.compatibility.v1",
-        guestFamilies: [.linux],
+        implementationIdentifier: "dory.vz-machine.v2",
+        guestFamilies: [.linux, .macOS],
         guestArchitectures: [.arm64],
-        bootMediaKinds: [.linuxKernel, .installedLinuxBootBundle, .installerISO, .virtualDisk],
+        bootMediaKinds: [
+            .linuxKernel,
+            .installedLinuxBootBundle,
+            .installerISO,
+            .virtualDisk,
+            .macOSRestoreImage,
+        ],
         lifecycle: .currentMachineManager
     )
 
@@ -570,6 +576,24 @@ public final class VirtualizationFrameworkLinuxMachineBackend: MachineBackend, @
             executableIsAvailable: executableIsAvailable,
             operations: operations,
             validateMachine: { machine, capability in
+                if capability.request.guest.family == .macOS {
+                    guard machine.guestFamily == .macOS,
+                          machine.guestArchitecture == .arm64,
+                          machine.bootMode == .macOSRestore,
+                          machine.displayMode == .desktop,
+                          capability.request.bootMedia.kind == .macOSRestoreImage,
+                          machine.macOSRestoreImagePath?.isEmpty == false,
+                          machine.macOSMachineBundlePath?.isEmpty == false else {
+                        return "A native macOS plan requires an ARM64 VZMac restore image and prepared machine bundle."
+                    }
+                    guard capability.request.devices.display != nil else {
+                        return "A native macOS plan requires its one supported guest display."
+                    }
+                    return nil
+                }
+                guard machine.guestFamily == .linux else {
+                    return "The selected guest family is not implemented by this Virtualization.framework adapter."
+                }
                 if machine.displayMode == .headless,
                    capability.request.devices.display != nil {
                     return "A headless VZ machine cannot attach a resolved display."

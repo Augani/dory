@@ -284,6 +284,7 @@ struct Pod: Identifiable, Hashable, Sendable {
 
 struct Machine: Identifiable, Hashable, Sendable {
     var name: String
+    var guestFamily: String = "linux"
     var distro: String
     var version: String
     var status: RunState

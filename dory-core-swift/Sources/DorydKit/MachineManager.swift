@@ -236,10 +236,12 @@ public enum DoryMachineDisplayMode: String, Sendable, Equatable, Hashable, Codab
 public enum DoryMachineBootMode: String, Sendable, Equatable, Hashable, Codable, CaseIterable {
     case linuxKernel = "linux-kernel"
     case efi
+    case macOSRestore = "macos-restore"
 }
 
 public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     public var id: String
+    public var guestFamily: DoryGuestFamily
     /// Guest ISA is workspace intent, not a property of the host daemon. Keeping it on each
     /// machine lets one Apple-silicon installation own native ARM64 and translated x86_64 VMs
     /// without changing a process-global architecture switch.
@@ -248,6 +250,10 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     public var rootfsPath: String
     public var bootMode: DoryMachineBootMode
     public var installerISOPath: String?
+    /// Lawful local Apple restore media used only while preparing/installing a native Mac VM.
+    public var macOSRestoreImagePath: String?
+    /// Descriptor-backed `.dorymac` workspace containing Apple platform identity and storage.
+    public var macOSMachineBundlePath: String?
     public var diskSizeBytes: UInt64?
     public var memoryMB: UInt64
     public var cpuCount: Int
@@ -260,11 +266,14 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
 
     public init(
         id: String,
+        guestFamily: DoryGuestFamily = .linux,
         guestArchitecture: DoryGuestArchitecture? = nil,
         kernelPath: String,
         rootfsPath: String,
         bootMode: DoryMachineBootMode = .linuxKernel,
         installerISOPath: String? = nil,
+        macOSRestoreImagePath: String? = nil,
+        macOSMachineBundlePath: String? = nil,
         diskSizeBytes: UInt64? = nil,
         memoryMB: UInt64 = 2048,
         cpuCount: Int = 2,
@@ -276,11 +285,14 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         cloneReceipt: DoryMachineCloneReceipt? = nil
     ) {
         self.id = id
+        self.guestFamily = guestFamily
         self.guestArchitecture = guestArchitecture
         self.kernelPath = kernelPath
         self.rootfsPath = rootfsPath
         self.bootMode = bootMode
         self.installerISOPath = installerISOPath
+        self.macOSRestoreImagePath = macOSRestoreImagePath
+        self.macOSMachineBundlePath = macOSMachineBundlePath
         self.diskSizeBytes = diskSizeBytes
         self.memoryMB = memoryMB
         self.cpuCount = cpuCount
@@ -294,11 +306,14 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case id
+        case guestFamily
         case guestArchitecture
         case kernelPath
         case rootfsPath
         case bootMode
         case installerISOPath
+        case macOSRestoreImagePath
+        case macOSMachineBundlePath
         case diskSizeBytes
         case memoryMB
         case cpuCount
@@ -314,6 +329,10 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             id: try container.decode(String.self, forKey: .id),
+            guestFamily: try container.decodeIfPresent(
+                DoryGuestFamily.self,
+                forKey: .guestFamily
+            ) ?? .linux,
             guestArchitecture: try container.decodeIfPresent(
                 DoryGuestArchitecture.self,
                 forKey: .guestArchitecture
@@ -322,6 +341,14 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
             rootfsPath: try container.decode(String.self, forKey: .rootfsPath),
             bootMode: try container.decodeIfPresent(DoryMachineBootMode.self, forKey: .bootMode) ?? .linuxKernel,
             installerISOPath: try container.decodeIfPresent(String.self, forKey: .installerISOPath),
+            macOSRestoreImagePath: try container.decodeIfPresent(
+                String.self,
+                forKey: .macOSRestoreImagePath
+            ),
+            macOSMachineBundlePath: try container.decodeIfPresent(
+                String.self,
+                forKey: .macOSMachineBundlePath
+            ),
             diskSizeBytes: try container.decodeIfPresent(UInt64.self, forKey: .diskSizeBytes),
             memoryMB: try container.decodeIfPresent(UInt64.self, forKey: .memoryMB) ?? 2048,
             cpuCount: try container.decodeIfPresent(Int.self, forKey: .cpuCount) ?? 2,
@@ -338,6 +365,33 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
                 forKey: .cloneReceipt
             )
         )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(id, forKey: .id)
+        if guestFamily != .linux {
+            try container.encode(guestFamily, forKey: .guestFamily)
+        }
+        try container.encodeIfPresent(guestArchitecture, forKey: .guestArchitecture)
+        try container.encode(kernelPath, forKey: .kernelPath)
+        try container.encode(rootfsPath, forKey: .rootfsPath)
+        try container.encode(bootMode, forKey: .bootMode)
+        try container.encodeIfPresent(installerISOPath, forKey: .installerISOPath)
+        try container.encodeIfPresent(macOSRestoreImagePath, forKey: .macOSRestoreImagePath)
+        try container.encodeIfPresent(macOSMachineBundlePath, forKey: .macOSMachineBundlePath)
+        try container.encodeIfPresent(diskSizeBytes, forKey: .diskSizeBytes)
+        try container.encode(memoryMB, forKey: .memoryMB)
+        try container.encode(cpuCount, forKey: .cpuCount)
+        try container.encodeIfPresent(address, forKey: .address)
+        try container.encode(displayMode, forKey: .displayMode)
+        try container.encode(shares, forKey: .shares)
+        try container.encode(environment, forKey: .environment)
+        try container.encodeIfPresent(
+            installedDesktopPayloadReceipt,
+            forKey: .installedDesktopPayloadReceipt
+        )
+        try container.encodeIfPresent(cloneReceipt, forKey: .cloneReceipt)
     }
 
     public var effectiveInstalledDesktopPayloadReceipt: DoryInstalledDesktopPayloadReceipt? {
@@ -358,6 +412,7 @@ public enum DoryMachineState: String, Sendable, Equatable {
 
 public struct DoryMachineStatus: Sendable, Equatable {
     public var id: String
+    public var guestFamily: DoryGuestFamily
     public var guestArchitecture: DoryGuestArchitecture?
     public var state: DoryMachineState
     public var pid: Int32?
@@ -403,6 +458,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
 
     public init(
         id: String,
+        guestFamily: DoryGuestFamily = .linux,
         guestArchitecture: DoryGuestArchitecture? = nil,
         state: DoryMachineState,
         pid: Int32? = nil,
@@ -446,6 +502,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         savedState: DoryMachineSavedStateStatus? = nil
     ) {
         self.id = id
+        self.guestFamily = guestFamily
         self.guestArchitecture = guestArchitecture
         self.state = state
         self.pid = pid
@@ -1923,6 +1980,22 @@ public final class MachineManager: @unchecked Sendable {
                     )
                 }
             }
+        case .macOSRestore:
+            guard machine.guestFamily == .macOS,
+                  machine.guestArchitecture == nil || machine.guestArchitecture == .arm64,
+                  machine.displayMode == .desktop,
+                  machine.kernelPath.isEmpty,
+                  machine.rootfsPath.isEmpty,
+                  machine.installerISOPath == nil,
+                  machine.diskSizeBytes == nil,
+                  let restoreImagePath = machine.macOSRestoreImagePath,
+                  Self.isRegularNonemptyFile(path: restoreImagePath),
+                  let machineBundlePath = machine.macOSMachineBundlePath,
+                  Self.isPrivateDirectory(path: machineBundlePath) else {
+                throw MachineManagerError.persistence(
+                    "native macOS creation requires an ARM64 desktop, lawful IPSW, and prepared private .dorymac bundle"
+                )
+            }
         }
         // Resolve and persist guest ISA before allocating a virtual disk or importing a
         // potentially multi-gigabyte ISO. Architecture is workspace intent, so a native ARM64
@@ -2054,6 +2127,7 @@ public final class MachineManager: @unchecked Sendable {
         )
         return DoryMachineStatus(
             id: preparedMachine.id,
+            guestFamily: preparedMachine.guestFamily,
             guestArchitecture: preparedMachine.guestArchitecture,
             state: .created,
             flightRecorderHeadSequence: createdEntry.flightRecorderHeadSequence,
@@ -7728,6 +7802,7 @@ public final class MachineManager: @unchecked Sendable {
            entry.process?.isRunningOrRestarting != true {
             return DoryMachineStatus(
                 id: id,
+                guestFamily: entry.configuration.guestFamily,
                 guestArchitecture: entry.configuration.guestArchitecture,
                 state: .failed,
                 lastError: entry.lastError ?? "dory-vmm process exited",
@@ -7766,6 +7841,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         return DoryMachineStatus(
             id: id,
+            guestFamily: entry.configuration.guestFamily,
             guestArchitecture: entry.configuration.guestArchitecture,
             state: entry.state,
             pid: entry.process?.pid,
@@ -12805,6 +12881,10 @@ public final class MachineManager: @unchecked Sendable {
                     try Self.cloneOrCopyFile(source: installerISOPath, destination: installerDestination)
                     copy.installerISOPath = installerDestination
                 }
+            case .macOSRestore:
+                throw MachineManagerError.persistence(
+                    "native macOS bundles require the VZMac artifact transaction"
+                )
             }
             copy.rootfsPath = rootfsDestination
             copy.kernelPath = kernelDestination
@@ -13577,6 +13657,8 @@ public final class MachineManager: @unchecked Sendable {
                   Self.isPrivateRegularFile(path: expectedNVRAMPath) else {
                 throw MachineManagerError.unknownSnapshot(snapshotID)
             }
+        case .macOSRestore:
+            throw MachineManagerError.unknownSnapshot(snapshotID)
         }
         try Self.validateSnapshotArtifactEvidence(snapshot)
         var validated = snapshot
@@ -14418,6 +14500,22 @@ public final class MachineManager: @unchecked Sendable {
 
     private static func validateLaunchConfiguration(_ machine: DoryMachineConfiguration) throws {
         try validateResources(memoryMB: machine.memoryMB, cpuCount: machine.cpuCount)
+        if machine.guestFamily == .macOS, machine.bootMode != .macOSRestore {
+            throw MachineManagerError.persistence(
+                "macOS machines require the native macOS restore boot contract"
+            )
+        }
+        if machine.guestFamily != .macOS, machine.bootMode == .macOSRestore {
+            throw MachineManagerError.persistence(
+                "the native macOS restore contract requires a macOS guest"
+            )
+        }
+        if machine.guestFamily == .linux,
+           machine.macOSRestoreImagePath != nil || machine.macOSMachineBundlePath != nil {
+            throw MachineManagerError.persistence(
+                "Linux machines cannot retain macOS restore or platform artifacts"
+            )
+        }
         if machine.bootMode == .efi, machine.displayMode != .desktop {
             throw MachineManagerError.persistence("EFI machines require desktop display mode")
         }
@@ -16858,6 +16956,8 @@ public final class MachineManager: @unchecked Sendable {
                   snapshot.nvramPath == nvramPath,
                   isPrivateRegularFile(path: machineIdentifierPath),
                   isPrivateRegularFile(path: nvramPath) else { return nil }
+        case .macOSRestore:
+            return nil
         }
         guard (try? validateSnapshotRuntimeIdentity(snapshot)) != nil,
               (try? validateSnapshotArtifactEvidence(snapshot)) != nil else { return nil }

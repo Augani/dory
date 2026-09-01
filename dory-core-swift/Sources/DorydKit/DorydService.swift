@@ -2650,6 +2650,14 @@ private extension DoryMachineConfiguration {
         }
         self.init(
             id: try dictionary.requiredString("id"),
+            guestFamily: try dictionary.optionalString("guestFamily").map {
+                guard let family = DoryGuestFamily(rawValue: $0) else {
+                    throw MachineManagerError.persistence(
+                        "unsupported guest family: \($0)"
+                    )
+                }
+                return family
+            } ?? .linux,
             guestArchitecture: try dictionary.optionalString("guestArchitecture").map {
                 guard let architecture = DoryGuestArchitecture(rawValue: $0) else {
                     throw MachineManagerError.persistence(
@@ -2662,6 +2670,8 @@ private extension DoryMachineConfiguration {
             rootfsPath: dictionary.optionalString("rootfsPath") ?? "",
             bootMode: bootMode,
             installerISOPath: dictionary.optionalString("installerISOPath"),
+            macOSRestoreImagePath: dictionary.optionalString("macOSRestoreImagePath"),
+            macOSMachineBundlePath: dictionary.optionalString("macOSMachineBundlePath"),
             diskSizeBytes: try dictionary.optionalUInt64("diskSizeBytes"),
             memoryMB: try dictionary.optionalUInt64("memoryMB") ?? 2048,
             cpuCount: try dictionary.optionalInt("cpuCount") ?? 2,
@@ -3027,6 +3037,7 @@ private extension DoryMachineStatus {
     var xpcDictionary: NSDictionary {
         var dictionary: [String: Any] = [
             "id": id,
+            "guestFamily": guestFamily.rawValue,
             "state": state.rawValue,
             "lastError": lastError ?? "",
         ]

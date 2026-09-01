@@ -3,7 +3,7 @@ import DoryOperations
 import XCTest
 
 final class MachineBackendTests: XCTestCase {
-    func testConcreteDescriptorsDescribeOnlyCurrentLinuxMechanisms() {
+    func testConcreteDescriptorsDescribeCurrentMachineMechanisms() {
         let raw = RawHVLinuxMachineBackend.backendDescriptor
         XCTAssertEqual(raw.identity, .doryHypervisor)
         XCTAssertEqual(raw.guestFamilies, [.linux])
@@ -16,11 +16,17 @@ final class MachineBackendTests: XCTestCase {
 
         let vz = VirtualizationFrameworkLinuxMachineBackend.backendDescriptor
         XCTAssertEqual(vz.identity, .appleVirtualizationFramework)
-        XCTAssertEqual(vz.guestFamilies, [.linux])
+        XCTAssertEqual(vz.guestFamilies, [.linux, .macOS])
         XCTAssertEqual(vz.guestArchitectures, [.arm64])
         XCTAssertEqual(
             vz.bootMediaKinds,
-            [.linuxKernel, .installedLinuxBootBundle, .installerISO, .virtualDisk]
+            [
+                .linuxKernel,
+                .installedLinuxBootBundle,
+                .installerISO,
+                .virtualDisk,
+                .macOSRestoreImage,
+            ]
         )
         XCTAssertTrue(vz.lifecycle.pause)
         XCTAssertTrue(vz.lifecycle.resume)
@@ -143,6 +149,84 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertTrue(result.isSuccess)
         XCTAssertEqual(result.plan?.backend.identity, .appleVirtualizationFramework)
         XCTAssertEqual(result.plan?.capability.request.bootMedia.kind, .installerISO)
+    }
+
+    func testRegistryPlansNativeMacRestoreWithPreparedBundle() throws {
+        let registry = try BackendRegistry(backends: [
+            availableVZBackend(operations: recordingOperations().operations),
+        ])
+        let machine = DoryMachineConfiguration(
+            id: "native-mac",
+            guestFamily: .macOS,
+            guestArchitecture: .arm64,
+            kernelPath: "",
+            rootfsPath: "",
+            bootMode: .macOSRestore,
+            macOSRestoreImagePath: "/fixture/Restore.ipsw",
+            macOSMachineBundlePath: "/fixture/native-mac.dorymac",
+            displayMode: .desktop
+        )
+        let result = registry.plan(MachineBackendPlanRequest(
+            machine: machine,
+            capabilityPlan: capabilityPlan(
+                backend: .appleVirtualizationFramework,
+                media: .macOSRestoreImage,
+                family: .macOS
+            )
+        ))
+
+        XCTAssertTrue(result.isSuccess)
+        XCTAssertEqual(result.plan?.capability.request.guest.family, .macOS)
+        XCTAssertEqual(result.plan?.capability.request.bootMedia.kind, .macOSRestoreImage)
+    }
+
+    func testNativeMacPlanRejectsLinuxOrMissingDisplayContract() {
+        let backend = availableVZBackend(operations: recordingOperations().operations)
+        let machine = DoryMachineConfiguration(
+            id: "native-mac",
+            guestFamily: .macOS,
+            guestArchitecture: .arm64,
+            kernelPath: "",
+            rootfsPath: "",
+            bootMode: .macOSRestore,
+            macOSRestoreImagePath: "/fixture/Restore.ipsw",
+            macOSMachineBundlePath: "/fixture/native-mac.dorymac",
+            displayMode: .desktop
+        )
+        var wrongFamily = capabilityPlan(
+            backend: .appleVirtualizationFramework,
+            media: .macOSRestoreImage
+        )
+        XCTAssertEqual(backend.plan(MachineBackendPlanRequest(
+            machine: machine,
+            capabilityPlan: wrongFamily
+        )).failure?.code, .machineConfigurationIncompatible)
+
+        let request = DoryVirtualMachineCapabilityRequest(
+            guest: DoryGuestPlatform(family: .macOS, architecture: .arm64),
+            bootMedia: DoryBootMedia(kind: .macOSRestoreImage, source: .userProvided),
+            backend: .appleVirtualizationFramework,
+            graphics: .hostAcceleratedDisplay,
+            devices: DoryVirtualMachineDeviceCapabilityRequest()
+        )
+        let noDisplay = DoryVirtualMachineCapabilityDescriptor(
+            evaluatorVersion: DoryVirtualMachineCapabilityDescriptor.appleSiliconEvaluatorVersion,
+            request: request,
+            availability: DoryCapabilityAvailability(
+                supportTier: .supported,
+                state: .available
+            ),
+            resolvedDevices: request.devices
+        )
+        wrongFamily = DoryVirtualMachineBackendPlanResult(
+            selectedDescriptor: noDisplay,
+            evaluatedDescriptors: [noDisplay],
+            failure: nil
+        )
+        XCTAssertEqual(backend.plan(MachineBackendPlanRequest(
+            machine: machine,
+            capabilityPlan: wrongFamily
+        )).failure?.code, .machineConfigurationIncompatible)
     }
 
     func testRegistryPlansVZInstalledLinuxBundleWithPlannerSelection() throws {
@@ -433,12 +517,14 @@ final class MachineBackendTests: XCTestCase {
     private func capabilityPlan(
         backend: DoryVirtualizationBackendIdentity,
         media: DoryBootMediaKind,
-        architecture: DoryGuestArchitecture = .arm64
+        architecture: DoryGuestArchitecture = .arm64,
+        family: DoryGuestFamily = .linux
     ) -> DoryVirtualMachineBackendPlanResult {
         let descriptor = capabilityDescriptor(
             backend: backend,
             media: media,
-            architecture: architecture
+            architecture: architecture,
+            family: family
         )
         return DoryVirtualMachineBackendPlanResult(
             selectedDescriptor: descriptor,
@@ -450,14 +536,23 @@ final class MachineBackendTests: XCTestCase {
     private func capabilityDescriptor(
         backend: DoryVirtualizationBackendIdentity,
         media: DoryBootMediaKind,
-        architecture: DoryGuestArchitecture = .arm64
+        architecture: DoryGuestArchitecture = .arm64,
+        family: DoryGuestFamily = .linux
     ) -> DoryVirtualMachineCapabilityDescriptor {
+        let devices = family == .macOS
+            ? DoryVirtualMachineDeviceCapabilityRequest(
+                display: DoryVirtualMachineDisplayCapabilityRequest(
+                    widthPixels: 1_280,
+                    heightPixels: 800
+                )
+            )
+            : .minimumBootable
         let request = DoryVirtualMachineCapabilityRequest(
-            guest: DoryGuestPlatform(family: .linux, architecture: architecture),
+            guest: DoryGuestPlatform(family: family, architecture: architecture),
             bootMedia: DoryBootMedia(kind: media, source: .userProvided),
             backend: backend,
             graphics: .hostAcceleratedDisplay,
-            devices: .minimumBootable
+            devices: devices
         )
         return DoryVirtualMachineCapabilityDescriptor(
             evaluatorVersion: DoryVirtualMachineCapabilityDescriptor.appleSiliconEvaluatorVersion,

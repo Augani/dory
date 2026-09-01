@@ -491,11 +491,14 @@ nonisolated struct DorydMachineTypedSettingsPatch: Sendable, Equatable {
 
 nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
     var id: String
+    var guestFamily: String = "linux"
     var guestArchitecture: String? = nil
     var kernelPath: String
     var rootfsPath: String
     var bootMode: MachineBootMode = .linuxKernel
     var installerISOPath: String? = nil
+    var macOSRestoreImagePath: String? = nil
+    var macOSMachineBundlePath: String? = nil
     var diskSizeBytes: UInt64? = nil
     var memoryMB: UInt64
     var cpuCount: Int
@@ -507,6 +510,7 @@ nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
     var xpcDictionary: NSDictionary {
         var dictionary: [String: Any] = [
             "id": id,
+            "guestFamily": guestFamily,
             "kernelPath": kernelPath,
             "rootfsPath": rootfsPath,
             "bootMode": bootMode.rawValue,
@@ -522,6 +526,12 @@ nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
         }
         if let installerISOPath {
             dictionary["installerISOPath"] = installerISOPath
+        }
+        if let macOSRestoreImagePath {
+            dictionary["macOSRestoreImagePath"] = macOSRestoreImagePath
+        }
+        if let macOSMachineBundlePath {
+            dictionary["macOSMachineBundlePath"] = macOSMachineBundlePath
         }
         if let diskSizeBytes {
             dictionary["diskSizeBytes"] = diskSizeBytes
@@ -1146,6 +1156,7 @@ nonisolated struct DorydMachineOperationSummary: Sendable, Equatable, Hashable {
 
 nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var id: String
+    var guestFamily: String = "linux"
     var guestArchitecture: String? = nil
     var state: String
     var pid: Int32?
@@ -3130,6 +3141,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
         return DorydMachineStatus(
             id: id,
+            guestFamily: nonEmptyString(dictionary["guestFamily"]) ?? "linux",
             guestArchitecture: nonEmptyString(dictionary["guestArchitecture"]),
             state: state,
             pid: int32(dictionary["pid"]),

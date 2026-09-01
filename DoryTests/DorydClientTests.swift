@@ -2221,6 +2221,35 @@ struct DorydClientTests {
         #expect(machine.displayMode == .desktop)
     }
 
+    @Test func nativeMacStatusMapsToMacDesktopIdentityWithoutLinuxShellMetadata() {
+        let status = DorydMachineStatus(
+            id: "mac-dev",
+            guestFamily: "macos",
+            guestArchitecture: "arm64",
+            state: "stopped",
+            pid: nil,
+            lastError: nil,
+            handoffSocketPath: nil,
+            agentBuild: nil,
+            agentSocketPath: nil,
+            dockerdSocketPath: nil,
+            shellSocketPath: nil,
+            handoffFDCount: 0,
+            memoryMB: 8_192,
+            cpuCount: 6,
+            displayMode: .desktop,
+            bootMode: .macOSRestore
+        )
+
+        let machine = AppStore.machine(fromDoryd: status)
+        #expect(machine.guestFamily == "macos")
+        #expect(machine.distro == "macOS")
+        #expect(machine.version == "Apple Silicon · Virtualization.framework")
+        #expect(machine.letter == "M")
+        #expect(machine.username.isEmpty)
+        #expect(machine.loginShell.isEmpty)
+    }
+
     @Test func machineCapabilityHandshakeRejectsMalformedPresentClaims() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -3780,6 +3809,30 @@ struct DorydClientTests {
         #expect(custom.typedSettings.isEmpty)
         #expect(custom.xpcDictionary["env"] == nil)
         #expect(custom.xpcDictionary["guestIdentityIntent"] == nil)
+    }
+
+    @Test func nativeMacMachineConfigurationUsesExplicitTypedXPCFields() {
+        let configuration = DorydMachineConfiguration(
+            id: "mac-dev",
+            guestFamily: "macos",
+            guestArchitecture: "arm64",
+            kernelPath: "",
+            rootfsPath: "",
+            bootMode: .macOSRestore,
+            macOSRestoreImagePath: "/managed/mac-dev/Restore.ipsw",
+            macOSMachineBundlePath: "/managed/mac-dev/mac-dev.dorymac",
+            memoryMB: 8_192,
+            cpuCount: 6,
+            displayMode: .desktop
+        )
+        let wire = configuration.xpcDictionary
+
+        #expect(wire["guestFamily"] as? String == "macos")
+        #expect(wire["guestArchitecture"] as? String == "arm64")
+        #expect(wire["bootMode"] as? String == "macos-restore")
+        #expect(wire["macOSRestoreImagePath"] as? String == "/managed/mac-dev/Restore.ipsw")
+        #expect(wire["macOSMachineBundlePath"] as? String == "/managed/mac-dev/mac-dev.dorymac")
+        #expect(wire["installerISOPath"] == nil)
     }
 
     @MainActor

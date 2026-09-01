@@ -5476,7 +5476,8 @@ final class AppStore {
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty } ?? status.state
         let isDesktop = status.displayMode == .desktop
-        let isCustomLinux = status.bootMode == .efi
+        let isMacOS = status.guestFamily == "macos"
+        let isCustomLinux = !isMacOS && status.bootMode == .efi
         let typedSettings = status.typedSettings ?? DorydMachineTypedSettings(
             legacyEnvironment: status.environment,
             displayMode: status.displayMode
@@ -5491,21 +5492,26 @@ final class AppStore {
             : typedSettings.clipboardPolicy?.files ?? .off
         return Machine(
             name: status.id,
-            distro: isCustomLinux ? "Custom Linux" : (isDesktop ? desktopDistro.displayName : "Dory Linux"),
-            version: isCustomLinux
+            guestFamily: status.guestFamily,
+            distro: isMacOS
+                ? "macOS"
+                : (isCustomLinux ? "Custom Linux" : (isDesktop ? desktopDistro.displayName : "Dory Linux")),
+            version: isMacOS
+                ? "Apple Silicon · Virtualization.framework"
+                : (isCustomLinux
                 ? "EFI · \(status.guestArchitecture ?? "arm64")"
-                : (isDesktop ? "\(desktopDistro.version) · \(desktopDistro.desktopName)" : detail),
+                : (isDesktop ? "\(desktopDistro.version) · \(desktopDistro.desktopName)" : detail)),
             status: runState,
             cpuPercent: 0,
             memoryDisplay: "—",
             ip: status.address ?? Self.machineDNSName(name: status.id, suffix: domainSuffix),
-            letter: isCustomLinux ? "L" : (isDesktop ? String(desktopDistro.displayName.prefix(1)) : "D"),
-            badgeHex: isCustomLinux ? 0x7C3AED : (isDesktop ? desktopDistro.badgeHex : 0x3B82F6),
+            letter: isMacOS ? "M" : (isCustomLinux ? "L" : (isDesktop ? String(desktopDistro.displayName.prefix(1)) : "D")),
+            badgeHex: isMacOS ? 0x64748B : (isCustomLinux ? 0x7C3AED : (isDesktop ? desktopDistro.badgeHex : 0x3B82F6)),
             containerID: "",
             arch: status.guestArchitecture ?? "",
             recipe: "doryd",
-            username: guestUsername,
-            loginShell: isCustomLinux ? "" : (isDesktop ? "/bin/bash" : "/bin/sh"),
+            username: isMacOS ? "" : guestUsername,
+            loginShell: isMacOS ? "" : (isCustomLinux ? "" : (isDesktop ? "/bin/bash" : "/bin/sh")),
             shellSocketPath: status.shellSocketPath ?? "",
             processID: status.pid,
             failure: status.failure,

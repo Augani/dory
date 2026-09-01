@@ -17,6 +17,7 @@ nonisolated enum MachineDisplayMode: String, Sendable, Hashable, CaseIterable {
 nonisolated enum MachineBootMode: String, Sendable, Hashable, CaseIterable {
     case linuxKernel = "linux-kernel"
     case efi
+    case macOSRestore = "macos-restore"
 }
 nonisolated struct MachineSettings: Sendable, Hashable {
     var cpus: Int?
