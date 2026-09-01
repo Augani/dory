@@ -26,8 +26,48 @@ public struct DoryPCVirtioPCIQueueSnapshot: Sendable, Hashable {
   public let deviceAddress: UInt64
 }
 
+public struct DoryPCVirtioPCIRegisterAccess: Sendable, Hashable {
+  public let sequenceNumber: UInt64
+  public let offset: UInt64
+  public let byteCount: Int
+  public let write: Bool
+  public let bytes: [UInt8]
+
+  public init(
+    sequenceNumber: UInt64,
+    offset: UInt64,
+    byteCount: Int,
+    write: Bool,
+    bytes: [UInt8]
+  ) {
+    self.sequenceNumber = sequenceNumber
+    self.offset = offset
+    self.byteCount = byteCount
+    self.write = write
+    self.bytes = bytes
+  }
+}
+
+public struct DoryPCVirtioPCIRegisterDiagnostics: Sendable, Hashable {
+  public let readCount: UInt64
+  public let writeCount: UInt64
+  public let recentAccesses: [DoryPCVirtioPCIRegisterAccess]
+
+  public init(
+    readCount: UInt64,
+    writeCount: UInt64,
+    recentAccesses: [DoryPCVirtioPCIRegisterAccess]
+  ) {
+    self.readCount = readCount
+    self.writeCount = writeCount
+    self.recentAccesses = recentAccesses
+  }
+}
+
 /// VirtIO 1.x PCI common configuration and BAR regions shared by every Dory PCI device model.
 public final class DoryPCVirtioPCITransport: @unchecked Sendable {
+  private static let maximumDiagnosticAccesses = 64
+
   private struct QueueRegisters {
     var size: UInt16
     var enabled = false
@@ -66,6 +106,9 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     ) throws -> Void)?
   private var queueCanProcess: @Sendable (UInt16) -> Bool = { _ in true }
   private let processingLocks: [NSRecursiveLock]
+  private var registerReadCount: UInt64 = 0
+  private var registerWriteCount: UInt64 = 0
+  private var recentRegisterAccesses: [DoryPCVirtioPCIRegisterAccess] = []
 
   public init(
     queueCount: Int,
@@ -179,6 +222,16 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     }
   }
 
+  public var registerDiagnostics: DoryPCVirtioPCIRegisterDiagnostics {
+    lock.withLock {
+      .init(
+        readCount: registerReadCount,
+        writeCount: registerWriteCount,
+        recentAccesses: recentRegisterAccesses
+      )
+    }
+  }
+
   @discardableResult
   public func signalQueueInterrupt(queue: UInt16? = nil) -> Bool {
     let delivery = lock.withLock {
@@ -215,29 +268,34 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
 
   public func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8] {
     try validate(offset: offset, byteCount: byteCount, write: false)
+    let result: [UInt8]
     if offset < 0x40 {
       let common = lock.withLock { commonConfigurationLocked() }
-      return Array(common[Int(offset)..<(Int(offset) + byteCount)])
-    }
-    if offset == 0x200, byteCount == 1 {
-      return [
+      result = Array(common[Int(offset)..<(Int(offset) + byteCount)])
+    } else if offset == 0x200, byteCount == 1 {
+      result = [
         lock.withLock {
           let value = isrStatus
           isrStatus = 0
           return value
         }
       ]
-    }
-    if offset >= 0x300, offset + UInt64(byteCount) <= 0x300 + UInt64(deviceConfiguration.count) {
-      return lock.withLock {
+    } else if offset >= 0x300,
+      offset + UInt64(byteCount) <= 0x300 + UInt64(deviceConfiguration.count)
+    {
+      result = lock.withLock {
         Array(deviceConfiguration[Int(offset - 0x300)..<(Int(offset - 0x300) + byteCount)])
       }
+    } else {
+      result = [UInt8](repeating: 0, count: byteCount)
     }
-    return [UInt8](repeating: 0, count: byteCount)
+    recordRegisterAccess(offset: offset, bytes: result, write: false)
+    return result
   }
 
   public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
     try validate(offset: offset, byteCount: bytes.count, write: true)
+    recordRegisterAccess(offset: offset, bytes: bytes, write: true)
     if offset < 0x40 {
       try writeCommon(offset: Int(offset), bytes: bytes)
       return
@@ -258,6 +316,31 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
         deviceConfiguration.replaceSubrange(
           Int(offset - 0x300)..<(Int(offset - 0x300) + bytes.count),
           with: bytes
+        )
+      }
+    }
+  }
+
+  private func recordRegisterAccess(offset: UInt64, bytes: [UInt8], write: Bool) {
+    lock.withLock {
+      if write {
+        registerWriteCount &+= 1
+      } else {
+        registerReadCount &+= 1
+      }
+      let sequenceNumber = registerReadCount &+ registerWriteCount
+      recentRegisterAccesses.append(
+        .init(
+          sequenceNumber: sequenceNumber,
+          offset: offset,
+          byteCount: bytes.count,
+          write: write,
+          bytes: Array(bytes.prefix(16))
+        )
+      )
+      if recentRegisterAccesses.count > Self.maximumDiagnosticAccesses {
+        recentRegisterAccesses.removeFirst(
+          recentRegisterAccesses.count - Self.maximumDiagnosticAccesses
         )
       }
     }

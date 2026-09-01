@@ -295,6 +295,7 @@ private func displayDeviceDiagnostics(
 ) -> [String: Any] {
   let state = device.transport.deviceState.snapshot()
   let commandDiagnostics = device.gpuDevice.commandDiagnostics
+  let registerDiagnostics = device.transport.registerDiagnostics
   let bar = try? device.configurationFunction.bar(at: 0)
   let queues: [[String: Any]] = (0..<device.transport.queueCount).map { index in
     let queueNumber = UInt16(index)
@@ -334,6 +335,17 @@ private func displayDeviceDiagnostics(
     "completedCommandCount": commandDiagnostics.completedCommandCount,
     "failedCommandCount": commandDiagnostics.failedCommandCount,
     "resetCount": commandDiagnostics.resetCount,
+    "registerReadCount": registerDiagnostics.readCount,
+    "registerWriteCount": registerDiagnostics.writeCount,
+    "recentRegisterAccesses": registerDiagnostics.recentAccesses.map { access in
+      [
+        "sequenceNumber": access.sequenceNumber,
+        "offset": hexadecimal(access.offset),
+        "byteCount": access.byteCount,
+        "write": access.write,
+        "bytes": hexadecimalBytes(access.bytes),
+      ] as [String: Any]
+    },
     "recentCommands": commandDiagnostics.recentCommands.map { command in
       [
         "sequenceNumber": command.sequenceNumber,

@@ -45,6 +45,14 @@ import Testing
     #expect(queue.descriptorAddress == 0x10_0000)
     #expect(queue.driverAddress == 0x11_0000)
     #expect(queue.deviceAddress == 0x12_0000)
+
+    let diagnostics = function.transport.registerDiagnostics
+    #expect(diagnostics.readCount == 2)
+    #expect(diagnostics.writeCount == 10)
+    #expect(diagnostics.recentAccesses.first?.offset == 0)
+    #expect(diagnostics.recentAccesses.first?.write == true)
+    #expect(diagnostics.recentAccesses.last?.offset == 0x1C)
+    #expect(diagnostics.recentAccesses.last?.bytes == [1, 0])
   }
 
   @Test func queueAddressesAcceptSplitMMIOWrites() throws {
