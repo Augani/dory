@@ -618,6 +618,15 @@ def platform_inventory(destination: Path) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+def current_build_identifier(source_lock: Dict[str, Any]) -> str:
+    with tempfile.NamedTemporaryFile() as inventory_file:
+        platform_digest = platform_inventory(Path(inventory_file.name))
+    identifier_seed = (
+        source_lock["revision"] + ":" + platform_digest + ":" + sha256(TOOLCHAIN_LOCK_PATH)
+    ).encode("utf-8")
+    return PLATFORM["buildIdentifierPrefix"] + hashlib.sha256(identifier_seed).hexdigest()[:20]
+
+
 def write_reproducible_stack_cookies(
     source: Path,
     source_lock: Dict[str, Any],
@@ -724,14 +733,8 @@ def package_bundle(
     environment: Dict[str, str],
 ) -> Path:
     configuration = workspace / "platform-configuration.json"
-    platform_digest = platform_inventory(configuration)
-    toolchain_digest = sha256(TOOLCHAIN_LOCK_PATH)
-    identifier_seed = (
-        source_lock["revision"] + ":" + platform_digest + ":" + toolchain_digest
-    ).encode("utf-8")
-    build_identifier = PLATFORM["buildIdentifierPrefix"] + hashlib.sha256(
-        identifier_seed
-    ).hexdigest()[:20]
+    platform_inventory(configuration)
+    build_identifier = current_build_identifier(source_lock)
 
     swift_scratch = workspace / "swift-build"
     run(
@@ -867,6 +870,32 @@ def remove_packaged_pc_bundle(destination: Path) -> None:
         shutil.rmtree(destination)
 
 
+def refresh_default_pc_bundle(arguments: argparse.Namespace, source: Path) -> None:
+    source.parent.mkdir(parents=True, exist_ok=True)
+    candidate = Path(tempfile.mkdtemp(prefix=f".{source.name}.refresh.", dir=str(source.parent)))
+    candidate.rmdir()
+    try:
+        build_and_publish(arguments, candidate)
+        verify_packaged_pc_bundle(candidate)
+        if not source.exists():
+            os.replace(candidate, source)
+            return
+
+        backup = Path(tempfile.mkdtemp(prefix=f".{source.name}.previous.", dir=str(source.parent)))
+        backup.rmdir()
+        os.replace(source, backup)
+        try:
+            os.replace(candidate, source)
+        except Exception:
+            os.replace(backup, source)
+            raise
+        else:
+            shutil.rmtree(backup)
+    finally:
+        if candidate.exists():
+            shutil.rmtree(candidate, ignore_errors=True)
+
+
 def package_pc_qualification_app(arguments: argparse.Namespace) -> int:
     if arguments.platform != "pc":
         raise BuildFailure("--package-app requires --platform pc")
@@ -888,9 +917,21 @@ def package_pc_qualification_app(arguments: argparse.Namespace) -> int:
         if explicit_bundle
         else REPOSITORY_ROOT / "guest/out/dory-pc-firmware"
     )
-    if not source.is_dir() and explicit_bundle is None:
-        print("note: building provenance-pinned DoryPC firmware for qualification", file=sys.stderr)
-        build_and_publish(arguments, source)
+    if explicit_bundle is None:
+        source_lock = load_json(SOURCE_LOCK_PATH)
+        expected_identifier = current_build_identifier(source_lock)
+        cached_identifier = None
+        if source.is_dir() and not source.is_symlink():
+            try:
+                cached_identifier = load_json(source / "manifest.json").get("buildIdentifier")
+            except (BuildFailure, OSError):
+                cached_identifier = None
+        if cached_identifier != expected_identifier:
+            print(
+                "note: rebuilding stale provenance-pinned DoryPC firmware for qualification",
+                file=sys.stderr,
+            )
+            refresh_default_pc_bundle(arguments, source)
     verify_packaged_pc_bundle(source)
 
     resources.mkdir(parents=True, exist_ok=True)
