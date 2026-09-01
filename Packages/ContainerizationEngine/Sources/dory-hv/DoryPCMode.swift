@@ -661,6 +661,12 @@ enum DoryPCMode {
         }
 
         func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+            // On hosts where audit-token Unix signalling is unavailable, daemon termination
+            // reaches an admitted desktop runner through NSRunningApplication.terminate(). AppKit
+            // invokes this delegate instead of the DispatchSource SIGTERM path, then the daemon's
+            // bounded stop eventually force-terminates the app. Retire the runner-owned child now
+            // so that cancellation of the AppKit quit cannot strand gvproxy under launchd.
+            networkRuntime?.stop()
             requestGuestShutdown()
             return .terminateCancel
         }
