@@ -227,6 +227,9 @@ import Testing
       #expect(hotSite.addressSpaceID == 0)
       #expect(hotSite.privilegeLevel == 0)
       #expect(hotSite.pagingEnabled == false)
+      #expect(hotSite.guestByteCount == 2)
+      #expect(hotSite.instructionBytes == [0x0F, 0xA2])
+      #expect(hotSite.declineReason == .interpreterHelper)
       #expect(hotSite.hitCount > 0)
     #endif
   }

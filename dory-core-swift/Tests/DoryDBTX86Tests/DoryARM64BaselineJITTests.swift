@@ -42,7 +42,7 @@ import Testing
 
   @Test func generationValidatedNegativeCacheSkipsRepeatedEmitterDeclines() throws {
     #if arch(arm64)
-      let bytes: [UInt8] = [0x0F, 0xA2]  // cpuid lowers to IR the baseline emitter cannot encode.
+      let bytes: [UInt8] = [0x0F, 0xA2]  // cpuid lowers to a precise interpreter helper.
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       var requestedByteCounts: [Int] = []
       func run() throws -> DoryARM64BaselineExecution? {
@@ -79,8 +79,39 @@ import Testing
       #expect(hotSite.addressSpaceID == 3)
       #expect(hotSite.privilegeLevel == 0)
       #expect(hotSite.pagingEnabled == false)
+      #expect(hotSite.guestByteCount == bytes.count)
+      #expect(hotSite.instructionBytes == bytes)
+      #expect(hotSite.declineReason == .interpreterHelper)
       #expect(hotSite.hitCount == 1)
     #endif
+  }
+
+  @Test func declineDiagnosticsDistinguishHelpersFromNativeEmitterRefusals() {
+    let helper = DoryIRBasicBlock(
+      guestStart: 0,
+      guestByteCount: 2,
+      guestInstructionCount: 1,
+      statements: [.helper(identifier: "x86.interpret.one", payload: [0x0F, 0xA2])],
+      terminator: .exit(.interpreter, resumeAt: 0)
+    )
+    let invalidRegister = DoryIRRegister(bank: "not.x86.gpr", index: 0, width: .i64)
+    let emitterRefusal = DoryIRBasicBlock(
+      guestStart: 0,
+      guestByteCount: 1,
+      guestInstructionCount: 1,
+      statements: [
+        .copy(
+          destination: .register(invalidRegister),
+          source: .immediate(1, width: .i64)
+        )
+      ],
+      terminator: .next(1)
+    )
+
+    #expect(
+      DoryARM64BaselineExecutor.compilationDeclineReason(for: helper) == .interpreterHelper)
+    #expect(
+      DoryARM64BaselineExecutor.compilationDeclineReason(for: emitterRefusal) == .nativeEmitter)
   }
 
   @Test func negativeCacheFailsOpenWithoutGenerationAuthority() throws {

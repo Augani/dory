@@ -250,6 +250,9 @@ private func jitDiagnostics(_ diagnostics: DoryPCJITCacheStatistics?) -> Any {
       "addressSpaceID": site.addressSpaceID,
       "privilegeLevel": site.privilegeLevel,
       "pagingEnabled": site.pagingEnabled,
+      "guestByteCount": site.guestByteCount,
+      "instructionBytes": site.instructionBytes.map { String(format: "%02x", $0) }.joined(),
+      "declineReason": site.declineReason.rawValue,
       "hitCount": site.hitCount,
     ]
   }

@@ -2097,6 +2097,12 @@ public struct DoryARM64ExecutionSummary: Sendable, Hashable {
   }
 }
 
+/// The stage that rejected a translated guest block before it could enter executable memory.
+public enum DoryARM64CompilationDeclineReason: String, Sendable, Hashable {
+  case interpreterHelper
+  case nativeEmitter
+}
+
 /// One exact, currently live negative-cache identity and its saturating validated-hit count.
 public struct DoryARM64NegativeCacheHotSite: Sendable, Hashable {
   public let guestRIP: UInt64
@@ -2105,6 +2111,9 @@ public struct DoryARM64NegativeCacheHotSite: Sendable, Hashable {
   public let addressSpaceID: UInt64
   public let privilegeLevel: UInt8
   public let pagingEnabled: Bool
+  public let guestByteCount: Int
+  public let instructionBytes: [UInt8]
+  public let declineReason: DoryARM64CompilationDeclineReason
   public let hitCount: UInt64
 }
 
@@ -2205,6 +2214,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private struct NegativeEntry {
     let key: NegativeLookupKey
     let guestByteCount: Int
+    let instructionBytes: [UInt8]
+    let declineReason: DoryARM64CompilationDeclineReason
     let memoryCodeGeneration: UInt64
     let codeCacheEpoch: UInt64
     var hitCount: UInt64
@@ -2213,6 +2224,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private struct ResidentCompilation {
     let resident: ResidentBlock?
     let emitterDeclineByteCount: Int?
+    let declineReason: DoryARM64CompilationDeclineReason?
   }
 
   private struct NativeTraceEntry {
@@ -2338,6 +2350,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           addressSpaceID: lookup.addressSpaceID,
           privilegeLevel: lookup.privilegeLevel,
           pagingEnabled: lookup.pagingEnabled,
+          guestByteCount: entry.guestByteCount,
+          instructionBytes: entry.instructionBytes,
+          declineReason: entry.declineReason,
           hitCount: entry.hitCount
         )
       }.sorted(by: Self.negativeHotSitePrecedes)
@@ -2943,10 +2958,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       return resident
     }
     declinedCompilationCount &+= 1
-    if let guestByteCount = compilation.emitterDeclineByteCount {
+    if let guestByteCount = compilation.emitterDeclineByteCount,
+      let declineReason = compilation.declineReason
+    {
       publishNegativeEntry(
         for: negativeKey,
         guestByteCount: guestByteCount,
+        declineReason: declineReason,
         originalBytes: bytes,
         byteProvider: byteProvider,
         codeGenerationProvider: codeGenerationProvider
@@ -2965,7 +2983,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     memory: (any DoryX86Memory)?
   ) throws -> ResidentCompilation {
     guard !bytes.isEmpty else {
-      return .init(resident: nil, emitterDeclineByteCount: nil)
+      return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
     let translated = try DoryX86IRTranslator(
       decoder: decoder,
@@ -2977,18 +2995,20 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       tier: optimization == .optimizing ? .optimizing : .baseline
     )
     if compiled.tier == .interpreterFallback {
+      let declineReason = Self.compilationDeclineReason(for: block)
       return .init(
         resident: nil,
-        emitterDeclineByteCount: Int(compiled.guestByteCount)
+        emitterDeclineByteCount: Int(compiled.guestByteCount),
+        declineReason: declineReason
       )
     }
     guard compiled.guestInstructionCount > 0,
       compiled.guestInstructionCount <= maximumInstructions,
       !compiled.requiresMemoryCallbacks || memory != nil
-    else { return .init(resident: nil, emitterDeclineByteCount: nil) }
+    else { return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil) }
     let byteCount = compiled.machineBytes.count
     guard byteCount <= region.capacity else {
-      return .init(resident: nil, emitterDeclineByteCount: nil)
+      return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
     if nextOffset > region.capacity - byteCount {
       entries.removeAll(keepingCapacity: true)
@@ -3016,7 +3036,16 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     )
     publish(resident, for: key)
     compiledBlockCount &+= 1
-    return .init(resident: resident, emitterDeclineByteCount: nil)
+    return .init(resident: resident, emitterDeclineByteCount: nil, declineReason: nil)
+  }
+
+  static func compilationDeclineReason(
+    for block: DoryIRBasicBlock
+  ) -> DoryARM64CompilationDeclineReason {
+    block.statements.contains {
+      if case .helper = $0 { return true }
+      return false
+    } ? .interpreterHelper : .nativeEmitter
   }
 
   private func makeLookupKey(
@@ -3083,6 +3112,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private func publishNegativeEntry(
     for key: NegativeLookupKey,
     guestByteCount: Int,
+    declineReason: DoryARM64CompilationDeclineReason,
     originalBytes: [UInt8],
     byteProvider: (_ maximumCount: Int) throws -> [UInt8],
     codeGenerationProvider: ((_ byteCount: Int) throws -> UInt64?)?
@@ -3097,11 +3127,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       guard confirmedBytes.count == guestByteCount,
         confirmedBytes.elementsEqual(originalBytes.prefix(guestByteCount))
       else { return }
+      let instruction = try decoder.decode(
+        originalBytes.prefix(15),
+        at: key.lookupKey.guestStart,
+        mode: key.lookupKey.executionMode
+      )
       codeGenerationCheckCount &+= 1
       guard try codeGenerationProvider(guestByteCount) == generationBefore else { return }
       negativeEntries[negativeIndex(for: key)] = .init(
         key: key,
         guestByteCount: guestByteCount,
+        instructionBytes: instruction.bytes,
+        declineReason: declineReason,
         memoryCodeGeneration: generationBefore,
         codeCacheEpoch: codeCacheEpoch,
         hitCount: 0

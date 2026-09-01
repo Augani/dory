@@ -136,6 +136,9 @@ public struct DoryPCJITNegativeCacheHotSite: Sendable, Hashable {
   public let addressSpaceID: UInt64
   public let privilegeLevel: UInt8
   public let pagingEnabled: Bool
+  public let guestByteCount: Int
+  public let instructionBytes: [UInt8]
+  public let declineReason: DoryARM64CompilationDeclineReason
   public let hitCount: UInt64
 
   fileprivate init(_ source: DoryARM64NegativeCacheHotSite) {
@@ -145,6 +148,9 @@ public struct DoryPCJITNegativeCacheHotSite: Sendable, Hashable {
     addressSpaceID = source.addressSpaceID
     privilegeLevel = source.privilegeLevel
     pagingEnabled = source.pagingEnabled
+    guestByteCount = source.guestByteCount
+    instructionBytes = source.instructionBytes
+    declineReason = source.declineReason
     hitCount = source.hitCount
   }
 }
