@@ -816,6 +816,11 @@ import Testing
           stackValue: nil
         ),
         StackCase(
+          bytes: [0x6A, 0xFE],  // push imm8 sign-extends to qword in long mode
+          registers: .init(rsp: 0x100),
+          stackValue: nil
+        ),
+        StackCase(
           bytes: [0x5A],  // pop rdx
           registers: .init(rdx: 0xDEAD_BEEF, rsp: 0x100),
           stackValue: 0x8877_6655_4433_2211
@@ -884,6 +889,7 @@ import Testing
     #if arch(arm64)
       let cases: [([UInt8], DoryX86GeneralRegisters)] = [
         ([0x41, 0x55], .init(rsp: 4, r13: 0x1122_3344_5566_7788)),
+        ([0x6A, 0xFE], .init(rsp: 4)),
         ([0x5A], .init(rdx: 0xDEAD_BEEF, rsp: 0x100)),
       ]
 
@@ -1127,6 +1133,7 @@ import Testing
     let measured: [([UInt8], UInt64)] = [
       ([0x41, 0x55], 0x12E4_D060A),  // push r13
       ([0x5A], 0x12E4_D06C9),  // pop rdx
+      ([0x6A, 0xFE], 0x1FDC_1959),  // push -2
     ]
     for (bytes, address) in measured {
       let block = try DoryX86IRTranslator().translate(bytes, at: address, mode: .long64)
@@ -1164,12 +1171,16 @@ import Testing
       ([0xFF, 0x30], .long64),  // push qword ptr [rax]
       ([0x8F, 0x00], .long64),  // pop qword ptr [rax]
       ([0x66, 0x50], .long64),  // push ax
+      ([0x66, 0x6A, 0xFE], .long64),  // push imm8 as a word
       ([0x66, 0x58], .long64),  // pop ax
       ([0x50], .protected32),
     ]
     for (bytes, mode) in excluded {
       let block = try DoryX86IRTranslator().translate(bytes, at: 0, mode: mode)
-      #expect(DoryARM64BaselineEmitter().compile(block).tier == .interpreterFallback)
+      #expect(
+        DoryARM64BaselineEmitter().compile(block).tier == .interpreterFallback,
+        "excluded stack form unexpectedly compiled: \(bytes) in \(mode)"
+      )
     }
 
     let invalid = DoryIRRegister(bank: "not.x86.gpr", index: 0, width: .i64)
@@ -1373,6 +1384,21 @@ import Testing
         ([0x48, 0x0F, 0xAF, 0xD6], .init(rdx: 0x8000_0000_0000_0000, rsi: 1)),
         ([0x48, 0x0F, 0xAF, 0xD6], .init(rdx: UInt64(bitPattern: -3), rsi: 7)),
         ([0x48, 0x0F, 0xAF, 0xD2], .init(rdx: 0x7FFF_FFFF_FFFF_FFFF)),
+        ([0x48, 0x6B, 0xC9, 0x18], .init(rcx: 0)),
+        ([0x48, 0x6B, 0xC9, 0x18], .init(rcx: UInt64(bitPattern: -3))),
+        ([0x48, 0x6B, 0xC9, 0x18], .init(rcx: 0x7FFF_FFFF_FFFF_FFFF)),
+        ([0x48, 0x6B, 0xC9, 0xFE], .init(rcx: 7)),
+        ([0x48, 0x6B, 0xC9, 0xFE], .init(rcx: 0x7FFF_FFFF_FFFF_FFFF)),
+        ([0x6B, 0xC9, 0xFE], .init(rcx: 0xAABB_CCDD_0000_0007)),
+        ([0x6B, 0xC9, 0xFE], .init(rcx: 0xAABB_CCDD_7FFF_FFFF)),
+        (
+          [0x48, 0x69, 0xC9, 0x00, 0x00, 0x00, 0x80],
+          .init(rcx: 2)
+        ),
+        (
+          [0x69, 0xC9, 0x00, 0x00, 0x00, 0x80],
+          .init(rcx: 0xAABB_CCDD_0000_0001)
+        ),
       ]
       let rotateValues: [UInt64] = [
         0,
@@ -1387,6 +1413,10 @@ import Testing
           optimization: optimization
         )
         for (bytes, registers) in multiplyCases {
+          let multiplyExecutor = try DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024,
+            optimization: optimization
+          )
           var interpreted = try DoryX86ArchitecturalState(
             registers: registers,
             rip: 0,
@@ -1404,7 +1434,7 @@ import Testing
             rflags: initialFlags
           )
           let execution = try #require(
-            executor.execute(
+            multiplyExecutor.execute(
               bytes: bytes,
               at: 0,
               mode: .long64,
@@ -1569,7 +1599,7 @@ import Testing
   @Test func kernelHashArithmeticCoverageRemainsNarrowAndFailClosed() throws {
     let excluded: [[UInt8]] = [
       [0x48, 0x0F, 0xAF, 0x10],  // imul rdx,[rax]
-      [0x48, 0x6B, 0xD6, 0x03],  // imul rdx,rsi,3
+      [0x66, 0x6B, 0xD6, 0x03],  // imul dx,si,3
       [0xC1, 0xC0, 0x1F],  // rol eax,31
       [0x48, 0xC1, 0x00, 0x1F],  // rol qword ptr [rax],31
       [0x48, 0xD3, 0xC2],  // rol rdx,cl

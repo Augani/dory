@@ -539,8 +539,14 @@ public struct DoryX86IRTranslator: Sendable {
       else { return false }
       return isJITGeneralRegister(target) && isJITGeneralRegister(origin)
     case .stackPush(let source):
-      guard case .register(let register) = source, register.width == .i64 else { return false }
-      return isJITGeneralRegister(register)
+      switch source {
+      case .register(let register):
+        return register.width == .i64 && isJITGeneralRegister(register)
+      case .immediate(_, let width):
+        return width == .i64
+      case .memory:
+        return false
+      }
     case .stackPop(let destination):
       guard case .register(let register) = destination,
         register.width == .i64,
@@ -550,11 +556,17 @@ public struct DoryX86IRTranslator: Sendable {
     case .signedMultiply(let destination, let lhs, let rhs):
       guard case .register(let target) = destination,
         target.width == .i32 || target.width == .i64,
-        case .register(let left) = lhs, left.width == target.width,
-        case .register(let right) = rhs, right.width == target.width
+        case .register(let left) = lhs, left.width == target.width
       else { return false }
-      return isJITGeneralRegister(target) && isJITGeneralRegister(left)
-        && isJITGeneralRegister(right)
+      guard isJITGeneralRegister(target) && isJITGeneralRegister(left) else { return false }
+      switch rhs {
+      case .register(let right):
+        return right.width == target.width && isJITGeneralRegister(right)
+      case .immediate(_, let width):
+        return width == target.width
+      case .memory:
+        return false
+      }
     case .extendMove(let destination, let source, let signed):
       guard !signed, case .register(let target) = destination,
         isJITGeneralRegister(target)

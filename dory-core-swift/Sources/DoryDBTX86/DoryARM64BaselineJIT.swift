@@ -190,10 +190,16 @@ public struct DoryARM64BaselineEmitter: Sendable {
     source: DoryIROperand,
     into words: inout [UInt32]
   ) -> Bool {
-    guard case .register(let register) = source,
-      register.bank == "x86.gpr", register.index < 16, register.width == .i64,
-      load(register, into: 10, words: &words)
-    else { return false }
+    switch source {
+    case .register(let register)
+    where register.bank == "x86.gpr" && register.index < 16 && register.width == .i64:
+      break
+    case .immediate(_, width: .i64):
+      break
+    default:
+      return false
+    }
+    guard load(source, matching: .i64, into: 10, words: &words) else { return false }
 
     // Read the source before changing the temporary RSP so `push rsp` stores the old value.
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
@@ -431,10 +437,19 @@ public struct DoryARM64BaselineEmitter: Sendable {
     guard case .register(let target) = destination,
       target.bank == "x86.gpr", target.index < 16,
       target.width == .i32 || target.width == .i64,
-      case .register(let left) = lhs, left.width == target.width,
-      case .register(let right) = rhs, right.width == target.width,
-      load(left, into: 9, words: &words),
-      load(right, into: 10, words: &words)
+      case .register(let left) = lhs, left.width == target.width
+    else { return false }
+    switch rhs {
+    case .register(let right)
+    where right.bank == "x86.gpr" && right.index < 16 && right.width == target.width:
+      break
+    case .immediate(_, let width) where width == target.width:
+      break
+    default:
+      return false
+    }
+    guard load(left, into: 9, words: &words),
+      load(rhs, matching: target.width, into: 10, words: &words)
     else { return false }
 
     let is64Bit = target.width == .i64
