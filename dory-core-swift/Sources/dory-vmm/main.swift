@@ -6,6 +6,9 @@ do {
     let arguments = try DoryApplicationLaunchHandoffClient.receiveIfRequested(
         arguments: Array(CommandLine.arguments.dropFirst())
     )
+    if arguments.first == "vzmac" {
+        exit(DoryVZMacDesktopMain.run(Array(arguments.dropFirst())))
+    }
     exit(DoryVMMMain.run(arguments))
 } catch {
     FileHandle.standardError.write(
