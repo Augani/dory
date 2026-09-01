@@ -257,6 +257,7 @@ private func blockDeviceDiagnostics(
     let state = device.transport.deviceState.snapshot()
     let queue = try? device.transport.queue(at: 0).snapshot()
     let bar = try? device.configurationFunction.bar(at: 0)
+    let diagnostics = device.blockDevice.diagnostics
     return [
       "identifier": String(decoding: device.blockDevice.identifier, as: UTF8.self),
       "pciAddress": String(
@@ -285,6 +286,17 @@ private func blockDeviceDiagnostics(
       "queueAvailableIndex": queue?.lastAvailableIndex ?? 0,
       "queueUsedIndex": queue?.lastUsedIndex ?? 0,
       "queueOutstandingHeads": queue?.outstandingHeads.count ?? 0,
+      "requestCount": diagnostics.requestCount,
+      "successfulRequestCount": diagnostics.successfulRequestCount,
+      "failedRequestCount": diagnostics.failedRequestCount,
+      "unsupportedRequestCount": diagnostics.unsupportedRequestCount,
+      "readRequestCount": diagnostics.readRequestCount,
+      "readByteCount": diagnostics.readByteCount,
+      "writeRequestCount": diagnostics.writeRequestCount,
+      "writeByteCount": diagnostics.writeByteCount,
+      "recentReadRanges": diagnostics.recentReadRanges.map {
+        ["offset": $0.offset, "byteCount": $0.byteCount]
+      },
     ]
   }
 }
@@ -408,7 +420,11 @@ private func runWithProgress(
     }
     let distanceToTrace = traceAfterInstructions.map { $0 > completed ? $0 - completed : 0 } ?? 0
     let chunk = min(
-      tracing ? 1 : max(1, min(progressInstructions, distanceToTrace == 0 ? progressInstructions : distanceToTrace)),
+      tracing
+        ? 1
+        : max(
+          1,
+          min(progressInstructions, distanceToTrace == 0 ? progressInstructions : distanceToTrace)),
       maximumInstructions - completed
     )
     let stop = try machine.run(maximumInstructions: chunk, exceptionPolicy: exceptionPolicy)
@@ -643,28 +659,29 @@ private func run() throws {
     memory: composed.machine.physicalMemory
   )
   let display = displaySink.snapshot()
-  let lastDisplayFrame: Any = display.lastFrame.map { frame in
-    [
-      "scanoutID": frame.scanoutID,
-      "resourceID": frame.resourceID,
-      "resourceWidth": frame.resourceWidth,
-      "resourceHeight": frame.resourceHeight,
-      "scanoutX": frame.scanoutRectangle.x,
-      "scanoutY": frame.scanoutRectangle.y,
-      "scanoutWidth": frame.scanoutRectangle.width,
-      "scanoutHeight": frame.scanoutRectangle.height,
-      "damagedX": frame.damagedRectangle.x,
-      "damagedY": frame.damagedRectangle.y,
-      "damagedWidth": frame.damagedRectangle.width,
-      "damagedHeight": frame.damagedRectangle.height,
-      "format": frame.format.rawValue,
-      "pixelByteCount": frame.pixels.count,
-      "nonzeroPixelByteCount": frame.pixels.reduce(into: 0) { count, byte in
-        if byte != 0 { count += 1 }
-      },
-      "pixelSHA256": sha256(of: frame.pixels),
-    ] as [String: Any]
-  } ?? NSNull()
+  let lastDisplayFrame: Any =
+    display.lastFrame.map { frame in
+      [
+        "scanoutID": frame.scanoutID,
+        "resourceID": frame.resourceID,
+        "resourceWidth": frame.resourceWidth,
+        "resourceHeight": frame.resourceHeight,
+        "scanoutX": frame.scanoutRectangle.x,
+        "scanoutY": frame.scanoutRectangle.y,
+        "scanoutWidth": frame.scanoutRectangle.width,
+        "scanoutHeight": frame.scanoutRectangle.height,
+        "damagedX": frame.damagedRectangle.x,
+        "damagedY": frame.damagedRectangle.y,
+        "damagedWidth": frame.damagedRectangle.width,
+        "damagedHeight": frame.damagedRectangle.height,
+        "format": frame.format.rawValue,
+        "pixelByteCount": frame.pixels.count,
+        "nonzeroPixelByteCount": frame.pixels.reduce(into: 0) { count, byte in
+          if byte != 0 { count += 1 }
+        },
+        "pixelSHA256": sha256(of: frame.pixels),
+      ] as [String: Any]
+    } ?? NSNull()
   let payload: [String: Any] = [
     "cr0": state.map { hexadecimal($0.control.cr0) } ?? "unavailable",
     "cr3": state.map { hexadecimal($0.control.cr3) } ?? "unavailable",
