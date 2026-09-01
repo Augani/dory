@@ -36,8 +36,30 @@ public struct DoryPCExecutionStatistics: Codable, Sendable, Hashable {
   }
 }
 
+public struct DoryPCTripleFaultExceptionEvidence: Sendable, Hashable {
+  public let exception: DoryX86Exception
+  public let processor: Int
+  public let executionMode: DoryX86ExecutionMode
+  public let state: DoryX86ArchitecturalState
+  public let instructionBytes: [UInt8]
+
+  public init(
+    exception: DoryX86Exception,
+    processor: Int,
+    executionMode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState,
+    instructionBytes: [UInt8]
+  ) {
+    self.exception = exception
+    self.processor = processor
+    self.executionMode = executionMode
+    self.state = state
+    self.instructionBytes = instructionBytes
+  }
+}
+
 public enum DoryPCTripleFaultSource: Sendable, Hashable {
-  case exception(DoryX86Exception)
+  case exception(DoryPCTripleFaultExceptionEvidence)
   case interrupt(vector: UInt8, source: DoryX86InterruptSource, processor: Int)
 }
 
@@ -494,6 +516,22 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           guard exceptionPolicy == .deliver else {
             return .exception(exception, instructionCount: completed - 1)
           }
+          let faultMode = executionMode(processorState.value)
+          translatedMemories[processor].updateContext(
+            .init(state: processorState.value, mode: faultMode)
+          )
+          let faultBytes =
+            (try? translatedMemories[processor].instructionBytes(
+              at: exception.instructionPointer,
+              maximumCount: 15
+            )) ?? []
+          let evidence = DoryPCTripleFaultExceptionEvidence(
+            exception: exception,
+            processor: processor,
+            executionMode: faultMode,
+            state: processorState.value,
+            instructionBytes: faultBytes
+          )
           do {
             try DoryX86InterruptDelivery().deliverException(
               exception,
@@ -504,7 +542,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             )
           } catch {
             return .tripleFault(
-              source: .exception(exception),
+              source: .exception(evidence),
               instructionCount: completed - 1
             )
           }

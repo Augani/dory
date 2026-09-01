@@ -103,6 +103,37 @@ import Testing
     #expect(count == 0)
   }
 
+  @Test func tripleFaultPreservesTheOriginalProcessorStateAndOpcodeBytes() throws {
+    let layout = DoryPCPVHBootLayout(
+      startInfo: 0x90000,
+      commandLine: 0x91000,
+      modules: 0x92000,
+      memoryMap: 0x93000,
+      initrd: 0x180000
+    )
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      bootLayout: layout
+    )
+    try machine.load(kernel: makeELF(code: [0x0F, 0x0B, 0xF4]), commandLine: "x")
+    let entry = try #require(machine.state?.rip)
+
+    guard case .tripleFault(let source, let count) = try machine.run(
+      maximumInstructions: 1,
+      exceptionPolicy: .deliver
+    ), case .exception(let evidence) = source else {
+      Issue.record("expected exception delivery to triple fault")
+      return
+    }
+
+    #expect(count == 0)
+    #expect(evidence.exception.kind == .invalidOpcode)
+    #expect(evidence.processor == 0)
+    #expect(evidence.executionMode == .protected32)
+    #expect(evidence.state.rip == entry)
+    #expect(evidence.instructionBytes.starts(with: [0x0F, 0x0B, 0xF4]))
+  }
+
   @Test func baselineJITExecutesDirectKernelBlocksWithPreciseAccounting() throws {
     #if arch(arm64)
       let layout = DoryPCPVHBootLayout(

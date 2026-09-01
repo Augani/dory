@@ -814,6 +814,28 @@ enum DoryPCMode {
                             "DoryPC stopped on unhandled \(exception) after \(count) instructions"
                         )
                     case .tripleFault(let source, let count):
+                        let sourceDetail: String
+                        switch source {
+                        case .exception(let evidence):
+                            let state = evidence.state
+                            let faultRIP = String(
+                                state.cs.base &+ evidence.exception.instructionPointer,
+                                radix: 16
+                            )
+                            let codeSegment = String(state.cs.selector, radix: 16)
+                            let bytes = evidence.instructionBytes.map {
+                                String(format: "%02x", $0)
+                            }.joined(separator: " ")
+                            sourceDetail = "exception=\(evidence.exception.kind) "
+                                + "vector=\(evidence.exception.vector) "
+                                + "processor=\(evidence.processor) "
+                                + "mode=\(evidence.executionMode.rawValue) "
+                                + "fault-rip=0x\(faultRIP) cs=0x\(codeSegment) "
+                                + "bytes=[\(bytes)]"
+                        case .interrupt(let vector, let interruptSource, let processor):
+                            sourceDetail = "interrupt=\(vector) source=\(interruptSource) "
+                                + "processor=\(processor)"
+                        }
                         let state = composed.machine.state
                         let statistics = composed.machine.executionStatistics
                         let detail = state.map {
@@ -826,7 +848,8 @@ enum DoryPCMode {
                                 + "cr4=0x\(cr4) efer=0x\(efer)"
                         } ?? "architectural-state=unavailable"
                         throw VMError.bootFailure(
-                            "DoryPC triple-faulted from \(source) after \(count) instructions; "
+                            "DoryPC triple-faulted from \(sourceDetail) "
+                                + "after \(count) instructions; "
                                 + "\(detail); interpreter=\(statistics.interpreterInstructions) "
                                 + "baseline=\(statistics.baselineJITInstructions) "
                                 + "optimizing=\(statistics.optimizingJITInstructions)"
