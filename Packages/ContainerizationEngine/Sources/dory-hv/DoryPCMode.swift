@@ -1093,7 +1093,12 @@ enum DoryPCMode {
                 + "declined=\(diagnostics.declinedCompilations) "
                 + "wraps=\(diagnostics.codeCacheWraps) "
                 + "trace-attempts=\(diagnostics.nativeTraceAttempts) "
-                + "trace-replays=\(diagnostics.nativeTraceReplays)"
+                + "trace-replays=\(diagnostics.nativeTraceReplays) "
+                + "generation-checks=\(diagnostics.codeGenerationChecks) "
+                + "generation-mismatches=\(diagnostics.codeGenerationMismatches) "
+                + "chain-calls=\(diagnostics.chainedExecutionCalls) "
+                + "chain-requested=\(diagnostics.chainedRequestedInstructions) "
+                + "chain-retired=\(diagnostics.chainedRetiredInstructions)"
         }
 
         private func requestGuestShutdown() {

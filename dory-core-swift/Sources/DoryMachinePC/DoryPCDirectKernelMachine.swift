@@ -93,6 +93,11 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let codeCacheWraps: UInt64
   public let nativeTraceAttempts: UInt64
   public let nativeTraceReplays: UInt64
+  public let codeGenerationChecks: UInt64
+  public let codeGenerationMismatches: UInt64
+  public let chainedExecutionCalls: UInt64
+  public let chainedRequestedInstructions: UInt64
+  public let chainedRetiredInstructions: UInt64
 
   fileprivate init(_ source: DoryARM64BaselineExecutorDiagnostics) {
     recentLookupHits = source.recentLookupHits
@@ -106,6 +111,11 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     codeCacheWraps = source.codeCacheWraps
     nativeTraceAttempts = source.nativeTraceAttempts
     nativeTraceReplays = source.nativeTraceReplays
+    codeGenerationChecks = source.codeGenerationChecks
+    codeGenerationMismatches = source.codeGenerationMismatches
+    chainedExecutionCalls = source.chainedExecutionCalls
+    chainedRequestedInstructions = source.chainedRequestedInstructions
+    chainedRetiredInstructions = source.chainedRetiredInstructions
   }
 }
 

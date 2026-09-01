@@ -1601,6 +1601,11 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   public let codeCacheWraps: UInt64
   public let nativeTraceAttempts: UInt64
   public let nativeTraceReplays: UInt64
+  public let codeGenerationChecks: UInt64
+  public let codeGenerationMismatches: UInt64
+  public let chainedExecutionCalls: UInt64
+  public let chainedRequestedInstructions: UInt64
+  public let chainedRetiredInstructions: UInt64
 }
 
 struct DoryARM64NativeBatchExecution: Sendable, Hashable {
@@ -1661,9 +1666,32 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let resident: ResidentBlock
   }
 
+  private struct NativeTraceEntry {
+    let guestStart: UInt64
+    let resident: ResidentBlock
+    let codeCacheEpoch: UInt64
+  }
+
+  private struct NativeTraceValidation: Hashable {
+    let guestStart: UInt64
+    let guestByteCount: Int
+    let memoryCodeGeneration: UInt64
+  }
+
   private struct NativeTrace {
     let key: LookupKey
-    let guestStarts: [UInt64]
+    let codeCacheEpoch: UInt64
+    let offsets: [Int]
+    let expectedGuestRIPs: [UInt64]
+    let guestInstructionCounts: [UInt32]
+    let totalGuestInstructionCount: Int
+    let validations: [NativeTraceValidation]
+  }
+
+  private enum NativeTraceReplayResult {
+    case executed(NativeReplay)
+    case invalid
+    case unavailable
   }
 
   private struct NativeReplay {
@@ -1701,6 +1729,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var codeCacheWrapCount: UInt64 = 0
   private var nativeTraceAttemptCount: UInt64 = 0
   private var nativeTraceReplayCount: UInt64 = 0
+  private var codeGenerationCheckCount: UInt64 = 0
+  private var codeGenerationMismatchCount: UInt64 = 0
+  private var chainedExecutionCallCount: UInt64 = 0
+  private var chainedRequestedInstructionCount: UInt64 = 0
+  private var chainedRetiredInstructionCount: UInt64 = 0
+  private var codeCacheEpoch: UInt64 = 0
   private var nextOffset = 0
 
   public init(
@@ -1738,7 +1772,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         declinedCompilations: declinedCompilationCount,
         codeCacheWraps: codeCacheWrapCount,
         nativeTraceAttempts: nativeTraceAttemptCount,
-        nativeTraceReplays: nativeTraceReplayCount
+        nativeTraceReplays: nativeTraceReplayCount,
+        codeGenerationChecks: codeGenerationCheckCount,
+        codeGenerationMismatches: codeGenerationMismatchCount,
+        chainedExecutionCalls: chainedExecutionCallCount,
+        chainedRequestedInstructions: chainedRequestedInstructionCount,
+        chainedRetiredInstructions: chainedRetiredInstructionCount
       )
     }
   }
@@ -1749,6 +1788,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       sharedCodeEntries.removeAll(keepingCapacity: true)
       recentEntries = .init(repeating: nil, count: recentEntries.count)
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
+      codeCacheEpoch &+= 1
       nextOffset = 0
     }
   }
@@ -1866,7 +1906,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   ) throws -> DoryARM64ExecutionSummary? {
     guard maximumInstructions > 0 else { return nil }
     return try lock.withLock {
-      try withUnsafeTemporaryAllocation(
+      chainedExecutionCallCount &+= 1
+      chainedRequestedInstructionCount &+= UInt64(maximumInstructions)
+      return try withUnsafeTemporaryAllocation(
         of: UInt64.self,
         capacity: DoryJITExecutableRegion.contextWordCount
       ) { context in
@@ -1884,37 +1926,39 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             state: state
           )
           let traceIndex = nativeTraceIndex(for: traceKey)
-          let recordedTrace = nativeTraces[traceIndex].flatMap {
-            $0.key == traceKey ? $0.guestStarts : nil
+          var recordedTrace = nativeTraces[traceIndex].flatMap {
+            $0.key == traceKey ? $0 : nil
           }
           if recordedTrace != nil { nativeTraceAttemptCount &+= 1 }
-          if let recordedTrace,
-            let replay = try replayNativeTrace(
-              recordedTrace,
-              byteProvider: byteProvider,
+          if let trace = recordedTrace {
+            switch try replayNativeTrace(
+              trace,
               codeGenerationProvider: codeGenerationProvider,
-              mode: mode,
-              addressSpaceID: addressSpaceID,
               maximumInstructions: maximumInstructions,
-              state: state,
-              context: context,
-              memory: memory
-            )
-          {
-            nativeTraceReplayCount &+= 1
-            completed = replay.guestInstructionCount
-            blockCount = replay.residentBlockCount
-            if replay.exitCode != .dispatch || completed >= maximumInstructions {
-              Self.apply(context: context, to: &state)
-              return DoryARM64ExecutionSummary(
-                guestInstructionCount: UInt32(completed),
-                residentBlockCount: UInt32(blockCount),
-                tier: optimization == .optimizing ? .optimizing : .baseline,
-                exitCode: replay.exitCode
-              )
+              context: context
+            ) {
+            case .executed(let replay):
+              nativeTraceReplayCount &+= 1
+              completed = replay.guestInstructionCount
+              blockCount = replay.residentBlockCount
+              if replay.exitCode != .dispatch || completed >= maximumInstructions {
+                chainedRetiredInstructionCount &+= UInt64(completed)
+                Self.apply(context: context, to: &state)
+                return DoryARM64ExecutionSummary(
+                  guestInstructionCount: UInt32(completed),
+                  residentBlockCount: UInt32(blockCount),
+                  tier: optimization == .optimizing ? .optimizing : .baseline,
+                  exitCode: replay.exitCode
+                )
+              }
+            case .invalid:
+              nativeTraces[traceIndex] = nil
+              recordedTrace = nil
+            case .unavailable:
+              break
             }
           }
-          var newTrace: [UInt64] = []
+          var newTrace: [NativeTraceEntry] = []
           var recordsTrace = recordedTrace == nil && completed == 0
           while completed < maximumInstructions {
             let currentRIP = context[16]
@@ -1935,6 +1979,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             else {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               guard completed > 0 else { return nil }
+              chainedRetiredInstructionCount &+= UInt64(completed)
               Self.apply(context: context, to: &state)
               return DoryARM64ExecutionSummary(
                 guestInstructionCount: UInt32(completed),
@@ -1949,7 +1994,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                 publishNativeTrace(newTrace, for: traceKey, if: true)
                 recordsTrace = false
               } else {
-                newTrace.append(currentRIP)
+                newTrace.append(.init(
+                  guestStart: currentRIP,
+                  resident: resident,
+                  codeCacheEpoch: codeCacheEpoch
+                ))
               }
             }
 
@@ -1967,6 +2016,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               for index in context.indices { context[index] = checkpoint[index] }
               guard completed > 0 else { return nil }
+              chainedRetiredInstructionCount &+= UInt64(completed)
               Self.apply(context: context, to: &state)
               return DoryARM64ExecutionSummary(
                 guestInstructionCount: UInt32(completed),
@@ -1980,6 +2030,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             blockCount += 1
             guard exit == .dispatch, completed < maximumInstructions else {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
+              chainedRetiredInstructionCount &+= UInt64(completed)
               Self.apply(context: context, to: &state)
               return DoryARM64ExecutionSummary(
                 guestInstructionCount: UInt32(completed),
@@ -2065,13 +2116,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       // of compiling and replacing the same RIP for every transient deadline.
       guard cached.block.guestInstructionCount <= maximumInstructions else { return nil }
       let byteCount = Int(cached.block.guestByteCount)
-      let memoryGeneration = try codeGenerationProvider?(byteCount) ?? nil
+      let memoryGeneration = try readCodeGeneration(
+        using: codeGenerationProvider,
+        byteCount: byteCount
+      )
       if let cachedMemoryGeneration = cached.memoryCodeGeneration,
         cachedMemoryGeneration == memoryGeneration
       {
         memoryGenerationHitCount &+= 1
         return cached
       }
+      if cached.memoryCodeGeneration != nil { codeGenerationMismatchCount &+= 1 }
       let currentBytes = try byteProvider(byteCount)
       guard currentBytes.count == byteCount else { return nil }
       let generation = Self.fingerprint(bytes: currentBytes, mode: mode)
@@ -2103,7 +2158,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             block: shared.block,
             offset: shared.offset,
             codeGeneration: shared.codeGeneration,
-            memoryCodeGeneration: try codeGenerationProvider?(byteCount) ?? nil
+            memoryCodeGeneration: try readCodeGeneration(
+              using: codeGenerationProvider,
+              byteCount: byteCount
+            )
           )
           publish(resident, for: key)
           return resident
@@ -2154,6 +2212,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       sharedCodeEntries.removeAll(keepingCapacity: true)
       recentEntries = .init(repeating: nil, count: recentEntries.count)
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
+      codeCacheEpoch &+= 1
       nextOffset = 0
       codeCacheWrapCount &+= 1
     }
@@ -2161,7 +2220,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     try region.publish(compiled, at: offset)
     nextOffset += byteCount
     let guestBytes = Array(bytes.prefix(Int(compiled.guestByteCount)))
-    let memoryCodeGeneration = try codeGenerationProvider?(guestBytes.count) ?? nil
+    let memoryCodeGeneration = try readCodeGeneration(
+      using: codeGenerationProvider,
+      byteCount: guestBytes.count
+    )
     let resident = ResidentBlock(
       block: compiled,
       offset: offset,
@@ -2198,78 +2260,77 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   }
 
   private func replayNativeTrace(
-    _ guestStarts: [UInt64],
-    byteProvider: (_ guestStart: UInt64, _ maximumCount: Int) throws -> [UInt8],
+    _ trace: NativeTrace,
     codeGenerationProvider: ((_ guestStart: UInt64, _ byteCount: Int) throws -> UInt64?)?,
-    mode: DoryX86ExecutionMode,
-    addressSpaceID: UInt64,
     maximumInstructions: Int,
-    state: DoryX86ArchitecturalState,
-    context: UnsafeMutableBufferPointer<UInt64>,
-    memory: (any DoryX86Memory)?
-  ) throws -> NativeReplay? {
-    guard guestStarts.count >= 2 else { return nil }
-    var resolvedByRIP: [UInt64: ResidentBlock] = [:]
-    resolvedByRIP.reserveCapacity(min(guestStarts.count, 16))
-    var offsets: [Int] = []
-    var expectedRIPs: [UInt64] = []
-    var instructionCounts: [UInt32] = []
-    offsets.reserveCapacity(guestStarts.count)
-    expectedRIPs.reserveCapacity(guestStarts.count)
-    instructionCounts.reserveCapacity(guestStarts.count)
-    var admittedInstructions = 0
-    for currentRIP in guestStarts {
-      let resident: ResidentBlock
-      if let resolved = resolvedByRIP[currentRIP] {
-        resident = resolved
-      } else {
-        guard
-          let resolved = try resolveResident(
-            byteProvider: { try byteProvider(currentRIP, $0) },
-            codeGenerationProvider: codeGenerationProvider.map { provider in
-              { try provider(currentRIP, $0) }
-            },
-            at: currentRIP,
-            mode: mode,
-            addressSpaceID: addressSpaceID,
-            maximumInstructions: maximumInstructions - admittedInstructions,
-            state: state,
-            memory: memory
-          ), !resolved.block.requiresMemoryCallbacks
-        else { return nil }
-        resident = resolved
-        resolvedByRIP[currentRIP] = resolved
+    context: UnsafeMutableBufferPointer<UInt64>
+  ) throws -> NativeTraceReplayResult {
+    guard trace.codeCacheEpoch == codeCacheEpoch else { return .invalid }
+    guard trace.totalGuestInstructionCount <= maximumInstructions else { return .unavailable }
+    guard let codeGenerationProvider else { return .invalid }
+    for validation in trace.validations {
+      codeGenerationCheckCount &+= 1
+      guard try codeGenerationProvider(validation.guestStart, validation.guestByteCount)
+        == validation.memoryCodeGeneration
+      else {
+        codeGenerationMismatchCount &+= 1
+        return .invalid
       }
-      let count = Int(resident.block.guestInstructionCount)
-      guard count > 0, admittedInstructions <= maximumInstructions - count else { break }
-      offsets.append(resident.offset)
-      expectedRIPs.append(currentRIP)
-      instructionCounts.append(resident.block.guestInstructionCount)
-      admittedInstructions += count
     }
-    guard offsets.count >= 2 else { return nil }
     let execution = try region.executeBatch(
-      offsets: offsets,
-      expectedGuestRIPs: expectedRIPs,
-      guestInstructionCounts: instructionCounts,
+      offsets: trace.offsets,
+      expectedGuestRIPs: trace.expectedGuestRIPs,
+      guestInstructionCounts: trace.guestInstructionCounts,
       context: context
     )
-    guard execution.residentBlockCount > 0 else { return nil }
+    guard execution.residentBlockCount > 0 else { return .unavailable }
     nativeBatchExecutionCountValue &+= 1
-    return NativeReplay(
+    return .executed(NativeReplay(
       guestInstructionCount: Int(execution.guestInstructionCount),
       residentBlockCount: Int(execution.residentBlockCount),
       exitCode: execution.exitCode
-    )
+    ))
+  }
+
+  private func readCodeGeneration(
+    using provider: ((_ byteCount: Int) throws -> UInt64?)?,
+    byteCount: Int
+  ) throws -> UInt64? {
+    guard let provider else { return nil }
+    codeGenerationCheckCount &+= 1
+    return try provider(byteCount)
   }
 
   private func publishNativeTrace(
-    _ guestStarts: [UInt64],
+    _ entries: [NativeTraceEntry],
     for key: LookupKey,
     if shouldPublish: Bool
   ) {
-    guard shouldPublish, guestStarts.count >= 2 else { return }
-    nativeTraces[nativeTraceIndex(for: key)] = NativeTrace(key: key, guestStarts: guestStarts)
+    guard shouldPublish, entries.count >= 2,
+      entries.allSatisfy({ $0.codeCacheEpoch == codeCacheEpoch })
+    else { return }
+    var validations: [NativeTraceValidation] = []
+    var seenValidations = Set<NativeTraceValidation>()
+    var totalGuestInstructionCount = 0
+    for entry in entries {
+      guard let generation = entry.resident.memoryCodeGeneration else { return }
+      totalGuestInstructionCount += Int(entry.resident.block.guestInstructionCount)
+      let validation = NativeTraceValidation(
+        guestStart: entry.guestStart,
+        guestByteCount: Int(entry.resident.block.guestByteCount),
+        memoryCodeGeneration: generation
+      )
+      if seenValidations.insert(validation).inserted { validations.append(validation) }
+    }
+    nativeTraces[nativeTraceIndex(for: key)] = NativeTrace(
+      key: key,
+      codeCacheEpoch: codeCacheEpoch,
+      offsets: entries.map(\.resident.offset),
+      expectedGuestRIPs: entries.map(\.guestStart),
+      guestInstructionCounts: entries.map(\.resident.block.guestInstructionCount),
+      totalGuestInstructionCount: totalGuestInstructionCount,
+      validations: validations
+    )
   }
 
   private func nativeTraceIndex(for key: LookupKey) -> Int {

@@ -46,15 +46,18 @@ import Testing
       // mov ecx,3; dec ecx; jne -4; hlt
       let bytes: [UInt8] = [0xB9, 3, 0, 0, 0, 0xFF, 0xC9, 0x75, 0xFC, 0xF4]
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var byteFetchCount = 0
       var state = try DoryX86ArchitecturalState(rip: base)
       let summary = try #require(
         executor.executeChainedSummary(
           byteProvider: { address, maximumCount in
+            byteFetchCount += 1
             guard address >= base else { return [] }
             let offset = Int(address - base)
             guard bytes.indices.contains(offset) else { return [] }
             return Array(bytes[offset..<min(bytes.count, offset + maximumCount)])
           },
+          codeGenerationProvider: { _, _ in 1 },
           at: base,
           mode: .long64,
           addressSpaceID: 0,
@@ -70,14 +73,17 @@ import Testing
       #expect(state.rip == base + UInt64(bytes.count))
 
       state = try DoryX86ArchitecturalState(rip: base)
+      byteFetchCount = 0
       let replay = try #require(
         executor.executeChainedSummary(
           byteProvider: { address, maximumCount in
+            byteFetchCount += 1
             guard address >= base else { return [] }
             let offset = Int(address - base)
             guard bytes.indices.contains(offset) else { return [] }
             return Array(bytes[offset..<min(bytes.count, offset + maximumCount)])
           },
+          codeGenerationProvider: { _, _ in 1 },
           at: base,
           mode: .long64,
           addressSpaceID: 0,
@@ -89,8 +95,138 @@ import Testing
       #expect(executor.nativeBatchExecutionCount == 1)
       #expect(executor.diagnostics.nativeTraceAttempts == 1)
       #expect(executor.diagnostics.nativeTraceReplays == 1)
+      #expect(executor.diagnostics.chainedExecutionCalls == 2)
+      #expect(executor.diagnostics.chainedRequestedInstructions == 32)
+      #expect(executor.diagnostics.chainedRetiredInstructions == 16)
+      #expect(byteFetchCount == 0)
       #expect(state.registers.rcx == 0)
       #expect(state.rip == base + UInt64(bytes.count))
+    #endif
+  }
+
+  @Test func nativeTraceGenerationMismatchRebuildsBeforeExecutingChangedCode() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x1800
+      var bytes: [UInt8] = [0xB8, 1, 0, 0, 0, 0xEB, 0, 0xF4]
+      var generation: UInt64 = 1
+      var byteFetchCount = 0
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      func run() throws -> DoryARM64ExecutionSummary? {
+        var state = try DoryX86ArchitecturalState(rip: base)
+        let summary = try executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            byteFetchCount += 1
+            guard address >= base else { return [] }
+            let offset = Int(address - base)
+            guard bytes.indices.contains(offset) else { return [] }
+            return Array(bytes[offset..<min(bytes.count, offset + maximumCount)])
+          },
+          codeGenerationProvider: { _, _ in generation },
+          at: base,
+          mode: .long64,
+          addressSpaceID: 7,
+          maximumInstructions: 16,
+          state: &state
+        )
+        #expect(state.registers.rax == UInt64(bytes[1]))
+        return summary
+      }
+
+      _ = try #require(try run())
+      byteFetchCount = 0
+      _ = try #require(try run())
+      #expect(byteFetchCount == 0)
+
+      bytes[1] = 2
+      generation = 2
+      byteFetchCount = 0
+      _ = try #require(try run())
+      #expect(byteFetchCount > 0)
+
+      byteFetchCount = 0
+      _ = try #require(try run())
+      #expect(byteFetchCount == 0)
+      #expect(executor.diagnostics.nativeTraceReplays == 2)
+      #expect(executor.diagnostics.codeGenerationMismatches >= 1)
+    #endif
+  }
+
+  @Test func nativeTraceWithoutGenerationProofUsesValidatedResidentFallback() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x1a00
+      let bytes: [UInt8] = [0xB8, 7, 0, 0, 0, 0xEB, 0, 0xF4]
+      var byteFetchCount = 0
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      func run() throws {
+        var state = try DoryX86ArchitecturalState(rip: base)
+        _ = try #require(executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            byteFetchCount += 1
+            guard address >= base else { return [] }
+            let offset = Int(address - base)
+            guard bytes.indices.contains(offset) else { return [] }
+            return Array(bytes[offset..<min(bytes.count, offset + maximumCount)])
+          },
+          at: base,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 16,
+          state: &state
+        ))
+        #expect(state.registers.rax == 7)
+      }
+
+      try run()
+      byteFetchCount = 0
+      try run()
+      #expect(byteFetchCount > 0)
+      #expect(executor.diagnostics.nativeTraceAttempts == 0)
+      #expect(executor.diagnostics.nativeTraceReplays == 0)
+    #endif
+  }
+
+  @Test func nativeTraceRefusesOffsetsRecordedAcrossACodeCacheWrap() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x20_000
+      var bytes: [UInt8] = []
+      for value in 0..<1_024 {
+        bytes += [
+          0xB8,
+          UInt8(truncatingIfNeeded: value),
+          UInt8(truncatingIfNeeded: value >> 8),
+          0,
+          0,
+          0xEB,
+          0,
+        ]
+      }
+      bytes.append(0xF4)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      func run() throws {
+        var state = try DoryX86ArchitecturalState(rip: base)
+        let summary = try #require(executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            guard address >= base else { return [] }
+            let offset = Int(address - base)
+            guard bytes.indices.contains(offset) else { return [] }
+            return Array(bytes[offset..<min(bytes.count, offset + maximumCount)])
+          },
+          codeGenerationProvider: { _, _ in 1 },
+          at: base,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 4_096,
+          state: &state
+        ))
+        #expect(summary.exitCode == .halt)
+        #expect(state.registers.rax == 1_023)
+      }
+
+      try run()
+      #expect(executor.diagnostics.codeCacheWraps > 0)
+      try run()
+      #expect(executor.diagnostics.nativeTraceAttempts == 0)
+      #expect(executor.diagnostics.nativeTraceReplays == 0)
     #endif
   }
 
