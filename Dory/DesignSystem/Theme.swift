@@ -1,10 +1,77 @@
+import AppKit
+import Observation
 import SwiftUI
 
 enum DoryAppearance: String, CaseIterable, Sendable {
-    case light, dark
+    case light, dark, system
 
-    var palette: DoryPalette { self == .dark ? .dark : .light }
-    var colorScheme: ColorScheme { self == .dark ? .dark : .light }
+    var label: String {
+        switch self {
+        case .light: "Light"
+        case .dark: "Dark"
+        case .system: "System"
+        }
+    }
+
+    func resolved(systemIsDark: Bool) -> DoryAppearance {
+        self == .system ? (systemIsDark ? .dark : .light) : self
+    }
+
+    var palette: DoryPalette { self == .light ? .light : .dark }
+
+    /// `nil` for `.system` so SwiftUI keeps following the OS setting.
+    var colorScheme: ColorScheme? {
+        switch self {
+        case .light: .light
+        case .dark: .dark
+        case .system: nil
+        }
+    }
+}
+
+/// Tracks the OS light/dark setting so `DoryAppearance.system` follows it live.
+@MainActor
+@Observable
+final class DorySystemAppearance {
+    static let shared = DorySystemAppearance()
+
+    private(set) var isDark: Bool = DorySystemAppearance.currentIsDark()
+    @ObservationIgnored private var observation: NSKeyValueObservation?
+
+    private init() {
+        observe()
+        if NSApp == nil {
+            // The app object does not exist yet during early launch; attach once it does.
+            NotificationCenter.default.addObserver(
+                forName: NSApplication.didFinishLaunchingNotification,
+                object: nil,
+                queue: .main
+            ) { _ in
+                MainActor.assumeIsolated {
+                    DorySystemAppearance.shared.observe()
+                    DorySystemAppearance.shared.refresh()
+                }
+            }
+        }
+    }
+
+    private func observe() {
+        guard observation == nil, let app = NSApp else { return }
+        observation = app.observe(\.effectiveAppearance, options: [.new]) { _, _ in
+            // KVO for effectiveAppearance is delivered on the main thread.
+            MainActor.assumeIsolated { DorySystemAppearance.shared.refresh() }
+        }
+    }
+
+    private func refresh() {
+        let value = Self.currentIsDark()
+        if value != isDark { isDark = value }
+    }
+
+    private static func currentIsDark() -> Bool {
+        let appearance = NSApp?.effectiveAppearance ?? NSAppearance.currentDrawing()
+        return appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+    }
 }
 
 struct DoryPalette: Sendable, Equatable {
