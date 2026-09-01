@@ -331,7 +331,7 @@ for distro in debian ubuntu kali; do
     printf 'ubuntu-desktop-minimal\tfixture\nubuntu-session\tfixture\ngdm3\tfixture\n' \
       > "$SOURCE/dory-desktop-$distro-packages-arm64.txt"
   else
-    printf 'xfce4\tfixture\nlightdm\tfixture\n' \
+    printf 'gnome-shell\tfixture\ngdm3\tfixture\n' \
       > "$SOURCE/dory-desktop-$distro-packages-arm64.txt"
   fi
   write_fixture "$SOURCE/dory-desktop-$distro-update-arm64.tar" 4096

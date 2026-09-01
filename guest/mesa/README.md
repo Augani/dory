@@ -2,7 +2,7 @@
 
 Dory ships a small, isolated Venus Vulkan ICD for accelerated ARM64 desktop guests. It lives at
 `/opt/dory/mesa` and does not replace the distribution's Mesa OpenGL stack. The distribution keeps
-rendering GNOME or Xfce through VirGL, while native Vulkan applications such as Zed may select this
+rendering GNOME through VirGL, while native Vulkan applications such as Zed may select this
 pinned ICD after the complete renderer tuple passes admission.
 
 The guest uses unmodified Venus WSI synchronization. Swapchain acquire imports the standard

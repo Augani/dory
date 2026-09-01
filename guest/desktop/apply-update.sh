@@ -53,14 +53,12 @@ require_package() {
 for package in binfmt-support binutils dconf-cli libxcb-keysyms1 network-manager openssh-server pipewire spice-vdagent x11-utils zstd; do
   require_package "$package"
 done
-case "$EXPECTED_DISTRO" in
-  ubuntu)
-    for package in gdm3 gnome-shell firefox; do require_package "$package"; done
-    ;;
-  *)
-    for package in lightdm xfce4; do require_package "$package"; done
-    ;;
-esac
+for package in gdm3 gnome-shell; do require_package "$package"; done
+if [ "$EXPECTED_DISTRO" = ubuntu ]; then
+  require_package firefox
+else
+  require_package firefox-esr
+fi
 if [ "$EXPECTED_DISTRO" = ubuntu ]; then
   # Keep Ubuntu's dock pointed at the Mozilla APT launcher rather than the absent Snap ID.
   sed -i "s/firefox_firefox\.desktop/firefox.desktop/g" \
@@ -93,19 +91,13 @@ fi
 
 rm -f /etc/resolv.conf
 ln -s ../run/NetworkManager/resolv.conf /etc/resolv.conf
-case "$EXPECTED_DISTRO" in
-  ubuntu)
-    rm -rf /etc/lightdm
-    sed -i "s/^AutomaticLogin=.*/AutomaticLogin=$MANAGED_USER/" /etc/gdm3/custom.conf
-    systemctl enable gdm3.service
-    ;;
-  *)
-    rm -rf /etc/gdm3
-    sed -i "s/^autologin-user=.*/autologin-user=$MANAGED_USER/" \
-      /etc/lightdm/lightdm.conf.d/50-dory.conf
-    systemctl enable lightdm.service
-    ;;
-esac
+sed -i "s/^AutomaticLogin=.*/AutomaticLogin=$MANAGED_USER/" /etc/gdm3/custom.conf
+if [ "$EXPECTED_DISTRO" = ubuntu ]; then
+  sed -i 's/^DefaultSession=.*/DefaultSession=ubuntu-xorg.desktop/' /etc/gdm3/custom.conf
+else
+  sed -i 's/^DefaultSession=.*/DefaultSession=gnome-xorg.desktop/' /etc/gdm3/custom.conf
+fi
+systemctl enable gdm3.service
 systemctl enable NetworkManager.service NetworkManager-wait-online.service ssh.service \
   dory-first-boot.service dory-boot.service dory-desktop-ready.service dory-zram.service \
   dory-graphics-backend.service dory-intel-translation.service

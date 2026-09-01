@@ -2948,7 +2948,7 @@ struct DorydClientTests {
 
         var machine = try #require(store.machines.first { $0.name == "dev" })
         #expect(machine.distro == "Debian")
-        #expect(machine.version == "13 · Xfce")
+        #expect(machine.version == "13 · GNOME")
         #expect(machine.username == "dory")
         #expect(machine.loginShell == "/bin/bash")
         #expect(machine.status == .running)

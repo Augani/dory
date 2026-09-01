@@ -1983,9 +1983,10 @@ PY
 }
 
 if [ "$SELECTED_DISTRO" = all ] || [ "$SELECTED_DISTRO" = debian ]; then
-  run_desktop debian "$DEBIAN_ROOTFS" lightdm xfce4-session firefox-esr \
+  run_desktop debian "$DEBIAN_ROOTFS" gdm3 gnome-shell firefox-esr \
     'firefox-esr|/firefox' /usr/share/applications/firefox-esr.desktop "$DEBIAN_UPDATE" \
-    xfce4-terminal thunar mousepad ristretto file-roller evince galculator
+    gnome-terminal nautilus gnome-text-editor eog file-roller evince \
+    gnome-calculator gnome-control-center
 fi
 if [ "$SELECTED_DISTRO" = all ] || [ "$SELECTED_DISTRO" = ubuntu ]; then
   run_desktop ubuntu "$UBUNTU_ROOTFS" gdm3 gnome-shell firefox \
@@ -1994,9 +1995,10 @@ if [ "$SELECTED_DISTRO" = all ] || [ "$SELECTED_DISTRO" = ubuntu ]; then
     gnome-calculator gnome-control-center
 fi
 if [ "$SELECTED_DISTRO" = all ] || [ "$SELECTED_DISTRO" = kali ]; then
-  run_desktop kali "$KALI_ROOTFS" lightdm xfce4-session firefox-esr \
+  run_desktop kali "$KALI_ROOTFS" gdm3 gnome-shell firefox-esr \
     'firefox-esr|/firefox' /usr/share/applications/firefox-esr.desktop "$KALI_UPDATE" \
-    xfce4-terminal thunar mousepad ristretto file-roller atril
+    gnome-terminal nautilus gnome-text-editor eog file-roller evince \
+    gnome-calculator gnome-control-center
 fi
 
 {

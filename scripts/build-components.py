@@ -886,7 +886,7 @@ def component_specs(
         (
             "debian",
             "Debian 13 Desktop",
-            "A stable Debian 13 Xfce desktop with its own packages and official repositories.",
+            "A stable Debian 13 GNOME desktop with its own packages and official repositories.",
         ),
         (
             "ubuntu",
@@ -896,7 +896,7 @@ def component_specs(
         (
             "kali",
             "Kali Linux Desktop",
-            "A Kali rolling Xfce security desktop with its own packages and official repositories.",
+            "A Kali rolling GNOME security desktop with its own packages and official repositories.",
         ),
     ):
         desktop_specs.append(

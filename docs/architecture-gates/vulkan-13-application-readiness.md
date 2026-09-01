@@ -84,7 +84,7 @@ The gate is split because the system boot preflight runs before a desktop displa
 
 The physical desktop gate runs the active-surface stage before it starts Zed. A failure at any
 stage keeps the candidate unavailable. Ubuntu is explicitly a native-Wayland cell. The current
-Debian and Kali XFCE cells remain explicit XCB cells and remain unavailable while their Xorg DRI3
+Debian and Kali GNOME cells remain explicit XCB cells and remain unavailable while their Xorg DRI3
 path is unqualified; success on Ubuntu does not project onto them.
 
 ## Physical observations on 2026-08-24

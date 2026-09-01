@@ -295,11 +295,12 @@ case "$DISTRO" in
     DEBIAN_VERSION="$($DEBUGFS -R 'cat /etc/debian_version' "$IMAGE" 2>/dev/null | tr -d '\r\n')"
     case "$DEBIAN_VERSION" in 13.*) ;; *) fail "$IMAGE contains unexpected Debian version $DEBIAN_VERSION" ;; esac
     for guest_path in \
-      /etc/lightdm/lightdm.conf.d/50-dory.conf \
-      /usr/bin/startxfce4 \
+      /etc/gdm3/custom.conf \
+      /usr/bin/gnome-shell \
+      /usr/bin/gnome-terminal \
       /usr/bin/firefox-esr \
       /usr/bin/evince \
-      /usr/bin/galculator; do
+      /usr/bin/gnome-calculator; do
       "$DEBUGFS" -R "stat $guest_path" "$IMAGE" 2>&1 | grep -Fq 'Inode:' \
         || fail "$IMAGE is missing $guest_path"
     done
@@ -322,12 +323,10 @@ case "$DISTRO" in
     ;;
   kali)
     grep -Fqx 'ID=kali' <<<"$OS_RELEASE" || fail "$IMAGE is not Kali Linux"
-    for guest_path in /etc/lightdm/lightdm.conf.d/50-dory.conf /usr/bin/startxfce4; do
+    for guest_path in /etc/gdm3/custom.conf /usr/bin/gnome-shell /usr/bin/firefox-esr; do
       "$DEBUGFS" -R "stat $guest_path" "$IMAGE" 2>&1 | grep -Fq 'Inode:' \
         || fail "$IMAGE is missing $guest_path"
     done
-    "$DEBUGFS" -R 'stat /home/dory/.config/xfce4/panel' "$IMAGE" 2>&1 \
-      | grep -Fq 'Inode:' || fail "$IMAGE is missing the Kali Xfce user defaults"
     "$DEBUGFS" -R 'cat /etc/apt/sources.list' "$IMAGE" 2>/dev/null \
       | grep -Fqx 'deb https://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware' \
       || fail "$IMAGE does not use the official Kali rolling repository"
@@ -335,32 +334,28 @@ case "$DISTRO" in
 esac
 "$DEBUGFS" -R 'cat /etc/ssh/sshd_config.d/50-dory.conf' "$IMAGE" 2>/dev/null \
   | grep -Fqx 'PasswordAuthentication no' || fail "SSH password login is not disabled"
-case "$DISTRO" in
-  ubuntu)
-    "$DEBUGFS" -R 'cat /etc/gdm3/custom.conf' "$IMAGE" 2>/dev/null \
-      | grep -Fqx 'AutomaticLogin=dory' || fail "Ubuntu GNOME autologin is not configured"
-    "$DEBUGFS" -R 'cat /etc/gdm3/custom.conf' "$IMAGE" 2>/dev/null \
-      | grep -Fqx 'WaylandEnable=false' \
-      || fail "Ubuntu GNOME does not select the qualified Xorg compatibility cell"
-    "$DEBUGFS" -R 'cat /etc/gdm3/custom.conf' "$IMAGE" 2>/dev/null \
-      | grep -Fqx 'DefaultSession=ubuntu-xorg.desktop' \
-      || fail "Ubuntu GNOME does not default to the qualified Xorg session"
-    DCONF_SESSION="$($DEBUGFS -R \
-      'cat /etc/dconf/db/dory.d/00-managed-session' "$IMAGE" 2>/dev/null)"
-    grep -Fqx 'lock-enabled=false' <<<"$DCONF_SESSION" \
-      || fail "Ubuntu GNOME can lock its passwordless managed account"
-    grep -Fqx 'idle-delay=uint32 0' <<<"$DCONF_SESSION" \
-      || fail "Ubuntu GNOME can idle into an impossible password prompt"
-    DCONF_LOCKS="$($DEBUGFS -R \
-      'cat /etc/dconf/db/dory.d/locks/00-managed-session' "$IMAGE" 2>/dev/null)"
-    grep -Fqx '/org/gnome/desktop/screensaver/lock-enabled' <<<"$DCONF_LOCKS" \
-      || fail "Ubuntu GNOME screen-lock policy is not immutable"
-    ;;
-  *)
-    "$DEBUGFS" -R 'cat /etc/lightdm/lightdm.conf.d/50-dory.conf' "$IMAGE" 2>/dev/null \
-      | grep -Fqx 'autologin-user=dory' || fail "Xfce autologin is not configured"
-    ;;
-esac
+GDM_CONFIGURATION="$($DEBUGFS -R 'cat /etc/gdm3/custom.conf' "$IMAGE" 2>/dev/null)"
+grep -Fqx 'AutomaticLogin=dory' <<<"$GDM_CONFIGURATION" \
+  || fail "$DISTRO GNOME autologin is not configured"
+grep -Fqx 'WaylandEnable=false' <<<"$GDM_CONFIGURATION" \
+  || fail "$DISTRO GNOME does not select the qualified Xorg compatibility cell"
+if [ "$DISTRO" = ubuntu ]; then
+  grep -Fqx 'DefaultSession=ubuntu-xorg.desktop' <<<"$GDM_CONFIGURATION" \
+    || fail "Ubuntu GNOME does not default to its qualified Xorg session"
+else
+  grep -Fqx 'DefaultSession=gnome-xorg.desktop' <<<"$GDM_CONFIGURATION" \
+    || fail "$DISTRO GNOME does not default to its qualified Xorg session"
+fi
+DCONF_SESSION="$($DEBUGFS -R \
+  'cat /etc/dconf/db/dory.d/00-managed-session' "$IMAGE" 2>/dev/null)"
+grep -Fqx 'lock-enabled=false' <<<"$DCONF_SESSION" \
+  || fail "$DISTRO GNOME can lock its passwordless managed account"
+grep -Fqx 'idle-delay=uint32 0' <<<"$DCONF_SESSION" \
+  || fail "$DISTRO GNOME can idle into an impossible password prompt"
+DCONF_LOCKS="$($DEBUGFS -R \
+  'cat /etc/dconf/db/dory.d/locks/00-managed-session' "$IMAGE" 2>/dev/null)"
+grep -Fqx '/org/gnome/desktop/screensaver/lock-enabled' <<<"$DCONF_LOCKS" \
+  || fail "$DISTRO GNOME screen-lock policy is not immutable"
 "$DEBUGFS" -R 'cat /etc/NetworkManager/conf.d/10-globally-managed-devices.conf' "$IMAGE" 2>/dev/null \
   | grep -Fqx 'unmanaged-devices=' || fail "virtio Ethernet is not opted into NetworkManager"
 "$DEBUGFS" -R 'cat /etc/NetworkManager/system-connections/dory-wired.nmconnection' "$IMAGE" 2>/dev/null \
@@ -380,18 +375,21 @@ RESOLV_LINK="$($DEBUGFS -R 'stat /etc/resolv.conf' "$IMAGE" 2>/dev/null \
 DISPLAY_CONFIGURATION="$($DEBUGFS -R 'cat /usr/lib/dory/configure-display' "$IMAGE" 2>/dev/null)"
 grep -Fq 'xrandr --output "$output_name" --mode "$preferred_mode"' <<<"$DISPLAY_CONFIGURATION" \
   || fail "dynamic desktop resizing is not configured"
+grep -Fq 'gsettings set org.gnome.desktop.interface scaling-factor "$scale"' <<<"$DISPLAY_CONFIGURATION" \
+  || fail "GNOME Retina scaling is not configured"
+grep -Fq '/run/dory/graphics-backend' <<<"$DISPLAY_CONFIGURATION" \
+  || fail "GNOME does not select effects based on the active graphics backend"
+grep -Fq 'gsettings set org.gnome.desktop.interface enable-animations true' <<<"$DISPLAY_CONFIGURATION" \
+  || fail "GNOME accelerated animations are not configured"
+grep -Fq 'gsettings set org.gnome.desktop.interface enable-animations false' <<<"$DISPLAY_CONFIGURATION" \
+  || fail "GNOME software-rendering fallback mode is not configured"
+grep -Fq 'xdg-settings set default-web-browser "$browser_desktop"' <<<"$DISPLAY_CONFIGURATION" \
+  || fail "the distribution browser is not configured as the GNOME default"
+for package in gnome-shell gnome-session gdm3; do
+  require_arm64_package "$package" "$package provenance is missing"
+done
 case "$DISTRO" in
   ubuntu)
-    grep -Fq 'gsettings set org.gnome.desktop.interface scaling-factor "$scale"' <<<"$DISPLAY_CONFIGURATION" \
-      || fail "GNOME Retina scaling is not configured"
-    grep -Fq '/run/dory/graphics-backend' <<<"$DISPLAY_CONFIGURATION" \
-      || fail "GNOME does not select effects based on the active graphics backend"
-    grep -Fq 'gsettings set org.gnome.desktop.interface enable-animations true' <<<"$DISPLAY_CONFIGURATION" \
-      || fail "GNOME accelerated animations are not configured"
-    grep -Fq 'gsettings set org.gnome.desktop.interface enable-animations false' <<<"$DISPLAY_CONFIGURATION" \
-      || fail "GNOME software-rendering fallback mode is not configured"
-    grep -Fq 'xdg-settings set default-web-browser firefox.desktop' <<<"$DISPLAY_CONFIGURATION" \
-      || fail "Firefox is not configured as the default Ubuntu browser"
     grep -Fq 'firefox_firefox.desktop/firefox.desktop' <<<"$DISPLAY_CONFIGURATION" \
       || fail "GNOME does not repair Ubuntu's stale Snap Firefox favorite"
     grep -Fq 'gnome-control-center.desktop/org.gnome.Settings.desktop' <<<"$DISPLAY_CONFIGURATION" \
@@ -412,17 +410,11 @@ case "$DISTRO" in
     "$DEBUGFS" -R 'cat /etc/apt/keyrings/packages.mozilla.org.asc' "$IMAGE" 2>/dev/null \
       | shasum -a 256 | grep -Fq "$MOZILLA_APT_KEY_SHA256" \
       || fail "the Mozilla APT key is not the pinned key"
-    if grep -Eq '^(xfce4|lightdm)[[:space:]]' "$PACKAGES"; then
-      fail "the Ubuntu image still contains the retired Xfce/LightDM session"
-    fi
     ;;
   *)
-    grep -Fq 'apply_xfce_scale "$(guest_ui_scale)"' <<<"$DISPLAY_CONFIGURATION" \
-      || fail "Xfce Retina scaling is not configured"
-    require_arm64_package xfce4 "Xfce package provenance is missing"
-    require_arm64_package lightdm "LightDM package provenance is missing"
+    require_arm64_package firefox-esr "Firefox ESR package provenance is missing"
     if [ "$DISTRO" = debian ]; then
-      for package in firefox-esr evince galculator; do
+      for package in evince gnome-calculator; do
         require_arm64_package "$package" "$package provenance is missing"
       done
     fi
@@ -430,8 +422,8 @@ case "$DISTRO" in
 esac
 grep -Fq '/var/lib/dory/guest-ui-scale' <<<"$DISPLAY_CONFIGURATION" \
   || fail "the resolved guest UI scale is not consumed"
-grep -Fq 'apply_xfce_scale "$scale"' <<<"$DISPLAY_CONFIGURATION" \
-  || fail "Xfce does not refresh the resolved guest UI scale"
+grep -Fq 'apply_gnome_scale "$scale"' <<<"$DISPLAY_CONFIGURATION" \
+  || fail "GNOME does not refresh the resolved guest UI scale"
 require_arm64_package spice-vdagent "SPICE package provenance is missing"
 require_arm64_package libgl1-mesa-dri \
   "the distro Mesa VirGL DRI package provenance is missing"
@@ -531,7 +523,7 @@ grep -Fq 'venus-ready:' <<<"$GRAPHICS_CONFIGURATION" \
 grep -Fq '/etc/X11/Xsession.d/70dory-graphics' <<<"$GRAPHICS_CONFIGURATION" \
   || fail "desktop sessions do not receive the qualified graphics environment"
 grep -Fq 'export VK_DRIVER_FILES=$venus_icd' <<<"$GRAPHICS_CONFIGURATION" \
-  || fail "GDM and LightDM sessions do not select Dory's Venus ICD"
+  || fail "GDM sessions do not select Dory's Venus ICD"
 grep -Fq 'export VK_ICD_FILENAMES=$venus_icd' <<<"$GRAPHICS_CONFIGURATION" \
   || fail "desktop sessions do not select Venus on older admitted Vulkan loaders"
 grep -Fq "'GSK_RENDERER=gl'" <<<"$GRAPHICS_CONFIGURATION" \

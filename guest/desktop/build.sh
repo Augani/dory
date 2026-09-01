@@ -93,19 +93,19 @@ AGENT="$ROOT/dory-core/target/$TARGET/release/dory-agent"
 [ -x "$AGENT" ] || { echo "dory-agent was not produced for $TARGET" >&2; exit 1; }
 
 COMMON_PACKAGES="systemd-sysv,dbus,dbus-user-session,dconf-cli,udev,kmod,network-manager,openssh-server,sudo,ca-certificates,curl,git,vim-tiny,less,man-db,bash-completion,binutils,xserver-xorg-core,xserver-xorg-input-libinput,x11-xserver-utils,x11-utils,xterm,libgl1-mesa-dri,libxcb-keysyms1,mesa-vulkan-drivers,mesa-utils,vulkan-tools,spice-vdagent,wl-clipboard,xclip,pipewire-audio,wireplumber,polkitd,pkexec,fonts-dejavu-core,fonts-noto-core,locales,util-linux,e2fsprogs,iproute2,iputils-ping,dnsutils,netcat-openbsd,procps,rsync,tar,gzip,xz-utils,zstd,fuse3,gvfs,gvfs-backends,binfmt-support"
-XFCE_PACKAGES="xfce4,xfce4-terminal,xfce4-notifyd,xfce4-power-manager,lightdm,lightdm-gtk-greeter,mate-polkit,mousepad,ristretto,file-roller"
+GNOME_PACKAGES="gdm3,gnome-core,gnome-shell,gnome-session,gnome-terminal,nautilus,gnome-text-editor,eog,file-roller,evince,gnome-calculator,gnome-control-center,gnome-system-monitor,gnome-disk-utility,gnome-keyring,seahorse,xdg-desktop-portal-gnome"
 case "$DISTRO" in
-  debian) PACKAGES="$COMMON_PACKAGES,$XFCE_PACKAGES,network-manager-gnome,desktop-base,firefox-esr,evince,galculator" ;;
+  debian) PACKAGES="$COMMON_PACKAGES,$GNOME_PACKAGES,network-manager-gnome,desktop-base,firefox-esr" ;;
   ubuntu)
     # Ubuntu is intentionally its real Canonical GNOME session, not an Ubuntu rootfs wearing
-    # Dory's shared Xfce profile. Hardware-only recommendations (printing, Bluetooth, firmware,
+    # a shared generic profile. Hardware-only recommendations (printing, Bluetooth, firmware,
     # laptop sensors) stay out of the VM, while the normal shell, dock, settings, files, themes,
     # utilities are explicit so the image is complete offline. Firefox is installed below from
     # Mozilla's signed ARM64 APT repository; Ubuntu's `firefox` package is only a Snap transition,
     # and WebKitGTK saturated the software-rendered desktop during real browser use.
     PACKAGES="$COMMON_PACKAGES,ubuntu-minimal,ubuntu-desktop-minimal,network-manager-gnome,appstream,baobab,eog,evince,file-roller,fonts-liberation,fonts-noto-color-emoji,fonts-ubuntu,gnome-calculator,gnome-characters,gnome-clocks,gnome-disk-utility,gnome-keyring,gnome-system-monitor,gnome-terminal,gnome-text-editor,gsettings-ubuntu-schemas,gvfs-fuse,libglib2.0-bin,libnss-mdns,libpam-gnome-keyring,nautilus-sendto,network-manager-config-connectivity-ubuntu,packagekit,policykit-desktop-privileges,seahorse,ubuntu-wallpapers,xcursor-themes,xdg-desktop-portal-gnome,xdg-utils,yaru-theme-gnome-shell,yaru-theme-gtk,yaru-theme-icon,yaru-theme-sound"
     ;;
-  kali) PACKAGES="$COMMON_PACKAGES,$XFCE_PACKAGES,network-manager-applet,nm-connection-editor,kali-desktop-xfce,kali-defaults,kali-menu" ;;
+  kali) PACKAGES="$COMMON_PACKAGES,$GNOME_PACKAGES,network-manager-applet,nm-connection-editor,kali-desktop-gnome,kali-defaults,kali-menu,firefox-esr" ;;
 esac
 
 # systemd's package scripts need proc/sys mounts while the rootfs is assembled.
@@ -248,16 +248,11 @@ EOF
     esac
 
     chroot /rootfs systemctl enable NetworkManager.service NetworkManager-wait-online.service
-    case "$DORY_DESKTOP_DISTRO" in
-      ubuntu)
-        rm -rf /rootfs/etc/lightdm
-        chroot /rootfs systemctl enable gdm3.service
-        ;;
-      *)
-        rm -rf /rootfs/etc/gdm3
-        chroot /rootfs systemctl enable lightdm.service
-        ;;
-    esac
+    if [ "$DORY_DESKTOP_DISTRO" = ubuntu ]; then
+      sed -i 's/^DefaultSession=.*/DefaultSession=ubuntu-xorg.desktop/' \
+        /rootfs/etc/gdm3/custom.conf
+    fi
+    chroot /rootfs systemctl enable gdm3.service
     chroot /rootfs systemctl enable ssh.service dory-first-boot.service \
       dory-boot.service dory-desktop-ready.service dory-zram.service \
       dory-graphics-backend.service dory-intel-translation.service

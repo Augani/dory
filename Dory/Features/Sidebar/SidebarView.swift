@@ -73,7 +73,7 @@ struct SidebarView: View {
                 )
                 row(
                     .machines,
-                    .machines,
+                    .servers,
                     "Headless VMs",
                     trailing: !AppInfo.componentAvailable(.linuxMachines) && serverCount == 0 ? "Get" : "\(serverCount)"
                 )

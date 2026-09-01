@@ -1,15 +1,6 @@
 #!/bin/bash
 set -euo pipefail
 
-set_xfce_value() {
-  local path="$1" type="$2" value="$3"
-  if xfconf-query --channel xsettings --property "$path" >/dev/null 2>&1; then
-    xfconf-query --channel xsettings --property "$path" --set "$value"
-  else
-    xfconf-query --channel xsettings --property "$path" --create --type "$type" --set "$value"
-  fi
-}
-
 guest_ui_scale() {
   local scale
   scale="$(cat /var/lib/dory/guest-ui-scale 2>/dev/null || printf '2\n')"
@@ -24,10 +15,6 @@ apply_gnome_scale() {
   gsettings set org.gnome.desktop.interface scaling-factor "$scale"
   gsettings set org.gnome.desktop.interface text-scaling-factor 1.0
   gsettings set org.gnome.desktop.interface cursor-size "$((16 * scale))"
-}
-
-apply_xfce_scale() {
-  set_xfce_value /Gdk/WindowScalingFactor int "$1"
 }
 
 configure_gnome() {
@@ -57,36 +44,38 @@ configure_gnome() {
     gsettings set org.gnome.desktop.interface enable-animations false
   fi
   gsettings set org.gnome.desktop.wm.preferences button-layout 'appmenu:minimize,maximize,close'
-  # ubuntu-desktop's stock schema assumes the Snap desktop ID. Dory installs Mozilla's signed APT
-  # build instead, so repair an existing profile without discarding any favorites the user added.
-  local favorites
+  # Select the distribution's native browser launcher while keeping a single GNOME integration
+  # path for Debian, Ubuntu, and Kali.
+  local browser_desktop favorites
+  . /etc/os-release
+  case "${ID:-}" in
+    ubuntu) browser_desktop=firefox.desktop ;;
+    *) browser_desktop=firefox-esr.desktop ;;
+  esac
   favorites="$(gsettings get org.gnome.shell favorite-apps)"
   if [[ "$favorites" == *firefox_firefox.desktop* ]]; then
-    favorites="${favorites//firefox_firefox.desktop/firefox.desktop}"
+    favorites="${favorites//firefox_firefox.desktop/$browser_desktop}"
   fi
   if [[ "$favorites" == *gnome-control-center.desktop* ]]; then
     favorites="${favorites//gnome-control-center.desktop/org.gnome.Settings.desktop}"
   fi
-  if [[ "$favorites" != *firefox.desktop* || "$favorites" != *org.gnome.Settings.desktop* ]]; then
+  if [[ "$favorites" != *"$browser_desktop"* || "$favorites" != *org.gnome.Settings.desktop* ]]; then
     gsettings set org.gnome.shell favorite-apps \
-      "['org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', 'firefox.desktop', 'org.gnome.Settings.desktop']"
+      "['org.gnome.Nautilus.desktop', 'org.gnome.Terminal.desktop', '$browser_desktop', 'org.gnome.Settings.desktop']"
   else
     gsettings set org.gnome.shell favorite-apps "$favorites"
   fi
-  xdg-settings set default-web-browser firefox.desktop >/dev/null 2>&1 || true
+  xdg-settings set default-web-browser "$browser_desktop" >/dev/null 2>&1 || true
 }
 
 follow_preferred_display_mode() {
-  local desktop="$1" current_mode output_name preferred_mode snapshot
+  local current_mode output_name preferred_mode snapshot
   local applied_scale="" scale
 
   while :; do
     scale="$(guest_ui_scale)"
     if [[ "$scale" != "$applied_scale" ]]; then
-      case "$desktop" in
-        gnome) apply_gnome_scale "$scale" ;;
-        xfce) apply_xfce_scale "$scale" ;;
-      esac
+      apply_gnome_scale "$scale"
       applied_scale="$scale"
     fi
     if snapshot="$(xrandr --query 2>/dev/null)"; then
@@ -108,15 +97,7 @@ for _ in $(seq 1 100); do
       && gsettings writable org.gnome.desktop.interface scaling-factor 2>/dev/null \
       | grep -qx true; then
     configure_gnome
-    follow_preferred_display_mode gnome
-  fi
-  if xfconf-query --channel xsettings --list >/dev/null 2>&1; then
-    apply_xfce_scale "$(guest_ui_scale)"
-    set_xfce_value /Xft/Antialias int 1
-    set_xfce_value /Xft/Hinting int 1
-    set_xfce_value /Xft/HintStyle string hintslight
-    set_xfce_value /Xft/RGBA string rgb
-    follow_preferred_display_mode xfce
+    follow_preferred_display_mode
   fi
   sleep 0.1
 done

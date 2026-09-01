@@ -27,10 +27,7 @@ nonisolated enum DesktopMachineDistro: String, CaseIterable, Identifiable, Senda
     }
 
     var desktopName: String {
-        switch self {
-        case .ubuntu: "GNOME"
-        case .debian, .kali: "Xfce"
-        }
+        "GNOME"
     }
 
     var summary: String {

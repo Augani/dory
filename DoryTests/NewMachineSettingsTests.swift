@@ -139,7 +139,7 @@ struct NewMachineSettingsTests {
         #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.distributionIdentifier == "kali")
         #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.displayName == "Kali Linux")
         #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.version == "Rolling")
-        #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.desktopEnvironment == "Xfce")
+        #expect(settings.virtualMachineSettings?.guestIdentityIntent.desktop?.desktopEnvironment == "GNOME")
         #expect(settings.virtualMachineSettings?.guestIdentityIntent.account?.username == "analyst")
         #expect(settings.virtualMachineSettings?.guestIdentityIntent.account?.numericUserID == 1_001)
     }

@@ -25,7 +25,7 @@ struct GlyphPrim: Sendable {
 }
 
 enum DoryGlyph: Sendable {
-    case containers, images, volumes, networks, kubernetes, machines, settings
+    case containers, images, volumes, networks, kubernetes, machines, servers, settings
     case search, plus, play, pause, listView, gridView, moon
     case eye, shield, health
 
@@ -54,6 +54,15 @@ enum DoryGlyph: Sendable {
                     .init(kind: .path("M8 3.2v2.4M11.5 6 9.7 7M9 9.4l1.2 1.9M7 9.4 5.8 11.3M4.5 6 6.3 7"))]
         case .machines:
             return [.init(kind: .rect(2, 2.6, 12, 7.4, 1.2)), .init(kind: .path("M5.4 13h5.2M8 10v3"))]
+        case .servers:
+            return [
+                .init(kind: .rect(2, 2, 12, 5, 1.2)),
+                .init(kind: .rect(2, 9, 12, 5, 1.2)),
+                .init(kind: .circle(4.2, 4.5, 0.65), fill: true),
+                .init(kind: .circle(4.2, 11.5, 0.65), fill: true),
+                .init(kind: .line(7, 4.5, 12, 4.5)),
+                .init(kind: .line(7, 11.5, 12, 11.5)),
+            ]
         case .settings:
             return [.init(kind: .line(2, 5, 14, 5)), .init(kind: .circle(6, 5, 1.7), fill: true),
                     .init(kind: .line(2, 11, 14, 11)), .init(kind: .circle(10.5, 11, 1.7), fill: true)]

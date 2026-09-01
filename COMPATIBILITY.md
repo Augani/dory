@@ -68,15 +68,15 @@ engine resources.
 
 | Capability | Status |
 |---|---|
-| Guest OS | Managed Ubuntu 24.04 LTS GNOME, Debian 13 Xfce, or Kali rolling Xfce desktop; lightweight Alpine headless Linux on native arm64 |
+| Guest OS | Managed Ubuntu 24.04 LTS, Debian 13, or Kali rolling GNOME desktop; lightweight Alpine headless Linux on native arm64 |
 | Access | Configurable desktop user, graphical session, embedded or selected external terminal, `dory machine shell`, and command execution |
 | Resources | CPU and memory configuration with guest-reported statistics |
 | Snapshots and export/import | Supported |
 | Scheduled local recovery bundles | Supported; owner-only durable schedules, archive re-import verification on every run, periodic disposable boot verification, and scheduler-owned retention |
 | Managed remote/offsite machine backup | **Unavailable**; Dory does not claim an S3 or hosted backup service |
 | Development recipes | Curated Node, Python, Go, Rust, Java, Ruby, and DevOps toolsets for Debian and Alpine |
-| Graphical Linux sessions | Supported with managed Ubuntu GNOME and Debian/Kali Xfce profiles on Apple Silicon |
-| Desktop display | Retina-sharp 2x framebuffer, dynamic window resizing, and matching GNOME or Xfce scaling |
+| Graphical Linux sessions | Supported with managed Ubuntu, Debian, and Kali GNOME profiles on Apple Silicon |
+| Desktop display | Retina-sharp 2x framebuffer, dynamic window resizing, and matching GNOME scaling |
 | Desktop GPU acceleration | **Unqualified for public release:** the repaired dual VirGL2+Venus tuple passed a 15-minute physical Developer-ID calibration on Apple M2 Pro with GNOME, Firefox, Files, Calculator, Settings, Terminal, sustained VirGL OpenGL, Venus Vulkan WSI, and native-Venus Zed; no rejected resource flush or device loss occurred. Public support remains closed until the same tuple is release-signed/notarized and passes the complete release matrix; software display remains the recovery path |
 | Existing desktop updates | Signed in-place package, browser, guest-integration, and kernel updates with a retained last-good snapshot and automatic failure/interruption rollback |
 | Custom arm64 installer ISO | Preview: architecture preflight, exact-media SHA-256/runtime evidence, native EFI boot, private managed ISO copy and recovery console, thin-provisioned disk, persistent machine identity/NVRAM, and attach/eject lifecycle |

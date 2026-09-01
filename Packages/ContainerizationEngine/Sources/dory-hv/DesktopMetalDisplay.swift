@@ -1301,7 +1301,7 @@ class DesktopDisplayView: NSView {
         let height = UInt32(clamping: max(1, Int(guestPixelSize.height.rounded())))
         resizeGeneration &+= 1
         let generation = resizeGeneration
-        // AppKit reports every intermediate drag size. Debounce the guest modeset so Mutter/Xfce
+        // AppKit reports every intermediate drag size. Debounce the guest modeset so Mutter
         // receives the final Retina pixel size without reallocating scanout resources per event.
         DesktopAppRunLoop.perform(after: 0.12) { [weak self] in
             guard let self, self.resizeGeneration == generation else { return }

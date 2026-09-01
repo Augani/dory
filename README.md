@@ -54,7 +54,7 @@ or commercial-use tier. Dory is GPL-3.0 software and stores workload data on you
 |---|---|
 | Docker | Docker 29 API and CLI, Buildx, BuildKit, Compose v2, registries, bind mounts, volumes, and custom networks |
 | Native app | Containers, images, volumes, networks, Compose projects, Kubernetes, Linux machines, health, migration, and settings |
-| Linux machines | Full Ubuntu 24.04 LTS GNOME, Debian 13 Xfce, and Kali rolling Xfce desktops plus lightweight Alpine headless VMs, with configurable resources, scoped mounts, networking, recipes, snapshots, clone, import, and export |
+| Linux machines | Full Ubuntu 24.04 LTS, Debian 13, and Kali rolling GNOME desktops plus lightweight Alpine headless VMs, with configurable resources, scoped mounts, networking, recipes, snapshots, clone, import, and export |
 | Kubernetes | One-click k3s with selectable v1.34, v1.35, and v1.36 presets plus a native resource browser |
 | Migration | Transactional full or exact-selection import from Docker Desktop, OrbStack, Colima, Rancher Desktop, Podman, or another Docker-compatible socket, with a selected/verified/omitted completeness report |
 | Storage | One managed `.dorydrive`, external APFS drive support, sparse growth, verified backup, restore, and safe selection |
@@ -123,9 +123,9 @@ migration, diagnostics, and recovery. The signed component catalog offers:
 | Kubernetes | `kubectl` and Dory's local k3s workflow | Docker Core |
 | Linux Machines | Headless VPS-style Linux guests | Docker Core |
 | Linux Desktop Runtime | Shared graphical VM kernel | Docker Core |
-| Debian 13 Desktop | Debian 13 Xfce image | Linux Desktop Runtime |
+| Debian 13 Desktop | Debian 13 GNOME image | Linux Desktop Runtime |
 | Ubuntu 24.04 LTS Desktop | Canonical Ubuntu GNOME image | Linux Desktop Runtime |
-| Kali Linux Desktop | Kali rolling Xfce image | Linux Desktop Runtime |
+| Kali Linux Desktop | Kali rolling GNOME image | Linux Desktop Runtime |
 
 Component download and installed sizes come from the signed release catalog, not estimates. Dory
 stores installed payloads inside the selected `.dorydrive/components` directory. Removing a
@@ -303,7 +303,7 @@ Install Linux Machines for headless guests. Graphical guests additionally need t
 Runtime and the selected Debian, Ubuntu, or Kali distribution component.
 
 Dory Linux machines are persistent, separate VMs rather than containers. The app offers Canonical's
-Ubuntu 24.04 LTS GNOME desktop plus Debian 13 and Kali Linux rolling Xfce desktops for graphical and
+Ubuntu 24.04 LTS, Debian 13, and Kali Linux rolling GNOME desktops for graphical and
 command-line applications. A lightweight Alpine-based headless profile remains available for services,
 terminals, test environments, and agent work. Each machine has its own disk, address, resources,
 shares, and snapshots.
@@ -313,7 +313,7 @@ From the app or CLI you can:
 - create, start, stop, delete, and inspect machines;
 - choose Desktop Linux or Headless Linux when creating a machine in the app;
 - choose 1 to 8 CPUs and 1 to 16 GiB of memory per machine;
-- configure the desktop Linux username, then use its GNOME or Xfce session, embedded terminal, or an external
+- configure the desktop Linux username, then use its GNOME session, embedded terminal, or an external
   terminal selected in Settings;
 - use a root shell for lightweight headless machines or `dory machine shell NAME`;
 - execute structured commands with `dory machine exec NAME --json -- COMMAND`;
@@ -353,7 +353,7 @@ local backup contract, not an S3 or managed offsite service, so copy important v
 independent storage as part of your normal backup policy.
 
 Desktop machines use native arm64 Ubuntu 24.04 LTS with GNOME or Debian 13 and Kali rolling with
-Xfce, plus systemd, Bash, a configurable login user, and a 64 GiB thin-provisioned disk stored in the selected
+GNOME, plus systemd, Bash, a configurable login user, and a 64 GiB thin-provisioned disk stored in the selected
 `.dorydrive`. Their window follows the Mac display at a true 2x framebuffer, resizes dynamically,
 and configures the selected desktop for Retina-sharp text and controls. They run normal graphical and command-line
 Linux applications and can mount the Mac home at `~/Mac` only when the user enables that share.
@@ -731,7 +731,7 @@ docker run --rm \
   hardware-virtualization paths. Rosetta/FEX translate applications inside ARM64 guests, not a
   complete Intel guest OS; a future full implementation requires a packaged QEMU TCG backend.
 - **Recovery baseline — Desktop Linux:** managed Ubuntu 24.04 LTS GNOME plus Debian 13 and Kali
-  rolling Xfce arm64 profiles must boot and launch ordinary applications with software graphics.
+  rolling GNOME arm64 profiles must boot and launch ordinary applications with software graphics.
   The exact release remains unqualified until the physical managed-desktop gate passes.
 - **Supported — Headless Linux:** Alpine-based arm64 guests with an initial root `/bin/sh` login.
 - **Unqualified for public release — Desktop GPU acceleration:** the repaired dual VirGL2/Venus
