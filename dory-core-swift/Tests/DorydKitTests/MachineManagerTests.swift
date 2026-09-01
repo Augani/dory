@@ -3705,6 +3705,125 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(try variableStore.load().snapshot.platform, .pcV1)
     }
 
+    func testDoryPCQualificationBootstrapLaunchesExactSoftwareUEFIEnvelope() throws {
+        let base = "/Users/Shared/dory-machine-pc-bootstrap-\(getpid())-\(UUID().uuidString)"
+        let state = base + "/machines"
+        let firmware = base + "/pc-firmware"
+        let helper = base + "/dory-hv"
+        let capture = base + "/arguments.txt"
+        let installer = base + "/linux-x86_64.iso"
+        try FileManager.default.createDirectory(
+            atPath: state,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        XCTAssertEqual(chmod(base, 0o700), 0)
+        XCTAssertEqual(chmod(state, 0o700), 0)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        try "#!/bin/sh\nprintf '%s\\n' \"$@\" > '\(capture)'\nsleep 30\n".write(
+            toFile: helper,
+            atomically: true,
+            encoding: .utf8
+        )
+        XCTAssertEqual(chmod(helper, 0o755), 0)
+        var installerBytes = Data(repeating: 0, count: 512)
+        installerBytes.replaceSubrange(
+            0..<"EFI/BOOT/BOOTX64.EFI".utf8.count,
+            with: "EFI/BOOT/BOOTX64.EFI".utf8
+        )
+        try installerBytes.write(to: URL(fileURLWithPath: installer))
+        let firmwareBundle = try DoryFirmwareBundleBuilder.build(
+            DoryFirmwareBundleBuildInput(
+                platform: .pcV1,
+                buildIdentifier: "dory-pc-bootstrap-test.1",
+                source: try DoryFirmwareSourcePin(
+                    repository: "https://github.com/tianocore/edk2.git",
+                    revision: String(repeating: "a", count: 40)
+                ),
+                sourceDateEpoch: 1_788_048_000,
+                platformConfiguration: Data("DoryPC.dsc".utf8),
+                toolchainDescriptor: Data("clang-17F109".utf8),
+                firmwareCode: Data(repeating: 0xf4, count: 4_096),
+                secureBootPolicy: .disabled
+            )
+        )
+        try firmwareBundle.write(to: URL(fileURLWithPath: firmware))
+
+        let broker = try DoryMachineStateBroker(canonicalStateRootPath: state)
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/false",
+                acceleratedDesktopExecutablePath: helper,
+                pcFirmwareBundlePath: firmware,
+                stateDirectory: state,
+                requiresReadyHandoff: false,
+                guestArchitecture: "x86_64"
+            ),
+            launchPolicy: .legacyCompatibility,
+            allowsNewMachinesInLegacyCompatibility: true,
+            allowsQualificationBootstrapLaunches: true,
+            machineStateBroker: broker
+        )
+        defer { try? manager.delete(id: "linux") }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "linux",
+            kernelPath: "",
+            rootfsPath: "",
+            bootMode: .efi,
+            installerISOPath: installer,
+            diskSizeBytes: MachineManager.minimumEFIDiskSizeBytes,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop,
+            environment: [
+                "DORY_CUSTOM_LINUX": "1",
+                DoryDesktopVMMPreference.environmentKey:
+                    DoryDesktopVMMPreference.accelerated.rawValue,
+                DoryDesktopGraphicsPreference.environmentKey:
+                    DoryDesktopGraphicsPreference.software.rawValue,
+            ]
+        ))
+
+        let running = try manager.start(id: "linux")
+        XCTAssertEqual(running.state, .running, running.lastError ?? "missing failure detail")
+        let arguments = try waitForFileContent(capture)
+            .split(separator: "\n").map(String.init)
+        let envelopeIndex = try XCTUnwrap(
+            arguments.firstIndex(of: "--pc-runtime-launch-envelope")
+        )
+        let envelope = try DoryPCRuntimeLaunchEnvelope.decodeArgument(
+            arguments[envelopeIndex + 1]
+        )
+        XCTAssertEqual(envelope.graphics, .software)
+        XCTAssertEqual(envelope.executionResources.tier, .optimizingJIT)
+        XCTAssertEqual(envelope.executionResources.memoryMB, 4096)
+        XCTAssertEqual(envelope.executionResources.virtualCPUCount, 4)
+        XCTAssertEqual(envelope.launchPlan.firmware.platform, .pcV1)
+        XCTAssertEqual(
+            envelope.launchPlan.bootDevices.map(\.kind),
+            [.systemDisk, .removableMedia]
+        )
+        let resources = try envelope.validatedResources()
+        let installerMedia = try XCTUnwrap(resources.installerMedia)
+        XCTAssertEqual(
+            envelope.launchPlan.bootOrder,
+            [
+                try XCTUnwrap(installerMedia.logicalDeviceID).rawValue,
+                try XCTUnwrap(resources.systemDisk.logicalDeviceID).rawValue,
+            ]
+        )
+        XCTAssertEqual(
+            installerMedia.contentSHA256,
+            SHA256.hash(data: installerBytes)
+                .map { String(format: "%02x", $0) }.joined()
+        )
+        XCTAssertFalse(arguments.contains("--kernel"))
+        XCTAssertFalse(arguments.contains("--rootfs"))
+        _ = try manager.stop(id: "linux")
+    }
+
     func testDoryPCFirstDiskBootFailureRestoresInstallerTransaction() throws {
         let base = "/tmp/dory-machine-pc-eject-rollback-\(getpid())-"
             + "\(UInt32.random(in: 0..<UInt32.max))"

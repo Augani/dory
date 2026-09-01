@@ -1123,10 +1123,26 @@ private struct DoryQualificationBootstrapLaunchPlan: Codable, Sendable {
     let components: [DoryResolvedBackendComponentEvidence]
 }
 
+private struct DoryQualificationBootstrapPCLaunchPlan: Codable, Sendable {
+    let schemaVersion: UInt16
+    let qualificationMode: String
+    let verdict: String
+    let definition: DoryVirtualMachineDefinition
+    let devices: DoryVirtualMachineDeviceCapabilityRequest
+    let executionResources: DoryPCRuntimeLaunchEnvelope.ExecutionResources
+    let backendRuntimeBuildIdentifier: String
+    let backendExecutableSHA256: String
+    let systemDiskLogicalID: DoryVirtualDeviceID
+    let installerMediaLogicalID: DoryVirtualDeviceID?
+    let installerMediaSHA256: String?
+    let launchPlan: DoryPCUEFILaunchPlan
+}
+
 private struct DoryQualificationBootstrapGraphicsExpectation: Sendable {
     let operationID: UUID
     let launchPlanSHA256: String
     let planRevision: UInt64
+    let accelerationLevel: DoryGraphicsAccelerationLevel
 }
 
 /// Single-launch handoff authority for the explicitly enabled, non-release-qualifying VM
@@ -1162,15 +1178,15 @@ private final class DoryQualificationBootstrapHandoffAuthority: @unchecked Senda
             operationID: operationID,
             planSHA256: expected.launchPlanSHA256,
             planRevision: expected.planRevision,
-            accelerationLevel: .hardwareAccelerated3D
+            accelerationLevel: expected.accelerationLevel
         )
     }
 }
 
 private struct DoryQualificationBootstrapRuntimeAuthority: @unchecked Sendable {
     let runtime: RawHVRuntimeLaunchAuthority
-    let rendererReleaseIdentity: DoryRendererReleaseIdentityV1
-    let graphicsExpectation: DoryQualificationBootstrapGraphicsExpectation
+    let rendererReleaseIdentity: DoryRendererReleaseIdentityV1?
+    let graphicsExpectation: DoryQualificationBootstrapGraphicsExpectation?
 }
 
 struct RawHVAdmittedSystemDisk: @unchecked Sendable {
@@ -3880,9 +3896,9 @@ public final class MachineManager: @unchecked Sendable {
             ) {
                 runtimeLaunchAuthority = bootstrapAuthority.runtime
                 rendererReleaseIdentity = bootstrapAuthority.rendererReleaseIdentity
-                try qualificationBootstrapHandoffAuthority.publish(
-                    bootstrapAuthority.graphicsExpectation
-                )
+                if let graphicsExpectation = bootstrapAuthority.graphicsExpectation {
+                    try qualificationBootstrapHandoffAuthority.publish(graphicsExpectation)
+                }
                 qualificationBootstrapLaunch = true
             } else {
                 runtimeLaunchAuthority = nil
@@ -7948,16 +7964,27 @@ public final class MachineManager: @unchecked Sendable {
         guard allowsQualificationBootstrapLaunches,
               launchPolicy == .legacyCompatibility,
               machine.displayMode == .desktop,
-              machine.installerISOPath == nil,
               try DoryDesktopVMMPreference(environment: machine.environment)
-                == .accelerated,
-              try DoryDesktopGraphicsPreference(environment: machine.environment)
-                .requiredBackend == .virglVenus else {
+                == .accelerated else {
             return nil
         }
         guard let definition,
               definition.identity.id == machine.id,
-              definition.validate().isEmpty,
+              definition.validate().isEmpty else {
+            throw MachineManagerError.persistence(
+                "qualification bootstrap requires one exact valid desktop definition"
+            )
+        }
+        if definition.guest == DoryGuestPlatform(family: .linux, architecture: .x86_64) {
+            return try qualificationBootstrapDoryPCRuntimeAuthority(
+                machine: machine,
+                definition: definition,
+                operationID: operationID
+            )
+        }
+        guard machine.installerISOPath == nil,
+              try DoryDesktopGraphicsPreference(environment: machine.environment)
+                .requiredBackend == .virglVenus,
               definition.graphics.acceptableLevels.contains(.hardwareAccelerated3D),
               let bootID = definition.boot.order.first,
               definition.boot.order.count == 1,
@@ -8144,7 +8171,189 @@ public final class MachineManager: @unchecked Sendable {
             graphicsExpectation: DoryQualificationBootstrapGraphicsExpectation(
                 operationID: operationID,
                 launchPlanSHA256: launchPlanSHA256,
-                planRevision: definition.lifecycle.revision
+                planRevision: definition.lifecycle.revision,
+                accelerationLevel: .hardwareAccelerated3D
+            )
+        )
+    }
+
+    /// Creates one exact, descriptor-backed DoryPC launch for physical qualification before a
+    /// schema-2 support catalog exists. This authority is transient, remains attached to the
+    /// legacy-compatible workspace identity, and never manufactures production qualification.
+    private func qualificationBootstrapDoryPCRuntimeAuthority(
+        machine: DoryMachineConfiguration,
+        definition: DoryVirtualMachineDefinition,
+        operationID: UUID
+    ) throws -> DoryQualificationBootstrapRuntimeAuthority {
+        guard machine.bootMode == .efi,
+              definition.workload == .installer || definition.workload == .desktop,
+              definition.virtualHardwareABIVersion == 1,
+              definition.graphics.acceptableLevels.contains(.software),
+              try DoryDesktopGraphicsPreference(environment: machine.environment)
+                .requiredBackend == .software,
+              let executablePath = configuration.acceleratedDesktopExecutablePath,
+              FileManager.default.isExecutableFile(atPath: executablePath),
+              let firmwareBundlePath = configuration.pcFirmwareBundlePath,
+              let machineStateBroker else {
+            throw MachineManagerError.persistence(
+                "DoryPC qualification bootstrap requires software graphics, signed runner, firmware, and machine-state authority"
+            )
+        }
+        let bytesPerMiB: UInt64 = 1_048_576
+        let (memoryBytes, memoryOverflow) = machine.memoryMB.multipliedReportingOverflow(
+            by: bytesPerMiB
+        )
+        guard !memoryOverflow,
+              let virtualCPUCount = UInt16(exactly: machine.cpuCount),
+              definition.resources.virtualCPUCount == UInt64(virtualCPUCount),
+              definition.resources.memoryBytes == memoryBytes else {
+            throw MachineManagerError.persistence(
+                "DoryPC qualification bootstrap compute resources do not match workspace intent"
+            )
+        }
+        let systemStorage = definition.storage.filter {
+            $0.role == .system && !$0.readOnly
+        }
+        var diskInfo = stat()
+        let managedDirectory = machineStateDirectory(id: machine.id)
+        guard systemStorage.count == 1,
+              systemStorage[0].capacityBytes == definition.resources.diskBytes,
+              machine.rootfsPath == managedDirectory + "/rootfs.ext4",
+              lstat(machine.rootfsPath, &diskInfo) == 0,
+              diskInfo.st_mode & S_IFMT == S_IFREG,
+              diskInfo.st_size > 0,
+              UInt64(diskInfo.st_size) == definition.resources.diskBytes else {
+            throw MachineManagerError.persistence(
+                "DoryPC qualification bootstrap system disk does not match workspace intent"
+            )
+        }
+        guard let bootID = definition.boot.order.first,
+              definition.boot.order.count == 1,
+              let bootMedia = definition.boot.devices.first(where: { $0.id == bootID }) else {
+            throw MachineManagerError.persistence(
+                "DoryPC qualification bootstrap requires one exact primary boot authority"
+            )
+        }
+        let mediaKind: DoryBootMediaKind
+        let installerSHA256: String?
+        let installerMediaLogicalID: DoryVirtualDeviceID?
+        if let installerPath = machine.installerISOPath {
+            guard installerPath == managedDirectory + "/installer.iso",
+                  bootMedia.kind == .installerISO,
+                  bootMedia.removable else {
+                throw MachineManagerError.persistence(
+                    "DoryPC qualification bootstrap installer does not match managed boot intent"
+                )
+            }
+            mediaKind = .installerISO
+            installerSHA256 = try Self.fileSHA256(path: installerPath)
+            installerMediaLogicalID = try DoryVirtualDeviceID.derived(
+                namespace: .removableStorage,
+                stableID: bootMedia.id
+            )
+        } else {
+            guard bootMedia.kind == .virtualDisk, !bootMedia.removable else {
+                throw MachineManagerError.persistence(
+                    "DoryPC qualification bootstrap disk boot retained removable-media intent"
+                )
+            }
+            mediaKind = .virtualDisk
+            installerSHA256 = nil
+            installerMediaLogicalID = nil
+        }
+        let systemDiskLogicalID = try DoryVirtualDeviceID.derived(
+            namespace: .systemDisk,
+            stableID: systemStorage[0].id
+        )
+        let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+        let executionResources = DoryPCRuntimeLaunchEnvelope.ExecutionResources(
+            memoryMB: machine.memoryMB,
+            virtualCPUCount: virtualCPUCount,
+            tier: .optimizingJIT
+        )
+        let executableSHA256 = try Self.fileSHA256(path: executablePath)
+        let runtimeBuildIdentifier = "sha256:\(executableSHA256)"
+        let lease: DoryMachineDirectoryLease
+        do {
+            lease = try machineStateBroker.acquireMachineDirectoryLease(machineID: machine.id)
+        } catch {
+            throw MachineManagerError.persistence(
+                "DoryPC qualification bootstrap machine-directory authority is unavailable: \(error)"
+            )
+        }
+        let admitted = try lease.withBorrowedDescriptor { descriptor in
+            try Self.admitResolvedDoryPCUEFIResources(
+                machineDirectoryDescriptor: descriptor,
+                machineDirectoryGeneration: lease.generation,
+                expectedDiskCapacityBytes: definition.resources.diskBytes,
+                firmwareBundlePath: firmwareBundlePath,
+                systemDiskLogicalID: systemDiskLogicalID,
+                installerMediaLogicalID: installerMediaLogicalID,
+                mediaKind: mediaKind,
+                expectedInstallerSHA256: installerSHA256
+            )
+        }
+        var authorityTransferred = false
+        defer { if !authorityTransferred { admitted.close() } }
+        let candidatePlan = DoryQualificationBootstrapPCLaunchPlan(
+            schemaVersion: 1,
+            qualificationMode: "candidate-bootstrap",
+            verdict: "not-release-qualifying",
+            definition: definition,
+            devices: devices,
+            executionResources: executionResources,
+            backendRuntimeBuildIdentifier: runtimeBuildIdentifier,
+            backendExecutableSHA256: executableSHA256,
+            systemDiskLogicalID: systemDiskLogicalID,
+            installerMediaLogicalID: installerMediaLogicalID,
+            installerMediaSHA256: installerSHA256,
+            launchPlan: admitted.boot.launchPlan
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        let launchPlanSHA256 = SHA256.hash(data: try encoder.encode(candidatePlan)).map {
+            String(format: "%02x", $0)
+        }.joined()
+        let envelope = DoryPCRuntimeLaunchEnvelope.resolvedUEFI(
+            machineID: machine.id,
+            operationID: operationID,
+            resolvedPlanSHA256: launchPlanSHA256,
+            planRevision: definition.lifecycle.revision,
+            executionComponentBuildIdentifier: runtimeBuildIdentifier,
+            virtualHardwareABIVersion: definition.virtualHardwareABIVersion,
+            graphics: .software,
+            devices: devices,
+            portForwards: definition.portForwards,
+            executionResources: executionResources,
+            systemDiskCapacityBytes: admitted.disk.capacityBytes,
+            systemDiskLogicalID: systemDiskLogicalID,
+            launchPlan: admitted.boot.launchPlan,
+            firmwareSBOMByteCount: admitted.boot.firmwareSBOM.byteCount,
+            installerMediaByteCount: admitted.boot.installerMedia?.byteCount,
+            installerMediaSHA256: admitted.boot.installerMedia?.sha256,
+            installerMediaLogicalID: installerMediaLogicalID
+        )
+        _ = try envelope.validatedResources()
+        do {
+            _ = try lease.revalidate()
+        } catch {
+            throw MachineManagerError.persistence(
+                "DoryPC qualification bootstrap machine-directory authority changed before spawn: \(error)"
+            )
+        }
+        authorityTransferred = true
+        return DoryQualificationBootstrapRuntimeAuthority(
+            runtime: RawHVRuntimeLaunchAuthority(
+                pcEnvelope: envelope,
+                inheritedFileDescriptors: [admitted.disk.authority]
+                    + admitted.boot.authorities
+            ),
+            rendererReleaseIdentity: nil,
+            graphicsExpectation: DoryQualificationBootstrapGraphicsExpectation(
+                operationID: operationID,
+                launchPlanSHA256: launchPlanSHA256,
+                planRevision: definition.lifecycle.revision,
+                accelerationLevel: .software
             )
         )
     }
@@ -8331,7 +8540,8 @@ public final class MachineManager: @unchecked Sendable {
                  backend: DoryVirtualizationBackendIdentity) {
         let target = try processTarget(
             for: machine,
-            resolvedLaunchBinding: resolvedLaunchBinding
+            resolvedLaunchBinding: resolvedLaunchBinding,
+            qualificationBootstrapLaunch: qualificationBootstrapLaunch
         )
         var process = HvProcessConfiguration(
             executablePath: target.executablePath,
@@ -9626,7 +9836,8 @@ public final class MachineManager: @unchecked Sendable {
 
     private func processTarget(
         for machine: DoryMachineConfiguration,
-        resolvedLaunchBinding: MachineBackendLaunchBinding?
+        resolvedLaunchBinding: MachineBackendLaunchBinding?,
+        qualificationBootstrapLaunch: Bool = false
     ) throws -> (
         executablePath: String,
         baseArguments: [String],
@@ -9647,6 +9858,19 @@ public final class MachineManager: @unchecked Sendable {
                     "resolved backend \(binding.backend.identity.rawValue) has no MachineManager launcher"
                 )
             }
+        }
+        if qualificationBootstrapLaunch {
+            guard let executablePath = configuration.acceleratedDesktopExecutablePath,
+                  FileManager.default.isExecutableFile(atPath: executablePath) else {
+                throw MachineManagerError.persistence(
+                    "qualification bootstrap runtime is unavailable"
+                )
+            }
+            return (
+                executablePath,
+                configuration.acceleratedDesktopBaseArguments,
+                true
+            )
         }
         let desktopPreference = try? DoryDesktopVMMPreference(environment: machine.environment)
         let supportsAcceleratedBoot = machine.bootMode == .linuxKernel
@@ -9778,8 +10002,8 @@ public final class MachineManager: @unchecked Sendable {
             ])
         } else if let pcRuntimeLaunchEnvelope {
             guard acceleratedDesktop,
-                  resolvedLaunchBinding?.backend.identity == .doryHypervisor,
-                  !qualificationBootstrapLaunch else {
+                  resolvedLaunchBinding?.backend.identity == .doryHypervisor
+                    || qualificationBootstrapLaunch else {
                 throw MachineManagerError.persistence(
                     "DoryPC runtime launch envelope is not valid for the selected backend"
                 )
@@ -10450,10 +10674,10 @@ public final class MachineManager: @unchecked Sendable {
         user="$(cat /var/lib/dory/username 2>/dev/null || printf 'dory')"
         id "$user" >/dev/null
         for _ in $(seq 1 120); do
-          if pgrep -u "$user" -f 'gnome-shell|xfce4-session' >/dev/null; then break; fi
+          if pgrep -u "$user" -x gnome-shell >/dev/null; then break; fi
           sleep 1
         done
-        pgrep -u "$user" -f 'gnome-shell|xfce4-session' >/dev/null
+        pgrep -u "$user" -x gnome-shell >/dev/null
         case "$DORY_EXPECTED_DISTRO" in
           debian) command -v firefox-esr >/dev/null ;;
           ubuntu) command -v firefox >/dev/null ;;
