@@ -1721,6 +1721,20 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let exitCode: DoryJITExitCode
   }
 
+  private static let qwordCopyLoopBytes: [UInt8] = [
+    0x48, 0x8b, 0x0c, 0x06, 0x48, 0x89, 0x0c, 0x07,
+    0x48, 0x83, 0xc0, 0x08, 0x48, 0x89, 0xd1, 0x48,
+    0x29, 0xc1, 0x48, 0x83, 0xf9, 0x07, 0x77, 0xe8,
+  ]
+
+  private static let arithmeticFlagMask: UInt64 =
+    DoryX86RFLAGS.carry.rawValue
+    | DoryX86RFLAGS.parity.rawValue
+    | DoryX86RFLAGS.auxiliaryCarry.rawValue
+    | DoryX86RFLAGS.zero.rawValue
+    | DoryX86RFLAGS.sign.rawValue
+    | DoryX86RFLAGS.overflow.rawValue
+
   private struct ResidentExecution {
     let resident: ResidentBlock
     let exitCode: DoryJITExitCode
@@ -1950,6 +1964,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     return try lock.withLock {
       chainedExecutionCallCount &+= 1
       chainedRequestedInstructionCount &+= UInt64(maximumInstructions)
+      if let accelerated = try executeQwordCopyLoop(
+        byteProvider: byteProvider,
+        guestStart: guestStart,
+        mode: mode,
+        maximumInstructions: maximumInstructions,
+        state: &state,
+        memory: memory
+      ) {
+        chainedRetiredInstructionCount &+= UInt64(accelerated.guestInstructionCount)
+        return accelerated
+      }
       return try withUnsafeTemporaryAllocation(
         of: UInt64.self,
         capacity: DoryJITExecutableRegion.contextWordCount
@@ -2086,6 +2111,142 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         }
       }
     }
+  }
+
+  private func executeQwordCopyLoop(
+    byteProvider: (_ guestStart: UInt64, _ maximumCount: Int) throws -> [UInt8],
+    guestStart: UInt64,
+    mode: DoryX86ExecutionMode,
+    maximumInstructions: Int,
+    state: inout DoryX86ArchitecturalState,
+    memory: (any DoryX86Memory)?
+  ) throws -> DoryARM64ExecutionSummary? {
+    guard mode == .long64, maximumInstructions >= 7,
+      let bulkMemory = memory as? any DoryX86BulkMemory,
+      state.rip == guestStart
+    else { return nil }
+    let bytes = try byteProvider(guestStart, Self.qwordCopyLoopBytes.count)
+    guard bytes == Self.qwordCopyLoopBytes,
+      recognizesQwordCopyLoop(bytes, at: guestStart)
+    else { return nil }
+
+    let offset = state.registers.rax
+    guard offset <= UInt64.max - 8, state.registers.rdx >= offset + 8 else { return nil }
+    let remainingByteCount = state.registers.rdx - offset
+    let requestedElementCount = min(Int(remainingByteCount / 8), maximumInstructions / 7)
+    guard requestedElementCount > 0 else { return nil }
+    let (sourceAddress, sourceOverflow) = state.registers.rsi.addingReportingOverflow(offset)
+    let (destinationAddress, destinationOverflow) = state.registers.rdi.addingReportingOverflow(
+      offset)
+    let (loopEnd, loopEndOverflow) = guestStart.addingReportingOverflow(
+      UInt64(Self.qwordCopyLoopBytes.count))
+    guard !sourceOverflow, !destinationOverflow, !loopEndOverflow else { return nil }
+
+    let copied: Int?
+    do {
+      copied = try bulkMemory.copyForwardNonoverlappingElements(
+        from: sourceAddress,
+        to: destinationAddress,
+        elementByteCount: 8,
+        maximumElementCount: requestedElementCount,
+        excludingDestinationRanges: [guestStart..<loopEnd]
+      )
+    } catch {
+      return nil
+    }
+    guard let copiedElementCount = copied, copiedElementCount > 0,
+      copiedElementCount <= requestedElementCount
+    else { return nil }
+
+    let copiedByteCount = UInt64(copiedElementCount * 8)
+    let nextOffset = offset + copiedByteCount
+    let comparisonLeft = state.registers.rdx - nextOffset
+    state.registers.rax = nextOffset
+    state.registers.rcx = comparisonLeft
+    state.rflags = Self.flagsAfterQuadwordSubtract(
+      comparisonLeft,
+      7,
+      preserving: state.rflags
+    )
+    state.rip = comparisonLeft > 7 ? guestStart : loopEnd
+    return .init(
+      guestInstructionCount: UInt32(copiedElementCount * 7),
+      residentBlockCount: UInt32(copiedElementCount * 2),
+      tier: optimization == .optimizing ? .optimizing : .baseline,
+      exitCode: .dispatch
+    )
+  }
+
+  private func recognizesQwordCopyLoop(_ bytes: [UInt8], at guestStart: UInt64) -> Bool {
+    let sourceMemory = DoryX86MemoryOperand(
+      base: .rsi, index: .rax, width: .quadword)
+    let destinationMemory = DoryX86MemoryOperand(
+      base: .rdi, index: .rax, width: .quadword)
+    let expected: [DoryX86InstructionOperation] = [
+      .move(
+        destination: .register(.rcx, width: .quadword),
+        source: .memory(sourceMemory)
+      ),
+      .move(
+        destination: .memory(destinationMemory),
+        source: .register(.rcx, width: .quadword)
+      ),
+      .alu(
+        .add,
+        destination: .register(.rax, width: .quadword),
+        source: .immediate(8, width: .quadword)
+      ),
+      .move(
+        destination: .register(.rcx, width: .quadword),
+        source: .register(.rdx, width: .quadword)
+      ),
+      .alu(
+        .subtract,
+        destination: .register(.rcx, width: .quadword),
+        source: .register(.rax, width: .quadword)
+      ),
+      .alu(
+        .compare,
+        destination: .register(.rcx, width: .quadword),
+        source: .immediate(7, width: .quadword)
+      ),
+      .conditionalJump(.above, relative: -24),
+    ]
+    var offset = 0
+    for operation in expected {
+      guard offset < bytes.count else { return false }
+      let address = guestStart &+ UInt64(offset)
+      guard
+        let instruction = try? decoder.decode(
+          Array(bytes[offset...]), at: address, mode: .long64),
+        instruction.operation == operation
+      else { return false }
+      offset += Int(instruction.length)
+    }
+    return offset == bytes.count
+  }
+
+  private static func flagsAfterQuadwordSubtract(
+    _ lhs: UInt64,
+    _ rhs: UInt64,
+    preserving flags: DoryX86RFLAGS
+  ) -> DoryX86RFLAGS {
+    let result = lhs &- rhs
+    var raw = flags.rawValue & ~arithmeticFlagMask
+    if lhs < rhs { raw |= DoryX86RFLAGS.carry.rawValue }
+    if ((lhs ^ rhs) & (lhs ^ result) & (1 << 63)) != 0 {
+      raw |= DoryX86RFLAGS.overflow.rawValue
+    }
+    if ((lhs ^ rhs ^ result) & 0x10) != 0 {
+      raw |= DoryX86RFLAGS.auxiliaryCarry.rawValue
+    }
+    if result == 0 { raw |= DoryX86RFLAGS.zero.rawValue }
+    if result & (1 << 63) != 0 { raw |= DoryX86RFLAGS.sign.rawValue }
+    if (result & 0xff).nonzeroBitCount.isMultiple(of: 2) {
+      raw |= DoryX86RFLAGS.parity.rawValue
+    }
+    raw |= DoryX86RFLAGS.reservedOne.rawValue
+    return DoryX86RFLAGS(rawValue: raw)
   }
 
   private func executeResident(

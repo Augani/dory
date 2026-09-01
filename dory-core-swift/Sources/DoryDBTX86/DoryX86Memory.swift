@@ -85,6 +85,18 @@ public protocol DoryX86BulkMemory: DoryX86Memory {
     maximumByteCount: Int
   ) throws -> Int?
 
+  /// Copies a positive prefix measured only in complete elements. Every exclusion range is in
+  /// this memory object's address space. Implementations must return `nil` before mutation unless
+  /// the source and destination are ordinary, non-overlapping RAM and the complete destination
+  /// prefix is disjoint from every exclusion range.
+  func copyForwardNonoverlappingElements(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    elementByteCount: Int,
+    maximumElementCount: Int,
+    excludingDestinationRanges: [Range<UInt64>]
+  ) throws -> Int?
+
   /// Repeats one scalar-width pattern into ordinary RAM. The returned count is measured in
   /// complete pattern elements so a REP STOS caller can publish exact architectural progress.
   /// Returning `nil` declines the fast path before mutation.
@@ -104,6 +116,16 @@ extension DoryX86Memory {
 }
 
 extension DoryX86BulkMemory {
+  public func copyForwardNonoverlappingElements(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    elementByteCount: Int,
+    maximumElementCount: Int,
+    excludingDestinationRanges: [Range<UInt64>]
+  ) throws -> Int? {
+    nil
+  }
+
   public func fillRepeating(
     at destinationAddress: UInt64,
     pattern: [UInt8],
@@ -328,6 +350,50 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
       storage.replaceSubrange(destinationOffset..<(destinationOffset + count), with: bytes)
       markCodePagesWritten(offset: destinationOffset, byteCount: count)
       return count
+    }
+  }
+
+  public func copyForwardNonoverlappingElements(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    elementByteCount: Int,
+    maximumElementCount: Int,
+    excludingDestinationRanges: [Range<UInt64>]
+  ) throws -> Int? {
+    guard elementByteCount > 0, maximumElementCount > 0,
+      maximumElementCount <= Int.max / elementByteCount
+    else { return maximumElementCount == 0 ? 0 : nil }
+    return lock.withLock {
+      guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
+      let sourceDistance = sourceAddress - baseAddress
+      let destinationDistance = destinationAddress - baseAddress
+      guard sourceDistance < UInt64(storage.count), destinationDistance < UInt64(storage.count),
+        sourceDistance <= UInt64(Int.max), destinationDistance <= UInt64(Int.max)
+      else { return nil }
+      let sourceOffset = Int(sourceDistance)
+      let destinationOffset = Int(destinationDistance)
+      let elementCount = min(
+        maximumElementCount,
+        (storage.count - sourceOffset) / elementByteCount,
+        (storage.count - destinationOffset) / elementByteCount
+      )
+      guard elementCount > 0 else { return nil }
+      let byteCount = elementCount * elementByteCount
+      guard
+        sourceOffset + byteCount <= destinationOffset
+          || destinationOffset + byteCount <= sourceOffset
+      else { return nil }
+      let (destinationEnd, destinationOverflow) = destinationAddress.addingReportingOverflow(
+        UInt64(byteCount))
+      guard !destinationOverflow else { return nil }
+      let destinationRange = destinationAddress..<destinationEnd
+      guard !excludingDestinationRanges.contains(where: { $0.overlaps(destinationRange) }) else {
+        return nil
+      }
+      let bytes = Array(storage[sourceOffset..<(sourceOffset + byteCount)])
+      storage.replaceSubrange(destinationOffset..<(destinationOffset + byteCount), with: bytes)
+      markCodePagesWritten(offset: destinationOffset, byteCount: byteCount)
+      return elementCount
     }
   }
 

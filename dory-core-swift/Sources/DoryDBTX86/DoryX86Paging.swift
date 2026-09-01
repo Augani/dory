@@ -801,6 +801,74 @@ extension DoryX86TranslatedMemory: DoryX86BulkMemory {
     )
   }
 
+  public func copyForwardNonoverlappingElements(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    elementByteCount: Int,
+    maximumElementCount: Int,
+    excludingDestinationRanges: [Range<UInt64>]
+  ) throws -> Int? {
+    guard elementByteCount > 0, maximumElementCount > 0,
+      maximumElementCount <= Int.max / elementByteCount,
+      let physicalMemory = bulkPhysicalMemory
+    else { return maximumElementCount == 0 ? 0 : nil }
+    let requestedByteCount = maximumElementCount * elementByteCount
+    let source = try pagingUnit.translate(
+      linearAddress: sourceAddress,
+      access: .read,
+      context: context,
+      physicalMemory: physicalMemory
+    )
+    let destination = try pagingUnit.translate(
+      linearAddress: destinationAddress,
+      access: .write,
+      context: context,
+      physicalMemory: physicalMemory
+    )
+    guard
+      let sourceSpan = physicalMemory.bulkCopyRAMSpan(
+        at: source.physicalAddress, maximumByteCount: requestedByteCount),
+      let destinationSpan = physicalMemory.bulkCopyRAMSpan(
+        at: destination.physicalAddress, maximumByteCount: requestedByteCount)
+    else { return nil }
+    let byteCount = min(
+      requestedByteCount,
+      sourceSpan,
+      destinationSpan,
+      Int(4_096 - (sourceAddress & 0xfff)),
+      Int(4_096 - (destinationAddress & 0xfff))
+    )
+    let elementCount = byteCount / elementByteCount
+    guard elementCount > 0 else { return nil }
+
+    var physicalExclusions: [Range<UInt64>] = []
+    for exclusion in excludingDestinationRanges where !exclusion.isEmpty {
+      var cursor = exclusion.lowerBound
+      while cursor < exclusion.upperBound {
+        let pageRemaining = UInt64(4_096) - (cursor & 0xfff)
+        let remaining = exclusion.upperBound - cursor
+        let count = min(pageRemaining, remaining)
+        let translated = try pagingUnit.translate(
+          linearAddress: cursor,
+          access: .instructionFetch,
+          context: context,
+          physicalMemory: physicalMemory
+        )
+        let (end, overflow) = translated.physicalAddress.addingReportingOverflow(count)
+        guard !overflow else { return nil }
+        physicalExclusions.append(translated.physicalAddress..<end)
+        cursor += count
+      }
+    }
+    return try physicalMemory.copyForwardNonoverlappingElements(
+      from: source.physicalAddress,
+      to: destination.physicalAddress,
+      elementByteCount: elementByteCount,
+      maximumElementCount: elementCount,
+      excludingDestinationRanges: physicalExclusions
+    )
+  }
+
   public func fillRepeating(
     at destinationAddress: UInt64,
     pattern: [UInt8],

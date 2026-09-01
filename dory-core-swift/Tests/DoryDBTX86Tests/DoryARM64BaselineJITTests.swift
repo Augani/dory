@@ -1488,6 +1488,237 @@ import Testing
       #expect(baselineState == optimizingState)
     #endif
   }
+  @Test func qwordCopyLoopUsesTheBoundedQuantumWithExactArchitecturalProgress() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x1000
+      let source: UInt64 = 0x3000
+      let destination: UInt64 = 0x5000
+      let loop: [UInt8] = [
+        0x48, 0x8b, 0x0c, 0x06, 0x48, 0x89, 0x0c, 0x07,
+        0x48, 0x83, 0xc0, 0x08, 0x48, 0x89, 0xd1, 0x48,
+        0x29, 0xc1, 0x48, 0x83, 0xf9, 0x07, 0x77, 0xe8,
+      ]
+      let payload = (0..<128).map(UInt8.init)
+      let memory = DoryX86ByteArrayMemory(byteCount: 0x8000)
+      try memory.write(at: base, bytes: loop)
+      try memory.write(at: source, bytes: payload)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0, rcx: 0xffff, rdx: 128, rsi: source, rdi: destination),
+        rip: base,
+        rflags: [.reservedOne, .carry, .zero, .interruptEnable, .identification]
+      )
+
+      let summary = try #require(
+        executor.executeChainedSummary(
+          byteProvider: { address, count in
+            try memory.instructionBytes(at: address, maximumCount: count)
+          },
+          at: base,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 64,
+          state: &state,
+          memory: memory
+        ))
+
+      #expect(summary.guestInstructionCount == 63)
+      #expect(summary.residentBlockCount == 18)
+      #expect(summary.exitCode == .dispatch)
+      #expect(state.registers.rax == 72)
+      #expect(state.registers.rcx == 56)
+      #expect(state.registers.rdx == 128)
+      #expect(state.registers.rsi == source)
+      #expect(state.registers.rdi == destination)
+      #expect(state.rip == base)
+      #expect(state.rflags == [.reservedOne, .interruptEnable, .identification])
+      #expect(try memory.read(at: destination, byteCount: 72) == Array(payload.prefix(72)))
+      #expect(
+        try memory.read(at: destination + 72, byteCount: 8)
+          == [UInt8](repeating: 0, count: 8))
+      #expect(executor.diagnostics.chainedRequestedInstructions == 64)
+      #expect(executor.diagnostics.chainedRetiredInstructions == 63)
+    #endif
+  }
+
+  @Test func qwordCopyLoopFallsThroughWithExactFinalCompareFlags() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x1800
+      let source: UInt64 = 0x3000
+      let destination: UInt64 = 0x4000
+      let loop: [UInt8] = [
+        0x48, 0x8b, 0x0c, 0x06, 0x48, 0x89, 0x0c, 0x07,
+        0x48, 0x83, 0xc0, 0x08, 0x48, 0x89, 0xd1, 0x48,
+        0x29, 0xc1, 0x48, 0x83, 0xf9, 0x07, 0x77, 0xe8,
+      ]
+      let memory = DoryX86ByteArrayMemory(byteCount: 0x8000)
+      try memory.write(at: base, bytes: loop)
+      try memory.write(at: source, bytes: Array(0..<24))
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0, rdx: 24, rsi: source, rdi: destination),
+        rip: base,
+        rflags: [.reservedOne, .overflow, .zero, .interruptEnable]
+      )
+
+      let summary = try #require(
+        executor.executeChainedSummary(
+          byteProvider: { address, count in
+            try memory.instructionBytes(at: address, maximumCount: count)
+          },
+          at: base,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 64,
+          state: &state,
+          memory: memory
+        ))
+
+      #expect(summary.guestInstructionCount == 21)
+      #expect(state.registers.rax == 24)
+      #expect(state.registers.rcx == 0)
+      #expect(state.rip == base + UInt64(loop.count))
+      #expect(
+        state.rflags == [
+          .reservedOne, .carry, .parity, .auxiliaryCarry, .sign, .interruptEnable,
+        ])
+      #expect(try memory.read(at: destination, byteCount: 24) == Array(0..<24))
+    #endif
+  }
+
+  @Test func qwordCopyLoopDoesNotBulkCopyBelowOneIterationBudget() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x2000
+      let source: UInt64 = 0x3000
+      let destination: UInt64 = 0x4000
+      let loop: [UInt8] = [
+        0x48, 0x8b, 0x0c, 0x06, 0x48, 0x89, 0x0c, 0x07,
+        0x48, 0x83, 0xc0, 0x08, 0x48, 0x89, 0xd1, 0x48,
+        0x29, 0xc1, 0x48, 0x83, 0xf9, 0x07, 0x77, 0xe8,
+      ]
+      let memory = DoryX86ByteArrayMemory(byteCount: 0x8000)
+      try memory.write(at: base, bytes: loop)
+      try memory.write(at: source, bytes: Array(0..<32))
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0, rdx: 32, rsi: source, rdi: destination), rip: base)
+
+      let summary = try #require(
+        executor.executeChainedSummary(
+          byteProvider: { address, count in
+            try memory.instructionBytes(at: address, maximumCount: count)
+          },
+          at: base,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 6,
+          state: &state,
+          memory: memory
+        ))
+
+      #expect(summary.guestInstructionCount == 6)
+      #expect(state.registers.rax == 8)
+      #expect(state.rip == base + 22)
+      #expect(try memory.read(at: destination, byteCount: 8) == Array(0..<8))
+      #expect(
+        try memory.read(at: destination + 8, byteCount: 8)
+          == [UInt8](repeating: 0, count: 8))
+    #endif
+  }
+
+  @Test func qwordCopyLoopBulkFaultFallsBackWithStateAndMemoryRestartable() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x2000
+      let source: UInt64 = 0x3000
+      let destination: UInt64 = 0x4000
+      let loop: [UInt8] = [
+        0x48, 0x8b, 0x0c, 0x06, 0x48, 0x89, 0x0c, 0x07,
+        0x48, 0x83, 0xc0, 0x08, 0x48, 0x89, 0xd1, 0x48,
+        0x29, 0xc1, 0x48, 0x83, 0xf9, 0x07, 0x77, 0xe8,
+      ]
+      let memory = FaultingBulkMemory(byteCount: 0x8000, faultingReadAddress: source)
+      try memory.backing.write(at: base, bytes: loop)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0, rcx: 0x55, rdx: 32, rsi: source, rdi: destination),
+        rip: base,
+        rflags: [.reservedOne, .carry, .interruptEnable]
+      )
+      var state = initial
+      let summary = try executor.executeChainedSummary(
+        byteProvider: { address, count in
+          try memory.instructionBytes(at: address, maximumCount: count)
+        },
+        at: base,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 64,
+        state: &state,
+        memory: memory
+      )
+
+      #expect(summary == nil)
+      #expect(memory.bulkCopyAttempts == 1)
+      #expect(state == initial)
+      #expect(
+        try memory.backing.read(at: destination, byteCount: 32)
+          == [UInt8](repeating: 0, count: 32))
+    #endif
+  }
+}
+
+private final class FaultingBulkMemory: DoryX86BulkMemory, @unchecked Sendable {
+  let backing: DoryX86ByteArrayMemory
+  let faultingReadAddress: UInt64
+  private(set) var bulkCopyAttempts = 0
+
+  init(byteCount: Int, faultingReadAddress: UInt64) {
+    backing = DoryX86ByteArrayMemory(byteCount: byteCount)
+    self.faultingReadAddress = faultingReadAddress
+  }
+
+  func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    try backing.instructionBytes(at: address, maximumCount: maximumCount)
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    if address == faultingReadAddress {
+      throw DoryX86MemoryError.unmapped(address: address, byteCount: byteCount, access: .read)
+    }
+    return try backing.read(at: address, byteCount: byteCount)
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    try backing.write(at: address, bytes: bytes)
+  }
+
+  func bulkCopyRAMSpan(at address: UInt64, maximumByteCount: Int) -> Int? {
+    backing.bulkCopyRAMSpan(at: address, maximumByteCount: maximumByteCount)
+  }
+
+  func copyForwardNonoverlapping(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    maximumByteCount: Int
+  ) throws -> Int? {
+    throw DoryX86MemoryError.unmapped(
+      address: sourceAddress, byteCount: maximumByteCount, access: .read)
+  }
+
+  func copyForwardNonoverlappingElements(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    elementByteCount: Int,
+    maximumElementCount: Int,
+    excludingDestinationRanges: [Range<UInt64>]
+  ) throws -> Int? {
+    bulkCopyAttempts += 1
+    throw DoryX86MemoryError.unmapped(
+      address: sourceAddress,
+      byteCount: elementByteCount * maximumElementCount,
+      access: .read
+    )
+  }
 }
 
 private final class ScalarTrackingMemory: DoryX86ScalarMemory, @unchecked Sendable {

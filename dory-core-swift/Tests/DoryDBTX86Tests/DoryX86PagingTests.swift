@@ -347,6 +347,74 @@ import Testing
     #expect(translated.physicalAddress == 0x8123)
   }
 
+  @Test func elementBulkCopyStopsBeforeAPageBoundaryWithoutPartialQwords() throws {
+    let memory = DoryX86ByteArrayMemory(byteCount: 0x20_000)
+    let source: UInt64 = 0x0040_0000
+    let destination: UInt64 = 0x0050_0000
+    try installFourLevelMapping(
+      linear: source, physicalPage: 0x8000, flags: 0x7, memory: memory)
+    try installFourLevelMapping(
+      linear: destination, physicalPage: 0x9000, flags: 0x7, memory: memory)
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: memory,
+      pagingUnit: DoryX86PagingUnit(),
+      context: longModeContext(cpl: 3)
+    )
+    let payload = (0..<32).map(UInt8.init)
+    try memory.write(at: 0x8ff0, bytes: payload)
+
+    #expect(
+      try translated.copyForwardNonoverlappingElements(
+        from: source + 0xff0,
+        to: destination + 0xff0,
+        elementByteCount: 8,
+        maximumElementCount: 4,
+        excludingDestinationRanges: []
+      ) == 2)
+    #expect(try memory.read(at: 0x9ff0, byteCount: 16) == Array(payload.prefix(16)))
+
+    let before = try memory.read(at: 0x9000, byteCount: 16)
+    #expect(
+      try translated.copyForwardNonoverlappingElements(
+        from: source + 0xff9,
+        to: destination,
+        elementByteCount: 8,
+        maximumElementCount: 1,
+        excludingDestinationRanges: []
+      ) == nil)
+    #expect(try memory.read(at: 0x9000, byteCount: 16) == before)
+  }
+
+  @Test func elementBulkCopyRejectsPhysicalCodeAliasesBeforeMutation() throws {
+    let memory = DoryX86ByteArrayMemory(byteCount: 0x20_000)
+    let source: UInt64 = 0x0040_0000
+    let destination: UInt64 = 0x0050_0000
+    let codeAlias: UInt64 = 0x0060_0000
+    try installFourLevelMapping(
+      linear: source, physicalPage: 0x8000, flags: 0x7, memory: memory)
+    try installFourLevelMapping(
+      linear: destination, physicalPage: 0x9000, flags: 0x7, memory: memory)
+    try installFourLevelMapping(
+      linear: codeAlias, physicalPage: 0x9000, flags: 0x7, memory: memory)
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: memory,
+      pagingUnit: DoryX86PagingUnit(),
+      context: longModeContext(cpl: 3)
+    )
+    try memory.write(at: 0x8100, bytes: Array(0..<24))
+    let before = try memory.read(at: 0x9100, byteCount: 24)
+
+    #expect(
+      try translated.copyForwardNonoverlappingElements(
+        from: source + 0x100,
+        to: destination + 0x100,
+        elementByteCount: 8,
+        maximumElementCount: 3,
+        excludingDestinationRanges: [(codeAlias + 0x100)..<(codeAlias + 0x118)]
+      ) == nil)
+    #expect(try memory.read(at: 0x9100, byteCount: 24) == before)
+  }
+
   private func longModeContext(cpl: UInt8) -> DoryX86PagingContext {
     .init(control: longModeControl(), rflags: .reset, currentPrivilegeLevel: cpl, mode: .long64)
   }

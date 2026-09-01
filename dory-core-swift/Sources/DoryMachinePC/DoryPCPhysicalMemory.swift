@@ -498,6 +498,57 @@ extension DoryPCPhysicalMemoryBus: DoryX86BulkMemory {
     )
   }
 
+  public func copyForwardNonoverlappingElements(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    elementByteCount: Int,
+    maximumElementCount: Int,
+    excludingDestinationRanges: [Range<UInt64>]
+  ) throws -> Int? {
+    guard elementByteCount > 0, maximumElementCount > 0,
+      maximumElementCount <= Int.max / elementByteCount
+    else { return maximumElementCount == 0 ? 0 : nil }
+    let maximumByteCount = maximumElementCount * elementByteCount
+    guard
+      let sourceSpan = bulkCopyRAMSpan(
+        at: sourceAddress, maximumByteCount: maximumByteCount),
+      let destinationSpan = bulkCopyRAMSpan(
+        at: destinationAddress, maximumByteCount: maximumByteCount)
+    else { return nil }
+    let elementCount = min(sourceSpan, destinationSpan, maximumByteCount) / elementByteCount
+    guard elementCount > 0 else { return nil }
+    let byteCount = elementCount * elementByteCount
+    guard
+      let source = try? resolveRAM(address: sourceAddress, byteCount: byteCount, access: .read),
+      let destination = try? resolveRAM(
+        address: destinationAddress,
+        byteCount: byteCount,
+        access: .write
+      )
+    else { return nil }
+    var backingExclusions: [Range<UInt64>] = []
+    for exclusion in excludingDestinationRanges where !exclusion.isEmpty {
+      let count = exclusion.upperBound - exclusion.lowerBound
+      guard count <= UInt64(Int.max),
+        let resolved = try? resolveRAM(
+          address: exclusion.lowerBound,
+          byteCount: Int(count),
+          access: .read
+        )
+      else { return nil }
+      let (end, overflow) = resolved.backingAddress.addingReportingOverflow(count)
+      guard !overflow else { return nil }
+      backingExclusions.append(resolved.backingAddress..<end)
+    }
+    return try ram.copyForwardNonoverlappingElements(
+      from: source.backingAddress,
+      to: destination.backingAddress,
+      elementByteCount: elementByteCount,
+      maximumElementCount: elementCount,
+      excludingDestinationRanges: backingExclusions
+    )
+  }
+
   public func fillRepeating(
     at destinationAddress: UInt64,
     pattern: [UInt8],
