@@ -662,6 +662,9 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         allowsExperimental: Bool
     ) -> DoryVirtualMachineBackendPlanRequest {
         let preferences: [DoryVirtualizationBackendIdentity]? = switch definition.platform?.executionEngine {
+        case .nativeARM64?
+            where media.kind == .installerISO || media.kind == .virtualDisk:
+            [.appleVirtualizationFramework]
         case .nativeARM64?: [.doryHypervisor]
         case .vzMac?: [.appleVirtualizationFramework]
         case .x86ToARM64?: [.doryHypervisor]
