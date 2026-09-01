@@ -187,19 +187,38 @@ public enum DoryPCUEFITierQualifier {
       throw DoryPCUEFITierQualificationError.invalidReceipt(expectedTier, "serialMarker")
     }
     guard receipt.completedInstructions > 0,
+      receipt.completedInstructions <= receipt.maximumInstructions,
       receipt.stop == "poweredOff(instructionCount: \(receipt.completedInstructions))"
     else {
       throw DoryPCUEFITierQualificationError.invalidReceipt(expectedTier, "stop")
     }
-    guard isSHA256(receipt.architecturalStateSHA256) else {
-      throw DoryPCUEFITierQualificationError.invalidReceipt(
-        expectedTier, "architecturalStateSHA256")
+    guard receipt.exceptionPolicy == "deliver" else {
+      throw DoryPCUEFITierQualificationError.invalidReceipt(expectedTier, "exceptionPolicy")
     }
-    let retired =
-      receipt.interpreterInstructions
-      &+ receipt.baselineJITInstructions
-      &+ receipt.optimizingJITInstructions
-    guard retired == receipt.completedInstructions else {
+    guard receipt.initialRTCUnixSeconds == 0 else {
+      throw DoryPCUEFITierQualificationError.invalidReceipt(expectedTier, "initialRTCUnixSeconds")
+    }
+    guard receipt.persistentSystemDisk == "in-memory", receipt.installerMedia == "none",
+      receipt.bootOrder == ["system-disk"]
+    else {
+      throw DoryPCUEFITierQualificationError.invalidReceipt(expectedTier, "bootMedia")
+    }
+    guard
+      [
+        receipt.architecturalStateSHA256,
+        receipt.firmwareCodeSHA256,
+        receipt.sbomSHA256,
+        receipt.variableStoreTemplateSHA256,
+        receipt.runnerSHA256,
+      ].allSatisfy(isSHA256)
+    else {
+      throw DoryPCUEFITierQualificationError.invalidReceipt(expectedTier, "SHA256")
+    }
+    let (interpreterAndBaseline, firstOverflow) = receipt.interpreterInstructions
+      .addingReportingOverflow(receipt.baselineJITInstructions)
+    let (retired, secondOverflow) = interpreterAndBaseline.addingReportingOverflow(
+      receipt.optimizingJITInstructions)
+    guard !firstOverflow, !secondOverflow, retired == receipt.completedInstructions else {
       throw DoryPCUEFITierQualificationError.invalidReceipt(expectedTier, "instructionAccounting")
     }
     switch expectedTier {
@@ -225,7 +244,8 @@ public enum DoryPCUEFITierQualifier {
   }
 
   private static func isSHA256(_ value: String) -> Bool {
-    value.count == 64 && value.allSatisfy { $0.isNumber || ("a"..."f").contains(String($0)) }
+    value.utf8.count == 64
+      && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
   }
 
   private static func sha256(_ data: Data) -> String {

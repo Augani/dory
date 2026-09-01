@@ -52,6 +52,35 @@ struct DoryPCUEFITierQualificationTests {
     }
   }
 
+  @Test("rejects non-ASCII and overflowing instruction evidence")
+  func rejectsMalformedEvidence() throws {
+    var data = Dictionary(
+      uniqueKeysWithValues: DoryPCQualificationTier.allCases.map { tier in
+        (tier, receipt(tier: tier))
+      })
+    data[.interpreter] = receipt(
+      tier: .interpreter,
+      stateSHA256: String(repeating: "١", count: 64)
+    )
+    #expect(
+      throws: DoryPCUEFITierQualificationError.invalidReceipt(.interpreter, "SHA256")
+    ) {
+      try DoryPCUEFITierQualifier.qualify(receiptData: data)
+    }
+
+    data[.interpreter] = receipt(
+      tier: .interpreter,
+      interpreterInstructions: .max,
+      baselineJITInstructions: 13
+    )
+    #expect(
+      throws: DoryPCUEFITierQualificationError.invalidReceipt(
+        .interpreter, "instructionAccounting")
+    ) {
+      try DoryPCUEFITierQualifier.qualify(receiptData: data)
+    }
+  }
+
   private func receipt(
     tier: DoryPCQualificationTier,
     stateSHA256: String = String(repeating: "a", count: 64),
