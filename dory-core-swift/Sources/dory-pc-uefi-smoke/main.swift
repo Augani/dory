@@ -289,6 +289,51 @@ private func blockDeviceDiagnostics(
   }
 }
 
+private func displayDeviceDiagnostics(
+  _ device: DoryPCVirtioGPUPCIDevice,
+  memory: any DoryX86Memory
+) -> [String: Any] {
+  let state = device.transport.deviceState.snapshot()
+  let bar = try? device.configurationFunction.bar(at: 0)
+  let queues: [[String: Any]] = (0..<device.transport.queueCount).map { index in
+    let queueNumber = UInt16(index)
+    let registers = try? device.transport.queueSnapshot(at: queueNumber)
+    let queue = try? device.transport.queue(at: queueNumber).snapshot()
+    return [
+      "index": index,
+      "enabled": registers?.enabled ?? false,
+      "size": registers?.size ?? 0,
+      "descriptorAddress": registers.map { hexadecimal($0.descriptorAddress) } ?? "unavailable",
+      "driverAddress": registers.map { hexadecimal($0.driverAddress) } ?? "unavailable",
+      "deviceAddress": registers.map { hexadecimal($0.deviceAddress) } ?? "unavailable",
+      "guestAvailableIndex": registers.flatMap {
+        queueIndex(memory: memory, address: $0.driverAddress &+ 2)
+      } ?? "unavailable",
+      "guestUsedIndex": registers.flatMap {
+        queueIndex(memory: memory, address: $0.deviceAddress &+ 2)
+      } ?? "unavailable",
+      "availableIndex": queue?.lastAvailableIndex ?? 0,
+      "usedIndex": queue?.lastUsedIndex ?? 0,
+      "outstandingHeads": queue?.outstandingHeads.count ?? 0,
+    ]
+  }
+  return [
+    "pciAddress": String(
+      format: "%04x:%02x:%02x.%x",
+      device.pciAddress.segment,
+      device.pciAddress.bus,
+      device.pciAddress.device,
+      device.pciAddress.function
+    ),
+    "pciCommand": device.configurationFunction.command,
+    "bar0": bar.map { hexadecimal($0.address) } ?? "unavailable",
+    "offeredFeatures": state.offeredFeatures.rawValue,
+    "negotiatedFeatures": state.negotiatedFeatures.rawValue,
+    "status": state.status.rawValue,
+    "queues": queues,
+  ]
+}
+
 private func queueIndex(memory: any DoryX86Memory, address: UInt64) -> String? {
   guard address > 2, let bytes = try? memory.read(at: address, byteCount: 2) else { return nil }
   let value = UInt16(bytes[0]) | UInt16(bytes[1]) << 8
@@ -528,6 +573,10 @@ private func run() throws {
     composed.blockDevices,
     memory: composed.machine.physicalMemory
   )
+  let displayDevice = displayDeviceDiagnostics(
+    composed.displayDevice,
+    memory: composed.machine.physicalMemory
+  )
   let display = displaySink.snapshot()
   let lastDisplayFrame: Any = display.lastFrame.map { frame in
     [
@@ -605,6 +654,7 @@ private func run() throws {
     "bootProbe": arguments.bootProbe,
     "serialDroppedBytes": serialDrops.transmitted,
     "blockDevices": blockDevices,
+    "displayDevice": displayDevice,
     "displayFrameCount": display.frameCount,
     "lastDisplayFrame": lastDisplayFrame,
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
