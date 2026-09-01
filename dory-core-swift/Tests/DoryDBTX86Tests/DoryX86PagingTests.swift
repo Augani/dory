@@ -17,62 +17,6 @@ import Testing
     }
   }
 
-  @Test func nativeJITReadTLBCachesOrdinaryRAMAndHonorsInvalidation() throws {
-    #if arch(arm64)
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
-      let linear: UInt64 = 0x0040_0000
-      try installFourLevelMapping(
-        linear: linear,
-        physicalPage: 0x8000,
-        flags: 0x7,
-        memory: memory
-      )
-      try memory.writeScalar(at: 0x8000, value: 0x1122_3344_5566_7788, byteCount: 8)
-      try memory.writeScalar(at: 0x9000, value: 0x8877_6655_4433_2211, byteCount: 8)
-      let paging = DoryX86PagingUnit()
-      let translated = DoryX86TranslatedMemory(
-        physicalMemory: memory,
-        pagingUnit: paging,
-        context: longModeContext(cpl: 3)
-      )
-      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
-
-      func executeLoad() throws -> UInt64 {
-        var state = try DoryX86ArchitecturalState(
-          registers: .init(rax: linear),
-          rip: 0x5000
-        )
-        _ = try #require(
-          executor.execute(
-            bytes: [0x48, 0x8B, 0x18],
-            at: state.rip,
-            mode: .long64,
-            addressSpaceID: 0x1000,
-            maximumInstructions: 1,
-            state: &state,
-            memory: translated
-          )
-        )
-        return state.registers.rbx
-      }
-
-      #expect(try executeLoad() == 0x1122_3344_5566_7788)
-      let afterMiss = paging.nativeReadTLBMetrics
-      #expect(afterMiss.misses == 1)
-      #expect(afterMiss.slowPaths == 1)
-
-      #expect(try executeLoad() == 0x1122_3344_5566_7788)
-      #expect(paging.nativeReadTLBMetrics.hits == 1)
-
-      try write64(memory, 0x4000, 0x9000 | 0x7)
-      paging.invalidate(linearAddress: linear)
-      #expect(try executeLoad() == 0x8877_6655_4433_2211)
-      let afterInvalidation = paging.nativeReadTLBMetrics
-      #expect(afterInvalidation.misses == 2)
-      #expect(afterInvalidation.slowPaths == 2)
-    #endif
-  }
-
   @Test func memoryAccessKindsKeepStableWireValuesWithDistinctHotPathHashes() throws {
     let kinds: [DoryX86MemoryAccessKind] = [.instructionFetch, .read, .write]
     #expect(Set(kinds).count == 3)

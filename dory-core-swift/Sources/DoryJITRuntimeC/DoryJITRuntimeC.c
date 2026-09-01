@@ -13,31 +13,6 @@
 #if defined(__aarch64__)
 
 enum { dory_jit_region_magic = 0x444f5259 };
-enum {
-    dory_jit_read_tlb_magic = 0x44544c42,
-    dory_jit_read_tlb_page_shift = 12,
-    dory_jit_read_tlb_entry_count = 1024,
-};
-
-struct dory_jit_read_tlb_entry {
-    uint64_t linear_page;
-    const uint8_t *host_page;
-};
-
-struct dory_jit_read_tlb {
-    uint32_t magic;
-    struct dory_jit_read_tlb_entry entries[dory_jit_read_tlb_entry_count];
-    uint64_t hit_count;
-    uint64_t miss_count;
-    uint64_t slow_path_count;
-};
-
-struct dory_jit_memory_context {
-    dory_jit_read_tlb *read_tlb;
-    void *slow_context;
-    dory_jit_memory_read_function slow_read;
-    dory_jit_memory_write_function slow_write;
-};
 
 struct dory_jit_region {
     uint32_t magic;
@@ -56,131 +31,6 @@ struct dory_jit_publication {
     size_t byte_count;
     uint64_t generation;
 };
-
-static size_t dory_jit_read_tlb_index(uint64_t linear_page) {
-    uint64_t value = linear_page;
-    value ^= value >> 17;
-    value ^= value >> 31;
-    return (size_t)(value & (dory_jit_read_tlb_entry_count - 1));
-}
-
-int dory_jit_read_tlb_create(dory_jit_read_tlb **tlb_out) {
-    if (tlb_out == NULL) {
-        return EINVAL;
-    }
-    *tlb_out = NULL;
-    dory_jit_read_tlb *tlb = calloc(1, sizeof(*tlb));
-    if (tlb == NULL) {
-        return ENOMEM;
-    }
-    tlb->magic = dory_jit_read_tlb_magic;
-    *tlb_out = tlb;
-    return 0;
-}
-
-void dory_jit_read_tlb_destroy(dory_jit_read_tlb *tlb) {
-    if (tlb == NULL || tlb->magic != dory_jit_read_tlb_magic) {
-        return;
-    }
-    tlb->magic = 0;
-    free(tlb);
-}
-
-void dory_jit_read_tlb_invalidate_all(dory_jit_read_tlb *tlb) {
-    if (tlb == NULL || tlb->magic != dory_jit_read_tlb_magic) {
-        return;
-    }
-    memset(tlb->entries, 0, sizeof(tlb->entries));
-}
-
-void dory_jit_read_tlb_invalidate(dory_jit_read_tlb *tlb, uint64_t linear_address) {
-    if (tlb == NULL || tlb->magic != dory_jit_read_tlb_magic) {
-        return;
-    }
-    const uint64_t linear_page = linear_address >> dory_jit_read_tlb_page_shift;
-    struct dory_jit_read_tlb_entry *entry =
-        &tlb->entries[dory_jit_read_tlb_index(linear_page)];
-    if (entry->host_page != NULL && entry->linear_page == linear_page) {
-        memset(entry, 0, sizeof(*entry));
-    }
-}
-
-int dory_jit_read_tlb_install(
-    dory_jit_read_tlb *tlb,
-    uint64_t linear_address,
-    const void *host_page
-) {
-    if (tlb == NULL || tlb->magic != dory_jit_read_tlb_magic || host_page == NULL ||
-        (linear_address & ((1u << dory_jit_read_tlb_page_shift) - 1)) != 0) {
-        return EINVAL;
-    }
-    const uint64_t linear_page = linear_address >> dory_jit_read_tlb_page_shift;
-    struct dory_jit_read_tlb_entry *entry =
-        &tlb->entries[dory_jit_read_tlb_index(linear_page)];
-    entry->linear_page = linear_page;
-    entry->host_page = host_page;
-    return 0;
-}
-
-void dory_jit_read_tlb_get_metrics(
-    const dory_jit_read_tlb *tlb,
-    dory_jit_read_tlb_metrics *metrics_out
-) {
-    if (metrics_out == NULL) {
-        return;
-    }
-    memset(metrics_out, 0, sizeof(*metrics_out));
-    if (tlb == NULL || tlb->magic != dory_jit_read_tlb_magic) {
-        return;
-    }
-    metrics_out->hit_count = tlb->hit_count;
-    metrics_out->miss_count = tlb->miss_count;
-    metrics_out->slow_path_count = tlb->slow_path_count;
-}
-
-static uint64_t dory_jit_memory_read_with_tlb(
-    void *opaque_context,
-    uint64_t address,
-    uint32_t byte_count
-) {
-    struct dory_jit_memory_context *context = opaque_context;
-    if (context == NULL || context->read_tlb == NULL ||
-        context->read_tlb->magic != dory_jit_read_tlb_magic) {
-        return 0;
-    }
-    dory_jit_read_tlb *tlb = context->read_tlb;
-    const uint64_t page_offset = address & ((1u << dory_jit_read_tlb_page_shift) - 1);
-    if ((byte_count == 1 || byte_count == 2 || byte_count == 4 || byte_count == 8) &&
-        page_offset <= (1u << dory_jit_read_tlb_page_shift) - byte_count) {
-        const uint64_t linear_page = address >> dory_jit_read_tlb_page_shift;
-        const struct dory_jit_read_tlb_entry *entry =
-            &tlb->entries[dory_jit_read_tlb_index(linear_page)];
-        if (entry->host_page != NULL && entry->linear_page == linear_page) {
-            uint64_t value = 0;
-            memcpy(&value, entry->host_page + page_offset, byte_count);
-            tlb->hit_count++;
-            return value;
-        }
-    }
-    tlb->miss_count++;
-    if (context->slow_read == NULL) {
-        return 0;
-    }
-    tlb->slow_path_count++;
-    return context->slow_read(context->slow_context, address, byte_count);
-}
-
-static void dory_jit_memory_write_slow(
-    void *opaque_context,
-    uint64_t address,
-    uint64_t value,
-    uint32_t byte_count
-) {
-    struct dory_jit_memory_context *context = opaque_context;
-    if (context != NULL && context->slow_write != NULL) {
-        context->slow_write(context->slow_context, address, value, byte_count);
-    }
-}
 
 static int dory_publish_code(void *opaque_context) {
     struct dory_jit_publication *context = opaque_context;
@@ -355,36 +205,6 @@ int dory_jit_region_execute(
     return 0;
 }
 
-int dory_jit_region_execute_with_read_tlb(
-    const dory_jit_region *region,
-    size_t offset,
-    uint64_t *context,
-    dory_jit_read_tlb *read_tlb,
-    void *slow_memory_context,
-    dory_jit_memory_read_function slow_memory_read,
-    dory_jit_memory_write_function slow_memory_write,
-    uint32_t *exit_code_out
-) {
-    if (read_tlb == NULL || read_tlb->magic != dory_jit_read_tlb_magic) {
-        return EINVAL;
-    }
-    struct dory_jit_memory_context memory_context = {
-        .read_tlb = read_tlb,
-        .slow_context = slow_memory_context,
-        .slow_read = slow_memory_read,
-        .slow_write = slow_memory_write,
-    };
-    return dory_jit_region_execute(
-        region,
-        offset,
-        context,
-        &memory_context,
-        dory_jit_memory_read_with_tlb,
-        dory_jit_memory_write_slow,
-        exit_code_out
-    );
-}
-
 int dory_jit_region_execute_batch(
     const dory_jit_region *region,
     const size_t *offsets,
@@ -442,39 +262,6 @@ int dory_jit_region_execute_batch(
 #else
 
 struct dory_jit_region {};
-struct dory_jit_read_tlb {};
-
-int dory_jit_read_tlb_create(dory_jit_read_tlb **tlb_out) {
-    if (tlb_out != NULL) {
-        *tlb_out = NULL;
-    }
-    return ENOTSUP;
-}
-void dory_jit_read_tlb_destroy(dory_jit_read_tlb *tlb) { (void)tlb; }
-void dory_jit_read_tlb_invalidate_all(dory_jit_read_tlb *tlb) { (void)tlb; }
-void dory_jit_read_tlb_invalidate(dory_jit_read_tlb *tlb, uint64_t linear_address) {
-    (void)tlb;
-    (void)linear_address;
-}
-int dory_jit_read_tlb_install(
-    dory_jit_read_tlb *tlb,
-    uint64_t linear_address,
-    const void *host_page
-) {
-    (void)tlb;
-    (void)linear_address;
-    (void)host_page;
-    return ENOTSUP;
-}
-void dory_jit_read_tlb_get_metrics(
-    const dory_jit_read_tlb *tlb,
-    dory_jit_read_tlb_metrics *metrics_out
-) {
-    (void)tlb;
-    if (metrics_out != NULL) {
-        memset(metrics_out, 0, sizeof(*metrics_out));
-    }
-}
 
 int dory_jit_region_create(size_t minimum_capacity, dory_jit_region **region_out) {
     (void)minimum_capacity;
@@ -521,26 +308,6 @@ int dory_jit_region_execute(
     (void)memory_context;
     (void)memory_read;
     (void)memory_write;
-    (void)exit_code_out;
-    return ENOTSUP;
-}
-int dory_jit_region_execute_with_read_tlb(
-    const dory_jit_region *region,
-    size_t offset,
-    uint64_t *context,
-    dory_jit_read_tlb *read_tlb,
-    void *slow_memory_context,
-    dory_jit_memory_read_function slow_memory_read,
-    dory_jit_memory_write_function slow_memory_write,
-    uint32_t *exit_code_out
-) {
-    (void)region;
-    (void)offset;
-    (void)context;
-    (void)read_tlb;
-    (void)slow_memory_context;
-    (void)slow_memory_read;
-    (void)slow_memory_write;
     (void)exit_code_out;
     return ENOTSUP;
 }

@@ -796,10 +796,7 @@ enum DoryPCMode {
                         Self.log(
                             "execution progress interpreter=\(statistics.interpreterInstructions) "
                                 + "baseline=\(statistics.baselineJITInstructions) "
-                                + "optimizing=\(statistics.optimizingJITInstructions) "
-                                + "native-read-tlb-hits=\(statistics.nativeReadTLBHits) "
-                                + "native-read-tlb-misses=\(statistics.nativeReadTLBMisses) "
-                                + "native-read-slow-paths=\(statistics.nativeReadSlowPaths)"
+                                + "optimizing=\(statistics.optimizingJITInstructions)"
                         )
                         nextProgressLogNanoseconds = now &+ progressLogIntervalNanoseconds
                     }

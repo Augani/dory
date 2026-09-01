@@ -1474,28 +1474,15 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
         requiresRestartableReads: requiresRestartableReads
       )
       result = withUnsafeMutablePointer(to: &memoryContext) { memoryContext in
-        if let nativeReadTLB = (memory as? any DoryX86NativeReadTLBMemory)?.nativeReadTLBHandle {
-          dory_jit_region_execute_with_read_tlb(
-            region,
-            offset,
-            context.baseAddress,
-            nativeReadTLB,
-            UnsafeMutableRawPointer(memoryContext),
-            doryJITMemoryRead,
-            doryJITMemoryWrite,
-            &rawExit
-          )
-        } else {
-          dory_jit_region_execute(
-            region,
-            offset,
-            context.baseAddress,
-            UnsafeMutableRawPointer(memoryContext),
-            doryJITMemoryRead,
-            doryJITMemoryWrite,
-            &rawExit
-          )
-        }
+        dory_jit_region_execute(
+          region,
+          offset,
+          context.baseAddress,
+          UnsafeMutableRawPointer(memoryContext),
+          doryJITMemoryRead,
+          doryJITMemoryWrite,
+          &rawExit
+        )
       }
       memoryFailed = memoryContext.failed
     } else {

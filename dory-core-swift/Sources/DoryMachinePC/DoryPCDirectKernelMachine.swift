@@ -65,28 +65,19 @@ public struct DoryPCExecutionStatistics: Codable, Sendable, Hashable {
   public let baselineJITBlocks: UInt64
   public let optimizingJITInstructions: UInt64
   public let optimizingJITBlocks: UInt64
-  public let nativeReadTLBHits: UInt64
-  public let nativeReadTLBMisses: UInt64
-  public let nativeReadSlowPaths: UInt64
 
   public init(
     interpreterInstructions: UInt64,
     baselineJITInstructions: UInt64,
     baselineJITBlocks: UInt64,
     optimizingJITInstructions: UInt64,
-    optimizingJITBlocks: UInt64,
-    nativeReadTLBHits: UInt64 = 0,
-    nativeReadTLBMisses: UInt64 = 0,
-    nativeReadSlowPaths: UInt64 = 0
+    optimizingJITBlocks: UInt64
   ) {
     self.interpreterInstructions = interpreterInstructions
     self.baselineJITInstructions = baselineJITInstructions
     self.baselineJITBlocks = baselineJITBlocks
     self.optimizingJITInstructions = optimizingJITInstructions
     self.optimizingJITBlocks = optimizingJITBlocks
-    self.nativeReadTLBHits = nativeReadTLBHits
-    self.nativeReadTLBMisses = nativeReadTLBMisses
-    self.nativeReadSlowPaths = nativeReadSlowPaths
   }
 }
 
@@ -678,28 +669,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   }
 
   private func publishExecutionStatistics() {
-    func saturatedAdd(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
-      let result = lhs.addingReportingOverflow(rhs)
-      return result.overflow ? .max : result.partialValue
-    }
-    var nativeReadTLBHits: UInt64 = 0
-    var nativeReadTLBMisses: UInt64 = 0
-    var nativeReadSlowPaths: UInt64 = 0
-    for pagingUnit in pagingUnits {
-      let metrics = pagingUnit.nativeReadTLBMetrics
-      nativeReadTLBHits = saturatedAdd(nativeReadTLBHits, metrics.hits)
-      nativeReadTLBMisses = saturatedAdd(nativeReadTLBMisses, metrics.misses)
-      nativeReadSlowPaths = saturatedAdd(nativeReadSlowPaths, metrics.slowPaths)
-    }
     let snapshot = DoryPCExecutionStatistics(
       interpreterInstructions: interpreterInstructionCount,
       baselineJITInstructions: baselineJITInstructionCount,
       baselineJITBlocks: baselineJITBlockCount,
       optimizingJITInstructions: optimizingJITInstructionCount,
-      optimizingJITBlocks: optimizingJITBlockCount,
-      nativeReadTLBHits: nativeReadTLBHits,
-      nativeReadTLBMisses: nativeReadTLBMisses,
-      nativeReadSlowPaths: nativeReadSlowPaths
+      optimizingJITBlocks: optimizingJITBlockCount
     )
     executionStatisticsLock.withLock { publishedExecutionStatistics = snapshot }
   }

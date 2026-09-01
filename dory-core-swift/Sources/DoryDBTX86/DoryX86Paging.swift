@@ -1,4 +1,3 @@
-import DoryJITRuntimeC
 import Foundation
 
 public struct DoryX86PagingContext: Sendable, Hashable {
@@ -38,25 +37,10 @@ public struct DoryX86Translation: Sendable, Hashable {
   public let executable: Bool
 }
 
-public struct DoryX86NativeReadTLBMetrics: Sendable, Hashable {
-  public let hits: UInt64
-  public let misses: UInt64
-  public let slowPaths: UInt64
-}
-
 /// Architectural x86 paging walker. The TLB is an implementation cache only: its key contains all
 /// guest-visible permission inputs and every invalidation operation removes lookup visibility
 /// synchronously before returning.
 public final class DoryX86PagingUnit: @unchecked Sendable {
-  private struct NativeContextKey: Equatable {
-    let cr0: UInt64
-    let cr3: UInt64
-    let cr4: UInt64
-    let efer: UInt64
-    let cpl: UInt8
-    let alignmentCheck: Bool
-  }
-
   private struct TLBKey: Hashable {
     let linearPage: UInt64
     let cr3: UInt64
@@ -86,8 +70,6 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
   private var entries: [TLBKey: TLBValue] = [:]
   private var recentEntries: [TLBEntry?] = [nil, nil, nil]
   private var generation: UInt64 = 0
-  private let nativeReadTLB: OpaquePointer?
-  private var nativeContextKey: NativeContextKey?
   public let physicalAddressBits: UInt8
   public let maximumEntryCount: Int
 
@@ -96,12 +78,6 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     precondition(maximumEntryCount > 0)
     self.physicalAddressBits = physicalAddressBits
     self.maximumEntryCount = maximumEntryCount
-    var created: OpaquePointer?
-    nativeReadTLB = dory_jit_read_tlb_create(&created) == 0 ? created : nil
-  }
-
-  deinit {
-    if let nativeReadTLB { dory_jit_read_tlb_destroy(nativeReadTLB) }
   }
 
   public func invalidate(linearAddress: UInt64) {
@@ -111,7 +87,6 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     for index in recentEntries.indices where recentEntries[index]?.key.linearPage == linearPage {
       recentEntries[index] = nil
     }
-    if let nativeReadTLB { dory_jit_read_tlb_invalidate(nativeReadTLB, linearAddress) }
     lock.unlock()
   }
 
@@ -120,60 +95,13 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     generation &+= 1
     entries.removeAll(keepingCapacity: true)
     recentEntries = [nil, nil, nil]
-    if let nativeReadTLB { dory_jit_read_tlb_invalidate_all(nativeReadTLB) }
     lock.unlock()
-  }
-
-  fileprivate func prepareNativeReadTLB(context: DoryX86PagingContext) {
-    let key = NativeContextKey(
-      cr0: context.control.cr0,
-      cr3: context.control.cr3,
-      cr4: context.control.cr4,
-      efer: context.control.efer,
-      cpl: context.currentPrivilegeLevel,
-      alignmentCheck: context.rflags.contains(.alignmentCheck)
-    )
-    lock.withLock {
-      guard nativeContextKey != key else { return }
-      nativeContextKey = key
-      if let nativeReadTLB { dory_jit_read_tlb_invalidate_all(nativeReadTLB) }
-    }
-  }
-
-  fileprivate var nativeReadTLBHandle: OpaquePointer? { nativeReadTLB }
-
-  fileprivate func installNativeReadTranslation(
-    linearAddress: UInt64,
-    physicalAddress: UInt64,
-    physicalMemory: any DoryX86Memory
-  ) {
-    guard let nativeReadTLB,
-      let directMemory = physicalMemory as? any DoryX86DirectRAMMemory
-    else { return }
-    let linearPage = linearAddress & ~UInt64(0xfff)
-    let physicalPage = physicalAddress & ~UInt64(0xfff)
-    guard
-      let mapping = directMemory.directRAMMapping(at: physicalPage, byteCount: 4_096),
-      mapping.availableByteCount >= 4_096
-    else { return }
-    _ = dory_jit_read_tlb_install(nativeReadTLB, linearPage, mapping.hostAddress)
   }
 
   public var cachedTranslationCount: Int {
     lock.lock()
     defer { lock.unlock() }
     return entries.count
-  }
-
-  public var nativeReadTLBMetrics: DoryX86NativeReadTLBMetrics {
-    guard let nativeReadTLB else { return .init(hits: 0, misses: 0, slowPaths: 0) }
-    var metrics = dory_jit_read_tlb_metrics()
-    dory_jit_read_tlb_get_metrics(nativeReadTLB, &metrics)
-    return .init(
-      hits: metrics.hit_count,
-      misses: metrics.miss_count,
-      slowPaths: metrics.slow_path_count
-    )
   }
 
   public func translate(
@@ -634,14 +562,12 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
     codeGenerationPhysicalMemory = physicalMemory as? any DoryX86CodeGenerationMemory
     self.pagingUnit = pagingUnit
     self.context = context
-    pagingUnit.prepareNativeReadTLB(context: context)
   }
 
   /// Refreshes the architectural view before a serialized vCPU dispatch. The owning machine must
   /// never mutate this context concurrently with a memory operation.
   public func updateContext(_ context: DoryX86PagingContext) {
     self.context = context
-    pagingUnit.prepareNativeReadTLB(context: context)
   }
 
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
@@ -668,23 +594,15 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
       context: context,
       physicalMemory: physicalMemory
     )
-    let value: UInt64
     if let scalarMemory = scalarPhysicalMemory {
-      value = try scalarMemory.readScalar(
+      return try scalarMemory.readScalar(
         at: translation.physicalAddress, byteCount: byteCount)
-    } else {
-      value = try physicalMemory.read(
-        at: translation.physicalAddress, byteCount: byteCount
-      ).enumerated().reduce(0) {
-        $0 | UInt64($1.element) << UInt64($1.offset * 8)
-      }
     }
-    pagingUnit.installNativeReadTranslation(
-      linearAddress: address,
-      physicalAddress: translation.physicalAddress,
-      physicalMemory: physicalMemory
-    )
-    return value
+    return try physicalMemory.read(
+      at: translation.physicalAddress, byteCount: byteCount
+    ).enumerated().reduce(0) {
+      $0 | UInt64($1.element) << UInt64($1.offset * 8)
+    }
   }
 
   public func write(at address: UInt64, bytes: [UInt8]) throws {
@@ -794,27 +712,11 @@ extension DoryX86TranslatedMemory: DoryX86RestartableScalarMemory {
       context: context,
       physicalMemory: physicalMemory
     )
-    let value = try restartableScalarPhysicalMemory.readRestartableScalar(
+    return try restartableScalarPhysicalMemory.readRestartableScalar(
       at: translation.physicalAddress,
       byteCount: byteCount
     )
-    if value != nil {
-      pagingUnit.installNativeReadTranslation(
-        linearAddress: address,
-        physicalAddress: translation.physicalAddress,
-        physicalMemory: physicalMemory
-      )
-    }
-    return value
   }
-}
-
-protocol DoryX86NativeReadTLBMemory: DoryX86Memory {
-  var nativeReadTLBHandle: OpaquePointer? { get }
-}
-
-extension DoryX86TranslatedMemory: DoryX86NativeReadTLBMemory {
-  var nativeReadTLBHandle: OpaquePointer? { pagingUnit.nativeReadTLBHandle }
 }
 
 extension DoryX86TranslatedMemory: DoryX86CodeGenerationMemory {

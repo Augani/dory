@@ -458,15 +458,6 @@ extension DoryPCPhysicalMemoryBus: DoryX86RestartableScalarMemory {
   }
 }
 
-extension DoryPCPhysicalMemoryBus: DoryX86DirectRAMMemory {
-  public func directRAMMapping(at address: UInt64, byteCount: Int) -> DoryX86DirectRAMMapping? {
-    guard byteCount > 0,
-      let resolved = try? directRAMRoute(address: address, byteCount: byteCount)
-    else { return nil }
-    return ram.directRAMMapping(at: resolved.backingAddress, byteCount: byteCount)
-  }
-}
-
 extension DoryPCPhysicalMemoryBus: DoryX86BulkMemory {
   public func bulkCopyRAMSpan(at address: UInt64, maximumByteCount: Int) -> Int? {
     guard maximumByteCount > 0 else { return 0 }
