@@ -40,6 +40,213 @@ import Testing
     #expect(compiled.machineWords.last == 0xD65F_03C0)
   }
 
+  @Test func generationValidatedNegativeCacheSkipsRepeatedEmitterDeclines() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x0F, 0xA2]  // cpuid lowers to IR the baseline emitter cannot encode.
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var requestedByteCounts: [Int] = []
+      func run() throws -> DoryARM64BaselineExecution? {
+        var state = try DoryX86ArchitecturalState(rip: 0x2000)
+        return try executor.execute(
+          byteProvider: { count in
+            requestedByteCounts.append(count)
+            return Array(bytes.prefix(count))
+          },
+          codeGenerationProvider: { _ in 7 },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 3,
+          maximumInstructions: 1,
+          state: &state
+        )
+      }
+
+      #expect(try run() == nil)
+      #expect(requestedByteCounts == [15, 2])
+      #expect(try run() == nil)
+      #expect(requestedByteCounts == [15, 2])
+      let diagnostics = executor.diagnostics
+      #expect(diagnostics.declinedCompilations == 1)
+      #expect(diagnostics.negativeCacheHits == 1)
+      #expect(diagnostics.negativeCacheMisses == 1)
+      #expect(diagnostics.negativeGenerationMismatches == 0)
+      #expect(diagnostics.negativeEntryCount == 1)
+    #endif
+  }
+
+  @Test func negativeCacheFailsOpenWithoutGenerationAuthority() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x0F, 0xA2]
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var byteFetchCount = 0
+      func run() throws -> DoryARM64BaselineExecution? {
+        var state = try DoryX86ArchitecturalState(rip: 0x2100)
+        return try executor.execute(
+          byteProvider: { count in
+            byteFetchCount += 1
+            return Array(bytes.prefix(count))
+          },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state
+        )
+      }
+
+      #expect(try run() == nil)
+      #expect(try run() == nil)
+      #expect(byteFetchCount == 2)
+      #expect(executor.diagnostics.declinedCompilations == 2)
+      #expect(executor.diagnostics.negativeCacheHits == 0)
+      #expect(executor.diagnostics.negativeEntryCount == 0)
+    #endif
+  }
+
+  @Test func negativeCacheGenerationMismatchCompilesChangedGuestCode() throws {
+    #if arch(arm64)
+      var bytes: [UInt8] = [0x0F, 0xA2]
+      var generation: UInt64 = 1
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      func run() throws -> DoryARM64BaselineExecution? {
+        var state = try DoryX86ArchitecturalState(rip: 0x2200)
+        return try executor.execute(
+          byteProvider: { count in Array(bytes.prefix(count)) },
+          codeGenerationProvider: { _ in generation },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state
+        )
+      }
+
+      #expect(try run() == nil)
+      bytes = [0x90, 0x90]
+      generation = 2
+      let execution = try #require(try run())
+      #expect(execution.block.guestInstructionCount == 1)
+      let diagnostics = executor.diagnostics
+      #expect(diagnostics.compiledBlocks == 1)
+      #expect(diagnostics.declinedCompilations == 1)
+      #expect(diagnostics.negativeGenerationMismatches == 1)
+      #expect(diagnostics.negativeEntryCount == 0)
+    #endif
+  }
+
+  @Test func negativeCacheIdentityIncludesTheExactInstructionBudget() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x0F, 0xA2]
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      func run(budget: Int) throws -> DoryARM64BaselineExecution? {
+        var state = try DoryX86ArchitecturalState(rip: 0x2300)
+        return try executor.execute(
+          byteProvider: { count in Array(bytes.prefix(count)) },
+          codeGenerationProvider: { _ in 1 },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: budget,
+          state: &state
+        )
+      }
+
+      #expect(try run(budget: 1) == nil)
+      #expect(try run(budget: 2) == nil)
+      #expect(executor.diagnostics.declinedCompilations == 2)
+      #expect(try run(budget: 1) == nil)
+      #expect(try run(budget: 2) == nil)
+      #expect(executor.diagnostics.declinedCompilations == 2)
+      #expect(executor.diagnostics.negativeCacheHits == 2)
+      #expect(executor.diagnostics.negativeEntryCount == 2)
+    #endif
+  }
+
+  @Test func negativeCacheHonorsTargetedAndFullInvalidation() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x0F, 0xA2]
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      func run(addressSpaceID: UInt64) throws -> DoryARM64BaselineExecution? {
+        var state = try DoryX86ArchitecturalState(rip: 0x2400)
+        return try executor.execute(
+          byteProvider: { count in Array(bytes.prefix(count)) },
+          codeGenerationProvider: { _ in 1 },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: addressSpaceID,
+          maximumInstructions: 1,
+          state: &state
+        )
+      }
+
+      #expect(try run(addressSpaceID: 1) == nil)
+      #expect(try run(addressSpaceID: 2) == nil)
+      #expect(executor.diagnostics.negativeEntryCount == 2)
+      executor.invalidate(addressSpaceID: 1, guestRange: 0x2400..<0x2402)
+      #expect(executor.diagnostics.negativeEntryCount == 1)
+      #expect(try run(addressSpaceID: 1) == nil)
+      #expect(try run(addressSpaceID: 2) == nil)
+      #expect(executor.diagnostics.declinedCompilations == 3)
+      #expect(executor.diagnostics.negativeCacheHits == 1)
+      executor.invalidateAll()
+      #expect(executor.diagnostics.negativeEntryCount == 0)
+    #endif
+  }
+
+  @Test func codeCacheWrapClearsNegativeEntries() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      var declinedState = try DoryX86ArchitecturalState(rip: 0x2500)
+      #expect(try executor.execute(
+        byteProvider: { count in Array([0x0F, 0xA2].prefix(count)) },
+        codeGenerationProvider: { _ in 1 },
+        at: declinedState.rip,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &declinedState
+      ) == nil)
+      #expect(executor.diagnostics.negativeEntryCount == 1)
+
+      for value in 0..<1_024 {
+        let address = UInt64(0x10_000 + value * 0x20)
+        let bytes: [UInt8] = [
+          0xB8,
+          UInt8(truncatingIfNeeded: value),
+          UInt8(truncatingIfNeeded: value >> 8),
+          0,
+          0,
+          0xF4,
+        ]
+        var state = try DoryX86ArchitecturalState(rip: address)
+        _ = try #require(executor.execute(
+          byteProvider: { count in Array(bytes.prefix(count)) },
+          codeGenerationProvider: { _ in 1 },
+          at: address,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 2,
+          state: &state
+        ))
+        if executor.diagnostics.codeCacheWraps > 0 { break }
+      }
+
+      #expect(executor.diagnostics.codeCacheWraps > 0)
+      #expect(executor.diagnostics.negativeEntryCount == 0)
+      declinedState.rip = 0x2500
+      #expect(try executor.execute(
+        byteProvider: { count in Array([0x0F, 0xA2].prefix(count)) },
+        codeGenerationProvider: { _ in 1 },
+        at: declinedState.rip,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &declinedState
+      ) == nil)
+      #expect(executor.diagnostics.declinedCompilations == 2)
+    #endif
+  }
+
   @Test func chainedExecutionKeepsArchitecturalContextAcrossTakenBranches() throws {
     #if arch(arm64)
       let base: UInt64 = 0x1000

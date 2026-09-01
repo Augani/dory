@@ -1598,6 +1598,10 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   public let sharedCodeHits: UInt64
   public let compiledBlocks: UInt64
   public let declinedCompilations: UInt64
+  public let negativeCacheHits: UInt64
+  public let negativeCacheMisses: UInt64
+  public let negativeGenerationMismatches: UInt64
+  public let negativeEntryCount: UInt64
   public let codeCacheWraps: UInt64
   public let nativeTraceAttempts: UInt64
   public let nativeTraceReplays: UInt64
@@ -1666,6 +1670,23 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let resident: ResidentBlock
   }
 
+  private struct NegativeLookupKey: Hashable {
+    let lookupKey: LookupKey
+    let instructionBudget: Int
+  }
+
+  private struct NegativeEntry {
+    let key: NegativeLookupKey
+    let guestByteCount: Int
+    let memoryCodeGeneration: UInt64
+    let codeCacheEpoch: UInt64
+  }
+
+  private struct ResidentCompilation {
+    let resident: ResidentBlock?
+    let emitterDeclineByteCount: Int?
+  }
+
   private struct NativeTraceEntry {
     let guestStart: UInt64
     let resident: ResidentBlock
@@ -1717,6 +1738,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var sharedCodeEntries: [SharedCodeKey: ResidentBlock] = [:]
   private var recentEntries: [RecentResidentBlock?] = .init(repeating: nil, count: 256)
   private var nativeTraces: [NativeTrace?] = .init(repeating: nil, count: 4_096)
+  private var negativeEntries: [NegativeEntry?] = .init(repeating: nil, count: 4_096)
   private var nativeBatchExecutionCountValue: UInt64 = 0
   private var recentLookupHitCount: UInt64 = 0
   private var dictionaryLookupHitCount: UInt64 = 0
@@ -1726,6 +1748,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var sharedCodeHitCount: UInt64 = 0
   private var compiledBlockCount: UInt64 = 0
   private var declinedCompilationCount: UInt64 = 0
+  private var negativeCacheHitCount: UInt64 = 0
+  private var negativeCacheMissCount: UInt64 = 0
+  private var negativeGenerationMismatchCount: UInt64 = 0
   private var codeCacheWrapCount: UInt64 = 0
   private var nativeTraceAttemptCount: UInt64 = 0
   private var nativeTraceReplayCount: UInt64 = 0
@@ -1770,6 +1795,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         sharedCodeHits: sharedCodeHitCount,
         compiledBlocks: compiledBlockCount,
         declinedCompilations: declinedCompilationCount,
+        negativeCacheHits: negativeCacheHitCount,
+        negativeCacheMisses: negativeCacheMissCount,
+        negativeGenerationMismatches: negativeGenerationMismatchCount,
+        negativeEntryCount: UInt64(negativeEntries.lazy.compactMap { $0 }.count),
         codeCacheWraps: codeCacheWrapCount,
         nativeTraceAttempts: nativeTraceAttemptCount,
         nativeTraceReplays: nativeTraceReplayCount,
@@ -1788,6 +1817,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       sharedCodeEntries.removeAll(keepingCapacity: true)
       recentEntries = .init(repeating: nil, count: recentEntries.count)
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
+      negativeEntries = .init(repeating: nil, count: negativeEntries.count)
       codeCacheEpoch &+= 1
       nextOffset = 0
     }
@@ -1806,6 +1836,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       for key in victims { entries.removeValue(forKey: key) }
       recentEntries = .init(repeating: nil, count: recentEntries.count)
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
+      for index in negativeEntries.indices {
+        guard let negative = negativeEntries[index],
+          negative.key.lookupKey.addressSpaceID == addressSpaceID
+        else { continue }
+        let start = negative.key.lookupKey.guestStart
+        let end = start.addingReportingOverflow(UInt64(negative.guestByteCount))
+        if end.overflow
+          || (start < guestRange.upperBound && guestRange.lowerBound < end.partialValue)
+        {
+          negativeEntries[index] = nil
+        }
+      }
     }
   }
 
@@ -2109,6 +2151,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       mode: mode,
       state: state
     )
+    let negativeKey = NegativeLookupKey(
+      lookupKey: key,
+      instructionBudget: maximumInstructions
+    )
     if let cached = lookupResident(for: key) {
       // The interrupt deadline is an execution constraint, not part of guest code identity. A
       // previously compiled shorter block is safe to reuse under a larger budget. If the resident
@@ -2143,6 +2189,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       }
       removeResident(for: key)
     }
+    if negativeCacheHit(
+      for: negativeKey,
+      codeGenerationProvider: codeGenerationProvider
+    ) {
+      return nil
+    }
     let bytes = try byteProvider(maximumInstructions * 15)
     if let shared = sharedCodeEntries[makeSharedCodeKey(from: key)],
       shared.block.guestInstructionCount <= maximumInstructions,
@@ -2168,7 +2220,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         }
       }
     }
-    let compiled = try compileResident(
+    let compilation = try compileResident(
       key: key,
       bytes: bytes,
       codeGenerationProvider: codeGenerationProvider,
@@ -2177,8 +2229,21 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       maximumInstructions: maximumInstructions,
       memory: memory
     )
-    if compiled == nil { declinedCompilationCount &+= 1 }
-    return compiled
+    if let resident = compilation.resident {
+      removeNegativeEntry(for: negativeKey)
+      return resident
+    }
+    declinedCompilationCount &+= 1
+    if let guestByteCount = compilation.emitterDeclineByteCount {
+      publishNegativeEntry(
+        for: negativeKey,
+        guestByteCount: guestByteCount,
+        originalBytes: bytes,
+        byteProvider: byteProvider,
+        codeGenerationProvider: codeGenerationProvider
+      )
+    }
+    return nil
   }
 
   private func compileResident(
@@ -2189,8 +2254,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     mode: DoryX86ExecutionMode,
     maximumInstructions: Int,
     memory: (any DoryX86Memory)?
-  ) throws -> ResidentBlock? {
-    guard !bytes.isEmpty else { return nil }
+  ) throws -> ResidentCompilation {
+    guard !bytes.isEmpty else {
+      return .init(resident: nil, emitterDeclineByteCount: nil)
+    }
     let translated = try DoryX86IRTranslator(
       decoder: decoder,
       instructionBudget: maximumInstructions
@@ -2200,18 +2267,26 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       block,
       tier: optimization == .optimizing ? .optimizing : .baseline
     )
-    guard compiled.tier != .interpreterFallback,
-      compiled.guestInstructionCount > 0,
+    if compiled.tier == .interpreterFallback {
+      return .init(
+        resident: nil,
+        emitterDeclineByteCount: Int(compiled.guestByteCount)
+      )
+    }
+    guard compiled.guestInstructionCount > 0,
       compiled.guestInstructionCount <= maximumInstructions,
       !compiled.requiresMemoryCallbacks || memory != nil
-    else { return nil }
+    else { return .init(resident: nil, emitterDeclineByteCount: nil) }
     let byteCount = compiled.machineBytes.count
-    guard byteCount <= region.capacity else { return nil }
+    guard byteCount <= region.capacity else {
+      return .init(resident: nil, emitterDeclineByteCount: nil)
+    }
     if nextOffset > region.capacity - byteCount {
       entries.removeAll(keepingCapacity: true)
       sharedCodeEntries.removeAll(keepingCapacity: true)
       recentEntries = .init(repeating: nil, count: recentEntries.count)
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
+      negativeEntries = .init(repeating: nil, count: negativeEntries.count)
       codeCacheEpoch &+= 1
       nextOffset = 0
       codeCacheWrapCount &+= 1
@@ -2232,7 +2307,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     )
     publish(resident, for: key)
     compiledBlockCount &+= 1
-    return resident
+    return .init(resident: resident, emitterDeclineByteCount: nil)
   }
 
   private func makeLookupKey(
@@ -2257,6 +2332,92 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       privilegeLevel: key.privilegeLevel,
       pagingEnabled: key.pagingEnabled
     )
+  }
+
+  /// A negative entry only suppresses native compilation; the caller still executes the exact
+  /// instruction through the interpreter. Entries therefore remain a performance hint, and any
+  /// missing or uncertain validation authority fails open to the normal compilation path.
+  private func negativeCacheHit(
+    for key: NegativeLookupKey,
+    codeGenerationProvider: ((_ byteCount: Int) throws -> UInt64?)?
+  ) -> Bool {
+    let index = negativeIndex(for: key)
+    guard let entry = negativeEntries[index], entry.key == key,
+      entry.codeCacheEpoch == codeCacheEpoch,
+      let codeGenerationProvider
+    else {
+      negativeCacheMissCount &+= 1
+      return false
+    }
+    do {
+      codeGenerationCheckCount &+= 1
+      guard try codeGenerationProvider(entry.guestByteCount) == entry.memoryCodeGeneration else {
+        codeGenerationMismatchCount &+= 1
+        negativeGenerationMismatchCount &+= 1
+        negativeCacheMissCount &+= 1
+        negativeEntries[index] = nil
+        return false
+      }
+      negativeCacheHitCount &+= 1
+      return true
+    } catch {
+      negativeCacheMissCount &+= 1
+      return false
+    }
+  }
+
+  private func publishNegativeEntry(
+    for key: NegativeLookupKey,
+    guestByteCount: Int,
+    originalBytes: [UInt8],
+    byteProvider: (_ maximumCount: Int) throws -> [UInt8],
+    codeGenerationProvider: ((_ byteCount: Int) throws -> UInt64?)?
+  ) {
+    guard guestByteCount > 0, originalBytes.count >= guestByteCount,
+      let codeGenerationProvider
+    else { return }
+    do {
+      codeGenerationCheckCount &+= 1
+      guard let generationBefore = try codeGenerationProvider(guestByteCount) else { return }
+      let confirmedBytes = try byteProvider(guestByteCount)
+      guard confirmedBytes.count == guestByteCount,
+        confirmedBytes.elementsEqual(originalBytes.prefix(guestByteCount))
+      else { return }
+      codeGenerationCheckCount &+= 1
+      guard try codeGenerationProvider(guestByteCount) == generationBefore else { return }
+      negativeEntries[negativeIndex(for: key)] = .init(
+        key: key,
+        guestByteCount: guestByteCount,
+        memoryCodeGeneration: generationBefore,
+        codeCacheEpoch: codeCacheEpoch
+      )
+    } catch {
+      // This validation is an optional optimization. The pre-cache behavior for a declined
+      // compilation is an interpreter fallback, so speculative validation failures must not turn
+      // into machine failures.
+    }
+  }
+
+  private func removeNegativeEntry(for key: NegativeLookupKey) {
+    let index = negativeIndex(for: key)
+    if negativeEntries[index]?.key == key { negativeEntries[index] = nil }
+  }
+
+  private func negativeIndex(for key: NegativeLookupKey) -> Int {
+    let lookup = key.lookupKey
+    var value = lookup.guestStart
+    value ^= lookup.addressSpaceID &* 0xa076_1d64_78bd_642f
+    value ^= UInt64(lookup.privilegeLevel) << 11
+    value ^= lookup.pagingEnabled ? 1 << 17 : 0
+    switch lookup.executionMode {
+    case .real16: value ^= 0x11
+    case .protected16: value ^= 0x22
+    case .protected32: value ^= 0x33
+    case .long64: value ^= 0x44
+    }
+    value ^= UInt64(truncatingIfNeeded: key.instructionBudget) &* 0xe703_7ed1_a0b4_28db
+    value ^= value >> 32
+    return Int(value & UInt64(negativeEntries.count - 1))
   }
 
   private func replayNativeTrace(

@@ -90,6 +90,10 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let sharedCodeHits: UInt64
   public let compiledBlocks: UInt64
   public let declinedCompilations: UInt64
+  public let negativeCacheHits: UInt64
+  public let negativeCacheMisses: UInt64
+  public let negativeGenerationMismatches: UInt64
+  public let negativeEntryCount: UInt64
   public let codeCacheWraps: UInt64
   public let nativeTraceAttempts: UInt64
   public let nativeTraceReplays: UInt64
@@ -108,6 +112,10 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     sharedCodeHits = source.sharedCodeHits
     compiledBlocks = source.compiledBlocks
     declinedCompilations = source.declinedCompilations
+    negativeCacheHits = source.negativeCacheHits
+    negativeCacheMisses = source.negativeCacheMisses
+    negativeGenerationMismatches = source.negativeGenerationMismatches
+    negativeEntryCount = source.negativeEntryCount
     codeCacheWraps = source.codeCacheWraps
     nativeTraceAttempts = source.nativeTraceAttempts
     nativeTraceReplays = source.nativeTraceReplays
