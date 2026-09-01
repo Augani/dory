@@ -1795,7 +1795,8 @@ enum DesktopMode {
                     let guestFSEventBridge = GuestFSEventBridge(vsock: vsock)
                     let hostShareCoherence = DoryHostShareCoherenceBridge(
                         endpoints: coherenceEndpoints,
-                        guestEvents: guestFSEventBridge
+                        guestEvents: guestFSEventBridge,
+                        onDiagnostic: { Self.log("dory-hv desktop: \($0)") }
                     ) { [weak machine] reason in
                         Self.log("dory-hv desktop: \(reason)")
                         machine?.requestStop(.crash(reason))

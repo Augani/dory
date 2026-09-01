@@ -30,6 +30,7 @@ public struct VirtioFSShareConfiguration: Equatable, Sendable {
     /// the convenience home share. The stronger guarantee is per-bind-mount on-demand sharing.
     public static let sensitiveNames: Set<String> = [
         ".ssh", ".aws", ".gcloud", ".azure", ".kube", ".docker", ".dory", ".gnupg", ".config",
+        ".Trash",
         ".codex", ".claude", ".colima", ".lima", ".orbstack", ".podman", ".rd",
         ".netrc", ".npmrc", ".pypirc", ".pgpass", ".gitconfig", ".git-credentials", ".terraform.d",
         ".zsh_history", ".bash_history",

@@ -1030,7 +1030,8 @@ enum EngineMode {
         let guestFSEventBridge = GuestFSEventBridge(vsock: vsock)
         let hostShareCoherence = DoryHostShareCoherenceBridge(
             endpoints: coherenceEndpoints,
-            guestEvents: guestFSEventBridge
+            guestEvents: guestFSEventBridge,
+            onDiagnostic: { note($0) }
         ) { reason in
             note(reason)
             machine.requestStop(.crash(reason))

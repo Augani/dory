@@ -108,7 +108,9 @@ async fn serve_fsevents() -> std::io::Result<()> {
         let dedupe = Arc::clone(&dedupe);
         tokio::spawn(async move {
             let _permit = permit;
-            let _ = handle_fsevent_batch(stream, dedupe).await;
+            if let Err(error) = handle_fsevent_batch(stream, dedupe).await {
+                eprintln!("dory-agent: host-share watcher request failed: {error}");
+            }
         });
     }
 }

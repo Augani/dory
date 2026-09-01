@@ -69,17 +69,20 @@ public actor DoryHostShareCoherenceBridge {
     private static let reverseInvalidationDeadline: Duration = .seconds(1)
     private let endpoints: [DoryFSShareCapabilityID: DoryHostShareCoherenceEndpoint]
     private let guestEvents: any GuestFSEventSending
+    private let onDiagnostic: @Sendable (String) -> Void
     private let terminal: TerminalLatch
 
     public init(
         endpoints: [DoryHostShareCoherenceEndpoint],
         guestEvents: any GuestFSEventSending,
+        onDiagnostic: @escaping @Sendable (String) -> Void = { _ in },
         onFatal: @escaping @Sendable (String) -> Void
     ) {
         self.endpoints = Dictionary(uniqueKeysWithValues: endpoints.map {
             ($0.capabilityID, $0)
         })
         self.guestEvents = guestEvents
+        self.onDiagnostic = onDiagnostic
         terminal = TerminalLatch(
             backends: endpoints.map(\.backend),
             onFatal: onFatal
@@ -160,11 +163,19 @@ public actor DoryHostShareCoherenceBridge {
                 paths: guestPaths
             )
             guard result.pathCount == UInt32(guestPaths.count), result.failed == 0 else {
-                throw DoryHostShareCoherenceBridgeError.watcherFailure
+                onDiagnostic(
+                    "host-share watcher skipped \(result.failed) of \(result.pathCount) paths; "
+                        + "reverse cache invalidation remains active"
+                )
+                return
             }
         } catch {
-            terminal.fail("host-share watcher notification failed")
-            throw DoryHostShareCoherenceBridgeError.watcherFailure
+            // Reverse invalidation has already completed. The Linux watcher nudge is a hot-reload
+            // aid, not a cache or data-correctness boundary, and must never destroy a workload.
+            onDiagnostic(
+                "host-share watcher notification skipped for \(guestPaths.count) paths: \(error); "
+                    + "reverse cache invalidation remains active"
+            )
         }
     }
 

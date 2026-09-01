@@ -57,7 +57,23 @@ private final class DoryFSWorkerReverseExchange: @unchecked Sendable {
 }
 
 private final class DoryFSWorkerXPCAdapter: NSObject, DoryFSWorkerXPCProtocol {
+    private final class ActivationReply: @unchecked Sendable {
+        private let reply: (Data) -> Void
+
+        init(_ reply: @escaping (Data) -> Void) {
+            self.reply = reply
+        }
+
+        func send(_ data: Data) {
+            reply(data)
+        }
+    }
+
     private let service: DoryFSWorkerService
+    private let activationQueue = DispatchQueue(
+        label: "dev.dory.fs-worker.coherence-activation",
+        qos: .userInitiated
+    )
 
     init(connection: NSXPCConnection) {
         let reverseExchange = DoryFSWorkerReverseExchange(connection: connection)
@@ -101,7 +117,15 @@ private final class DoryFSWorkerXPCAdapter: NSObject, DoryFSWorkerXPCProtocol {
     }
 
     func activateCoherence(withReply reply: @escaping (Data) -> Void) {
-        reply(service.activateCoherenceExactBytes())
+        // Activation sends retained coherence batches back over this same bidirectional XPC
+        // connection and waits for the runner's exact acknowledgements. Returning from the
+        // incoming XPC handler before beginning that reverse exchange is essential: doing the
+        // transaction inline leaves Foundation waiting for this handler to yield while the worker
+        // waits for the reverse reply, so the worker times out and fail-stops every VM generation.
+        let activationReply = ActivationReply(reply)
+        activationQueue.async { [service] in
+            activationReply.send(service.activateCoherenceExactBytes())
+        }
     }
 }
 

@@ -408,28 +408,16 @@ fn nudge_path_or_parent(path: &Path) -> io::Result<()> {
                     candidate = current.parent();
                     break;
                 }
-                Err(error)
-                    if matches!(
-                        error.raw_os_error(),
-                        Some(libc::ENOENT) | Some(libc::ENOTDIR) | Some(libc::ELOOP)
-                    ) =>
-                {
+                Err(_) => {
+                    // Home and external-volume shares routinely contain sockets, FIFOs, device
+                    // nodes, symlinks, mode-000 files, and transient filesystem entries. None can
+                    // safely receive the content-neutral same-mode fchmod used for regular files
+                    // and directories. The protocol promises a nudge on the exact path *or its
+                    // nearest usable parent*, so every permanent exact-node failure walks upward.
+                    // Transport-wide failures still surface once no safe ancestor can be nudged.
                     candidate = current.parent();
                     break;
                 }
-                Err(error)
-                    if matches!(error.raw_os_error(), Some(libc::EACCES) | Some(libc::EPERM)) =>
-                {
-                    // The host file may intentionally be write-only or mode 000. The macOS
-                    // virtio-fs server runs as the owning desktop user, so Linux root cannot make
-                    // an O_RDONLY open bypass those host permission bits. A write-only regular
-                    // file is retried with O_WRONLY inside nudge_exact; if neither access mode is
-                    // available, wake the nearest live directory watcher instead of retrying the
-                    // same permanently failing file until coherence restarts the VM.
-                    candidate = current.parent();
-                    break;
-                }
-                Err(error) => return Err(error),
             }
         }
     }
@@ -443,7 +431,20 @@ fn nudge_exact(path: &Path) -> io::Result<()> {
     let c_path = CString::new(path.as_os_str().as_bytes())
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "path contains NUL"))?;
     let metadata = std::fs::symlink_metadata(path)?;
-    let access_modes = nudge_access_modes(metadata.permissions().mode());
+    let metadata_mode = metadata.permissions().mode();
+    let metadata_kind = metadata_mode & mode_bits(libc::S_IFMT);
+    if metadata_kind != mode_bits(libc::S_IFREG)
+        && metadata_kind != mode_bits(libc::S_IFDIR)
+    {
+        // Opening a FIFO, socket, or device through VirtioFS can block in the host filesystem
+        // before Linux's O_NONBLOCK semantics are applied. Reject unsupported nodes from metadata
+        // alone so the caller can nudge their directory parent without ever opening the node.
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only regular files and directories can be nudged",
+        ));
+    }
+    let access_modes = nudge_access_modes(metadata_mode);
     let mut fd = -1;
     let mut last_error = None;
     for access_mode in access_modes {
@@ -661,6 +662,24 @@ mod tests {
         std::fs::set_permissions(&inaccessible, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert_eq!(std::fs::read(&write_only).unwrap(), b"preserved");
         assert_eq!(std::fs::read(&inaccessible).unwrap(), b"also-preserved");
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn nudge_special_node_uses_nearest_directory_parent() {
+        let directory = unique_temp_dir();
+        let socket = directory.join("watcher.sock");
+        let _listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+
+        let outcome = nudge_paths(&[socket]);
+
+        assert_eq!(
+            outcome,
+            BatchOutcome {
+                path_count: 1,
+                failed_indices: vec![]
+            }
+        );
         std::fs::remove_dir_all(directory).unwrap();
     }
 
