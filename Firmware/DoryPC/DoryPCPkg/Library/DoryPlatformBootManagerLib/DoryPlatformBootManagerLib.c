@@ -5,17 +5,21 @@
 #include <Guid/EventGroup.h>
 #include <Guid/SerialPortLibVendor.h>
 #include <Guid/TtyTerm.h>
+#include <IndustryStandard/Pci.h>
 #include <Library/IoLib.h>
 #include <Library/PcdLib.h>
 #include <Library/PlatformBootManagerLib.h>
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiBootManagerLib.h>
 #include <Library/UefiLib.h>
+#include <Protocol/PciIo.h>
 
 #define DP_NODE_LEN(Type)  { (UINT8)sizeof (Type), (UINT8)(sizeof (Type) >> 8) }
 #define DORY_PC_PM1_CONTROL_PORT  0x0604
 #define DORY_PC_SERIAL_PORT       0x03F8
 #define DORY_PC_SOFT_OFF_TYPE     5
+#define DORY_PC_VIRTIO_VENDOR_ID  0x1AF4
+#define DORY_PC_GPU_DEVICE_ID     0x1050
 
 STATIC CONST CHAR8  mDoryBootMarker[] = "DORY-PC-UEFI-BOOT\r\n";
 STATIC CONST CHAR8  mDoryConsoleMissingMarker[] = "DORY-PC-UEFI-CONSOLE-MISSING\r\n";
@@ -97,6 +101,66 @@ STATIC DORY_SERIAL_CONSOLE mSerialConsole = {
   }
 };
 
+STATIC
+VOID
+DoryConnectDisplayConsole (
+  VOID
+  )
+{
+  EFI_HANDLE           *Handles;
+  UINTN                HandleCount;
+  UINTN                Index;
+  EFI_STATUS           Status;
+  EFI_PCI_IO_PROTOCOL  *PciIo;
+  PCI_TYPE00           Pci;
+
+  Handles = NULL;
+  Status  = gBS->LocateHandleBuffer (
+                   ByProtocol,
+                   &gEfiPciIoProtocolGuid,
+                   NULL,
+                   &HandleCount,
+                   &Handles
+                   );
+  if (EFI_ERROR (Status)) {
+    return;
+  }
+
+  for (Index = 0; Index < HandleCount; Index++) {
+    Status = gBS->HandleProtocol (
+                    Handles[Index],
+                    &gEfiPciIoProtocolGuid,
+                    (VOID **)&PciIo
+                    );
+    if (EFI_ERROR (Status)) {
+      continue;
+    }
+
+    Status = PciIo->Pci.Read (
+                          PciIo,
+                          EfiPciIoWidthUint32,
+                          0,
+                          sizeof (Pci) / sizeof (UINT32),
+                          &Pci
+                          );
+    if (EFI_ERROR (Status) ||
+        (Pci.Hdr.VendorId != DORY_PC_VIRTIO_VENDOR_ID) ||
+        (Pci.Hdr.DeviceId != DORY_PC_GPU_DEVICE_ID) ||
+        !IS_PCI_DISPLAY (&Pci))
+    {
+      continue;
+    }
+
+    // VirtioGpuDxe creates its GOP child only when the display controller is connected as video.
+    // Register that GOP as an additional ConOut while retaining serial as the recovery console.
+    if (!EFI_ERROR (EfiBootManagerConnectVideoController (Handles[Index]))) {
+      break;
+    }
+  }
+
+  gBS->FreePool (Handles);
+}
+
 VOID
 EFIAPI
 PlatformBootManagerBeforeConsole (
@@ -122,6 +186,10 @@ PlatformBootManagerAfterConsole (
   // connection pass runs. Rescan those protocols afterwards so the standard console variables
   // and EFI_SYSTEM_TABLE pointers describe the devices that now exist.
   EfiBootManagerConnectAll ();
+  // PCI I/O handles do not exist until the recursive connection pass enumerates the root bridge.
+  // Connect the display here so VirtioGpuDxe can create its GOP child before the console splitter
+  // resolves ConOut and publishes it through EFI_SYSTEM_TABLE.
+  DoryConnectDisplayConsole ();
   EfiBootManagerUpdateConsoleVariable (ConIn, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
   EfiBootManagerUpdateConsoleVariable (ConOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);
   EfiBootManagerUpdateConsoleVariable (ErrOut, (EFI_DEVICE_PATH_PROTOCOL *)&mSerialConsole, NULL);

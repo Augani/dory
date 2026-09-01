@@ -163,6 +163,16 @@ def verify_platform_contract() -> None:
         raise BuildFailure("DoryPC console drivers must be dispatched before BDS")
     if console_dispatch_positions != sorted(console_dispatch_positions):
         raise BuildFailure("DoryPC console drivers must preserve their dependency order")
+    virtio_dispatch_order = (
+        "MdeModulePkg/Bus/Pci/PciBusDxe/PciBusDxe.inf",
+        "OvmfPkg/Virtio10Dxe/Virtio10.inf",
+        "OvmfPkg/VirtioGpuDxe/VirtioGpu.inf",
+    )
+    virtio_dispatch_positions = [apriori.find(driver) for driver in virtio_dispatch_order]
+    if any(position < 0 for position in virtio_dispatch_positions):
+        raise BuildFailure("DoryPC display drivers must be dispatched before BDS")
+    if virtio_dispatch_positions != sorted(virtio_dispatch_positions):
+        raise BuildFailure("DoryPC display drivers must preserve their dependency order")
     if "A31280AD-481E-41B6-95E8-127F4C984779" not in flash_contents:
         raise BuildFailure("DoryPC compact firmware volume must use Tiano compression")
     if "EE4E5898-3914-4259-9D6E-DC7BD79403CF" in flash_contents:
@@ -179,6 +189,9 @@ def verify_platform_contract() -> None:
         "DORY_PC_CONFIGURATION_FLAG_BOOT_PROBE",
         "DORY-PC-UEFI-BOOT",
         "DORY_PC_PM1_CONTROL_PORT",
+        "DoryConnectDisplayConsole",
+        "EfiBootManagerConnectVideoController",
+        "DORY_PC_GPU_DEVICE_ID",
     )
     if any(value not in boot_manager_contents for value in required_probe_contract):
         raise BuildFailure("DoryPC firmware qualification probe contract has drifted")

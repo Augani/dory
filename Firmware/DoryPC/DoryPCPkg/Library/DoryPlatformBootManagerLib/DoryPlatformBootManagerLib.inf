@@ -30,3 +30,6 @@
 [Guids]
   gEfiEndOfDxeEventGroupGuid
   gEdkiiSerialPortLibVendorGuid
+
+[Protocols]
+  gEfiPciIoProtocolGuid

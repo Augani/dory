@@ -183,6 +183,7 @@ APRIORI DXE {
   INF  DoryPCPkg/DoryVariableRuntimeDxe/DoryVariableRuntimeDxe.inf
   INF  MdeModulePkg/Bus/Pci/PciBusDxe/PciBusDxe.inf
   INF  OvmfPkg/Virtio10Dxe/Virtio10.inf
+  INF  OvmfPkg/VirtioGpuDxe/VirtioGpu.inf
   INF  OvmfPkg/VirtioBlkDxe/VirtioBlk.inf
   INF  MdeModulePkg/Universal/Disk/DiskIoDxe/DiskIoDxe.inf
   INF  MdeModulePkg/Universal/Disk/PartitionDxe/PartitionDxe.inf
