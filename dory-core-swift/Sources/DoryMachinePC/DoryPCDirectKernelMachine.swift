@@ -151,6 +151,16 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var roundRobinCursor = 0
   private var consumedPayload = false
   private let baselineJIT: DoryARM64BaselineExecutor?
+  private let optimizingJIT: DoryARM64BaselineExecutor?
+  private let optimizingJITWarmupDispatches: UInt8
+  private struct JITHotnessEntry {
+    var tag: UInt64 = 0
+    var dispatchCount: UInt8 = 0
+  }
+  // A bounded direct-mapped table keeps full-system cold-start accounting independent of the
+  // number of distinct firmware, kernel, and initramfs RIPs. A collision merely delays promotion;
+  // it cannot affect architectural behavior or cache correctness.
+  private var jitHotness = [JITHotnessEntry](repeating: .init(), count: 1 << 16)
   private let translatedMemories: [DoryX86TranslatedMemory]
   private var interpreterInstructionCount: UInt64 = 0
   private var baselineJITInstructionCount: UInt64 = 0
@@ -187,7 +197,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     platformMMIODevices: [any DoryPCMMIODevice] = [],
     interpreter: DoryX86Interpreter = .init(),
     executionTier: DoryPCExecutionTier = .interpreter,
-    baselineJITMaximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes
+    baselineJITMaximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
+    optimizingJITWarmupDispatches: UInt8 = 8
   ) throws {
     guard memoryBytes >= 1024 * 1024 else {
       throw DoryPCMachineError.invalidMemorySize(memoryBytes)
@@ -197,6 +208,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     self.processorCount = processorCount
     self.executionTier = executionTier
+    self.optimizingJITWarmupDispatches = optimizingJITWarmupDispatches
     baselineJIT =
       switch executionTier {
       case .interpreter:
@@ -210,7 +222,19 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         )
       case .optimizingJIT:
         try DoryARM64BaselineExecutor(
-          maximumCodeBytes: baselineJITMaximumCodeBytes,
+          maximumCodeBytes: max(4_096, baselineJITMaximumCodeBytes / 4),
+          decoder: interpreter.decoder,
+          cpuProfileIdentifier: interpreter.profile.identifier,
+          optimization: .baseline
+        )
+      }
+    optimizingJIT =
+      switch executionTier {
+      case .interpreter, .baselineJIT:
+        nil
+      case .optimizingJIT:
+        try DoryARM64BaselineExecutor(
+          maximumCodeBytes: max(4_096, baselineJITMaximumCodeBytes * 3 / 4),
           decoder: interpreter.decoder,
           cpuProfileIdentifier: interpreter.profile.identifier,
           optimization: .optimizing
@@ -625,7 +649,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     jitInstructionBudget: Int?
   ) throws -> ProcessorExecution {
     let mode = executionMode(state)
-    if let baselineJIT,
+    if let jit = selectedJIT(for: state, mode: mode),
       mode == .long64 || (mode == .protected32 && state.cs.base == 0),
       !state.rflags.contains(.trap)
     {
@@ -633,7 +657,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       let translatedMemory = translatedMemories[processor]
       translatedMemory.updateContext(.init(state: state, mode: mode))
       let guestRIP = state.rip
-      if let execution = try baselineJIT.executeChainedSummary(
+      if let execution = try jit.executeChainedSummary(
         byteProvider: { address, maximumCount in
           // A speculative block fetch can cross an unmapped guest page even when the current
           // instruction itself is valid. Preserve the architectural path by declining JIT
@@ -688,6 +712,41 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       case .exception(let exception): .exception(exception)
       }
     return .init(result: machineResult, instructionCount: 1, jitTier: nil, jitBlockCount: 0)
+  }
+
+  private func selectedJIT(
+    for state: DoryX86ArchitecturalState,
+    mode: DoryX86ExecutionMode
+  ) -> DoryARM64BaselineExecutor? {
+    guard executionTier == .optimizingJIT, let optimizingJIT else { return baselineJIT }
+    guard optimizingJITWarmupDispatches > 0 else { return optimizingJIT }
+
+    var tag = state.rip
+    tag ^= state.control.cr3 &* 0x9e37_79b9_7f4a_7c15
+    tag ^= UInt64(state.cs.selector & 3) << 57
+    tag ^= state.control.cr0 & (1 << 31) != 0 ? 1 << 56 : 0
+    switch mode {
+    case .real16: tag ^= 0x11
+    case .protected16: tag ^= 0x22
+    case .protected32: tag ^= 0x33
+    case .long64: tag ^= 0x44
+    }
+    tag ^= tag >> 33
+    tag &*= 0xff51_afd7_ed55_8ccd
+    tag ^= tag >> 33
+    // Reserve zero as the empty tag while retaining deterministic treatment of the one hash that
+    // naturally maps there.
+    if tag == 0 { tag = 1 }
+    let index = Int(tag & UInt64(jitHotness.count - 1))
+    if jitHotness[index].tag != tag {
+      jitHotness[index] = .init(tag: tag, dispatchCount: 1)
+      return baselineJIT
+    }
+    if jitHotness[index].dispatchCount < optimizingJITWarmupDispatches {
+      jitHotness[index].dispatchCount &+= 1
+    }
+    return jitHotness[index].dispatchCount >= optimizingJITWarmupDispatches
+      ? optimizingJIT : baselineJIT
   }
 
   private func baselineInstructionBudget(maximumInstructions: UInt64) -> Int {

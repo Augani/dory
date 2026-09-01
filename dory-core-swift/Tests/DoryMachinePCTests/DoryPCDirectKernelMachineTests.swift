@@ -185,7 +185,7 @@ import Testing
     #endif
   }
 
-  @Test func optimizingJITMatchesTheDirectKernelArchitecturalResult() throws {
+  @Test func optimizingJITWarmsAColdDirectKernelBlockWithBaselineCode() throws {
     #if arch(arm64)
       let layout = DoryPCPVHBootLayout(
         startInfo: 0x90000,
@@ -209,14 +209,14 @@ import Testing
       #expect(try machine.run(maximumInstructions: 8) == .halted(instructionCount: 4))
       #expect(machine.state?.registers.rax == 1)
       #expect(machine.state?.registers.rbx == 3)
-      #expect(machine.executionStatistics.optimizingJITInstructions == 4)
-      #expect(machine.executionStatistics.optimizingJITBlocks == 1)
-      #expect(machine.executionStatistics.baselineJITInstructions == 0)
+      #expect(machine.executionStatistics.optimizingJITInstructions == 0)
+      #expect(machine.executionStatistics.baselineJITInstructions == 4)
+      #expect(machine.executionStatistics.baselineJITBlocks == 1)
       #expect(machine.executionStatistics.interpreterInstructions == 0)
     #endif
   }
 
-  @Test func multiprocessorOptimizingJITUsesABoundedInstructionBatch() throws {
+  @Test func multiprocessorOptimizingJITUsesABoundedBaselineWarmupBatch() throws {
     #if arch(arm64)
       let machine = try DoryPCDirectKernelMachine(
         memoryBytes: 2 * 1024 * 1024,
@@ -238,12 +238,35 @@ import Testing
 
       #expect(try machine.run(maximumInstructions: 16) == .halted(instructionCount: 5))
       #expect(machine.state?.registers.rbx == 3)
-      #expect(machine.executionStatistics.optimizingJITInstructions == 5)
-      #expect(machine.executionStatistics.optimizingJITBlocks == 1)
+      #expect(machine.executionStatistics.baselineJITInstructions == 5)
+      #expect(machine.executionStatistics.baselineJITBlocks == 1)
       #expect(machine.executionStatistics.interpreterInstructions == 0)
       #expect(machine.processorExecutionSnapshots.dropFirst().allSatisfy {
         $0.lifecycle == .waitingForStartup
       })
+    #endif
+  }
+
+  @Test func optimizingJITPromotesRepeatedDispatchesAfterBoundedWarmup() throws {
+    #if arch(arm64)
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        executionTier: .optimizingJIT,
+        baselineJITMaximumCodeBytes: 16 * 1024,
+        optimizingJITWarmupDispatches: 3
+      )
+      // jmp $ keeps every bounded run at the same guest RIP, modelling a hot dispatch head.
+      try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+
+      #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+      #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+      #expect(machine.executionStatistics.baselineJITInstructions == 2)
+      #expect(machine.executionStatistics.optimizingJITInstructions == 0)
+
+      #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+      #expect(machine.executionStatistics.baselineJITInstructions == 2)
+      #expect(machine.executionStatistics.optimizingJITInstructions == 1)
+      #expect(machine.executionStatistics.interpreterInstructions == 0)
     #endif
   }
 
