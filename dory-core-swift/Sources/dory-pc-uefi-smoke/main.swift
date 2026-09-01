@@ -625,6 +625,11 @@ private func run() throws {
       (try? composed.machine.memoryBytes(atLinearAddress: $0.registers.rsp, maximumCount: 64))
         ?? nil
     }
+  let sourceIndexBytes =
+    state.flatMap {
+      (try? composed.machine.memoryBytes(atLinearAddress: $0.registers.rsi, maximumCount: 64))
+        ?? nil
+    }
   let serialBytes = composed.machine.serial.drainTransmittedBytes()
   let serialOutput = String(decoding: serialBytes, as: UTF8.self)
   let serialMarkerMatched = arguments.expectedSerialMarker.map(serialOutput.contains)
@@ -709,6 +714,7 @@ private func run() throws {
     "pageTableTrace": pageTrace,
     "instructionBytes": instructionBytes.map(hexadecimalBytes) ?? "unmapped",
     "stackBytes": stackBytes.map(hexadecimalBytes) ?? "unmapped",
+    "rsiBytes": sourceIndexBytes.map(hexadecimalBytes) ?? "unmapped",
     "serialOutput": serialOutput,
     "serialMarkerExpected": arguments.expectedSerialMarker.map { $0 as Any } ?? NSNull(),
     "serialMarkerMatched": serialMarkerMatched.map { $0 as Any } ?? NSNull(),
