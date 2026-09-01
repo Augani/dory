@@ -50,6 +50,18 @@ import Testing
     #expect(try device.process(identity, memory: memory).bytesWritten == 21)
     #expect(
       String(decoding: try memory.read(at: 0xE00, byteCount: 9), as: UTF8.self) == "dory-disk")
+
+    let diagnostics = device.diagnostics
+    #expect(diagnostics.requestCount == 4)
+    #expect(diagnostics.successfulRequestCount == 4)
+    #expect(diagnostics.failedRequestCount == 0)
+    #expect(diagnostics.unsupportedRequestCount == 0)
+    #expect(diagnostics.readRequestCount == 1)
+    #expect(diagnostics.readByteCount == 512)
+    #expect(diagnostics.writeRequestCount == 1)
+    #expect(diagnostics.writeByteCount == 512)
+    #expect(diagnostics.flushRequestCount == 1)
+    #expect(diagnostics.recentReadRanges == [.init(offset: 512, byteCount: 512)])
   }
 
   @Test func executesDiscardAndWriteZeroesRanges() throws {
@@ -75,6 +87,12 @@ import Testing
     ])
     #expect(try device.process(zeroes, memory: memory).status == 0)
     #expect(try storage.read(offset: 2048, byteCount: 512) == [UInt8](repeating: 0, count: 512))
+
+    let diagnostics = device.diagnostics
+    #expect(diagnostics.discardRequestCount == 1)
+    #expect(diagnostics.discardedByteCount == 512)
+    #expect(diagnostics.writeZeroesRequestCount == 1)
+    #expect(diagnostics.writeZeroesByteCount == 512)
   }
 
   @Test func rejectsOutOfBoundsAndDirectionConfusionWithoutTouchingStorage() throws {
@@ -96,6 +114,18 @@ import Testing
       descriptor(0xA00, 1, true),
     ])
     #expect(try device.process(wrongDirection, memory: memory).status == 1)
+
+    memory.put(header(type: 0xffff, sector: 0), at: 0xB00)
+    let unsupported = chain([
+      descriptor(0xB00, 16, false), descriptor(0xC00, 1, true),
+    ])
+    #expect(try device.process(unsupported, memory: memory).status == 2)
+
+    let diagnostics = device.diagnostics
+    #expect(diagnostics.requestCount == 3)
+    #expect(diagnostics.successfulRequestCount == 0)
+    #expect(diagnostics.failedRequestCount == 2)
+    #expect(diagnostics.unsupportedRequestCount == 1)
   }
 
   private func descriptor(

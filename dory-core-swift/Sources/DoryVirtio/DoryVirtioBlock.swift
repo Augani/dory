@@ -33,6 +33,36 @@ public struct DoryVirtioBlockResult: Sendable, Hashable {
   public let status: UInt8
 }
 
+public struct DoryVirtioBlockReadRange: Sendable, Hashable {
+  public let offset: UInt64
+  public let byteCount: UInt64
+
+  public init(offset: UInt64, byteCount: UInt64) {
+    self.offset = offset
+    self.byteCount = byteCount
+  }
+}
+
+/// Bounded, transport-neutral evidence for proving that firmware or a guest driver actually used a
+/// block device. Recent read ranges deliberately retain offsets rather than payload bytes, so the
+/// diagnostic cannot disclose guest data or grow with an installer image.
+public struct DoryVirtioBlockDiagnostics: Sendable, Hashable {
+  public let requestCount: UInt64
+  public let successfulRequestCount: UInt64
+  public let failedRequestCount: UInt64
+  public let unsupportedRequestCount: UInt64
+  public let readRequestCount: UInt64
+  public let readByteCount: UInt64
+  public let writeRequestCount: UInt64
+  public let writeByteCount: UInt64
+  public let flushRequestCount: UInt64
+  public let discardRequestCount: UInt64
+  public let discardedByteCount: UInt64
+  public let writeZeroesRequestCount: UInt64
+  public let writeZeroesByteCount: UInt64
+  public let recentReadRanges: [DoryVirtioBlockReadRange]
+}
+
 /// Transport-neutral VirtIO block request engine with bounded scatter/gather and range commands.
 public final class DoryVirtioBlockDevice: @unchecked Sendable {
   public static let sectorSize: UInt64 = 512
@@ -43,6 +73,23 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
   public let storage: any DoryVirtioBlockStorage
   public let identifier: [UInt8]
   public let maximumRangeSegments: Int
+
+  private static let maximumRecentReadRanges = 16
+  private let diagnosticsLock = NSLock()
+  private var requestCount: UInt64 = 0
+  private var successfulRequestCount: UInt64 = 0
+  private var failedRequestCount: UInt64 = 0
+  private var unsupportedRequestCount: UInt64 = 0
+  private var readRequestCount: UInt64 = 0
+  private var readByteCount: UInt64 = 0
+  private var writeRequestCount: UInt64 = 0
+  private var writeByteCount: UInt64 = 0
+  private var flushRequestCount: UInt64 = 0
+  private var discardRequestCount: UInt64 = 0
+  private var discardedByteCount: UInt64 = 0
+  private var writeZeroesRequestCount: UInt64 = 0
+  private var writeZeroesByteCount: UInt64 = 0
+  private var recentReadRanges: [DoryVirtioBlockReadRange] = []
 
   public init(
     storage: any DoryVirtioBlockStorage,
@@ -79,6 +126,27 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
     return bytes
   }
 
+  public var diagnostics: DoryVirtioBlockDiagnostics {
+    diagnosticsLock.withLock {
+      .init(
+        requestCount: requestCount,
+        successfulRequestCount: successfulRequestCount,
+        failedRequestCount: failedRequestCount,
+        unsupportedRequestCount: unsupportedRequestCount,
+        readRequestCount: readRequestCount,
+        readByteCount: readByteCount,
+        writeRequestCount: writeRequestCount,
+        writeByteCount: writeByteCount,
+        flushRequestCount: flushRequestCount,
+        discardRequestCount: discardRequestCount,
+        discardedByteCount: discardedByteCount,
+        writeZeroesRequestCount: writeZeroesRequestCount,
+        writeZeroesByteCount: writeZeroesByteCount,
+        recentReadRanges: recentReadRanges
+      )
+    }
+  }
+
   public func process(
     _ chain: DoryVirtioDescriptorChain,
     memory: any DoryVirtioGuestMemory
@@ -96,6 +164,7 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
     let requestType = uint32(header, at: 0)
     let sector = uint64(header, at: 8)
     let payload = Array(chain.descriptors.dropFirst().dropLast())
+    recordRequest()
     let result: DoryVirtioBlockResult
     do {
       result = try execute(type: requestType, sector: sector, payload: payload, memory: memory)
@@ -104,6 +173,7 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
     } catch {
       result = .init(bytesWritten: 1, status: Self.ioErrorStatus)
     }
+    recordCompletion(status: result.status)
     try memory.write(at: statusDescriptor.address, bytes: [result.status])
     return result
   }
@@ -128,6 +198,7 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
           expected: Int(byteCount), actual: bytes.count)
       }
       try scatter(bytes, into: payload, memory: memory)
+      recordRead(offset: offset, byteCount: byteCount)
       return .init(bytesWritten: UInt32(byteCount) + 1, status: Self.successStatus)
     case 1:
       guard !storage.readOnly else {
@@ -140,10 +211,12 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
       }
       let offset = try checkedOffset(sector: sector, byteCount: UInt64(bytes.count))
       try storage.write(offset: offset, bytes: bytes)
+      recordWrite(byteCount: UInt64(bytes.count))
       return .init(bytesWritten: 1, status: Self.successStatus)
     case 4:
       guard payload.isEmpty else { throw DoryVirtioBlockError.malformedRequest }
       try storage.flush()
+      diagnosticsLock.withLock { flushRequestCount = Self.saturatingAdd(flushRequestCount, 1) }
       return .init(bytesWritten: 1, status: Self.successStatus)
     case 8:
       try requireDirection(payload, deviceWillWrite: true)
@@ -167,6 +240,9 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
       try executeRanges(try gather(payload, memory: memory), zeroes: true)
       return .init(bytesWritten: 1, status: Self.successStatus)
     default:
+      diagnosticsLock.withLock {
+        unsupportedRequestCount = Self.saturatingAdd(unsupportedRequestCount, 1)
+      }
       return .init(bytesWritten: 1, status: Self.unsupportedStatus)
     }
   }
@@ -178,6 +254,13 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
     let count = bytes.count / 16
     guard count <= maximumRangeSegments else {
       throw DoryVirtioBlockError.tooManyRangeSegments(count)
+    }
+    diagnosticsLock.withLock {
+      if zeroes {
+        writeZeroesRequestCount = Self.saturatingAdd(writeZeroesRequestCount, 1)
+      } else {
+        discardRequestCount = Self.saturatingAdd(discardRequestCount, 1)
+      }
     }
     for index in 0..<count {
       let base = index * 16
@@ -191,8 +274,14 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
       let offset = try checkedOffset(sector: sector, byteCount: byteCount)
       if zeroes {
         try storage.writeZeroes(offset: offset, byteCount: byteCount, mayUnmap: flags & 1 != 0)
+        diagnosticsLock.withLock {
+          writeZeroesByteCount = Self.saturatingAdd(writeZeroesByteCount, byteCount)
+        }
       } else {
         try storage.discard(offset: offset, byteCount: byteCount)
+        diagnosticsLock.withLock {
+          discardedByteCount = Self.saturatingAdd(discardedByteCount, byteCount)
+        }
       }
     }
   }
@@ -261,6 +350,43 @@ public final class DoryVirtioBlockDevice: @unchecked Sendable {
         expected: Int(descriptor.length), actual: bytes.count)
     }
     return bytes
+  }
+
+  private func recordRequest() {
+    diagnosticsLock.withLock { requestCount = Self.saturatingAdd(requestCount, 1) }
+  }
+
+  private func recordCompletion(status: UInt8) {
+    diagnosticsLock.withLock {
+      if status == Self.successStatus {
+        successfulRequestCount = Self.saturatingAdd(successfulRequestCount, 1)
+      } else if status != Self.unsupportedStatus {
+        failedRequestCount = Self.saturatingAdd(failedRequestCount, 1)
+      }
+    }
+  }
+
+  private func recordRead(offset: UInt64, byteCount: UInt64) {
+    diagnosticsLock.withLock {
+      readRequestCount = Self.saturatingAdd(readRequestCount, 1)
+      readByteCount = Self.saturatingAdd(readByteCount, byteCount)
+      recentReadRanges.append(.init(offset: offset, byteCount: byteCount))
+      if recentReadRanges.count > Self.maximumRecentReadRanges {
+        recentReadRanges.removeFirst(recentReadRanges.count - Self.maximumRecentReadRanges)
+      }
+    }
+  }
+
+  private func recordWrite(byteCount: UInt64) {
+    diagnosticsLock.withLock {
+      writeRequestCount = Self.saturatingAdd(writeRequestCount, 1)
+      writeByteCount = Self.saturatingAdd(writeByteCount, byteCount)
+    }
+  }
+
+  private static func saturatingAdd(_ value: UInt64, _ increment: UInt64) -> UInt64 {
+    let (result, overflow) = value.addingReportingOverflow(increment)
+    return overflow ? .max : result
   }
 }
 
