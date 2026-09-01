@@ -49,6 +49,16 @@ assert "codesign --verify --deep --strict \"$runner_app\"" in runner
 vmm = function_body("bundle_doryd_swiftpm_helpers")
 assert 'sign_hardened_payload "$helper" "$entitlements" dory-vmm' in vmm
 assert 'sign_hardened_payload "$vmm_app" "$entitlements" dory-vmm' in vmm
+pc_firmware = function_body("bundle_dory_pc_firmware")
+for canonical_name in (
+    "firmware-code.fd",
+    "manifest.json",
+    "sbom.json",
+    "variable-store-template.json",
+):
+    assert canonical_name in pc_firmware
+assert "firmware-manifest.json" not in pc_firmware
+assert "firmware-sbom.spdx.json" not in pc_firmware
 assert "xcodebuild_status=$?" in text
 assert 'echo "xcodebuild_exit=$xcodebuild_status"' in text
 assert 'echo "build_exit=$status"' in text

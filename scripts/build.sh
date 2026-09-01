@@ -662,7 +662,7 @@ bundle_dory_pc_firmware() {
     return 1
   }
   for file in \
-    firmware-code.fd firmware-manifest.json firmware-sbom.spdx.json \
+    firmware-code.fd manifest.json sbom.json \
     variable-store-template.json; do
     [ -f "$source_dir/$file" ] && [ ! -L "$source_dir/$file" ] \
       && [ -s "$source_dir/$file" ] || {
@@ -679,7 +679,7 @@ bundle_dory_pc_firmware() {
     }
     mkdir -p "$destination" || return 1
     for file in \
-      firmware-code.fd firmware-manifest.json firmware-sbom.spdx.json \
+      firmware-code.fd manifest.json sbom.json \
       variable-store-template.json; do
       install -m 0644 "$source_dir/$file" "$destination/$file" || return 1
     done
