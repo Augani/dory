@@ -218,6 +218,28 @@ public enum DoryPCV1ABI {
     `BootOrder` are retained after the launch plan's physical-device fallbacks. An unchanged projection
     does not advance the variable-store generation, and a store requiring backup recovery cannot boot
     until recovery is explicitly completed.
+
+    ## Execution-tier firmware gate
+
+    `dory-pc-uefi-smoke` must reach the firmware-owned `DORY-PC-UEFI-BOOT` marker and ACPI power-off
+    under the interpreter, baseline JIT, and optimizing JIT with the same zero RTC epoch, memory size,
+    processor count, firmware bundle, runner, and in-memory boot disk. Preserve each JSON receipt, then
+    issue the comparison receipt with:
+
+    ```sh
+    swift run -c release --package-path dory-core-swift dory-pc-tier-qualification \\
+      --interpreter-receipt /absolute/evidence/interpreter.json \\
+      --baseline-jit-receipt /absolute/evidence/baseline-jit.json \\
+      --optimizing-jit-receipt /absolute/evidence/optimizing-jit.json \\
+      --output /absolute/evidence/tier-qualification.json
+    ```
+
+    The `dory.pc-uefi-tier-equivalence@1` verifier fails closed unless all three receipts bind the
+    same runner, firmware/SBOM/NVRAM identities, configuration, exact retired-instruction count,
+    power-off reason, full architectural-state digest, marker, and serial output. It also proves that
+    each requested JIT tier actually retired instructions in that tier. This gate establishes the
+    deterministic firmware baseline; installer, installed-disk, update, recovery, device, workload,
+    and performance qualification remain separate Phase 5 evidence.
     """
 
   private static func fixedRegion(
