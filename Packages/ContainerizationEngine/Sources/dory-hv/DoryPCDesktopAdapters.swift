@@ -43,6 +43,7 @@ final class DoryPCSoftwareDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Send
     private let onFirstFrame: @Sendable () -> Void
     private var identities = [UInt32: ResourceIdentity]()
     private var generations = [UInt32: UInt64]()
+    private var deliveredVisibleFrame = false
 
     init(
         mailbox: DesktopFrameMailbox,
@@ -55,7 +56,39 @@ final class DoryPCSoftwareDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Send
     func present(_ frame: DoryVirtioGPUFrame) {
         guard let converted = convert(frame) else { return }
         mailbox.submit(converted)
-        onFirstFrame()
+        let shouldDeliver = lock.withLock { () -> Bool in
+            guard !deliveredVisibleFrame,
+                  Self.containsVisibleContent(converted.bytes) else { return false }
+            deliveredVisibleFrame = true
+            return true
+        }
+        if shouldDeliver { onFirstFrame() }
+    }
+
+    /// A modeset commonly flushes one uniformly cleared resource before firmware or a bootloader
+    /// has drawn anything. Keep the startup presentation over that clear instead of turning a
+    /// healthy translated boot into an unexplained blank window. Variation is visible regardless
+    /// of channel order; a uniform pixel is visible when it contains color rather than only an
+    /// opaque alpha/X byte.
+    static func containsVisibleContent(_ bytes: Data) -> Bool {
+        let bytesPerPixel = 4
+        guard bytes.count >= bytesPerPixel, bytes.count.isMultiple(of: bytesPerPixel) else {
+            return false
+        }
+        let baseline = Array(bytes.prefix(bytesPerPixel))
+        var index = bytesPerPixel
+        while index < bytes.count {
+            if bytes[index] != baseline[0]
+                || bytes[index + 1] != baseline[1]
+                || bytes[index + 2] != baseline[2]
+                || bytes[index + 3] != baseline[3]
+            {
+                return true
+            }
+            index += bytesPerPixel
+        }
+        let nonzero = baseline.filter { $0 != 0 }
+        return nonzero.count > 1 || nonzero.contains { $0 != 0xff }
     }
 
     func convert(_ frame: DoryVirtioGPUFrame) -> VirtioGPUScanoutFrame? {

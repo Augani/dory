@@ -249,6 +249,42 @@ import Testing
         #expect(replacement.resourceGeneration == first.resourceGeneration + 1)
     }
 
+    @Test func softwareDisplayReadinessWaitsForVisibleFramebufferContent() {
+        final class DeliveryCounter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var storage = 0
+
+            var value: Int { lock.withLock { storage } }
+            func increment() { lock.withLock { storage += 1 } }
+        }
+
+        let deliveries = DeliveryCounter()
+        let sink = DoryPCSoftwareDisplaySink(
+            mailbox: DesktopFrameMailbox(scanoutID: 0),
+            onFirstFrame: { deliveries.increment() }
+        )
+        func frame(_ pixels: [UInt8]) -> DoryVirtioGPUFrame {
+            DoryVirtioGPUFrame(
+                scanoutID: 0,
+                resourceID: 7,
+                scanoutRectangle: .init(x: 0, y: 0, width: 2, height: 1),
+                damagedRectangle: .init(x: 0, y: 0, width: 2, height: 1),
+                resourceWidth: 2,
+                resourceHeight: 1,
+                format: .b8g8r8a8UNorm,
+                pixels: pixels
+            )
+        }
+
+        sink.present(frame([0, 0, 0, 0, 0, 0, 0, 0]))
+        sink.present(frame([0, 0, 0, 255, 0, 0, 0, 255]))
+        #expect(deliveries.value == 0)
+
+        sink.present(frame([0, 0, 0, 255, 255, 255, 255, 255]))
+        sink.present(frame([255, 255, 255, 255, 255, 255, 255, 255]))
+        #expect(deliveries.value == 1)
+    }
+
     @Test func softwareFrameConversionRejectsTruncatedResources() {
         let sink = DoryPCSoftwareDisplaySink(mailbox: DesktopFrameMailbox(scanoutID: 0))
         let frame = DoryVirtioGPUFrame(
