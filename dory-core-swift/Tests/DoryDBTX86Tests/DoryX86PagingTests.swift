@@ -203,6 +203,40 @@ import Testing
     )
   }
 
+  @Test func bulkFillStopsAtLinearPageBoundariesWithCompleteElements() throws {
+    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let linear: UInt64 = 0x0040_0000
+    try installFourLevelMapping(
+      linear: linear, physicalPage: 0x8000, flags: 0x7, memory: memory)
+    try installFourLevelMapping(
+      linear: linear + 0x1000, physicalPage: 0x9000, flags: 0x7, memory: memory)
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: memory,
+      pagingUnit: DoryX86PagingUnit(),
+      context: longModeContext(cpl: 3)
+    )
+    let pattern: [UInt8] = [0x11, 0x22, 0x33, 0x44]
+
+    #expect(
+      try translated.fillRepeating(
+        at: linear + 0xff8,
+        pattern: pattern,
+        maximumElementCount: 4
+      ) == 2
+    )
+    #expect(try memory.read(at: 0x8ff8, byteCount: 8) == pattern + pattern)
+    #expect(try memory.read(at: 0x9000, byteCount: 8) == [UInt8](repeating: 0, count: 8))
+
+    #expect(
+      try translated.fillRepeating(
+        at: linear + 0x1000,
+        pattern: pattern,
+        maximumElementCount: 2
+      ) == 2
+    )
+    #expect(try memory.read(at: 0x9000, byteCount: 8) == pattern + pattern)
+  }
+
   @Test func translatedScalarAccessesCrossPagesPrecisely() throws {
     let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0040_0000

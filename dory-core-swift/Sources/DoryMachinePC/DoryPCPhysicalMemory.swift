@@ -497,6 +497,33 @@ extension DoryPCPhysicalMemoryBus: DoryX86BulkMemory {
       maximumByteCount: min(maximumByteCount, sourceSpan, destinationSpan)
     )
   }
+
+  public func fillRepeating(
+    at destinationAddress: UInt64,
+    pattern: [UInt8],
+    maximumElementCount: Int
+  ) throws -> Int? {
+    guard maximumElementCount > 0, !pattern.isEmpty else {
+      return maximumElementCount == 0 ? 0 : nil
+    }
+    guard
+      let destination = try? resolveRAM(
+        address: destinationAddress,
+        byteCount: 1,
+        access: .write
+      )
+    else { return nil }
+    let elementCount = min(
+      maximumElementCount,
+      destination.availableByteCount / pattern.count
+    )
+    guard elementCount > 0 else { return nil }
+    return try ram.fillRepeating(
+      at: destination.backingAddress,
+      pattern: pattern,
+      maximumElementCount: elementCount
+    )
+  }
 }
 
 extension DoryPCPhysicalMemoryBus: DoryVirtioGuestMemory {

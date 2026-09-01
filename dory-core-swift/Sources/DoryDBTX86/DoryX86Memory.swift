@@ -84,6 +84,15 @@ public protocol DoryX86BulkMemory: DoryX86Memory {
     to destinationAddress: UInt64,
     maximumByteCount: Int
   ) throws -> Int?
+
+  /// Repeats one scalar-width pattern into ordinary RAM. The returned count is measured in
+  /// complete pattern elements so a REP STOS caller can publish exact architectural progress.
+  /// Returning `nil` declines the fast path before mutation.
+  func fillRepeating(
+    at destinationAddress: UInt64,
+    pattern: [UInt8],
+    maximumElementCount: Int
+  ) throws -> Int?
 }
 
 extension DoryX86Memory {
@@ -92,6 +101,16 @@ extension DoryX86Memory {
   }
 
   public func synchronize() {}
+}
+
+extension DoryX86BulkMemory {
+  public func fillRepeating(
+    at destinationAddress: UInt64,
+    pattern: [UInt8],
+    maximumElementCount: Int
+  ) throws -> Int? {
+    nil
+  }
 }
 
 extension DoryX86ScalarMemory {
@@ -309,6 +328,45 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
       storage.replaceSubrange(destinationOffset..<(destinationOffset + count), with: bytes)
       markCodePagesWritten(offset: destinationOffset, byteCount: count)
       return count
+    }
+  }
+
+  public func fillRepeating(
+    at destinationAddress: UInt64,
+    pattern: [UInt8],
+    maximumElementCount: Int
+  ) throws -> Int? {
+    guard maximumElementCount > 0, !pattern.isEmpty else {
+      return maximumElementCount == 0 ? 0 : nil
+    }
+    return lock.withLock {
+      guard destinationAddress >= baseAddress else { return nil }
+      let distance = destinationAddress - baseAddress
+      guard distance < UInt64(storage.count), distance <= UInt64(Int.max) else { return nil }
+      let destinationOffset = Int(distance)
+      let elementCount = min(
+        maximumElementCount,
+        (storage.count - destinationOffset) / pattern.count
+      )
+      guard elementCount > 0 else { return nil }
+      let byteCount = elementCount * pattern.count
+      storage.withUnsafeMutableBytes { destination in
+        pattern.withUnsafeBytes { source in
+          guard let destinationBase = destination.baseAddress,
+            let sourceBase = source.baseAddress
+          else { return }
+          var offset = 0
+          while offset < byteCount {
+            destinationBase.advanced(by: destinationOffset + offset).copyMemory(
+              from: sourceBase,
+              byteCount: pattern.count
+            )
+            offset += pattern.count
+          }
+        }
+      }
+      markCodePagesWritten(offset: destinationOffset, byteCount: byteCount)
+      return elementCount
     }
   }
 }

@@ -800,4 +800,27 @@ extension DoryX86TranslatedMemory: DoryX86BulkMemory {
       maximumByteCount: count
     )
   }
+
+  public func fillRepeating(
+    at destinationAddress: UInt64,
+    pattern: [UInt8],
+    maximumElementCount: Int
+  ) throws -> Int? {
+    guard maximumElementCount > 0, !pattern.isEmpty,
+      let physicalMemory = bulkPhysicalMemory
+    else { return maximumElementCount == 0 ? 0 : nil }
+    let destination = try pagingUnit.translate(
+      linearAddress: destinationAddress,
+      access: .write,
+      context: context,
+      physicalMemory: physicalMemory
+    )
+    let pageElementCount = Int(4_096 - (destinationAddress & 0xfff)) / pattern.count
+    guard pageElementCount > 0 else { return nil }
+    return try physicalMemory.fillRepeating(
+      at: destination.physicalAddress,
+      pattern: pattern,
+      maximumElementCount: min(maximumElementCount, pageElementCount)
+    )
+  }
 }

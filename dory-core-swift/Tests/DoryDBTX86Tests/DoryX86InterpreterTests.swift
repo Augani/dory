@@ -8,12 +8,14 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   private let backing: DoryX86ByteArrayMemory
   private let lock = NSLock()
   private var _bulkCallCount = 0
+  private var _bulkFillCallCount = 0
 
   init(baseAddress: UInt64, bytes: [UInt8]) {
     backing = DoryX86ByteArrayMemory(baseAddress: baseAddress, bytes: bytes)
   }
 
   var bulkCallCount: Int { lock.withLock { _bulkCallCount } }
+  var bulkFillCallCount: Int { lock.withLock { _bulkFillCallCount } }
 
   func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
     try backing.instructionBytes(at: address, maximumCount: maximumCount)
@@ -43,6 +45,19 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       from: sourceAddress,
       to: destinationAddress,
       maximumByteCount: maximumByteCount
+    )
+  }
+
+  func fillRepeating(
+    at destinationAddress: UInt64,
+    pattern: [UInt8],
+    maximumElementCount: Int
+  ) throws -> Int? {
+    lock.withLock { _bulkFillCallCount += 1 }
+    return try backing.fillRepeating(
+      at: destinationAddress,
+      pattern: pattern,
+      maximumElementCount: maximumElementCount
     )
   }
 }
@@ -2156,6 +2171,42 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(state.rip == 0x10_002)
     #expect(memory.bulkCallCount == 2)
     #expect(try memory.read(at: 0x12_000, byteCount: Int(count)) == Array(bytes[0x100..<0x1101]))
+  }
+
+  @Test func longRepeatStoresUseBulkRAMAndYieldAtAnInterruptibleBoundary() throws {
+    let count: UInt64 = 4_097
+    let pattern: UInt64 = 0x1122_3344_5566_7788
+    let memory = BulkRecordingMemory(
+      baseAddress: 0x20_000,
+      bytes: [0xF3, 0x48, 0xAB] + [UInt8](repeating: 0, count: 0x9FFD)
+    )
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: pattern, rcx: count, rdi: 0x21_000),
+      rip: 0x20_000
+    )
+
+    let first = interpreter.step(state: &state, memory: memory, mode: .long64)
+    guard case .yielded = first else {
+      Issue.record("long REP STOSQ did not yield: \(first)")
+      return
+    }
+    #expect(state.rip == 0x20_000)
+    #expect(state.registers.rcx == 1)
+    #expect(state.registers.rdi == 0x21_000 + 4_096 * 8)
+    #expect(memory.bulkFillCallCount == 1)
+
+    let second = interpreter.step(state: &state, memory: memory, mode: .long64)
+    guard case .retired = second else {
+      Issue.record("final REP STOSQ iteration did not retire: \(second)")
+      return
+    }
+    #expect(state.registers.rcx == 0)
+    #expect(state.rip == 0x20_003)
+    #expect(memory.bulkFillCallCount == 2)
+    #expect(
+      try memory.read(at: 0x21_000, byteCount: Int(count) * 8)
+        == Array(repeating: littleEndian(pattern), count: Int(count)).flatMap { $0 }
+    )
   }
 
   @Test func overlappingRepeatMovePreservesSequentialX86Semantics() throws {

@@ -3985,6 +3985,54 @@ public struct DoryX86Interpreter: Sendable {
       }
     }
 
+    if operation == .store,
+      repeated,
+      addressWidth == .quadword,
+      mode == .long64,
+      !state.rflags.contains(.direction),
+      let bulkMemory = memory as? any DoryX86BulkMemory
+    {
+      let pattern = littleEndian(state.registers.rax, width: width)
+      while remaining != 0, completed < iterationBudget {
+        let destinationAddress = stringDestinationAddress(
+          addressWidth: addressWidth,
+          mode: mode,
+          state: state
+        )
+        let maximumElementCount = Int(
+          min(remaining, iterationBudget - completed, UInt64(Int.max))
+        )
+        do {
+          guard
+            let filled = try bulkMemory.fillRepeating(
+              at: destinationAddress,
+              pattern: pattern,
+              maximumElementCount: maximumElementCount
+            ),
+            filled > 0
+          else { break }
+          precondition(filled <= maximumElementCount)
+          let elementCount = UInt64(filled)
+          let byteCount = elementCount &* UInt64(width.byteCount)
+          advanceStringRegister(
+            .rdi,
+            by: byteCount,
+            decrement: false,
+            width: addressWidth,
+            state: &state
+          )
+          completed &+= elementCount
+          remaining &-= elementCount
+          writeStringRegister(.rcx, value: remaining, width: addressWidth, state: &state)
+        } catch let error as DoryX86MemoryError {
+          if completed != 0 { throw DoryX86PartialMemoryFault(error: error) }
+          throw error
+        }
+      }
+      if remaining == 0 { return true }
+      if completed == iterationBudget { return false }
+    }
+
     while remaining != 0 {
       do {
         let sourceAddress = stringSourceAddress(
