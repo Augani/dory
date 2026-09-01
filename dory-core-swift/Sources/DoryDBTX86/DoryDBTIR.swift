@@ -343,7 +343,8 @@ public struct DoryX86IRTranslator: Sendable {
       return ([], .exit(.halt, resumeAt: instruction.nextInstructionAddress))
     case .input, .output, .string(.input, _), .string(.output, _):
       return fallback(instruction, reason: .portIO)
-    case .callIndirect, .jumpIndirect, .return, .returnAndPop, .farCall, .farJump, .farReturn:
+    case .callIndirect, .jumpIndirect, .return, .returnAndPop, .farCall, .farCallIndirect,
+      .farJump, .farJumpIndirect, .farReturn:
       return fallback(instruction, reason: .indirectControl)
     default:
       return fallback(instruction, reason: .interpreter)

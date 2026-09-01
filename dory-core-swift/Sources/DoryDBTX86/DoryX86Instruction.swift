@@ -452,7 +452,9 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case readSegment(DoryX86SegmentRegister, destination: DoryX86Operand)
   case writeSegment(DoryX86SegmentRegister, source: DoryX86Operand)
   case farJump(offset: UInt64, selector: UInt16)
+  case farJumpIndirect(address: DoryX86MemoryOperand, width: DoryX86OperandWidth)
   case farCall(offset: UInt64, selector: UInt16, width: DoryX86OperandWidth)
+  case farCallIndirect(address: DoryX86MemoryOperand, width: DoryX86OperandWidth)
   case farReturn(popBytes: UInt16, width: DoryX86OperandWidth)
   case machineStatusWord(load: Bool, operand: DoryX86Operand)
   case clearTaskSwitched

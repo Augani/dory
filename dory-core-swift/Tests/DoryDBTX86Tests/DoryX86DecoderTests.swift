@@ -471,6 +471,23 @@ import Testing
       try decoder.decode([0xEA, 0x00, 0x02, 0x78, 0x56], at: 0x300, mode: .real16).operation
         == .farJump(offset: 0x200, selector: 0x5678)
     )
+    #expect(
+      try decoder.decode([0x2E, 0x66, 0xFF, 0x2D], at: 0x35, mode: .protected16)
+        .operation
+        == .farJumpIndirect(
+          address: .init(
+            base: .rdi,
+            width: .doubleword,
+            addressWidth: .word,
+            segment: .cs,
+            ignoresLegacySegmentBase: false
+          ),
+          width: .doubleword
+        )
+    )
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0x66, 0xFF, 0xED], at: 0x35, mode: .protected16)
+    }
   }
 
   @Test func decodesMachineStatusTransitions() throws {

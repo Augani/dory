@@ -411,6 +411,36 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(state.rip == 0xFFFF_FE8F)
   }
 
+  @Test func firmwareAPFarIndirectJumpLoadsItsSegmentedPointerAndCodeDescriptor() throws {
+    let base: UInt64 = 0x8000
+    var bytes = [UInt8](repeating: 0, count: 0x300)
+    bytes.replaceSubrange(0x35..<0x39, with: [0x2E, 0x66, 0xFF, 0x2D])
+    bytes.replaceSubrange(0x100..<0x106, with: [0x78, 0x56, 0x34, 0x12, 0x10, 0x00])
+    bytes.replaceSubrange(
+      0x210..<0x218,
+      with: [0xFF, 0xFF, 0x00, 0x00, 0x00, 0x9B, 0xCF, 0x00]
+    )
+    let memory = DoryX86ByteArrayMemory(baseAddress: base, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rdi: 0x100),
+      rip: 0x35,
+      cs: .init(selector: 0x0800, attributes: 0x009B, limit: 0xFFFF, base: base),
+      gdtr: .init(limit: 0x3F, base: base + 0x200),
+      control: .init(cr0: 0x6000_0033)
+    )
+
+    let result = interpreter.step(state: &state, memory: memory, mode: .protected16)
+
+    guard case .retired = result else {
+      Issue.record("firmware AP far indirect jump unexpectedly faulted: \(result)")
+      return
+    }
+    #expect(state.cs.selector == 0x10)
+    #expect(state.cs.base == 0)
+    #expect(state.cs.attributes == 0xC09B)
+    #expect(state.rip == 0x1234_5678)
+  }
+
   @Test func compatibilityModeFarJumpPreservesFirmwareLongModeEntryPoint() throws {
     var bytes = [UInt8](repeating: 0, count: 0x300)
     bytes.replaceSubrange(
@@ -2489,6 +2519,30 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     _ = interpreter.step(state: &state, memory: memory, mode: .real16)
     #expect(state.cs.selector == 0)
     #expect(state.rip == 0x105)
+    #expect(state.registers.rsp & 0xffff == 0x80)
+  }
+
+  @Test func realModeFarIndirectCallReadsItsMemoryPointerAndReturns() throws {
+    var bytes = [UInt8](repeating: 0, count: 0x500)
+    bytes.replaceSubrange(0x100..<0x104, with: [0xFF, 0x1E, 0x00, 0x02])
+    bytes.replaceSubrange(0x200..<0x204, with: [0x20, 0x00, 0x20, 0x00])
+    bytes.replaceSubrange(0x220..<0x221, with: [0xCB])
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rsp: 0x80),
+      rip: 0x100,
+      cs: .init(selector: 0, attributes: 0x93, limit: 0xffff, base: 0),
+      ss: .init(selector: 0x30, attributes: 0x93, limit: 0xffff, base: 0x300)
+    )
+
+    _ = interpreter.step(state: &state, memory: memory, mode: .real16)
+    #expect(state.cs.selector == 0x20)
+    #expect(state.rip == 0x20)
+    #expect(state.registers.rsp & 0xffff == 0x7C)
+    #expect(try memory.read(at: 0x37C, byteCount: 4) == [0x04, 0x01, 0, 0])
+    _ = interpreter.step(state: &state, memory: memory, mode: .real16)
+    #expect(state.cs.selector == 0)
+    #expect(state.rip == 0x104)
     #expect(state.registers.rsp & 0xffff == 0x80)
   }
 

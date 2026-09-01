@@ -389,7 +389,19 @@ public struct DoryX86Decoder: Sendable {
       case 0: operation = .unary(.increment, operand: operands.rm)
       case 1: operation = .unary(.decrement, operand: operands.rm)
       case 2 where opcode == 0xFF: operation = .callIndirect(controlOperand)
+      case 3 where opcode == 0xFF:
+        guard case .memory(let memoryAddress) = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "far indirect CALL requires a memory operand")
+        }
+        operation = .farCallIndirect(address: memoryAddress, width: operandWidth)
       case 4 where opcode == 0xFF: operation = .jumpIndirect(controlOperand)
+      case 5 where opcode == 0xFF:
+        guard case .memory(let memoryAddress) = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "far indirect JMP requires a memory operand")
+        }
+        operation = .farJumpIndirect(address: memoryAddress, width: operandWidth)
       case 6 where opcode == 0xFF: operation = .push(controlOperand)
       default:
         throw DoryX86DecodeError.invalidEncoding(

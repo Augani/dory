@@ -1675,6 +1675,27 @@ public struct DoryX86Interpreter: Sendable {
         else { return generalProtection(at: originalRIP) }
         state.cs = loaded
         nextRIP = offset
+      case .farJumpIndirect(let address, let width):
+        let pointerAddress = effectiveAddress(address, instruction: instruction, state: state)
+        let pointer = try executionMemory.read(
+          at: pointerAddress,
+          byteCount: width.byteCount + MemoryLayout<UInt16>.size
+        )
+        let offset = fromLittleEndian(Array(pointer.prefix(width.byteCount))) & mask(width)
+        let selector = UInt16(
+          truncatingIfNeeded: fromLittleEndian(Array(pointer.suffix(MemoryLayout<UInt16>.size)))
+        )
+        guard
+          let loaded = try loadSegment(
+            .cs,
+            selector: selector,
+            mode: mode,
+            state: state,
+            memory: executionMemory
+          )
+        else { return generalProtection(at: originalRIP) }
+        state.cs = loaded
+        nextRIP = offset
       case .farCall(let offset, let selector, let width):
         guard
           let loaded = try loadSegment(
@@ -1703,6 +1724,43 @@ public struct DoryX86Interpreter: Sendable {
         writeStringRegister(.rsp, value: returnStack, width: width, state: &state)
         state.cs = loaded
         nextRIP = offset & mask(width)
+      case .farCallIndirect(let address, let width):
+        let pointerAddress = effectiveAddress(address, instruction: instruction, state: state)
+        let pointer = try executionMemory.read(
+          at: pointerAddress,
+          byteCount: width.byteCount + MemoryLayout<UInt16>.size
+        )
+        let offset = fromLittleEndian(Array(pointer.prefix(width.byteCount))) & mask(width)
+        let selector = UInt16(
+          truncatingIfNeeded: fromLittleEndian(Array(pointer.suffix(MemoryLayout<UInt16>.size)))
+        )
+        guard
+          let loaded = try loadSegment(
+            .cs,
+            selector: selector,
+            mode: mode,
+            state: state,
+            memory: executionMemory
+          )
+        else { return generalProtection(at: originalRIP) }
+        let oldStack = state.registers.rsp & mask(width)
+        let selectorStack = oldStack &- UInt64(width.byteCount) & mask(width)
+        let returnStack = selectorStack &- UInt64(width.byteCount) & mask(width)
+        let selectorAddress = stackAddress(selectorStack, mode: mode, state: state)
+        let returnAddress = stackAddress(returnStack, mode: mode, state: state)
+        try executionMemory.validateWrite(at: selectorAddress, byteCount: width.byteCount)
+        try executionMemory.validateWrite(at: returnAddress, byteCount: width.byteCount)
+        try executionMemory.write(
+          at: selectorAddress,
+          bytes: littleEndian(UInt64(state.cs.selector), width: width)
+        )
+        try executionMemory.write(
+          at: returnAddress,
+          bytes: littleEndian(nextRIP, width: width)
+        )
+        writeStringRegister(.rsp, value: returnStack, width: width, state: &state)
+        state.cs = loaded
+        nextRIP = offset
       case .farReturn(let popBytes, let width):
         let stack = state.registers.rsp & mask(width)
         let returnAddress = stackAddress(stack, mode: mode, state: state)
