@@ -94,6 +94,7 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let negativeCacheMisses: UInt64
   public let negativeGenerationMismatches: UInt64
   public let negativeEntryCount: UInt64
+  public let negativeCacheHotSites: [DoryPCJITNegativeCacheHotSite]
   public let codeCacheWraps: UInt64
   public let nativeTraceAttempts: UInt64
   public let nativeTraceReplays: UInt64
@@ -116,6 +117,7 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     negativeCacheMisses = source.negativeCacheMisses
     negativeGenerationMismatches = source.negativeGenerationMismatches
     negativeEntryCount = source.negativeEntryCount
+    negativeCacheHotSites = source.negativeCacheHotSites.map(DoryPCJITNegativeCacheHotSite.init)
     codeCacheWraps = source.codeCacheWraps
     nativeTraceAttempts = source.nativeTraceAttempts
     nativeTraceReplays = source.nativeTraceReplays
@@ -124,6 +126,26 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     chainedExecutionCalls = source.chainedExecutionCalls
     chainedRequestedInstructions = source.chainedRequestedInstructions
     chainedRetiredInstructions = source.chainedRetiredInstructions
+  }
+}
+
+public struct DoryPCJITNegativeCacheHotSite: Sendable, Hashable {
+  public let guestRIP: UInt64
+  public let executionMode: DoryX86ExecutionMode
+  public let instructionBudget: Int
+  public let addressSpaceID: UInt64
+  public let privilegeLevel: UInt8
+  public let pagingEnabled: Bool
+  public let hitCount: UInt64
+
+  fileprivate init(_ source: DoryARM64NegativeCacheHotSite) {
+    guestRIP = source.guestRIP
+    executionMode = source.executionMode
+    instructionBudget = source.instructionBudget
+    addressSpaceID = source.addressSpaceID
+    privilegeLevel = source.privilegeLevel
+    pagingEnabled = source.pagingEnabled
+    hitCount = source.hitCount
   }
 }
 

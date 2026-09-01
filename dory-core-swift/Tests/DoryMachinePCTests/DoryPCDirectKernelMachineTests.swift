@@ -207,6 +207,30 @@ import Testing
     #endif
   }
 
+  @Test func baselineJITDiagnosticsProjectLiveNegativeCacheHotSites() throws {
+    #if arch(arm64)
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        executionTier: .baselineJIT,
+        baselineJITMaximumCodeBytes: 16 * 1024
+      )
+      // CPUID declines native emission; the backward jump keeps revisiting the same exact site
+      // while the resident resolver's 64-instruction budget remains stable.
+      try machine.load(kernel: makeELF(code: [0x0F, 0xA2, 0xEB, 0xFC]), commandLine: "x")
+
+      #expect(try machine.run(maximumInstructions: 130) == .instructionBudget(130))
+      let diagnostics = try #require(machine.baselineJITDiagnostics)
+      let hotSite = try #require(diagnostics.negativeCacheHotSites.first)
+      #expect(hotSite.guestRIP == 0x10_0000)
+      #expect(hotSite.executionMode == .protected32)
+      #expect(hotSite.instructionBudget == 64)
+      #expect(hotSite.addressSpaceID == 0)
+      #expect(hotSite.privilegeLevel == 0)
+      #expect(hotSite.pagingEnabled == false)
+      #expect(hotSite.hitCount > 0)
+    #endif
+  }
+
   @Test func twoRunnableProcessorsRetainThe64InstructionFairnessQuantum() throws {
     #if arch(arm64)
       let machine = try DoryPCDirectKernelMachine(

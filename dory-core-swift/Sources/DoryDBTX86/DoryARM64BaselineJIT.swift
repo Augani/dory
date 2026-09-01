@@ -1905,6 +1905,17 @@ public struct DoryARM64ExecutionSummary: Sendable, Hashable {
   }
 }
 
+/// One exact, currently live negative-cache identity and its saturating validated-hit count.
+public struct DoryARM64NegativeCacheHotSite: Sendable, Hashable {
+  public let guestRIP: UInt64
+  public let executionMode: DoryX86ExecutionMode
+  public let instructionBudget: Int
+  public let addressSpaceID: UInt64
+  public let privilegeLevel: UInt8
+  public let pagingEnabled: Bool
+  public let hitCount: UInt64
+}
+
 /// Cumulative cache-path evidence for one JIT executor. This remains process-local rather than
 /// part of the daemon wire contract so a runner can diagnose throughput without coupling older
 /// daemons to a newer helper's telemetry schema.
@@ -1921,6 +1932,9 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   public let negativeCacheMisses: UInt64
   public let negativeGenerationMismatches: UInt64
   public let negativeEntryCount: UInt64
+  /// Exact hit counts for the 16 hottest currently live negative entries. Replacing or removing an
+  /// entry through collision, invalidation, generation mismatch, or cache reset discards its count.
+  public let negativeCacheHotSites: [DoryARM64NegativeCacheHotSite]
   public let codeCacheWraps: UInt64
   public let nativeTraceAttempts: UInt64
   public let nativeTraceReplays: UInt64
@@ -2001,6 +2015,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let guestByteCount: Int
     let memoryCodeGeneration: UInt64
     let codeCacheEpoch: UInt64
+    var hitCount: UInt64
   }
 
   private struct ResidentCompilation {
@@ -2121,7 +2136,20 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   }
   public var diagnostics: DoryARM64BaselineExecutorDiagnostics {
     lock.withLock {
-      .init(
+      let negativeCacheHotSites = negativeEntries.compactMap { entry in
+        guard let entry, entry.hitCount > 0 else { return nil }
+        let lookup = entry.key.lookupKey
+        return DoryARM64NegativeCacheHotSite(
+          guestRIP: lookup.guestStart,
+          executionMode: lookup.executionMode,
+          instructionBudget: entry.key.instructionBudget,
+          addressSpaceID: lookup.addressSpaceID,
+          privilegeLevel: lookup.privilegeLevel,
+          pagingEnabled: lookup.pagingEnabled,
+          hitCount: entry.hitCount
+        )
+      }.sorted(by: Self.negativeHotSitePrecedes)
+      return .init(
         recentLookupHits: recentLookupHitCount,
         dictionaryLookupHits: dictionaryLookupHitCount,
         lookupMisses: lookupMissCount,
@@ -2134,6 +2162,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         negativeCacheMisses: negativeCacheMissCount,
         negativeGenerationMismatches: negativeGenerationMismatchCount,
         negativeEntryCount: UInt64(negativeEntries.lazy.compactMap { $0 }.count),
+        negativeCacheHotSites: Array(negativeCacheHotSites.prefix(16)),
         codeCacheWraps: codeCacheWrapCount,
         nativeTraceAttempts: nativeTraceAttemptCount,
         nativeTraceReplays: nativeTraceReplayCount,
@@ -2847,6 +2876,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         return false
       }
       negativeCacheHitCount &+= 1
+      var updatedEntry = entry
+      if updatedEntry.hitCount < UInt64.max {
+        updatedEntry.hitCount += 1
+      }
+      negativeEntries[index] = updatedEntry
       return true
     } catch {
       negativeCacheMissCount &+= 1
@@ -2877,7 +2911,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         key: key,
         guestByteCount: guestByteCount,
         memoryCodeGeneration: generationBefore,
-        codeCacheEpoch: codeCacheEpoch
+        codeCacheEpoch: codeCacheEpoch,
+        hitCount: 0
       )
     } catch {
       // This validation is an optional optimization. The pre-cache behavior for a declined
@@ -2906,6 +2941,23 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     value ^= UInt64(truncatingIfNeeded: key.instructionBudget) &* 0xe703_7ed1_a0b4_28db
     value ^= value >> 32
     return Int(value & UInt64(negativeEntries.count - 1))
+  }
+
+  private static func negativeHotSitePrecedes(
+    _ lhs: DoryARM64NegativeCacheHotSite,
+    _ rhs: DoryARM64NegativeCacheHotSite
+  ) -> Bool {
+    if lhs.hitCount != rhs.hitCount { return lhs.hitCount > rhs.hitCount }
+    if lhs.guestRIP != rhs.guestRIP { return lhs.guestRIP < rhs.guestRIP }
+    if lhs.executionMode.rawValue != rhs.executionMode.rawValue {
+      return lhs.executionMode.rawValue < rhs.executionMode.rawValue
+    }
+    if lhs.instructionBudget != rhs.instructionBudget {
+      return lhs.instructionBudget < rhs.instructionBudget
+    }
+    if lhs.addressSpaceID != rhs.addressSpaceID { return lhs.addressSpaceID < rhs.addressSpaceID }
+    if lhs.privilegeLevel != rhs.privilegeLevel { return lhs.privilegeLevel < rhs.privilegeLevel }
+    return !lhs.pagingEnabled && rhs.pagingEnabled
   }
 
   private func replayNativeTrace(

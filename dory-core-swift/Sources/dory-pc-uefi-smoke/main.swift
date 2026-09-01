@@ -242,6 +242,17 @@ private func sha256(of bytes: [UInt8]) -> String {
 
 private func jitDiagnostics(_ diagnostics: DoryPCJITCacheStatistics?) -> Any {
   guard let diagnostics else { return NSNull() }
+  let negativeCacheHotSites: [[String: Any]] = diagnostics.negativeCacheHotSites.map { site in
+    [
+      "guestRIP": hexadecimal(site.guestRIP),
+      "executionMode": site.executionMode.rawValue,
+      "instructionBudget": site.instructionBudget,
+      "addressSpaceID": site.addressSpaceID,
+      "privilegeLevel": site.privilegeLevel,
+      "pagingEnabled": site.pagingEnabled,
+      "hitCount": site.hitCount,
+    ]
+  }
   return [
     "recentLookupHits": diagnostics.recentLookupHits,
     "dictionaryLookupHits": diagnostics.dictionaryLookupHits,
@@ -255,6 +266,7 @@ private func jitDiagnostics(_ diagnostics: DoryPCJITCacheStatistics?) -> Any {
     "negativeCacheMisses": diagnostics.negativeCacheMisses,
     "negativeGenerationMismatches": diagnostics.negativeGenerationMismatches,
     "negativeEntryCount": diagnostics.negativeEntryCount,
+    "negativeCacheHotSites": negativeCacheHotSites,
     "codeCacheWraps": diagnostics.codeCacheWraps,
     "nativeTraceAttempts": diagnostics.nativeTraceAttempts,
     "nativeTraceReplays": diagnostics.nativeTraceReplays,
@@ -263,7 +275,7 @@ private func jitDiagnostics(_ diagnostics: DoryPCJITCacheStatistics?) -> Any {
     "chainedExecutionCalls": diagnostics.chainedExecutionCalls,
     "chainedRequestedInstructions": diagnostics.chainedRequestedInstructions,
     "chainedRetiredInstructions": diagnostics.chainedRetiredInstructions,
-  ]
+  ] as [String: Any]
 }
 
 private func completedInstructions(for stop: DoryPCMachineStop) -> UInt64 {

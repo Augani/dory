@@ -71,6 +71,15 @@ import Testing
       #expect(diagnostics.negativeCacheMisses == 1)
       #expect(diagnostics.negativeGenerationMismatches == 0)
       #expect(diagnostics.negativeEntryCount == 1)
+      let hotSite = try #require(diagnostics.negativeCacheHotSites.first)
+      #expect(diagnostics.negativeCacheHotSites.count == 1)
+      #expect(hotSite.guestRIP == 0x2000)
+      #expect(hotSite.executionMode == .long64)
+      #expect(hotSite.instructionBudget == 1)
+      #expect(hotSite.addressSpaceID == 3)
+      #expect(hotSite.privilegeLevel == 0)
+      #expect(hotSite.pagingEnabled == false)
+      #expect(hotSite.hitCount == 1)
     #endif
   }
 
@@ -100,6 +109,7 @@ import Testing
       #expect(executor.diagnostics.declinedCompilations == 2)
       #expect(executor.diagnostics.negativeCacheHits == 0)
       #expect(executor.diagnostics.negativeEntryCount == 0)
+      #expect(executor.diagnostics.negativeCacheHotSites.isEmpty)
     #endif
   }
 
@@ -122,6 +132,8 @@ import Testing
       }
 
       #expect(try run() == nil)
+      #expect(try run() == nil)
+      #expect(executor.diagnostics.negativeCacheHotSites.first?.hitCount == 1)
       bytes = [0x90, 0x90]
       generation = 2
       let execution = try #require(try run())
@@ -131,6 +143,7 @@ import Testing
       #expect(diagnostics.declinedCompilations == 1)
       #expect(diagnostics.negativeGenerationMismatches == 1)
       #expect(diagnostics.negativeEntryCount == 0)
+      #expect(diagnostics.negativeCacheHotSites.isEmpty)
     #endif
   }
 
@@ -159,6 +172,8 @@ import Testing
       #expect(executor.diagnostics.declinedCompilations == 2)
       #expect(executor.diagnostics.negativeCacheHits == 2)
       #expect(executor.diagnostics.negativeEntryCount == 2)
+      #expect(executor.diagnostics.negativeCacheHotSites.map(\.instructionBudget) == [1, 2])
+      #expect(executor.diagnostics.negativeCacheHotSites.map(\.hitCount) == [1, 1])
     #endif
   }
 
@@ -181,15 +196,20 @@ import Testing
 
       #expect(try run(addressSpaceID: 1) == nil)
       #expect(try run(addressSpaceID: 2) == nil)
+      #expect(try run(addressSpaceID: 1) == nil)
+      #expect(try run(addressSpaceID: 2) == nil)
       #expect(executor.diagnostics.negativeEntryCount == 2)
+      #expect(executor.diagnostics.negativeCacheHotSites.map(\.addressSpaceID) == [1, 2])
       executor.invalidate(addressSpaceID: 1, guestRange: 0x2400..<0x2402)
       #expect(executor.diagnostics.negativeEntryCount == 1)
+      #expect(executor.diagnostics.negativeCacheHotSites.map(\.addressSpaceID) == [2])
       #expect(try run(addressSpaceID: 1) == nil)
       #expect(try run(addressSpaceID: 2) == nil)
       #expect(executor.diagnostics.declinedCompilations == 3)
-      #expect(executor.diagnostics.negativeCacheHits == 1)
+      #expect(executor.diagnostics.negativeCacheHits == 3)
       executor.invalidateAll()
       #expect(executor.diagnostics.negativeEntryCount == 0)
+      #expect(executor.diagnostics.negativeCacheHotSites.isEmpty)
     #endif
   }
 
@@ -206,7 +226,20 @@ import Testing
         maximumInstructions: 1,
         state: &declinedState
       ) == nil)
+      declinedState.rip = 0x2500
+      #expect(
+        try executor.execute(
+          byteProvider: { count in Array([0x0F, 0xA2].prefix(count)) },
+          codeGenerationProvider: { _ in 1 },
+          at: declinedState.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &declinedState
+        ) == nil
+      )
       #expect(executor.diagnostics.negativeEntryCount == 1)
+      #expect(executor.diagnostics.negativeCacheHotSites.first?.hitCount == 1)
 
       for value in 0..<1_024 {
         let address = UInt64(0x10_000 + value * 0x20)
@@ -233,6 +266,7 @@ import Testing
 
       #expect(executor.diagnostics.codeCacheWraps > 0)
       #expect(executor.diagnostics.negativeEntryCount == 0)
+      #expect(executor.diagnostics.negativeCacheHotSites.isEmpty)
       declinedState.rip = 0x2500
       #expect(try executor.execute(
         byteProvider: { count in Array([0x0F, 0xA2].prefix(count)) },
@@ -244,6 +278,77 @@ import Testing
         state: &declinedState
       ) == nil)
       #expect(executor.diagnostics.declinedCompilations == 2)
+    #endif
+  }
+
+  @Test func negativeCacheCollisionReplacementDiscardsTheReplacedHitCount() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x0F, 0xA2]
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      func run(at guestRIP: UInt64) throws -> DoryARM64BaselineExecution? {
+        var state = try DoryX86ArchitecturalState(rip: guestRIP)
+        return try executor.execute(
+          byteProvider: { count in Array(bytes.prefix(count)) },
+          codeGenerationProvider: { _ in 1 },
+          at: guestRIP,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state
+        )
+      }
+
+      // These identities differ only in bit 12 and therefore select the same 4,096-entry slot.
+      #expect(try run(at: 0x1000) == nil)
+      #expect(try run(at: 0x1000) == nil)
+      #expect(try run(at: 0x1000) == nil)
+      #expect(executor.diagnostics.negativeCacheHotSites.first?.hitCount == 2)
+
+      #expect(try run(at: 0x2000) == nil)
+      #expect(executor.diagnostics.negativeCacheHotSites.isEmpty)
+      #expect(try run(at: 0x2000) == nil)
+      let hotSite = try #require(executor.diagnostics.negativeCacheHotSites.first)
+      #expect(hotSite.guestRIP == 0x2000)
+      #expect(hotSite.hitCount == 1)
+    #endif
+  }
+
+  @Test func negativeCacheHotSitesAreCappedAndDeterministicallySorted() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x0F, 0xA2]
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let addresses = (0..<18).map { UInt64(0x5000 + $0 * 4) }
+      func run(at guestRIP: UInt64) throws {
+        var state = try DoryX86ArchitecturalState(rip: guestRIP)
+        #expect(
+          try executor.execute(
+            byteProvider: { count in Array(bytes.prefix(count)) },
+            codeGenerationProvider: { _ in 1 },
+            at: guestRIP,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &state
+          ) == nil
+        )
+      }
+
+      for address in addresses {
+        try run(at: address)
+        try run(at: address)
+      }
+      try run(at: addresses[16])
+      try run(at: addresses[17])
+      try run(at: addresses[17])
+
+      let hotSites = executor.diagnostics.negativeCacheHotSites
+      #expect(hotSites.count == 16)
+      #expect(hotSites[0].guestRIP == addresses[17])
+      #expect(hotSites[0].hitCount == 3)
+      #expect(hotSites[1].guestRIP == addresses[16])
+      #expect(hotSites[1].hitCount == 2)
+      #expect(hotSites.dropFirst(2).map(\.guestRIP) == Array(addresses.prefix(14)))
+      #expect(hotSites.dropFirst(2).allSatisfy { $0.hitCount == 1 })
     #endif
   }
 
