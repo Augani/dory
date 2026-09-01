@@ -2180,6 +2180,56 @@ final class DockerTierTests: XCTestCase {
         XCTAssertTrue(tier.stop())
     }
 
+    func testPromotionAfterFailedGuestProbeReconnectsAgentForReplacementGeneration() throws {
+        let base = "/tmp/dory-tier-agent-retry-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let failedClient = GuestResourceProbeAgentClient(records: [
+            .failure("mux connection closed"),
+        ])
+        let recoveredClient = GuestResourceProbeAgentClient(records: [
+            .success(guestResourceRecord()),
+        ])
+        let clients = AgentControlClientSequence([failedClient, recoveredClient])
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: base + "/agent.sock")
+        ) { _ in
+            try clients.next()
+        }
+        let helper = ReadyDockerManagedProcess(pid: 44_002)
+        let dataDriveRoot = base + "/selected.dorydrive"
+        let authority = guestDataDiskAuthority(
+            diskImagePath: dataDriveRoot + "/engine/docker-data.ext4"
+        )
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: base + "/home",
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", dataDriveRoot]
+                )
+            ),
+            agentControl: agent,
+            dockerReadyWaiter: { _, _, _ in true },
+            guestDataDiskAuthorityProvider: { _ in authority }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        defer { _ = tier.stop() }
+
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertTrue("\(error)".contains("mux connection closed"), "\(error)")
+        }
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertEqual(failedClient.closeCount, 1)
+
+        try tier.promoteToRunning(timeout: 2)
+
+        XCTAssertEqual(tier.status().state, .running)
+        XCTAssertEqual(clients.connectionCount, 2)
+        XCTAssertEqual(recoveredClient.resourceProbeCount, 1)
+    }
+
     func testManagedFreshSelectedDriveFormatsPreparedSparseDiskInPlaceBeforeReadiness() throws {
         let base = "/Users/Shared/dory-test-tier-fresh-data-drive-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let home = base + "/home"
@@ -2461,6 +2511,28 @@ final class DockerTierTests: XCTestCase {
             lockFileName: "drive.lock"
         )
         withExtendedLifetime((releasedSelection, releasedDriveLock)) {}
+    }
+
+    func testLaunchDriveLockJoinsSameProcessRetirementBeforeRetry() throws {
+        let base = "/Users/Shared/dory-test-tier-self-lock-retry-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        XCTAssertEqual(chmod(base, 0o700), 0)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let root = try DoryTrustedDirectoryRoot(canonicalAbsolutePath: base)
+        let held = LockedEngineStateDirectoryLockBox(try EngineStateDirectoryLock(
+            trustedDirectoryRoot: root,
+            lockFileName: "drive.lock"
+        ))
+        DispatchQueue.global().asyncAfter(deadline: .now() + 0.1) {
+            held.release()
+        }
+
+        let replacement = try DockerTier.acquireSelectedGuestDataDiskLaunchLock(
+            trustedDirectoryRoot: root,
+            selfRetirementTimeout: 1
+        )
+
+        XCTAssertFalse(replacement.path.isEmpty)
     }
 
     func testManagedGuestRejectsAClonedUUIDFromTheWrongConfiguredHostDrive() throws {
@@ -2947,11 +3019,13 @@ private final class GuestResourceProbeAgentClient: AgentControlClient, @unchecke
     enum ResourceResult {
         case success(Data)
         case timeout(Data)
+        case failure(String)
     }
 
     private let lock = NSLock()
     private var records: [ResourceResult]
     private var storedResourceProbeCount = 0
+    private var storedCloseCount = 0
     private let blockOnProbeNumber: Int?
     private let blockedProbeEntered = DispatchSemaphore(value: 0)
     private let blockedProbeRelease = DispatchSemaphore(value: 0)
@@ -2965,6 +3039,12 @@ private final class GuestResourceProbeAgentClient: AgentControlClient, @unchecke
         lock.lock()
         defer { lock.unlock() }
         return storedResourceProbeCount
+    }
+
+    var closeCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedCloseCount
     }
 
     func info() throws -> DoryAgentInfo {
@@ -3055,6 +3135,8 @@ private final class GuestResourceProbeAgentClient: AgentControlClient, @unchecke
                 stdoutTruncated: false,
                 stderrTruncated: false
             )
+        case .failure(let message):
+            throw GuestResourceProbeError.failed(message)
         }
     }
 
@@ -3066,7 +3148,48 @@ private final class GuestResourceProbeAgentClient: AgentControlClient, @unchecke
         blockedProbeRelease.signal()
     }
 
-    func close() {}
+    func close() {
+        lock.lock()
+        storedCloseCount += 1
+        lock.unlock()
+    }
+}
+
+private enum GuestResourceProbeError: Error, CustomStringConvertible {
+    case failed(String)
+
+    var description: String {
+        switch self {
+        case .failed(let message): message
+        }
+    }
+}
+
+private final class AgentControlClientSequence: @unchecked Sendable {
+    private let lock = NSLock()
+    private var clients: [any AgentControlClient]
+    private var storedConnectionCount = 0
+
+    init(_ clients: [any AgentControlClient]) {
+        precondition(!clients.isEmpty)
+        self.clients = clients
+    }
+
+    var connectionCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return storedConnectionCount
+    }
+
+    func next() throws -> any AgentControlClient {
+        lock.lock()
+        defer { lock.unlock() }
+        storedConnectionCount += 1
+        guard !clients.isEmpty else {
+            throw GuestResourceProbeError.failed("no queued agent client")
+        }
+        return clients.removeFirst()
+    }
 }
 
 private final class GuestDataDiskAuthoritySequence: @unchecked Sendable {
@@ -3099,6 +3222,21 @@ private final class LockedDiskFormattingObservation: @unchecked Sendable {
     func set(before: DiskImageFileIdentity, after: DiskImageFileIdentity) {
         lock.lock()
         storedValue = (before, after)
+        lock.unlock()
+    }
+}
+
+private final class LockedEngineStateDirectoryLockBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: EngineStateDirectoryLock?
+
+    init(_ value: EngineStateDirectoryLock) {
+        self.value = value
+    }
+
+    func release() {
+        lock.lock()
+        value = nil
         lock.unlock()
     }
 }

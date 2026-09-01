@@ -852,9 +852,8 @@ public final class DockerTier: @unchecked Sendable {
             )
         }
         do {
-            let driveLock = try EngineStateDirectoryLock(
-                trustedDirectoryRoot: trustedRoot,
-                lockFileName: "drive.lock"
+            let driveLock = try acquireSelectedGuestDataDiskLaunchLock(
+                trustedDirectoryRoot: trustedRoot
             )
             let engineDirectory = try trustedRoot.openPrivateChildDirectory(
                 try DoryTrustedPathComponent(validating: "engine")
@@ -886,6 +885,33 @@ public final class DockerTier: @unchecked Sendable {
             throw TierError.repairUnavailable(
                 "could not prepare the selected Docker data disk before launch: \(error)"
             )
+        }
+    }
+
+    /// A cancelled launch can still be unwinding its local generation after an explicit stop has
+    /// already committed. During that narrow window the same doryd process still owns `drive.lock`;
+    /// an immediate Try Again must join the retirement boundary instead of reporting that its own
+    /// directory is in use. Locks owned by another process remain an immediate hard failure.
+    static func acquireSelectedGuestDataDiskLaunchLock(
+        trustedDirectoryRoot: DoryTrustedDirectoryRoot,
+        selfRetirementTimeout: TimeInterval = 3
+    ) throws -> EngineStateDirectoryLock {
+        let deadline = Date().addingTimeInterval(max(0, selfRetirementTimeout))
+        let ownPID = "pid=\(getpid())"
+        while true {
+            do {
+                return try EngineStateDirectoryLock(
+                    trustedDirectoryRoot: trustedDirectoryRoot,
+                    lockFileName: "drive.lock"
+                )
+            } catch let error as EngineStateDirectoryLockError {
+                guard case let .alreadyInUse(_, _, owner, _) = error,
+                      owner == ownPID || owner.hasPrefix(ownPID + ","),
+                      Date() < deadline else {
+                    throw error
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
         }
     }
 
@@ -1954,6 +1980,11 @@ public final class DockerTier: @unchecked Sendable {
                 code: readinessReasonCode(for: error),
                 detail: "\(error)"
             )
+            // A failed guest boot invalidates every RPC stream multiplexed over that helper's
+            // vsock transport. Keep no cached AgentControl client across generations: otherwise
+            // an explicit retry can immediately replay the old "mux connection closed" failure
+            // instead of connecting to the replacement guest.
+            agentControl?.disconnect()
             startedResources?.handle.shutdown()
             startedResources?.activityServer?.stop()
             let helperTerminated = stopManagedHelperAndRetainIfNeeded(
@@ -3957,6 +3988,9 @@ public final class DockerTier: @unchecked Sendable {
                 code: readinessReasonCode(for: error),
                 detail: "\(error)"
             )
+            // Cold wake creates a new helper generation, so its guest-agent transport must also
+            // be generation-scoped. Retire a failed wake's cached mux before any later retry.
+            agentControl?.disconnect()
             let helperTerminated = stopManagedHelperAndRetainIfNeeded(
                 helper,
                 context: "failed cold wake could not confirm helper exit"
