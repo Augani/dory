@@ -818,10 +818,10 @@ enum DoryPCMode {
                         switch source {
                         case .exception(let evidence):
                             let state = evidence.state
-                            let faultRIP = String(
-                                state.cs.base &+ evidence.exception.instructionPointer,
-                                radix: 16
-                            )
+                            let faultLinearRIP = evidence.executionMode == .long64
+                                ? evidence.exception.instructionPointer
+                                : state.cs.base &+ evidence.exception.instructionPointer
+                            let faultRIP = String(faultLinearRIP, radix: 16)
                             let codeSegment = String(state.cs.selector, radix: 16)
                             let bytes = evidence.instructionBytes.map {
                                 String(format: "%02x", $0)

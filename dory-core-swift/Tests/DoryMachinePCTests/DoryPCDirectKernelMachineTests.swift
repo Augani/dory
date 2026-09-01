@@ -113,24 +113,39 @@ import Testing
     )
     let machine = try DoryPCDirectKernelMachine(
       memoryBytes: 2 * 1024 * 1024,
+      processorCount: 2,
       bootLayout: layout
     )
-    try machine.load(kernel: makeELF(code: [0x0F, 0x0B, 0xF4]), commandLine: "x")
-    let entry = try #require(machine.state?.rip)
+    try machine.load(kernel: makeELF(code: [0xF4]), commandLine: "x")
+    try machine.memory.write(
+      at: 0x8000,
+      bytes: [
+        0x66, 0x0F, 0x20, 0xC0,  // mov eax,cr0
+        0x66, 0x83, 0xC8, 0x01,  // or eax,1
+        0x66, 0x0F, 0x22, 0xC0,  // mov cr0,eax
+        0x0F, 0x0B, 0xF4,        // ud2; hlt
+      ]
+    )
+    try machine.physicalMemory.write(at: 0xFEE0_0310, bytes: [0, 0, 0, 1])
+    try machine.physicalMemory.write(at: 0xFEE0_0300, bytes: [8, 6, 0, 0])
 
-    guard case .tripleFault(let source, let count) = try machine.run(
-      maximumInstructions: 1,
+    let stop = try machine.run(
+      maximumInstructions: 16,
       exceptionPolicy: .deliver
-    ), case .exception(let evidence) = source else {
-      Issue.record("expected exception delivery to triple fault")
+    )
+    guard case .tripleFault(let source, let count) = stop,
+      case .exception(let evidence) = source
+    else {
+      Issue.record("expected exception delivery to triple fault, got \(stop)")
       return
     }
 
-    #expect(count == 0)
+    #expect(count == 4)
     #expect(evidence.exception.kind == .invalidOpcode)
-    #expect(evidence.processor == 0)
-    #expect(evidence.executionMode == .protected32)
-    #expect(evidence.state.rip == entry)
+    #expect(evidence.processor == 1)
+    #expect(evidence.executionMode == .protected16)
+    #expect(evidence.state.cs.base == 0x8000)
+    #expect(evidence.state.rip == 12)
     #expect(evidence.instructionBytes.starts(with: [0x0F, 0x0B, 0xF4]))
   }
 

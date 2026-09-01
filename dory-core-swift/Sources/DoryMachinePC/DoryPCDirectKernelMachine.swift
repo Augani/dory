@@ -520,9 +520,13 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           translatedMemories[processor].updateContext(
             .init(state: processorState.value, mode: faultMode)
           )
+          let faultLinearInstructionPointer =
+            faultMode == .long64
+            ? exception.instructionPointer
+            : processorState.value.cs.base &+ exception.instructionPointer
           let faultBytes =
             (try? translatedMemories[processor].instructionBytes(
-              at: exception.instructionPointer,
+              at: faultLinearInstructionPointer,
               maximumCount: 15
             )) ?? []
           let evidence = DoryPCTripleFaultExceptionEvidence(
