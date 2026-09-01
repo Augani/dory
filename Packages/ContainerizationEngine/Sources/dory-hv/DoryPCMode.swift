@@ -21,6 +21,18 @@ enum DoryPCMode {
         return try make()
     }
 
+    /// DoryPC's gvproxy sockets are ephemeral runtime endpoints. Derive their directory from the
+    /// already-admitted lifecycle socket rather than the persistent machine bundle, whose path can
+    /// legitimately exceed Darwin's `sockaddr_un.sun_path` limit.
+    static func ephemeralRuntimeDirectory(controlSocketPath: String) -> String? {
+        guard controlSocketPath.hasPrefix("/"),
+              !controlSocketPath.utf8.contains(0) else { return nil }
+        let directory = URL(fileURLWithPath: controlSocketPath)
+            .deletingLastPathComponent().standardizedFileURL.path
+        guard directory != "/", !directory.isEmpty else { return nil }
+        return directory
+    }
+
     struct Configuration {
         let envelope: DoryPCRuntimeLaunchEnvelope
         let authority: DoryPCUEFIRuntimeAuthority
@@ -328,9 +340,16 @@ enum DoryPCMode {
                 guard let interface = devices.networkInterface else {
                     throw VMError.invalidConfiguration("DoryPC network identity is missing")
                 }
+                guard let runtimeDirectory = DoryPCMode.ephemeralRuntimeDirectory(
+                    controlSocketPath: configuration.controlSocketPath
+                ) else {
+                    throw VMError.invalidConfiguration(
+                        "DoryPC lifecycle socket does not identify a runtime directory"
+                    )
+                }
                 let connected = try DoryPCGVProxyNetworkBackend(
                     gvproxyPath: configuration.gvproxyPath,
-                    stateDirectory: configuration.stateDirectory,
+                    stateDirectory: runtimeDirectory,
                     attachment: devices.networkAttachment,
                     interface: interface,
                     portForwards: envelope.portForwards

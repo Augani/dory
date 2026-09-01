@@ -35,6 +35,22 @@ import Testing
         }
     }
 
+    @Test func ephemeralNetworkSocketsFollowTheShortLifecycleRuntimeDirectory() {
+        let persistentMachineDirectory =
+            "/Users/example/Library/Application Support/Dory/Dory.dorydrive/machines/"
+            + String(repeating: "machine", count: 12)
+        let runtimeDirectory = "/var/folders/aa/runtime/d/m/0123456789abcdef"
+
+        #expect(DoryPCMode.ephemeralRuntimeDirectory(
+            controlSocketPath: runtimeDirectory + "/c.sock"
+        ) == runtimeDirectory)
+        #expect(DoryPCMode.ephemeralRuntimeDirectory(
+            controlSocketPath: persistentMachineDirectory + "/c.sock"
+        ) == persistentMachineDirectory)
+        #expect(DoryPCMode.ephemeralRuntimeDirectory(controlSocketPath: "relative/c.sock") == nil)
+        #expect(DoryPCMode.ephemeralRuntimeDirectory(controlSocketPath: "/c.sock") == nil)
+    }
+
     @Test func physicalUSBLeaseSurvivesResetAndRevokesTheRootPort() async throws {
         let token = DoryUSBPhysicalIdentityToken(
             rawValue: String(repeating: "a", count: 64)
