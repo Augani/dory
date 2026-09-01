@@ -22,6 +22,9 @@ nonisolated enum MachineBootMode: String, Sendable, Hashable, CaseIterable {
 nonisolated struct MachineSettings: Sendable, Hashable {
     var cpus: Int?
     var memoryMB: Int?
+    /// Guest operating-system family for full virtual machines. Headless/container compatibility
+    /// records retain Linux by default.
+    var guestFamily: String = "linux"
     /// Guest ISA selected for a whole-machine VM. Nil keeps the native host default for legacy
     /// records and container-backed headless environments.
     var guestArchitecture: MachineArch? = nil
@@ -37,6 +40,7 @@ nonisolated struct MachineSettings: Sendable, Hashable {
     var displayMode: MachineDisplayMode = .headless
     var bootMode: MachineBootMode = .linuxKernel
     var installerISOPath: String? = nil
+    var macOSRestoreImagePath: String? = nil
     var diskSizeGB: Int? = nil
     nonisolated static let `default` = MachineSettings(cpus: nil, memoryMB: nil)
 }

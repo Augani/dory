@@ -113,16 +113,29 @@ final class DoryScreensUITests: XCTestCase {
         app.buttons["Cancel"].firstMatch.click()
     }
 
-    func testNewMachineResourceControlsReachTheirBoundsWithoutCrashing() {
+    func testNewDesktopSupportsLinuxAndMacOSPlatformsAndResourceBounds() {
         nav("desktops")
         let create = app.buttons["create-first-desktop"]
         XCTAssertTrue(create.waitForExistence(timeout: 4))
         create.click()
-        XCTAssertTrue(app.buttons["desktop-distro-debian"].waitForExistence(timeout: 4))
-        XCTAssertTrue(app.buttons["desktop-distro-ubuntu"].exists)
-        XCTAssertTrue(app.buttons["desktop-distro-kali"].exists)
-        XCTAssertTrue(app.switches["new-machine-gpu-acceleration"].exists)
-        app.buttons["desktop-distro-ubuntu"].click()
+        let linuxARM64 = app.buttons["guest-platform-linuxARM64"]
+        let linuxX86 = app.buttons["guest-platform-linuxX86_64"]
+        let macOSARM64 = app.buttons["guest-platform-macOSARM64"]
+        let macOSX86 = app.buttons["guest-platform-macOSX86_64"]
+        XCTAssertTrue(linuxARM64.waitForExistence(timeout: 4))
+        XCTAssertTrue(linuxX86.exists)
+        XCTAssertTrue(macOSARM64.exists)
+        XCTAssertTrue(macOSX86.exists)
+        XCTAssertFalse(macOSX86.isEnabled)
+        XCTAssertTrue(app.buttons["custom-linux-iso-picker"].exists)
+
+        linuxX86.click()
+        XCTAssertTrue(app.buttons["custom-linux-iso-picker"].exists)
+        macOSARM64.click()
+        XCTAssertTrue(app.buttons["macos-ipsw-picker"].exists)
+        XCTAssertTrue(app.staticTexts["80 GB"].exists)
+        linuxARM64.click()
+
         let advanced = app.buttons["new-machine-advanced-toggle"]
         XCTAssertTrue(advanced.waitForExistence(timeout: 4))
         advanced.click()

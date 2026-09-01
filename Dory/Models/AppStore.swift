@@ -6249,7 +6249,7 @@ final class AppStore {
         }
         UserDefaults.standard.set(true, forKey: Self.legacyMachineCleanupKey)
         try? FileManager.default.removeItem(at: dir)
-        actionError = "Reclaimed disk space from the old machine cache (~/.dory/machines). New machines are doryd-managed Linux VMs with their own lifecycle and address."
+        actionError = "Reclaimed disk space from the old machine cache (~/.dory/machines). New Linux and macOS VMs are doryd-managed with their own lifecycle and address."
     }
 
     var browsingVolume: String?
@@ -6683,7 +6683,7 @@ final class AppStore {
         let arch = hostMachineAssetArch
         let kernel: String
         let rootfs: String
-        if settings.bootMode == .efi {
+        if settings.bootMode == .efi || settings.bootMode == .macOSRestore {
             kernel = ""
             rootfs = ""
         } else {
@@ -6723,6 +6723,7 @@ final class AppStore {
         }
         return DorydMachineConfiguration(
             id: name,
+            guestFamily: settings.guestFamily,
             guestArchitecture: settings.guestArchitecture.map {
                 $0 == .amd64 ? "x86_64" : $0.rawValue
             },
@@ -6730,6 +6731,7 @@ final class AppStore {
             rootfsPath: rootfs,
             bootMode: settings.bootMode,
             installerISOPath: settings.installerISOPath,
+            macOSRestoreImagePath: settings.macOSRestoreImagePath,
             diskSizeBytes: settings.diskSizeGB.flatMap { UInt64(exactly: $0) }.map {
                 $0 * 1024 * 1024 * 1024
             },
@@ -6764,6 +6766,16 @@ final class AppStore {
                   let installerISOPath = settings.installerISOPath,
                   FileManager.default.fileExists(atPath: installerISOPath) else {
                 let message = "Choose a readable Linux installer ISO before creating the VM."
+                actionError = message
+                return message
+            }
+        } else if settings.bootMode == .macOSRestore {
+            guard settings.guestFamily == "macos",
+                  settings.displayMode == .desktop,
+                  settings.guestArchitecture == nil || settings.guestArchitecture == .arm64,
+                  let restoreImagePath = settings.macOSRestoreImagePath,
+                  FileManager.default.fileExists(atPath: restoreImagePath) else {
+                let message = "Choose a readable Apple restore image (IPSW) before creating the Mac."
                 actionError = message
                 return message
             }
@@ -6856,10 +6868,25 @@ final class AppStore {
                 appendMachineCreationLog("Installer media is staged for the VM service.")
                 stagedInstallerISOPath = staged.path
                 settings.installerISOPath = staged.path
+            } else if settings.bootMode == .macOSRestore,
+                      let restoreImagePath = settings.macOSRestoreImagePath {
+                let sourceURL = URL(fileURLWithPath: restoreImagePath)
+                let hasSecurityScope = sourceURL.startAccessingSecurityScopedResource()
+                defer {
+                    if hasSecurityScope { sourceURL.stopAccessingSecurityScopedResource() }
+                }
+                appendMachineCreationLog(
+                    "Validating the Apple restore image and preparing a private Mac identity…"
+                )
             }
             let desktopAssets: DesktopMachineAssets?
             if settings.bootMode == .efi {
                 appendMachineCreationLog("Importing the installer ISO and creating a thin-provisioned virtual disk…")
+                desktopAssets = nil
+            } else if settings.bootMode == .macOSRestore {
+                appendMachineCreationLog(
+                    "Importing the IPSW and creating the Mac disk, hardware model, and auxiliary storage…"
+                )
                 desktopAssets = nil
             } else if settings.displayMode == .desktop {
                 let distro = DesktopMachineDistro.resolve(
@@ -6910,6 +6937,10 @@ final class AppStore {
             if settings.bootMode == .efi {
                 appendMachineCreationLog(
                     "VM and display started. Complete Linux setup in the desktop window."
+                )
+            } else if settings.bootMode == .macOSRestore {
+                appendMachineCreationLog(
+                    "macOS restore started. Dory will open the Mac after installation completes."
                 )
             } else {
                 appendMachineCreationLog("Machine created and started.")

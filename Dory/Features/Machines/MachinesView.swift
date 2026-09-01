@@ -1398,7 +1398,9 @@ private struct MachineEditSheet: View {
                     clipboardBlock
                     resourceRow
                     addressBlock
-                    mountsBlock
+                    if machine.guestFamily != "macos" {
+                        mountsBlock
+                    }
                 }
                 .padding(20)
             }
@@ -1463,7 +1465,9 @@ private struct MachineEditSheet: View {
                 .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 10))
             VStack(alignment: .leading, spacing: 1) {
                 Text("Edit \(machine.name)").font(.system(size: 15, weight: .bold)).foregroundStyle(p.text)
-                Text(machine.bootMode == .efi
+                Text(machine.bootMode == .macOSRestore
+                     ? "Apply supported Mac device and presentation settings"
+                     : machine.bootMode == .efi
                      ? "Apply resources, address and mounted folders"
                      : "Apply user, resources, address and mounted folders")
                     .font(.system(size: 11.5)).foregroundStyle(p.text3)
@@ -1476,7 +1480,9 @@ private struct MachineEditSheet: View {
     private var warning: some View {
         HStack(spacing: 9) {
             Image(systemName: "info.circle.fill").font(.system(size: 13)).foregroundStyle(p.accent)
-            Text(machine.bootMode == .efi
+            Text(machine.bootMode == .macOSRestore
+                 ? "The Mac platform identity, architecture, and restore disk are fixed. Supported device changes restart the Mac safely."
+                 : machine.bootMode == .efi
                  ? "Resource and mount changes restart a running machine automatically. The EFI machine type is fixed to protect its installed disk."
                  : "Resource, user and mount changes restart a running machine automatically. The machine type is fixed to protect its existing disk.")
                 .font(.system(size: 12)).foregroundStyle(p.text2)
@@ -1495,13 +1501,23 @@ private struct MachineEditSheet: View {
                     .frame(width: 34, height: 34)
                     .background(p.accentSoft, in: RoundedRectangle(cornerRadius: 9))
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(machine.bootMode == .efi ? "Custom EFI Linux" : (displayMode == .desktop ? "Desktop Linux" : "Headless Linux"))
+                    Text(machine.guestFamily == "macos"
+                         ? "Native macOS"
+                         : machine.bootMode == .efi
+                            ? "Custom EFI Linux"
+                            : (displayMode == .desktop ? "Desktop Linux" : "Headless Linux"))
                         .font(.system(size: 12.5, weight: .semibold)).foregroundStyle(p.text)
-                    Text(displayMode == .desktop ? "\(machine.distro) \(machine.version)" : "Lightweight Dory Linux")
+                    Text(machine.guestFamily == "macos"
+                         ? "ARM64 · Apple Virtualization.framework"
+                         : displayMode == .desktop
+                            ? "\(machine.distro) \(machine.version)"
+                            : "Lightweight Dory Linux")
                         .font(.system(size: 11)).foregroundStyle(p.text3)
                 }
                 Spacer(minLength: 0)
-                if displayMode == .desktop, machine.bootMode != .efi {
+                if displayMode == .desktop,
+                   machine.bootMode != .efi,
+                   machine.guestFamily != "macos" {
                     TextField("dory", text: $guestUsername)
                         .textFieldStyle(.plain)
                         .font(.mono(11.5)).foregroundStyle(p.text)
@@ -1589,7 +1605,9 @@ private struct MachineEditSheet: View {
                 .foregroundStyle(p.text)
                 .disabled(!audioPolicyEditable)
                 Text(audioPolicyEditable
-                     ? (machine.bootMode == .efi
+                     ? (machine.guestFamily == "macos"
+                        ? "Audio uses Apple virtual devices. Camera access uses Dory Camera and follows host macOS privacy permission."
+                        : machine.bootMode == .efi
                         ? "Speakers and microphone use standard VirtIO audio. Camera sharing is currently available on Dory-managed accelerated desktops, not custom ISO compatibility guests."
                         : "Enabled devices are attached explicitly. Camera sharing appears in Linux as a standard UVC webcam and follows macOS camera permission.")
                      : "This compatibility machine keeps its historical combined audio device. Replan it into the resolved runtime before changing audio policy.")
@@ -1611,12 +1629,14 @@ private struct MachineEditSheet: View {
                 .labelsHidden()
                 .pickerStyle(.segmented)
                 .accessibilityIdentifier("edit-machine-clipboard-policy")
-                Text("Control whether text and images can move between this Linux desktop and your Mac.")
+                Text(machine.guestFamily == "macos"
+                     ? "Control whether text and images can move between this virtual Mac and the host Mac."
+                     : "Control whether text and images can move between this Linux desktop and your Mac.")
                     .font(.system(size: 11)).foregroundStyle(p.text3)
                 Picker("File transfer", selection: $fileTransferPolicy) {
                     Text("Off").tag(DoryVMClipboardDirection.off)
-                    Text("To Linux").tag(DoryVMClipboardDirection.hostToGuest)
-                    Text("To Mac").tag(DoryVMClipboardDirection.guestToHost)
+                    Text("To Guest").tag(DoryVMClipboardDirection.hostToGuest)
+                    Text("To Host").tag(DoryVMClipboardDirection.guestToHost)
                     Text("Both").tag(DoryVMClipboardDirection.bidirectional)
                 }
                 .pickerStyle(.segmented)
@@ -1628,7 +1648,9 @@ private struct MachineEditSheet: View {
     }
 
     @ViewBuilder private var runtimeBlock: some View {
-        if displayMode == .desktop, machine.bootMode != .efi {
+        if displayMode == .desktop,
+           machine.bootMode != .efi,
+           machine.guestFamily != "macos" {
             VStack(alignment: .leading, spacing: 9) {
                 sectionLabel("DISPLAY ENGINE")
                 HStack(spacing: 14) {
@@ -1675,7 +1697,7 @@ private struct MachineEditSheet: View {
                 }
                 .accessibilityIdentifier("edit-machine-host-display")
                 Text(dedicatedHostDisplayUUID == nil
-                     ? "The Linux desktop opens as a normal Mac window."
+                     ? "The guest desktop opens as a normal Mac window."
                      : "The guest owns a native full-screen Space on this monitor. Command-Control-F exits full screen; disconnecting it falls back to a normal window.")
                     .font(.system(size: 11))
                     .foregroundStyle(p.text3)
@@ -1684,7 +1706,9 @@ private struct MachineEditSheet: View {
     }
 
     @ViewBuilder private var intelApplicationTranslationBlock: some View {
-        if displayMode == .desktop, machine.bootMode != .efi {
+        if displayMode == .desktop,
+           machine.bootMode != .efi,
+           machine.guestFamily != "macos" {
             MachineIntelApplicationTranslationControl(
                 isEnabled: $intelApplicationTranslationEnabled,
                 editable: intelApplicationTranslationPolicyEditable,

@@ -3809,6 +3809,38 @@ struct DorydClientTests {
         #expect(custom.typedSettings.isEmpty)
         #expect(custom.xpcDictionary["env"] == nil)
         #expect(custom.xpcDictionary["guestIdentityIntent"] == nil)
+
+        let nativeMac = AppStore.dorydMachineConfiguration(
+            name: "mac-dev",
+            settings: MachineSettings(
+                cpus: 6,
+                memoryMB: 8_192,
+                guestFamily: "macos",
+                guestArchitecture: .arm64,
+                virtualMachineSettings: DorydMachineTypedSettings(
+                    networkMode: .sharedNAT,
+                    audioConfiguration: DoryVMAudioConfiguration(
+                        inputEnabled: true,
+                        outputEnabled: true
+                    ),
+                    cameraConfiguration: DoryVMCameraConfiguration(enabled: true)
+                ),
+                displayMode: .desktop,
+                bootMode: .macOSRestore,
+                macOSRestoreImagePath: "/Downloads/Restore.ipsw",
+                diskSizeGB: 96
+            ),
+            environment: ["DORYD_DISABLE_BUNDLED_MACHINE_ASSETS": "1"]
+        )
+        let mac = try #require(nativeMac)
+        #expect(mac.guestFamily == "macos")
+        #expect(mac.guestArchitecture == "arm64")
+        #expect(mac.kernelPath.isEmpty)
+        #expect(mac.rootfsPath.isEmpty)
+        #expect(mac.bootMode == .macOSRestore)
+        #expect(mac.macOSRestoreImagePath == "/Downloads/Restore.ipsw")
+        #expect(mac.diskSizeBytes == 96 * 1_024 * 1_024 * 1_024)
+        #expect(mac.typedSettings.cameraConfiguration?.enabled == true)
     }
 
     @Test func nativeMacMachineConfigurationUsesExplicitTypedXPCFields() {
