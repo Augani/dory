@@ -6,18 +6,17 @@ import XCTest
 final class DoryComponentsTests: XCTestCase {
     func testComponentSelectionURLRoundTripsInCanonicalOrder() throws {
         let url = try XCTUnwrap(DoryComponentSelectionURL.make([
-            .desktopUbuntu,
+            .linuxMachines,
             .kubernetes,
-            .linuxDesktop,
         ]))
 
         XCTAssertEqual(
             DoryComponentSelectionURL.parse(url),
-            [.kubernetes, .linuxDesktop, .desktopUbuntu]
+            [.kubernetes, .linuxMachines]
         )
         XCTAssertEqual(
             url.absoluteString,
-            "dory://components/install?ids=kubernetes,linux-desktop,desktop-ubuntu"
+            "dory://components/install?ids=kubernetes,linux-machines"
         )
     }
 
@@ -29,6 +28,10 @@ final class DoryComponentsTests: XCTestCase {
             "dory://components/install",
             "dory://components/install?ids=",
             "dory://components/install?ids=docker-core",
+            "dory://components/install?ids=linux-desktop",
+            "dory://components/install?ids=desktop-debian",
+            "dory://components/install?ids=desktop-ubuntu",
+            "dory://components/install?ids=desktop-kali",
             "dory://components/install?ids=unknown",
             "dory://components/install?ids=kubernetes,kubernetes",
             "dory://components/install?ids=kubernetes,",
@@ -44,6 +47,8 @@ final class DoryComponentsTests: XCTestCase {
         }
         XCTAssertNil(DoryComponentSelectionURL.make([]))
         XCTAssertNil(DoryComponentSelectionURL.make([.dockerCore]))
+        XCTAssertNil(DoryComponentSelectionURL.make([.linuxDesktop]))
+        XCTAssertNil(DoryComponentSelectionURL.make([.desktopUbuntu]))
     }
 
     func testSignedCatalogRejectsTamperingWrongArchitectureAndOldApp() throws {

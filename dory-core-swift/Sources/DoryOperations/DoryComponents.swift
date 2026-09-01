@@ -67,7 +67,9 @@ public enum DoryComponentSelectionURL {
 
     public static func make(_ ids: some Sequence<DoryComponentID>) -> URL? {
         let selected = Set(ids)
-        guard !selected.isEmpty, selected.allSatisfy(\.isRemovable) else { return nil }
+        guard !selected.isEmpty,
+              selected.allSatisfy(\.isRemovable),
+              selected.allSatisfy(\.isUserSelectable) else { return nil }
         let ordered = DoryComponentID.allCases.filter(selected.contains)
         var components = URLComponents()
         components.scheme = scheme
