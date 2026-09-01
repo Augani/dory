@@ -3280,13 +3280,41 @@ final class DorydServiceTests: XCTestCase {
             "displayMode": "desktop",
         ]) { ok, _, message in
             XCTAssertFalse(ok)
-            XCTAssertTrue(message.contains("not a portable ARM64 EFI Linux ISO"), message)
+            XCTAssertTrue(message.contains("not a portable EFI Linux ISO"), message)
             reply.fulfill()
         }
         wait(for: [reply], timeout: 5)
 
         XCTAssertNil(manager.status(id: "not-portable"))
         XCTAssertFalse(FileManager.default.fileExists(atPath: state + "/not-portable"))
+    }
+
+    func testMachineCreateRejectsUnknownGuestArchitectureAtXPCBoundary() throws {
+        let base = "/tmp/doryd-service-guest-arch-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: base,
+            requiresReadyHandoff: false
+        ))
+        let service = DorydService(
+            socketPath: "/tmp/doryd-test.sock",
+            machineManager: manager
+        )
+        let reply = expectation(description: "unknown guest architecture rejected")
+
+        service.machineCreate([
+            "id": "unknown-arch",
+            "guestArchitecture": "riscv64",
+            "kernelPath": doryTestKernelPath,
+            "rootfsPath": doryTestRootfsPath,
+        ]) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("unsupported guest architecture: riscv64"), message)
+            reply.fulfill()
+        }
+        wait(for: [reply], timeout: 5)
+        XCTAssertNil(manager.status(id: "unknown-arch"))
     }
 
     func testPerWorkspaceCreatePlanningFailureRollsBackBeforeNameCanCollide() throws {

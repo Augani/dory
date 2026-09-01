@@ -21,6 +21,9 @@ nonisolated enum MachineBootMode: String, Sendable, Hashable, CaseIterable {
 nonisolated struct MachineSettings: Sendable, Hashable {
     var cpus: Int?
     var memoryMB: Int?
+    /// Guest ISA selected for a whole-machine VM. Nil keeps the native host default for legacy
+    /// records and container-backed headless environments.
+    var guestArchitecture: MachineArch? = nil
     var mounts: [MountPair] = []
     var ports: [PortPair] = []
     var identity: MacIdentity? = nil

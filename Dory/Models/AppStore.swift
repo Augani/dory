@@ -5322,6 +5322,9 @@ final class AppStore {
             return MachineSettings(
                 cpus: status.cpuCount,
                 memoryMB: status.memoryMB.flatMap { Int(exactly: $0) },
+                guestArchitecture: status.guestArchitecture.flatMap {
+                    $0 == "x86_64" ? .amd64 : MachineArch(rawValue: $0)
+                },
                 mounts: status.shares.map(Self.mountPair(fromDoryd:)),
                 env: [:],
                 virtualMachineSettings: status.typedSettings
@@ -5489,7 +5492,9 @@ final class AppStore {
         return Machine(
             name: status.id,
             distro: isCustomLinux ? "Custom Linux" : (isDesktop ? desktopDistro.displayName : "Dory Linux"),
-            version: isCustomLinux ? "EFI · arm64" : (isDesktop ? "\(desktopDistro.version) · \(desktopDistro.desktopName)" : detail),
+            version: isCustomLinux
+                ? "EFI · \(status.guestArchitecture ?? "arm64")"
+                : (isDesktop ? "\(desktopDistro.version) · \(desktopDistro.desktopName)" : detail),
             status: runState,
             cpuPercent: 0,
             memoryDisplay: "—",
@@ -5497,7 +5502,7 @@ final class AppStore {
             letter: isCustomLinux ? "L" : (isDesktop ? String(desktopDistro.displayName.prefix(1)) : "D"),
             badgeHex: isCustomLinux ? 0x7C3AED : (isDesktop ? desktopDistro.badgeHex : 0x3B82F6),
             containerID: "",
-            arch: "",
+            arch: status.guestArchitecture ?? "",
             recipe: "doryd",
             username: guestUsername,
             loginShell: isCustomLinux ? "" : (isDesktop ? "/bin/bash" : "/bin/sh"),
@@ -6712,6 +6717,9 @@ final class AppStore {
         }
         return DorydMachineConfiguration(
             id: name,
+            guestArchitecture: settings.guestArchitecture.map {
+                $0 == .amd64 ? "x86_64" : $0.rawValue
+            },
             kernelPath: kernel,
             rootfsPath: rootfs,
             bootMode: settings.bootMode,
@@ -6825,7 +6833,11 @@ final class AppStore {
                     if hasSecurityScope { sourceURL.stopAccessingSecurityScopedResource() }
                 }
                 appendMachineCreationLog("Checking the selected installer's EFI architecture…")
-                let staged = try DoryInstallerISOStager.stage(atPath: installerISOPath)
+                let staged = try DoryInstallerISOStager.stage(
+                    atPath: installerISOPath,
+                    allowsTranslatedX86_64OnARM64:
+                        AppInfo.vmQualificationBootstrapEnabled
+                )
                 if staged.architecture == .unknown {
                     appendMachineCreationLog("The EFI architecture is non-standard; continuing as a custom image.")
                 } else {

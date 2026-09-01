@@ -497,6 +497,38 @@ struct DoryMachineConfigurationMigrationTests {
         """#)
     }
 
+    @Test("explicit mixed-architecture intent round trips without changing older records")
+    func explicitGuestArchitectureRoundTrip() throws {
+        let legacy = DoryMachineConfiguration(
+            id: "pc-dev",
+            guestArchitecture: .x86_64,
+            kernelPath: "/managed/pc-dev/kernel",
+            rootfsPath: "/managed/pc-dev/rootfs.ext4",
+            bootMode: .efi,
+            installerISOPath: "/managed/pc-dev/installer.iso",
+            diskSizeBytes: 64 * gibibyte,
+            displayMode: .desktop,
+            environment: ["DORY_CUSTOM_LINUX": "1"]
+        )
+        let migrated = try DoryMachineConfigurationMigrationBridge.migrate(
+            legacy,
+            facts: DoryMachineConfigurationMigrationFacts(
+                guestArchitecture: .x86_64,
+                systemDiskCapacityBytes: 64 * gibibyte,
+                lifecycle: DoryVMLifecycleMetadata(
+                    revision: 1,
+                    createdAtUnixMilliseconds: 1_787_200_000_000,
+                    updatedAtUnixMilliseconds: 1_787_200_000_000
+                )
+            )
+        )
+
+        #expect(migrated.definition.guest.architecture == .x86_64)
+        #expect(try migrated.legacyConfiguration() == legacy)
+        #expect(try migrated.authoritativeLegacyData()
+            == DoryMachineConfigurationMigrationBridge.encodeLegacy(legacy))
+    }
+
     private func migrate(
         _ configuration: DoryMachineConfiguration,
         capacity: UInt64,

@@ -491,6 +491,7 @@ nonisolated struct DorydMachineTypedSettingsPatch: Sendable, Equatable {
 
 nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
     var id: String
+    var guestArchitecture: String? = nil
     var kernelPath: String
     var rootfsPath: String
     var bootMode: MachineBootMode = .linuxKernel
@@ -513,6 +514,9 @@ nonisolated struct DorydMachineConfiguration: Sendable, Equatable {
             "cpuCount": cpuCount,
             "displayMode": displayMode.rawValue,
         ]
+        if let guestArchitecture {
+            dictionary["guestArchitecture"] = guestArchitecture
+        }
         if let address {
             dictionary["address"] = address
         }
@@ -1142,6 +1146,7 @@ nonisolated struct DorydMachineOperationSummary: Sendable, Equatable, Hashable {
 
 nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var id: String
+    var guestArchitecture: String? = nil
     var state: String
     var pid: Int32?
     var lastError: String?
@@ -3125,6 +3130,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
         return DorydMachineStatus(
             id: id,
+            guestArchitecture: nonEmptyString(dictionary["guestArchitecture"]),
             state: state,
             pid: int32(dictionary["pid"]),
             lastError: nonEmptyString(dictionary["lastError"]),

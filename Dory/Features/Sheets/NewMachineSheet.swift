@@ -320,7 +320,9 @@ struct NewMachineSheet: View {
                     incrementIdentifier: "custom-linux-disk-increment"
                 )
             }
-            Text("Dory stores a private copy of the ISO, a thin-provisioned disk, a stable VM identity, and persistent EFI NVRAM. Choose an arm64 ISO on Apple Silicon.")
+            Text(AppInfo.vmQualificationBootstrapEnabled
+                ? "Dory stores a private copy of the ISO, a thin-provisioned disk, a stable VM identity, and persistent EFI NVRAM. This candidate accepts portable ARM64 and x86_64 EFI media."
+                : "Dory stores a private copy of the ISO, a thin-provisioned disk, a stable VM identity, and persistent EFI NVRAM. Choose an ARM64 ISO on Apple silicon.")
                 .font(.system(size: 11)).foregroundStyle(p.text3)
             Label(
                 "Dory starts installers with a balanced 4-vCPU default. EFI architecture and exact-media runtime qualification are checked separately.",
@@ -350,7 +352,7 @@ struct NewMachineSheet: View {
                     color: p.amber,
                     text: architecture == .multiArchitecture
                         ? "Universal EFI architecture confirmed — this exact media is not yet runtime-qualified by Dory."
-                        : "ARM64 EFI architecture confirmed — this exact media is not yet runtime-qualified by Dory."
+                        : "\(architecture == .x86_64 ? "x86_64" : "ARM64") EFI architecture confirmed — this exact media is not yet runtime-qualified by Dory."
                 )
             case let .knownUnstable(message):
                 isoStatusRow(icon: "exclamationmark.octagon.fill", color: p.red, text: message)
@@ -359,7 +361,7 @@ struct NewMachineSheet: View {
             isoStatusRow(
                 icon: "xmark.octagon.fill",
                 color: p.red,
-                text: "Dory could not prove a portable ARM64 EFI loader in this ISO. Choose different media."
+                text: "Dory could not prove a portable ARM64 or x86_64 EFI loader in this ISO. Choose different media."
             )
         case let .unstable(message):
             isoStatusRow(icon: "exclamationmark.octagon.fill", color: p.red, text: message)
@@ -898,7 +900,9 @@ struct NewMachineSheet: View {
         if let isoType = UTType(filenameExtension: "iso") {
             panel.allowedContentTypes = [isoType]
         }
-        panel.message = "Choose an arm64 Linux installer ISO"
+        panel.message = AppInfo.vmQualificationBootstrapEnabled
+            ? "Choose an ARM64 or x86_64 Linux installer ISO"
+            : "Choose an ARM64 Linux installer ISO"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         installerISOPath = url.path
         installerISOCheck = .checking
@@ -927,10 +931,18 @@ struct NewMachineSheet: View {
                 installerISOCheck = .failed(result.1 ?? "Dory could not inspect this ISO.")
                 return
             }
-            switch DoryInstallerISOInspector.compatibility(
-                of: identity.architecture,
-                hostArchitecture: DoryInstallerISOInspector.currentHostArchitecture
-            ) {
+            let compatibility: DoryInstallerISOCompatibility
+            if AppInfo.vmQualificationBootstrapEnabled,
+               identity.architecture == .x86_64,
+               DoryInstallerISOInspector.currentHostArchitecture == "arm64" {
+                compatibility = .compatible
+            } else {
+                compatibility = DoryInstallerISOInspector.compatibility(
+                    of: identity.architecture,
+                    hostArchitecture: DoryInstallerISOInspector.currentHostArchitecture
+                )
+            }
+            switch compatibility {
             case .compatible:
                 let qualification = DoryInstallerISORuntimeCatalog.qualification(of: identity)
                 if case let .knownUnstable(message) = qualification {
@@ -952,6 +964,14 @@ struct NewMachineSheet: View {
             false
         case .none, .checking, .unknown, .unstable, .incompatible, .failed:
             true
+        }
+    }
+
+    private var selectedGuestArchitecture: MachineArch? {
+        switch installerISOCheck {
+        case .compatible(.x86_64, _): .amd64
+        case .compatible(.arm64, _), .compatible(.multiArchitecture, _): .arm64
+        default: nil
         }
     }
 
@@ -1070,6 +1090,7 @@ struct NewMachineSheet: View {
             gpuAccelerationEnabled: gpuAccelerationEnabled
         )
         if customISOInstall {
+            settings.guestArchitecture = selectedGuestArchitecture
             settings.bootMode = .efi
             settings.installerISOPath = installerISOPath
             settings.diskSizeGB = diskSizeGB
@@ -1077,6 +1098,8 @@ struct NewMachineSheet: View {
             // environment marker or carry managed-desktop provisioning intent.
             settings.env = [:]
             settings.virtualMachineSettings = DorydMachineTypedSettings(
+                runtimePreference: selectedGuestArchitecture == .amd64 ? .accelerated : nil,
+                graphicsPreference: selectedGuestArchitecture == .amd64 ? .software : nil,
                 networkMode: networkMode,
                 portForwards: resolvedPortForwards ?? [],
                 audioConfiguration: DoryVMAudioConfiguration(

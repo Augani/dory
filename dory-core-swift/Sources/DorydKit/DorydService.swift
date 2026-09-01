@@ -641,12 +641,12 @@ public final class DorydService: NSObject, DorydControl {
             let machine = try DoryMachineConfiguration(xpcDictionary: config)
             if machine.bootMode == .efi, let installerISOPath = machine.installerISOPath {
                 do {
-                    _ = try DoryQualifiedBootMediaInspector
-                        .inspectPortableLinuxARM64InstallerISO(atPath: installerISOPath)
+                    _ = try DoryInstallerISOInspector
+                        .portableEFIMediaIdentity(atPath: installerISOPath)
                 } catch {
                     throw MachineManagerError.persistence(
-                        "The selected installer is not a portable ARM64 EFI Linux ISO. "
-                            + "Choose media with a standard EFI/BOOT/BOOTAA64.EFI loader."
+                        "The selected installer is not a portable EFI Linux ISO. Choose media "
+                            + "with a standard EFI/BOOT/BOOTAA64.EFI or BOOTX64.EFI loader."
                     )
                 }
             }
@@ -2650,6 +2650,14 @@ private extension DoryMachineConfiguration {
         }
         self.init(
             id: try dictionary.requiredString("id"),
+            guestArchitecture: try dictionary.optionalString("guestArchitecture").map {
+                guard let architecture = DoryGuestArchitecture(rawValue: $0) else {
+                    throw MachineManagerError.persistence(
+                        "unsupported guest architecture: \($0)"
+                    )
+                }
+                return architecture
+            },
             kernelPath: dictionary.optionalString("kernelPath") ?? "",
             rootfsPath: dictionary.optionalString("rootfsPath") ?? "",
             bootMode: bootMode,
@@ -3022,6 +3030,9 @@ private extension DoryMachineStatus {
             "state": state.rawValue,
             "lastError": lastError ?? "",
         ]
+        if let guestArchitecture {
+            dictionary["guestArchitecture"] = guestArchitecture.rawValue
+        }
         if let pid {
             dictionary["pid"] = pid
         }

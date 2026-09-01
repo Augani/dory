@@ -1538,6 +1538,7 @@ struct DorydClientTests {
         let shareBookmark = Data([0x44, 0x4f, 0x52, 0x59])
         let createdMachine = try await client.machineCreate(DorydMachineConfiguration(
             id: "dev",
+            guestArchitecture: "x86_64",
             kernelPath: "/tmp/kernel",
             rootfsPath: "/tmp/rootfs",
             memoryMB: 2048,
@@ -1747,6 +1748,7 @@ struct DorydClientTests {
         )
         #expect((createForwards.firstObject as? NSDictionary)?["hostPort"] as? Int == 8_080)
         #expect(createdMachine.state == "created")
+        #expect(createdMachine.guestArchitecture == "x86_64")
         #expect(createdMachine.displayMode == .desktop)
         #expect(startedMachine.pid == 1234)
         #expect(startedMachine.agentBuild == "agent-test")
@@ -5544,6 +5546,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         let row = Self.machineRow(
             id: id,
             state: "created",
+            guestArchitecture: config["guestArchitecture"] as? String,
             memoryMB: Self.uint64(config["memoryMB"]) ?? 2048,
             cpuCount: Self.int(config["cpuCount"]) ?? 2,
             address: config["address"] as? String,
@@ -6675,6 +6678,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private static func machineRow(
         id: String,
         state: String,
+        guestArchitecture: String? = nil,
         pid: Int32? = nil,
         agentBuild: String? = nil,
         agentProtocolVersion: UInt32? = 1,
@@ -6710,6 +6714,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
                 "available": true,
             ] as NSDictionary,
         ]
+        if let guestArchitecture { row["guestArchitecture"] = guestArchitecture }
         if let pid { row["pid"] = pid }
         if let agentBuild {
             row["agentBuild"] = agentBuild

@@ -240,6 +240,10 @@ public enum DoryMachineBootMode: String, Sendable, Equatable, Hashable, Codable,
 
 public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
     public var id: String
+    /// Guest ISA is workspace intent, not a property of the host daemon. Keeping it on each
+    /// machine lets one Apple-silicon installation own native ARM64 and translated x86_64 VMs
+    /// without changing a process-global architecture switch.
+    public var guestArchitecture: DoryGuestArchitecture?
     public var kernelPath: String
     public var rootfsPath: String
     public var bootMode: DoryMachineBootMode
@@ -256,6 +260,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
 
     public init(
         id: String,
+        guestArchitecture: DoryGuestArchitecture? = nil,
         kernelPath: String,
         rootfsPath: String,
         bootMode: DoryMachineBootMode = .linuxKernel,
@@ -271,6 +276,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         cloneReceipt: DoryMachineCloneReceipt? = nil
     ) {
         self.id = id
+        self.guestArchitecture = guestArchitecture
         self.kernelPath = kernelPath
         self.rootfsPath = rootfsPath
         self.bootMode = bootMode
@@ -288,6 +294,7 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
 
     private enum CodingKeys: String, CodingKey {
         case id
+        case guestArchitecture
         case kernelPath
         case rootfsPath
         case bootMode
@@ -307,6 +314,10 @@ public struct DoryMachineConfiguration: Sendable, Equatable, Hashable, Codable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.init(
             id: try container.decode(String.self, forKey: .id),
+            guestArchitecture: try container.decodeIfPresent(
+                DoryGuestArchitecture.self,
+                forKey: .guestArchitecture
+            ),
             kernelPath: try container.decode(String.self, forKey: .kernelPath),
             rootfsPath: try container.decode(String.self, forKey: .rootfsPath),
             bootMode: try container.decodeIfPresent(DoryMachineBootMode.self, forKey: .bootMode) ?? .linuxKernel,
@@ -347,6 +358,7 @@ public enum DoryMachineState: String, Sendable, Equatable {
 
 public struct DoryMachineStatus: Sendable, Equatable {
     public var id: String
+    public var guestArchitecture: DoryGuestArchitecture?
     public var state: DoryMachineState
     public var pid: Int32?
     public var lastError: String?
@@ -391,6 +403,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
 
     public init(
         id: String,
+        guestArchitecture: DoryGuestArchitecture? = nil,
         state: DoryMachineState,
         pid: Int32? = nil,
         lastError: String? = nil,
@@ -433,6 +446,7 @@ public struct DoryMachineStatus: Sendable, Equatable {
         savedState: DoryMachineSavedStateStatus? = nil
     ) {
         self.id = id
+        self.guestArchitecture = guestArchitecture
         self.state = state
         self.pid = pid
         self.lastError = lastError
@@ -1890,9 +1904,10 @@ public final class MachineManager: @unchecked Sendable {
                 }
             }
         }
-        // Reject incompatible media before allocating a virtual disk or importing a potentially
-        // multi-gigabyte ISO. The managed copy is created only after this preflight succeeds.
-        try validateInstallerArchitecture(machine)
+        // Resolve and persist guest ISA before allocating a virtual disk or importing a
+        // potentially multi-gigabyte ISO. Architecture is workspace intent, so a native ARM64
+        // VM and a translated x86_64 VM can coexist under the same Apple-silicon daemon.
+        try resolveGuestArchitecture(&machine)
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(atPath: configuration.stateDirectory, withIntermediateDirectories: true)
@@ -2019,6 +2034,7 @@ public final class MachineManager: @unchecked Sendable {
         )
         return DoryMachineStatus(
             id: preparedMachine.id,
+            guestArchitecture: preparedMachine.guestArchitecture,
             state: .created,
             flightRecorderHeadSequence: createdEntry.flightRecorderHeadSequence,
             flightRecorderAvailable: createdEntry.flightRecorderAvailable,
@@ -6121,7 +6137,7 @@ public final class MachineManager: @unchecked Sendable {
             rootfsPath: rootfsPath,
             sizeBytes: snapshotSize,
             kernelPath: kernelPath,
-            architecture: configuration.guestArchitecture,
+            architecture: try guestArchitectureString(for: machine),
             memoryMB: machine.memoryMB,
             cpuCount: machine.cpuCount,
             displayMode: machine.displayMode,
@@ -6804,6 +6820,7 @@ public final class MachineManager: @unchecked Sendable {
         )
         let machine = DoryMachineConfiguration(
             id: newID,
+            guestArchitecture: DoryGuestArchitecture(rawValue: snapshot.architecture),
             kernelPath: snapshot.kernelPath,
             rootfsPath: snapshot.rootfsPath,
             bootMode: snapshot.bootMode,
@@ -7173,7 +7190,7 @@ public final class MachineManager: @unchecked Sendable {
         try Self.validateSnapshotRuntimeIdentity(snapshot)
 
         var issues: [DoryMachineImportIssueCode] = []
-        let architectureMatches = snapshot.architecture == configuration.guestArchitecture
+        let architectureMatches = supportsSnapshotArchitecture(snapshot.architecture)
         if !architectureMatches { issues.append(.architectureMismatch) }
         let abiMatches = snapshot.runtimeIdentity.virtualHardwareABIVersion
             == DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
@@ -7296,9 +7313,9 @@ public final class MachineManager: @unchecked Sendable {
             guard Self.isValidID(snapshot.machineID), Self.isValidID(snapshot.id) else {
                 throw MachineManagerError.persistence("invalid snapshot metadata")
             }
-            guard snapshot.architecture == configuration.guestArchitecture else {
+            guard supportsSnapshotArchitecture(snapshot.architecture) else {
                 throw MachineManagerError.persistence(
-                    "machine snapshot architecture \(snapshot.architecture) is incompatible with \(configuration.guestArchitecture)"
+                    "machine snapshot architecture \(snapshot.architecture) is unavailable on this host"
                 )
             }
             try Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)
@@ -7626,6 +7643,7 @@ public final class MachineManager: @unchecked Sendable {
            entry.process?.isRunningOrRestarting != true {
             return DoryMachineStatus(
                 id: id,
+                guestArchitecture: entry.configuration.guestArchitecture,
                 state: .failed,
                 lastError: entry.lastError ?? "dory-vmm process exited",
                 failure: entry.failure ?? DoryMachineFailure(
@@ -7663,6 +7681,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         return DoryMachineStatus(
             id: id,
+            guestArchitecture: entry.configuration.guestArchitecture,
             state: entry.state,
             pid: entry.process?.pid,
             lastError: entry.lastError,
@@ -9918,25 +9937,115 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
-    private func validateInstallerArchitecture(_ machine: DoryMachineConfiguration) throws {
-        guard machine.bootMode == .efi, let installerISOPath = machine.installerISOPath else {
-            return
+    private func resolveGuestArchitecture(
+        _ machine: inout DoryMachineConfiguration
+    ) throws {
+        let daemonArchitecture = try configuredGuestArchitecture()
+        var requested = machine.guestArchitecture ?? daemonArchitecture
+
+        if machine.bootMode == .efi, let installerISOPath = machine.installerISOPath {
+            let detected: DoryInstallerISOArchitecture
+            do {
+                // The public daemon has already minted structural portable-EFI evidence before
+                // calling the manager. Keep this internal boundary architecture-only so recovery
+                // and isolated manager harnesses can use synthetic media without bypassing the
+                // daemon's stricter admission path.
+                detected = try DoryInstallerISOInspector.architecture(
+                    atPath: installerISOPath
+                )
+            } catch {
+                throw MachineManagerError.persistence(
+                    "could not inspect installer ISO architecture: \(error)"
+                )
+            }
+            switch detected {
+            case .arm64:
+                guard machine.guestArchitecture == nil || requested == .arm64 else {
+                    throw MachineManagerError.persistence(
+                        "installer ISO architecture arm64 does not match requested guest architecture \(requested.rawValue)"
+                    )
+                }
+                requested = .arm64
+            case .x86_64:
+                guard machine.guestArchitecture == nil || requested == .x86_64 else {
+                    throw MachineManagerError.persistence(
+                        "installer ISO architecture x86_64 does not match requested guest architecture \(requested.rawValue)"
+                    )
+                }
+                requested = .x86_64
+            case .multiArchitecture:
+                break
+            case .unknown:
+                throw MachineManagerError.persistence(
+                    "installer ISO does not contain a supported portable ARM64 or x86_64 EFI loader"
+                )
+            }
         }
-        let detected: DoryInstallerISOArchitecture
-        do {
-            detected = try DoryInstallerISOInspector.architecture(atPath: installerISOPath)
-        } catch {
-            throw MachineManagerError.persistence("could not inspect installer ISO: \(error)")
+
+        switch requested {
+        case .arm64:
+            guard daemonArchitecture == .arm64 else {
+                throw MachineManagerError.persistence(
+                    "ARM64 guests require an Apple-silicon host"
+                )
+            }
+        case .x86_64:
+            guard DoryInstallerISOInspector.currentHostArchitecture == "arm64",
+                  allowsQualificationBootstrapLaunches,
+                  machine.bootMode == .efi,
+                  machine.displayMode == .desktop else {
+                throw MachineManagerError.persistence(
+                    "x86_64 Linux is available only in an explicit Apple-silicon DoryPC qualification build"
+                )
+            }
         }
-        switch DoryInstallerISOInspector.compatibility(
-            of: detected,
-            hostArchitecture: configuration.guestArchitecture
-        ) {
-        case let .incompatible(message):
-            throw MachineManagerError.persistence(message)
-        case .compatible, .unknown:
-            return
+        machine.guestArchitecture = requested
+    }
+
+    private func configuredGuestArchitecture() throws -> DoryGuestArchitecture {
+        switch configuration.guestArchitecture.lowercased() {
+        case "arm64", "aarch64": .arm64
+        case "amd64", "x86_64": .x86_64
+        default:
+            throw MachineManagerError.persistence(
+                "unsupported daemon guest architecture \(configuration.guestArchitecture)"
+            )
         }
+    }
+
+    private func effectiveGuestArchitecture(
+        for machine: DoryMachineConfiguration
+    ) throws -> DoryGuestArchitecture {
+        if let architecture = machine.guestArchitecture { return architecture }
+        return try configuredGuestArchitecture()
+    }
+
+    private func guestArchitectureString(
+        for machine: DoryMachineConfiguration
+    ) throws -> String {
+        try effectiveGuestArchitecture(for: machine).rawValue
+    }
+
+    private func supportsSnapshotArchitecture(_ architecture: String) -> Bool {
+        guard let guest = DoryGuestArchitecture(rawValue: architecture) else { return false }
+        if guest == (try? configuredGuestArchitecture()) { return true }
+        return guest == .x86_64
+            && allowsQualificationBootstrapLaunches
+            && DoryInstallerISOInspector.currentHostArchitecture == "arm64"
+    }
+
+    private func snapshotArchitectureIsValid(
+        machineID: String,
+        architecture: String
+    ) -> Bool {
+        lock.lock()
+        let machine = machines[machineID]?.configuration
+        lock.unlock()
+        if let machine,
+           let expected = try? guestArchitectureString(for: machine) {
+            return architecture == expected
+        }
+        return supportsSnapshotArchitecture(architecture)
     }
 
     private func processArguments(
@@ -11953,7 +12062,7 @@ public final class MachineManager: @unchecked Sendable {
               updated.installerISOPath == nil else {
             return false
         }
-        if Self.isX86GuestArchitecture(configuration.guestArchitecture) {
+        if try effectiveGuestArchitecture(for: current) == .x86_64 {
             do {
                 let store = try DoryUEFIVariableStoreFile(
                     directory: machineDoryPCFirmwareVariableDirectoryPath(id: current.id)
@@ -12007,7 +12116,7 @@ public final class MachineManager: @unchecked Sendable {
         guard current.bootMode == .efi,
               current.installerISOPath != nil,
               updated.installerISOPath == nil,
-              Self.isX86GuestArchitecture(configuration.guestArchitecture) else {
+              try effectiveGuestArchitecture(for: current) == .x86_64 else {
             return
         }
         do {
@@ -13152,14 +13261,11 @@ public final class MachineManager: @unchecked Sendable {
         for machine: DoryMachineConfiguration
     ) throws -> DoryMachineConfigurationMigrationFacts {
         let architecture: DoryGuestArchitecture
-        switch configuration.guestArchitecture.lowercased() {
-        case "arm64", "aarch64":
-            architecture = .arm64
-        case "amd64", "x86_64":
-            architecture = .x86_64
-        default:
+        do {
+            architecture = try effectiveGuestArchitecture(for: machine)
+        } catch {
             throw DoryMachineConfigurationMigrationError.invalidLegacyConfiguration(
-                "unsupported guest architecture \(configuration.guestArchitecture)"
+                error.localizedDescription
             )
         }
 
@@ -13276,7 +13382,10 @@ public final class MachineManager: @unchecked Sendable {
               snapshot.id == snapshotID,
               snapshot.rootfsPath == expectedRootfsPath,
               snapshot.kernelPath == expectedKernelPath,
-              snapshot.architecture == configuration.guestArchitecture,
+              snapshotArchitectureIsValid(
+                  machineID: machineID,
+                  architecture: snapshot.architecture
+              ),
               snapshot.runtimeIdentity.validate().isEmpty,
               (try? Self.validateResources(memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount)) != nil,
               Self.isPrivateRegularFile(path: expectedRootfsPath),

@@ -283,6 +283,11 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
 
         return DoryMachineConfiguration(
             id: definition.identity.id,
+            // Guest ISA is now explicit in legacy machine metadata when the workspace was
+            // created by a mixed-architecture daemon. Preserve the exact optional shape so an
+            // untouched migration remains byte-for-byte lossless; older records intentionally
+            // keep nil and continue deriving their architecture from migration facts.
+            guestArchitecture: authoritativeLegacyConfiguration.guestArchitecture,
             kernelPath: authoritativeLegacyConfiguration.kernelPath,
             rootfsPath: authoritativeLegacyConfiguration.rootfsPath,
             bootMode: authoritativeLegacyConfiguration.bootMode,

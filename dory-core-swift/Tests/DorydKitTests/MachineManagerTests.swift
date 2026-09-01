@@ -3364,7 +3364,8 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
         let installer = "\(base)/ubuntu-arm64.iso"
-        try Data("efi-installer".utf8).write(to: URL(fileURLWithPath: installer))
+        let installerData = Data("EFI/BOOT/BOOTAA64.EFI".utf8)
+        try installerData.write(to: URL(fileURLWithPath: installer))
         let state = "\(base)/machines"
         let configuration = MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
@@ -3403,7 +3404,7 @@ final class MachineManagerTests: XCTestCase {
         )
         XCTAssertEqual(
             try Data(contentsOf: URL(fileURLWithPath: try XCTUnwrap(stored.installerISOPath))),
-            Data("efi-installer".utf8)
+            installerData
         )
 
         let reloaded = MachineManager(configuration: configuration)
@@ -3657,14 +3658,17 @@ final class MachineManagerTests: XCTestCase {
         try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
         try Data("blank disk".utf8).write(to: URL(fileURLWithPath: disk))
         let state = base + "/machines"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
-            vmmExecutablePath: "/bin/sleep",
-            stateDirectory: state,
-            baseArguments: ["30"],
-            passMachineArguments: false,
-            requiresReadyHandoff: false,
-            guestArchitecture: "x86_64"
-        ))
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false,
+                guestArchitecture: "x86_64"
+            ),
+            allowsQualificationBootstrapLaunches: true
+        )
         _ = try manager.create(DoryMachineConfiguration(
             id: "linux",
             kernelPath: "",
@@ -3758,17 +3762,17 @@ final class MachineManagerTests: XCTestCase {
                 pcFirmwareBundlePath: firmware,
                 stateDirectory: state,
                 requiresReadyHandoff: false,
-                guestArchitecture: "x86_64"
+                guestArchitecture: "arm64"
             ),
             launchPolicy: .legacyCompatibility,
             allowsNewMachinesInLegacyCompatibility: true,
             allowsQualificationBootstrapLaunches: true,
             machineStateBroker: broker
         )
-        defer { try? manager.delete(id: "linux") }
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "linux",
+            guestArchitecture: .x86_64,
             kernelPath: "",
             rootfsPath: "",
             bootMode: .efi,
@@ -3822,6 +3826,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertFalse(arguments.contains("--kernel"))
         XCTAssertFalse(arguments.contains("--rootfs"))
         _ = try manager.stop(id: "linux")
+        try manager.delete(id: "linux")
     }
 
     func testDoryPCFirstDiskBootFailureRestoresInstallerTransaction() throws {
@@ -3844,6 +3849,7 @@ final class MachineManagerTests: XCTestCase {
                 requiresReadyHandoff: false,
                 guestArchitecture: "x86_64"
             ),
+            allowsQualificationBootstrapLaunches: true,
             processStarter: { process in try starter.start(process) }
         )
         _ = try manager.create(DoryMachineConfiguration(
@@ -3885,14 +3891,17 @@ final class MachineManagerTests: XCTestCase {
         try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
         try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
         let state = base + "/machines"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
-            vmmExecutablePath: "/bin/sleep",
-            stateDirectory: state,
-            baseArguments: ["30"],
-            passMachineArguments: false,
-            requiresReadyHandoff: true,
-            guestArchitecture: "x86_64"
-        ))
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: true,
+                guestArchitecture: "x86_64"
+            ),
+            allowsQualificationBootstrapLaunches: true
+        )
         defer { try? manager.delete(id: "linux") }
         _ = try manager.create(DoryMachineConfiguration(
             id: "linux",
@@ -4219,8 +4228,12 @@ final class MachineManagerTests: XCTestCase {
             cpuCount: 4,
             displayMode: .desktop
         ))) { error in
-            XCTAssertTrue(String(describing: error).contains("x86_64-only"))
-            XCTAssertTrue(String(describing: error).contains("arm64 EFI ISO"))
+            XCTAssertTrue(
+                String(describing: error).contains(
+                    "x86_64 Linux is available only in an explicit Apple-silicon DoryPC qualification build"
+                ),
+                String(describing: error)
+            )
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/omarchy"))
     }
