@@ -644,7 +644,7 @@ enum DoryPCMode {
             DoryDesktopApplicationIdentity.install(on: application)
             application.setActivationPolicy(window == nil ? .accessory : .regular)
             application.delegate = self
-            installSignals()
+            try installSignals()
             window?.makeKeyAndOrderFront(nil)
             if window != nil { application.activate() }
             // A translated first boot can spend several minutes in immutable UEFI work before a
@@ -905,7 +905,12 @@ enum DoryPCMode {
             }
         }
 
-        private func installSignals() {
+        private func installSignals() throws {
+            guard DoryPCClockSource.installProcessResumeTracking() else {
+                throw VMError.invalidConfiguration(
+                    "could not install DoryPC resume clock tracking: errno \(errno)"
+                )
+            }
             let graceful = configuration.envelope.devices.gracefulShutdown
             let agentSocketPath = configuration.agentSocketPath
             let keyboardInput = self.keyboardInput

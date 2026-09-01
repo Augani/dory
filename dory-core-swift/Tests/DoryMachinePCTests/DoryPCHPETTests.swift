@@ -64,6 +64,19 @@ import Testing
     #expect(hpet.ticksUntilNextInterrupt() == 15)
   }
 
+  @Test func periodicTimerCatchesUpLargeHostDeltasInConstantTime() throws {
+    let hpet = DoryPCHPET()
+    let periodicEnabled = UInt64(1 << 2) | UInt64(1 << 3) | UInt64(1 << 6)
+    try write64(hpet, 0x100, periodicEnabled)
+    try write64(hpet, 0x108, 1)
+    try write64(hpet, 0x10, 1)
+
+    hpet.advance(by: 10_000_000_000)
+
+    #expect(hpet.snapshot().mainCounter == 10_000_000_000)
+    #expect(hpet.snapshot().timers[0].comparator == 10_000_000_001)
+  }
+
   @Test func machineMapsHPETAndRoutesComparatorInterrupts() throws {
     let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
     try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)

@@ -92,13 +92,9 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
           }
         }
         if timers[index].configuration & (1 << 3) != 0, timers[index].period > 0 {
-          repeat {
-            timers[index].comparator &+= timers[index].period
-          } while expired(
-            timers[index].comparator,
-            after: oldCounter,
-            through: mainCounter
-          )
+          let elapsedSinceComparator = mainCounter &- timers[index].comparator
+          let elapsedPeriods = elapsedSinceComparator / timers[index].period
+          timers[index].comparator &+= (elapsedPeriods &+ 1) &* timers[index].period
         } else {
           timers[index].armed = false
         }

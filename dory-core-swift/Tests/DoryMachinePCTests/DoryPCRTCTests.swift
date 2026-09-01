@@ -122,6 +122,20 @@ import Testing
     #expect(machine.localAPIC.acknowledge(interruptsEnabled: true) == nil)
   }
 
+  @Test func calendarAndAlarmCatchUpAcrossLargeHostDeltas() throws {
+    let initial = utcDate(2026, 8, 30, 21, 47, 58)
+    let rtc = DoryPCRTC146818(initialDate: initial)
+    try write(rtc, 0x01, 0x00)
+    try write(rtc, 0x03, 0x48)
+    try write(rtc, 0x05, 0x21)
+    try write(rtc, 0x0B, 0x22)
+
+    rtc.advance(by: 3 * 86_400 * DoryPCRTC146818.oscillatorFrequency)
+
+    #expect(rtc.snapshot().date == initial.addingTimeInterval(3 * 86_400))
+    #expect(rtc.snapshot().statusC & 0xB0 == 0xB0)
+  }
+
   @Test func indexPortTracksTheNMIEnableBit() throws {
     let rtc = DoryPCRTC146818(initialDate: utcDate(2026, 8, 30, 21, 47, 58))
     try rtc.write(portOffset: 0, value: 0x89, width: .byte)

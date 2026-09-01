@@ -295,6 +295,89 @@ import Testing
     }
   }
 
+  @Test func productionClockAdvancesTSCAndDevicesFromHostMonotonicTime() throws {
+    final class ManualClock: @unchecked Sendable {
+      private let lock = NSLock()
+      private var value: UInt64 = 0
+      private var generation: UInt32 = 0
+
+      func sample() -> UInt64 { lock.withLock { value } }
+      func discontinuity() -> UInt32 { lock.withLock { generation } }
+      func advance(nanoseconds: UInt64) { lock.withLock { value &+= nanoseconds } }
+      func suspendAndResume(after nanoseconds: UInt64) {
+        lock.withLock {
+          value &+= nanoseconds
+          generation &+= 1
+        }
+      }
+    }
+
+    let clock = ManualClock()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      clockSource: .hostMonotonic(
+        { clock.sample() },
+        discontinuityGeneration: { clock.discontinuity() }
+      )
+    )
+    // A hot loop makes instruction retirement independent from the injected host clock.
+    try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+    try machine.physicalMemory.write(
+      at: DoryPCV1ABI.hpetBase + 0x10,
+      bytes: [1, 0, 0, 0, 0, 0, 0, 0]
+    )
+
+    #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+    #expect(machine.state?.tsc == 0)
+
+    clock.advance(nanoseconds: 1_000_000)
+    #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+    #expect(machine.state?.tsc == 1_000_000)
+    #expect(machine.hpet.snapshot().mainCounter == 10_000)
+
+    // Sub-tick samples retain their remainder rather than losing virtual time.
+    clock.advance(nanoseconds: 99)
+    _ = try machine.run(maximumInstructions: 1)
+    #expect(machine.state?.tsc == 1_000_000)
+    clock.advance(nanoseconds: 1)
+    _ = try machine.run(maximumInstructions: 1)
+    #expect(machine.state?.tsc == 1_000_100)
+
+    clock.suspendAndResume(after: 30_000_000_000)
+    _ = try machine.run(maximumInstructions: 1)
+    #expect(machine.state?.tsc == 1_000_100)
+    clock.advance(nanoseconds: 100)
+    _ = try machine.run(maximumInstructions: 1)
+    #expect(machine.state?.tsc == 1_000_200)
+  }
+
+  @Test func initAndStartupPreserveTheCoherentMachineTSC() throws {
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      processorCount: 2
+    )
+    try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+    _ = try machine.run(maximumInstructions: 8)
+
+    try machine.multiprocessorController.handleInterruptCommand(
+      sourceAPICID: 0,
+      high: 1 << 24,
+      low: UInt32(5 << 8) | UInt32(1 << 14)
+    )
+    _ = try machine.run(maximumInstructions: 1)
+    var snapshots = machine.processorExecutionSnapshots
+    #expect(snapshots[0].state?.tsc == snapshots[1].state?.tsc)
+
+    try machine.multiprocessorController.handleInterruptCommand(
+      sourceAPICID: 0,
+      high: 1 << 24,
+      low: UInt32(6 << 8) | 8
+    )
+    _ = try machine.run(maximumInstructions: 1)
+    snapshots = machine.processorExecutionSnapshots
+    #expect(snapshots[0].state?.tsc == snapshots[1].state?.tsc)
+  }
+
   @Test func pitClockScalesIdenticallyAcrossExecutionTiers() throws {
     #if arch(arm64)
       let tiers: [DoryPCExecutionTier] = [.interpreter, .baselineJIT, .optimizingJIT]

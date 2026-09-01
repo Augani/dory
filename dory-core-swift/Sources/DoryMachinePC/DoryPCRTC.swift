@@ -200,14 +200,24 @@ public final class DoryPCRTC146818: DoryPCPortIODevice, @unchecked Sendable {
     let oldSeconds = oldTicks / Self.oscillatorFrequency
     let newSeconds = newTicks / Self.oscillatorFrequency
     guard newSeconds > oldSeconds else { return }
-    for _ in oldSeconds..<newSeconds {
-      guard let next = calendar.date(byAdding: .second, value: 1, to: date) else { break }
-      date = next
-      var event: UInt8 = 0x10
-      if alarmMatchesLocked(at: date) { event |= 0x20 }
-      if event & statusB & 0x70 != 0 { statusC |= 0x80 }
-      statusC |= event
+    let elapsedSeconds = newSeconds - oldSeconds
+    var alarmMatched = false
+    if statusB & 0x20 != 0 {
+      // Alarm fields contain only hour/minute/second and therefore repeat within one UTC day.
+      // Bound catch-up work after host sleep while preserving whether at least one alarm fired.
+      let candidates = Int(min(elapsedSeconds, 86_400))
+      for offset in 1...candidates {
+        if alarmMatchesLocked(at: date.addingTimeInterval(TimeInterval(offset))) {
+          alarmMatched = true
+          break
+        }
+      }
     }
+    date = date.addingTimeInterval(TimeInterval(elapsedSeconds))
+    var event: UInt8 = 0x10
+    if alarmMatched { event |= 0x20 }
+    if event & statusB & 0x70 != 0 { statusC |= 0x80 }
+    statusC |= event
   }
 
   private func raisePeriodicInterruptsLocked(from oldTicks: UInt64, through newTicks: UInt64) {

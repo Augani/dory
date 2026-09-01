@@ -1,4 +1,6 @@
+import Dispatch
 import DoryDBTX86
+import DoryPlatformC
 import Foundation
 
 public enum DoryPCMachineError: Error, Sendable, Equatable {
@@ -12,6 +14,49 @@ public enum DoryPCExecutionTier: String, Codable, Sendable, Hashable {
   case interpreter
   case baselineJIT
   case optimizingJIT
+}
+
+/// Selects the source of guest machine time without changing the DoryPC-v1 clock frequencies.
+/// Deterministic time is reserved for conformance, replay, and unit tests. Product UEFI machines
+/// use host-monotonic time so a slow translated CPU cannot also make firmware timers run slowly.
+public struct DoryPCClockSource: Sendable {
+  fileprivate let monotonicNanoseconds: (@Sendable () -> UInt64)?
+  fileprivate let discontinuityGeneration: @Sendable () -> UInt32
+
+  public static let deterministic = Self(
+    monotonicNanoseconds: nil,
+    discontinuityGeneration: { 0 }
+  )
+  public static let hostMonotonic = Self(
+    monotonicNanoseconds: { DispatchTime.now().uptimeNanoseconds },
+    discontinuityGeneration: { dory_sigcont_generation() }
+  )
+
+  /// Injectable host-monotonic source for clock conformance tests. Values that move backwards are
+  /// ignored; production uses `hostMonotonic`.
+  public static func hostMonotonic(
+    _ monotonicNanoseconds: @escaping @Sendable () -> UInt64,
+    discontinuityGeneration: @escaping @Sendable () -> UInt32 = { 0 }
+  ) -> Self {
+    Self(
+      monotonicNanoseconds: monotonicNanoseconds,
+      discontinuityGeneration: discontinuityGeneration
+    )
+  }
+
+  private init(
+    monotonicNanoseconds: (@Sendable () -> UInt64)?,
+    discontinuityGeneration: @escaping @Sendable () -> UInt32
+  ) {
+    self.monotonicNanoseconds = monotonicNanoseconds
+    self.discontinuityGeneration = discontinuityGeneration
+  }
+
+  /// Installs the process-wide SIGCONT generation marker used to exclude explicit VM suspension
+  /// from host-monotonic guest time. DoryPC runners host exactly one VM per process.
+  public static func installProcessResumeTracking() -> Bool {
+    dory_install_sigcont_generation_tracker() == 0
+  }
 }
 
 public struct DoryPCExecutionStatistics: Codable, Sendable, Hashable {
@@ -176,6 +221,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   )
   private var pitClockRemainder: UInt64 = 0
   private var rtcClockRemainder: UInt64 = 0
+  private let clockSource: DoryPCClockSource
+  private var lastHostClockNanoseconds: UInt64?
+  private var hostClockNanosecondRemainder: UInt64 = 0
+  private var hostClockDiscontinuityGeneration: UInt32?
 
   // HPET exposes a 100 ns period, so one deterministic machine-clock tick is 100 ns. Keeping the
   // execution tiers on this shared timebase makes the 1 GHz invariant TSC advance by 100 cycles
@@ -198,7 +247,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     interpreter: DoryX86Interpreter = .init(),
     executionTier: DoryPCExecutionTier = .interpreter,
     baselineJITMaximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
-    optimizingJITWarmupDispatches: UInt8 = 8
+    optimizingJITWarmupDispatches: UInt8 = 8,
+    clockSource: DoryPCClockSource = .deterministic
   ) throws {
     guard memoryBytes >= 1024 * 1024 else {
       throw DoryPCMachineError.invalidMemorySize(memoryBytes)
@@ -209,6 +259,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     self.processorCount = processorCount
     self.executionTier = executionTier
     self.optimizingJITWarmupDispatches = optimizingJITWarmupDispatches
+    self.clockSource = clockSource
     baselineJIT =
       switch executionTier {
       case .interpreter:
@@ -523,14 +574,16 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       while completed < maximumInstructions {
         if let stop = powerStop(instructionCount: completed) { return stop }
         applyProcessorEvents()
-        // Every execution tier advances the same canonical 10 MHz machine clock. Routing the
-        // leading tick through the scaler is essential: advancing PIT/RTC by one native device
-        // tick here made interpreter dispatches over-clock both devices while multi-instruction
-        // JIT blocks scaled only their trailing ticks.
-        advanceClocks(by: 1)
+        if clockSource.monotonicNanoseconds != nil {
+          synchronizeHostClock()
+        } else {
+          // Deterministic conformance time advances with retired work and remains identical across
+          // interpreter and JIT tiers. Product UEFI execution never uses this policy.
+          advanceClocks(by: 1)
+        }
         if let stop = deliverPendingInterrupts(instructionCount: completed) { return stop }
         guard let processor = nextRunnableProcessor() else {
-          if advanceToNextInterrupt() { continue }
+          if waitForNextInterrupt() { continue }
           return .halted(instructionCount: completed)
         }
         guard let processorState = loadedStates[processor] else { continue }
@@ -554,16 +607,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         case .interpreterFallback, nil:
           interpreterInstructionCount &+= execution.instructionCount
         }
-        if execution.instructionCount > 1 {
-          advanceClocks(by: execution.instructionCount - 1)
-        }
-        // The architectural TSC is a machine clock, not an interpreter side effect. Advancing it
-        // here keeps RDTSC deterministic and identical when a translated block retires several
-        // guest instructions at once.
-        let tscTicks = execution.instructionCount &* Self.tscTicksPerMachineClock
-        processorState.value.tsc &+= tscTicks
-        for index in loadedStates.indices where index != processor {
-          loadedStates[index]?.value.tsc &+= tscTicks
+        if clockSource.monotonicNanoseconds != nil {
+          synchronizeHostClock()
+        } else {
+          if execution.instructionCount > 1 {
+            advanceClocks(by: execution.instructionCount - 1)
+          }
+          // Deterministic TSC progression is an explicit test/replay policy, not product time.
+          advanceTSCs(byMachineTicks: execution.instructionCount)
         }
         if let stop = powerStop(instructionCount: completed) { return stop }
         switch execution.result {
@@ -779,6 +830,43 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     hpet.advance(by: ticks)
   }
 
+  private func advanceTSCs(byMachineTicks ticks: UInt64) {
+    guard ticks > 0 else { return }
+    let tscTicks = ticks &* Self.tscTicksPerMachineClock
+    for index in loadedStates.indices {
+      loadedStates[index]?.value.tsc &+= tscTicks
+    }
+  }
+
+  /// Samples elapsed host time and advances one coherent 10 MHz machine epoch. The remainder is
+  /// retained so repeated sub-100 ns samples cannot lose time. Guest-visible state stores only
+  /// virtual ticks; the host uptime sample is disposable launch-local authority.
+  private func synchronizeHostClock() {
+    guard let sample = clockSource.monotonicNanoseconds else { return }
+    let now = sample()
+    let discontinuity = clockSource.discontinuityGeneration()
+    guard hostClockDiscontinuityGeneration == discontinuity else {
+      hostClockDiscontinuityGeneration = discontinuity
+      lastHostClockNanoseconds = now
+      hostClockNanosecondRemainder = 0
+      return
+    }
+    guard let previous = lastHostClockNanoseconds else {
+      lastHostClockNanoseconds = now
+      return
+    }
+    guard now >= previous else { return }
+    lastHostClockNanoseconds = now
+    let elapsed = now - previous
+    let wholeTicks = elapsed / 100
+    let fractionalNanoseconds = hostClockNanosecondRemainder + elapsed % 100
+    let ticks = wholeTicks &+ fractionalNanoseconds / 100
+    hostClockNanosecondRemainder = fractionalNanoseconds % 100
+    guard ticks > 0 else { return }
+    advanceClocks(by: ticks)
+    advanceTSCs(byMachineTicks: ticks)
+  }
+
   private func scaledDeviceTicks(
     machineTicks: UInt64,
     frequencyHz: UInt64,
@@ -883,14 +971,18 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       switch event {
       case .initialize(let apicID):
         guard let index = processorIndex(apicID) else { continue }
+        let coherentTSC = loadedStates[0]?.value.tsc ?? loadedStates[index]?.value.tsc ?? 0
         processorLifecycles[index] = .waitingForStartup
-        loadedStates[index] = ProcessorState(applicationProcessorResetState())
+        var state = applicationProcessorResetState()
+        state.tsc = coherentTSC
+        loadedStates[index] = ProcessorState(state)
         haltedProcessors[index] = true
         pendingNMIs.remove(index)
       case .startup(let apicID, let vector):
         guard let index = processorIndex(apicID) else { continue }
         processorLifecycles[index] = .running
         var state = applicationProcessorResetState()
+        state.tsc = loadedStates[0]?.value.tsc ?? loadedStates[index]?.value.tsc ?? 0
         state.rip = 0
         state.cs = .init(
           selector: UInt16(vector) << 8,
@@ -958,13 +1050,21 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     return nil
   }
 
-  private func advanceToNextInterrupt() -> Bool {
+  private func waitForNextInterrupt() -> Bool {
     guard let ticks = ticksUntilNextAcceptedInterrupt() else { return false }
-    advanceClocks(by: ticks)
-    let tscTicks = ticks &* Self.tscTicksPerMachineClock
-    for index in loadedStates.indices {
-      loadedStates[index]?.value.tsc &+= tscTicks
+    if clockSource.monotonicNanoseconds != nil {
+      // Keep cancellation and lifecycle supervision responsive while a guest is halted. The next
+      // run-loop pass samples real elapsed time and delivers the interrupt once its deadline is
+      // reached; production time is never synthesized from translator throughput.
+      let nanoseconds = min(ticks, 10_000) * 100
+      if nanoseconds > 0 {
+        Thread.sleep(forTimeInterval: Double(nanoseconds) / 1_000_000_000)
+      }
+      synchronizeHostClock()
+      return true
     }
+    advanceClocks(by: ticks)
+    advanceTSCs(byMachineTicks: ticks)
     return true
   }
 
