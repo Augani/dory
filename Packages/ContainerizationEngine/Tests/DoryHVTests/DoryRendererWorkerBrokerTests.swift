@@ -492,13 +492,11 @@ import Testing
             deviceGeneration: 11
         )
         let scanoutRecorder = DoryPCVirGLScanoutRecorder()
-        let scanoutMailbox = DesktopFrameMailbox(scanoutID: 0)
         let authority = try DoryPCVirGLRendererAuthority(
             lane: lane,
             deviceGeneration: 11,
             scanoutSink: {
-                _ = scanoutRecorder.accept($0)
-                return scanoutMailbox.submit($0)
+                scanoutRecorder.accept($0)
             }
         )
 
@@ -746,7 +744,7 @@ import Testing
             }.stride == 16
         )
 
-        scanoutMailbox.disable()
+        update.retire()
         #expect(await rendererEventually { fixture.channel.sendCount == 7 })
         let release = try fixture.channel.command(
             at: 6,
