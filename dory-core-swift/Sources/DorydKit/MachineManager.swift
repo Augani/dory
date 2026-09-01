@@ -10577,7 +10577,11 @@ public final class MachineManager: @unchecked Sendable {
                 "--generic-guest",
             ])
         }
-        if let installerISOPath = machine.installerISOPath {
+        // RawHV boot media is already admitted and transferred by descriptor through its
+        // immutable runtime envelope. Only the VZ split-argument path may reopen installer media
+        // by pathname; appending this legacy option to dory-hv is both rejected by its parser and
+        // would create a second, weaker source of boot authority.
+        if let installerISOPath = machine.installerISOPath, !acceleratedDesktop {
             arguments.append(contentsOf: ["--installer-iso", installerISOPath])
         }
         if let handoffPath {

@@ -3825,6 +3825,7 @@ final class MachineManagerTests: XCTestCase {
         )
         XCTAssertFalse(arguments.contains("--kernel"))
         XCTAssertFalse(arguments.contains("--rootfs"))
+        XCTAssertFalse(arguments.contains("--installer-iso"))
         _ = try manager.stop(id: "linux")
         try manager.delete(id: "linux")
     }
