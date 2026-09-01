@@ -143,6 +143,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .conditionalMove(let condition, let destination, let source):
       return emitConditionalMove(
         condition, destination: destination, source: source, into: &words)
+    case .setCondition(let condition, let destination):
+      return emitSetCondition(condition, destination: destination, into: &words)
     case .signedMultiply(let destination, let lhs, let rhs):
       return emitSignedMultiply(destination: destination, lhs: lhs, rhs: rhs, into: &words)
     case .extendMove(let destination, let source, let signed):
@@ -153,6 +155,24 @@ public struct DoryARM64BaselineEmitter: Sendable {
     default:
       return false
     }
+  }
+
+  private func emitSetCondition(
+    _ condition: DoryX86Condition,
+    destination: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard case .register(let target) = destination,
+      isLowByteRegister(target),
+      emitX86Condition(condition, into: 10, words: &words)
+    else { return false }
+
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+    emitImmediate(~UInt64(0xFF), register: 11, into: &words)
+    words.append(encodeLogical(.and, left: 9, right: 11, destination: 9))
+    words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+    return true
   }
 
   private func emitConditionalMove(
@@ -263,7 +283,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .shift(_, let destination, _):
       if case .memory = destination { return 2 }
       return 0
-    case .conditionalMove:
+    case .conditionalMove, .setCondition:
       return 0
     case .signedMultiply(let destination, let lhs, let rhs):
       if case .memory = destination { return 1 }

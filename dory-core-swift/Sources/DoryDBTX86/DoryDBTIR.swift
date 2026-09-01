@@ -85,6 +85,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
     destination: DoryIROperand,
     source: DoryIROperand
   )
+  case setCondition(DoryX86Condition, destination: DoryIROperand)
   case signedMultiply(destination: DoryIROperand, lhs: DoryIROperand, rhs: DoryIROperand)
   case extendMove(destination: DoryIROperand, source: DoryIROperand, signed: Bool)
   case effectiveAddress(destination: DoryIROperand, address: DoryIRMemoryAddress)
@@ -310,6 +311,16 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .setCondition(let condition, let destination):
+      return (
+        [
+          .setCondition(
+            condition,
+            destination: operand(destination)
+          )
+        ],
+        nil
+      )
     case .signedMultiply(let destination, let lhs, let rhs):
       return (
         [
@@ -468,6 +479,9 @@ public struct DoryX86IRTranslator: Sendable {
         target.width == .i32 || target.width == .i64
       else { return false }
       return isJITGeneralRegister(target) && isJITGeneralRegister(origin)
+    case .setCondition(_, let destination):
+      guard case .register(let target) = destination else { return false }
+      return isJITLowByteRegister(target)
     case .signedMultiply(let destination, let lhs, let rhs):
       guard case .register(let target) = destination,
         target.width == .i32 || target.width == .i64,
@@ -541,6 +555,8 @@ public struct DoryX86IRTranslator: Sendable {
     case .conditionalMove(_, let destination, let source):
       if isMemory(destination) { return .write }
       return isMemory(source) ? .read : .none
+    case .setCondition(_, let destination):
+      return isMemory(destination) ? .write : .none
     case .signedMultiply(let destination, let lhs, let rhs):
       if isMemory(destination) { return .write }
       return isMemory(lhs) || isMemory(rhs) ? .read : .none

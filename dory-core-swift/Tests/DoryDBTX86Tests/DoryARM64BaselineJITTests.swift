@@ -1177,6 +1177,123 @@ import Testing
     #expect(DoryARM64BaselineEmitter().compile(crafted).tier == .interpreterFallback)
   }
 
+  @Test func lowByteSetConditionsMatchInterpreterAcrossAllConditionsAndTiers() throws {
+    #if arch(arm64)
+      let preservedFlags: UInt64 =
+        DoryX86RFLAGS.reservedOne.rawValue
+        | DoryX86RFLAGS.auxiliaryCarry.rawValue
+        | DoryX86RFLAGS.direction.rawValue
+        | DoryX86RFLAGS.interruptEnable.rawValue
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          optimization: optimization
+        )
+        for rawCondition in UInt8(0)..<UInt8(16) {
+          for flagBits in UInt64(0)..<UInt64(32) {
+            var rawFlags = preservedFlags
+            if flagBits & 0x01 != 0 { rawFlags |= DoryX86RFLAGS.carry.rawValue }
+            if flagBits & 0x02 != 0 { rawFlags |= DoryX86RFLAGS.parity.rawValue }
+            if flagBits & 0x04 != 0 { rawFlags |= DoryX86RFLAGS.zero.rawValue }
+            if flagBits & 0x08 != 0 { rawFlags |= DoryX86RFLAGS.sign.rawValue }
+            if flagBits & 0x10 != 0 { rawFlags |= DoryX86RFLAGS.overflow.rawValue }
+            let initialFlags = DoryX86RFLAGS(rawValue: rawFlags)
+            let bytes: [UInt8] = [0x41, 0x0F, 0x90 | rawCondition, 0xC1]
+            let registers = DoryX86GeneralRegisters(r9: 0x1122_3344_5566_77AA)
+
+            var interpreted = try DoryX86ArchitecturalState(
+              registers: registers,
+              rip: 0,
+              rflags: initialFlags
+            )
+            _ = DoryX86Interpreter().step(
+              state: &interpreted,
+              memory: DoryX86ByteArrayMemory(bytes: bytes),
+              mode: .long64
+            )
+
+            var translated = try DoryX86ArchitecturalState(
+              registers: registers,
+              rip: 0,
+              rflags: initialFlags
+            )
+            let execution = try #require(
+              executor.execute(
+                bytes: bytes,
+                at: 0,
+                mode: .long64,
+                addressSpaceID: 0,
+                maximumInstructions: 1,
+                state: &translated
+              )
+            )
+
+            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(translated == interpreted)
+            #expect(translated.rflags == initialFlags)
+            #expect(translated.registers.r9 & ~UInt64(0xFF) == 0x1122_3344_5566_7700)
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func nativeTranslationSpansMeasuredKernelSetConditionSlice() throws {
+    let bytes: [UInt8] = [
+      0x45, 0x31, 0xC9,  // xor r9d,r9d
+      0x85, 0xF6,  // test esi,esi
+      0x41, 0x0F, 0x94, 0xC1,  // sete r9b
+      0x3C, 0x01,  // cmp al,1
+      0x0F, 0x84, 0x00, 0x0C, 0x00, 0x00,  // je 0x12e43c5b1
+    ]
+    let block = try DoryX86IRTranslator().translate(
+      bytes,
+      at: 0x12E4_3B9A0,
+      mode: .long64
+    )
+
+    #expect(block.guestInstructionCount == 5)
+    #expect(block.guestByteCount == bytes.count)
+    #expect(block.statements.count == 4)
+    #expect(
+      block.statements.contains {
+        if case .setCondition(.equal, _) = $0 { return true }
+        return false
+      })
+    for tier in [DoryARM64CompilationTier.baseline, .optimizing] {
+      let candidate =
+        tier == .optimizing
+        ? DoryIROptimizer().optimize(block).block
+        : block
+      #expect(DoryARM64BaselineEmitter().compile(candidate, tier: tier).tier == tier)
+    }
+  }
+
+  @Test func setConditionCoverageExcludesHighByteMemoryAndInvalidIRDestinations() throws {
+    let excluded: [[UInt8]] = [
+      [0x0F, 0x94, 0xC4],  // sete ah
+      [0x0F, 0x94, 0x00],  // sete byte ptr [rax]
+    ]
+    for bytes in excluded {
+      let block = try DoryX86IRTranslator().translate(bytes, at: 0, mode: .long64)
+      #expect(DoryARM64BaselineEmitter().compile(block).tier == .interpreterFallback)
+    }
+
+    let crafted = DoryIRBasicBlock(
+      guestStart: 0,
+      guestByteCount: 1,
+      guestInstructionCount: 1,
+      statements: [
+        .setCondition(
+          .equal,
+          destination: .register(.init(bank: "not.x86.gpr", index: 0, width: .i8))
+        )
+      ],
+      terminator: .next(1)
+    )
+    #expect(DoryARM64BaselineEmitter().compile(crafted).tier == .interpreterFallback)
+  }
+
   @Test func clShiftsMatchInterpreterResultsAndFlags() throws {
     #if arch(arm64)
       let instructions: [([UInt8], DoryX86GeneralRegister)] = [
