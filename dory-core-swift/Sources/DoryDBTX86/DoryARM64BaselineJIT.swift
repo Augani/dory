@@ -935,14 +935,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
     writesDestination: Bool,
     into words: inout [UInt32]
   ) -> Bool {
-    if !writesDestination && (operation == .compare || operation == .test),
-      case .register(let target) = destination,
-      isLowByteRegister(target)
+    if case .register(let target) = destination, isLowByteRegister(target),
+      (!writesDestination && (operation == .compare || operation == .test))
+        || (writesDestination && operation == .and)
     {
-      return emitLowByteFlagsOnlyBinary(
+      return emitLowByteBinary(
         operation,
         destination: target,
         source: source,
+        writesDestination: writesDestination,
         into: &words
       )
     }
@@ -1019,10 +1020,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
     return true
   }
 
-  private func emitLowByteFlagsOnlyBinary(
+  private func emitLowByteBinary(
     _ operation: DoryIRBinaryOperation,
     destination: DoryIRRegister,
     source: DoryIROperand,
+    writesDestination: Bool,
     into words: inout [UInt32]
   ) -> Bool {
     guard isLowByteRegister(destination),
@@ -1053,8 +1055,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
       ))
     switch operation {
     case .compare:
+      guard !writesDestination else { return false }
       words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 12, 13, 11))
-    case .test:
+    case .and, .test:
+      guard writesDestination == (operation == .and) else { return false }
       words.append(encodeLogical(.andSetFlags, is64Bit: false, 12, 13, 11))
     default:
       return false
@@ -1075,6 +1079,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
       resultRegister: 11,
       into: &words
     )
+    if writesDestination {
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(destination.index) * 8))
+      emitImmediate(~UInt64(0xFF), register: 10, into: &words)
+      words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
+      words.append(encodeLogical(.or, left: 9, right: 11, destination: 9))
+      words.append(
+        encodeStore64(register: 9, base: 0, byteOffset: Int(destination.index) * 8)
+      )
+    }
     return true
   }
 
