@@ -185,6 +185,79 @@ import Testing
     #endif
   }
 
+  @Test func soleRunnableJITProcessorUsesTheAdaptive4096InstructionQuantum() throws {
+    #if arch(arm64)
+      for (budget, expectedCalls) in [(4_095, UInt64(1)), (4_096, 1), (4_097, 2)] {
+        let machine = try DoryPCDirectKernelMachine(
+          memoryBytes: 2 * 1024 * 1024,
+          processorCount: 4,
+          executionTier: .baselineJIT,
+          baselineJITMaximumCodeBytes: 16 * 1024
+        )
+        try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+
+        #expect(
+          try machine.run(maximumInstructions: UInt64(budget))
+            == .instructionBudget(UInt64(budget)))
+        let diagnostics = try #require(machine.baselineJITDiagnostics)
+        #expect(diagnostics.chainedExecutionCalls == expectedCalls)
+        #expect(diagnostics.chainedRequestedInstructions == UInt64(budget))
+        #expect(diagnostics.chainedRetiredInstructions == UInt64(budget))
+      }
+    #endif
+  }
+
+  @Test func twoRunnableProcessorsRetainThe64InstructionFairnessQuantum() throws {
+    #if arch(arm64)
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        processorCount: 2,
+        executionTier: .baselineJIT,
+        baselineJITMaximumCodeBytes: 16 * 1024
+      )
+      try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+      try machine.memory.write(at: 0x8000, bytes: [0xEB, 0xFE])
+      try machine.physicalMemory.write(at: 0xFEE0_0310, bytes: [0, 0, 0, 1])
+      try machine.physicalMemory.write(at: 0xFEE0_0300, bytes: [8, 6, 0, 0])
+
+      #expect(try machine.run(maximumInstructions: 130) == .instructionBudget(130))
+      let diagnostics = try #require(machine.baselineJITDiagnostics)
+      #expect(diagnostics.chainedExecutionCalls == 2)
+      #expect(diagnostics.chainedRequestedInstructions == 128)
+      #expect(diagnostics.chainedRetiredInstructions == 128)
+      #expect(machine.executionStatistics.interpreterInstructions == 2)
+      #expect(machine.processorExecutionSnapshots[1].lifecycle == .running)
+    #endif
+  }
+
+  @Test func adaptiveJITQuantumStillStopsAtTheAcceptedAPICTimerDeadline() throws {
+    #if arch(arm64)
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        executionTier: .baselineJIT,
+        baselineJITMaximumCodeBytes: 16 * 1024
+      )
+      // STI retires through the precise path, then the hot loop receives only the three machine
+      // ticks remaining before this accepted local-APIC deadline.
+      try machine.load(kernel: makeELF(code: [0xFB, 0xEB, 0xFE]), commandLine: "x")
+      try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
+      try machine.localAPIC.configureTimer(
+        vector: 0x30,
+        masked: false,
+        mode: .oneShot,
+        initialCount: 250
+      )
+
+      #expect(try machine.run(maximumInstructions: 4) == .instructionBudget(4))
+      let diagnostics = try #require(machine.baselineJITDiagnostics)
+      // The first four-instruction request declines STI to the interpreter. The second request is
+      // capped to the three ticks remaining until the now-accepted timer deadline.
+      #expect(diagnostics.chainedExecutionCalls == 2)
+      #expect(diagnostics.chainedRequestedInstructions == 7)
+      #expect(diagnostics.chainedRetiredInstructions == 3)
+    #endif
+  }
+
   @Test func optimizingJITWarmsAColdDirectKernelBlockWithBaselineCode() throws {
     #if arch(arm64)
       let layout = DoryPCPVHBootLayout(

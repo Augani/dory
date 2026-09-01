@@ -1665,6 +1665,123 @@ import Testing
           == [UInt8](repeating: 0, count: 32))
     #endif
   }
+
+  @Test func largeQwordCopyBudgetKeepsExactAccountingAndFinalFlags() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x1000
+      let source: UInt64 = 0x4000
+      let destination: UInt64 = 0x10_000
+      let loop: [UInt8] = [
+        0x48, 0x8b, 0x0c, 0x06, 0x48, 0x89, 0x0c, 0x07,
+        0x48, 0x83, 0xc0, 0x08, 0x48, 0x89, 0xd1, 0x48,
+        0x29, 0xc1, 0x48, 0x83, 0xf9, 0x07, 0x77, 0xe8,
+      ]
+      let payload = (0..<4_680).map { UInt8(truncatingIfNeeded: $0) }
+
+      for budget in [4_095, 4_096, 4_097] {
+        let memory = DoryX86ByteArrayMemory(byteCount: 0x20_000)
+        try memory.write(at: base, bytes: loop)
+        try memory.write(at: source, bytes: payload)
+        let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+        var state = try DoryX86ArchitecturalState(
+          registers: .init(rax: 0, rdx: 4_680, rsi: source, rdi: destination),
+          rip: base,
+          rflags: [.reservedOne, .overflow, .zero, .interruptEnable]
+        )
+
+        let summary = try #require(
+          executor.executeChainedSummary(
+            byteProvider: { address, count in
+              try memory.instructionBytes(at: address, maximumCount: count)
+            },
+            at: base,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: budget,
+            state: &state,
+            memory: memory
+          ))
+
+        #expect(summary.guestInstructionCount == 4_095)
+        #expect(summary.residentBlockCount == 1_170)
+        #expect(state.registers.rax == 4_680)
+        #expect(state.registers.rcx == 0)
+        #expect(state.rip == base + UInt64(loop.count))
+        #expect(
+          state.rflags == [
+            .reservedOne, .carry, .parity, .auxiliaryCarry, .sign, .interruptEnable,
+          ])
+        #expect(try memory.read(at: destination, byteCount: payload.count) == payload)
+      }
+    #endif
+  }
+
+  @Test func largeChainKeepsResidentCompilationFetchesAtOrBelow960Bytes() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x3000
+      let bytes = [UInt8](repeating: 0x90, count: 100) + [0xF4]
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024)
+      var requestedCounts: [Int] = []
+      var state = try DoryX86ArchitecturalState(rip: base)
+
+      let summary = try #require(
+        executor.executeChainedSummary(
+          byteProvider: { address, count in
+            requestedCounts.append(count)
+            guard address >= base else { return [] }
+            let offset = Int(address - base)
+            guard bytes.indices.contains(offset) else { return [] }
+            return Array(bytes[offset..<min(bytes.count, offset + count)])
+          },
+          codeGenerationProvider: { _, _ in 1 },
+          at: base,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 4_096,
+          state: &state
+        ))
+
+      #expect(summary.exitCode == .halt)
+      #expect(summary.guestInstructionCount == 101)
+      #expect(requestedCounts.max() == 960)
+      #expect(requestedCounts.allSatisfy { $0 <= 960 })
+    #endif
+  }
+
+  @Test func largeChainPublishesAndReplaysABounded256BlockNativeTrace() throws {
+    #if arch(arm64)
+      let base: UInt64 = 0x5000
+      let jump: [UInt8] = [0xEB, 0]
+      let bytes: [UInt8] = Array(repeating: jump, count: 300).flatMap { $0 } + [0xF4]
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 256 * 1024)
+      func run() throws -> DoryARM64ExecutionSummary {
+        var state = try DoryX86ArchitecturalState(rip: base)
+        return try #require(
+          executor.executeChainedSummary(
+            byteProvider: { address, count in
+              guard address >= base else { return [] }
+              let offset = Int(address - base)
+              guard bytes.indices.contains(offset) else { return [] }
+              return Array(bytes[offset..<min(bytes.count, offset + count)])
+            },
+            codeGenerationProvider: { _, _ in 1 },
+            at: base,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 4_096,
+            state: &state
+          ))
+      }
+
+      #expect(DoryARM64BaselineExecutor.maximumRecordedNativeTraceBlocks == 256)
+      #expect(try run().guestInstructionCount == 301)
+      #expect(executor.diagnostics.nativeTraceReplays == 0)
+      #expect(try run().guestInstructionCount == 301)
+      #expect(executor.diagnostics.nativeTraceAttempts == 1)
+      #expect(executor.diagnostics.nativeTraceReplays == 1)
+      #expect(executor.nativeBatchExecutionCount == 1)
+    #endif
+  }
 }
 
 private final class FaultingBulkMemory: DoryX86BulkMemory, @unchecked Sendable {

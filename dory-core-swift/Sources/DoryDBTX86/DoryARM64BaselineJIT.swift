@@ -1627,6 +1627,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   /// large enough that a normal installer boot does not continuously discard and recompile its
   /// cold-start working set.
   public static let defaultMaximumCodeBytes = 128 * 1024 * 1024
+  static let maximumResidentInstructionBudget = 64
+  static let maximumRecordedNativeTraceBlocks = 256
 
   private struct LookupKey: Hashable {
     let guestStart: UInt64
@@ -2030,6 +2032,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           while completed < maximumInstructions {
             let currentRIP = context[16]
             let remaining = maximumInstructions - completed
+            let residentInstructionBudget = min(
+              remaining, Self.maximumResidentInstructionBudget)
             guard
               let resident = try resolveResident(
                 byteProvider: { try byteProvider(currentRIP, $0) },
@@ -2039,7 +2043,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                 at: currentRIP,
                 mode: mode,
                 addressSpaceID: addressSpaceID,
-                maximumInstructions: remaining,
+                maximumInstructions: residentInstructionBudget,
                 state: state,
                 memory: memory
               )
@@ -2066,6 +2070,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                   resident: resident,
                   codeCacheEpoch: codeCacheEpoch
                 ))
+                if newTrace.count == Self.maximumRecordedNativeTraceBlocks {
+                  publishNativeTrace(newTrace, for: traceKey, if: true)
+                  recordsTrace = false
+                }
               }
             }
 
@@ -2629,6 +2637,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     if shouldPublish: Bool
   ) {
     guard shouldPublish, entries.count >= 2,
+      entries.count <= Self.maximumRecordedNativeTraceBlocks,
       entries.allSatisfy({ $0.codeCacheEpoch == codeCacheEpoch })
     else { return }
     var validations: [NativeTraceValidation] = []

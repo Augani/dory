@@ -857,11 +857,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   }
 
   private func baselineInstructionBudget(maximumInstructions: UInt64) -> Int {
-    // SMP fairness needs a bounded quantum, not an interpreter-sized quantum. Returning through
-    // Swift after every guest instruction made normal 4-vCPU firmware and bootloaders tens of
-    // times slower even after their application processors had parked. Interrupt deadlines below
-    // still shorten this batch whenever the machine has observable work due sooner.
-    var budget = Int(min(maximumInstructions, 64))
+    // SMP fairness keeps a 64-instruction quantum while multiple processors can run. Once every
+    // other processor has parked, a larger bounded quantum avoids needless Swift round trips.
+    // Interrupt deadlines below still shorten either batch whenever observable work is due sooner.
+    let runnableProcessorCount = loadedStates.indices.lazy.filter {
+      self.loadedStates[$0] != nil && !self.haltedProcessors[$0]
+        && self.processorLifecycles[$0] == .running
+    }.prefix(2).count
+    let fairnessLimit: UInt64 = runnableProcessorCount == 1 ? 4_096 : 64
+    var budget = Int(min(maximumInstructions, fairnessLimit))
     if let deadline = ticksUntilNextAcceptedInterrupt() {
       budget = min(budget, Int(min(deadline, UInt64(Int.max))))
     }
