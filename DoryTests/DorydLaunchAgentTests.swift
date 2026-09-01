@@ -120,12 +120,29 @@ struct DorydLaunchAgentTests {
         #expect(decision == .bootstrap)
     }
 
-    @Test func decisionReplacesWhenLaunchdPointsAtOldAppBundle() {
+    @Test func decisionDefersReplacementWhenRunningFromOldAppBundle() {
         let status = DorydLaunchAgent.Status(
             loaded: true,
             running: true,
             plistPath: "/Users/me/Library/LaunchAgents/dev.dory.doryd.plist",
             programPath: "/Users/me/Library/Developer/Xcode/DerivedData/Dory/Build/Products/Debug/Dory.app/Contents/Helpers/doryd"
+        )
+
+        let decision = DorydLaunchAgent.decision(
+            status: status,
+            currentPlist: "/Users/me/Library/LaunchAgents/dev.dory.doryd.plist",
+            currentProgram: "/Applications/Dory.app/Contents/Helpers/doryd"
+        )
+
+        #expect(decision == .upToDate)
+    }
+
+    @Test func decisionReplacesStoppedJobFromOldAppBundle() {
+        let status = DorydLaunchAgent.Status(
+            loaded: true,
+            running: false,
+            plistPath: "/Users/me/Library/LaunchAgents/dev.dory.doryd.plist",
+            programPath: "/tmp/OldDory.app/Contents/Helpers/doryd"
         )
 
         let decision = DorydLaunchAgent.decision(
@@ -154,7 +171,7 @@ struct DorydLaunchAgentTests {
         #expect(decision == .upToDate)
     }
 
-    @Test func decisionReplacesWhenPlistEnvironmentChanged() {
+    @Test func decisionStagesPlistEnvironmentChangeWhileDaemonIsRunning() {
         let status = DorydLaunchAgent.Status(
             loaded: true,
             running: true,
@@ -169,7 +186,7 @@ struct DorydLaunchAgentTests {
             currentPlistChanged: true
         )
 
-        #expect(decision == .replace)
+        #expect(decision == .upToDate)
     }
 
     @Test func ensureCurrentReplacesStaleLaunchdJob() async {
@@ -188,7 +205,7 @@ struct DorydLaunchAgentTests {
             """
             gui/501/dev.dory.doryd = {
                 path = /Users/me/Library/LaunchAgents/dev.dory.doryd.plist
-                state = running
+                state = waiting
                 program = /tmp/OldDory.app/Contents/Helpers/doryd
             }
             """
@@ -287,7 +304,7 @@ struct DorydLaunchAgentTests {
             == AppStore.EngineResourceLimits(maximumCPUCount: 16, maximumMemoryMB: 62 * 1024))
     }
 
-    @Test func ensureCurrentRestartsWhenLaunchAgentEnvironmentChanges() async throws {
+    @Test func ensureCurrentDoesNotRestartRunningDaemonWhenEnvironmentChanges() async throws {
         let temporaryDirectory = FileManager.default.temporaryDirectory
             .appendingPathComponent("DorydLaunchAgentTests-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
@@ -336,7 +353,7 @@ struct DorydLaunchAgentTests {
         let plist = try String(contentsOf: plistURL, encoding: .utf8)
         #expect(ok)
         #expect(plist.contains("<string>team.dory.local</string>"))
-        #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootout", "bootstrap", "kickstart"])
+        #expect(recorder.commands.map { $0.first ?? "" } == ["print"])
 
         let rejectingRecorder = LaunchctlRecorder(
             printOutput:
@@ -357,8 +374,8 @@ struct DorydLaunchAgentTests {
         ) { arguments in
             rejectingRecorder.run(arguments)
         }
-        #expect(!rejected)
-        #expect(rejectingRecorder.commands.map { $0.first ?? "" } == ["print", "bootout"])
+        #expect(rejected)
+        #expect(rejectingRecorder.commands.map { $0.first ?? "" } == ["print"])
     }
 
     @Test func ensureCurrentRetriesBootstrapAfterReplacingLaunchAgent() async throws {
@@ -387,7 +404,7 @@ struct DorydLaunchAgentTests {
             """
             gui/501/dev.dory.doryd = {
                 path = /Users/me/Library/LaunchAgents/dev.dory.doryd.plist
-                state = running
+                state = waiting
                 program = /tmp/OldDory.app/Contents/Helpers/doryd
             }
             """,

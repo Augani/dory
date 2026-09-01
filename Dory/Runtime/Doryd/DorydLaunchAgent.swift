@@ -299,6 +299,12 @@ enum DorydLaunchAgent {
         guard let status, status.loaded else {
             return .bootstrap
         }
+        // A live daemon can own running engines and virtual machines. Updating the plist is safe,
+        // but booting out that process during ordinary UI attachment is not. The staged program
+        // and environment take effect after the next deliberate daemon stop or login transition.
+        guard !status.running else {
+            return .upToDate
+        }
         guard normalize(status.programPath) == normalize(currentProgram),
               normalize(status.plistPath) == normalize(currentPlist) else {
             return .replace
