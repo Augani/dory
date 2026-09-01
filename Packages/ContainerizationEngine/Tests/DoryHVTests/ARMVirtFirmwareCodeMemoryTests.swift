@@ -43,7 +43,7 @@ import Testing
     }
 
     private func makeArtifacts(firmware: Data) throws -> DoryVerifiedFirmwareArtifacts {
-        let variables = Data(#"{"generation":1,"variables":[]}"#.utf8)
+        let variables = try DoryUEFIVariableStoreSnapshot(platform: .armVirtV1).canonicalData()
         let sbom = Data(#"{"bomFormat":"CycloneDX","specVersion":"1.6"}"#.utf8)
         let digest: (Data) -> String = { data in
             SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
