@@ -4,6 +4,14 @@ import DoryRendererWorkerWireContracts
 import XCTest
 
 final class HvProcessTests: XCTestCase {
+    func testHvProcessConfigurationKeepsLaunchEnvelopesOutOfLine() {
+        XCTAssertLessThan(
+            MemoryLayout<HvProcessConfiguration>.size,
+            256,
+            "launch envelopes must remain reference-owned instead of inflating worker stacks"
+        )
+    }
+
     func testStartsAndStopsChildProcess() throws {
         let process = HvProcess(configuration: HvProcessConfiguration(
             executablePath: "/bin/sleep",

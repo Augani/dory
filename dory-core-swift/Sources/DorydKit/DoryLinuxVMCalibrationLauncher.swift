@@ -508,7 +508,7 @@ public enum DoryLinuxVMCalibrationLauncher {
             ],
             logPath: runtimeWorkrootPath + "/" + logFileName,
             restartPolicy: .none,
-            runtimeLaunchEnvelope: envelope,
+            runtimeLaunchEnvelopeAuthority: try RuntimeLaunchEnvelopeAuthority(envelope),
             inheritedFileDescriptors: [exactResources.disk.authority]
                 + exactResources.boot.authorities
                 + (exactResources.rendererBootstrap.map { [$0.authority] } ?? [])

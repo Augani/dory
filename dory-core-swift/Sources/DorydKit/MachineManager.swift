@@ -463,6 +463,55 @@ public struct DoryMachineStatus: Sendable, Equatable {
     public var cloneReceipt: DoryMachineCloneReceipt?
     public var savedState: DoryMachineSavedStateStatus?
 
+    /// A compact construction path for launch/status hot paths. The fully parameterized
+    /// convenience initializer below is useful to callers, but its many default-argument
+    /// temporaries produce a large compiler-generated stack frame on cooperative workers.
+    public init(id: String, state: DoryMachineState) {
+        self.id = id
+        guestFamily = .linux
+        guestArchitecture = nil
+        self.state = state
+        pid = nil
+        lastError = nil
+        failure = nil
+        activeOperationID = nil
+        activeOperationKind = nil
+        flightRecorderHeadSequence = 0
+        flightRecorderAvailable = false
+        handoffSocketPath = nil
+        agentBuild = nil
+        agentProtocolVersion = nil
+        agentCapabilities = []
+        agentSocketPath = nil
+        dockerdSocketPath = nil
+        shellSocketPath = nil
+        controlSocketPath = nil
+        address = nil
+        configuredAddress = nil
+        runtimeAddress = nil
+        handoffFDCount = 0
+        memoryMB = 0
+        currentBalloonTargetMB = 0
+        cpuCount = 0
+        displayMode = .headless
+        bootMode = .linuxKernel
+        installerMediaAttached = false
+        shares = []
+        environment = [:]
+        typedSettings = nil
+        sandboxPolicy = nil
+        diagnosticOverrides = []
+        displayPresentation = .windowed
+        runtimeIdentity = .legacyCompatibility(
+            virtualHardwareABIVersion:
+                DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
+        )
+        runtimeGraphicsSelection = nil
+        installedDesktopPayloadReceipt = nil
+        cloneReceipt = nil
+        savedState = nil
+    }
+
     public init(
         id: String,
         guestFamily: DoryGuestFamily = .linux,
@@ -1163,25 +1212,25 @@ private struct DoryMachineCloneCreationAuthority {
 }
 
 struct RawHVRuntimeLaunchAuthority: @unchecked Sendable {
-    let envelope: RuntimeLaunchEnvelope?
-    let pcEnvelope: DoryPCRuntimeLaunchEnvelope?
+    let envelopeAuthority: RuntimeLaunchEnvelopeAuthority?
+    let pcEnvelopeAuthority: DoryPCRuntimeLaunchEnvelopeAuthority?
     let inheritedFileDescriptors: [HvProcessInheritedFileDescriptor]
 
     init(
         envelope: RuntimeLaunchEnvelope,
         inheritedFileDescriptors: [HvProcessInheritedFileDescriptor]
-    ) {
-        self.envelope = envelope
-        pcEnvelope = nil
+    ) throws {
+        envelopeAuthority = try RuntimeLaunchEnvelopeAuthority(envelope)
+        pcEnvelopeAuthority = nil
         self.inheritedFileDescriptors = inheritedFileDescriptors
     }
 
     init(
         pcEnvelope: DoryPCRuntimeLaunchEnvelope,
         inheritedFileDescriptors: [HvProcessInheritedFileDescriptor]
-    ) {
-        envelope = nil
-        self.pcEnvelope = pcEnvelope
+    ) throws {
+        envelopeAuthority = nil
+        pcEnvelopeAuthority = try DoryPCRuntimeLaunchEnvelopeAuthority(pcEnvelope)
         self.inheritedFileDescriptors = inheritedFileDescriptors
     }
 }
@@ -2677,13 +2726,15 @@ public final class MachineManager: @unchecked Sendable {
         let operationID = try launchOperationID(id: id, lifecycle: lifecycle)
         do {
             if let lifecycle { try advanceLifecycleToPublishing(lifecycle) }
-            let status = try spawnPreparedMachine(
+            try spawnPreparedMachine(
                 prepared.machine,
                 shareAuthorities: prepared.shareAuthorities,
                 launchBinding: nil,
                 operationID: operationID,
                 qualificationBootstrapDefinition: prepared.definition
             )
+            let status = self.status(id: id)
+                ?? DoryMachineStatus(id: id, state: .running)
             if let lifecycle {
                 if status.state == .failed {
                     failLifecycle(lifecycle, stepID: "start.helper-exited")
@@ -2959,14 +3010,17 @@ public final class MachineManager: @unchecked Sendable {
                 "resolved backend executable does not match qualified runtime evidence"
             )
         }
-        return MachineBackendRuntimeObservation(try spawnPreparedMachine(
+        try spawnPreparedMachine(
             authorization.machine,
             shareAuthorities: authorization.shareAuthorities,
             launchBinding: binding,
             operationID: authorization.operationID,
             preSpawnAuthorization: authorization.preSpawnAuthorization,
             resolvedPlan: authorization.plan
-        ))
+        )
+        let status = self.status(id: binding.machineID)
+            ?? DoryMachineStatus(id: binding.machineID, state: .running)
+        return MachineBackendRuntimeObservation(status)
     }
 
     private func launchOperationID(
@@ -3539,7 +3593,7 @@ public final class MachineManager: @unchecked Sendable {
     /// synthesized equality for the complete plan here generated an unbounded compiler stack frame
     /// as the versioned topology contract grew, and provided no additional mutation authority.
     private static func runtimeIdentityLaunchAuthority(
-        _ identity: DoryMachineRuntimeIdentity
+        _ identity: borrowing DoryMachineRuntimeIdentity
     ) -> MachineRuntimeIdentityLaunchAuthority {
         MachineRuntimeIdentityLaunchAuthority(
             schemaVersion: identity.schemaVersion,
@@ -3547,7 +3601,10 @@ public final class MachineManager: @unchecked Sendable {
             virtualHardwareABIVersion: identity.virtualHardwareABIVersion,
             invalidationReason: identity.invalidationReason,
             resolvedPlanSHA256: identity.resolvedPlanSHA256,
-            hasResolvedPlan: identity.resolvedPlan != nil
+            // This identity has already passed full validation. Its mode is therefore the
+            // scalar, digest-bound proof of plan presence and avoids materializing the plan's
+            // nested optional payload on a cooperative worker stack.
+            hasResolvedPlan: identity.mode == .resolvedPlan
         )
     }
 
@@ -3769,7 +3826,7 @@ public final class MachineManager: @unchecked Sendable {
         preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization? = nil,
         resolvedPlan: DoryResolvedMachinePlan? = nil,
         qualificationBootstrapDefinition: DoryVirtualMachineDefinition? = nil
-    ) throws -> DoryMachineStatus {
+    ) throws {
         let snapshot: MachineLaunchAdmissionSnapshot
         do {
             snapshot = try reservePreparedMachineLaunch(
@@ -4027,7 +4084,7 @@ public final class MachineManager: @unchecked Sendable {
                         rendererBootstrapSHA256: admitted.rendererBootstrap?.sha256
                     )
                     _ = try envelope.validatedResolvedARMVirtResources()
-                    runtimeLaunchAuthority = RawHVRuntimeLaunchAuthority(
+                    runtimeLaunchAuthority = try RawHVRuntimeLaunchAuthority(
                         envelope: envelope,
                         inheritedFileDescriptors: [admitted.disk.authority]
                             + admitted.boot.authorities
@@ -4106,7 +4163,7 @@ public final class MachineManager: @unchecked Sendable {
                         installerMediaLogicalID: removableLogicalID
                     )
                     _ = try envelope.validatedResolvedARMVirtUEFIResources()
-                    runtimeLaunchAuthority = RawHVRuntimeLaunchAuthority(
+                    runtimeLaunchAuthority = try RawHVRuntimeLaunchAuthority(
                         envelope: envelope,
                         inheritedFileDescriptors: [admitted.disk.authority]
                             + admitted.boot.authorities
@@ -4322,7 +4379,6 @@ public final class MachineManager: @unchecked Sendable {
                 throw error
             }
         }
-        return status(id: id) ?? DoryMachineStatus(id: id, state: .running)
     }
 
     private func startAndWaitUntilReady(id: String) throws -> DoryMachineStatus {
@@ -7947,92 +8003,70 @@ public final class MachineManager: @unchecked Sendable {
             ? entry.sandboxPolicySnapshot
             : DoryVMSandboxPolicy.legacyEnvironment(entry.configuration.environment)
         let displayPresentation = entry.displayPresentation
-        if [.starting, .running, .paused].contains(entry.state),
-           entry.process?.isRunningOrRestarting != true {
-            return DoryMachineStatus(
-                id: id,
-                guestFamily: entry.configuration.guestFamily,
-                guestArchitecture: entry.configuration.guestArchitecture,
-                state: .failed,
-                lastError: entry.lastError ?? "dory-vmm process exited",
-                failure: entry.failure ?? DoryMachineFailure(
-                    code: .helperExited,
-                    operationID: entry.activeOperationID?.uuidString.lowercased(),
-                    causalChain: [.processExit],
-                    recoveryDisposition: .retry,
-                    evidenceReferences: failureEvidenceReferences(for: entry)
-                ),
-                activeOperationID: entry.activeOperationID?.uuidString.lowercased(),
-                activeOperationKind: entry.activeOperationKind?.rawValue,
-                flightRecorderHeadSequence: entry.flightRecorderHeadSequence,
-                flightRecorderAvailable: entry.flightRecorderAvailable,
-                address: entry.configuration.address,
-                configuredAddress: entry.configuration.address,
-                memoryMB: entry.configuration.memoryMB,
-                cpuCount: entry.configuration.cpuCount,
-                displayMode: entry.configuration.displayMode,
-                bootMode: entry.configuration.bootMode,
-                installerMediaAttached: entry.configuration.installerISOPath != nil,
-                shares: entry.configuration.shares,
-                environment: entry.configuration.environment,
-                typedSettings: typedSettings,
-                sandboxPolicy: sandboxPolicy,
-                diagnosticOverrides: DoryMachineDiagnosticOverride.configured(
-                    in: entry.configuration.environment
-                ),
-                displayPresentation: displayPresentation,
-                runtimeIdentity: entry.runtimeIdentity,
-                installedDesktopPayloadReceipt:
-                    entry.configuration.effectiveInstalledDesktopPayloadReceipt,
-                cloneReceipt: entry.configuration.cloneReceipt,
-                savedState: entry.savedStateStatus
-            )
-        }
-        return DoryMachineStatus(
+        let helperExited = [.starting, .running, .paused].contains(entry.state)
+            && entry.process?.isRunningOrRestarting != true
+        var status = DoryMachineStatus(
             id: id,
-            guestFamily: entry.configuration.guestFamily,
-            guestArchitecture: entry.configuration.guestArchitecture,
-            state: entry.state,
-            pid: entry.process?.pid,
-            lastError: entry.lastError,
-            failure: entry.failure,
-            activeOperationID: entry.activeOperationID?.uuidString.lowercased(),
-            activeOperationKind: entry.activeOperationKind?.rawValue,
-            flightRecorderHeadSequence: entry.flightRecorderHeadSequence,
-            flightRecorderAvailable: entry.flightRecorderAvailable,
-            handoffSocketPath: entry.handoffServer?.path,
-            agentBuild: entry.handoff?.ready.agentBuild,
-            agentProtocolVersion: entry.handoff?.ready.agentProtocolVersion,
-            agentCapabilities: entry.handoff?.ready.agentCapabilities ?? [],
-            agentSocketPath: entry.handoff?.ready.agentSocketPath,
-            dockerdSocketPath: entry.handoff?.ready.dockerdSocketPath,
-            shellSocketPath: entry.handoff?.ready.shellSocketPath,
-            controlSocketPath: entry.handoff?.ready.controlSocketPath,
-            address: entry.configuration.address ?? entry.runtimeAddress,
-            configuredAddress: entry.configuration.address,
-            runtimeAddress: entry.runtimeAddress,
-            handoffFDCount: entry.handoff?.fileDescriptors.count ?? 0,
-            memoryMB: entry.configuration.memoryMB,
-            currentBalloonTargetMB: entry.currentBalloonTargetMB ?? entry.configuration.memoryMB,
-            cpuCount: entry.configuration.cpuCount,
-            displayMode: entry.configuration.displayMode,
-            bootMode: entry.configuration.bootMode,
-            installerMediaAttached: entry.configuration.installerISOPath != nil,
-            shares: entry.configuration.shares,
-            environment: entry.configuration.environment,
-            typedSettings: typedSettings,
-            sandboxPolicy: sandboxPolicy,
-            diagnosticOverrides: DoryMachineDiagnosticOverride.configured(
-                in: entry.configuration.environment
-            ),
-            displayPresentation: displayPresentation,
-            runtimeIdentity: entry.runtimeIdentity,
-            runtimeGraphicsSelection: entry.handoff?.ready.graphicsSelection,
-            installedDesktopPayloadReceipt:
-                entry.configuration.effectiveInstalledDesktopPayloadReceipt,
-            cloneReceipt: entry.configuration.cloneReceipt,
-            savedState: entry.savedStateStatus
+            state: helperExited ? .failed : entry.state
         )
+        status.guestFamily = entry.configuration.guestFamily
+        status.guestArchitecture = entry.configuration.guestArchitecture
+        status.activeOperationID = entry.activeOperationID?.uuidString.lowercased()
+        status.activeOperationKind = entry.activeOperationKind?.rawValue
+        status.flightRecorderHeadSequence = entry.flightRecorderHeadSequence
+        status.flightRecorderAvailable = entry.flightRecorderAvailable
+        status.address = entry.configuration.address
+        status.configuredAddress = entry.configuration.address
+        status.memoryMB = entry.configuration.memoryMB
+        status.currentBalloonTargetMB = entry.configuration.memoryMB
+        status.cpuCount = entry.configuration.cpuCount
+        status.displayMode = entry.configuration.displayMode
+        status.bootMode = entry.configuration.bootMode
+        status.installerMediaAttached = entry.configuration.installerISOPath != nil
+        status.shares = entry.configuration.shares
+        status.environment = entry.configuration.environment
+        status.typedSettings = typedSettings
+        status.sandboxPolicy = sandboxPolicy
+        status.diagnosticOverrides = DoryMachineDiagnosticOverride.configured(
+            in: entry.configuration.environment
+        )
+        status.displayPresentation = displayPresentation
+        status.runtimeIdentity = entry.runtimeIdentity
+        status.installedDesktopPayloadReceipt =
+            entry.configuration.effectiveInstalledDesktopPayloadReceipt
+        status.cloneReceipt = entry.configuration.cloneReceipt
+        status.savedState = entry.savedStateStatus
+
+        if helperExited {
+            status.lastError = entry.lastError ?? "dory-vmm process exited"
+            status.failure = entry.failure ?? DoryMachineFailure(
+                code: .helperExited,
+                operationID: entry.activeOperationID?.uuidString.lowercased(),
+                causalChain: [.processExit],
+                recoveryDisposition: .retry,
+                evidenceReferences: failureEvidenceReferences(for: entry)
+            )
+            return status
+        }
+
+        status.pid = entry.process?.pid
+        status.lastError = entry.lastError
+        status.failure = entry.failure
+        status.handoffSocketPath = entry.handoffServer?.path
+        status.agentBuild = entry.handoff?.ready.agentBuild
+        status.agentProtocolVersion = entry.handoff?.ready.agentProtocolVersion
+        status.agentCapabilities = entry.handoff?.ready.agentCapabilities ?? []
+        status.agentSocketPath = entry.handoff?.ready.agentSocketPath
+        status.dockerdSocketPath = entry.handoff?.ready.dockerdSocketPath
+        status.shellSocketPath = entry.handoff?.ready.shellSocketPath
+        status.controlSocketPath = entry.handoff?.ready.controlSocketPath
+        status.address = entry.configuration.address ?? entry.runtimeAddress
+        status.runtimeAddress = entry.runtimeAddress
+        status.handoffFDCount = entry.handoff?.fileDescriptors.count ?? 0
+        status.currentBalloonTargetMB =
+            entry.currentBalloonTargetMB ?? entry.configuration.memoryMB
+        status.runtimeGraphicsSelection = entry.handoff?.ready.graphicsSelection
+        return status
     }
 
     private func failureEvidenceReferences(
@@ -8490,7 +8524,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         authorityTransferred = true
         return DoryQualificationBootstrapRuntimeAuthority(
-            runtime: RawHVRuntimeLaunchAuthority(
+            runtime: try RawHVRuntimeLaunchAuthority(
                 envelope: envelope,
                 inheritedFileDescriptors: [admitted.disk.authority]
                     + admitted.boot.authorities
@@ -8672,7 +8706,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         authorityTransferred = true
         return DoryQualificationBootstrapRuntimeAuthority(
-            runtime: RawHVRuntimeLaunchAuthority(
+            runtime: try RawHVRuntimeLaunchAuthority(
                 pcEnvelope: envelope,
                 inheritedFileDescriptors: [admitted.disk.authority]
                     + admitted.boot.authorities
@@ -8850,7 +8884,7 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         transferred = true
-        return RawHVRuntimeLaunchAuthority(
+        return try RawHVRuntimeLaunchAuthority(
             pcEnvelope: envelope,
             inheritedFileDescriptors: [admitted.disk.authority] + admitted.boot.authorities
         )
@@ -8882,16 +8916,16 @@ public final class MachineManager: @unchecked Sendable {
                 acceleratedDesktop: target.acceleratedDesktop,
                 resolvedLaunchBinding: resolvedLaunchBinding,
                 restoreStatePath: restoreStatePath,
-                runtimeLaunchEnvelope: runtimeLaunchAuthority?.envelope,
-                pcRuntimeLaunchEnvelope: runtimeLaunchAuthority?.pcEnvelope,
+                runtimeLaunchEnvelopeAuthority: runtimeLaunchAuthority?.envelopeAuthority,
+                pcRuntimeLaunchEnvelopeAuthority: runtimeLaunchAuthority?.pcEnvelopeAuthority,
                 qualificationBootstrapLaunch: qualificationBootstrapLaunch
             ),
             logPath: "\(configuration.logDirectory)/\(machine.id).log",
             restartPolicy: configuration.requiresReadyHandoff
                 ? configuration.startupRestartPolicy
                 : .none,
-            runtimeLaunchEnvelope: runtimeLaunchAuthority?.envelope,
-            pcRuntimeLaunchEnvelope: runtimeLaunchAuthority?.pcEnvelope,
+            runtimeLaunchEnvelopeAuthority: runtimeLaunchAuthority?.envelopeAuthority,
+            pcRuntimeLaunchEnvelopeAuthority: runtimeLaunchAuthority?.pcEnvelopeAuthority,
             inheritedFileDescriptors: runtimeLaunchAuthority?.inheritedFileDescriptors ?? [],
             launchStyle: Self.processLaunchStyle(
                 executablePath: target.executablePath,
@@ -10372,12 +10406,12 @@ public final class MachineManager: @unchecked Sendable {
         acceleratedDesktop: Bool,
         resolvedLaunchBinding: MachineBackendLaunchBinding?,
         restoreStatePath: String?,
-        runtimeLaunchEnvelope: RuntimeLaunchEnvelope?,
-        pcRuntimeLaunchEnvelope: DoryPCRuntimeLaunchEnvelope? = nil,
+        runtimeLaunchEnvelopeAuthority: RuntimeLaunchEnvelopeAuthority?,
+        pcRuntimeLaunchEnvelopeAuthority: DoryPCRuntimeLaunchEnvelopeAuthority? = nil,
         qualificationBootstrapLaunch: Bool = false
     ) throws -> [String] {
         guard configuration.passMachineArguments else {
-            if runtimeLaunchEnvelope != nil || pcRuntimeLaunchEnvelope != nil {
+            if runtimeLaunchEnvelopeAuthority != nil || pcRuntimeLaunchEnvelopeAuthority != nil {
                 throw MachineManagerError.persistence(
                     "resolved Dory launch envelope cannot be omitted from helper arguments"
                 )
@@ -10389,8 +10423,8 @@ public final class MachineManager: @unchecked Sendable {
                   machine.bootMode == .macOSRestore,
                   machine.guestArchitecture == .arm64,
                   machine.displayMode == .desktop,
-                  runtimeLaunchEnvelope == nil,
-                  pcRuntimeLaunchEnvelope == nil,
+                  runtimeLaunchEnvelopeAuthority == nil,
+                  pcRuntimeLaunchEnvelopeAuthority == nil,
                   resolvedLaunchBinding?.backend.identity
                     == .appleVirtualizationFramework,
                   resolvedLaunchBinding?.graphics == .hostAcceleratedDisplay,
@@ -10450,8 +10484,8 @@ public final class MachineManager: @unchecked Sendable {
             && machine.bootMode == .efi
             && machine.installerISOPath == nil
         let bootDescriptor = acceleratedInstalledLinux
-            && runtimeLaunchEnvelope == nil
-            && pcRuntimeLaunchEnvelope == nil
+            && runtimeLaunchEnvelopeAuthority == nil
+            && pcRuntimeLaunchEnvelopeAuthority == nil
             ? try DoryInstalledLinuxBootBundle.descriptor(atPath: machine.kernelPath)
             : nil
         var arguments = baseArguments + [
@@ -10464,7 +10498,7 @@ public final class MachineManager: @unchecked Sendable {
             "--control-sock", "\(machineRuntimeDirectory(id: machine.id))/c.sock",
             "--display-mode", machine.displayMode.rawValue,
         ]
-        if runtimeLaunchEnvelope == nil, pcRuntimeLaunchEnvelope == nil {
+        if runtimeLaunchEnvelopeAuthority == nil, pcRuntimeLaunchEnvelopeAuthority == nil {
             arguments.append(contentsOf: [
                 "--memory-mb", String(machine.memoryMB),
                 "--cpus", String(machine.cpuCount),
@@ -10477,7 +10511,7 @@ public final class MachineManager: @unchecked Sendable {
                 "--dockerd-sock", "\(machineRuntimeDirectory(id: machine.id))/d.sock",
             ])
         }
-        if let runtimeLaunchEnvelope {
+        if let runtimeLaunchEnvelopeAuthority {
             guard acceleratedDesktop,
                   resolvedLaunchBinding?.backend.identity == .doryHypervisor
                     || qualificationBootstrapLaunch else {
@@ -10487,9 +10521,9 @@ public final class MachineManager: @unchecked Sendable {
             }
             arguments.append(contentsOf: [
                 "--runtime-launch-envelope",
-                try runtimeLaunchEnvelope.encodedArgument(),
+                try runtimeLaunchEnvelopeAuthority.encodedArgument(),
             ])
-        } else if let pcRuntimeLaunchEnvelope {
+        } else if let pcRuntimeLaunchEnvelopeAuthority {
             guard acceleratedDesktop,
                   resolvedLaunchBinding?.backend.identity == .doryHypervisor
                     || qualificationBootstrapLaunch else {
@@ -10499,7 +10533,7 @@ public final class MachineManager: @unchecked Sendable {
             }
             arguments.append(contentsOf: [
                 "--pc-runtime-launch-envelope",
-                try pcRuntimeLaunchEnvelope.encodedArgument(),
+                try pcRuntimeLaunchEnvelopeAuthority.encodedArgument(),
             ])
         } else {
             if resolvedLaunchBinding?.backend.identity == .doryHypervisor {
@@ -10527,8 +10561,8 @@ public final class MachineManager: @unchecked Sendable {
         // A schema-v3 RawHV helper receives device authority only through the immutable
         // envelope. VZ has no such envelope yet and continues to consume the resolved binding's
         // split argument contract.
-        let removableUSBHotplugEnabled = runtimeLaunchEnvelope?.devices.removableUSBHotplug
-            ?? pcRuntimeLaunchEnvelope?.devices.removableUSBHotplug
+        let removableUSBHotplugEnabled = runtimeLaunchEnvelopeAuthority?.removableUSBHotplug
+            ?? pcRuntimeLaunchEnvelopeAuthority?.removableUSBHotplug
             ?? resolvedLaunchBinding?.devices.removableUSBHotplug
             ?? true
         if acceleratedDesktop, removableUSBHotplugEnabled {
@@ -10558,7 +10592,7 @@ public final class MachineManager: @unchecked Sendable {
             }
             arguments.append(contentsOf: ["--restore-state", restoreStatePath])
         }
-        if let resolvedLaunchBinding, runtimeLaunchEnvelope == nil {
+        if let resolvedLaunchBinding, runtimeLaunchEnvelopeAuthority == nil {
             guard resolvedLaunchBinding.backend.identity == .appleVirtualizationFramework else {
                 throw MachineManagerError.persistence(
                     "only Virtualization.framework may use split resolved helper arguments"
@@ -10616,7 +10650,7 @@ public final class MachineManager: @unchecked Sendable {
         if let resolvedLaunchBinding {
             switch resolvedLaunchBinding.backend.identity {
             case .doryHypervisor:
-                guard runtimeLaunchEnvelope != nil,
+                guard runtimeLaunchEnvelopeAuthority != nil,
                       (machine.displayMode == .headless
                         ? resolvedLaunchBinding.graphics == .none
                         : resolvedLaunchBinding.graphics != .none) else {
@@ -10625,7 +10659,7 @@ public final class MachineManager: @unchecked Sendable {
                     )
                 }
             case .appleVirtualizationFramework:
-                guard runtimeLaunchEnvelope == nil else {
+                guard runtimeLaunchEnvelopeAuthority == nil else {
                     throw MachineManagerError.persistence(
                         "Virtualization.framework cannot consume a raw-HV launch envelope"
                     )

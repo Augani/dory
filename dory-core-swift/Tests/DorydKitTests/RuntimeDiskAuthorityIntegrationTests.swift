@@ -36,7 +36,9 @@ final class RuntimeDiskAuthorityIntegrationTests: XCTestCase {
                     "dory-authority-test",
                     output,
                 ],
-                runtimeLaunchEnvelope: launch.envelope,
+                runtimeLaunchEnvelopeAuthority: try RuntimeLaunchEnvelopeAuthority(
+                    launch.envelope
+                ),
                 inheritedFileDescriptors: [admitted.authority, launch.kernel]
             ),
             unexpectedTerminationHandler: { _ in terminated.fulfill() }
@@ -70,7 +72,7 @@ final class RuntimeDiskAuthorityIntegrationTests: XCTestCase {
             executablePath: script,
             arguments: [marker, capturePrefix],
             restartPolicy: HvRestartPolicy(maxRestarts: 1, delaySeconds: 0.01),
-            runtimeLaunchEnvelope: launch.envelope,
+            runtimeLaunchEnvelopeAuthority: try RuntimeLaunchEnvelopeAuthority(launch.envelope),
             inheritedFileDescriptors: [admitted.authority, launch.kernel]
         ))
         try process.start()
@@ -152,7 +154,9 @@ final class RuntimeDiskAuthorityIntegrationTests: XCTestCase {
             configuration: HvProcessConfiguration(
                 executablePath: "/bin/sh",
                 arguments: ["-c", "if IFS= read -r ignored; then exit 9; else exit 0; fi"],
-                runtimeLaunchEnvelope: launch.envelope,
+                runtimeLaunchEnvelopeAuthority: try RuntimeLaunchEnvelopeAuthority(
+                    launch.envelope
+                ),
                 inheritedFileDescriptors: [admitted.authority, launch.kernel]
             ),
             unexpectedTerminationHandler: { termination in

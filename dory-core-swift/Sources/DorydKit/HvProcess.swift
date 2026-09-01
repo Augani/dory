@@ -251,14 +251,84 @@ public final class HvProcessInheritedFileDescriptor: @unchecked Sendable {
     }
 }
 
+/// Reference-owned DoryARMVirt launch authority. The complete immutable topology is intentionally
+/// kept off ordinary dispatch-worker stacks for the same reason as the DoryPC authority below.
+public final class RuntimeLaunchEnvelopeAuthority: @unchecked Sendable {
+    private let envelope: RuntimeLaunchEnvelope
+
+    public init(_ envelope: RuntimeLaunchEnvelope) throws {
+        switch envelope.boot {
+        case .linuxDirect:
+            _ = try envelope.validatedResolvedARMVirtResources()
+        case .uefi:
+            _ = try envelope.validatedResolvedARMVirtUEFIResources()
+        }
+        self.envelope = envelope
+    }
+
+    public var removableUSBHotplug: Bool {
+        envelope.devices.removableUSBHotplug
+    }
+
+    public func encodedArgument() throws -> String {
+        try envelope.encodedArgument()
+    }
+
+    fileprivate func inheritedDescriptorSlots() -> [(String, Int32)] {
+        envelope.inheritedFileDescriptors.map { ($0.name, $0.descriptor) }
+            + envelope.inheritedDirectoryDescriptors.map { ($0.name, $0.descriptor) }
+    }
+
+    fileprivate func validateResources() throws {
+        switch envelope.boot {
+        case .linuxDirect:
+            _ = try envelope.validatedResolvedARMVirtResources()
+        case .uefi:
+            _ = try envelope.validatedResolvedARMVirtUEFIResources()
+        }
+    }
+}
+
+/// Reference-owned DoryPC launch authority.
+///
+/// `DoryPCRuntimeLaunchEnvelope` contains the complete immutable PC firmware and device plan. Its
+/// value representation is intentionally rich and is too large to copy through ordinary dispatch
+/// worker stacks. Keeping one validated instance behind this reference also prevents process
+/// supervision from accidentally manufacturing a second launch authority while inspecting it.
+public final class DoryPCRuntimeLaunchEnvelopeAuthority: @unchecked Sendable {
+    private let envelope: DoryPCRuntimeLaunchEnvelope
+
+    public init(_ envelope: DoryPCRuntimeLaunchEnvelope) throws {
+        _ = try envelope.validatedResources()
+        self.envelope = envelope
+    }
+
+    public var removableUSBHotplug: Bool {
+        envelope.devices.removableUSBHotplug
+    }
+
+    public func encodedArgument() throws -> String {
+        try envelope.encodedArgument()
+    }
+
+    fileprivate func inheritedDescriptorSlots() -> [(String, Int32)] {
+        envelope.inheritedFileDescriptors.map { ($0.name, $0.descriptor) }
+            + envelope.inheritedDirectoryDescriptors.map { ($0.name, $0.descriptor) }
+    }
+
+    fileprivate func validateResources() throws {
+        _ = try envelope.validatedResources()
+    }
+}
+
 public struct HvProcessConfiguration: Sendable {
     public var executablePath: String
     public var arguments: [String]
     public var environment: [String: String]
     public var logPath: String?
     public var restartPolicy: HvRestartPolicy
-    public var runtimeLaunchEnvelope: RuntimeLaunchEnvelope?
-    public var pcRuntimeLaunchEnvelope: DoryPCRuntimeLaunchEnvelope?
+    public var runtimeLaunchEnvelopeAuthority: RuntimeLaunchEnvelopeAuthority?
+    public var pcRuntimeLaunchEnvelopeAuthority: DoryPCRuntimeLaunchEnvelopeAuthority?
     public var inheritedFileDescriptors: [HvProcessInheritedFileDescriptor]
     public var launchStyle: HvProcessLaunchStyle
     /// Populated only by the resolved production RawHV path after decoding the release identity
@@ -271,8 +341,8 @@ public struct HvProcessConfiguration: Sendable {
         environment: [String: String] = [:],
         logPath: String? = nil,
         restartPolicy: HvRestartPolicy = .none,
-        runtimeLaunchEnvelope: RuntimeLaunchEnvelope? = nil,
-        pcRuntimeLaunchEnvelope: DoryPCRuntimeLaunchEnvelope? = nil,
+        runtimeLaunchEnvelopeAuthority: RuntimeLaunchEnvelopeAuthority? = nil,
+        pcRuntimeLaunchEnvelopeAuthority: DoryPCRuntimeLaunchEnvelopeAuthority? = nil,
         inheritedFileDescriptors: [HvProcessInheritedFileDescriptor] = [],
         launchStyle: HvProcessLaunchStyle = .directExecutable
     ) {
@@ -281,8 +351,8 @@ public struct HvProcessConfiguration: Sendable {
         self.environment = environment
         self.logPath = logPath
         self.restartPolicy = restartPolicy
-        self.runtimeLaunchEnvelope = runtimeLaunchEnvelope
-        self.pcRuntimeLaunchEnvelope = pcRuntimeLaunchEnvelope
+        self.runtimeLaunchEnvelopeAuthority = runtimeLaunchEnvelopeAuthority
+        self.pcRuntimeLaunchEnvelopeAuthority = pcRuntimeLaunchEnvelopeAuthority
         self.inheritedFileDescriptors = inheritedFileDescriptors
         self.launchStyle = launchStyle
         rendererReleaseIdentity = nil
@@ -966,17 +1036,15 @@ public final class HvProcess: @unchecked Sendable {
 
     private func validateDescriptorEnvelope(mappings: [InheritedDescriptorMapping]) throws {
         let dockerDiskIndex = try validatedDockerDataDiskDescriptorIndex(mappings: mappings)
-        guard configuration.runtimeLaunchEnvelope == nil
-                || configuration.pcRuntimeLaunchEnvelope == nil else {
+        guard configuration.runtimeLaunchEnvelopeAuthority == nil
+                || configuration.pcRuntimeLaunchEnvelopeAuthority == nil else {
             throw ProcessError.descriptorEnvelopeMismatch
         }
         let slots: [(String, Int32)]
-        if let envelope = configuration.runtimeLaunchEnvelope {
-            slots = envelope.inheritedFileDescriptors.map { ($0.name, $0.descriptor) }
-                + envelope.inheritedDirectoryDescriptors.map { ($0.name, $0.descriptor) }
-        } else if let envelope = configuration.pcRuntimeLaunchEnvelope {
-            slots = envelope.inheritedFileDescriptors.map { ($0.name, $0.descriptor) }
-                + envelope.inheritedDirectoryDescriptors.map { ($0.name, $0.descriptor) }
+        if let authority = configuration.runtimeLaunchEnvelopeAuthority {
+            slots = authority.inheritedDescriptorSlots()
+        } else if let authority = configuration.pcRuntimeLaunchEnvelopeAuthority {
+            slots = authority.inheritedDescriptorSlots()
         } else {
             guard mappings.count == (dockerDiskIndex == nil ? 0 : 1) else {
                 throw ProcessError.descriptorEnvelopeMismatch
@@ -993,15 +1061,10 @@ public final class HvProcess: @unchecked Sendable {
               }) else {
             throw ProcessError.descriptorEnvelopeMismatch
         }
-        if let envelope = configuration.runtimeLaunchEnvelope {
-            switch envelope.boot {
-            case .linuxDirect:
-                _ = try envelope.validatedResolvedARMVirtResources()
-            case .uefi:
-                _ = try envelope.validatedResolvedARMVirtUEFIResources()
-            }
-        } else if let envelope = configuration.pcRuntimeLaunchEnvelope {
-            _ = try envelope.validatedResources()
+        if let authority = configuration.runtimeLaunchEnvelopeAuthority {
+            try authority.validateResources()
+        } else if let authority = configuration.pcRuntimeLaunchEnvelopeAuthority {
+            try authority.validateResources()
         }
     }
 
@@ -1064,8 +1127,8 @@ public final class HvProcess: @unchecked Sendable {
     }
 
     private func spawnEnvironment() throws -> ([String: String], Bool) {
-        guard configuration.runtimeLaunchEnvelope != nil
-                || configuration.pcRuntimeLaunchEnvelope != nil else {
+        guard configuration.runtimeLaunchEnvelopeAuthority != nil
+                || configuration.pcRuntimeLaunchEnvelopeAuthority != nil else {
             return (configuration.environment, true)
         }
         let allowed = Set([

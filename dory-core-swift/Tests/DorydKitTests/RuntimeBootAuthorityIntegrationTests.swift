@@ -262,7 +262,7 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
             executablePath: script,
             arguments: [marker, kernelCapture, initrdCapture],
             restartPolicy: HvRestartPolicy(maxRestarts: 1, delaySeconds: 0.01),
-            runtimeLaunchEnvelope: envelope,
+            runtimeLaunchEnvelopeAuthority: try RuntimeLaunchEnvelopeAuthority(envelope),
             inheritedFileDescriptors: [disk.authority] + boot.authorities
         ))
         defer { process.stop() }
@@ -330,7 +330,7 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
         let process = HvProcess(configuration: HvProcessConfiguration(
             executablePath: "/bin/sh",
             arguments: ["-c", "touch \"$1\"", "dory-boot-authority-test", marker],
-            runtimeLaunchEnvelope: envelope,
+            runtimeLaunchEnvelopeAuthority: try RuntimeLaunchEnvelopeAuthority(envelope),
             inheritedFileDescriptors: [disk.authority, boot.kernel.authority]
         ))
 
