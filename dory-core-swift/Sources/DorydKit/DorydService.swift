@@ -820,33 +820,42 @@ public final class DorydService: NSObject, DorydControl {
         }
         do {
             let update = try MachineUpdateRequest(xpcDictionary: config)
-            let previousState = machineManager.status(id: machineID)?.state
-            let restoresActiveInstallerSession = update.installerMediaAttached != nil
-                && (previousState == .running || previousState == .paused)
-            var status = try machineManager.update(
-                id: machineID,
-                memoryMB: update.memoryMB,
-                cpuCount: update.cpuCount,
-                address: update.address,
-                updatesAddress: update.updatesAddress,
-                shares: update.shares,
-                updatesShares: update.updatesShares,
-                typedSettingsPatch: update.typedSettings.isEmpty ? nil : update.typedSettings,
-                installerMediaAttached: update.installerMediaAttached
-            )
-            if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
-                guard let productionPlanningController else {
+            let status: DoryMachineStatus
+            if let attached = update.installerMediaAttached {
+                guard update.containsOnlyInstallerMediaMutation else {
                     throw MachineManagerError.persistence(
-                        "production planning controller is not configured"
+                        "installer attach/eject must be its own lifecycle transaction"
                     )
                 }
-                status = try machineManager.resolveAndPublishProductionPlan(
+                status = try machineManager.transitionInstallerMedia(
                     id: machineID,
-                    controller: productionPlanningController
+                    attached: attached,
+                    productionPlanningController: productionPlanningController
                 )
-                if restoresActiveInstallerSession {
-                    status = try machineManager.start(id: machineID)
+            } else {
+                var updated = try machineManager.update(
+                    id: machineID,
+                    memoryMB: update.memoryMB,
+                    cpuCount: update.cpuCount,
+                    address: update.address,
+                    updatesAddress: update.updatesAddress,
+                    shares: update.shares,
+                    updatesShares: update.updatesShares,
+                    typedSettingsPatch: update.typedSettings.isEmpty
+                        ? nil : update.typedSettings
+                )
+                if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
+                    guard let productionPlanningController else {
+                        throw MachineManagerError.persistence(
+                            "production planning controller is not configured"
+                        )
+                    }
+                    updated = try machineManager.resolveAndPublishProductionPlan(
+                        id: machineID,
+                        controller: productionPlanningController
+                    )
                 }
+                status = updated
             }
             incidentWriter?.record(type: "machine.update", detail: machineID)
             reply(true, status.xpcDictionary, "")
@@ -2550,6 +2559,15 @@ private struct MachineUpdateRequest {
     var updatesShares: Bool
     var typedSettings: DoryMachineTypedSettingsPatch
     var installerMediaAttached: Bool?
+
+    var containsOnlyInstallerMediaMutation: Bool {
+        installerMediaAttached != nil
+            && memoryMB == nil
+            && cpuCount == nil
+            && !updatesAddress
+            && !updatesShares
+            && typedSettings.isEmpty
+    }
 
     init(xpcDictionary dictionary: NSDictionary) throws {
         guard dictionary[DoryMachineSandboxPolicyWriteAuthority.xpcKey] == nil else {

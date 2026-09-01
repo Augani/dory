@@ -336,14 +336,17 @@ private struct MachineCard: View {
 
     private var installerMediaActionTitle: String {
         let action = machine.installerMediaAttached ? "Eject Installer" : "Attach Installer"
+        if machine.installerMediaAttached {
+            return action + (isActive ? " and Restart" : " and Boot")
+        }
         return isActive ? action + " and Restart" : action
     }
 
     private var installerMediaDialogMessage: String {
         if machine.installerMediaAttached {
             return isActive
-                ? "Dory will request a graceful shutdown, eject the ISO, and restart from the installed virtual disk. Continue only after the Linux installer has finished writing the disk."
-                : "The next Start will boot from the installed virtual disk without the ISO. Continue only after installation is complete."
+                ? "Dory will request a graceful shutdown, verify the installed disk, eject the ISO, and restart from it. If that first disk boot fails, Dory will restore the installer automatically."
+                : "Dory will verify the installed disk, eject the ISO, and perform its first disk boot now. If that boot fails, Dory will restore the installer automatically."
         }
         return isActive
             ? "Dory will request a graceful shutdown, attach the read-only installer ISO, and restart into EFI recovery/install media."

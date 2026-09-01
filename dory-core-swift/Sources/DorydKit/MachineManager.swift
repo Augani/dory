@@ -5609,6 +5609,10 @@ public final class MachineManager: @unchecked Sendable {
             }
             var promotedInstallerFirmwareStore = false
             do {
+                try confirmInstalledDoryPCBootabilityIfNeeded(
+                    from: current,
+                    to: updated
+                )
                 try resetInstallerFirmwareVariableStoreForRecoveryIfNeeded(
                     from: current,
                     to: updated
@@ -5731,6 +5735,10 @@ public final class MachineManager: @unchecked Sendable {
         }
         var promotedInstallerFirmwareStore = false
         do {
+            try confirmInstalledDoryPCBootabilityIfNeeded(
+                from: current,
+                to: updated
+            )
             try resetInstallerFirmwareVariableStoreForRecoveryIfNeeded(
                 from: current,
                 to: updated
@@ -5826,6 +5834,110 @@ public final class MachineManager: @unchecked Sendable {
             }
             throw MachineManagerError.persistence(
                 "could not start updated \(id): \(updateError); original configuration was restored"
+            )
+        }
+    }
+
+    /// Owns the removable-media transition through its first executable outcome. Ejection always
+    /// proves a disk-first boot, even when the installer powered the VM off before the user
+    /// requested the transition. A planning or boot failure restores the prior media definition
+    /// and, when applicable, its prior active state before returning the original failure.
+    public func transitionInstallerMedia(
+        id: String,
+        attached: Bool,
+        productionPlanningController: (
+            any DoryDaemonVirtualMachineProductionPlanningControlling
+        )? = nil
+    ) throws -> DoryMachineStatus {
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
+        let (original, originalState) = try configurationAndPowerState(id: id)
+        guard original.bootMode == .efi else {
+            throw MachineManagerError.persistence(
+                "installer media is only available for EFI machines"
+            )
+        }
+        let originallyAttached = original.installerISOPath != nil
+        guard originallyAttached != attached else {
+            return status(id: id) ?? DoryMachineStatus(id: id, state: originalState)
+        }
+        guard originalState != .suspended else {
+            throw MachineManagerError.persistence(
+                "a suspended EFI machine must be restored before changing installer media"
+            )
+        }
+
+        let originallyActive = originalState == .running || originalState == .paused
+        if originalState == .paused {
+            _ = try resume(id: id)
+        }
+        var definitionChanged = false
+        do {
+            var result = try update(id: id, installerMediaAttached: attached)
+            definitionChanged = true
+            if launchPolicy == .perWorkspaceAuthority {
+                guard let productionPlanningController else {
+                    throw MachineManagerError.persistence(
+                        "production planning controller is not configured"
+                    )
+                }
+                result = try resolveAndPublishProductionPlan(
+                    id: id,
+                    controller: productionPlanningController
+                )
+            }
+            if !attached || originallyActive {
+                if result.state != .running {
+                    result = try startAndWaitUntilReady(id: id)
+                }
+                guard result.state == .running else {
+                    throw MachineManagerError.persistence(
+                        attached
+                            ? "installer media restart did not reach running"
+                            : "first installed-disk boot did not reach running"
+                    )
+                }
+            }
+            return result
+        } catch {
+            let transitionError = error
+            guard definitionChanged else {
+                if originalState == .paused { _ = try? pause(id: id) }
+                throw transitionError
+            }
+            do {
+                if let current = status(id: id),
+                   [.starting, .running, .paused, .failed].contains(current.state) {
+                    _ = try? stop(id: id)
+                }
+                _ = try update(
+                    id: id,
+                    installerMediaAttached: originallyAttached
+                )
+                if launchPolicy == .perWorkspaceAuthority {
+                    guard let productionPlanningController else {
+                        throw MachineManagerError.persistence(
+                            "production planning controller is not configured for rollback"
+                        )
+                    }
+                    _ = try resolveAndPublishProductionPlan(
+                        id: id,
+                        controller: productionPlanningController
+                    )
+                }
+                if originallyActive {
+                    _ = try startAndWaitUntilReady(id: id)
+                    if originalState == .paused { _ = try pause(id: id) }
+                }
+            } catch let rollbackError {
+                throw MachineManagerError.persistence(
+                    "installer media transition failed: \(transitionError); "
+                        + "automatic rollback failed: \(rollbackError)"
+                )
+            }
+            throw MachineManagerError.persistence(
+                "installer media transition failed: \(transitionError); "
+                    + "the original installer configuration was restored"
             )
         }
     }
@@ -11596,6 +11708,10 @@ public final class MachineManager: @unchecked Sendable {
         "\(machineStateDirectory(id: id))/NVRAM.installer"
     }
 
+    private func machineDoryPCFirmwareVariableDirectoryPath(id: String) -> String {
+        "\(machineStateDirectory(id: id))/uefi-variables"
+    }
+
     private func machineFirmwarePromotionMarkerPath(id: String) -> String {
         "\(machineStateDirectory(id: id))/\(Self.installerFirmwarePromotionMarkerName)"
     }
@@ -11611,6 +11727,31 @@ public final class MachineManager: @unchecked Sendable {
         guard current.bootMode == .efi,
               current.installerISOPath != nil,
               updated.installerISOPath == nil else {
+            return false
+        }
+        if Self.isX86GuestArchitecture(configuration.guestArchitecture) {
+            do {
+                let store = try DoryUEFIVariableStoreFile(
+                    directory: machineDoryPCFirmwareVariableDirectoryPath(id: current.id)
+                )
+                let load = try store.load()
+                guard load.source == .primary, load.snapshot.platform == .pcV1 else {
+                    throw MachineManagerError.persistence(
+                        "DoryPC UEFI variable state requires explicit recovery before installer ejection"
+                    )
+                }
+            } catch let error as MachineManagerError {
+                throw error
+            } catch {
+                throw MachineManagerError.persistence(
+                    "the DoryPC installer has not produced valid persistent UEFI state; "
+                        + "keep the ISO attached and complete an installer boot before ejecting it: \(error)"
+                )
+            }
+            // DoryPC uses one descriptor-backed variable store across removable-media and
+            // disk-first boots. Its launch-plan reconciliation replaces only Dory-owned fallback
+            // entries and preserves installer-created Boot#### variables, so no file promotion is
+            // necessary or correct.
             return false
         }
         let installedNVRAM = machineFirmwareNVRAMPath(id: current.id)
@@ -11630,6 +11771,38 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         return true
+    }
+
+    /// The removable-media transaction may switch DoryPC to disk-first boot only after the
+    /// stopped system disk contains a structurally valid EFI system partition. The immediately
+    /// following first boot remains the executable proof and retains the existing rollback path.
+    private func confirmInstalledDoryPCBootabilityIfNeeded(
+        from current: DoryMachineConfiguration,
+        to updated: DoryMachineConfiguration
+    ) throws {
+        guard current.bootMode == .efi,
+              current.installerISOPath != nil,
+              updated.installerISOPath == nil,
+              Self.isX86GuestArchitecture(configuration.guestArchitecture) else {
+            return
+        }
+        do {
+            _ = try DoryLinuxInstalledDiskInspector.efiSystemPartition(
+                atPath: current.rootfsPath
+            )
+        } catch {
+            throw MachineManagerError.persistence(
+                "DoryPC installer ejection requires an EFI-bootable installed system disk; "
+                    + "keep the ISO attached and finish installation before retrying: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private static func isX86GuestArchitecture(_ value: String) -> Bool {
+        switch value.lowercased() {
+        case "amd64", "x86_64": true
+        default: false
+        }
     }
 
     /// The first installed EFI boot must inherit the Boot#### entries written by the installer.

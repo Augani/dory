@@ -83,6 +83,34 @@ final class DoryInstallerISOTests: XCTestCase {
         )
     }
 
+    func testDiscoversEFIAndLinuxPartitionsFromInstalledGPT() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-installed-gpt-\(UUID().uuidString).raw")
+        defer { try? FileManager.default.removeItem(at: path) }
+        try installedGPTImage().write(to: path)
+
+        XCTAssertEqual(
+            try DoryLinuxInstalledDiskInspector.efiSystemPartition(atPath: path.path),
+            1
+        )
+        XCTAssertEqual(
+            try DoryLinuxInstalledDiskInspector.rootDevice(atPath: path.path),
+            "/dev/vda2"
+        )
+
+        var withoutESP = installedGPTImage()
+        withoutESP.replaceSubrange(2 * 512..<(2 * 512 + 16), with: Data(repeating: 0, count: 16))
+        try withoutESP.write(to: path)
+        XCTAssertThrowsError(
+            try DoryLinuxInstalledDiskInspector.efiSystemPartition(atPath: path.path)
+        ) { error in
+            XCTAssertEqual(
+                error as? DoryLinuxInstalledDiskInspectionError,
+                .efiSystemPartitionNotFound(path.path)
+            )
+        }
+    }
+
     func testExtractsBootAssetsFromOptInRealInstallerISO() throws {
         guard let path = ProcessInfo.processInfo.environment["DORY_TEST_INSTALLER_ISO"],
               !path.isEmpty else {
@@ -898,5 +926,42 @@ final class DoryInstallerISOTests: XCTestCase {
         data[offset + 1] = UInt8(truncatingIfNeeded: value >> 8)
         data[offset + 2] = UInt8(truncatingIfNeeded: value >> 16)
         data[offset + 3] = UInt8(truncatingIfNeeded: value >> 24)
+    }
+
+    private func putUInt64(_ value: UInt64, into data: inout Data, at offset: Int) {
+        putUInt32(UInt32(truncatingIfNeeded: value), into: &data, at: offset)
+        putUInt32(UInt32(truncatingIfNeeded: value >> 32), into: &data, at: offset + 4)
+    }
+
+    private func installedGPTImage() -> Data {
+        let sectorBytes = 512
+        var image = Data(repeating: 0, count: 128 * sectorBytes)
+        let header = sectorBytes
+        image.replaceSubrange(header..<(header + 8), with: Data("EFI PART".utf8))
+        putUInt32(92, into: &image, at: header + 12)
+        putUInt64(1, into: &image, at: header + 24)
+        putUInt64(127, into: &image, at: header + 32)
+        putUInt64(34, into: &image, at: header + 40)
+        putUInt64(126, into: &image, at: header + 48)
+        putUInt64(2, into: &image, at: header + 72)
+        putUInt32(4, into: &image, at: header + 80)
+        putUInt32(128, into: &image, at: header + 84)
+
+        let entries = 2 * sectorBytes
+        image.replaceSubrange(entries..<(entries + 16), with: Data([
+            0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11,
+            0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b,
+        ]))
+        putUInt64(34, into: &image, at: entries + 32)
+        putUInt64(63, into: &image, at: entries + 40)
+
+        let linux = entries + 128
+        image.replaceSubrange(linux..<(linux + 16), with: Data([
+            0xaf, 0x3d, 0xc6, 0x0f, 0x83, 0x84, 0x72, 0x47,
+            0x8e, 0x79, 0x3d, 0x69, 0xd8, 0x47, 0x7d, 0xe4,
+        ]))
+        putUInt64(64, into: &image, at: linux + 32)
+        putUInt64(120, into: &image, at: linux + 40)
+        return image
     }
 }

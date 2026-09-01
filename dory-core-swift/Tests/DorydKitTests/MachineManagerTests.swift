@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import DoryCore
+import DoryFirmware
 import DoryOperations
 @testable import DorydKit
 import XCTest
@@ -83,6 +84,40 @@ final class MachineManagerTests: XCTestCase {
             Data("dory-nvram-promotion-v1\nmachine=linux\n".utf8),
             toPath: fixture.promotionMarker
         )
+    }
+
+    private func installedX86GPTImage() -> Data {
+        func putUInt32(_ value: UInt32, into data: inout Data, at offset: Int) {
+            for byte in 0..<4 {
+                data[offset + byte] = UInt8(truncatingIfNeeded: value >> (byte * 8))
+            }
+        }
+        func putUInt64(_ value: UInt64, into data: inout Data, at offset: Int) {
+            for byte in 0..<8 {
+                data[offset + byte] = UInt8(truncatingIfNeeded: value >> (byte * 8))
+            }
+        }
+
+        let sectorBytes = 512
+        var image = Data(repeating: 0, count: 128 * sectorBytes)
+        let header = sectorBytes
+        image.replaceSubrange(header..<(header + 8), with: Data("EFI PART".utf8))
+        putUInt32(92, into: &image, at: header + 12)
+        putUInt64(1, into: &image, at: header + 24)
+        putUInt64(127, into: &image, at: header + 32)
+        putUInt64(34, into: &image, at: header + 40)
+        putUInt64(126, into: &image, at: header + 48)
+        putUInt64(2, into: &image, at: header + 72)
+        putUInt32(4, into: &image, at: header + 80)
+        putUInt32(128, into: &image, at: header + 84)
+        let entries = 2 * sectorBytes
+        image.replaceSubrange(entries..<(entries + 16), with: Data([
+            0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11,
+            0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b,
+        ]))
+        putUInt64(34, into: &image, at: entries + 32)
+        putUInt64(63, into: &image, at: entries + 40)
+        return image
     }
 
     func testShareArgumentsRoundTripDelimiterHeavyPathsAndJSON() throws {
@@ -3611,6 +3646,175 @@ final class MachineManagerTests: XCTestCase {
         )
         XCTAssertNotNil(stored.installerISOPath)
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(state)/linux/NVRAM"))
+    }
+
+    func testDoryPCInstallerEjectionUsesDescriptorVariableStoreAndBootableDisk() throws {
+        let base = "/tmp/dory-machine-pc-eject-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let installer = base + "/linux-x86_64.iso"
+        let disk = base + "/disk.raw"
+        try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try Data("blank disk".utf8).write(to: URL(fileURLWithPath: disk))
+        let state = base + "/machines"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: false,
+            guestArchitecture: "x86_64"
+        ))
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "linux",
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            installerISOPath: installer,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+
+        XCTAssertThrowsError(
+            try manager.update(id: "linux", installerMediaAttached: false)
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("persistent UEFI state"))
+        }
+
+        let machineDirectory = state + "/linux"
+        let variableStore = try DoryUEFIVariableStoreFile(
+            directory: machineDirectory + "/uefi-variables"
+        )
+        try variableStore.initialize(try DoryUEFIVariableStoreSnapshot(platform: .pcV1))
+        XCTAssertThrowsError(
+            try manager.update(id: "linux", installerMediaAttached: false)
+        ) { error in
+            XCTAssertTrue(String(describing: error).contains("EFI-bootable installed system disk"))
+        }
+
+        try installedX86GPTImage().write(
+            to: URL(fileURLWithPath: machineDirectory + "/rootfs.ext4")
+        )
+        let ejected = try manager.update(id: "linux", installerMediaAttached: false)
+        XCTAssertFalse(ejected.installerMediaAttached)
+        XCTAssertFalse(
+            FileManager.default.fileExists(atPath: machineDirectory + "/NVRAM"),
+            "DoryPC must retain its descriptor-backed store instead of creating a legacy NVRAM file"
+        )
+        XCTAssertEqual(try variableStore.load().snapshot.platform, .pcV1)
+    }
+
+    func testDoryPCFirstDiskBootFailureRestoresInstallerTransaction() throws {
+        let base = "/tmp/dory-machine-pc-eject-rollback-\(getpid())-"
+            + "\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let installer = base + "/linux-x86_64.iso"
+        let disk = base + "/disk.raw"
+        try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
+        let starter = RecordingProcessStarter(failingAttempts: [1])
+        let state = base + "/machines"
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sleep",
+                stateDirectory: state,
+                baseArguments: ["30"],
+                passMachineArguments: false,
+                requiresReadyHandoff: false,
+                guestArchitecture: "x86_64"
+            ),
+            processStarter: { process in try starter.start(process) }
+        )
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "linux",
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            installerISOPath: installer,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+        let variableStore = try DoryUEFIVariableStoreFile(
+            directory: state + "/linux/uefi-variables"
+        )
+        try variableStore.initialize(try DoryUEFIVariableStoreSnapshot(platform: .pcV1))
+
+        XCTAssertThrowsError(
+            try manager.transitionInstallerMedia(id: "linux", attached: false)
+        ) { error in
+            XCTAssertTrue(
+                String(describing: error).contains("original installer configuration was restored"),
+                String(describing: error)
+            )
+        }
+        let restored = try XCTUnwrap(manager.status(id: "linux"))
+        XCTAssertTrue(restored.installerMediaAttached)
+        XCTAssertNotEqual(restored.state, .running)
+        XCTAssertEqual(starter.attemptCount, 1)
+    }
+
+    func testDoryPCInstallerEjectionWaitsForFirstDiskBootReadiness() throws {
+        let base = "/tmp/dory-machine-pc-eject-readiness-\(getpid())-"
+            + "\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let installer = base + "/linux-x86_64.iso"
+        let disk = base + "/disk.raw"
+        try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
+        try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
+        let state = base + "/machines"
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep",
+            stateDirectory: state,
+            baseArguments: ["30"],
+            passMachineArguments: false,
+            requiresReadyHandoff: true,
+            guestArchitecture: "x86_64"
+        ))
+        defer { try? manager.delete(id: "linux") }
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "linux",
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            installerISOPath: installer,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop
+        ))
+        let variableStore = try DoryUEFIVariableStoreFile(
+            directory: state + "/linux/uefi-variables"
+        )
+        try variableStore.initialize(try DoryUEFIVariableStoreSnapshot(platform: .pcV1))
+
+        let transitionFinished = expectation(description: "installer transition finished")
+        let transitionResult = LockedResult<DoryMachineStatus>()
+        DispatchQueue.global(qos: .userInitiated).async {
+            transitionResult.store(Result {
+                try manager.transitionInstallerMedia(id: "linux", attached: false)
+            })
+            transitionFinished.fulfill()
+        }
+
+        let starting = try waitForMachineStatus(manager, id: "linux", timeout: 10) {
+            $0.state == .starting && !$0.installerMediaAttached
+        }
+        try sendVmmHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            ready: VmmReadyMessage(
+                machineID: "linux",
+                operationID: try XCTUnwrap(starting.activeOperationID)
+            ),
+            fileDescriptors: []
+        )
+
+        wait(for: [transitionFinished], timeout: 15)
+        let completed = try XCTUnwrap(transitionResult.value).get()
+        XCTAssertEqual(completed.state, .running)
+        XCTAssertFalse(completed.installerMediaAttached)
     }
 
     func testDaemonRestartRollsBackInterruptedNVRAMPromotionWhileISOIsAttached() throws {

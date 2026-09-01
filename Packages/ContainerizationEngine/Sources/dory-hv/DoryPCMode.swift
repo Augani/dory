@@ -345,13 +345,12 @@ enum DoryPCMode {
 
             let mailbox = devices.displays.isEmpty ? nil : DesktopFrameMailbox(scanoutID: 0)
             self.mailbox = mailbox
-            let installerIsFirst = envelope.launchPlan.bootOrder.first.flatMap { firstID in
-                envelope.launchPlan.bootDevices.first { $0.logicalID == firstID }?.kind
-            } == .removableMedia
-            let requestedGuestServices = devices.clipboard || devices.clockSynchronization
-                || devices.directorySharing
             let readyPublisher = ReadyPublisher(
-                requiresGuestServices: requestedGuestServices && !installerIsFirst
+                // DoryPC-v1 boots user-supplied Linux media. The VirtIO display is part of the
+                // machine contract, but a Dory guest agent is not. Agent-backed conveniences may
+                // come online after boot; they cannot prevent a valid generic installation from
+                // publishing readiness or completing its first disk-boot proof.
+                requiresGuestServices: false
             ) {
                 let graphics = envelope.graphics == .software
                     ? DoryRuntimeGraphicsSelection.resolvedSoftware(
@@ -616,7 +615,7 @@ enum DoryPCMode {
             let clipboard = self.clipboard
             let machineState = self.machineState
             let directoryShares = configuration.shares
-            guestServiceQueue.async { [weak self] in
+            guestServiceQueue.async {
                 let deadline = Date().addingTimeInterval(90)
                 var lastError: Error?
                 while !machineState.isStopping,
@@ -688,11 +687,11 @@ enum DoryPCMode {
                 let failure = lastError ?? VMError.bootFailure(
                     "DoryPC guest services did not become ready"
                 )
-                if installerIsFirst {
-                    Self.log("installer guest services remain deferred: \(failure)")
-                } else {
-                    self?.finish(failure)
-                }
+                Self.log(
+                    installerIsFirst
+                        ? "installer guest services remain deferred: \(failure)"
+                        : "optional guest services are unavailable: \(failure)"
+                )
             }
         }
 
