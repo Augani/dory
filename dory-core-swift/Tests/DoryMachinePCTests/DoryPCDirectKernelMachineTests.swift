@@ -70,6 +70,13 @@ import Testing
     #expect(try machine.run(maximumInstructions: 16) == .halted(instructionCount: 5))
     #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "A")])
     #expect(machine.state(forProcessor: 1)?.cs.base == 0x8000)
+    let snapshots = machine.processorExecutionSnapshots
+    #expect(snapshots.count == 2)
+    #expect(snapshots[0].lifecycle == .running)
+    #expect(snapshots[0].isHalted)
+    #expect(snapshots[1].lifecycle == .running)
+    #expect(snapshots[1].isHalted)
+    #expect(snapshots[1].state?.cs.base == 0x8000)
     #expect(try machine.physicalMemories[0].read(at: 0xFEE0_0020, byteCount: 4) == [0, 0, 0, 0])
     #expect(try machine.physicalMemories[1].read(at: 0xFEE0_0020, byteCount: 4) == [0, 0, 0, 1])
   }

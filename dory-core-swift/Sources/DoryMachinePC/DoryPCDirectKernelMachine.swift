@@ -36,6 +36,25 @@ public struct DoryPCExecutionStatistics: Codable, Sendable, Hashable {
   }
 }
 
+public struct DoryPCProcessorExecutionSnapshot: Sendable, Hashable {
+  public let index: Int
+  public let lifecycle: DoryPCProcessorLifecycle
+  public let isHalted: Bool
+  public let state: DoryX86ArchitecturalState?
+
+  public init(
+    index: Int,
+    lifecycle: DoryPCProcessorLifecycle,
+    isHalted: Bool,
+    state: DoryX86ArchitecturalState?
+  ) {
+    self.index = index
+    self.lifecycle = lifecycle
+    self.isHalted = isHalted
+    self.state = state
+  }
+}
+
 public struct DoryPCTripleFaultExceptionEvidence: Sendable, Hashable {
   public let exception: DoryX86Exception
   public let processor: Int
@@ -411,6 +430,19 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   public func state(forProcessor index: Int) -> DoryX86ArchitecturalState? {
     lock.withLock { loadedStates.indices.contains(index) ? loadedStates[index]?.value : nil }
+  }
+
+  public var processorExecutionSnapshots: [DoryPCProcessorExecutionSnapshot] {
+    lock.withLock {
+      loadedStates.indices.map { index in
+        .init(
+          index: index,
+          lifecycle: processorLifecycles[index],
+          isHalted: haltedProcessors[index],
+          state: loadedStates[index]?.value
+        )
+      }
+    }
   }
 
   /// Reads instruction bytes through the processor's current linear-address translation. This is

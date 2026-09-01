@@ -591,6 +591,35 @@ private func run() throws {
       )
     } ?? []
   let instructionBytes = (try? composed.machine.instructionBytes(maximumCount: 16)) ?? nil
+  let processorStates: [[String: Any]] = composed.machine.processorExecutionSnapshots.map {
+    snapshot in
+    let processorState = snapshot.state
+    let bytes =
+      (try? composed.machine.instructionBytes(
+        forProcessor: snapshot.index,
+        maximumCount: 16
+      )) ?? nil
+    return [
+      "index": snapshot.index,
+      "lifecycle": snapshot.lifecycle.rawValue,
+      "halted": snapshot.isHalted,
+      "rip": processorState.map { hexadecimal($0.rip) } ?? "unavailable",
+      "linearInstructionPointer":
+        processorState.map { hexadecimal($0.cs.base &+ $0.rip) } ?? "unavailable",
+      "instructionBytes": bytes.map(hexadecimalBytes) ?? "unmapped",
+      "csSelector":
+        processorState.map { String(format: "0x%04x", $0.cs.selector) } ?? "unavailable",
+      "csBase": processorState.map { hexadecimal($0.cs.base) } ?? "unavailable",
+      "csAttributes":
+        processorState.map { String(format: "0x%04x", $0.cs.attributes) } ?? "unavailable",
+      "cr0": processorState.map { hexadecimal($0.control.cr0) } ?? "unavailable",
+      "cr3": processorState.map { hexadecimal($0.control.cr3) } ?? "unavailable",
+      "cr4": processorState.map { hexadecimal($0.control.cr4) } ?? "unavailable",
+      "efer": processorState.map { hexadecimal($0.control.efer) } ?? "unavailable",
+      "rflags": processorState.map { hexadecimal($0.rflags.rawValue) } ?? "unavailable",
+      "rsp": processorState.map { hexadecimal($0.registers.rsp) } ?? "unavailable",
+    ]
+  }
   let stackBytes =
     state.flatMap {
       (try? composed.machine.memoryBytes(atLinearAddress: $0.registers.rsp, maximumCount: 64))
@@ -656,6 +685,7 @@ private func run() throws {
     "traceStopReason": execution.traceStopReason.map { $0 as Any } ?? NSNull(),
     "instructionTrace": execution.trace,
     "processorCount": arguments.processorCount,
+    "processorStates": processorStates,
     "bootOrder": bootOrder,
     "exceptionPolicy": arguments.exceptionPolicy == .stop ? "stop" : "deliver",
     "executionTier": arguments.executionTier.rawValue,
