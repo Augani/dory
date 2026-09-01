@@ -1,5 +1,6 @@
 import DoryFSWorkerContracts
 @testable import DoryFSWorkerServiceCore
+import Darwin
 import Foundation
 import Testing
 
@@ -129,6 +130,258 @@ struct DoryFSWorkerHostCoherenceTests {
         if frames.count >= 2 { #expect(frames[0] == frames[1]) }
         #expect(failures.error == nil)
         #expect(relay.statistics.deliveredBatchCount >= 1)
+    }
+
+    @Test func steadyStateEventLossReconcilesAtomicReplacementNamespace() async throws {
+        let share = try CoherenceTemporaryShare()
+        let file = share.root.appendingPathComponent("known-before-loss.txt")
+        try Data("before".utf8).write(to: file)
+        let hostFS = try HostFS(rootPath: share.root.path)
+        let entry = try hostFS.lookup(parent: HostFS.rootNodeID, name: file.lastPathComponent)
+        let capability = try hostCoherenceCapability(12)
+        let exchange = HostCoherenceExchangeRecorder()
+        let failures = HostCoherenceFailureRecorder()
+        let relay = try DoryFSWorkerHostCoherence(
+            generation: DoryFSWorkerGeneration(rawValue: 112),
+            shares: [(capability, hostFS, .invalidationAndWatcherNudge)],
+            exchange: exchange.exchange,
+            onFailure: failures.record
+        )
+        defer { relay.stop() }
+        try relay.activate()
+        let deliveredBeforeLoss = relay.statistics.deliveredBatchCount
+        let batchesBeforeLoss = exchange.recordedBatches.count
+
+        let replacement = share.root.appendingPathComponent("replacement.tmp")
+        try Data("after".utf8).write(to: replacement)
+        guard Darwin.rename(replacement.path, file.path) == 0 else {
+            throw HostCoherenceRecorderError.systemCall(errno)
+        }
+
+        relay.recordEventLossForTesting(capability: capability)
+
+        #expect(try await waitForRecoveredEventLoss(
+            in: relay,
+            deliveredAfter: deliveredBeforeLoss
+        ))
+        #expect(relay.statistics.running)
+        #expect(relay.statistics.eventLossCount == 1)
+        let recoveryBatches = exchange.recordedBatches.dropFirst(batchesBeforeLoss)
+        #expect(recoveryBatches.contains { batch in
+            batch.invalidations.contains(.delete(
+                parentNodeID: HostFS.rootNodeID,
+                childNodeID: entry.nodeID,
+                name: file.lastPathComponent
+            ))
+        })
+        #expect(recoveryBatches.contains { batch in
+            batch.invalidations.contains(.entry(
+                parentNodeID: HostFS.rootNodeID,
+                name: file.lastPathComponent,
+                flags: 0
+            ))
+        })
+        #expect(exchange.containsNudge(""))
+        #expect(failures.error == nil)
+    }
+
+    @Test func repeatedEventLossWhileRecoveryIsBlockedRunsAnotherSweep() async throws {
+        let share = try CoherenceTemporaryShare()
+        let file = share.root.appendingPathComponent("known.txt")
+        try Data("before".utf8).write(to: file)
+        let hostFS = try HostFS(rootPath: share.root.path)
+        _ = try hostFS.lookup(parent: HostFS.rootNodeID, name: file.lastPathComponent)
+        let capability = try hostCoherenceCapability(13)
+        let exchange = ArmableBlockingHostCoherenceExchange()
+        let failures = HostCoherenceFailureRecorder()
+        let relay = try DoryFSWorkerHostCoherence(
+            generation: DoryFSWorkerGeneration(rawValue: 113),
+            shares: [(capability, hostFS, .invalidationOnly)],
+            exchange: exchange.exchange,
+            onFailure: failures.record
+        )
+        defer {
+            exchange.release()
+            relay.stop()
+        }
+        try relay.activate()
+        let deliveredBeforeLoss = relay.statistics.deliveredBatchCount
+
+        exchange.arm()
+        relay.recordEventLossForTesting(capability: capability)
+        #expect(try await exchange.waitUntilBlocked())
+        relay.recordEventLossForTesting(capability: capability)
+        exchange.release()
+
+        #expect(try await waitForRecoveredEventLoss(
+            in: relay,
+            deliveredAfter: deliveredBeforeLoss + 1,
+            expectedLossCount: 2
+        ))
+        #expect(relay.statistics.running)
+        #expect(failures.error == nil)
+    }
+
+    @Test func reconciliationBeyondOneFramePublishesOneOrderedTransaction() throws {
+        let share = try CoherenceTemporaryShare()
+        let hostFS = try HostFS(rootPath: share.root.path)
+        for index in 0..<1_025 {
+            let name = "known-\(index).txt"
+            try Data().write(to: share.root.appendingPathComponent(name))
+            _ = try hostFS.lookup(parent: HostFS.rootNodeID, name: name)
+        }
+        let capability = try hostCoherenceCapability(18)
+        let exchange = HostCoherenceExchangeRecorder()
+        let failures = HostCoherenceFailureRecorder()
+        let relay = try DoryFSWorkerHostCoherence(
+            generation: DoryFSWorkerGeneration(rawValue: 118),
+            shares: [(capability, hostFS, .invalidationOnly)],
+            exchange: exchange.exchange,
+            onFailure: failures.record
+        )
+        defer { relay.stop() }
+
+        try relay.activate()
+
+        let delivered = exchange.recordedBatches.filter {
+            $0.shareCapabilityID == capability
+        }
+        let first = try #require(delivered.first { $0.transactionCount > 1 })
+        let batches = delivered.filter { $0.transactionID == first.transactionID }
+        #expect(batches.count > 1)
+        #expect(first.transactionCount == UInt16(batches.count))
+        #expect(batches.enumerated().allSatisfy { index, batch in
+            batch.transactionID == first.batchID
+                && batch.transactionIndex == UInt16(index)
+                && batch.transactionCount == UInt16(batches.count)
+                && batch.nudgeRelativePaths.isEmpty
+        })
+        #expect(failures.error == nil)
+    }
+
+    @Test func stopJoinsBlockedRecoveryAndCancelsQueuedDelivery() async throws {
+        let share = try CoherenceTemporaryShare()
+        let file = share.root.appendingPathComponent("known.txt")
+        try Data("before".utf8).write(to: file)
+        let hostFS = try HostFS(rootPath: share.root.path)
+        _ = try hostFS.lookup(parent: HostFS.rootNodeID, name: file.lastPathComponent)
+        let capability = try hostCoherenceCapability(14)
+        let exchange = ArmableBlockingHostCoherenceExchange()
+        let failures = HostCoherenceFailureRecorder()
+        let relay = try DoryFSWorkerHostCoherence(
+            generation: DoryFSWorkerGeneration(rawValue: 114),
+            shares: [(capability, hostFS, .invalidationOnly)],
+            exchange: exchange.exchange,
+            onFailure: failures.record
+        )
+        try relay.activate()
+        exchange.arm()
+        relay.recordEventLossForTesting(capability: capability)
+        #expect(try await exchange.waitUntilBlocked())
+
+        let completion = HostCoherenceCompletionRecorder()
+        let stopping = Task.detached {
+            relay.stop()
+            completion.record()
+        }
+        try await Task.sleep(nanoseconds: 50_000_000)
+        #expect(!completion.completed)
+
+        exchange.release()
+        await stopping.value
+        let exchangesAfterStop = exchange.exchangeCount
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        #expect(completion.completed)
+        #expect(exchange.exchangeCount == exchangesAfterStop)
+        #expect(!relay.statistics.running)
+        #expect(failures.error == nil)
+    }
+
+    @Test func persistentStopRetainsCallbackContextsUntilQueueDrain() async throws {
+        let share = try CoherenceTemporaryShare()
+        let hostFS = try HostFS(rootPath: share.root.path)
+        let capability = try hostCoherenceCapability(15)
+        let exchange = HostCoherenceExchangeRecorder()
+        let failures = HostCoherenceFailureRecorder()
+        let cleanup = HostCoherenceBlockingHook()
+        let completion = HostCoherenceCompletionRecorder()
+        let relay = try DoryFSWorkerHostCoherence(
+            generation: DoryFSWorkerGeneration(rawValue: 115),
+            shares: [(capability, hostFS, .invalidationOnly)],
+            exchange: exchange.exchange,
+            onFailure: failures.record
+        )
+        try relay.prepare()
+        relay.persistentStreamCleanupQueueTestHook = cleanup.block
+
+        let stopping = Task.detached {
+            relay.stop()
+            completion.record()
+        }
+        #expect(try await cleanup.waitUntilBlocked())
+        #expect(!completion.completed)
+
+        cleanup.release()
+        await stopping.value
+
+        #expect(completion.completed)
+        #expect(!relay.statistics.running)
+        #expect(failures.error == nil)
+    }
+
+    @Test func eventLossFailsClosedWhenObservedRootAuthorityIsReplaced() async throws {
+        let share = try CoherenceTemporaryShare()
+        let hostFS = try HostFS(rootPath: share.root.path)
+        let capability = try hostCoherenceCapability(16)
+        let exchange = HostCoherenceExchangeRecorder()
+        let failures = HostCoherenceFailureRecorder()
+        let relay = try DoryFSWorkerHostCoherence(
+            generation: DoryFSWorkerGeneration(rawValue: 116),
+            shares: [(capability, hostFS, .invalidationOnly)],
+            exchange: exchange.exchange,
+            onFailure: failures.record
+        )
+        defer { relay.stop() }
+        try relay.activate()
+
+        let retiredRoot = share.base.appendingPathComponent("retired-share", isDirectory: true)
+        guard Darwin.rename(share.root.path, retiredRoot.path) == 0 else {
+            throw HostCoherenceRecorderError.systemCall(errno)
+        }
+        try FileManager.default.createDirectory(
+            at: share.root,
+            withIntermediateDirectories: false
+        )
+        relay.recordEventLossForTesting(capability: capability)
+
+        #expect(try await waitForFailure(in: failures))
+        #expect(failures.error == .observationUnavailable)
+        #expect(!relay.statistics.running)
+    }
+
+    @Test func eventLossFailsClosedWhenReverseAcknowledgementIsUnavailable() async throws {
+        let share = try CoherenceTemporaryShare()
+        let hostFS = try HostFS(rootPath: share.root.path)
+        let capability = try hostCoherenceCapability(17)
+        let exchange = ArmableFailingHostCoherenceExchange()
+        let failures = HostCoherenceFailureRecorder()
+        let relay = try DoryFSWorkerHostCoherence(
+            generation: DoryFSWorkerGeneration(rawValue: 117),
+            shares: [(capability, hostFS, .invalidationOnly)],
+            exchange: exchange.exchange,
+            onFailure: failures.record
+        )
+        defer { relay.stop() }
+        try relay.activate()
+
+        exchange.arm()
+        relay.recordEventLossForTesting(capability: capability)
+
+        #expect(try await waitForFailure(in: failures))
+        #expect(failures.error == .acknowledgementUnavailable)
+        #expect(!relay.statistics.running)
+        #expect(exchange.failedAttemptCount == DoryFSWorkerHostCoherence.acknowledgementAttempts)
     }
 
     @Test func deliveryActivationReconcilesKnownInodeWithoutWaitingForFSEvents() throws {
@@ -262,7 +515,6 @@ struct DoryFSWorkerHostCoherenceTests {
         )
         defer { relay.stop() }
         try relay.activate()
-        let activationFrameCount = exchange.exactFrames.count
 
         try Data("guest write".utf8).write(
             to: share.root.appendingPathComponent("same-worker-pid.txt")
@@ -270,7 +522,7 @@ struct DoryFSWorkerHostCoherenceTests {
         relay.flushObservationStreams()
         try await Task.sleep(nanoseconds: 50_000_000)
         relay.flushObservationStreams()
-        #expect(exchange.exactFrames.count == activationFrameCount)
+        #expect(!exchange.containsNudge("same-worker-pid.txt"))
 
         try runExternal("/usr/bin/touch", [
             share.root.appendingPathComponent("different-pid.txt").path,
@@ -335,6 +587,7 @@ private enum HostCoherenceRecorderError: Error {
     case transientFailure
     case processFailed(Int32)
     case timedOut
+    case systemCall(Int32)
 }
 
 private final class HostCoherenceExchangeRecorder: @unchecked Sendable {
@@ -430,6 +683,86 @@ private final class BlockingHostCoherenceExchange: @unchecked Sendable {
     }
 }
 
+private final class ArmableBlockingHostCoherenceExchange: @unchecked Sendable {
+    private let condition = NSCondition()
+    private var armed = false
+    private var blocked = false
+    private var released = false
+    private var batches = [DoryFSWorkerCoherenceBatch]()
+
+    var exchangeCount: Int { condition.withLock { batches.count } }
+
+    func arm() {
+        condition.withLock {
+            armed = true
+            blocked = false
+            released = false
+        }
+    }
+
+    func exchange(_ frame: Data) throws -> Data {
+        let batch = try DoryFSWorkerCoherenceCodec.decodeBatch(frame)
+        condition.lock()
+        batches.append(batch)
+        if armed {
+            blocked = true
+            condition.broadcast()
+            let deadline = Date(timeIntervalSinceNow: 5)
+            while !released {
+                guard condition.wait(until: deadline) else {
+                    condition.unlock()
+                    throw HostCoherenceRecorderError.timedOut
+                }
+            }
+        }
+        condition.unlock()
+        return DoryFSWorkerCoherenceCodec.encode(
+            try DoryFSWorkerCoherenceAcknowledgement(accepting: batch)
+        )
+    }
+
+    func waitUntilBlocked() async throws -> Bool {
+        for _ in 0..<200 {
+            if condition.withLock({ blocked }) { return true }
+            try await Task.sleep(nanoseconds: 25_000_000)
+        }
+        return false
+    }
+
+    func release() {
+        condition.withLock {
+            released = true
+            armed = false
+            condition.broadcast()
+        }
+    }
+}
+
+private final class ArmableFailingHostCoherenceExchange: @unchecked Sendable {
+    private let lock = NSLock()
+    private var armed = false
+    private var failures = 0
+
+    var failedAttemptCount: Int { lock.withLock { failures } }
+
+    func arm() {
+        lock.withLock { armed = true }
+    }
+
+    func exchange(_ frame: Data) throws -> Data {
+        let batch = try DoryFSWorkerCoherenceCodec.decodeBatch(frame)
+        let shouldFail = lock.withLock { () -> Bool in
+            guard armed else { return false }
+            failures += 1
+            return true
+        }
+        if shouldFail { throw HostCoherenceRecorderError.transientFailure }
+        return DoryFSWorkerCoherenceCodec.encode(
+            try DoryFSWorkerCoherenceAcknowledgement(accepting: batch)
+        )
+    }
+}
+
 private final class HostCoherenceCompletionRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var didComplete = false
@@ -508,6 +841,33 @@ private func hostCoherenceCapability(_ byte: UInt8) throws -> DoryFSShareCapabil
         0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 1, byte
     )))
+}
+
+private func waitForRecoveredEventLoss(
+    in relay: DoryFSWorkerHostCoherence,
+    deliveredAfter previousDeliveryCount: UInt64,
+    expectedLossCount: UInt64 = 1
+) async throws -> Bool {
+    for _ in 0..<200 {
+        let statistics = relay.statistics
+        if statistics.running,
+           statistics.eventLossCount >= expectedLossCount,
+           statistics.deliveredBatchCount > previousDeliveryCount {
+            return true
+        }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return false
+}
+
+private func waitForFailure(
+    in recorder: HostCoherenceFailureRecorder
+) async throws -> Bool {
+    for _ in 0..<200 {
+        if recorder.error != nil { return true }
+        try await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return false
 }
 
 private func runExternal(_ executable: String, _ arguments: [String]) throws {

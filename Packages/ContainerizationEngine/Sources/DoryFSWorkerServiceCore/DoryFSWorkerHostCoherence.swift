@@ -75,7 +75,7 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         var eventID: UInt64
         var directoryAggregate: Bool
 
-        var requiresFailStop: Bool {
+        var requiresLossRecovery: Bool {
             let mask = UInt32(
                 kFSEventStreamEventFlagMustScanSubDirs |
                 kFSEventStreamEventFlagUserDropped |
@@ -134,6 +134,15 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         let expectedIdentity: HostFSEventPathIdentity
     }
 
+    private struct ObservationAuthority {
+        let root: String
+        let expectedIdentity: HostFSEventPathIdentity
+    }
+
+    private enum DeliveryError: Error {
+        case cancelled
+    }
+
     static let pendingEventLimit = 65_536
     static let acknowledgementAttempts = 2
 
@@ -179,7 +188,8 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
     /// Checkpoint taken while the worker's sealed root authorities are being assembled. Streams
     /// are intentionally not started until the runner exports its sink, but starting from this
     /// checkpoint lets FSEvents replay host mutations from that pre-activation interval after the
-    /// sink is ready. Loss/wrap flags on that replay are terminal rather than silently skipped.
+    /// sink is ready. Loss/wrap flags force an acknowledged full reconciliation rather than being
+    /// silently skipped.
     private let preactivationEventID: FSEventStreamEventId
     private let endpoints: [DoryFSShareCapabilityID: Endpoint]
     private let exchange: Exchange
@@ -189,9 +199,14 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
     /// still owned by `lock`; this gate only makes duplicate activation requests join the first
     /// transaction instead of observing an intermediate state.
     private let activationLock = NSLock()
+    /// Serializes complete delivery sequences so a standalone flush cannot interleave with the
+    /// frames of an atomic reconciliation transaction.
+    private let deliverySequenceLock = NSLock()
+    private let deliveryLock = NSLock()
     private let lock = NSLock()
     private var streams = [String: FSEventStreamRef]()
     private var callbackBoxes = [String: CallbackBox]()
+    private var observationAuthorities = [DoryFSShareCapabilityID: ObservationAuthority]()
     private var requiredCapabilities = Set<DoryFSShareCapabilityID>()
     private var historyCaughtUpCapabilities = Set<DoryFSShareCapabilityID>()
     private var observedCapabilities = Set<DoryFSShareCapabilityID>()
@@ -202,14 +217,22 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
     private var activationComplete = false
     private var flushScheduled = false
     private var terminalFailureReported = false
+    private var lossRecoveryRequested = false
+    private var lossRecoveryInProgress = false
+    private var lossRecoveryGeneration: UInt64 = 0
+    private var lossRecoveryCapabilities = Set<DoryFSShareCapabilityID>()
     private var nextBatchID = UInt64.random(in: 1...UInt64.max)
     private var receivedEventCount: UInt64 = 0
     private var deliveredBatchCount: UInt64 = 0
     private var failedBatchCount: UInt64 = 0
     private var eventLossCount: UInt64 = 0
+    private var deliveryEpoch: UInt64 = 0
     /// Test-only queue marker. Production leaves this nil; a blocked marker proves activation does
     /// not release an unretained replay context ahead of callbacks queued at invalidation.
     var activationReplayCleanupQueueTestHook: (@Sendable () -> Void)?
+    /// Test-only queue marker for the persistent-stream stop path. The callback boxes are backed
+    /// by unretained FSEvents contexts and must outlive this marker and the following queue drain.
+    var persistentStreamCleanupQueueTestHook: (@Sendable () -> Void)?
 
     init(
         generation: DoryFSWorkerGeneration,
@@ -268,6 +291,7 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
     func prepare() throws {
         let shouldPrepare = lock.withLock { () -> Bool in
             guard !terminalFailureReported, !running else { return false }
+            deliveryEpoch &+= 1
             running = true
             activationCatchupInProgress = true
             return true
@@ -355,7 +379,9 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         )
         let reconciliationBatches: [DoryFSWorkerCoherenceBatch]
         do {
-            reconciliationBatches = try activationReconciliationBatches()
+            reconciliationBatches = try makeReconciliationBatches(
+                includeWatcherRootNudge: false
+            )
         } catch let error as DoryFSWorkerHostCoherenceError {
             failStop(error)
             throw error
@@ -364,7 +390,7 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
             throw DoryFSWorkerHostCoherenceError.planOverflow
         }
 
-        let mustFlush = lock.withLock { () -> Bool? in
+        let activationState = lock.withLock { () -> (mustFlush: Bool, epoch: UInt64)? in
             guard running,
                   !terminalFailureReported,
                   !activationCatchupInProgress,
@@ -372,25 +398,31 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
                   observedCapabilities == requiredCapabilities else {
                 return nil
             }
-            if activationComplete { return false }
+            if activationComplete { return (false, deliveryEpoch) }
             activationDeliveryInProgress = true
             let mustFlush = !pending.isEmpty
             if mustFlush { flushScheduled = true }
-            return mustFlush
+            return (mustFlush, deliveryEpoch)
         }
-        guard let mustFlush else {
+        guard let activationState else {
             throw DoryFSWorkerHostCoherenceError.observationUnavailable
         }
+        deliverySequenceLock.lock()
+        defer { deliverySequenceLock.unlock() }
         do {
             for batch in reconciliationBatches {
                 try deliverRetainingUntilAcknowledged(
                     batch,
-                    activationDeadlineUptimeNanoseconds: activationDeadline
+                    activationDeadlineUptimeNanoseconds: activationDeadline,
+                    deliveryEpoch: activationState.epoch
                 )
                 lock.withLock {
                     deliveredBatchCount = Self.saturatingAdd(deliveredBatchCount, 1)
                 }
             }
+        } catch DeliveryError.cancelled {
+            lock.withLock { activationDeliveryInProgress = false }
+            throw DoryFSWorkerHostCoherenceError.observationUnavailable
         } catch let error as DoryFSWorkerHostCoherenceError {
             lock.withLock {
                 failedBatchCount = Self.saturatingAdd(failedBatchCount, 1)
@@ -404,8 +436,12 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
             failStop(.acknowledgementUnavailable)
             throw DoryFSWorkerHostCoherenceError.acknowledgementUnavailable
         }
-        if mustFlush {
-            flush(activationDeadlineUptimeNanoseconds: activationDeadline)
+        if activationState.mustFlush {
+            flush(
+                activationDeadlineUptimeNanoseconds: activationDeadline,
+                expectedDeliveryEpoch: activationState.epoch,
+                deliverySequenceLockHeld: true
+            )
         }
         let committed = lock.withLock { () -> Bool in
             guard running, activationDeliveryInProgress, !terminalFailureReported else {
@@ -421,6 +457,7 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         }
         // Events committed after the activation barrier may have accumulated while the retained
         // batch was in reverse XPC. They are steady-state work and can now use the normal scheduler.
+        scheduleLossRecovery()
         scheduleFlush()
     }
 
@@ -442,17 +479,22 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
     func stop() {
         let retired = lock.withLock { () -> ([FSEventStreamRef], [CallbackBox]) in
             running = false
+            deliveryEpoch &+= 1
             activationCatchupInProgress = false
             activationDeliveryInProgress = false
             activationComplete = false
             flushScheduled = false
             pending.removeAll(keepingCapacity: false)
+            lossRecoveryRequested = false
+            lossRecoveryInProgress = false
+            lossRecoveryCapabilities.removeAll(keepingCapacity: false)
             requiredCapabilities.removeAll(keepingCapacity: false)
             historyCaughtUpCapabilities.removeAll(keepingCapacity: false)
             observedCapabilities.removeAll(keepingCapacity: false)
             let retired = (Array(streams.values), Array(callbackBoxes.values))
             streams.removeAll(keepingCapacity: false)
             callbackBoxes.removeAll(keepingCapacity: false)
+            observationAuthorities.removeAll(keepingCapacity: false)
             return retired
         }
         for endpoint in endpoints.values {
@@ -461,9 +503,20 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         for stream in retired.0 {
             FSEventStreamStop(stream)
             FSEventStreamInvalidate(stream)
+        }
+        // Invalidation prevents new callbacks but does not cancel callbacks already submitted to
+        // the queue. Drain it before releasing the streams or their unretained context boxes.
+        if let hook = persistentStreamCleanupQueueTestHook {
+            streamQueue.async(execute: hook)
+        }
+        streamQueue.sync {}
+        for stream in retired.0 {
             FSEventStreamRelease(stream)
         }
         _ = retired.1
+        // Join an in-flight reverse exchange. A queued exchange observes the incremented epoch
+        // after acquiring this gate and cancels without calling into reverse XPC.
+        deliveryLock.withLock {}
     }
 
     private func observe(
@@ -547,6 +600,10 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
             guard running, streams[key] == nil else { return false }
             streams[key] = stream
             callbackBoxes[key] = box
+            observationAuthorities[capability] = ObservationAuthority(
+                root: observationRoot,
+                expectedIdentity: expectedIdentity
+            )
             return true
         }
         if !accepted {
@@ -666,49 +723,125 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         }
     }
 
-    /// Invalidates every inode identity already known to the guest before readiness. This sweep is
-    /// deliberately independent of FSEvents callback timing: pre-activation FUSE replies are
-    /// fail-closed to zero validity, and this final acknowledged invalidation prevents a positive
-    /// lookup or open inode from carrying stale content across the activation boundary. Newly
-    /// unknown names have no negative dentry grant before activation and are discovered normally.
-    private func activationReconciliationBatches() throws -> [DoryFSWorkerCoherenceBatch] {
+    /// Invalidates every inode and namespace binding already known to the guest. The namespace
+    /// portion is required after FSEvents reports a dropped queue: invalidating an inode does not
+    /// evict Linux's positive dentry for a deleted, renamed, or atomically replaced host name.
+    ///
+    /// This sweep is deliberately independent of FSEvents callback timing: pre-activation FUSE
+    /// replies are fail-closed to zero validity, and this final acknowledged invalidation prevents
+    /// a positive lookup or open inode from carrying stale content across the activation boundary.
+    /// Newly unknown names have no negative dentry grant before activation and are discovered
+    /// normally.
+    private func makeReconciliationBatches(
+        includeWatcherRootNudge: Bool,
+        capabilities: Set<DoryFSShareCapabilityID>? = nil
+    ) throws -> [DoryFSWorkerCoherenceBatch] {
         var batches = [DoryFSWorkerCoherenceBatch]()
-        for endpoint in endpoints.values.sorted(by: {
+        for endpoint in endpoints.values.filter({
+            capabilities?.contains($0.capability) ?? true
+        }).sorted(by: {
             $0.capability.rawValue.uuidString < $1.capability.rawValue.uuidString
         }) {
-            let keyedInvalidations = endpoint.hostFS.knownNodeIDsForLossRecovery().map {
+            var invalidations = [String: DoryFSWorkerCoherenceInvalidation]()
+            for hostPath in endpoint.hostFS.knownHostPathsForLossRecovery() {
+                guard let snapshot = endpoint.hostFS.invalidationSnapshot(forHostPath: hostPath),
+                      let name = snapshot.entryName else { continue }
+                let pathIsMissing: Bool
+                do {
+                    pathIsMissing = try endpoint.hostFS.eventPathIsMissing(forHostPath: hostPath)
+                } catch {
+                    throw DoryFSWorkerHostCoherenceError.capabilityAuthorityUnavailable
+                }
+                let change = Change(
+                    path: hostPath,
+                    flags: UInt32(
+                        kFSEventStreamEventFlagItemModified
+                            | kFSEventStreamEventFlagItemRemoved
+                            | kFSEventStreamEventFlagItemRenamed
+                    ),
+                    eventID: 0,
+                    directoryAggregate: false
+                )
+                let planned = Self.plannedInvalidations(
+                    change: change,
+                    snapshot: snapshot,
+                    pathIsMissing: pathIsMissing,
+                    permitsContentInvalidation: true
+                )
+                for (key, value) in planned {
+                    invalidations[key] = Self.merge(value, preserving: invalidations[key])
+                }
+                let hasDelete = planned.values.contains {
+                    if case .delete = $0 { return true }
+                    return false
+                }
+                if !hasDelete {
+                    for parentNodeID in snapshot.parentNodeIDs {
+                        invalidations["e:\(parentNodeID):\(name)"] = .entry(
+                            parentNodeID: parentNodeID,
+                            name: name,
+                            flags: 0
+                        )
+                    }
+                }
+                endpoint.hostFS.reconcileHostInvalidation(
+                    forHostPath: hostPath,
+                    staleNodeIDs: snapshot.staleNodeIDs
+                )
+            }
+            for nodeID in endpoint.hostFS.knownNodeIDsForLossRecovery()
+            where invalidations["i:\(nodeID)"] == nil {
+                invalidations["i:\(nodeID)"] = .inode(
+                    nodeID: nodeID,
+                    offset: 0,
+                    length: -1
+                )
+            }
+            let keyedInvalidations = invalidations.map {
                 (
-                    key: "i:\($0)",
-                    value: DoryFSWorkerCoherenceInvalidation.inode(
-                        nodeID: $0,
-                        offset: 0,
-                        length: -1
-                    )
+                    key: $0.key,
+                    value: $0.value
                 )
             }.sorted { $0.key < $1.key }
-            var start = 0
-            while start < keyedInvalidations.count {
-                let end = min(
-                    keyedInvalidations.count,
-                    start + DoryFSWorkerCoherenceCodec.maximumInvalidations
-                )
-                let batchID = lock.withLock { () -> UInt64 in
+            guard !keyedInvalidations.isEmpty else { continue }
+            let chunkCount =
+                (keyedInvalidations.count + DoryFSWorkerCoherenceCodec.maximumInvalidations - 1)
+                / DoryFSWorkerCoherenceCodec.maximumInvalidations
+            guard let transactionCount = UInt16(exactly: chunkCount) else {
+                throw DoryFSWorkerHostCoherenceError.planOverflow
+            }
+            let batchIDs = lock.withLock { () -> [UInt64] in
+                (0..<chunkCount).map { _ in
                     let value = nextBatchID
                     nextBatchID = value == UInt64.max ? 1 : value + 1
                     return value
                 }
+            }
+            guard let transactionID = batchIDs.first else {
+                throw DoryFSWorkerHostCoherenceError.planOverflow
+            }
+            for index in 0..<chunkCount {
+                let start = index * DoryFSWorkerCoherenceCodec.maximumInvalidations
+                let end = min(
+                    keyedInvalidations.count,
+                    start + DoryFSWorkerCoherenceCodec.maximumInvalidations
+                )
                 do {
                     batches.append(try DoryFSWorkerCoherenceBatch(
                         generation: generation,
                         shareCapabilityID: endpoint.capability,
-                        batchID: batchID,
+                        batchID: batchIDs[index],
+                        transactionID: transactionID,
+                        transactionIndex: UInt16(index),
+                        transactionCount: transactionCount,
                         invalidations: keyedInvalidations[start..<end].map(\.value),
-                        nudgeRelativePaths: []
+                        nudgeRelativePaths: includeWatcherRootNudge
+                            && endpoint.watcherNudgesEnabled
+                            && index == chunkCount - 1 ? [""] : []
                     ))
                 } catch {
                     throw DoryFSWorkerHostCoherenceError.planOverflow
                 }
-                start = end
             }
         }
         return batches
@@ -743,13 +876,17 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
 
     private func record(_ changes: [Change], capability: DoryFSShareCapabilityID) {
         guard !changes.isEmpty, endpoints[capability] != nil else { return }
-        var terminal: DoryFSWorkerHostCoherenceError?
+        var observedLoss = false
         lock.withLock {
             guard running else { return }
             receivedEventCount = Self.saturatingAdd(receivedEventCount, UInt64(changes.count))
-            if changes.contains(where: \.requiresFailStop) {
+            if changes.contains(where: \.requiresLossRecovery) {
                 eventLossCount = Self.saturatingAdd(eventLossCount, 1)
-                terminal = .eventLoss
+                pending.removeValue(forKey: capability)
+                lossRecoveryRequested = true
+                lossRecoveryGeneration &+= 1
+                lossRecoveryCapabilities.insert(capability)
+                observedLoss = true
                 return
             }
             for change in changes {
@@ -757,7 +894,11 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
                 if pending[capability]?[change.path] == nil,
                    currentCount >= Self.pendingEventLimit {
                     eventLossCount = Self.saturatingAdd(eventLossCount, 1)
-                    terminal = .pendingOverflow(limit: Self.pendingEventLimit)
+                    pending.removeValue(forKey: capability)
+                    lossRecoveryRequested = true
+                    lossRecoveryGeneration &+= 1
+                    lossRecoveryCapabilities.insert(capability)
+                    observedLoss = true
                     return
                 }
                 if var existing = pending[capability]?[change.path] {
@@ -770,10 +911,120 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
                 }
             }
         }
-        if let terminal {
-            failStop(terminal)
+        if observedLoss {
+            scheduleLossRecovery()
         } else {
             scheduleFlush()
+        }
+    }
+
+    /// Focused tests inject the same loss marker emitted by FSEvents without depending on the
+    /// host daemon to overflow its kernel queue on demand.
+    func recordEventLossForTesting(capability: DoryFSShareCapabilityID) {
+        guard let endpoint = endpoints[capability] else { return }
+        record([
+            Change(
+                path: endpoint.root,
+                flags: UInt32(
+                    kFSEventStreamEventFlagMustScanSubDirs
+                        | kFSEventStreamEventFlagUserDropped
+                ),
+                eventID: 0,
+                directoryAggregate: true
+            )
+        ], capability: capability)
+    }
+
+    private func scheduleLossRecovery() {
+        let shouldStart = lock.withLock { () -> Bool in
+            guard running,
+                  activationComplete,
+                  lossRecoveryRequested,
+                  !lossRecoveryInProgress else { return false }
+            lossRecoveryInProgress = true
+            return true
+        }
+        guard shouldStart else { return }
+        Task.detached(priority: .userInitiated) { [weak self] in
+            self?.recoverFromEventLoss()
+        }
+    }
+
+    private func recoverFromEventLoss() {
+        deliverySequenceLock.lock()
+        defer { deliverySequenceLock.unlock() }
+        do {
+            while true {
+                guard let recoveryState = lock.withLock({ () -> (
+                    generation: UInt64,
+                    epoch: UInt64,
+                    capabilities: Set<DoryFSShareCapabilityID>
+                )? in
+                    guard running, lossRecoveryInProgress else { return nil }
+                    return (
+                        lossRecoveryGeneration,
+                        deliveryEpoch,
+                        lossRecoveryCapabilities
+                    )
+                }) else { return }
+                try validateObservationAuthorities()
+                for batch in try makeReconciliationBatches(
+                    includeWatcherRootNudge: true,
+                    capabilities: recoveryState.capabilities
+                ) {
+                    try deliverRetainingUntilAcknowledged(
+                        batch,
+                        activationDeadlineUptimeNanoseconds: nil,
+                        deliveryEpoch: recoveryState.epoch
+                    )
+                    lock.withLock {
+                        deliveredBatchCount = Self.saturatingAdd(deliveredBatchCount, 1)
+                    }
+                }
+                try validateObservationAuthorities()
+                let complete = lock.withLock { () -> Bool in
+                    guard running, lossRecoveryInProgress else { return true }
+                    guard lossRecoveryGeneration == recoveryState.generation else { return false }
+                    lossRecoveryRequested = false
+                    lossRecoveryInProgress = false
+                    lossRecoveryCapabilities.removeAll(keepingCapacity: true)
+                    return true
+                }
+                if complete {
+                    scheduleFlush()
+                    return
+                }
+            }
+        } catch DeliveryError.cancelled {
+            lock.withLock { lossRecoveryInProgress = false }
+            return
+        } catch let error as DoryFSWorkerHostCoherenceError {
+            lock.withLock {
+                failedBatchCount = Self.saturatingAdd(failedBatchCount, 1)
+                lossRecoveryInProgress = false
+            }
+            failStop(error)
+        } catch {
+            lock.withLock {
+                failedBatchCount = Self.saturatingAdd(failedBatchCount, 1)
+                lossRecoveryInProgress = false
+            }
+            failStop(.acknowledgementUnavailable)
+        }
+    }
+
+    private func validateObservationAuthorities() throws {
+        let authorities = lock.withLock { observationAuthorities }
+        guard authorities.count == endpoints.count else {
+            throw DoryFSWorkerHostCoherenceError.observationUnavailable
+        }
+        for (capability, authority) in authorities {
+            guard let endpoint = endpoints[capability],
+                  try Self.pathnameIdentity(authority.root) == authority.expectedIdentity,
+                  try endpoint.hostFS.eventObservationIdentity(forRootPath: authority.root)
+                    == authority.expectedIdentity else {
+                throw DoryFSWorkerHostCoherenceError.observationUnavailable
+            }
         }
     }
 
@@ -782,6 +1033,8 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
             guard running,
                   !activationCatchupInProgress,
                   activationComplete,
+                  !lossRecoveryRequested,
+                  !lossRecoveryInProgress,
                   !flushScheduled,
                   !pending.isEmpty else { return false }
             flushScheduled = true
@@ -795,10 +1048,18 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
     }
 
     private func flush(
-        activationDeadlineUptimeNanoseconds: UInt64? = nil
+        activationDeadlineUptimeNanoseconds: UInt64? = nil,
+        expectedDeliveryEpoch: UInt64? = nil,
+        deliverySequenceLockHeld: Bool = false
     ) {
-        let batches = lock.withLock { () -> [(Endpoint, [Change])] in
-            guard running, activationComplete || activationDeliveryInProgress else { return [] }
+        if !deliverySequenceLockHeld { deliverySequenceLock.lock() }
+        defer {
+            if !deliverySequenceLockHeld { deliverySequenceLock.unlock() }
+        }
+        let delivery = lock.withLock { () -> (batches: [(Endpoint, [Change])], epoch: UInt64) in
+            guard running, activationComplete || activationDeliveryInProgress else {
+                return ([], expectedDeliveryEpoch ?? deliveryEpoch)
+            }
             let batches = pending.compactMap { capability, byPath -> (Endpoint, [Change])? in
                 guard let endpoint = endpoints[capability] else { return nil }
                 return (endpoint, byPath.values.sorted {
@@ -806,15 +1067,16 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
                 })
             }.sorted { $0.0.capability.rawValue.uuidString < $1.0.capability.rawValue.uuidString }
             pending.removeAll(keepingCapacity: true)
-            return batches
+            return (batches, expectedDeliveryEpoch ?? deliveryEpoch)
         }
 
         do {
-            for (endpoint, changes) in batches {
+            for (endpoint, changes) in delivery.batches {
                 if let batch = try plan(changes, endpoint: endpoint) {
                     try deliverRetainingUntilAcknowledged(
                         batch,
-                        activationDeadlineUptimeNanoseconds: activationDeadlineUptimeNanoseconds
+                        activationDeadlineUptimeNanoseconds: activationDeadlineUptimeNanoseconds,
+                        deliveryEpoch: delivery.epoch
                     )
                     lock.withLock {
                         deliveredBatchCount = Self.saturatingAdd(deliveredBatchCount, 1)
@@ -825,6 +1087,9 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
                 flushScheduled = false
             }
             scheduleFlush()
+        } catch DeliveryError.cancelled {
+            lock.withLock { flushScheduled = false }
+            return
         } catch let error as DoryFSWorkerHostCoherenceError {
             lock.withLock {
                 failedBatchCount = Self.saturatingAdd(failedBatchCount, 1)
@@ -842,8 +1107,14 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
 
     private func deliverRetainingUntilAcknowledged(
         _ batch: DoryFSWorkerCoherenceBatch,
-        activationDeadlineUptimeNanoseconds: UInt64?
+        activationDeadlineUptimeNanoseconds: UInt64?,
+        deliveryEpoch expectedDeliveryEpoch: UInt64
     ) throws {
+        deliveryLock.lock()
+        defer { deliveryLock.unlock() }
+        guard lock.withLock({ running && deliveryEpoch == expectedDeliveryEpoch }) else {
+            throw DeliveryError.cancelled
+        }
         let exactFrame: Data
         do {
             exactFrame = try DoryFSWorkerCoherenceCodec.encode(batch)
@@ -852,12 +1123,18 @@ final class DoryFSWorkerHostCoherence: @unchecked Sendable {
         }
         let expected = try DoryFSWorkerCoherenceAcknowledgement(accepting: batch)
         for _ in 0..<Self.acknowledgementAttempts {
+            guard lock.withLock({ running && deliveryEpoch == expectedDeliveryEpoch }) else {
+                throw DeliveryError.cancelled
+            }
             if let activationDeadlineUptimeNanoseconds,
                DispatchTime.now().uptimeNanoseconds >= activationDeadlineUptimeNanoseconds {
                 throw DoryFSWorkerHostCoherenceError.acknowledgementUnavailable
             }
             do {
                 let reply = try exchange(exactFrame)
+                guard lock.withLock({ running && deliveryEpoch == expectedDeliveryEpoch }) else {
+                    throw DeliveryError.cancelled
+                }
                 guard try DoryFSWorkerCoherenceCodec.decodeAcknowledgement(reply) == expected else {
                     throw DoryFSWorkerHostCoherenceError.invalidAcknowledgement
                 }

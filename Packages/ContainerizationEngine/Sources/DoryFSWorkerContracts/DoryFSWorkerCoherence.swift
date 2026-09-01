@@ -15,6 +15,11 @@ public struct DoryFSWorkerCoherenceBatch: Equatable, Sendable {
     public let generation: DoryFSWorkerGeneration
     public let shareCapabilityID: DoryFSShareCapabilityID
     public let batchID: UInt64
+    /// Stable identity shared by every frame in one atomic invalidation transaction. Standalone
+    /// batches use their own batch ID. Multi-frame transactions are contiguous and non-interleaved.
+    public let transactionID: UInt64
+    public let transactionIndex: UInt16
+    public let transactionCount: UInt16
     public let invalidations: [DoryFSWorkerCoherenceInvalidation]
     /// Canonical paths relative to this capability's pinned root. The runner alone maps them onto
     /// the corresponding guest mount; an absolute host or guest path cannot cross this contract.
@@ -24,10 +29,34 @@ public struct DoryFSWorkerCoherenceBatch: Equatable, Sendable {
         generation: DoryFSWorkerGeneration,
         shareCapabilityID: DoryFSShareCapabilityID,
         batchID: UInt64,
+        transactionID: UInt64? = nil,
+        transactionIndex: UInt16 = 0,
+        transactionCount: UInt16 = 1,
         invalidations: [DoryFSWorkerCoherenceInvalidation],
         nudgeRelativePaths: [String]
     ) throws {
         guard batchID != 0 else { throw DoryFSWorkerCoherenceCodecError.invalidBatchID }
+        let resolvedTransactionID = transactionID ?? batchID
+        guard resolvedTransactionID != 0 else {
+            throw DoryFSWorkerCoherenceCodecError.invalidTransactionID
+        }
+        guard transactionCount > 0,
+              transactionCount <= DoryFSWorkerCoherenceCodec.maximumTransactionFrames,
+              transactionIndex < transactionCount else {
+            throw DoryFSWorkerCoherenceCodecError.invalidTransactionPosition(
+                index: transactionIndex,
+                count: transactionCount
+            )
+        }
+        guard transactionCount > 1 || resolvedTransactionID == batchID else {
+            throw DoryFSWorkerCoherenceCodecError.invalidTransactionID
+        }
+        guard transactionIndex == transactionCount - 1 || nudgeRelativePaths.isEmpty else {
+            throw DoryFSWorkerCoherenceCodecError.nonFinalTransactionNudge
+        }
+        guard transactionCount == 1 || !invalidations.isEmpty else {
+            throw DoryFSWorkerCoherenceCodecError.emptyBatch
+        }
         guard !invalidations.isEmpty || !nudgeRelativePaths.isEmpty else {
             throw DoryFSWorkerCoherenceCodecError.emptyBatch
         }
@@ -88,6 +117,9 @@ public struct DoryFSWorkerCoherenceBatch: Equatable, Sendable {
         self.generation = generation
         self.shareCapabilityID = shareCapabilityID
         self.batchID = batchID
+        self.transactionID = resolvedTransactionID
+        self.transactionIndex = transactionIndex
+        self.transactionCount = transactionCount
         self.invalidations = invalidations
         self.nudgeRelativePaths = nudgeRelativePaths
     }
@@ -97,23 +129,50 @@ public struct DoryFSWorkerCoherenceAcknowledgement: Equatable, Sendable {
     public let generation: DoryFSWorkerGeneration
     public let shareCapabilityID: DoryFSShareCapabilityID
     public let batchID: UInt64
+    public let transactionID: UInt64
+    public let transactionIndex: UInt16
+    public let transactionCount: UInt16
 
     public init(
         generation: DoryFSWorkerGeneration,
         shareCapabilityID: DoryFSShareCapabilityID,
-        batchID: UInt64
+        batchID: UInt64,
+        transactionID: UInt64? = nil,
+        transactionIndex: UInt16 = 0,
+        transactionCount: UInt16 = 1
     ) throws {
         guard batchID != 0 else { throw DoryFSWorkerCoherenceCodecError.invalidBatchID }
+        let resolvedTransactionID = transactionID ?? batchID
+        guard resolvedTransactionID != 0 else {
+            throw DoryFSWorkerCoherenceCodecError.invalidTransactionID
+        }
+        guard transactionCount > 0,
+              transactionCount <= DoryFSWorkerCoherenceCodec.maximumTransactionFrames,
+              transactionIndex < transactionCount else {
+            throw DoryFSWorkerCoherenceCodecError.invalidTransactionPosition(
+                index: transactionIndex,
+                count: transactionCount
+            )
+        }
+        guard transactionCount > 1 || resolvedTransactionID == batchID else {
+            throw DoryFSWorkerCoherenceCodecError.invalidTransactionID
+        }
         self.generation = generation
         self.shareCapabilityID = shareCapabilityID
         self.batchID = batchID
+        self.transactionID = resolvedTransactionID
+        self.transactionIndex = transactionIndex
+        self.transactionCount = transactionCount
     }
 
     public init(accepting batch: DoryFSWorkerCoherenceBatch) throws {
         try self.init(
             generation: batch.generation,
             shareCapabilityID: batch.shareCapabilityID,
-            batchID: batch.batchID
+            batchID: batch.batchID,
+            transactionID: batch.transactionID,
+            transactionIndex: batch.transactionIndex,
+            transactionCount: batch.transactionCount
         )
     }
 }
@@ -287,6 +346,9 @@ public enum DoryFSWorkerCoherenceCodecError: Error, Equatable, Sendable {
     case invalidGeneration
     case invalidCapabilityID
     case invalidBatchID
+    case invalidTransactionID
+    case invalidTransactionPosition(index: UInt16, count: UInt16)
+    case nonFinalTransactionNudge
     case invalidNodeID
     case invalidInvalidationRange
     case invalidEntryFlags(UInt32)
@@ -309,18 +371,19 @@ public enum DoryFSWorkerCoherenceCodecError: Error, Equatable, Sendable {
 public enum DoryFSWorkerCoherenceCodec {
     public static let maximumFrameBytes = 256 * 1_024
     public static let maximumInvalidations = 1_024
+    public static let maximumTransactionFrames: UInt16 = 1_024
     public static let maximumNudgePaths = 512
     public static let maximumEntryNameBytes = 255
     public static let maximumRelativePathBytes = 4_095
 
-    private static let version: UInt16 = 1
+    private static let version: UInt16 = 2
     private static let batchMagic: [UInt8] = [0x44, 0x46, 0x43, 0x31] // DFC1
     private static let acknowledgementMagic: [UInt8] = [0x44, 0x46, 0x43, 0x41] // DFCA
     private static let batchKind: UInt8 = 1
     private static let acknowledgementKind: UInt8 = 2
     private static let batchHeaderBytes = 64
     private static let invalidationHeaderBytes = 32
-    private static let acknowledgementBytes = 48
+    private static let acknowledgementBytes = 64
 
     public static func encode(_ batch: DoryFSWorkerCoherenceBatch) throws -> Data {
         var bytes = [UInt8]()
@@ -330,13 +393,14 @@ public enum DoryFSWorkerCoherenceCodec {
         bytes.append(batchKind)
         bytes.append(0)
         bytes.appendLE(UInt32(0)) // patched after the complete bounded frame is assembled
-        bytes.appendLE(UInt32(0))
+        bytes.appendLE(batch.transactionIndex)
+        bytes.appendLE(batch.transactionCount)
         bytes.appendLE(batch.generation.rawValue)
         append(batch.shareCapabilityID.rawValue, to: &bytes)
         bytes.appendLE(batch.batchID)
         bytes.appendLE(UInt32(batch.invalidations.count))
         bytes.appendLE(UInt32(batch.nudgeRelativePaths.count))
-        bytes.appendLE(UInt64(0))
+        bytes.appendLE(batch.transactionID)
         precondition(bytes.count == batchHeaderBytes)
 
         for invalidation in batch.invalidations {
@@ -427,7 +491,7 @@ public enum DoryFSWorkerCoherenceCodec {
         guard bytes[6] == batchKind else {
             throw DoryFSWorkerCoherenceCodecError.unknownFrameKind(bytes[6])
         }
-        guard bytes[7] == 0, bytes.leUInt32(at: 12) == 0, bytes.leUInt64(at: 56) == 0 else {
+        guard bytes[7] == 0 else {
             throw DoryFSWorkerCoherenceCodecError.nonzeroReservedField
         }
         let declaredLength = bytes.leUInt32(at: 8)
@@ -445,6 +509,9 @@ public enum DoryFSWorkerCoherenceCodec {
         }
         let batchID = bytes.leUInt64(at: 40)
         guard batchID != 0 else { throw DoryFSWorkerCoherenceCodecError.invalidBatchID }
+        let transactionIndex = bytes.leUInt16(at: 12)
+        let transactionCount = bytes.leUInt16(at: 14)
+        let transactionID = bytes.leUInt64(at: 56)
         let invalidationCount = Int(bytes.leUInt32(at: 48))
         let nudgeCount = Int(bytes.leUInt32(at: 52))
         guard invalidationCount <= maximumInvalidations else {
@@ -544,6 +611,9 @@ public enum DoryFSWorkerCoherenceCodec {
             generation: generation,
             shareCapabilityID: capability,
             batchID: batchID,
+            transactionID: transactionID,
+            transactionIndex: transactionIndex,
+            transactionCount: transactionCount,
             invalidations: invalidations,
             nudgeRelativePaths: nudges
         )
@@ -567,6 +637,10 @@ public enum DoryFSWorkerCoherenceCodec {
         bytes.appendLE(acknowledgement.generation.rawValue)
         append(acknowledgement.shareCapabilityID.rawValue, to: &bytes)
         bytes.appendLE(acknowledgement.batchID)
+        bytes.appendLE(acknowledgement.transactionID)
+        bytes.appendLE(acknowledgement.transactionIndex)
+        bytes.appendLE(acknowledgement.transactionCount)
+        bytes.appendLE(UInt32(0))
         precondition(bytes.count == acknowledgementBytes)
         return Data(bytes)
     }
@@ -592,7 +666,8 @@ public enum DoryFSWorkerCoherenceCodec {
         }
         guard bytes[7] == 0,
               bytes.leUInt32(at: 8) == UInt32(acknowledgementBytes),
-              bytes.leUInt32(at: 12) == 0 else {
+              bytes.leUInt32(at: 12) == 0,
+              bytes.leUInt32(at: 60) == 0 else {
             throw DoryFSWorkerCoherenceCodecError.nonzeroReservedField
         }
         guard let generation = try? DoryFSWorkerGeneration(rawValue: bytes.leUInt64(at: 16)) else {
@@ -604,7 +679,10 @@ public enum DoryFSWorkerCoherenceCodec {
         return try DoryFSWorkerCoherenceAcknowledgement(
             generation: generation,
             shareCapabilityID: capability,
-            batchID: bytes.leUInt64(at: 40)
+            batchID: bytes.leUInt64(at: 40),
+            transactionID: bytes.leUInt64(at: 48),
+            transactionIndex: bytes.leUInt16(at: 56),
+            transactionCount: bytes.leUInt16(at: 58)
         )
     }
 

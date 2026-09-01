@@ -142,18 +142,25 @@ final class DoryFSWorkerCoherenceXPCSink:
         }
 
         private enum Entry: Sendable {
-            case running(exactFrame: Data, task: Task<Outcome, Never>)
+            case running(
+                exactFrame: Data,
+                task: Task<Outcome, Never>,
+                started: ContinuousClock.Instant
+            )
             case completed(exactFrame: Data, acknowledgement: Data)
         }
 
         private static let completedLedgerLimit = 64
-        private static let inFlightLimit = 8
+        // The worker's protocol is strict request/ACK sequencing. Exact replays join above, while
+        // unique frames serialize so actor reentrancy cannot overlap transaction phases.
+        private static let inFlightLimit = 1
 
         private let expectedGeneration: DoryFSWorkerGeneration
         private let capabilities: Set<DoryFSShareCapabilityID>
         private let handlerBox: HandlerBox
         private let statistics: StatisticsBox
         private let onFailure: Failure
+        private let uniqueCompletionTestHook: (@Sendable () async -> Void)?
         private var entries = [Key: Entry]()
         private var completedOrder = [Key]()
         private var inFlightCount = 0
@@ -165,12 +172,14 @@ final class DoryFSWorkerCoherenceXPCSink:
             capabilities: Set<DoryFSShareCapabilityID>,
             handlerBox: HandlerBox,
             statistics: StatisticsBox,
+            uniqueCompletionTestHook: (@Sendable () async -> Void)?,
             onFailure: @escaping Failure
         ) {
             self.expectedGeneration = expectedGeneration
             self.capabilities = capabilities
             self.handlerBox = handlerBox
             self.statistics = statistics
+            self.uniqueCompletionTestHook = uniqueCompletionTestHook
             self.onFailure = onFailure
         }
 
@@ -199,12 +208,16 @@ final class DoryFSWorkerCoherenceXPCSink:
             if let existing = entries[key] {
                 statistics.begin(byteCount: exactFrame.count, replay: true)
                 switch existing {
-                case .running(let retainedFrame, let task):
+                case .running(let retainedFrame, let task, _):
                     guard retainedFrame == exactFrame else {
                         fail(.conflictingReplay)
                         return Data()
                     }
-                    return await reply(for: await task.value, key: key, exactFrame: exactFrame)
+                    return finalize(
+                        outcome: await task.value,
+                        key: key,
+                        exactFrame: exactFrame
+                    )
                 case .completed(let retainedFrame, let acknowledgement):
                     guard retainedFrame == exactFrame else {
                         fail(.conflictingReplay)
@@ -243,59 +256,53 @@ final class DoryFSWorkerCoherenceXPCSink:
                     return .failure
                 }
             }
-            entries[key] = .running(exactFrame: exactFrame, task: task)
+            entries[key] = .running(
+                exactFrame: exactFrame,
+                task: task,
+                started: started
+            )
             let outcome = await task.value
-            let elapsed = started.duration(to: .now)
-            let nanoseconds = Self.nanoseconds(elapsed)
-            inFlightCount = max(0, inFlightCount - 1)
-            switch outcome {
-            case .success(let acknowledgement):
-                if case .running = entries[key] {
-                    entries[key] = .completed(
-                        exactFrame: exactFrame,
-                        acknowledgement: acknowledgement
-                    )
-                    completedOrder.append(key)
-                    evictCompletedIfNeeded()
-                }
-                statistics.finish(
-                    replyBytes: acknowledgement.count,
-                    latencyNanoseconds: nanoseconds,
-                    succeeded: true
-                )
-                return acknowledgement
-            case .failure:
-                entries.removeValue(forKey: key)
-                statistics.finish(
-                    replyBytes: 0,
-                    latencyNanoseconds: nanoseconds,
-                    succeeded: false
-                )
-                fail(.deliveryFailed, recordStatistics: false)
-                return Data()
-            }
+            if let uniqueCompletionTestHook { await uniqueCompletionTestHook() }
+            return finalize(outcome: outcome, key: key, exactFrame: exactFrame)
         }
 
-        private func reply(
-            for outcome: Outcome,
+        private func finalize(
+            outcome: Outcome,
             key: Key,
             exactFrame: Data
-        ) async -> Data {
-            switch outcome {
-            case .success(let acknowledgement):
-                // The original waiter normally records the completed ledger first. Actor
-                // reentrancy allows a replay waiter to resume first, so make completion idempotent.
-                if case .running = entries[key] {
+        ) -> Data {
+            guard let entry = entries[key] else { return Data() }
+            switch entry {
+            case .completed(let retainedFrame, let acknowledgement):
+                return retainedFrame == exactFrame ? acknowledgement : Data()
+            case .running(let retainedFrame, _, let started):
+                guard retainedFrame == exactFrame else { return Data() }
+                inFlightCount = max(0, inFlightCount - 1)
+                let nanoseconds = Self.nanoseconds(started.duration(to: .now))
+                switch outcome {
+                case .success(let acknowledgement):
                     entries[key] = .completed(
                         exactFrame: exactFrame,
                         acknowledgement: acknowledgement
                     )
                     completedOrder.append(key)
                     evictCompletedIfNeeded()
+                    statistics.finish(
+                        replyBytes: acknowledgement.count,
+                        latencyNanoseconds: nanoseconds,
+                        succeeded: true
+                    )
+                    return acknowledgement
+                case .failure:
+                    entries.removeValue(forKey: key)
+                    statistics.finish(
+                        replyBytes: 0,
+                        latencyNanoseconds: nanoseconds,
+                        succeeded: false
+                    )
+                    fail(.deliveryFailed, recordStatistics: false)
+                    return Data()
                 }
-                return acknowledgement
-            case .failure:
-                return Data()
             }
         }
 
@@ -344,6 +351,7 @@ final class DoryFSWorkerCoherenceXPCSink:
     init(
         expectedGeneration: DoryFSWorkerGeneration,
         capabilities: Set<DoryFSShareCapabilityID>,
+        uniqueCompletionTestHook: (@Sendable () async -> Void)? = nil,
         onFailure: @escaping Failure
     ) {
         processor = Processor(
@@ -351,6 +359,7 @@ final class DoryFSWorkerCoherenceXPCSink:
             capabilities: capabilities,
             handlerBox: handlerBox,
             statistics: statisticsBox,
+            uniqueCompletionTestHook: uniqueCompletionTestHook,
             onFailure: onFailure
         )
         super.init()

@@ -86,6 +86,91 @@ struct DoryFSWorkerCoherenceSinkTests {
         #expect(sink.statistics.terminalFailureLatched)
     }
 
+    @Test func finalTransactionFrameAcknowledgementReplayCommitsOnlyOnce() async throws {
+        let generation = try DoryFSWorkerGeneration(rawValue: 35)
+        let capability = try coherenceCapability(5)
+        let failures = CoherenceFailureRecorder()
+        let counter = CoherenceInvocationCounter()
+        let sink = DoryFSWorkerCoherenceXPCSink(
+            expectedGeneration: generation,
+            capabilities: [capability],
+            onFailure: failures.record
+        )
+        #expect(sink.installHandler { _ in await counter.increment() })
+        let frame = try coherenceFrame(
+            generation: generation,
+            capability: capability,
+            batchID: 91,
+            transactionID: 90,
+            transactionIndex: 1,
+            transactionCount: 2,
+            nudge: "final"
+        )
+        let expected = DoryFSWorkerCoherenceCodec.encode(
+            try DoryFSWorkerCoherenceAcknowledgement(
+                generation: generation,
+                shareCapabilityID: capability,
+                batchID: 91,
+                transactionID: 90,
+                transactionIndex: 1,
+                transactionCount: 2
+            )
+        )
+
+        #expect(await sink.deliverForTesting(frame) == expected)
+        #expect(await sink.deliverForTesting(frame) == expected)
+        let invocationCount = await counter.value
+        #expect(invocationCount == 1)
+        #expect(failures.error == nil)
+        #expect(sink.statistics.replayedBatchCount == 1)
+    }
+
+    @Test func inFlightReplayFinalizesBeforeNextSequentialFrameAdmission() async throws {
+        let generation = try DoryFSWorkerGeneration(rawValue: 36)
+        let capability = try coherenceCapability(6)
+        let failures = CoherenceFailureRecorder()
+        let handler = CoherenceHandlerGate()
+        let originalCompletion = CoherenceOneShotGate()
+        let sink = DoryFSWorkerCoherenceXPCSink(
+            expectedGeneration: generation,
+            capabilities: [capability],
+            uniqueCompletionTestHook: originalCompletion.run,
+            onFailure: failures.record
+        )
+        #expect(sink.installHandler { _ in await handler.run() })
+        let firstFrame = try coherenceFrame(
+            generation: generation,
+            capability: capability,
+            batchID: 90,
+            nudge: "first"
+        )
+        let nextFrame = try coherenceFrame(
+            generation: generation,
+            capability: capability,
+            batchID: 91,
+            nudge: "next"
+        )
+
+        let first = Task { await sink.deliverForTesting(firstFrame) }
+        while await handler.invocationCount < 1 { await Task.yield() }
+        let replay = Task { await sink.deliverForTesting(firstFrame) }
+        await handler.release()
+        while !(await originalCompletion.hasStarted) { await Task.yield() }
+
+        let replayReply = await replay.value
+        #expect(!replayReply.isEmpty)
+        let next = Task { await sink.deliverForTesting(nextFrame) }
+        while await handler.invocationCount < 2 { await Task.yield() }
+        await handler.release()
+        #expect(!(await next.value).isEmpty)
+
+        await originalCompletion.release()
+        #expect(await first.value == replayReply)
+        #expect(failures.error == nil)
+        #expect(sink.statistics.completedBatchCount == 2)
+        #expect(sink.statistics.inFlightBatchCount == 0)
+    }
+
     @Test func foreignGenerationAndSkippedSequenceFailStop() async throws {
         let generation = try DoryFSWorkerGeneration(rawValue: 33)
         let capability = try coherenceCapability(3)
@@ -150,6 +235,24 @@ private actor CoherenceInvocationCounter {
     func increment() { value += 1 }
 }
 
+private actor CoherenceOneShotGate {
+    private var continuation: CheckedContinuation<Void, Never>?
+    private(set) var hasStarted = false
+    private var hasBlocked = false
+
+    func run() async {
+        guard !hasBlocked else { return }
+        hasBlocked = true
+        hasStarted = true
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        continuation?.resume()
+        continuation = nil
+    }
+}
+
 private final class CoherenceFailureRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var stored: DoryFSWorkerCoherenceSinkError?
@@ -174,12 +277,18 @@ private func coherenceFrame(
     generation: DoryFSWorkerGeneration,
     capability: DoryFSShareCapabilityID,
     batchID: UInt64,
+    transactionID: UInt64? = nil,
+    transactionIndex: UInt16 = 0,
+    transactionCount: UInt16 = 1,
     nudge: String
 ) throws -> Data {
     try DoryFSWorkerCoherenceCodec.encode(DoryFSWorkerCoherenceBatch(
         generation: generation,
         shareCapabilityID: capability,
         batchID: batchID,
+        transactionID: transactionID,
+        transactionIndex: transactionIndex,
+        transactionCount: transactionCount,
         invalidations: [.inode(nodeID: 1, offset: -1, length: 0)],
         nudgeRelativePaths: [nudge]
     ))

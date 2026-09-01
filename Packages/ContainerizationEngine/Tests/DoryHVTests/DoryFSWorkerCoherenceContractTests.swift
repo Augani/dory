@@ -12,6 +12,9 @@ struct DoryFSWorkerCoherenceContractTests {
             generation: generation,
             shareCapabilityID: capability,
             batchID: 7,
+            transactionID: 6,
+            transactionIndex: 1,
+            transactionCount: 2,
             invalidations: [
                 .delete(parentNodeID: 1, childNodeID: 2, name: "old"),
                 .entry(parentNodeID: 1, name: "new", flags: 0),

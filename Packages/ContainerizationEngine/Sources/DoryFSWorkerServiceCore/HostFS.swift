@@ -882,6 +882,19 @@ final class HostFS: @unchecked Sendable {
         lock.withLock { nodes.keys.sorted() }
     }
 
+    /// Every namespace binding already resolved by Linux, bounded by HostFS's in-memory indexes.
+    /// A full FSEvents rescan uses this set instead of walking the host tree: unknown names cannot
+    /// have a positive guest dentry, while every known live or detached name must be invalidated.
+    public func knownHostPathsForLossRecovery() -> [String] {
+        lock.withLock {
+            Set(idsByRelativePath.keys)
+                .union(detachedIDsByRelativePath.keys)
+                .filter { !$0.isEmpty }
+                .map { rootPath + "/" + $0 }
+                .sorted()
+        }
+    }
+
     public func knownStaleHostPathsForNamespaceReconciliation() -> [String] {
         lock.withLock {
             idsByRelativePath.keys.compactMap { relativePath in

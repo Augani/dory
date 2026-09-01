@@ -590,10 +590,69 @@ public final class VirtioFS: VirtioDeviceBackend {
         timeout: Duration = .seconds(2)
     ) async throws {
         guard !invalidations.isEmpty else { return }
+        let transaction = VirtioFSInvalidationTransaction(owner: self)
+        try await appendInvalidationTransaction(
+            transaction,
+            invalidations: invalidations,
+            maximumBatchSize: maximumBatchSize,
+            timeout: timeout,
+            finishing: true
+        )
+    }
+
+    /// Starts a cross-frame transaction and retains the request-publication gate after this
+    /// frame is acknowledged. The caller must either finish the token or fail-stop the backend.
+    public func beginInvalidationTransaction(
+        _ invalidations: [VirtioFSInvalidation],
+        maximumBatchSize: Int,
+        timeout: Duration = .seconds(2)
+    ) async throws -> VirtioFSInvalidationTransaction {
+        guard !invalidations.isEmpty else {
+            throw VirtioFSNotificationError.invalidTransaction
+        }
+        let transaction = VirtioFSInvalidationTransaction(owner: self)
+        try await appendInvalidationTransaction(
+            transaction,
+            invalidations: invalidations,
+            maximumBatchSize: maximumBatchSize,
+            timeout: timeout,
+            finishing: false
+        )
+        return transaction
+    }
+
+    /// Appends one frame to a transaction. `finishing` releases every retained barrier only after
+    /// the final frame has been consumed by Linux; any failure permanently latches the gate.
+    public func continueInvalidationTransaction(
+        _ transaction: VirtioFSInvalidationTransaction,
+        invalidations: [VirtioFSInvalidation],
+        maximumBatchSize: Int,
+        timeout: Duration = .seconds(2),
+        finishing: Bool
+    ) async throws {
+        try await appendInvalidationTransaction(
+            transaction,
+            invalidations: invalidations,
+            maximumBatchSize: maximumBatchSize,
+            timeout: timeout,
+            finishing: finishing
+        )
+    }
+
+    private func appendInvalidationTransaction(
+        _ transaction: VirtioFSInvalidationTransaction,
+        invalidations: [VirtioFSInvalidation],
+        maximumBatchSize: Int,
+        timeout: Duration,
+        finishing: Bool
+    ) async throws {
+        guard transaction.owner == ObjectIdentifier(self),
+              !invalidations.isEmpty else {
+            throw VirtioFSNotificationError.invalidTransaction
+        }
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: timeout)
         let batchSize = max(1, min(maximumBatchSize, notificationBacklogLimit))
-        var retainedBarriers = [VirtioFSNotificationBarrier]()
         do {
             var start = 0
             while start < invalidations.count {
@@ -603,7 +662,9 @@ public final class VirtioFS: VirtioDeviceBackend {
                     retainRequestGateForCaller: true,
                     requestGateDeadline: deadline
                 )
-                retainedBarriers.append(barrier)
+                guard transaction.append(barrier) else {
+                    throw VirtioFSNotificationError.invalidTransaction
+                }
                 let remaining = clock.now.duration(to: deadline)
                 guard remaining > .zero else {
                     throw VirtioFSNotificationError.timedOut
@@ -615,8 +676,13 @@ public final class VirtioFS: VirtioDeviceBackend {
                 }
                 start = end
             }
-            for barrier in retainedBarriers {
-                releaseCallerRetainedRequestGate(barrier, succeeded: true)
+            if finishing {
+                guard let retainedBarriers = transaction.finish() else {
+                    throw VirtioFSNotificationError.invalidTransaction
+                }
+                for barrier in retainedBarriers {
+                    releaseCallerRetainedRequestGate(barrier, succeeded: true)
+                }
             }
         } catch {
             // Any returned error leaves delivery or cache revocation uncertain. Revoke future TTLs
@@ -624,7 +690,7 @@ public final class VirtioFS: VirtioDeviceBackend {
             // schedule a VM restart. In particular, never let a delayed guest WRITE/FSYNC escape
             // between this failure and the host-owned recovery boundary.
             deactivateCoherentCaching()
-            for barrier in retainedBarriers {
+            for barrier in transaction.finish() ?? [] {
                 releaseCallerRetainedRequestGate(barrier, succeeded: false)
             }
             latchRequestGateFailure(barrier: nil)

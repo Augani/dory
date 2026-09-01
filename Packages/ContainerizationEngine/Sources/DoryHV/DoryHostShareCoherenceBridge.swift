@@ -7,6 +7,7 @@ public enum DoryHostShareCoherenceBridgeError: Error, Equatable, Sendable {
     case invalidGuestPath
     case notificationFailure
     case watcherFailure
+    case transactionViolation
 }
 
 public struct DoryHostShareCoherenceEndpoint: @unchecked Sendable {
@@ -37,6 +38,14 @@ public struct DoryHostShareCoherenceEndpoint: @unchecked Sendable {
 /// Runner half of host-edit coherence. The actor preserves invalidation-before-watcher ordering;
 /// the terminal latch closes every sibling VirtioFS publication gate synchronously on any loss.
 public actor DoryHostShareCoherenceBridge {
+    private struct ActiveTransaction {
+        let id: UInt64
+        let capability: DoryFSShareCapabilityID
+        let count: UInt16
+        var nextIndex: UInt16
+        let backendTransaction: VirtioFSInvalidationTransaction
+    }
+
     private final class TerminalLatch: @unchecked Sendable {
         private let lock = NSLock()
         private let backends: [VirtioFS]
@@ -71,11 +80,16 @@ public actor DoryHostShareCoherenceBridge {
     private let guestEvents: any GuestFSEventSending
     private let onDiagnostic: @Sendable (String) -> Void
     private let terminal: TerminalLatch
+    private let interFrameDeadline: Duration
+    private var activeTransaction: ActiveTransaction?
+    private var transactionWatchdog: Task<Void, Never>?
+    private var processingUniqueFrame = false
 
     public init(
         endpoints: [DoryHostShareCoherenceEndpoint],
         guestEvents: any GuestFSEventSending,
         onDiagnostic: @escaping @Sendable (String) -> Void = { _ in },
+        interFrameDeadline: Duration = .seconds(5),
         onFatal: @escaping @Sendable (String) -> Void
     ) {
         self.endpoints = Dictionary(uniqueKeysWithValues: endpoints.map {
@@ -83,6 +97,7 @@ public actor DoryHostShareCoherenceBridge {
         })
         self.guestEvents = guestEvents
         self.onDiagnostic = onDiagnostic
+        self.interFrameDeadline = interFrameDeadline
         terminal = TerminalLatch(
             backends: endpoints.map(\.backend),
             onFatal: onFatal
@@ -96,6 +111,12 @@ public actor DoryHostShareCoherenceBridge {
     }
 
     public func process(_ batch: DoryFSWorkerCoherenceBatch) async throws {
+        guard !processingUniqueFrame else {
+            terminal.fail("filesystem coherence frames overlapped")
+            throw DoryHostShareCoherenceBridgeError.transactionViolation
+        }
+        processingUniqueFrame = true
+        defer { processingUniqueFrame = false }
         guard !terminal.isFailed else {
             throw DoryHostShareCoherenceBridgeError.notificationFailure
         }
@@ -131,19 +152,83 @@ public actor DoryHostShareCoherenceBridge {
                 )
             }
         }
+        let maximumBatchSize = min(
+            128,
+            max(1, endpoint.backend.notificationBacklogLimit)
+        )
+        let isStandalone = batch.transactionCount == 1
         do {
-            if !invalidations.isEmpty {
-                try await endpoint.backend.invalidateAtomically(
+            if isStandalone {
+                guard activeTransaction == nil else {
+                    throw DoryHostShareCoherenceBridgeError.transactionViolation
+                }
+                if !invalidations.isEmpty {
+                    try await endpoint.backend.invalidateAtomically(
+                        invalidations,
+                        maximumBatchSize: maximumBatchSize,
+                        timeout: Self.reverseInvalidationDeadline
+                    )
+                }
+            } else if batch.transactionIndex == 0 {
+                guard activeTransaction == nil, !invalidations.isEmpty else {
+                    throw DoryHostShareCoherenceBridgeError.transactionViolation
+                }
+                let backendTransaction = try await endpoint.backend.beginInvalidationTransaction(
                     invalidations,
-                    maximumBatchSize: min(
-                        128,
-                        max(1, endpoint.backend.notificationBacklogLimit)
-                    ),
+                    maximumBatchSize: maximumBatchSize,
                     timeout: Self.reverseInvalidationDeadline
                 )
+                guard !terminal.isFailed else {
+                    throw DoryHostShareCoherenceBridgeError.notificationFailure
+                }
+                activeTransaction = ActiveTransaction(
+                    id: batch.transactionID,
+                    capability: batch.shareCapabilityID,
+                    count: batch.transactionCount,
+                    nextIndex: 1,
+                    backendTransaction: backendTransaction
+                )
+                armTransactionWatchdog(transactionID: batch.transactionID)
+                return
+            } else {
+                guard let current = activeTransaction,
+                      current.id == batch.transactionID,
+                      current.capability == batch.shareCapabilityID,
+                      current.count == batch.transactionCount,
+                      current.nextIndex == batch.transactionIndex,
+                      !invalidations.isEmpty else {
+                    throw DoryHostShareCoherenceBridgeError.transactionViolation
+                }
+                let finishing = batch.transactionIndex == batch.transactionCount - 1
+                try await endpoint.backend.continueInvalidationTransaction(
+                    current.backendTransaction,
+                    invalidations: invalidations,
+                    maximumBatchSize: maximumBatchSize,
+                    timeout: Self.reverseInvalidationDeadline,
+                    finishing: finishing
+                )
+                guard !terminal.isFailed else {
+                    throw DoryHostShareCoherenceBridgeError.notificationFailure
+                }
+                if finishing {
+                    transactionWatchdog?.cancel()
+                    transactionWatchdog = nil
+                    activeTransaction = nil
+                } else {
+                    activeTransaction?.nextIndex += 1
+                    armTransactionWatchdog(transactionID: batch.transactionID)
+                    return
+                }
             }
+        } catch let error as DoryHostShareCoherenceBridgeError {
+            terminal.fail("host-share coherence transaction sequence failed")
+            throw error
         } catch {
             terminal.fail("host-share reverse invalidation failed")
+            throw DoryHostShareCoherenceBridgeError.notificationFailure
+        }
+
+        guard !terminal.isFailed else {
             throw DoryHostShareCoherenceBridgeError.notificationFailure
         }
 
@@ -177,6 +262,24 @@ public actor DoryHostShareCoherenceBridge {
                     + "reverse cache invalidation remains active"
             )
         }
+    }
+
+    private func armTransactionWatchdog(transactionID: UInt64) {
+        transactionWatchdog?.cancel()
+        let deadline = interFrameDeadline
+        transactionWatchdog = Task { [weak self] in
+            do {
+                try await Task.sleep(for: deadline)
+            } catch {
+                return
+            }
+            await self?.transactionDidTimeOut(transactionID: transactionID)
+        }
+    }
+
+    private func transactionDidTimeOut(transactionID: UInt64) {
+        guard activeTransaction?.id == transactionID else { return }
+        terminal.fail("filesystem coherence transaction timed out between frames")
     }
 
     private static func guestPath(root: String, relative: String) throws -> String {

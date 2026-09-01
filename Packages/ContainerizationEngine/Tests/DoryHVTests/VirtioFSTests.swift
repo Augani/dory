@@ -878,6 +878,164 @@ struct VirtioFSTests {
         #expect(!fs.requestPublicationGateClosed)
     }
 
+    @Test func coherenceBridgeKeepsRequestGateClosedAcrossWorkerFrames() async throws {
+        let harness = try VirtioFSNotificationHarness(notificationBacklogLimit: 1)
+        try await harness.prepareCoherentCachingEligibility()
+        let capability = try bridgeCapability(1)
+        let fatal = BridgeFatalRecorder()
+        let endpoint = try DoryHostShareCoherenceEndpoint(
+            capabilityID: capability,
+            backend: harness.fs,
+            guestRoot: "/mnt/share",
+            policy: .invalidationOnly
+        )
+        let bridge = DoryHostShareCoherenceBridge(
+            endpoints: [endpoint],
+            guestEvents: NoopGuestFSEventSender(),
+            onFatal: fatal.record
+        )
+        let transactionID: UInt64 = 700
+        let firstBatch = try DoryFSWorkerCoherenceBatch(
+            generation: DoryFSWorkerTestChannel.generation,
+            shareCapabilityID: capability,
+            batchID: transactionID,
+            transactionID: transactionID,
+            transactionIndex: 0,
+            transactionCount: 2,
+            invalidations: [.entry(parentNodeID: HostFS.rootNodeID, name: "atomic.txt", flags: 0)],
+            nudgeRelativePaths: []
+        )
+        let finalBatch = try DoryFSWorkerCoherenceBatch(
+            generation: DoryFSWorkerTestChannel.generation,
+            shareCapabilityID: capability,
+            batchID: transactionID + 1,
+            transactionID: transactionID,
+            transactionIndex: 1,
+            transactionCount: 2,
+            invalidations: [.inode(nodeID: 20, offset: -1, length: 0)],
+            nudgeRelativePaths: []
+        )
+        let usedBefore = try harness.usedIndex(queue: 1)
+
+        let first = Task { try await bridge.process(firstBatch) }
+        #expect(await eventually {
+            harness.fs.requestPublicationGateClosed
+                && (try? harness.usedIndex(queue: 1)) == usedBefore &+ 1
+        })
+        #expect(try harness.acknowledgeConsumedInvalidations() == 1)
+        try await first.value
+        #expect(harness.fs.requestPublicationGateClosed)
+
+        let blocked = try harness.enqueueFuseRequest(
+            makeFuseRequest(opcode: .statfs, unique: 420),
+            queue: 2
+        )
+        #expect(await eventually { harness.fs.deferredRequestQueueSnapshot.contains(2) })
+        #expect(try harness.responseLength(blocked) == 0)
+
+        let final = Task { try await bridge.process(finalBatch) }
+        #expect(await eventually {
+            (try? harness.usedIndex(queue: 1)) == usedBefore &+ 2
+        })
+        #expect(harness.fs.requestPublicationGateClosed)
+        #expect(try harness.responseLength(blocked) == 0)
+        #expect(try harness.acknowledgeConsumedInvalidations() == 1)
+        try await final.value
+
+        let response = try harness.waitForFuseResponse(blocked)
+        #expect(try FuseProtocol.decodeOutHeader(response).error == 0)
+        #expect(!harness.fs.requestPublicationGateClosed)
+        #expect(fatal.reason == nil)
+    }
+
+    @Test func coherenceBridgeFailStopsAStalledMultiFrameTransaction() async throws {
+        let harness = try VirtioFSNotificationHarness(notificationBacklogLimit: 1)
+        try await harness.prepareCoherentCachingEligibility()
+        let capability = try bridgeCapability(2)
+        let fatal = BridgeFatalRecorder()
+        let endpoint = try DoryHostShareCoherenceEndpoint(
+            capabilityID: capability,
+            backend: harness.fs,
+            guestRoot: "/mnt/share",
+            policy: .invalidationOnly
+        )
+        let bridge = DoryHostShareCoherenceBridge(
+            endpoints: [endpoint],
+            guestEvents: NoopGuestFSEventSender(),
+            interFrameDeadline: .milliseconds(20),
+            onFatal: fatal.record
+        )
+        let batch = try DoryFSWorkerCoherenceBatch(
+            generation: DoryFSWorkerTestChannel.generation,
+            shareCapabilityID: capability,
+            batchID: 800,
+            transactionID: 800,
+            transactionIndex: 0,
+            transactionCount: 2,
+            invalidations: [.inode(nodeID: 20, offset: -1, length: 0)],
+            nudgeRelativePaths: []
+        )
+
+        let first = Task { try await bridge.process(batch) }
+        #expect(await eventually { (try? harness.usedIndex(queue: 1)) == 1 })
+        #expect(try harness.acknowledgeConsumedInvalidations() == 1)
+        try await first.value
+
+        #expect(await eventually { fatal.reason != nil })
+        #expect(harness.fs.requestPublicationGateClosed)
+    }
+
+    @Test func coherenceBridgeLatchesAnIntermediateFrameTransportFailure() async throws {
+        let harness = try VirtioFSNotificationHarness(notificationBacklogLimit: 1)
+        try await harness.prepareCoherentCachingEligibility()
+        let capability = try bridgeCapability(3)
+        let fatal = BridgeFatalRecorder()
+        let endpoint = try DoryHostShareCoherenceEndpoint(
+            capabilityID: capability,
+            backend: harness.fs,
+            guestRoot: "/mnt/share",
+            policy: .invalidationOnly
+        )
+        let bridge = DoryHostShareCoherenceBridge(
+            endpoints: [endpoint],
+            guestEvents: NoopGuestFSEventSender(),
+            onFatal: fatal.record
+        )
+        let firstBatch = try DoryFSWorkerCoherenceBatch(
+            generation: DoryFSWorkerTestChannel.generation,
+            shareCapabilityID: capability,
+            batchID: 900,
+            transactionID: 900,
+            transactionIndex: 0,
+            transactionCount: 2,
+            invalidations: [.entry(parentNodeID: 1, name: "failed.txt", flags: 0)],
+            nudgeRelativePaths: []
+        )
+        let finalBatch = try DoryFSWorkerCoherenceBatch(
+            generation: DoryFSWorkerTestChannel.generation,
+            shareCapabilityID: capability,
+            batchID: 901,
+            transactionID: 900,
+            transactionIndex: 1,
+            transactionCount: 2,
+            invalidations: [.inode(nodeID: 21, offset: -1, length: 0)],
+            nudgeRelativePaths: []
+        )
+
+        let first = Task { try await bridge.process(firstBatch) }
+        #expect(await eventually { (try? harness.usedIndex(queue: 1)) == 1 })
+        #expect(try harness.acknowledgeConsumedInvalidations() == 1)
+        try await first.value
+        harness.transport.write(offset: 0x070, value: 0, width: 4)
+
+        do {
+            try await bridge.process(finalBatch)
+            Issue.record("transport-reset transaction unexpectedly committed")
+        } catch {}
+        #expect(fatal.reason != nil)
+        #expect(harness.fs.requestPublicationGateClosed)
+    }
+
     @Test func positiveCachingRemainsFailClosedWithHealthyNotifications() async throws {
         let harness = try VirtioFSNotificationHarness()
         let initial = harness.fs.cacheActivationEligibility
@@ -2639,4 +2797,30 @@ private func makeFuseRequest(
         gid: 1_000,
         pid: 42
     )) + payload
+}
+
+private struct NoopGuestFSEventSender: GuestFSEventSending {
+    func send(operationID _: UInt64, paths: [String]) async throws -> GuestFSEventBatchResult {
+        GuestFSEventBatchResult(pathCount: UInt32(paths.count), failedIndices: [])
+    }
+}
+
+private final class BridgeFatalRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedReason: String?
+
+    var reason: String? { lock.withLock { storedReason } }
+
+    func record(_ reason: String) {
+        lock.withLock {
+            if storedReason == nil { storedReason = reason }
+        }
+    }
+}
+
+private func bridgeCapability(_ byte: UInt8) throws -> DoryFSShareCapabilityID {
+    try DoryFSShareCapabilityID(rawValue: UUID(uuid: (
+        0, 0, 0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0, 2, byte
+    )))
 }

@@ -86,6 +86,38 @@ public enum VirtioFSNotificationError: Error, Equatable, Sendable {
     case requestDrainTimedOut(activeRequests: Int)
     case acknowledgementTimedOut
     case timedOut
+    case invalidTransaction
+}
+
+/// Opaque ownership token for a multi-frame invalidation transaction. Only its originating
+/// VirtioFS backend may append or finish it; retained barriers keep request publication closed.
+public final class VirtioFSInvalidationTransaction: @unchecked Sendable {
+    let owner: ObjectIdentifier
+    private let lock = NSLock()
+    private var barriers = [VirtioFSNotificationBarrier]()
+    private var finished = false
+
+    init(owner: VirtioFS) {
+        self.owner = ObjectIdentifier(owner)
+    }
+
+    func append(_ barrier: VirtioFSNotificationBarrier) -> Bool {
+        lock.withLock {
+            guard !finished else { return false }
+            barriers.append(barrier)
+            return true
+        }
+    }
+
+    func finish() -> [VirtioFSNotificationBarrier]? {
+        lock.withLock {
+            guard !finished else { return nil }
+            finished = true
+            let retained = barriers
+            barriers.removeAll(keepingCapacity: false)
+            return retained
+        }
+    }
 }
 
 /// Completes after Linux has consumed every notification in a submission and reposted its buffers.
