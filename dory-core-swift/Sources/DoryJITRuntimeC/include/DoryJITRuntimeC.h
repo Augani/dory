@@ -36,5 +36,16 @@ int dory_jit_region_execute(
     dory_jit_memory_write_function memory_write,
     uint32_t *exit_code_out
 );
+int dory_jit_region_execute_batch(
+    const dory_jit_region *region,
+    const size_t *offsets,
+    const uint64_t *expected_guest_rips,
+    const uint32_t *guest_instruction_counts,
+    size_t block_count,
+    uint64_t *context,
+    uint32_t *exit_code_out,
+    uint32_t *executed_block_count_out,
+    uint32_t *guest_instruction_count_out
+);
 
 #endif

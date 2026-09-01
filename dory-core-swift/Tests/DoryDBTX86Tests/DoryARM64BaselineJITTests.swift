@@ -68,6 +68,27 @@ import Testing
       #expect(summary.residentBlockCount == 4)
       #expect(state.registers.rcx == 0)
       #expect(state.rip == base + UInt64(bytes.count))
+
+      state = try DoryX86ArchitecturalState(rip: base)
+      let replay = try #require(
+        executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            guard address >= base else { return [] }
+            let offset = Int(address - base)
+            guard bytes.indices.contains(offset) else { return [] }
+            return Array(bytes[offset..<min(bytes.count, offset + maximumCount)])
+          },
+          at: base,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 16,
+          state: &state
+        )
+      )
+      #expect(replay == summary)
+      #expect(executor.nativeBatchExecutionCount == 1)
+      #expect(state.registers.rcx == 0)
+      #expect(state.rip == base + UInt64(bytes.count))
     #endif
   }
 
@@ -781,6 +802,63 @@ import Testing
       #expect(exit == .dispatch)
       #expect(context[0] == 0x1234_5678)
       #expect(context[16] == 0x400A)
+    #endif
+  }
+
+  @Test func nativeBatchReplaysGuardedCallbackFreeBlocksUntilTerminalExit() throws {
+    #if arch(arm64)
+      let emitter = DoryARM64BaselineEmitter()
+      let first = emitter.compile(
+        try DoryX86IRTranslator().translate(
+          [0xB8, 1, 0, 0, 0, 0xEB, 0],
+          at: 0x5000,
+          mode: .long64
+        ))
+      let second = emitter.compile(
+        try DoryX86IRTranslator().translate(
+          [0xBB, 2, 0, 0, 0, 0xF4],
+          at: 0x5007,
+          mode: .long64
+        ))
+      #expect(!first.requiresMemoryCallbacks)
+      #expect(!second.requiresMemoryCallbacks)
+      let secondOffset = first.machineBytes.count
+      let region = try DoryJITExecutableRegion(minimumCapacity: 4096)
+      try region.publish(first, at: 0)
+      try region.publish(second, at: secondOffset)
+      var words = [UInt64](repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+      words[16] = 0x5000
+
+      let batch = try words.withUnsafeMutableBufferPointer { context in
+        try region.executeBatch(
+          offsets: [0, secondOffset],
+          expectedGuestRIPs: [0x5000, 0x5007],
+          guestInstructionCounts: [first.guestInstructionCount, second.guestInstructionCount],
+          context: context
+        )
+      }
+
+      #expect(batch.exitCode == .halt)
+      #expect(batch.residentBlockCount == 2)
+      #expect(batch.guestInstructionCount == 4)
+      #expect(words[0] == 1)
+      #expect(words[3] == 2)
+      #expect(words[16] == 0x500D)
+
+      words = [UInt64](repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+      words[16] = 0x6000
+      let divergent = try words.withUnsafeMutableBufferPointer { context in
+        try region.executeBatch(
+          offsets: [0, secondOffset],
+          expectedGuestRIPs: [0x5000, 0x5007],
+          guestInstructionCounts: [first.guestInstructionCount, second.guestInstructionCount],
+          context: context
+        )
+      }
+      #expect(divergent.exitCode == .dispatch)
+      #expect(divergent.residentBlockCount == 0)
+      #expect(divergent.guestInstructionCount == 0)
+      #expect(words[16] == 0x6000)
     #endif
   }
 

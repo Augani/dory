@@ -1503,6 +1503,57 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     }
     return exit
   }
+
+  /// Replays an already validated sequence of callback-free resident blocks without crossing the
+  /// Swift/C boundary between each block. Expected RIP guards stop safely when a conditional path
+  /// diverges from the recorded trace.
+  func executeBatch(
+    offsets: [Int],
+    expectedGuestRIPs: [UInt64],
+    guestInstructionCounts: [UInt32],
+    context: UnsafeMutableBufferPointer<UInt64>
+  ) throws -> DoryARM64NativeBatchExecution {
+    guard !offsets.isEmpty, offsets.count == expectedGuestRIPs.count,
+      offsets.count == guestInstructionCounts.count
+    else { throw DoryJITRuntimeError.executionFailed(EINVAL) }
+    guard context.count == Self.contextWordCount else {
+      throw DoryJITRuntimeError.invalidContextWordCount(context.count)
+    }
+    for offset in offsets {
+      guard offset >= 0, offset.isMultiple(of: 4), offset < capacity else {
+        throw DoryJITRuntimeError.invalidOffset(offset)
+      }
+    }
+    var rawExit: UInt32 = 0
+    var executedBlocks: UInt32 = 0
+    var executedInstructions: UInt32 = 0
+    let result = offsets.withUnsafeBufferPointer { offsets in
+      expectedGuestRIPs.withUnsafeBufferPointer { expectedGuestRIPs in
+        guestInstructionCounts.withUnsafeBufferPointer { guestInstructionCounts in
+          dory_jit_region_execute_batch(
+            region,
+            offsets.baseAddress,
+            expectedGuestRIPs.baseAddress,
+            guestInstructionCounts.baseAddress,
+            offsets.count,
+            context.baseAddress,
+            &rawExit,
+            &executedBlocks,
+            &executedInstructions
+          )
+        }
+      }
+    }
+    guard result == 0 else { throw DoryJITRuntimeError.executionFailed(result) }
+    guard let exit = DoryJITExitCode(rawValue: rawExit) else {
+      throw DoryJITRuntimeError.invalidExitCode(rawExit)
+    }
+    return .init(
+      guestInstructionCount: executedInstructions,
+      residentBlockCount: executedBlocks,
+      exitCode: exit
+    )
+  }
 }
 
 public struct DoryARM64BaselineExecution: Sendable, Hashable {
@@ -1533,6 +1584,12 @@ public struct DoryARM64ExecutionSummary: Sendable, Hashable {
     self.tier = tier
     self.exitCode = exitCode
   }
+}
+
+struct DoryARM64NativeBatchExecution: Sendable, Hashable {
+  let guestInstructionCount: UInt32
+  let residentBlockCount: UInt32
+  let exitCode: DoryJITExitCode
 }
 
 /// Owns one bounded MAP_JIT region and dispatches exact, helper-free baseline blocks through it.
@@ -1577,6 +1634,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let resident: ResidentBlock
   }
 
+  private struct NativeTrace {
+    let key: LookupKey
+    let guestStarts: [UInt64]
+  }
+
+  private struct NativeReplay {
+    let guestInstructionCount: Int
+    let residentBlockCount: Int
+    let exitCode: DoryJITExitCode
+  }
+
   private struct ResidentExecution {
     let resident: ResidentBlock
     let exitCode: DoryJITExitCode
@@ -1592,6 +1660,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let region: DoryJITExecutableRegion
   private var entries: [LookupKey: ResidentBlock] = [:]
   private var recentEntries: [RecentResidentBlock?] = .init(repeating: nil, count: 256)
+  private var nativeTraces: [NativeTrace?] = .init(repeating: nil, count: 4_096)
+  private var nativeBatchExecutionCountValue: UInt64 = 0
   private var nextOffset = 0
 
   public init(
@@ -1613,11 +1683,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
 
   public var residentBlockCount: Int { lock.withLock { entries.count } }
   public var residentByteCount: Int { lock.withLock { nextOffset } }
+  public var nativeBatchExecutionCount: UInt64 {
+    lock.withLock { nativeBatchExecutionCountValue }
+  }
 
   public func invalidateAll() {
     lock.withLock {
       entries.removeAll(keepingCapacity: true)
       recentEntries = .init(repeating: nil, count: recentEntries.count)
+      nativeTraces = .init(repeating: nil, count: nativeTraces.count)
       nextOffset = 0
     }
   }
@@ -1634,6 +1708,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       }.map(\.key)
       for key in victims { entries.removeValue(forKey: key) }
       recentEntries = .init(repeating: nil, count: recentEntries.count)
+      nativeTraces = .init(repeating: nil, count: nativeTraces.count)
     }
   }
 
@@ -1745,6 +1820,43 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           Self.populateExecutionContext(context, from: state)
           var completed = 0
           var blockCount = 0
+          let traceKey = makeLookupKey(
+            guestStart: guestStart,
+            addressSpaceID: addressSpaceID,
+            mode: mode,
+            state: state
+          )
+          let traceIndex = nativeTraceIndex(for: traceKey)
+          let recordedTrace = nativeTraces[traceIndex].flatMap {
+            $0.key == traceKey ? $0.guestStarts : nil
+          }
+          if let recordedTrace,
+            let replay = try replayNativeTrace(
+              recordedTrace,
+              byteProvider: byteProvider,
+              codeGenerationProvider: codeGenerationProvider,
+              mode: mode,
+              addressSpaceID: addressSpaceID,
+              maximumInstructions: maximumInstructions,
+              state: state,
+              context: context,
+              memory: memory
+            )
+          {
+            completed = replay.guestInstructionCount
+            blockCount = replay.residentBlockCount
+            if replay.exitCode != .dispatch || completed >= maximumInstructions {
+              Self.apply(context: context, to: &state)
+              return DoryARM64ExecutionSummary(
+                guestInstructionCount: UInt32(completed),
+                residentBlockCount: UInt32(blockCount),
+                tier: optimization == .optimizing ? .optimizing : .baseline,
+                exitCode: replay.exitCode
+              )
+            }
+          }
+          var newTrace: [UInt64] = []
+          var recordsTrace = recordedTrace == nil && completed == 0
           while completed < maximumInstructions {
             let currentRIP = context[16]
             let remaining = maximumInstructions - completed
@@ -1762,6 +1874,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                 memory: memory
               )
             else {
+              publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               guard completed > 0 else { return nil }
               Self.apply(context: context, to: &state)
               return DoryARM64ExecutionSummary(
@@ -1770,6 +1883,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                 tier: optimization == .optimizing ? .optimizing : .baseline,
                 exitCode: .dispatch
               )
+            }
+
+            if recordsTrace {
+              if resident.block.requiresMemoryCallbacks {
+                publishNativeTrace(newTrace, for: traceKey, if: true)
+                recordsTrace = false
+              } else {
+                newTrace.append(currentRIP)
+              }
             }
 
             let hasCheckpoint = resident.block.requiresMemoryCallbacks
@@ -1783,6 +1905,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               requiresRestartableReads: resident.block.requiresRestartableMemoryReads
             )
             if exit == .interpreter, hasCheckpoint {
+              publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               for index in context.indices { context[index] = checkpoint[index] }
               guard completed > 0 else { return nil }
               Self.apply(context: context, to: &state)
@@ -1797,6 +1920,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             completed += Int(resident.block.guestInstructionCount)
             blockCount += 1
             guard exit == .dispatch, completed < maximumInstructions else {
+              publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               Self.apply(context: context, to: &state)
               return DoryARM64ExecutionSummary(
                 guestInstructionCount: UInt32(completed),
@@ -1869,12 +1993,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state: DoryX86ArchitecturalState,
     memory: (any DoryX86Memory)?
   ) throws -> ResidentBlock? {
-    let key = LookupKey(
+    let key = makeLookupKey(
       guestStart: guestStart,
       addressSpaceID: addressSpaceID,
-      executionMode: mode,
-      privilegeLevel: UInt8(state.cs.selector & 3),
-      pagingEnabled: state.control.cr0 & (1 << 31) != 0
+      mode: mode,
+      state: state
     )
     if let cached = lookupResident(for: key) {
       // The interrupt deadline is an execution constraint, not part of guest code identity. A
@@ -1944,6 +2067,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     if nextOffset > region.capacity - byteCount {
       entries.removeAll(keepingCapacity: true)
       recentEntries = .init(repeating: nil, count: recentEntries.count)
+      nativeTraces = .init(repeating: nil, count: nativeTraces.count)
       nextOffset = 0
     }
     let offset = nextOffset
@@ -1959,6 +2083,105 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     )
     publish(resident, for: key)
     return resident
+  }
+
+  private func makeLookupKey(
+    guestStart: UInt64,
+    addressSpaceID: UInt64,
+    mode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState
+  ) -> LookupKey {
+    LookupKey(
+      guestStart: guestStart,
+      addressSpaceID: addressSpaceID,
+      executionMode: mode,
+      privilegeLevel: UInt8(state.cs.selector & 3),
+      pagingEnabled: state.control.cr0 & (1 << 31) != 0
+    )
+  }
+
+  private func replayNativeTrace(
+    _ guestStarts: [UInt64],
+    byteProvider: (_ guestStart: UInt64, _ maximumCount: Int) throws -> [UInt8],
+    codeGenerationProvider: ((_ guestStart: UInt64, _ byteCount: Int) throws -> UInt64?)?,
+    mode: DoryX86ExecutionMode,
+    addressSpaceID: UInt64,
+    maximumInstructions: Int,
+    state: DoryX86ArchitecturalState,
+    context: UnsafeMutableBufferPointer<UInt64>,
+    memory: (any DoryX86Memory)?
+  ) throws -> NativeReplay? {
+    guard guestStarts.count >= 2 else { return nil }
+    var resolvedByRIP: [UInt64: ResidentBlock] = [:]
+    resolvedByRIP.reserveCapacity(min(guestStarts.count, 16))
+    var offsets: [Int] = []
+    var expectedRIPs: [UInt64] = []
+    var instructionCounts: [UInt32] = []
+    offsets.reserveCapacity(guestStarts.count)
+    expectedRIPs.reserveCapacity(guestStarts.count)
+    instructionCounts.reserveCapacity(guestStarts.count)
+    var admittedInstructions = 0
+    for currentRIP in guestStarts {
+      let resident: ResidentBlock
+      if let resolved = resolvedByRIP[currentRIP] {
+        resident = resolved
+      } else {
+        guard
+          let resolved = try resolveResident(
+            byteProvider: { try byteProvider(currentRIP, $0) },
+            codeGenerationProvider: codeGenerationProvider.map { provider in
+              { try provider(currentRIP, $0) }
+            },
+            at: currentRIP,
+            mode: mode,
+            addressSpaceID: addressSpaceID,
+            maximumInstructions: maximumInstructions - admittedInstructions,
+            state: state,
+            memory: memory
+          ), !resolved.block.requiresMemoryCallbacks
+        else { return nil }
+        resident = resolved
+        resolvedByRIP[currentRIP] = resolved
+      }
+      let count = Int(resident.block.guestInstructionCount)
+      guard count > 0, admittedInstructions <= maximumInstructions - count else { break }
+      offsets.append(resident.offset)
+      expectedRIPs.append(currentRIP)
+      instructionCounts.append(resident.block.guestInstructionCount)
+      admittedInstructions += count
+    }
+    guard offsets.count >= 2 else { return nil }
+    let execution = try region.executeBatch(
+      offsets: offsets,
+      expectedGuestRIPs: expectedRIPs,
+      guestInstructionCounts: instructionCounts,
+      context: context
+    )
+    guard execution.residentBlockCount > 0 else { return nil }
+    nativeBatchExecutionCountValue &+= 1
+    return NativeReplay(
+      guestInstructionCount: Int(execution.guestInstructionCount),
+      residentBlockCount: Int(execution.residentBlockCount),
+      exitCode: execution.exitCode
+    )
+  }
+
+  private func publishNativeTrace(
+    _ guestStarts: [UInt64],
+    for key: LookupKey,
+    if shouldPublish: Bool
+  ) {
+    guard shouldPublish, guestStarts.count >= 2 else { return }
+    nativeTraces[nativeTraceIndex(for: key)] = NativeTrace(key: key, guestStarts: guestStarts)
+  }
+
+  private func nativeTraceIndex(for key: LookupKey) -> Int {
+    var value = key.guestStart
+    value ^= key.addressSpaceID &* 0xd6e8_feb8_6659_fd93
+    value ^= UInt64(key.privilegeLevel) << 7
+    value ^= key.pagingEnabled ? 1 << 13 : 0
+    value ^= value >> 32
+    return Int(value & UInt64(nativeTraces.count - 1))
   }
 
   private func lookupResident(for key: LookupKey) -> ResidentBlock? {

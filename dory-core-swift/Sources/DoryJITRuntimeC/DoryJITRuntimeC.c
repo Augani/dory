@@ -205,6 +205,60 @@ int dory_jit_region_execute(
     return 0;
 }
 
+int dory_jit_region_execute_batch(
+    const dory_jit_region *region,
+    const size_t *offsets,
+    const uint64_t *expected_guest_rips,
+    const uint32_t *guest_instruction_counts,
+    size_t block_count,
+    uint64_t *context,
+    uint32_t *exit_code_out,
+    uint32_t *executed_block_count_out,
+    uint32_t *guest_instruction_count_out
+) {
+    if (region == NULL || offsets == NULL || expected_guest_rips == NULL ||
+        guest_instruction_counts == NULL || block_count == 0 || context == NULL ||
+        exit_code_out == NULL || executed_block_count_out == NULL ||
+        guest_instruction_count_out == NULL) {
+        return EINVAL;
+    }
+    typedef uint32_t (*dory_jit_function)(
+        uint64_t *,
+        void *,
+        dory_jit_memory_read_function,
+        dory_jit_memory_write_function
+    );
+    uint32_t executed = 0;
+    uint32_t instructions = 0;
+    uint32_t exit_code = 0;
+    for (size_t index = 0; index < block_count; index++) {
+        if (context[16] != expected_guest_rips[index]) {
+            break;
+        }
+        void *entry = dory_jit_region_entry(region, offsets[index]);
+        if (entry == NULL || guest_instruction_counts[index] == 0 ||
+            UINT32_MAX - instructions < guest_instruction_counts[index]) {
+            return EINVAL;
+        }
+        union {
+            void *pointer;
+            dory_jit_function function;
+        } callable = {.pointer = entry};
+        // Batch callers admit only blocks without memory callbacks. Keeping callback authority
+        // absent makes that contract fail closed if a mismatched block ever reaches this path.
+        exit_code = callable.function(context, NULL, NULL, NULL);
+        executed++;
+        instructions += guest_instruction_counts[index];
+        if (exit_code != 0) {
+            break;
+        }
+    }
+    *exit_code_out = exit_code;
+    *executed_block_count_out = executed;
+    *guest_instruction_count_out = instructions;
+    return 0;
+}
+
 #else
 
 struct dory_jit_region {};
@@ -255,6 +309,28 @@ int dory_jit_region_execute(
     (void)memory_read;
     (void)memory_write;
     (void)exit_code_out;
+    return ENOTSUP;
+}
+int dory_jit_region_execute_batch(
+    const dory_jit_region *region,
+    const size_t *offsets,
+    const uint64_t *expected_guest_rips,
+    const uint32_t *guest_instruction_counts,
+    size_t block_count,
+    uint64_t *context,
+    uint32_t *exit_code_out,
+    uint32_t *executed_block_count_out,
+    uint32_t *guest_instruction_count_out
+) {
+    (void)region;
+    (void)offsets;
+    (void)expected_guest_rips;
+    (void)guest_instruction_counts;
+    (void)block_count;
+    (void)context;
+    (void)exit_code_out;
+    (void)executed_block_count_out;
+    (void)guest_instruction_count_out;
     return ENOTSUP;
 }
 
