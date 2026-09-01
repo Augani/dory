@@ -279,9 +279,6 @@ final class DoryPCDeviceTelemetrySampler: @unchecked Sendable {
                             value: execution.optimizingJITInstructions
                         ),
                         .measured(.optimizingJITBlocks, value: execution.optimizingJITBlocks),
-                        .measured(.nativeReadTLBHits, value: execution.nativeReadTLBHits),
-                        .measured(.nativeReadTLBMisses, value: execution.nativeReadTLBMisses),
-                        .measured(.nativeReadSlowPaths, value: execution.nativeReadSlowPaths),
                     ]
                 ),
                 DoryDeviceTelemetryDevice(

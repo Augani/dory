@@ -777,6 +777,9 @@ enum DoryPCMode {
         }
 
         private nonisolated func execute() {
+            let progressLogIntervalNanoseconds: UInt64 = 30_000_000_000
+            var nextProgressLogNanoseconds = DispatchTime.now().uptimeNanoseconds
+                &+ progressLogIntervalNanoseconds
             do {
                 while true {
                     let composed = machineState.current()
@@ -786,6 +789,19 @@ enum DoryPCMode {
                     )
                     for byte in composed.machine.serial.drainTransmittedBytes() {
                         serialOutput.enqueue(byte)
+                    }
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    if now >= nextProgressLogNanoseconds {
+                        let statistics = composed.machine.executionStatistics
+                        Self.log(
+                            "execution progress interpreter=\(statistics.interpreterInstructions) "
+                                + "baseline=\(statistics.baselineJITInstructions) "
+                                + "optimizing=\(statistics.optimizingJITInstructions) "
+                                + "native-read-tlb-hits=\(statistics.nativeReadTLBHits) "
+                                + "native-read-tlb-misses=\(statistics.nativeReadTLBMisses) "
+                                + "native-read-slow-paths=\(statistics.nativeReadSlowPaths)"
+                        )
+                        nextProgressLogNanoseconds = now &+ progressLogIntervalNanoseconds
                     }
                     switch stop {
                     case .instructionBudget:
