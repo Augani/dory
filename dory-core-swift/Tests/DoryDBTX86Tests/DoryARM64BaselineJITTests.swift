@@ -824,6 +824,115 @@ import Testing
     #endif
   }
 
+  @Test func clShiftsMatchInterpreterResultsAndFlags() throws {
+    #if arch(arm64)
+      let instructions: [([UInt8], DoryX86GeneralRegister)] = [
+        ([0x49, 0xD3, 0xE1], .r9),  // shl r9,cl
+        ([0x49, 0xD3, 0xE9], .r9),  // shr r9,cl
+        ([0x48, 0xD3, 0xF8], .rax),  // sar rax,cl
+        ([0xD3, 0xE0], .rax),  // shl eax,cl
+        ([0xD3, 0xE8], .rax),  // shr eax,cl
+        ([0xD3, 0xF8], .rax),  // sar eax,cl
+      ]
+      let counts: [UInt64] = [0, 1, 31, 32, 63, 64, 255]
+      let values: [UInt64] = [
+        0,
+        1,
+        0x8000_0000_0000_0001,
+        0xF123_4567_89AB_CDEF,
+      ]
+      let initialFlags = [
+        DoryX86RFLAGS.reservedOne,
+        DoryX86RFLAGS(
+          rawValue: DoryX86RFLAGS.reservedOne.rawValue
+            | DoryX86RFLAGS.carry.rawValue
+            | DoryX86RFLAGS.auxiliaryCarry.rawValue
+            | DoryX86RFLAGS.overflow.rawValue
+        ),
+        DoryX86RFLAGS(
+          rawValue: DoryX86RFLAGS.reservedOne.rawValue
+            | DoryX86RFLAGS.parity.rawValue
+            | DoryX86RFLAGS.zero.rawValue
+            | DoryX86RFLAGS.sign.rawValue
+        ),
+      ]
+
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        for (bytes, target) in instructions {
+          let executor = try DoryARM64BaselineExecutor(
+            maximumCodeBytes: 4096,
+            optimization: optimization
+          )
+          for count in counts {
+            for value in values {
+              for flags in initialFlags {
+                var registers = DoryX86GeneralRegisters(rcx: count)
+                registers[target] = value
+                var interpreted = try DoryX86ArchitecturalState(
+                  registers: registers,
+                  rip: 0,
+                  rflags: flags
+                )
+                let memory = DoryX86ByteArrayMemory(bytes: bytes)
+                _ = DoryX86Interpreter().step(
+                  state: &interpreted,
+                  memory: memory,
+                  mode: .long64
+                )
+
+                var translated = try DoryX86ArchitecturalState(
+                  registers: registers,
+                  rip: 0,
+                  rflags: flags
+                )
+                let execution = try #require(
+                  executor.execute(
+                    bytes: bytes,
+                    at: 0,
+                    mode: .long64,
+                    addressSpaceID: 0,
+                    maximumInstructions: 1,
+                    state: &translated
+                  )
+                )
+
+                #expect(execution.block.tier.rawValue == optimization.rawValue)
+                #expect(execution.block.guestInstructionCount == 1)
+                #expect(translated == interpreted)
+              }
+            }
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func nativeTranslationSpansTheKernelCLShiftPair() throws {
+    let bytes: [UInt8] = [
+      0x49, 0xC7, 0xC7, 0xFF, 0xFF, 0xFF, 0xFF,  // mov r15,-1
+      0x89, 0xF9,  // mov ecx,edi
+      0x49, 0x89, 0xD1,  // mov r9,rdx
+      0x01, 0xF8,  // add eax,edi
+      0x48, 0x89, 0xD7,  // mov rdi,rdx
+      0xF7, 0xD9,  // neg ecx
+      0x49, 0xD3, 0xE9,  // shr r9,cl
+      0x44, 0x89, 0xF1,  // mov ecx,r14d
+      0x49, 0xD3, 0xE7,  // shl r15,cl
+      0x4C, 0x89, 0xF9,  // mov rcx,r15
+      0x49, 0xC7, 0xC7, 0xFF, 0xFF, 0xFF, 0xFF,  // mov r15,-1
+      0x48, 0xF7, 0xD1,  // not rcx
+      0x4C, 0x21, 0xC9,  // and rcx,r9
+      0x4C, 0x01, 0xD1,  // add rcx,r10
+      0x48, 0x89, 0x8C, 0x24, 0xF8, 0x00, 0x00, 0x00,  // mov [rsp+0xf8],rcx
+    ]
+    let block = try DoryX86IRTranslator().translate(bytes, at: 0x12E4_3B45C, mode: .long64)
+    let compiled = DoryARM64BaselineEmitter().compile(block)
+
+    #expect(block.guestInstructionCount == 15)
+    #expect(block.guestByteCount == bytes.count)
+    #expect(compiled.tier == .baseline)
+  }
+
   @Test func signedMultiply32MatchesInterpreterLowResultAndOverflowFlags() throws {
     #if arch(arm64)
       for (left, right) in [(UInt64(2), UInt64(3)), (0x7FFF_FFFF, 2), (0xFFFF_FFFF, 2)] {

@@ -65,6 +65,11 @@ public enum DoryIRShiftOperation: String, Codable, Sendable, Hashable {
   case left, logicalRight, arithmeticRight
 }
 
+public enum DoryIRShiftCount: Codable, Sendable, Hashable {
+  case immediate(UInt8)
+  case cl
+}
+
 public enum DoryIRStatement: Codable, Sendable, Hashable {
   case copy(destination: DoryIROperand, source: DoryIROperand)
   case binary(
@@ -74,7 +79,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
     writesDestination: Bool
   )
   case unary(DoryIRUnaryOperation, operand: DoryIROperand)
-  case shift(DoryIRShiftOperation, destination: DoryIROperand, count: UInt8)
+  case shift(DoryIRShiftOperation, destination: DoryIROperand, count: DoryIRShiftCount)
   case signedMultiply(destination: DoryIROperand, lhs: DoryIROperand, rhs: DoryIROperand)
   case extendMove(destination: DoryIROperand, source: DoryIROperand, signed: Bool)
   case effectiveAddress(destination: DoryIROperand, address: DoryIRMemoryAddress)
@@ -262,7 +267,7 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
-    case .shift(let operation, let destination, .immediate(let count)):
+    case .shift(let operation, let destination, let count):
       let loweredOperation: DoryIRShiftOperation
       switch operation {
       case .shiftLeft: loweredOperation = .left
@@ -270,6 +275,11 @@ public struct DoryX86IRTranslator: Sendable {
       case .arithmeticShiftRight: loweredOperation = .arithmeticRight
       default: return fallback(instruction, reason: .interpreter)
       }
+      let loweredCount: DoryIRShiftCount =
+        switch count {
+        case .immediate(let value): .immediate(value)
+        case .cl: .cl
+        }
       return (
         [
           .shift(
@@ -278,7 +288,7 @@ public struct DoryX86IRTranslator: Sendable {
               destination,
               instructionRelativeBase: instruction.nextInstructionAddress
             ),
-            count: count
+            count: loweredCount
           )
         ],
         nil

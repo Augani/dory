@@ -311,7 +311,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private func emitShift(
     _ operation: DoryIRShiftOperation,
     destination: DoryIROperand,
-    count rawCount: UInt8,
+    count countSource: DoryIRShiftCount,
     into words: inout [UInt32]
   ) -> Bool {
     guard case .register(let target) = destination,
@@ -321,10 +321,60 @@ public struct DoryARM64BaselineEmitter: Sendable {
     else { return false }
     let is64Bit = target.width == .i64
     let bitCount: UInt32 = is64Bit ? 64 : 32
-    let count = UInt32(rawCount) & (is64Bit ? 0x3f : 0x1f)
-    guard count != 0 else { return true }
+    switch countSource {
+    case .immediate(let rawCount):
+      let count = UInt32(rawCount) & (is64Bit ? 0x3f : 0x1f)
+      guard count != 0 else { return true }
+      emitImmediate(UInt64(count), register: 10, into: &words)
+      words.append(
+        encodeVariableShift(
+          operation,
+          is64Bit: is64Bit,
+          value: 9,
+          count: 10,
+          destination: 11
+        ))
+      emitShiftFlags(
+        operation,
+        is64Bit: is64Bit,
+        bitCount: bitCount,
+        count: count,
+        original: 9,
+        result: 11,
+        words: &words
+      )
+      words.append(encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8))
+    case .cl:
+      emitCLShift(
+        operation,
+        is64Bit: is64Bit,
+        bitCount: bitCount,
+        target: target,
+        words: &words
+      )
+    }
+    return true
+  }
 
-    emitImmediate(UInt64(count), register: 10, into: &words)
+  private func emitCLShift(
+    _ operation: DoryIRShiftOperation,
+    is64Bit: Bool,
+    bitCount: UInt32,
+    target: DoryIRRegister,
+    words: inout [UInt32]
+  ) {
+    // A 32-bit destination write zero-extends its architectural register even when the masked
+    // count is zero. Commit that width effect before the flag-preserving zero-count branch.
+    if !is64Bit {
+      words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+    }
+    words.append(encodeLoad64(register: 10, base: 0, byteOffset: 8))
+    emitImmediate(is64Bit ? 0x3f : 0x1f, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 10, right: 15, destination: 10))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 10, 31, 31))
+    let zeroCountBranch = words.count
+    words.append(0)
+
     words.append(
       encodeVariableShift(
         operation,
@@ -333,17 +383,123 @@ public struct DoryARM64BaselineEmitter: Sendable {
         count: 10,
         destination: 11
       ))
-    emitShiftFlags(
-      operation,
-      is64Bit: is64Bit,
-      bitCount: bitCount,
-      count: count,
-      original: 9,
-      result: 11,
-      words: &words
+
+    if operation == .left {
+      emitImmediate(UInt64(bitCount), register: 12, into: &words)
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 12, 10, 12))
+    } else {
+      emitImmediate(1, register: 12, into: &words)
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 10, 12, 12))
+    }
+    words.append(
+      encodeVariableShift(
+        .logicalRight,
+        is64Bit: is64Bit,
+        value: 9,
+        count: 12,
+        destination: 13
+      ))
+    emitImmediate(1, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 13, right: 15, destination: 13))
+
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 11, 31, 31))
+    words.append(encodeConditionalSet(register: 14, condition: .equal))
+    words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 6, destination: 13))
+    words.append(
+      encodeLogical(
+        .or,
+        is64Bit: is64Bit,
+        left: 31,
+        right: 11,
+        shiftAmount: bitCount - 1,
+        logicalRightShift: true,
+        destination: 14
+      ))
+    words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 7, destination: 13))
+
+    words.append(
+      encodeLogical(
+        .xor,
+        is64Bit: is64Bit,
+        left: 11,
+        right: 11,
+        shiftAmount: 4,
+        logicalRightShift: true,
+        destination: 14
+      ))
+    words.append(
+      encodeLogical(
+        .xor, left: 14, right: 14, shiftAmount: 2, logicalRightShift: true, destination: 14
+      ))
+    words.append(
+      encodeLogical(
+        .xor, left: 14, right: 14, shiftAmount: 1, logicalRightShift: true, destination: 14
+      ))
+    words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.xor, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 2, destination: 13))
+
+    words.append(encodeLoad64(register: 12, base: 0, byteOffset: Self.rflagsOffset))
+    let resultFlagMask =
+      DoryX86RFLAGS.carry.rawValue
+      | DoryX86RFLAGS.parity.rawValue
+      | DoryX86RFLAGS.auxiliaryCarry.rawValue
+      | DoryX86RFLAGS.zero.rawValue
+      | DoryX86RFLAGS.sign.rawValue
+    emitImmediate(~resultFlagMask, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 12, right: 15, destination: 12))
+    words.append(encodeLogical(.or, left: 12, right: 13, destination: 12))
+
+    emitImmediate(1, register: 15, into: &words)
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 10, 15, 31))
+    let nonUnitCountBranch = words.count
+    words.append(0)
+    switch operation {
+    case .left:
+      words.append(
+        encodeLogical(
+          .or,
+          is64Bit: is64Bit,
+          left: 31,
+          right: 11,
+          shiftAmount: bitCount - 1,
+          logicalRightShift: true,
+          destination: 14
+        ))
+      words.append(encodeLogical(.xor, left: 14, right: 13, destination: 14))
+      words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    case .logicalRight:
+      words.append(
+        encodeLogical(
+          .or,
+          is64Bit: is64Bit,
+          left: 31,
+          right: 9,
+          shiftAmount: bitCount - 1,
+          logicalRightShift: true,
+          destination: 14
+        ))
+      words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    case .arithmeticRight:
+      emitImmediate(0, register: 14, into: &words)
+    }
+    emitImmediate(~DoryX86RFLAGS.overflow.rawValue, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 12, right: 15, destination: 12))
+    words.append(encodeLogical(.or, left: 12, right: 14, shiftAmount: 11, destination: 12))
+    words[nonUnitCountBranch] = encodeConditionalBranch(
+      condition: .notEqual,
+      wordOffset: words.count - nonUnitCountBranch
     )
+
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 15, into: &words)
+    words.append(encodeLogical(.or, left: 12, right: 15, destination: 12))
+    words.append(encodeStore64(register: 12, base: 0, byteOffset: Self.rflagsOffset))
     words.append(encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8))
-    return true
+    words[zeroCountBranch] = encodeConditionalBranch(
+      condition: .equal,
+      wordOffset: words.count - zeroCountBranch
+    )
   }
 
   private func emitShiftFlags(
@@ -1209,6 +1365,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
   ) -> UInt32 {
     0x9A80_0000 | falseRegister << 16 | condition.rawValue << 12 | trueRegister << 5
       | destination
+  }
+
+  private func encodeConditionalBranch(
+    condition: ARM64Condition,
+    wordOffset: Int
+  ) -> UInt32 {
+    precondition((-262_144..<262_144).contains(wordOffset))
+    let immediate = UInt32(truncatingIfNeeded: wordOffset) & 0x7_ffff
+    return 0x5400_0000 | immediate << 5 | condition.rawValue
   }
 }
 
