@@ -667,6 +667,10 @@ enum DoryPCMode {
                     $0.logicalID == firstID
                 }?.kind
             } == .removableMedia
+            guard !installerIsFirst else {
+                Self.log("installer guest services are deferred until the installed guest boots")
+                return
+            }
             let agentSocketPath = configuration.agentSocketPath
             let readyPublisher = self.readyPublisher
             let clipboard = self.clipboard
@@ -675,8 +679,7 @@ enum DoryPCMode {
             guestServiceQueue.async {
                 let deadline = Date().addingTimeInterval(90)
                 var lastError: Error?
-                while !machineState.isStopping,
-                      installerIsFirst || Date() < deadline {
+                while !machineState.isStopping, Date() < deadline {
                     do {
                         let control = DorydKit.AgentControl(configuration: .init(
                             directSocketPath: agentSocketPath
@@ -737,7 +740,7 @@ enum DoryPCMode {
                         return
                     } catch {
                         lastError = error
-                        Thread.sleep(forTimeInterval: installerIsFirst ? 1 : 0.25)
+                        Thread.sleep(forTimeInterval: 0.25)
                     }
                 }
                 guard !machineState.isStopping else { return }
@@ -745,9 +748,7 @@ enum DoryPCMode {
                     "DoryPC guest services did not become ready"
                 )
                 Self.log(
-                    installerIsFirst
-                        ? "installer guest services remain deferred: \(failure)"
-                        : "optional guest services are unavailable: \(failure)"
+                    "optional guest services are unavailable: \(failure)"
                 )
             }
         }
