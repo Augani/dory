@@ -899,10 +899,18 @@ enum DoryPCMode {
             let agentSocketPath = configuration.agentSocketPath
             let keyboardInput = self.keyboardInput
             let machineState = self.machineState
+            let networkRuntime = self.networkRuntime
             for number in [SIGTERM, SIGINT] {
                 signal(number, SIG_IGN)
                 let source = DispatchSource.makeSignalSource(signal: number, queue: signalQueue)
                 source.setEventHandler {
+                    // The daemon's bounded stop may ultimately SIGKILL this runner if an
+                    // installer has no guest agent and ignores the ACPI power key. Retire the
+                    // runner-owned sidecar at the first host termination signal so that forced
+                    // runner exit cannot orphan gvproxy under launchd or leak its stale sockets
+                    // into the next start. Guest shutdown control uses the independent vsock
+                    // bridge, so network teardown does not prevent the graceful request.
+                    networkRuntime?.stop()
                     machineState.requestGuestShutdown(
                         graceful: graceful,
                         agentSocketPath: agentSocketPath,
