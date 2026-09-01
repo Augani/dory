@@ -41,16 +41,15 @@ import Testing
     #expect(Array(tables.facs.prefix(4)) == Array("FACS".utf8))
     #expect(Array(tables.dsdt.prefix(4)) == Array("DSDT".utf8))
     #expect(tables.dsdt.reduce(0, &+) == 0)
-    #expect(
-      tables.dsdt.suffix(14) == [
-        0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x08, 0x04, 0x0A, 0x05, 0x0A, 0x05, 0, 0,
-      ])
+    #expect(tables.dsdt.containsSubsequence(Array("_S5_".utf8)))
+    #expect(tables.dsdt.containsSubsequence(Array("PCI0".utf8)))
+    #expect(tables.dsdt.containsSubsequence(Array("_PRT".utf8)))
   }
 
   @Test func installsAtomicallyAfterPreflightingEveryTable() throws {
     let tables = try DoryPCACPIBuilder.build(
       layout: .init(rsdp: 0x100, xsdt: 0x200, madt: 0x300, hpet: 0x400, mcfg: 0x500))
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x1000)
+    let memory = DoryX86ByteArrayMemory(byteCount: 0x3000)
 
     try tables.install(into: memory)
 
@@ -74,6 +73,39 @@ import Testing
     }
   }
 
+  @Test func everySupportedTopologyFitsTheReservedACPIRegion() throws {
+    for processorCount: UInt8 in [1, 23, 24, 255] {
+      let tables = try DoryPCACPIBuilder.build(processorCount: processorCount)
+      let ranges = tableRanges(tables).sorted { $0.lowerBound < $1.lowerBound }
+      let reserved = DoryPCV1ABI.acpiBase..<(DoryPCV1ABI.acpiBase + DoryPCV1ABI.acpiBytes)
+
+      #expect(ranges.allSatisfy { reserved.lowerBound <= $0.lowerBound })
+      #expect(ranges.allSatisfy { $0.upperBound <= reserved.upperBound })
+      #expect(!zip(ranges, ranges.dropFirst()).contains { $0.0.overlaps($0.1) })
+    }
+  }
+
+  @Test func dsdtDefinesTheCompletePCIeRootContract() throws {
+    let dsl = try decompileDSDT(try DoryPCACPIBuilder.build().dsdt)
+    let compactDSL = dsl.components(separatedBy: .whitespacesAndNewlines)
+      .filter { !$0.isEmpty }
+      .joined(separator: " ")
+
+    #expect(dsl.contains("Device (PCI0)"))
+    #expect(dsl.contains("Name (_HID, EisaId (\"PNP0A08\")"))
+    #expect(dsl.contains("Name (_CID, EisaId (\"PNP0A03\")"))
+    #expect(dsl.contains("Name (_SEG, Zero)"))
+    #expect(dsl.contains("Name (_BBN, Zero)"))
+    #expect(dsl.contains("0xD0000000"))
+    #expect(dsl.contains("0xDFFFFFFF"))
+    #expect(dsl.contains("0x10000000"))
+    #expect(dsl.contains("Device (MRES)"))
+    #expect(dsl.contains("EisaId (\"PNP0C02\")"))
+    #expect(dsl.components(separatedBy: "Package (0x04)").count - 1 == 129)
+    #expect(compactDSL.contains("0xFFFF, Zero, Zero, 0x10"))
+    #expect(compactDSL.contains("0x001FFFFF, 0x03, Zero, 0x12"))
+  }
+
   @Test func directKernelHandoffPublishesTheRSDPAddress() throws {
     let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
     try machine.load(kernel: makeMinimalELF(), commandLine: "x")
@@ -95,6 +127,48 @@ import Testing
 
   private func read64(_ bytes: [UInt8], at offset: Int) -> UInt64 {
     (0..<8).reduce(0) { $0 | UInt64(bytes[offset + $1]) << UInt64($1 * 8) }
+  }
+
+  private func tableRanges(_ tables: DoryPCACPITables) -> [Range<UInt64>] {
+    [
+      tables.layout.rsdp..<(tables.layout.rsdp + UInt64(tables.rsdp.count)),
+      tables.layout.xsdt..<(tables.layout.xsdt + UInt64(tables.xsdt.count)),
+      tables.layout.madt..<(tables.layout.madt + UInt64(tables.madt.count)),
+      tables.layout.hpet..<(tables.layout.hpet + UInt64(tables.hpet.count)),
+      tables.layout.mcfg..<(tables.layout.mcfg + UInt64(tables.mcfg.count)),
+      tables.layout.fadt..<(tables.layout.fadt + UInt64(tables.fadt.count)),
+      tables.layout.facs..<(tables.layout.facs + UInt64(tables.facs.count)),
+      tables.layout.dsdt..<(tables.layout.dsdt + UInt64(tables.dsdt.count)),
+    ]
+  }
+
+  private func decompileDSDT(_ bytes: [UInt8]) throws -> String {
+    let directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("dory-acpi-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false)
+    defer { try? FileManager.default.removeItem(at: directory) }
+
+    let tableURL = directory.appendingPathComponent("dsdt.aml")
+    let outputURL = directory.appendingPathComponent("decoded")
+    try Data(bytes).write(to: tableURL, options: .atomic)
+
+    let process = Process()
+    let output = Pipe()
+    process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+    process.arguments = ["iasl", "-d", "-p", outputURL.path, tableURL.path]
+    process.standardOutput = output
+    process.standardError = output
+    try process.run()
+    process.waitUntilExit()
+    let diagnostics = output.fileHandleForReading.readDataToEndOfFile()
+    guard process.terminationStatus == 0 else {
+      throw NSError(
+        domain: "DoryPCACPITests",
+        code: Int(process.terminationStatus),
+        userInfo: [NSLocalizedDescriptionKey: String(decoding: diagnostics, as: UTF8.self)]
+      )
+    }
+    return try String(contentsOf: outputURL.appendingPathExtension("dsl"), encoding: .utf8)
   }
 
   private func makeMinimalELF() -> Data {

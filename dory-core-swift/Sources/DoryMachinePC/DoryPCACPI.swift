@@ -14,9 +14,9 @@ public struct DoryPCACPILayout: Codable, Sendable, Hashable {
   public init(
     rsdp: UInt64 = DoryPCV1ABI.acpiBase,
     xsdt: UInt64 = DoryPCV1ABI.acpiBase + 0x100,
-    madt: UInt64 = DoryPCV1ABI.acpiBase + 0x200,
-    hpet: UInt64 = DoryPCV1ABI.acpiBase + 0x300,
-    mcfg: UInt64 = DoryPCV1ABI.acpiBase + 0x400,
+    madt: UInt64 = DoryPCV1ABI.acpiBase + 0x1000,
+    hpet: UInt64 = DoryPCV1ABI.acpiBase + 0x200,
+    mcfg: UInt64 = DoryPCV1ABI.acpiBase + 0x300,
     fadt: UInt64? = nil,
     facs: UInt64? = nil,
     dsdt: UInt64? = nil
@@ -34,6 +34,7 @@ public struct DoryPCACPILayout: Codable, Sendable, Hashable {
 
 public enum DoryPCACPIError: Error, Sendable, Equatable {
   case overlappingTables
+  case tablesOutsideReservedRegion
   case guestMemoryRejected(DoryX86MemoryError)
 }
 
@@ -79,18 +80,24 @@ public enum DoryPCACPIBuilder {
     let fadt = makeFADT(facsAddress: layout.facs, dsdtAddress: layout.dsdt)
     let xsdt = makeXSDT(tableAddresses: [layout.fadt, layout.madt, layout.hpet, layout.mcfg])
     let rsdp = makeRSDP(xsdtAddress: layout.xsdt)
-    let ranges = [
-      layout.rsdp..<(layout.rsdp + UInt64(rsdp.count)),
-      layout.xsdt..<(layout.xsdt + UInt64(xsdt.count)),
-      layout.madt..<(layout.madt + UInt64(madt.count)),
-      layout.hpet..<(layout.hpet + UInt64(hpet.count)),
-      layout.mcfg..<(layout.mcfg + UInt64(mcfg.count)),
-      layout.fadt..<(layout.fadt + UInt64(fadt.count)),
-      layout.facs..<(layout.facs + UInt64(facs.count)),
-      layout.dsdt..<(layout.dsdt + UInt64(dsdt.count)),
+    let ranges = try [
+      checkedRange(start: layout.rsdp, byteCount: rsdp.count),
+      checkedRange(start: layout.xsdt, byteCount: xsdt.count),
+      checkedRange(start: layout.madt, byteCount: madt.count),
+      checkedRange(start: layout.hpet, byteCount: hpet.count),
+      checkedRange(start: layout.mcfg, byteCount: mcfg.count),
+      checkedRange(start: layout.fadt, byteCount: fadt.count),
+      checkedRange(start: layout.facs, byteCount: facs.count),
+      checkedRange(start: layout.dsdt, byteCount: dsdt.count),
     ].sorted { $0.lowerBound < $1.lowerBound }
     guard !zip(ranges, ranges.dropFirst()).contains(where: { $0.0.overlaps($0.1) }) else {
       throw DoryPCACPIError.overlappingTables
+    }
+    let (reservedEnd, overflow) = layout.rsdp.addingReportingOverflow(DoryPCV1ABI.acpiBytes)
+    guard !overflow,
+      ranges.allSatisfy({ layout.rsdp <= $0.lowerBound && $0.upperBound <= reservedEnd })
+    else {
+      throw DoryPCACPIError.tablesOutsideReservedRegion
     }
     return .init(
       layout: layout,
@@ -126,6 +133,12 @@ public enum DoryPCACPIBuilder {
     append(UInt16(0), to: &body)
     body += [1]
     return table(signature: "APIC", revision: 5, body: body)
+  }
+
+  private static func checkedRange(start: UInt64, byteCount: Int) throws -> Range<UInt64> {
+    let (end, overflow) = start.addingReportingOverflow(UInt64(byteCount))
+    guard !overflow else { throw DoryPCACPIError.tablesOutsideReservedRegion }
+    return start..<end
   }
 
   private static func makeHPET() -> [UInt8] {
@@ -200,12 +213,142 @@ public enum DoryPCACPIBuilder {
   }
 
   private static func makeDSDT() -> [UInt8] {
-    // Name (_S5, Package (4) { 5, 5, Zero, Zero }). ACPICA iasl round-trip is covered by tests.
-    table(
-      signature: "DSDT",
-      revision: 2,
-      body: [0x08, 0x5F, 0x53, 0x35, 0x5F, 0x12, 0x08, 0x04, 0x0A, 0x05, 0x0A, 0x05, 0, 0]
+    let sleepState = amlName(
+      "_S5_",
+      value: amlPackage([amlInteger(5), amlInteger(5), amlInteger(0), amlInteger(0)])
     )
+
+    let pciResources = amlResourceTemplate([
+      // WordBusNumber(ResourceProducer, MinFixed, MaxFixed, PosDecode, 0, 0, 255, 0, 256)
+      0x88, 0x0D, 0x00, 0x02, 0x0C, 0x00,
+      0x00, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x00, 0x00, 0x00, 0x01,
+      // DWordMemory(ResourceProducer, PosDecode, MinFixed, MaxFixed,
+      //   NonCacheable, ReadWrite, 0, 0xD0000000, 0xDFFFFFFF, 0, 0x10000000)
+      0x87, 0x17, 0x00, 0x00, 0x0C, 0x01,
+      0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0xD0,
+      0xFF, 0xFF, 0xFF, 0xDF,
+      0x00, 0x00, 0x00, 0x00,
+      0x00, 0x00, 0x00, 0x10,
+    ])
+    var interruptRoutes: [[UInt8]] = []
+    interruptRoutes.reserveCapacity(32 * 4)
+    for device: UInt8 in 0..<32 {
+      for pin: UInt8 in 0..<4 {
+        let address = UInt32(device) << 16 | 0xFFFF
+        let gsi = DoryPCV1ABI.interruptLine(device: device, pin: pin + 1)
+        interruptRoutes.append(
+          amlPackage([
+            amlInteger(UInt64(address)), amlInteger(UInt64(pin)), amlInteger(0),
+            amlInteger(UInt64(gsi)),
+          ]))
+      }
+    }
+    let pciRoot = amlDevice(
+      "PCI0",
+      terms: amlName("_HID", value: amlEISAID("PNP0A08"))
+        + amlName("_CID", value: amlEISAID("PNP0A03"))
+        + amlName("_UID", value: amlInteger(0))
+        + amlName("_SEG", value: amlInteger(0))
+        + amlName("_BBN", value: amlInteger(0))
+        + amlName("_CRS", value: pciResources)
+        + amlName("_PRT", value: amlPackage(interruptRoutes))
+    )
+
+    // Reserve ECAM in the namespace without advertising it as a PCI child allocation window.
+    let ecamReservation = amlDevice(
+      "MRES",
+      terms: amlName("_HID", value: amlEISAID("PNP0C02"))
+        + amlName("_UID", value: amlInteger(1))
+        + amlName(
+          "_CRS",
+          value: amlResourceTemplate([
+            0x86, 0x09, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0xE0,
+            0x00, 0x00, 0x00, 0x10,
+          ]))
+    )
+    let systemBus = amlScope("\\_SB_", terms: pciRoot + ecamReservation)
+    return table(signature: "DSDT", revision: 2, body: sleepState + systemBus)
+  }
+
+  private static func amlName(_ name: String, value: [UInt8]) -> [UInt8] {
+    [0x08] + amlNameString(name) + value
+  }
+
+  private static func amlScope(_ name: String, terms: [UInt8]) -> [UInt8] {
+    let payload = amlNameString(name) + terms
+    return [0x10] + amlPackagePayload(payload)
+  }
+
+  private static func amlDevice(_ name: String, terms: [UInt8]) -> [UInt8] {
+    let payload = amlNameString(name) + terms
+    return [0x5B, 0x82] + amlPackagePayload(payload)
+  }
+
+  private static func amlPackage(_ elements: [[UInt8]]) -> [UInt8] {
+    precondition(elements.count <= Int(UInt8.max))
+    return [0x12] + amlPackagePayload([UInt8(elements.count)] + elements.flatMap { $0 })
+  }
+
+  private static func amlResourceTemplate(_ descriptors: [UInt8]) -> [UInt8] {
+    let bytes = descriptors + [0x79, 0x00]
+    return [0x11] + amlPackagePayload(amlInteger(UInt64(bytes.count)) + bytes)
+  }
+
+  private static func amlEISAID(_ identifier: String) -> [UInt8] {
+    precondition(identifier.utf8.count == 7)
+    let bytes = Array(identifier.utf8)
+    let manufacturer =
+      UInt16(bytes[0] - 0x40) << 10
+      | UInt16(bytes[1] - 0x40) << 5
+      | UInt16(bytes[2] - 0x40)
+    let product = UInt16(identifier.suffix(4), radix: 16)!
+    return [
+      0x0C,
+      UInt8(manufacturer >> 8), UInt8(truncatingIfNeeded: manufacturer),
+      UInt8(product >> 8), UInt8(truncatingIfNeeded: product),
+    ]
+  }
+
+  private static func amlInteger(_ value: UInt64) -> [UInt8] {
+    switch value {
+    case 0: return [0x00]
+    case 1: return [0x01]
+    case ...UInt64(UInt8.max): return [0x0A, UInt8(value)]
+    case ...UInt64(UInt16.max):
+      return [0x0B, UInt8(truncatingIfNeeded: value), UInt8(truncatingIfNeeded: value >> 8)]
+    case ...UInt64(UInt32.max):
+      return [0x0C] + (0..<4).map { UInt8(truncatingIfNeeded: value >> UInt64($0 * 8)) }
+    default:
+      return [0x0E] + (0..<8).map { UInt8(truncatingIfNeeded: value >> UInt64($0 * 8)) }
+    }
+  }
+
+  private static func amlNameString(_ name: String) -> [UInt8] {
+    let rooted = name.first == "\\"
+    let segment = rooted ? String(name.dropFirst()) : name
+    precondition(segment.utf8.count == 4)
+    return (rooted ? [0x5C] : []) + Array(segment.utf8)
+  }
+
+  private static func amlPackagePayload(_ payload: [UInt8]) -> [UInt8] {
+    for width in 1...4 {
+      let length = payload.count + width
+      let limit = width == 1 ? 0x40 : 1 << (4 + (width - 1) * 8)
+      if length < limit { return amlPackageLength(length, width: width) + payload }
+    }
+    preconditionFailure("AML package exceeds the four-byte package-length encoding")
+  }
+
+  private static func amlPackageLength(_ length: Int, width: Int) -> [UInt8] {
+    precondition((1...4).contains(width))
+    if width == 1 { return [UInt8(length)] }
+    var bytes = [UInt8(0x40 * (width - 1) | (length & 0x0F))]
+    for index in 0..<(width - 1) {
+      bytes.append(UInt8(truncatingIfNeeded: length >> (4 + index * 8)))
+    }
+    return bytes
   }
 
   private static func makeRSDP(xsdtAddress: UInt64) -> [UInt8] {
