@@ -40,6 +40,13 @@ enum DorydLaunchAgent {
         var plistContents: String
     }
 
+    struct RuntimeGeneration: Sendable, Equatable {
+        var root: URL
+        var program: URL
+        var helpersDirectory: URL
+        var resourcesDirectory: URL
+    }
+
     struct Configuration: Sendable, Equatable {
         var domainsEnabled: Bool
         var domainSuffix: String
@@ -340,47 +347,57 @@ enum DorydLaunchAgent {
         configuration: Configuration = Configuration()
     ) -> Install? {
         let bundleURL = bundle.bundleURL
-        let bundledProgram = bundleURL.appendingPathComponent("Contents/Helpers/doryd")
-        let helpersDirectory = bundleURL.appendingPathComponent("Contents/Helpers", isDirectory: true)
         let fileManager = FileManager.default
-        guard fileManager.isExecutableFile(atPath: bundledProgram.path),
-              let launchAgentsDirectory = launchAgentsDirectory ?? defaultLaunchAgentsDirectory(),
+        guard let launchAgentsDirectory = launchAgentsDirectory ?? defaultLaunchAgentsDirectory(),
               let daemonRuntimeDirectory = daemonRuntimeDirectory ?? self.daemonRuntimeDirectory,
-              let program = try? stageDaemon(
-                  bundledProgram,
+              let runtime = try? stageRuntimeGeneration(
+                  from: bundleURL,
                   beneath: daemonRuntimeDirectory,
                   fileManager: fileManager
-              ).path else {
+              ) else {
             return nil
         }
         let plist = launchAgentsDirectory.appendingPathComponent("\(label).plist").path
         return Install(
             plistPath: plist,
-            programPath: program,
+            programPath: runtime.program.path,
             plistContents: launchAgentPlist(
-                program: program,
-                helpersDirectory: helpersDirectory,
+                program: runtime.program.path,
+                helpersDirectory: runtime.helpersDirectory,
                 configuration: configuration
             )
         )
     }
 
-    /// Keeps the live daemon's signed executable linked for its entire lifetime. Replacing
-    /// Dory.app unlinks the old bundle vnode; macOS then rejects that otherwise-valid process at
-    /// the XPC code-signing boundary. Content-addressed generations are immutable and deliberately
-    /// retained, so app updates can stage the next daemon without disturbing the active one.
-    static func stageDaemon(
-        _ source: URL,
+    /// Pins every executable and boot resource used by one daemon generation. A running daemon
+    /// must never execute its old `doryd` while resolving helpers or firmware through a newly
+    /// replaced Dory.app. The app's signed CodeResources seal is the fast content identity in
+    /// production; unsigned development bundles fall back to a deterministic tree digest.
+    /// Published generations are immutable and deliberately retained until no installed plist can
+    /// select them, so replacing Dory.app cannot disturb live engines or virtual machines.
+    static func stageRuntimeGeneration(
+        from bundle: URL,
         beneath root: URL,
         fileManager: FileManager = .default
-    ) throws -> URL {
-        let sourceDigest = try sha256(of: source)
-        let generation = root.appendingPathComponent(sourceDigest, isDirectory: true)
-        let destination = generation.appendingPathComponent("doryd")
-        if fileManager.isExecutableFile(atPath: destination.path),
-           try sha256(of: destination) == sourceDigest {
-            return destination
+    ) throws -> RuntimeGeneration {
+        let sourceContents = bundle.appendingPathComponent("Contents", isDirectory: true)
+        let sourceHelpers = sourceContents.appendingPathComponent("Helpers", isDirectory: true)
+        let sourceResources = sourceContents.appendingPathComponent("Resources", isDirectory: true)
+        let sourceProgram = sourceHelpers.appendingPathComponent("doryd")
+        guard fileManager.isExecutableFile(atPath: sourceProgram.path) else {
+            throw CocoaError(.fileNoSuchFile)
         }
+
+        let identity = try runtimeGenerationIdentity(
+            contents: sourceContents,
+            fileManager: fileManager
+        )
+        let generation = root.appendingPathComponent(identity, isDirectory: true)
+        if let existing = validatedRuntimeGeneration(
+            at: generation,
+            identity: identity,
+            fileManager: fileManager
+        ) { return existing }
 
         try fileManager.createDirectory(
             at: root,
@@ -395,18 +412,125 @@ enum DorydLaunchAgent {
             attributes: [.posixPermissions: 0o700]
         )
         defer { try? fileManager.removeItem(at: staging) }
-        let stagedProgram = staging.appendingPathComponent("doryd")
-        try fileManager.copyItem(at: source, to: stagedProgram)
-        guard fileManager.isExecutableFile(atPath: stagedProgram.path),
-              try sha256(of: stagedProgram) == sourceDigest else {
+        let stagedContents = staging.appendingPathComponent("Contents", isDirectory: true)
+        try fileManager.createDirectory(at: stagedContents, withIntermediateDirectories: false)
+        let stagedHelpers = stagedContents.appendingPathComponent("Helpers", isDirectory: true)
+        let stagedResources = stagedContents.appendingPathComponent("Resources", isDirectory: true)
+        try cloneTree(from: sourceHelpers, to: stagedHelpers)
+        if fileManager.fileExists(atPath: sourceResources.path) {
+            try cloneTree(from: sourceResources, to: stagedResources)
+        } else {
+            try fileManager.createDirectory(at: stagedResources, withIntermediateDirectories: false)
+        }
+        let stagedProgram = stagedHelpers.appendingPathComponent("doryd")
+        guard fileManager.isExecutableFile(atPath: stagedProgram.path) else {
             throw CocoaError(.fileReadCorruptFile)
         }
+        try identity.write(
+            to: staging.appendingPathComponent(".runtime-generation"),
+            atomically: true,
+            encoding: .utf8
+        )
         do {
             try fileManager.moveItem(at: staging, to: generation)
-        } catch where fileManager.isExecutableFile(atPath: destination.path) {
-            guard try sha256(of: destination) == sourceDigest else { throw error }
+        } catch {
+            guard validatedRuntimeGeneration(
+                at: generation,
+                identity: identity,
+                fileManager: fileManager
+            ) != nil else { throw error }
         }
-        return destination
+        guard let published = validatedRuntimeGeneration(
+            at: generation,
+            identity: identity,
+            fileManager: fileManager
+        ) else { throw CocoaError(.fileReadCorruptFile) }
+        return published
+    }
+
+    private static func validatedRuntimeGeneration(
+        at root: URL,
+        identity: String,
+        fileManager: FileManager
+    ) -> RuntimeGeneration? {
+        let contents = root.appendingPathComponent("Contents", isDirectory: true)
+        let helpers = contents.appendingPathComponent("Helpers", isDirectory: true)
+        let resources = contents.appendingPathComponent("Resources", isDirectory: true)
+        let program = helpers.appendingPathComponent("doryd")
+        let marker = root.appendingPathComponent(".runtime-generation")
+        guard fileManager.isExecutableFile(atPath: program.path),
+              fileManager.fileExists(atPath: resources.path),
+              (try? String(contentsOf: marker, encoding: .utf8)) == identity else {
+            return nil
+        }
+        return RuntimeGeneration(
+            root: root,
+            program: program,
+            helpersDirectory: helpers,
+            resourcesDirectory: resources
+        )
+    }
+
+    private static func runtimeGenerationIdentity(
+        contents: URL,
+        fileManager: FileManager
+    ) throws -> String {
+        let codeResources = contents
+            .appendingPathComponent("_CodeSignature", isDirectory: true)
+            .appendingPathComponent("CodeResources")
+        if fileManager.isReadableFile(atPath: codeResources.path) {
+            return try sha256(of: codeResources)
+        }
+
+        var digest = SHA256()
+        digest.update(data: Data("dev.dory.runtime-generation-v1\0".utf8))
+        for directoryName in ["Helpers", "Resources"] {
+            let directory = contents.appendingPathComponent(directoryName, isDirectory: true)
+            guard fileManager.fileExists(atPath: directory.path) else { continue }
+            let enumerator = fileManager.enumerator(
+                at: directory,
+                includingPropertiesForKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey],
+                options: []
+            )
+            let entries = (enumerator?.allObjects as? [URL] ?? []).sorted { $0.path < $1.path }
+            for entry in entries {
+                let relative = String(entry.path.dropFirst(contents.path.count + 1))
+                digest.update(data: Data(relative.utf8))
+                digest.update(data: Data([0]))
+                let values = try entry.resourceValues(forKeys: [
+                    .isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,
+                ])
+                if values.isDirectory == true {
+                    digest.update(data: Data("directory\0".utf8))
+                } else if values.isSymbolicLink == true {
+                    digest.update(data: Data("symlink\0".utf8))
+                    digest.update(data: Data(try fileManager.destinationOfSymbolicLink(atPath: entry.path).utf8))
+                    digest.update(data: Data([0]))
+                } else if values.isRegularFile == true {
+                    digest.update(data: Data("file\0".utf8))
+                    do {
+                        let handle = try FileHandle(forReadingFrom: entry)
+                        defer { try? handle.close() }
+                        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+                            digest.update(data: chunk)
+                        }
+                    }
+                }
+            }
+        }
+        return digest.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func cloneTree(from source: URL, to destination: URL) throws {
+        let flags = copyfile_flags_t(
+            COPYFILE_ALL | COPYFILE_RECURSIVE | COPYFILE_CLONE | COPYFILE_EXCL | COPYFILE_NOFOLLOW
+        )
+        guard copyfile(source.path, destination.path, nil, flags) == 0 else {
+            throw CocoaError(.fileWriteUnknown, userInfo: [
+                NSFilePathErrorKey: destination.path,
+                NSUnderlyingErrorKey: POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO),
+            ])
+        }
     }
 
     private static func sha256(of url: URL) throws -> String {

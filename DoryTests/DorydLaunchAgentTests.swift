@@ -66,8 +66,10 @@ struct DorydLaunchAgentTests {
         let bundleURL = temporaryDirectory.appendingPathComponent("Dory.app", isDirectory: true)
         let contentsURL = bundleURL.appendingPathComponent("Contents", isDirectory: true)
         let helpersURL = contentsURL.appendingPathComponent("Helpers", isDirectory: true)
+        let resourcesURL = contentsURL.appendingPathComponent("Resources", isDirectory: true)
         let launchAgentsDirectory = temporaryDirectory.appendingPathComponent("LaunchAgents", isDirectory: true)
         try FileManager.default.createDirectory(at: helpersURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: launchAgentsDirectory, withIntermediateDirectories: true)
         try """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -77,17 +79,19 @@ struct DorydLaunchAgentTests {
         let dorydURL = helpersURL.appendingPathComponent("doryd")
         try "#!/bin/sh\n".write(to: dorydURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dorydURL.path)
+        let firmwareURL = resourcesURL.appendingPathComponent("firmware.fd")
+        try Data([0x44, 0x4f, 0x52, 0x59]).write(to: firmwareURL)
         let bundle = try #require(Bundle(url: bundleURL))
         let configuration = DorydLaunchAgent.Configuration()
         let daemonRuntimeDirectory = temporaryDirectory.appendingPathComponent("DaemonRuntime", isDirectory: true)
-        let stagedDorydURL = try DorydLaunchAgent.stageDaemon(
-            dorydURL,
+        let stagedRuntime = try DorydLaunchAgent.stageRuntimeGeneration(
+            from: bundleURL,
             beneath: daemonRuntimeDirectory
         )
         let plistURL = launchAgentsDirectory.appendingPathComponent("\(DorydLaunchAgent.label).plist")
         try DorydLaunchAgent.launchAgentPlist(
-            program: stagedDorydURL.path,
-            helpersDirectory: helpersURL,
+            program: stagedRuntime.program.path,
+            helpersDirectory: stagedRuntime.helpersDirectory,
             configuration: configuration
         ).write(to: plistURL, atomically: true, encoding: .utf8)
         let recorder = LaunchctlRecorder(printOutput:
@@ -95,7 +99,7 @@ struct DorydLaunchAgentTests {
             gui/501/dev.dory.doryd = {
                 path = \(plistURL.path)
                 state = waiting
-                program = \(stagedDorydURL.path)
+                program = \(stagedRuntime.program.path)
             }
             """
         )
@@ -238,8 +242,10 @@ struct DorydLaunchAgentTests {
         let bundleURL = temporaryDirectory.appendingPathComponent("Dory.app", isDirectory: true)
         let contentsURL = bundleURL.appendingPathComponent("Contents", isDirectory: true)
         let helpersURL = contentsURL.appendingPathComponent("Helpers", isDirectory: true)
+        let resourcesURL = contentsURL.appendingPathComponent("Resources", isDirectory: true)
         let launchAgentsDirectory = temporaryDirectory.appendingPathComponent("LaunchAgents", isDirectory: true)
         try FileManager.default.createDirectory(at: helpersURL, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
         try """
         <?xml version="1.0" encoding="UTF-8"?>
         <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -248,6 +254,8 @@ struct DorydLaunchAgentTests {
         let dorydURL = helpersURL.appendingPathComponent("doryd")
         try "#!/bin/sh\n".write(to: dorydURL, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dorydURL.path)
+        let firmwareURL = resourcesURL.appendingPathComponent("firmware.fd")
+        try Data([0x44, 0x4f, 0x52, 0x59]).write(to: firmwareURL)
         let bundle = try #require(Bundle(url: bundleURL))
 
         let daemonRuntimeDirectory = temporaryDirectory.appendingPathComponent("DaemonRuntime", isDirectory: true)
@@ -266,7 +274,7 @@ struct DorydLaunchAgentTests {
         let stagedDoryd = try #require(
             FileManager.default.contentsOfDirectory(at: daemonRuntimeDirectory, includingPropertiesForKeys: nil)
                 .first { !$0.lastPathComponent.hasPrefix(".") }?
-                .appendingPathComponent("doryd")
+                .appendingPathComponent("Contents/Helpers/doryd")
         )
         let plistObject = try #require(
             PropertyListSerialization.propertyList(
@@ -280,12 +288,32 @@ struct DorydLaunchAgentTests {
             URL(fileURLWithPath: stagedProgram).resolvingSymlinksInPath().path
                 == stagedDoryd.resolvingSymlinksInPath().path
         )
+        let stagedHelpers = stagedDoryd.deletingLastPathComponent()
+        let stagedResources = stagedHelpers.deletingLastPathComponent().appendingPathComponent("Resources")
         #expect(try Data(contentsOf: stagedDoryd) == Data(contentsOf: dorydURL))
-        #expect(plist.contains("<string>\(helpersURL.appendingPathComponent("dory-vmm").path)</string>"))
-        #expect(plist.contains("<key>DORYD_HELPERS_DIR</key>"))
-        #expect(plist.contains("<string>\(helpersURL.path)</string>"))
-        #expect(plist.contains("<key>DORYD_RESOURCES_DIR</key>"))
-        #expect(plist.contains("<string>\(contentsURL.appendingPathComponent("Resources").path)</string>"))
+        #expect(
+            try Data(contentsOf: stagedResources.appendingPathComponent("firmware.fd"))
+                == Data(contentsOf: firmwareURL)
+        )
+        #expect(!plist.contains(bundleURL.path))
+        let environment = try #require(plistObject["EnvironmentVariables"] as? [String: String])
+        let plistHelpers = URL(fileURLWithPath: stagedProgram).deletingLastPathComponent()
+        let plistResources = plistHelpers.deletingLastPathComponent().appendingPathComponent("Resources")
+        func resolved(_ path: String) -> String {
+            URL(fileURLWithPath: path).resolvingSymlinksInPath().path
+        }
+        #expect(
+            environment["DORYD_VMM_HELPER"]
+                == plistHelpers.appendingPathComponent("dory-vmm").path
+        )
+        #expect(
+            environment["DORYD_HELPERS_DIR"] == plistHelpers.path
+        )
+        #expect(
+            environment["DORYD_RESOURCES_DIR"] == plistResources.path
+        )
+        #expect(resolved(plistHelpers.path) == resolved(stagedHelpers.path))
+        #expect(resolved(plistResources.path) == resolved(stagedResources.path))
         #expect(plist.contains("<key>DORYD_STATE_DIR</key>"))
         #expect(plist.contains("<string>\(DorydLaunchAgent.runtimeDirectory.appendingPathComponent("docker").path)</string>"))
         #expect(plist.contains("<key>DORYD_MACHINE_RUNTIME_DIR</key>"))
@@ -312,6 +340,49 @@ struct DorydLaunchAgentTests {
         #expect(plist.contains("<string>\(DorydLaunchAgent.logPath)</string>"))
         #expect(recorder.commands.map { $0.first ?? "" } == ["print", "bootstrap", "kickstart"])
         #expect(recorder.commands.first { $0.first == "bootstrap" }?.last == plistURL.path)
+    }
+
+    @Test func runtimeGenerationPinsOldHelpersAndResourcesWhenSourceChanges() throws {
+        let temporaryDirectory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("DorydRuntimeGeneration-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: temporaryDirectory) }
+
+        let bundle = temporaryDirectory.appendingPathComponent("Dory.app", isDirectory: true)
+        let helpers = bundle.appendingPathComponent("Contents/Helpers", isDirectory: true)
+        let resources = bundle.appendingPathComponent("Contents/Resources", isDirectory: true)
+        let root = temporaryDirectory.appendingPathComponent("Runtime", isDirectory: true)
+        try FileManager.default.createDirectory(at: helpers, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: resources, withIntermediateDirectories: true)
+        let daemon = helpers.appendingPathComponent("doryd")
+        let helper = helpers.appendingPathComponent("dory-hv")
+        let firmware = resources.appendingPathComponent("firmware.fd")
+        try "#!/bin/sh\necho old\n".write(to: daemon, atomically: true, encoding: .utf8)
+        try "old helper".write(to: helper, atomically: true, encoding: .utf8)
+        try "old firmware".write(to: firmware, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: daemon.path)
+
+        let oldGeneration = try DorydLaunchAgent.stageRuntimeGeneration(from: bundle, beneath: root)
+        try "new helper".write(to: helper, atomically: true, encoding: .utf8)
+        try "new firmware".write(to: firmware, atomically: true, encoding: .utf8)
+        let newGeneration = try DorydLaunchAgent.stageRuntimeGeneration(from: bundle, beneath: root)
+
+        #expect(oldGeneration.root != newGeneration.root)
+        #expect(
+            try String(contentsOf: oldGeneration.helpersDirectory.appendingPathComponent("dory-hv"))
+                == "old helper"
+        )
+        #expect(
+            try String(contentsOf: oldGeneration.resourcesDirectory.appendingPathComponent("firmware.fd"))
+                == "old firmware"
+        )
+        #expect(
+            try String(contentsOf: newGeneration.helpersDirectory.appendingPathComponent("dory-hv"))
+                == "new helper"
+        )
+        #expect(
+            try String(contentsOf: newGeneration.resourcesDirectory.appendingPathComponent("firmware.fd"))
+                == "new firmware"
+        )
     }
 
     @Test func defaultEngineResourcesScaleWithHostCapacity() {
