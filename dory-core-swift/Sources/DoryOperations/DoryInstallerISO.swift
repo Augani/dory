@@ -336,6 +336,10 @@ public enum DoryInstallerISOInspector {
             descriptor: descriptor,
             size: size,
             path: path
+        ) + gptEFIPartitionRanges(
+            descriptor: descriptor,
+            size: size,
+            path: path
         )
         for range in metadata.bootImageRanges + partitionRanges {
             try scan(
@@ -383,6 +387,10 @@ public enum DoryInstallerISOInspector {
             descriptor: descriptor,
             size: size,
             path: path
+        ) + gptEFIPartitionRanges(
+            descriptor: descriptor,
+            size: size,
+            path: path
         )
         for candidate in metadata.bootImageRanges + partitionRanges {
             guard let volume = try validatedFATVolume(
@@ -390,9 +398,7 @@ public enum DoryInstallerISOInspector {
                 descriptor: descriptor,
                 imageSize: size,
                 path: path
-            ) else {
-                continue
-            }
+            ) else { continue }
             try inspectPortableEFIFATNamespace(
                 volume: volume,
                 descriptor: descriptor,
@@ -841,9 +847,113 @@ public enum DoryInstallerISOInspector {
             guard offset >= 0, offset < size, declaredLength > 0 else { return nil }
             return ByteRange(
                 offset: offset,
-                length: min(maximumBootRegionBytes, min(declaredLength, size - offset))
+                length: min(declaredLength, size - offset)
             )
         }
+    }
+
+    /// Returns EFI System Partitions from a CRC-valid primary GPT. Hybrid installer images such
+    /// as Archboot commonly expose their boot FAT only through GPT; requiring the protective MBR,
+    /// header checksum, entry-array checksum, exact ESP type GUID, and in-bounds LBAs keeps this a
+    /// structural authority rather than a filename or partition-label guess.
+    private static func gptEFIPartitionRanges(
+        descriptor: Int32,
+        size: Int64,
+        path: String
+    ) throws -> [ByteRange] {
+        let sectorBytes: UInt64 = 512
+        guard size >= Int64(34 * sectorBytes) else { return [] }
+        let mbr = try read(descriptor: descriptor, offset: 0, count: 512, path: path)
+        guard mbr.count == 512,
+              mbr[510] == 0x55,
+              mbr[511] == 0xAA,
+              (0..<4).contains(where: { mbr[446 + $0 * 16 + 4] == 0xEE }) else {
+            return []
+        }
+
+        let header = try read(descriptor: descriptor, offset: 512, count: 512, path: path)
+        guard header.count == 512,
+              header[0..<8].elementsEqual(Data("EFI PART".utf8)),
+              littleEndianUInt32(header, at: 8) == 0x0001_0000 else {
+            return []
+        }
+        let headerBytes = Int(littleEndianUInt32(header, at: 12))
+        guard (92...512).contains(headerBytes),
+              littleEndianUInt64(header, at: 24) == 1 else {
+            return []
+        }
+        let expectedHeaderCRC = littleEndianUInt32(header, at: 16)
+        var checksummedHeader = Data(header.prefix(headerBytes))
+        checksummedHeader.replaceSubrange(16..<20, with: repeatElement(UInt8(0), count: 4))
+        guard crc32(checksummedHeader) == expectedHeaderCRC else { return [] }
+
+        let imageBlocks = UInt64(size) / sectorBytes
+        let backupLBA = littleEndianUInt64(header, at: 32)
+        let firstUsableLBA = littleEndianUInt64(header, at: 40)
+        let lastUsableLBA = littleEndianUInt64(header, at: 48)
+        let entriesLBA = littleEndianUInt64(header, at: 72)
+        let entryCount = UInt64(littleEndianUInt32(header, at: 80))
+        let entryBytes = UInt64(littleEndianUInt32(header, at: 84))
+        guard imageBlocks > 2,
+              backupLBA > 1, backupLBA < imageBlocks,
+              firstUsableLBA >= 2, firstUsableLBA <= lastUsableLBA,
+              lastUsableLBA < imageBlocks,
+              entriesLBA >= 2,
+              (1...4_096).contains(entryCount),
+              entryBytes >= 128, entryBytes <= 4_096,
+              entryBytes.isMultiple(of: 8) else {
+            return []
+        }
+        let (tableBytes, tableOverflow) = entryCount.multipliedReportingOverflow(by: entryBytes)
+        let (tableOffset, offsetOverflow) = entriesLBA.multipliedReportingOverflow(by: sectorBytes)
+        guard !tableOverflow, !offsetOverflow,
+              tableBytes <= 16 * 1_024 * 1_024,
+              tableOffset <= UInt64(size),
+              tableBytes <= UInt64(size) - tableOffset,
+              let tableCount = Int(exactly: tableBytes),
+              let tableFileOffset = Int64(exactly: tableOffset) else {
+            return []
+        }
+        let table = try read(
+            descriptor: descriptor,
+            offset: tableFileOffset,
+            count: tableCount,
+            path: path
+        )
+        guard table.count == tableCount,
+              crc32(table) == littleEndianUInt32(header, at: 88) else {
+            return []
+        }
+
+        let espTypeGUID = Data([
+            0x28, 0x73, 0x2a, 0xc1, 0x1f, 0xf8, 0xd2, 0x11,
+            0xba, 0x4b, 0x00, 0xa0, 0xc9, 0x3e, 0xc9, 0x3b,
+        ])
+        var ranges: [ByteRange] = []
+        for index in 0..<Int(entryCount) {
+            let offset = index * Int(entryBytes)
+            guard table[offset..<(offset + 16)].elementsEqual(espTypeGUID) else { continue }
+            let firstLBA = littleEndianUInt64(table, at: offset + 32)
+            let lastLBA = littleEndianUInt64(table, at: offset + 40)
+            guard firstLBA >= firstUsableLBA,
+                  firstLBA <= lastLBA,
+                  lastLBA <= lastUsableLBA else {
+                continue
+            }
+            let (start, startOverflow) = firstLBA.multipliedReportingOverflow(by: sectorBytes)
+            let (sectors, sectorOverflow) = (lastLBA - firstLBA + 1)
+                .multipliedReportingOverflow(by: sectorBytes)
+            guard !startOverflow, !sectorOverflow,
+                  start < UInt64(size),
+                  sectors > 0,
+                  sectors <= UInt64(size) - start,
+                  let signedStart = Int64(exactly: start),
+                  let signedLength = Int64(exactly: sectors) else {
+                continue
+            }
+            ranges.append(ByteRange(offset: signedStart, length: signedLength))
+        }
+        return ranges
     }
 
     private enum FATKind {
@@ -1324,6 +1434,22 @@ public enum DoryInstallerISOInspector {
         UInt16(data[offset]) | UInt16(data[offset + 1]) << 8
     }
 
+    private static func littleEndianUInt64(_ data: Data, at offset: Int) -> UInt64 {
+        UInt64(littleEndianUInt32(data, at: offset))
+            | UInt64(littleEndianUInt32(data, at: offset + 4)) << 32
+    }
+
+    private static func crc32(_ data: Data) -> UInt32 {
+        var crc = UInt32.max
+        for byte in data {
+            crc ^= UInt32(byte)
+            for _ in 0..<8 {
+                crc = (crc >> 1) ^ (crc & 1 == 0 ? 0 : 0xEDB8_8320)
+            }
+        }
+        return ~crc
+    }
+
     private struct ByteRange: Hashable {
         let offset: Int64
         let length: Int64
@@ -1758,7 +1884,8 @@ public enum DoryInstallerISOStager {
         atPath sourcePath: String,
         stagingDirectory requestedDirectory: URL? = nil,
         hostArchitecture: String = DoryInstallerISOInspector.currentHostArchitecture,
-        hostRuntime requestedHostRuntime: DoryInstallerHostRuntime? = nil
+        hostRuntime requestedHostRuntime: DoryInstallerHostRuntime? = nil,
+        allowsTranslatedX86_64OnARM64: Bool = false
     ) throws -> DoryStagedInstallerISO {
         let sourceDescriptor = open(
             sourcePath,
@@ -1781,9 +1908,13 @@ public enum DoryInstallerISOStager {
             size: Int64(sourceInfo.st_size),
             path: sourcePath
         )
+        let compatibilityArchitecture = allowsTranslatedX86_64OnARM64
+            && DoryInstallerISOInspector.currentHostArchitecture == "arm64"
+            && identity.architecture == .x86_64
+                ? "x86_64" : hostArchitecture
         if case let .incompatible(message) = DoryInstallerISOInspector.compatibility(
             of: identity.architecture,
-            hostArchitecture: hostArchitecture
+            hostArchitecture: compatibilityArchitecture
         ) {
             throw DoryInstallerISOStagingError.incompatible(message)
         }

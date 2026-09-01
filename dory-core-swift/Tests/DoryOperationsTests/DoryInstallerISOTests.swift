@@ -424,6 +424,27 @@ final class DoryInstallerISOTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: stagingDirectory.path))
     }
 
+    func testStagesX86MediaOnlyWithExplicitAppleSiliconTranslationAuthority() throws {
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-x86-iso-stager-\(UUID().uuidString)")
+        let source = base.appendingPathComponent("linux-x86_64.iso")
+        let stagingDirectory = base.appendingPathComponent("staging", isDirectory: true)
+        try FileManager.default.createDirectory(at: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: base) }
+        try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: source)
+
+        let staged = try DoryInstallerISOStager.stage(
+            atPath: source.path,
+            stagingDirectory: stagingDirectory,
+            hostArchitecture: "arm64",
+            allowsTranslatedX86_64OnARM64: true
+        )
+
+        XCTAssertEqual(staged.architecture, .x86_64)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: staged.path)),
+                       Data("EFI/BOOT/BOOTX64.EFI".utf8))
+    }
+
     func testRejectsOptInRealX86InstallerBeforeStaging() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let sourcePath = environment["DORY_TEST_X86_64_INSTALLER_ISO"],
@@ -467,6 +488,25 @@ final class DoryInstallerISOTests: XCTestCase {
             FileManager.default.fileExists(atPath: stagingDirectory.path),
             "the rejected ISO must not be copied or cloned into managed staging"
         )
+    }
+
+    func testInspectsOptInRealPortableEFIInstaller() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let sourcePath = environment["DORY_TEST_PORTABLE_INSTALLER_ISO"],
+              !sourcePath.isEmpty else {
+            throw XCTSkip(
+                "set DORY_TEST_PORTABLE_INSTALLER_ISO for real portable-EFI media coverage"
+            )
+        }
+        let identity = try DoryInstallerISOInspector.portableEFIMediaIdentity(
+            atPath: sourcePath
+        )
+        if let expected = environment["DORY_TEST_PORTABLE_INSTALLER_ARCHITECTURE"],
+           !expected.isEmpty {
+            XCTAssertEqual(identity.architecture.rawValue, expected)
+        }
+        XCTAssertGreaterThan(identity.byteCount, 0)
+        XCTAssertEqual(identity.sha256.count, 64)
     }
 
     private func rawARM64Image(marker: UInt8) -> Data {
