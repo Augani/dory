@@ -1610,6 +1610,16 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let pagingEnabled: Bool
   }
 
+  /// Emitted host code depends on the virtual RIP and architectural execution context, but not on
+  /// the guest page-table root. Per-address-space entries still own byte-generation validation;
+  /// this key only lets an exact byte match reuse already-published ARM64 code after a CR3 change.
+  private struct SharedCodeKey: Hashable {
+    let guestStart: UInt64
+    let executionMode: DoryX86ExecutionMode
+    let privilegeLevel: UInt8
+    let pagingEnabled: Bool
+  }
+
   private final class ResidentBlock {
     let block: DoryARM64CompiledBlock
     let offset: Int
@@ -1659,6 +1669,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let optimizer: DoryIROptimizer
   private let region: DoryJITExecutableRegion
   private var entries: [LookupKey: ResidentBlock] = [:]
+  private var sharedCodeEntries: [SharedCodeKey: ResidentBlock] = [:]
   private var recentEntries: [RecentResidentBlock?] = .init(repeating: nil, count: 256)
   private var nativeTraces: [NativeTrace?] = .init(repeating: nil, count: 4_096)
   private var nativeBatchExecutionCountValue: UInt64 = 0
@@ -1690,6 +1701,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   public func invalidateAll() {
     lock.withLock {
       entries.removeAll(keepingCapacity: true)
+      sharedCodeEntries.removeAll(keepingCapacity: true)
       recentEntries = .init(repeating: nil, count: recentEntries.count)
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
       nextOffset = 0
@@ -2027,9 +2039,30 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       }
       removeResident(for: key)
     }
+    let bytes = try byteProvider(maximumInstructions * 15)
+    if let shared = sharedCodeEntries[makeSharedCodeKey(from: key)],
+      shared.block.guestInstructionCount <= maximumInstructions,
+      !shared.block.requiresMemoryCallbacks || memory != nil
+    {
+      let byteCount = Int(shared.block.guestByteCount)
+      if bytes.count >= byteCount {
+        let guestBytes = Array(bytes.prefix(byteCount))
+        let generation = Self.fingerprint(bytes: guestBytes, mode: mode)
+        if generation == shared.codeGeneration {
+          let resident = ResidentBlock(
+            block: shared.block,
+            offset: shared.offset,
+            codeGeneration: shared.codeGeneration,
+            memoryCodeGeneration: try codeGenerationProvider?(byteCount) ?? nil
+          )
+          publish(resident, for: key)
+          return resident
+        }
+      }
+    }
     return try compileResident(
       key: key,
-      bytes: byteProvider(maximumInstructions * 15),
+      bytes: bytes,
       codeGenerationProvider: codeGenerationProvider,
       guestStart: guestStart,
       mode: mode,
@@ -2066,6 +2099,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     guard byteCount <= region.capacity else { return nil }
     if nextOffset > region.capacity - byteCount {
       entries.removeAll(keepingCapacity: true)
+      sharedCodeEntries.removeAll(keepingCapacity: true)
       recentEntries = .init(repeating: nil, count: recentEntries.count)
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
       nextOffset = 0
@@ -2097,6 +2131,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       executionMode: mode,
       privilegeLevel: UInt8(state.cs.selector & 3),
       pagingEnabled: state.control.cr0 & (1 << 31) != 0
+    )
+  }
+
+  private func makeSharedCodeKey(from key: LookupKey) -> SharedCodeKey {
+    SharedCodeKey(
+      guestStart: key.guestStart,
+      executionMode: key.executionMode,
+      privilegeLevel: key.privilegeLevel,
+      pagingEnabled: key.pagingEnabled
     )
   }
 
@@ -2194,6 +2237,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
 
   private func publish(_ resident: ResidentBlock, for key: LookupKey) {
     entries[key] = resident
+    sharedCodeEntries[makeSharedCodeKey(from: key)] = resident
     recentEntries[recentIndex(for: key)] = .init(key: key, resident: resident)
   }
 

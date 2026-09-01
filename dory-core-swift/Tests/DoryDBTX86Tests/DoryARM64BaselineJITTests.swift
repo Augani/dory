@@ -786,6 +786,39 @@ import Testing
     #endif
   }
 
+  @Test func identicalCodeReusesPublishedHostBlockAcrossAddressSpaces() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let program: [UInt8] = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0]
+      var state = try DoryX86ArchitecturalState(rip: 0x9800)
+      _ = try #require(
+        executor.execute(
+          bytes: program,
+          at: 0x9800,
+          mode: .long64,
+          addressSpaceID: 1,
+          maximumInstructions: 1,
+          state: &state
+        ))
+      let publishedBytes = executor.residentByteCount
+
+      state.rip = 0x9800
+      _ = try #require(
+        executor.execute(
+          bytes: program,
+          at: 0x9800,
+          mode: .long64,
+          addressSpaceID: 2,
+          maximumInstructions: 1,
+          state: &state
+        ))
+
+      #expect(executor.residentBlockCount == 2)
+      #expect(executor.residentByteCount == publishedBytes)
+      #expect(state.registers.rax == 1)
+    #endif
+  }
+
   @Test func publishesAndExecutesThroughTheGuardedMAPJITRegion() throws {
     #if arch(arm64)
       let block = try DoryX86IRTranslator().translate(
