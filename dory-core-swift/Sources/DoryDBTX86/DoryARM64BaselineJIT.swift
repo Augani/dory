@@ -152,6 +152,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         source: source,
         into: &words
       )
+    case .byteSwap(let operand):
+      return emitByteSwap(operand, into: &words)
     case .stackPush(let source):
       return emitStackPush(source: source, into: &words)
     case .stackPop(let destination):
@@ -207,6 +209,26 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeAdd(is64Bit: true, left: 9, right: 11, destination: 12))
     words.append(encodeStore64(register: 12, base: 0, byteOffset: Self.rspOffset))
     emitMemoryWrite(addressRegister: 12, valueRegister: 10, width: .i64, words: &words)
+    return true
+  }
+
+  private func emitByteSwap(
+    _ operand: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard case .register(let register) = operand,
+      register.bank == "x86.gpr", register.index < 16,
+      register.width == .i32 || register.width == .i64,
+      load(register, into: 9, words: &words)
+    else { return false }
+    words.append(
+      encodeReverseBytes(
+        is64Bit: register.width == .i64,
+        source: 9,
+        destination: 9
+      )
+    )
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(register.index) * 8))
     return true
   }
 
@@ -402,6 +424,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return 0
     case .stackPush, .stackPop:
       return 1
+    case .byteSwap:
+      return 0
     case .signedMultiply(let destination, let lhs, let rhs):
       if case .memory = destination { return 1 }
       if case .memory = lhs { return 1 }
@@ -1644,6 +1668,14 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private func encodeCountLeadingZeros32(source: UInt32, destination: UInt32) -> UInt32 {
     0x5AC0_1000 | source << 5 | destination
+  }
+
+  private func encodeReverseBytes(
+    is64Bit: Bool,
+    source: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    (is64Bit ? 0xDAC0_0C00 : 0x5AC0_0800) | source << 5 | destination
   }
 
   private func encodeMultiply64(left: UInt32, right: UInt32, destination: UInt32) -> UInt32 {

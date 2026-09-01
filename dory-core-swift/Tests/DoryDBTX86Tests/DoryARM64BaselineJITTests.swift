@@ -885,6 +885,97 @@ import Testing
     #endif
   }
 
+  @Test func byteSwapMatchesInterpreterAcrossWidthsRegistersAndTiers() throws {
+    #if arch(arm64)
+      let cases: [([UInt8], DoryX86GeneralRegisters)] = [
+        ([0x0F, 0xC8], .init(rax: 0xAABB_CCDD_1122_3344)),
+        ([0x48, 0x0F, 0xC8], .init(rax: 0x1122_3344_5566_7788)),
+        ([0x41, 0x0F, 0xC9], .init(r9: 0xAABB_CCDD_89AB_CDEF)),
+      ]
+      let flags: DoryX86RFLAGS = [
+        .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .sign, .direction,
+        .interruptEnable, .overflow,
+      ]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        for (bytes, registers) in cases {
+          let executor = try DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024,
+            optimization: optimization
+          )
+          var interpreted = try DoryX86ArchitecturalState(
+            registers: registers,
+            rip: 0,
+            rflags: flags
+          )
+          _ = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: DoryX86ByteArrayMemory(bytes: bytes),
+            mode: .long64
+          )
+          var translated = try DoryX86ArchitecturalState(
+            registers: registers,
+            rip: 0,
+            rflags: flags
+          )
+          let execution = try #require(
+            executor.execute(
+              bytes: bytes,
+              at: 0,
+              mode: .long64,
+              addressSpaceID: 0,
+              maximumInstructions: 1,
+              state: &translated
+            )
+          )
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(translated == interpreted)
+        }
+      }
+    #endif
+  }
+
+  @Test func measuredByteSwapSitesCompileNativelyAndInvalidateOptimizerState() throws {
+    let measured: [([UInt8], UInt64)] = [
+      ([0x0F, 0xC8], 0x1BE8_9456),
+      ([0x41, 0x0F, 0xC9], 0x1BE8_949C),
+    ]
+    for (bytes, address) in measured {
+      let block = try DoryX86IRTranslator().translate(bytes, at: address, mode: .long64)
+      for tier in [DoryARM64CompilationTier.baseline, .optimizing] {
+        let candidate = tier == .optimizing ? DoryIROptimizer().optimize(block).block : block
+        #expect(DoryARM64BaselineEmitter().compile(candidate, tier: tier).tier == tier)
+      }
+    }
+
+    let flow = try DoryX86IRTranslator().translate(
+      [
+        0xB8, 0x44, 0x33, 0x22, 0x11,  // mov eax,0x11223344
+        0x0F, 0xC8,  // bswap eax
+        0x89, 0xC3,  // mov ebx,eax
+      ],
+      at: 0,
+      mode: .long64
+    )
+    let optimized = DoryIROptimizer().optimize(flow).block
+    guard case .copy(destination: _, source: .register(let source)) = optimized.statements.last
+    else {
+      Issue.record("byte swap must invalidate the optimizer's pre-swap register constant")
+      return
+    }
+    #expect(source.index == 0)
+
+    let invalid = DoryIRBasicBlock(
+      guestStart: 0,
+      guestByteCount: 1,
+      guestInstructionCount: 1,
+      statements: [
+        .byteSwap(.register(.init(bank: "not.x86.gpr", index: 0, width: .i32)))
+      ],
+      terminator: .next(1)
+    )
+    #expect(DoryARM64BaselineEmitter().compile(invalid).tier == .interpreterFallback)
+  }
+
   @Test func registerStackMemoryFailuresLeaveArchitecturalStateRestartable() throws {
     #if arch(arm64)
       let cases: [([UInt8], DoryX86GeneralRegisters)] = [

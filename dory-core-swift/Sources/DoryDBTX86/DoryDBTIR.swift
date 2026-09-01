@@ -87,6 +87,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   )
   case setCondition(DoryX86Condition, destination: DoryIROperand)
   case bitScan(reverse: Bool, destination: DoryIROperand, source: DoryIROperand)
+  case byteSwap(DoryIROperand)
   case stackPush(source: DoryIROperand)
   case stackPop(destination: DoryIROperand)
   case signedMultiply(destination: DoryIROperand, lhs: DoryIROperand, rhs: DoryIROperand)
@@ -335,6 +336,8 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .byteSwap(let target):
+      return ([.byteSwap(operand(target))], nil)
     case .push(let source) where mode == .long64:
       return (
         [
@@ -538,6 +541,9 @@ public struct DoryX86IRTranslator: Sendable {
         case .register(let origin) = source, origin.width == .i32
       else { return false }
       return isJITGeneralRegister(target) && isJITGeneralRegister(origin)
+    case .byteSwap(let operand):
+      guard case .register(let register) = operand else { return false }
+      return isJITGeneralRegister(register)
     case .stackPush(let source):
       switch source {
       case .register(let register):
@@ -637,6 +643,8 @@ public struct DoryX86IRTranslator: Sendable {
     case .bitScan(_, let destination, let source):
       if isMemory(destination) { return .write }
       return isMemory(source) ? .read : .none
+    case .byteSwap:
+      return .none
     case .stackPush:
       return .write
     case .stackPop:

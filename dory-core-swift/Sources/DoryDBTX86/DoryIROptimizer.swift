@@ -91,6 +91,10 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)
 
+      case .byteSwap(let operand):
+        statements.append(statement)
+        invalidate(operand, knownConstants: &knownConstants)
+
       case .stackPush:
         statements.append(statement)
         invalidateStackPointer(knownConstants: &knownConstants)
