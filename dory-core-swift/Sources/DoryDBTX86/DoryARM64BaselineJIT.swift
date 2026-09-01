@@ -1367,8 +1367,8 @@ private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address
       at: address,
       byteCount: Int(byteCount)
     ).enumerated().reduce(0) {
-        $0 | UInt64($1.element) << UInt64($1.offset * 8)
-      }
+      $0 | UInt64($1.element) << UInt64($1.offset * 8)
+    }
   } catch {
     context.pointee.failed = true
     return 0
@@ -1518,15 +1518,18 @@ public struct DoryARM64BaselineExecution: Sendable, Hashable {
 /// Allocation-free dispatch metadata for machine loops that do not need to retain compiled code.
 public struct DoryARM64ExecutionSummary: Sendable, Hashable {
   public let guestInstructionCount: UInt32
+  public let residentBlockCount: UInt32
   public let tier: DoryARM64CompilationTier
   public let exitCode: DoryJITExitCode
 
   public init(
     guestInstructionCount: UInt32,
+    residentBlockCount: UInt32 = 1,
     tier: DoryARM64CompilationTier,
     exitCode: DoryJITExitCode
   ) {
     self.guestInstructionCount = guestInstructionCount
+    self.residentBlockCount = residentBlockCount
     self.tier = tier
     self.exitCode = exitCode
   }
@@ -1704,9 +1707,104 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     else { return nil }
     return .init(
       guestInstructionCount: execution.resident.block.guestInstructionCount,
+      residentBlockCount: 1,
       tier: execution.resident.block.tier,
       exitCode: execution.exitCode
     )
+  }
+
+  /// Runs consecutive resident basic blocks while the machine's interrupt deadline permits it.
+  /// The execution context crosses block boundaries without round-tripping all architectural
+  /// registers through Swift. System, port-I/O, halt, and restartable-memory exits still return at
+  /// their exact boundary, and a block that cannot enter native code remains an interpreter step.
+  public func executeChainedSummary(
+    byteProvider: (_ guestStart: UInt64, _ maximumCount: Int) throws -> [UInt8],
+    codeGenerationProvider: ((_ guestStart: UInt64, _ byteCount: Int) throws -> UInt64?)? = nil,
+    at guestStart: UInt64,
+    mode: DoryX86ExecutionMode,
+    addressSpaceID: UInt64,
+    maximumInstructions: Int,
+    state: inout DoryX86ArchitecturalState,
+    memory: (any DoryX86Memory)? = nil
+  ) throws -> DoryARM64ExecutionSummary? {
+    guard maximumInstructions > 0 else { return nil }
+    return try lock.withLock {
+      try withUnsafeTemporaryAllocation(
+        of: UInt64.self,
+        capacity: DoryJITExecutableRegion.contextWordCount
+      ) { context in
+        try withUnsafeTemporaryAllocation(
+          of: UInt64.self,
+          capacity: DoryJITExecutableRegion.contextWordCount
+        ) { checkpoint in
+          Self.populateExecutionContext(context, from: state)
+          var completed = 0
+          var blockCount = 0
+          while completed < maximumInstructions {
+            let currentRIP = context[16]
+            let remaining = maximumInstructions - completed
+            guard
+              let resident = try resolveResident(
+                byteProvider: { try byteProvider(currentRIP, $0) },
+                codeGenerationProvider: codeGenerationProvider.map { provider in
+                  { try provider(currentRIP, $0) }
+                },
+                at: currentRIP,
+                mode: mode,
+                addressSpaceID: addressSpaceID,
+                maximumInstructions: remaining,
+                state: state,
+                memory: memory
+              )
+            else {
+              guard completed > 0 else { return nil }
+              Self.apply(context: context, to: &state)
+              return DoryARM64ExecutionSummary(
+                guestInstructionCount: UInt32(completed),
+                residentBlockCount: UInt32(blockCount),
+                tier: optimization == .optimizing ? .optimizing : .baseline,
+                exitCode: .dispatch
+              )
+            }
+
+            let hasCheckpoint = resident.block.requiresMemoryCallbacks
+            if hasCheckpoint {
+              for index in context.indices { checkpoint[index] = context[index] }
+            }
+            let exit = try region.execute(
+              at: resident.offset,
+              context: context,
+              memory: memory,
+              requiresRestartableReads: resident.block.requiresRestartableMemoryReads
+            )
+            if exit == .interpreter, hasCheckpoint {
+              for index in context.indices { context[index] = checkpoint[index] }
+              guard completed > 0 else { return nil }
+              Self.apply(context: context, to: &state)
+              return DoryARM64ExecutionSummary(
+                guestInstructionCount: UInt32(completed),
+                residentBlockCount: UInt32(blockCount),
+                tier: resident.block.tier,
+                exitCode: .dispatch
+              )
+            }
+
+            completed += Int(resident.block.guestInstructionCount)
+            blockCount += 1
+            guard exit == .dispatch, completed < maximumInstructions else {
+              Self.apply(context: context, to: &state)
+              return DoryARM64ExecutionSummary(
+                guestInstructionCount: UInt32(completed),
+                residentBlockCount: UInt32(blockCount),
+                tier: resident.block.tier,
+                exitCode: exit
+              )
+            }
+          }
+          preconditionFailure("positive chained execution must return from its bounded loop")
+        }
+      }
+    }
   }
 
   private func executeResident(
@@ -1721,62 +1819,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   ) throws -> ResidentExecution? {
     guard maximumInstructions > 0 else { return nil }
     return try lock.withLock { () -> ResidentExecution? in
-      let key = LookupKey(
-        guestStart: guestStart,
-        addressSpaceID: addressSpaceID,
-        executionMode: mode,
-        privilegeLevel: UInt8(state.cs.selector & 3),
-        pagingEnabled: state.control.cr0 & (1 << 31) != 0,
-        maximumInstructions: maximumInstructions
-      )
-      var resident: ResidentBlock
-      if let cached = lookupResident(for: key),
-        cached.block.guestInstructionCount <= maximumInstructions
-      {
-        let byteCount = Int(cached.block.guestByteCount)
-        let memoryGeneration = try codeGenerationProvider?(byteCount) ?? nil
-        if let cachedMemoryGeneration = cached.memoryCodeGeneration,
-          cachedMemoryGeneration == memoryGeneration
-        {
-          resident = cached
-        } else {
-          let currentBytes = try byteProvider(byteCount)
-          guard currentBytes.count == byteCount else { return nil }
-          let generation = Self.fingerprint(bytes: currentBytes, mode: mode)
-          if generation == cached.codeGeneration {
-            resident = ResidentBlock(
-              block: cached.block,
-              offset: cached.offset,
-              codeGeneration: cached.codeGeneration,
-              memoryCodeGeneration: memoryGeneration
-            )
-            publish(resident, for: key)
-          } else {
-            removeResident(for: key)
-            guard let refreshed = try compileResident(
-              key: key,
-              bytes: byteProvider(maximumInstructions * 15),
-              codeGenerationProvider: codeGenerationProvider,
-              guestStart: guestStart,
-              mode: mode,
-              maximumInstructions: maximumInstructions,
-              memory: memory
-            ) else { return nil }
-            resident = refreshed
-          }
-        }
-      } else {
-        guard let compiled = try compileResident(
-          key: key,
-          bytes: byteProvider(maximumInstructions * 15),
+      guard
+        let resident = try resolveResident(
+          byteProvider: byteProvider,
           codeGenerationProvider: codeGenerationProvider,
-          guestStart: guestStart,
+          at: guestStart,
           mode: mode,
+          addressSpaceID: addressSpaceID,
           maximumInstructions: maximumInstructions,
+          state: state,
           memory: memory
-        ) else { return nil }
-        resident = compiled
-      }
+        )
+      else { return nil }
 
       return try withUnsafeTemporaryAllocation(
         of: UInt64.self,
@@ -1796,6 +1850,62 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         return ResidentExecution(resident: resident, exitCode: exit)
       }
     }
+  }
+
+  /// Resolves a block while the executor lock is held. Callers must not retain the returned region
+  /// authority past that lock because a later compilation may wrap the bounded code cache.
+  private func resolveResident(
+    byteProvider: (_ maximumCount: Int) throws -> [UInt8],
+    codeGenerationProvider: ((_ byteCount: Int) throws -> UInt64?)?,
+    at guestStart: UInt64,
+    mode: DoryX86ExecutionMode,
+    addressSpaceID: UInt64,
+    maximumInstructions: Int,
+    state: DoryX86ArchitecturalState,
+    memory: (any DoryX86Memory)?
+  ) throws -> ResidentBlock? {
+    let key = LookupKey(
+      guestStart: guestStart,
+      addressSpaceID: addressSpaceID,
+      executionMode: mode,
+      privilegeLevel: UInt8(state.cs.selector & 3),
+      pagingEnabled: state.control.cr0 & (1 << 31) != 0,
+      maximumInstructions: maximumInstructions
+    )
+    if let cached = lookupResident(for: key),
+      cached.block.guestInstructionCount <= maximumInstructions
+    {
+      let byteCount = Int(cached.block.guestByteCount)
+      let memoryGeneration = try codeGenerationProvider?(byteCount) ?? nil
+      if let cachedMemoryGeneration = cached.memoryCodeGeneration,
+        cachedMemoryGeneration == memoryGeneration
+      {
+        return cached
+      }
+      let currentBytes = try byteProvider(byteCount)
+      guard currentBytes.count == byteCount else { return nil }
+      let generation = Self.fingerprint(bytes: currentBytes, mode: mode)
+      if generation == cached.codeGeneration {
+        let resident = ResidentBlock(
+          block: cached.block,
+          offset: cached.offset,
+          codeGeneration: cached.codeGeneration,
+          memoryCodeGeneration: memoryGeneration
+        )
+        publish(resident, for: key)
+        return resident
+      }
+      removeResident(for: key)
+    }
+    return try compileResident(
+      key: key,
+      bytes: byteProvider(maximumInstructions * 15),
+      codeGenerationProvider: codeGenerationProvider,
+      guestStart: guestStart,
+      mode: mode,
+      maximumInstructions: maximumInstructions,
+      memory: memory
+    )
   }
 
   private func compileResident(

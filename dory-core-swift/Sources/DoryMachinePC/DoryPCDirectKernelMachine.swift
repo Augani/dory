@@ -459,10 +459,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         switch execution.jitTier {
         case .baseline:
           baselineJITInstructionCount &+= execution.instructionCount
-          baselineJITBlockCount &+= 1
+          baselineJITBlockCount &+= execution.jitBlockCount
         case .optimizing:
           optimizingJITInstructionCount &+= execution.instructionCount
-          optimizingJITBlockCount &+= 1
+          optimizingJITBlockCount &+= execution.jitBlockCount
         case .interpreterFallback, nil:
           interpreterInstructionCount &+= execution.instructionCount
         }
@@ -517,6 +517,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     let result: ProcessorResult
     let instructionCount: UInt64
     let jitTier: DoryARM64CompilationTier?
+    let jitBlockCount: UInt64
   }
 
   private func execute(
@@ -534,30 +535,39 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       let translatedMemory = translatedMemories[processor]
       translatedMemory.updateContext(.init(state: state, mode: mode))
       let guestRIP = state.rip
-      if let execution = try baselineJIT.executeSummary(
-          byteProvider: { maximumCount in
-            // A speculative block fetch can cross an unmapped guest page even when the current
-            // instruction itself is valid. Preserve the architectural path by declining JIT
-            // execution and letting the interpreter perform its precise instruction fetch/fault.
-            (try? translatedMemory.instructionBytes(at: guestRIP, maximumCount: maximumCount)) ?? []
-          },
-          codeGenerationProvider: { byteCount in
-            try translatedMemory.codeGeneration(at: guestRIP, byteCount: byteCount)
-          },
-          at: guestRIP,
-          mode: mode,
-          addressSpaceID: state.control.cr3,
-          maximumInstructions: budget,
-          state: &state,
-          memory: translatedMemory
-        )
-      {
+      if let execution = try baselineJIT.executeChainedSummary(
+        byteProvider: { address, maximumCount in
+          // A speculative block fetch can cross an unmapped guest page even when the current
+          // instruction itself is valid. Preserve the architectural path by declining JIT
+          // execution and letting the interpreter perform its precise instruction fetch/fault.
+          (try? translatedMemory.instructionBytes(at: address, maximumCount: maximumCount)) ?? []
+        },
+        codeGenerationProvider: { address, byteCount in
+          try translatedMemory.codeGeneration(at: address, byteCount: byteCount)
+        },
+        at: guestRIP,
+        mode: mode,
+        addressSpaceID: state.control.cr3,
+        maximumInstructions: budget,
+        state: &state,
+        memory: translatedMemory
+      ) {
         let count = UInt64(execution.guestInstructionCount)
         switch execution.exitCode {
         case .dispatch:
-          return .init(result: .retired, instructionCount: count, jitTier: execution.tier)
+          return .init(
+            result: .retired,
+            instructionCount: count,
+            jitTier: execution.tier,
+            jitBlockCount: UInt64(execution.residentBlockCount)
+          )
         case .halt:
-          return .init(result: .halted, instructionCount: count, jitTier: execution.tier)
+          return .init(
+            result: .halted,
+            instructionCount: count,
+            jitTier: execution.tier,
+            jitBlockCount: UInt64(execution.residentBlockCount)
+          )
         case .interpreter, .system, .portIO:
           break
         }
@@ -579,7 +589,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       case .halted: .halted
       case .exception(let exception): .exception(exception)
       }
-    return .init(result: machineResult, instructionCount: 1, jitTier: nil)
+    return .init(result: machineResult, instructionCount: 1, jitTier: nil, jitBlockCount: 0)
   }
 
   private func baselineInstructionBudget(maximumInstructions: UInt64) -> Int {
