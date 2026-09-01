@@ -21,6 +21,7 @@ let package = Package(
     .library(name: "DoryMachineARMVirt", targets: ["DoryMachineARMVirt"]),
     .library(name: "DoryVirtio", targets: ["DoryVirtio"]),
     .library(name: "DoryFirmware", targets: ["DoryFirmware"]),
+    .library(name: "DoryPCQualification", targets: ["DoryPCQualification"]),
     .library(name: "DoryCameraBridgeContracts", targets: ["DoryCameraBridgeContracts"]),
     .library(name: "DoryVZMacCameraBridge", targets: ["DoryVZMacCameraBridge"]),
     .library(name: "DoryVZMacCore", targets: ["DoryVZMacCore"]),
@@ -96,6 +97,10 @@ let package = Package(
       targets: ["dory-pc-uefi-smoke"]
     ),
     .executable(
+      name: "dory-pc-tier-qualification",
+      targets: ["dory-pc-tier-qualification"]
+    ),
+    .executable(
       name: "dory-x86-decode-audit",
       targets: ["dory-x86-decode-audit"]
     ),
@@ -135,6 +140,10 @@ let package = Package(
     .target(
       name: "DoryFirmware",
       dependencies: ["DoryDBTX86", "DoryMachineARMVirt", "DoryMachinePC", "DoryVirtio"]
+    ),
+    .target(
+      name: "DoryPCQualification",
+      dependencies: []
     ),
     .target(
       name: "DoryNativeHVArm64",
@@ -386,6 +395,10 @@ let package = Package(
       name: "dory-pc-uefi-smoke",
       dependencies: ["DoryDBTX86", "DoryFirmware", "DoryMachinePC", "DoryVirtio"]
     ),
+    .executableTarget(
+      name: "dory-pc-tier-qualification",
+      dependencies: ["DoryPCQualification"]
+    ),
     // Phase 4 conformance helper. It checks every instruction emitted in linked x86 firmware
     // modules against Dory's decoder so bring-up can close common ISA gaps in batches.
     .executableTarget(
@@ -421,6 +434,10 @@ let package = Package(
       dependencies: [
         "DoryDBTX86", "DoryFirmware", "DoryMachineARMVirt", "DoryMachinePC", "DoryVirtio",
       ]
+    ),
+    .testTarget(
+      name: "DoryPCQualificationTests",
+      dependencies: ["DoryPCQualification"]
     ),
     .testTarget(
       name: "DoryNativeHVArm64Tests",
