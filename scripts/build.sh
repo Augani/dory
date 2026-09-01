@@ -862,6 +862,38 @@ bundle_host_cli_helpers() {
   done
 }
 
+verify_installable_app_bundle() {
+  local app found helper
+  found=0
+  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
+    [ -d "$app" ] || continue
+    found=1
+    [ -x "$app/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" ] \
+      || { echo "error: installable Dory bundle is missing DoryHVRunner.app" >&2; return 1; }
+    if [ "${DORY_BUILD_DORYD_HELPERS:-1}" = "1" ]; then
+      for helper in doryd dorydctl dory-vmm dory-network-helper; do
+        [ -x "$app/Contents/Helpers/$helper" ] && [ ! -L "$app/Contents/Helpers/$helper" ] \
+          || { echo "error: installable Dory bundle is missing direct engine helper $helper" >&2; return 1; }
+      done
+      [ -x "$app/Contents/Helpers/DoryVMM.app/Contents/MacOS/dory-vmm" ] \
+        && [ ! -L "$app/Contents/Helpers/DoryVMM.app" ] \
+        || { echo "error: installable Dory bundle is missing direct DoryVMM.app" >&2; return 1; }
+      [ -f "$app/Contents/Resources/dev.dory.doryd.plist" ] \
+        && [ ! -L "$app/Contents/Resources/dev.dory.doryd.plist" ] \
+        || { echo "error: installable Dory bundle is missing its doryd LaunchAgent template" >&2; return 1; }
+      plutil -lint "$app/Contents/Resources/dev.dory.doryd.plist" >/dev/null \
+        || { echo "error: installable Dory bundle has an invalid doryd LaunchAgent template" >&2; return 1; }
+    fi
+    if [ "${DORY_BUILD_DEBUG_HELPERS:-1}" = "1" ] \
+        && [ "${DORY_ALLOW_MISSING_GVPROXY:-0}" != "1" ]; then
+      [ -x "$app/Contents/Helpers/gvproxy" ] && [ ! -L "$app/Contents/Helpers/gvproxy" ] \
+        || { echo "error: installable Dory bundle is missing direct gvproxy" >&2; return 1; }
+    fi
+  done
+  [ "$found" -eq 1 ] \
+    || { echo "error: Xcode produced no Dory.app to verify" >&2; return 1; }
+}
+
 sign_debug_apps() {
   local app helper framework extension
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
@@ -1008,6 +1040,9 @@ if [ "$status" -eq 0 ]; then
 fi
 if [ "$status" -eq 0 ]; then
   bundle_dory_pc_firmware || status=$?
+fi
+if [ "$status" -eq 0 ]; then
+  verify_installable_app_bundle || status=$?
 fi
 if [ "$status" -eq 0 ]; then
   sign_debug_apps || status=$?

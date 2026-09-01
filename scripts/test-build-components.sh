@@ -54,6 +54,24 @@ assert "renderer-disabled runner retained a production renderer inventory" in re
 vmm = function_body("bundle_doryd_swiftpm_helpers")
 assert 'sign_hardened_payload "$helper" "$entitlements" dory-vmm' in vmm
 assert 'sign_hardened_payload "$vmm_app" "$entitlements" dory-vmm' in vmm
+installable = function_body("verify_installable_app_bundle")
+for required in (
+    "DoryHVRunner.app/Contents/MacOS/dory-hv",
+    "doryd",
+    "dorydctl",
+    "dory-vmm",
+    "dory-network-helper",
+    "DoryVMM.app/Contents/MacOS/dory-vmm",
+    "dev.dory.doryd.plist",
+    "gvproxy",
+):
+    assert required in installable
+assert 'DORY_BUILD_DORYD_HELPERS:-1' in installable
+assert 'DORY_BUILD_DEBUG_HELPERS:-1' in installable
+assert 'DORY_ALLOW_MISSING_GVPROXY:-0' in installable
+assert text.index("verify_installable_app_bundle || status=$?") < text.index(
+    "sign_debug_apps || status=$?"
+)
 pc_firmware = function_body("bundle_dory_pc_firmware")
 pc_builder = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
 for canonical_name in (
