@@ -181,10 +181,8 @@ final class DoryAppDelegate: NSObject, NSApplicationDelegate {
         if !Self.isTestHost {
             DoryFinderStorageLocation.removeBeforeExit()
         }
-        if !Self.isTestHost,
-           !AppStore.resolvedKeepDorydRunningAfterQuit(defaults: .standard) {
-            DorydLaunchAgent.stopAndRemoveCurrentSynchronously()
-        }
+        // doryd owns long-lived engines and machines independently of the window process.
+        // Quitting or relaunching the UI must never interrupt guest workloads or Docker state.
         Self.instanceLock.lock()
         let fd = Self.instanceLockFD
         Self.instanceLockFD = -1

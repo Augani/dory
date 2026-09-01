@@ -120,7 +120,7 @@ final class AppStore {
     var launchAtLogin = false
     var showMenuBarIcon = true
     var routeDockerCLI = true
-    var keepDorydRunningAfterQuit = false
+    var keepDorydRunningAfterQuit = true
     /// Retained as an empty v1 managed-settings compatibility field. Host environment import is
     /// disabled: credentials belong in scoped secret grants, never persisted machine environment.
     var machineEnvAllowList: [String] = []
@@ -421,8 +421,8 @@ final class AppStore {
     static let containerScopeKey = "dory.containerScope"
     static let kubernetesVersionKey = "dory.kubernetesVersion"
 
-    static func resolvedKeepDorydRunningAfterQuit(defaults: UserDefaults) -> Bool {
-        (defaults.object(forKey: keepDorydRunningAfterQuitKey) as? Bool) ?? false
+    static func resolvedKeepDorydRunningAfterQuit(defaults _: UserDefaults) -> Bool {
+        true
     }
 
     var externalTerminalDisplayName: String {
@@ -661,12 +661,10 @@ final class AppStore {
         }
     }
 
-    func setKeepDorydRunningAfterQuit(_ on: Bool) {
-        keepDorydRunningAfterQuit = on
-        UserDefaults.standard.set(on, forKey: Self.keepDorydRunningAfterQuitKey)
-        showSettingsSuccess(on
-            ? "doryd will keep running after Dory quits."
-            : "doryd will stop when Dory quits.")
+    func setKeepDorydRunningAfterQuit(_ _: Bool) {
+        keepDorydRunningAfterQuit = true
+        UserDefaults.standard.set(true, forKey: Self.keepDorydRunningAfterQuitKey)
+        showSettingsSuccess("Dory's engine runs independently and remains available after the app closes.")
     }
 
     @discardableResult
