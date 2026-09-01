@@ -665,6 +665,18 @@ public struct DoryARM64BaselineEmitter: Sendable {
     writesDestination: Bool,
     into words: inout [UInt32]
   ) -> Bool {
+    if !writesDestination && (operation == .compare || operation == .test),
+      case .register(let target) = destination,
+      isLowByteRegister(target)
+    {
+      return emitLowByteFlagsOnlyBinary(
+        operation,
+        destination: target,
+        source: source,
+        into: &words
+      )
+    }
+
     let width: DoryIRIntegerWidth
     let registerTarget: DoryIRRegister?
     switch destination {
@@ -735,6 +747,98 @@ public struct DoryARM64BaselineEmitter: Sendable {
       }
     }
     return true
+  }
+
+  private func emitLowByteFlagsOnlyBinary(
+    _ operation: DoryIRBinaryOperation,
+    destination: DoryIRRegister,
+    source: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard isLowByteRegister(destination),
+      loadLowByteRegister(destination, into: 9, words: &words),
+      loadLowByteOperand(source, into: 10, words: &words)
+    else { return false }
+
+    // Put the x86 sign bit at the ARM32 sign position before setting NZCV. This makes C, Z, N,
+    // and V describe an exact eight-bit operation. The unshifted operands and result remain in
+    // x9, x10, and x11 so the shared x86 auxiliary-carry and parity synthesis stays exact.
+    words.append(
+      encodeLogical(
+        .or,
+        is64Bit: false,
+        left: 31,
+        right: 9,
+        shiftAmount: 24,
+        destination: 12
+      ))
+    words.append(
+      encodeLogical(
+        .or,
+        is64Bit: false,
+        left: 31,
+        right: 10,
+        shiftAmount: 24,
+        destination: 13
+      ))
+    switch operation {
+    case .compare:
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 12, 13, 11))
+    case .test:
+      words.append(encodeLogical(.andSetFlags, is64Bit: false, 12, 13, 11))
+    default:
+      return false
+    }
+    words.append(
+      encodeLogical(
+        .or,
+        is64Bit: false,
+        left: 31,
+        right: 11,
+        shiftAmount: 24,
+        logicalRightShift: true,
+        destination: 11
+      ))
+    emitX86ArithmeticFlags(
+      subtraction: operation == .compare,
+      includesAuxiliaryCarry: operation == .compare,
+      resultRegister: 11,
+      into: &words
+    )
+    return true
+  }
+
+  private func isLowByteRegister(_ register: DoryIRRegister) -> Bool {
+    register.bank == "x86.gpr" && register.index < 16 && register.width == .i8
+  }
+
+  private func loadLowByteRegister(
+    _ register: DoryIRRegister,
+    into hostRegister: UInt32,
+    words: inout [UInt32]
+  ) -> Bool {
+    guard isLowByteRegister(register) else { return false }
+    words.append(
+      encodeLoad64(register: hostRegister, base: 0, byteOffset: Int(register.index) * 8))
+    emitImmediate(0xFF, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: hostRegister, right: 15, destination: hostRegister))
+    return true
+  }
+
+  private func loadLowByteOperand(
+    _ operand: DoryIROperand,
+    into hostRegister: UInt32,
+    words: inout [UInt32]
+  ) -> Bool {
+    switch operand {
+    case .register(let register):
+      return loadLowByteRegister(register, into: hostRegister, words: &words)
+    case .immediate(let value, width: .i8):
+      emitImmediate(value & 0xFF, register: hostRegister, into: &words)
+      return true
+    default:
+      return false
+    }
   }
 
   private func emitARMCarryFromX86(inverted: Bool, into words: inout [UInt32]) {
