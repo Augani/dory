@@ -29,12 +29,24 @@ Useful environment controls:
                                   (defaults to 1 for Debug and 0 for Release)
   DORY_PC_FIRMWARE_BUNDLE=PATH    Use an already-built verified DoryPC firmware bundle
   DORY_ALLOW_MISSING_GVPROXY=1    Permit an intentionally incomplete development bundle
+  DORY_BUNDLE_RENDERER=0|1        Disable or require the production renderer tuple
+  DORY_BUNDLE_VENUS=0|1           Disable or require the matching Venus guest path
 EOF
 }
 
 for argument in "$@"; do
   case "$argument" in
     -h|--help) usage; exit 0 ;;
+    # These are both Xcode build settings and inputs to the post-build verifier below. Preserve
+    # an explicit command-line assignment in this process so both stages validate the same build.
+    DORY_BUNDLE_RENDERER=0|DORY_BUNDLE_RENDERER=1)
+      export DORY_BUNDLE_RENDERER="${argument#*=}" ;;
+    DORY_BUNDLE_RENDERER_REQUIRED=0|DORY_BUNDLE_RENDERER_REQUIRED=1)
+      export DORY_BUNDLE_RENDERER_REQUIRED="${argument#*=}" ;;
+    DORY_BUNDLE_VENUS=0|DORY_BUNDLE_VENUS=1)
+      export DORY_BUNDLE_VENUS="${argument#*=}" ;;
+    DORY_BUNDLE_VENUS_REQUIRED=0|DORY_BUNDLE_VENUS_REQUIRED=1)
+      export DORY_BUNDLE_VENUS_REQUIRED="${argument#*=}" ;;
   esac
 done
 
