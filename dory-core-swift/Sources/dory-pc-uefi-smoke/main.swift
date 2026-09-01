@@ -24,6 +24,28 @@ private struct FileIdentity {
   let sha256: String
 }
 
+private final class SmokeDisplaySink: DoryVirtioGPUDisplaySink, @unchecked Sendable {
+  struct Snapshot: Sendable {
+    let frameCount: UInt64
+    let lastFrame: DoryVirtioGPUFrame?
+  }
+
+  private let lock = NSLock()
+  private var frameCount: UInt64 = 0
+  private var lastFrame: DoryVirtioGPUFrame?
+
+  func present(_ frame: DoryVirtioGPUFrame) {
+    lock.withLock {
+      frameCount &+= 1
+      lastFrame = frame
+    }
+  }
+
+  func snapshot() -> Snapshot {
+    lock.withLock { Snapshot(frameCount: frameCount, lastFrame: lastFrame) }
+  }
+}
+
 private func identity(of file: URL) throws -> FileIdentity {
   let handle = try FileHandle(forReadingFrom: file)
   defer { try? handle.close() }
@@ -208,6 +230,12 @@ private func sha256<T: Encodable>(of value: T) throws -> String {
   let encoder = JSONEncoder()
   encoder.outputFormatting = [.sortedKeys]
   return SHA256.hash(data: try encoder.encode(value))
+    .map { String(format: "%02x", $0) }
+    .joined()
+}
+
+private func sha256(of bytes: [UInt8]) -> String {
+  SHA256.hash(data: Data(bytes))
     .map { String(format: "%02x", $0) }
     .joined()
 }
@@ -450,6 +478,7 @@ private func run() throws {
     bootDevices: devices,
     bootOrder: bootOrder
   )
+  let displaySink = SmokeDisplaySink()
   let composed = try DoryPCUEFIMachine(
     plan: plan,
     firmware: artifacts,
@@ -459,6 +488,7 @@ private func run() throws {
     processorCount: arguments.processorCount,
     initialRTCDate: Date(timeIntervalSince1970: TimeInterval(arguments.initialRTCUnixSeconds)),
     firmwareConfigurationFlags: arguments.bootProbe ? [.qualificationBootProbe] : [],
+    displaySink: displaySink,
     executionTier: arguments.executionTier
   )
   let execution = try runWithProgress(
@@ -498,6 +528,29 @@ private func run() throws {
     composed.blockDevices,
     memory: composed.machine.physicalMemory
   )
+  let display = displaySink.snapshot()
+  let lastDisplayFrame: Any = display.lastFrame.map { frame in
+    [
+      "scanoutID": frame.scanoutID,
+      "resourceID": frame.resourceID,
+      "resourceWidth": frame.resourceWidth,
+      "resourceHeight": frame.resourceHeight,
+      "scanoutX": frame.scanoutRectangle.x,
+      "scanoutY": frame.scanoutRectangle.y,
+      "scanoutWidth": frame.scanoutRectangle.width,
+      "scanoutHeight": frame.scanoutRectangle.height,
+      "damagedX": frame.damagedRectangle.x,
+      "damagedY": frame.damagedRectangle.y,
+      "damagedWidth": frame.damagedRectangle.width,
+      "damagedHeight": frame.damagedRectangle.height,
+      "format": frame.format.rawValue,
+      "pixelByteCount": frame.pixels.count,
+      "nonzeroPixelByteCount": frame.pixels.reduce(into: 0) { count, byte in
+        if byte != 0 { count += 1 }
+      },
+      "pixelSHA256": sha256(of: frame.pixels),
+    ] as [String: Any]
+  } ?? NSNull()
   let payload: [String: Any] = [
     "cr0": state.map { hexadecimal($0.control.cr0) } ?? "unavailable",
     "cr3": state.map { hexadecimal($0.control.cr3) } ?? "unavailable",
@@ -552,6 +605,8 @@ private func run() throws {
     "bootProbe": arguments.bootProbe,
     "serialDroppedBytes": serialDrops.transmitted,
     "blockDevices": blockDevices,
+    "displayFrameCount": display.frameCount,
+    "lastDisplayFrame": lastDisplayFrame,
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
     "rbx": state.map { hexadecimal($0.registers.rbx) } ?? "unavailable",
     "rcx": state.map { hexadecimal($0.registers.rcx) } ?? "unavailable",
