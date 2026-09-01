@@ -303,7 +303,10 @@ import Testing
                     baselineJITInstructions: 0,
                     baselineJITBlocks: 0,
                     optimizingJITInstructions: 95,
-                    optimizingJITBlocks: 40
+                    optimizingJITBlocks: 40,
+                    nativeReadTLBHits: 1_000,
+                    nativeReadTLBMisses: 20,
+                    nativeReadSlowPaths: 20
                 ),
                 graphics: DoryVirtioGPUCommandDiagnostics(
                     completedCommandCount: 10,
@@ -328,6 +331,9 @@ import Testing
         let execution = try #require(first.devices.first { $0.id == "dorypc-execution" })
         #expect(execution.metrics.first { $0.kind == .guestInstructions }?.value == 100)
         #expect(execution.metrics.first { $0.kind == .optimizingJITBlocks }?.value == 40)
+        #expect(execution.metrics.first { $0.kind == .nativeReadTLBHits }?.value == 1_000)
+        #expect(execution.metrics.first { $0.kind == .nativeReadTLBMisses }?.value == 20)
+        #expect(execution.metrics.first { $0.kind == .nativeReadSlowPaths }?.value == 20)
         let graphics = try #require(first.devices.first { $0.id == "dorypc-display-0" })
         #expect(graphics.health == .healthy)
         #expect(graphics.metrics.first { $0.kind == .graphicsCommands }?.value == 10)

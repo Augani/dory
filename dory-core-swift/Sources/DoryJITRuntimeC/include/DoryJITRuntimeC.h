@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 typedef struct dory_jit_region dory_jit_region;
+typedef struct dory_jit_read_tlb dory_jit_read_tlb;
 typedef uint64_t (*dory_jit_memory_read_function)(
     void *memory_context,
     uint64_t address,
@@ -15,6 +16,26 @@ typedef void (*dory_jit_memory_write_function)(
     uint64_t address,
     uint64_t value,
     uint32_t byte_count
+);
+
+typedef struct dory_jit_read_tlb_metrics {
+    uint64_t hit_count;
+    uint64_t miss_count;
+    uint64_t slow_path_count;
+} dory_jit_read_tlb_metrics;
+
+int dory_jit_read_tlb_create(dory_jit_read_tlb **tlb_out);
+void dory_jit_read_tlb_destroy(dory_jit_read_tlb *tlb);
+void dory_jit_read_tlb_invalidate_all(dory_jit_read_tlb *tlb);
+void dory_jit_read_tlb_invalidate(dory_jit_read_tlb *tlb, uint64_t linear_address);
+int dory_jit_read_tlb_install(
+    dory_jit_read_tlb *tlb,
+    uint64_t linear_address,
+    const void *host_page
+);
+void dory_jit_read_tlb_get_metrics(
+    const dory_jit_read_tlb *tlb,
+    dory_jit_read_tlb_metrics *metrics_out
 );
 
 int dory_jit_region_create(size_t minimum_capacity, dory_jit_region **region_out);
@@ -34,6 +55,16 @@ int dory_jit_region_execute(
     void *memory_context,
     dory_jit_memory_read_function memory_read,
     dory_jit_memory_write_function memory_write,
+    uint32_t *exit_code_out
+);
+int dory_jit_region_execute_with_read_tlb(
+    const dory_jit_region *region,
+    size_t offset,
+    uint64_t *context,
+    dory_jit_read_tlb *read_tlb,
+    void *slow_memory_context,
+    dory_jit_memory_read_function slow_memory_read,
+    dory_jit_memory_write_function slow_memory_write,
     uint32_t *exit_code_out
 );
 int dory_jit_region_execute_batch(

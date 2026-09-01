@@ -70,6 +70,24 @@ public protocol DoryX86CodeGenerationMemory: DoryX86Memory {
   func codeGeneration(at address: UInt64, byteCount: Int) throws -> UInt64?
 }
 
+/// A stable host mapping for ordinary RAM. The pointer remains valid for the lifetime of the
+/// provider; callers must still use the architectural memory path for MMIO, faults, and writes
+/// that participate in translated-code invalidation.
+public struct DoryX86DirectRAMMapping: @unchecked Sendable {
+  public let hostAddress: UnsafeRawPointer
+  public let availableByteCount: Int
+
+  public init(hostAddress: UnsafeRawPointer, availableByteCount: Int) {
+    precondition(availableByteCount > 0)
+    self.hostAddress = hostAddress
+    self.availableByteCount = availableByteCount
+  }
+}
+
+public protocol DoryX86DirectRAMMemory: DoryX86Memory {
+  func directRAMMapping(at address: UInt64, byteCount: Int) -> DoryX86DirectRAMMapping?
+}
+
 /// Optional exact fast path for forward, non-overlapping string copies. Implementations return
 /// `nil` before mutation when either starting address is not proven ordinary RAM or when the
 /// resolved backing ranges overlap. A positive result is a fully committed prefix, allowing the
@@ -142,18 +160,33 @@ public final class DoryX86ByteArrayMemory: DoryX86Memory, DoryX86ScalarMemory, @
   public let baseAddress: UInt64
   public let byteCount: Int
   private let lock = NSLock()
-  private var storage: [UInt8]
+  private let storage: UnsafeMutableBufferPointer<UInt8>
   private var codePageGenerations: [UInt64]
 
   public init(baseAddress: UInt64 = 0, bytes: [UInt8]) {
     self.baseAddress = baseAddress
     byteCount = bytes.count
-    storage = bytes
+    storage = .allocate(capacity: bytes.count)
     codePageGenerations = .init(repeating: 0, count: (bytes.count + 4_095) / 4_096)
+    if !bytes.isEmpty {
+      bytes.withUnsafeBufferPointer { source in
+        storage.baseAddress!.initialize(from: source.baseAddress!, count: bytes.count)
+      }
+    }
   }
 
-  public convenience init(baseAddress: UInt64 = 0, byteCount: Int) {
-    self.init(baseAddress: baseAddress, bytes: .init(repeating: 0, count: byteCount))
+  public init(baseAddress: UInt64 = 0, byteCount: Int) {
+    precondition(byteCount >= 0)
+    self.baseAddress = baseAddress
+    self.byteCount = byteCount
+    storage = .allocate(capacity: byteCount)
+    if byteCount > 0 { storage.initialize(repeating: 0) }
+    codePageGenerations = .init(repeating: 0, count: (byteCount + 4_095) / 4_096)
+  }
+
+  deinit {
+    if byteCount > 0 { storage.deinitialize() }
+    storage.deallocate()
   }
 
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
@@ -191,7 +224,12 @@ public final class DoryX86ByteArrayMemory: DoryX86Memory, DoryX86ScalarMemory, @
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
-    storage.replaceSubrange(offset..<(offset + bytes.count), with: bytes)
+    bytes.withUnsafeBytes { source in
+      storage.baseAddress!.advanced(by: offset).update(
+        from: source.bindMemory(to: UInt8.self).baseAddress!,
+        count: bytes.count
+      )
+    }
     markCodePagesWritten(offset: offset, byteCount: bytes.count)
   }
 
@@ -223,7 +261,7 @@ public final class DoryX86ByteArrayMemory: DoryX86Memory, DoryX86ScalarMemory, @
   public func snapshot() -> [UInt8] {
     lock.lock()
     defer { lock.unlock() }
-    return storage
+    return Array(storage)
   }
 
   private func checkedOffset(
@@ -293,7 +331,7 @@ extension DoryX86ByteArrayMemory: DoryX86RestartableScalarMemory {
 extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
   public func bulkCopyRAMSpan(at address: UInt64, maximumByteCount: Int) -> Int? {
     guard maximumByteCount > 0 else { return 0 }
-    return lock.withLock {
+    return lock.withLock { () -> Int? in
       guard address >= baseAddress else { return nil }
       let distance = address - baseAddress
       guard distance < UInt64(storage.count), distance <= UInt64(Int.max) else { return nil }
@@ -307,7 +345,7 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
     maximumByteCount: Int
   ) throws -> Int? {
     guard maximumByteCount > 0 else { return 0 }
-    return lock.withLock {
+    return lock.withLock { () -> Int? in
       guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
       let sourceDistance = sourceAddress - baseAddress
       let destinationDistance = destinationAddress - baseAddress
@@ -324,8 +362,10 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
       guard count > 0 else { return nil }
       guard sourceOffset + count <= destinationOffset || destinationOffset + count <= sourceOffset
       else { return nil }
-      let bytes = Array(storage[sourceOffset..<(sourceOffset + count)])
-      storage.replaceSubrange(destinationOffset..<(destinationOffset + count), with: bytes)
+      storage.baseAddress!.advanced(by: destinationOffset).update(
+        from: storage.baseAddress!.advanced(by: sourceOffset),
+        count: count
+      )
       markCodePagesWritten(offset: destinationOffset, byteCount: count)
       return count
     }
@@ -339,7 +379,7 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
     guard maximumElementCount > 0, !pattern.isEmpty else {
       return maximumElementCount == 0 ? 0 : nil
     }
-    return lock.withLock {
+    return lock.withLock { () -> Int? in
       guard destinationAddress >= baseAddress else { return nil }
       let distance = destinationAddress - baseAddress
       guard distance < UInt64(storage.count), distance <= UInt64(Int.max) else { return nil }
@@ -350,23 +390,37 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
       )
       guard elementCount > 0 else { return nil }
       let byteCount = elementCount * pattern.count
-      storage.withUnsafeMutableBytes { destination in
-        pattern.withUnsafeBytes { source in
-          guard let destinationBase = destination.baseAddress,
-            let sourceBase = source.baseAddress
-          else { return }
-          var offset = 0
-          while offset < byteCount {
-            destinationBase.advanced(by: destinationOffset + offset).copyMemory(
-              from: sourceBase,
-              byteCount: pattern.count
-            )
-            offset += pattern.count
-          }
+      pattern.withUnsafeBytes { source in
+        guard let sourceBase = source.baseAddress else { return }
+        var offset = 0
+        while offset < byteCount {
+          UnsafeMutableRawPointer(
+            storage.baseAddress!.advanced(by: destinationOffset + offset)
+          ).copyMemory(
+            from: sourceBase,
+            byteCount: pattern.count
+          )
+          offset += pattern.count
         }
       }
       markCodePagesWritten(offset: destinationOffset, byteCount: byteCount)
       return elementCount
+    }
+  }
+}
+
+extension DoryX86ByteArrayMemory: DoryX86DirectRAMMemory {
+  public func directRAMMapping(at address: UInt64, byteCount: Int) -> DoryX86DirectRAMMapping? {
+    guard byteCount > 0 else { return nil }
+    return lock.withLock {
+      guard
+        let offset = try? checkedOffset(address: address, byteCount: byteCount, access: .read),
+        let base = storage.baseAddress
+      else { return nil }
+      return DoryX86DirectRAMMapping(
+        hostAddress: UnsafeRawPointer(base.advanced(by: offset)),
+        availableByteCount: storage.count - offset
+      )
     }
   }
 }

@@ -400,6 +400,9 @@ private func runWithProgress(
         "interpreterInstructions": statistics.interpreterInstructions,
         "baselineJITInstructions": statistics.baselineJITInstructions,
         "optimizingJITInstructions": statistics.optimizingJITInstructions,
+        "nativeReadTLBHits": statistics.nativeReadTLBHits,
+        "nativeReadTLBMisses": statistics.nativeReadTLBMisses,
+        "nativeReadSlowPaths": statistics.nativeReadSlowPaths,
       ])
       if trace.count > traceCapacity { trace.removeFirst(trace.count - traceCapacity) }
       if let traceBreakRIPBelow, state.cs.base &+ state.rip < traceBreakRIPBelow {
@@ -424,6 +427,9 @@ private func runWithProgress(
         "interpreterInstructions": statistics.interpreterInstructions,
         "baselineJITInstructions": statistics.baselineJITInstructions,
         "optimizingJITInstructions": statistics.optimizingJITInstructions,
+        "nativeReadTLBHits": statistics.nativeReadTLBHits,
+        "nativeReadTLBMisses": statistics.nativeReadTLBMisses,
+        "nativeReadSlowPaths": statistics.nativeReadSlowPaths,
         "blockDevices": blockDeviceDiagnostics(blockDevices, memory: machine.physicalMemory),
       ]
       let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
@@ -701,6 +707,9 @@ private func run() throws {
     "baselineJITBlocks": executionStatistics.baselineJITBlocks,
     "optimizingJITInstructions": executionStatistics.optimizingJITInstructions,
     "optimizingJITBlocks": executionStatistics.optimizingJITBlocks,
+    "nativeReadTLBHits": executionStatistics.nativeReadTLBHits,
+    "nativeReadTLBMisses": executionStatistics.nativeReadTLBMisses,
+    "nativeReadSlowPaths": executionStatistics.nativeReadSlowPaths,
     "persistentSystemDisk": arguments.systemDisk?.path ?? "in-memory",
     "installerMedia": arguments.installerMedia?.path ?? "none",
     "installerMediaByteCount": installerIdentity.map { $0.byteCount as Any } ?? NSNull(),
