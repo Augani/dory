@@ -50,6 +50,25 @@ import Testing
     #expect(!FileManager.default.fileExists(atPath: fixture.store.backupPath))
   }
 
+  @Test func coldSnapshotReplacementCanMoveBackwardAndRetainsRollbackAuthority() throws {
+    let fixture = try Fixture()
+    defer { fixture.cleanup() }
+    let generationOne = try DoryUEFIVariableStoreSnapshot()
+    let generationTwo = try generationOne.setting(variable(name: "BootOrder", bytes: [0, 0]))
+    try fixture.store.initialize(generationOne)
+    try fixture.store.commit(generationTwo, expectedGeneration: generationOne.generation)
+
+    let encoded = try DoryUEFIVariableStoreFile.encodeColdSnapshot(generationOne)
+    let coldSnapshot = try DoryUEFIVariableStoreFile.decodeColdSnapshot(encoded)
+    let previous = try fixture.store.replaceFromColdSnapshot(coldSnapshot)
+
+    #expect(previous == generationTwo)
+    #expect(try fixture.store.load().snapshot == generationOne)
+    #expect(try decoded(fixture.store.backupPath) == generationTwo)
+    _ = try fixture.store.replaceFromColdSnapshot(previous)
+    #expect(try fixture.store.load().snapshot == generationTwo)
+  }
+
   @Test func corruptPrimaryRequiresExplicitBackupRepair() throws {
     let fixture = try Fixture()
     defer { fixture.cleanup() }

@@ -3829,6 +3829,151 @@ final class MachineManagerTests: XCTestCase {
         try manager.delete(id: "linux")
     }
 
+    func testDoryPCSnapshotsRestoreCloneAndPortDescriptorVariableState() throws {
+        let base = "/Users/Shared/dory-machine-pc-snapshot-\(getpid())-\(UUID().uuidString)"
+        let state = base + "/machines"
+        let firmware = base + "/pc-firmware"
+        let helper = base + "/dory-hv"
+        let disk = base + "/installed-x86_64.raw"
+        try FileManager.default.createDirectory(
+            atPath: state,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        XCTAssertEqual(chmod(base, 0o700), 0)
+        XCTAssertEqual(chmod(state, 0o700), 0)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        try "#!/bin/sh\nsleep 30\n".write(
+            toFile: helper,
+            atomically: true,
+            encoding: .utf8
+        )
+        XCTAssertEqual(chmod(helper, 0o755), 0)
+        let originalDisk = installedX86GPTImage()
+        try originalDisk.write(to: URL(fileURLWithPath: disk))
+        let firmwareBundle = try DoryFirmwareBundleBuilder.build(
+            DoryFirmwareBundleBuildInput(
+                platform: .pcV1,
+                buildIdentifier: "dory-pc-snapshot-test.1",
+                source: try DoryFirmwareSourcePin(
+                    repository: "https://github.com/tianocore/edk2.git",
+                    revision: String(repeating: "b", count: 40)
+                ),
+                sourceDateEpoch: 1_788_048_000,
+                platformConfiguration: Data("DoryPC.dsc".utf8),
+                toolchainDescriptor: Data("clang-17F109".utf8),
+                firmwareCode: Data(repeating: 0xf4, count: 4_096),
+                secureBootPolicy: .disabled
+            )
+        )
+        try firmwareBundle.write(to: URL(fileURLWithPath: firmware))
+
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/false",
+                acceleratedDesktopExecutablePath: helper,
+                pcFirmwareBundlePath: firmware,
+                stateDirectory: state,
+                requiresReadyHandoff: false,
+                guestArchitecture: "arm64"
+            ),
+            launchPolicy: .legacyCompatibility,
+            allowsNewMachinesInLegacyCompatibility: true,
+            allowsQualificationBootstrapLaunches: true,
+            machineStateBroker: try DoryMachineStateBroker(canonicalStateRootPath: state)
+        )
+        defer {
+            try? manager.delete(id: "linux-copy")
+            try? manager.delete(id: "linux")
+        }
+
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "linux",
+            guestArchitecture: .x86_64,
+            kernelPath: "",
+            rootfsPath: disk,
+            bootMode: .efi,
+            memoryMB: 4096,
+            cpuCount: 4,
+            displayMode: .desktop,
+            environment: [
+                DoryDesktopVMMPreference.environmentKey:
+                    DoryDesktopVMMPreference.accelerated.rawValue,
+                DoryDesktopGraphicsPreference.environmentKey:
+                    DoryDesktopGraphicsPreference.software.rawValue,
+            ]
+        ))
+
+        let variableStore = try DoryUEFIVariableStoreFile(
+            directory: state + "/linux/uefi-variables"
+        )
+        let initial = try DoryUEFIVariableStoreSnapshot(platform: .pcV1)
+        try variableStore.initialize(initial)
+        let bootOrderKey = try DoryUEFIVariableKey(
+            vendor: try XCTUnwrap(UUID(uuidString: "8BE4DF61-93CA-11D2-AA0D-00E098032B8C")),
+            name: "BootOrder"
+        )
+        let saved = try initial.setting(DoryUEFIVariable(
+            key: bootOrderKey,
+            attributes: [.nonVolatile, .bootServiceAccess, .runtimeAccess],
+            data: Data([0x01, 0x00])
+        ))
+        try variableStore.commit(saved, expectedGeneration: initial.generation)
+
+        let snapshot = try manager.snapshot(id: "linux", snapshotID: "portable")
+        XCTAssertEqual(snapshot.architecture, DoryGuestArchitecture.x86_64.rawValue)
+        let archivedVariables = try DoryUEFIVariableStoreFile.decodeColdSnapshot(
+            Data(contentsOf: URL(fileURLWithPath: try XCTUnwrap(snapshot.nvramPath)))
+        )
+        XCTAssertEqual(archivedVariables, saved)
+
+        var mutatedDisk = originalDisk
+        mutatedDisk[mutatedDisk.count - 1] = 0x7f
+        try mutatedDisk.write(to: URL(fileURLWithPath: state + "/linux/rootfs.ext4"))
+        let mutated = try saved.setting(DoryUEFIVariable(
+            key: bootOrderKey,
+            attributes: [.nonVolatile, .bootServiceAccess, .runtimeAccess],
+            data: Data([0x02, 0x00])
+        ))
+        try variableStore.commit(mutated, expectedGeneration: saved.generation)
+
+        _ = try manager.restoreSnapshot(machineID: "linux", snapshotID: snapshot.id)
+        XCTAssertEqual(
+            try Data(contentsOf: URL(fileURLWithPath: state + "/linux/rootfs.ext4")),
+            originalDisk
+        )
+        XCTAssertEqual(try variableStore.load().snapshot, saved)
+
+        let clone = try manager.cloneSnapshot(
+            machineID: "linux",
+            snapshotID: snapshot.id,
+            newID: "linux-copy"
+        )
+        XCTAssertEqual(clone.state, .running, clone.lastError ?? "missing failure detail")
+        XCTAssertEqual(clone.guestArchitecture, .x86_64)
+        let cloneStore = try DoryUEFIVariableStoreFile(
+            directory: state + "/linux-copy/uefi-variables"
+        )
+        XCTAssertEqual(try cloneStore.load().snapshot, saved)
+
+        let bundle = base + "/linux-x86_64.dorymachine"
+        try manager.exportSnapshot(
+            machineID: "linux",
+            snapshotID: snapshot.id,
+            toPath: bundle
+        )
+        try manager.deleteSnapshot(machineID: "linux", snapshotID: snapshot.id)
+        let imported = try manager.importSnapshot(fromPath: bundle)
+        XCTAssertEqual(imported.architecture, DoryGuestArchitecture.x86_64.rawValue)
+        XCTAssertEqual(
+            try DoryUEFIVariableStoreFile.decodeColdSnapshot(
+                Data(contentsOf: URL(fileURLWithPath: try XCTUnwrap(imported.nvramPath)))
+            ),
+            saved
+        )
+    }
+
     func testDoryPCFirstDiskBootFailureRestoresInstallerTransaction() throws {
         let base = "/tmp/dory-machine-pc-eject-rollback-\(getpid())-"
             + "\(UInt32.random(in: 0..<UInt32.max))"

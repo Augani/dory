@@ -95,6 +95,48 @@ public struct DoryUEFIVariableStoreFile: Sendable, Equatable {
     try initializeUnpublishedStore(snapshot)
   }
 
+  /// Replaces the logical variable state at a stopped-VM restore boundary.
+  ///
+  /// Snapshot restore is intentionally not a generation-CAS update: restoring an older cold
+  /// snapshot may move the guest-visible generation backwards. The current primary is published
+  /// as the durable backup first, so callers can roll the wider disk/configuration transaction
+  /// back by replacing with the returned value if a later commit step fails.
+  @discardableResult
+  public func replaceFromColdSnapshot(
+    _ snapshot: DoryUEFIVariableStoreSnapshot
+  ) throws -> DoryUEFIVariableStoreSnapshot {
+    try validatePrivateDirectory()
+    return try withExclusiveLock {
+      guard let currentData = try secureReadIfPresent(primaryPath) else {
+        throw DoryUEFIVariableStoreFileError.recoveryRequired
+      }
+      let current: DoryUEFIVariableStoreSnapshot
+      do {
+        current = try Self.decodeCanonical(currentData, path: primaryPath)
+      } catch let error as DoryUEFIVariableStoreFileError {
+        guard case .invalidStore = error else { throw error }
+        throw DoryUEFIVariableStoreFileError.recoveryRequired
+      }
+      try publish(currentData, to: backupPath)
+      try publish(try Self.canonicalData(snapshot), to: primaryPath)
+      return current
+    }
+  }
+
+  /// Canonical transport representation used by cold-snapshot archives.
+  public static func encodeColdSnapshot(
+    _ snapshot: DoryUEFIVariableStoreSnapshot
+  ) throws -> Data {
+    try canonicalData(snapshot)
+  }
+
+  /// Validates and decodes the canonical transport representation used by cold snapshots.
+  public static func decodeColdSnapshot(
+    _ data: Data
+  ) throws -> DoryUEFIVariableStoreSnapshot {
+    try decodeCanonical(data, path: "DoryPC cold snapshot")
+  }
+
   private func initializeUnpublishedStore(
     _ snapshot: DoryUEFIVariableStoreSnapshot
   ) throws {

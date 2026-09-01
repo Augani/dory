@@ -1355,6 +1355,26 @@ public final class MachineManager: @unchecked Sendable {
     private static let snapshotMachineIdentifierTemporaryMarker = ".machine-identifier.tmp-"
     private static let snapshotNVRAMTemporaryMarker = ".nvram.tmp-"
     private static let snapshotMetadataTemporaryPrefix = ".dory-snapshot-metadata-"
+    /// The v4 archive has two firmware artifact slots. DoryPC uses the first as an immutable
+    /// platform discriminator and the second for its canonical descriptor-backed variable state.
+    /// This keeps the archive framing stable while making the payload semantics explicit.
+    private static let doryPCSnapshotFirmwareIdentity = Data(
+        "DORY-PC-v1-DESCRIPTOR-VARIABLE-STORE\n".utf8
+    )
+
+    private enum SnapshotFirmwareRestore {
+        case vz(
+            identifier: String,
+            nvram: String,
+            snapshotIdentifier: String,
+            snapshotNVRAM: String
+        )
+        case doryPC(
+            store: DoryUEFIVariableStoreFile,
+            target: DoryUEFIVariableStoreSnapshot,
+            previous: DoryUEFIVariableStoreSnapshot
+        )
+    }
     private static let desktopUpdateJournalName = "desktop-update.json"
     private static let desktopUpdateStagingPrefix = ".desktop-update-stage-"
     private static let maximumPersistedMetadataBytes: Int64 = 16 * 1024 * 1024
@@ -6107,11 +6127,36 @@ public final class MachineManager: @unchecked Sendable {
                 )
             }
         }
-        let liveMachineIdentifierPath = machine.bootMode == .efi
+        let doryPCFirmwareSnapshotData: Data?
+        let isDoryPC = try effectiveGuestArchitecture(for: machine) == .x86_64
+            && machine.bootMode == .efi
+        let liveMachineIdentifierPath = machine.bootMode == .efi && !isDoryPC
             ? machineFirmwareIdentifierPath(id: id) : nil
-        let liveNVRAMPath = machine.bootMode == .efi
+        let liveNVRAMPath = machine.bootMode == .efi && !isDoryPC
             ? machineFirmwareNVRAMPath(id: id) : nil
-        if machine.bootMode == .efi {
+        if isDoryPC {
+            let store = try DoryUEFIVariableStoreFile(
+                directory: machineDoryPCFirmwareVariableDirectoryPath(id: id)
+            )
+            let loaded: DoryUEFIVariableStoreLoad
+            do {
+                loaded = try store.load()
+            } catch {
+                throw MachineManagerError.persistence(
+                    "DoryPC firmware state is unavailable; start the machine once before taking a snapshot"
+                )
+            }
+            guard loaded.source == .primary, loaded.snapshot.platform == .pcV1 else {
+                throw MachineManagerError.persistence(
+                    "DoryPC firmware state requires repair before taking a snapshot"
+                )
+            }
+            doryPCFirmwareSnapshotData = try DoryUEFIVariableStoreFile
+                .encodeColdSnapshot(loaded.snapshot)
+        } else {
+            doryPCFirmwareSnapshotData = nil
+        }
+        if machine.bootMode == .efi && !isDoryPC {
             guard let liveMachineIdentifierPath, let liveNVRAMPath,
                   Self.isPrivateRegularFile(path: liveMachineIdentifierPath),
                   Self.isPrivateRegularFile(path: liveNVRAMPath) else {
@@ -6120,12 +6165,24 @@ public final class MachineManager: @unchecked Sendable {
                 )
             }
         }
-        let artifactEvidence = try Self.snapshotArtifactEvidence(
-            rootfsPath: machine.rootfsPath,
-            kernelPath: machine.kernelPath,
-            machineIdentifierPath: liveMachineIdentifierPath,
-            nvramPath: liveNVRAMPath
-        )
+        let artifactEvidence: DoryMachineSnapshotArtifactEvidence
+        if let doryPCFirmwareSnapshotData {
+            artifactEvidence = DoryMachineSnapshotArtifactEvidence(
+                rootfs: try Self.snapshotArtifact(path: machine.rootfsPath),
+                kernel: try Self.snapshotArtifact(path: machine.kernelPath),
+                machineIdentifier: Self.snapshotArtifact(
+                    data: Self.doryPCSnapshotFirmwareIdentity
+                ),
+                nvram: Self.snapshotArtifact(data: doryPCFirmwareSnapshotData)
+            )
+        } else {
+            artifactEvidence = try Self.snapshotArtifactEvidence(
+                rootfsPath: machine.rootfsPath,
+                kernelPath: machine.kernelPath,
+                machineIdentifierPath: liveMachineIdentifierPath,
+                nvramPath: liveNVRAMPath
+            )
+        }
         guard let snapshotSize = Int64(exactly: artifactEvidence.rootfs.byteCount) else {
             throw MachineManagerError.persistence("machine snapshot disk is too large")
         }
@@ -6189,19 +6246,33 @@ public final class MachineManager: @unchecked Sendable {
             )
             publishedKernel = true
             if machine.bootMode == .efi {
-                guard let liveMachineIdentifierPath, let liveNVRAMPath else {
-                    throw MachineManagerError.persistence("EFI firmware state is unavailable")
+                if let doryPCFirmwareSnapshotData {
+                    try Self.writeDurablePrivateData(
+                        Self.doryPCSnapshotFirmwareIdentity,
+                        toPath: machineIdentifierPath
+                    )
+                    publishedMachineIdentifier = true
+                    try Self.writeDurablePrivateData(
+                        doryPCFirmwareSnapshotData,
+                        toPath: nvramPath
+                    )
+                    publishedNVRAM = true
+                    try Self.syncDirectory(path: snapshotDirectory(machineID: id))
+                } else {
+                    guard let liveMachineIdentifierPath, let liveNVRAMPath else {
+                        throw MachineManagerError.persistence("EFI firmware state is unavailable")
+                    }
+                    try cloneOrCopySnapshotArtifact(
+                        source: liveMachineIdentifierPath,
+                        destination: machineIdentifierPath
+                    )
+                    publishedMachineIdentifier = true
+                    try cloneOrCopySnapshotArtifact(
+                        source: liveNVRAMPath,
+                        destination: nvramPath
+                    )
+                    publishedNVRAM = true
                 }
-                try cloneOrCopySnapshotArtifact(
-                    source: liveMachineIdentifierPath,
-                    destination: machineIdentifierPath
-                )
-                publishedMachineIdentifier = true
-                try cloneOrCopySnapshotArtifact(
-                    source: liveNVRAMPath,
-                    destination: nvramPath
-                )
-                publishedNVRAM = true
             }
             // Validate the copies against the pre-publish authority before publishing metadata.
             try Self.validateSnapshotArtifactEvidence(snapshot)
@@ -6844,12 +6915,26 @@ public final class MachineManager: @unchecked Sendable {
                 guard let snapshotNVRAMPath = snapshot.nvramPath else {
                     throw MachineManagerError.persistence("EFI snapshot is missing NVRAM state")
                 }
-                // A clone gets a new Virtualization.framework machine identifier, but retains
-                // the guest's EFI variables (including its installed boot entries).
-                try Self.cloneOrCopyFile(
-                    source: snapshotNVRAMPath,
-                    destination: machineFirmwareNVRAMPath(id: newID)
-                )
+                if Self.isDoryPCSnapshot(snapshot) {
+                    let data = try Data(contentsOf: URL(fileURLWithPath: snapshotNVRAMPath))
+                    let cold = try DoryUEFIVariableStoreFile.decodeColdSnapshot(data)
+                    guard cold.platform == .pcV1 else {
+                        throw MachineManagerError.persistence(
+                            "DoryPC snapshot contains incompatible firmware state"
+                        )
+                    }
+                    let store = try DoryUEFIVariableStoreFile(
+                        directory: machineDoryPCFirmwareVariableDirectoryPath(id: newID)
+                    )
+                    try store.initializeFromColdSnapshot(cold)
+                } else {
+                    // A VZ clone gets a new Virtualization.framework machine identifier, but
+                    // retains the guest's EFI variables (including installed boot entries).
+                    try Self.cloneOrCopyFile(
+                        source: snapshotNVRAMPath,
+                        destination: machineFirmwareNVRAMPath(id: newID)
+                    )
+                }
             }
             if launchPolicy == .perWorkspaceAuthority {
                 // A clone has new mutable storage and a new machine identity. Its source runtime
@@ -9920,6 +10005,7 @@ public final class MachineManager: @unchecked Sendable {
         let installedEFIDesktop = machine.bootMode == .efi
             && DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath)
         if machine.bootMode == .efi,
+           try effectiveGuestArchitecture(for: machine) == .arm64,
            preference == .accelerated,
            !installedEFIDesktop {
             throw MachineManagerError.persistence(
@@ -10048,6 +10134,11 @@ public final class MachineManager: @unchecked Sendable {
         return supportsSnapshotArchitecture(architecture)
     }
 
+    private static func isDoryPCSnapshot(_ snapshot: DoryMachineSnapshot) -> Bool {
+        snapshot.bootMode == .efi
+            && snapshot.architecture == DoryGuestArchitecture.x86_64.rawValue
+    }
+
     private func processArguments(
         for machine: DoryMachineConfiguration,
         operationID: UUID,
@@ -10071,7 +10162,9 @@ public final class MachineManager: @unchecked Sendable {
         let acceleratedInstalledLinux = acceleratedDesktop
             && machine.bootMode == .efi
             && machine.installerISOPath == nil
-        let bootDescriptor = acceleratedInstalledLinux && runtimeLaunchEnvelope == nil
+        let bootDescriptor = acceleratedInstalledLinux
+            && runtimeLaunchEnvelope == nil
+            && pcRuntimeLaunchEnvelope == nil
             ? try DoryInstalledLinuxBootBundle.descriptor(atPath: machine.kernelPath)
             : nil
         var arguments = baseArguments + [
@@ -11953,6 +12046,7 @@ public final class MachineManager: @unchecked Sendable {
               machine.bootMode == .efi,
               machine.displayMode == .desktop,
               machine.installerISOPath == nil,
+              try effectiveGuestArchitecture(for: machine) == .arm64,
               try DoryDesktopVMMPreference(environment: machine.environment) == .accelerated,
               configuration.acceleratedDesktopExecutablePath != nil else {
             return
@@ -11973,6 +12067,7 @@ public final class MachineManager: @unchecked Sendable {
         guard machine.bootMode == .efi,
               machine.displayMode == .desktop,
               machine.installerISOPath == nil,
+              try effectiveGuestArchitecture(for: machine) == .arm64,
               try DoryDesktopVMMPreference(environment: machine.environment) == .accelerated,
               configuration.acceleratedDesktopExecutablePath != nil,
               !DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) else {
@@ -12012,6 +12107,7 @@ public final class MachineManager: @unchecked Sendable {
     ) throws {
         guard machine.bootMode == .efi,
               machine.installerISOPath == nil,
+              try effectiveGuestArchitecture(for: machine) == .arm64,
               try DoryDesktopVMMPreference(environment: machine.environment) == .accelerated,
               DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) else {
             return
@@ -12135,6 +12231,14 @@ public final class MachineManager: @unchecked Sendable {
         switch value.lowercased() {
         case "amd64", "x86_64": true
         default: false
+        }
+    }
+
+    private static func normalizedGuestArchitecture(_ value: String) -> String? {
+        switch value.lowercased() {
+        case "arm64", "aarch64": DoryGuestArchitecture.arm64.rawValue
+        case "amd64", "x86_64": DoryGuestArchitecture.x86_64.rawValue
+        default: nil
         }
     }
 
@@ -12774,23 +12878,76 @@ public final class MachineManager: @unchecked Sendable {
                 "could not preserve machine metadata before restore: \(error)"
             )
         }
-        let firmwareRestore: (identifier: String, nvram: String, snapshotIdentifier: String, snapshotNVRAM: String)?
+        let firmwareRestore: SnapshotFirmwareRestore?
         if snapshot.bootMode == .efi {
-            let identifier = machineFirmwareIdentifierPath(id: machine.id)
-            let nvram = machineFirmwareNVRAMPath(id: machine.id)
             guard let snapshotIdentifier = snapshot.machineIdentifierPath,
-                  let snapshotNVRAM = snapshot.nvramPath,
-                  Self.isPrivateRegularFile(path: identifier),
-                  Self.isPrivateRegularFile(path: nvram) else {
-                throw MachineManagerError.persistence("could not preserve live EFI firmware before restore")
+                  let snapshotNVRAM = snapshot.nvramPath else {
+                throw MachineManagerError.persistence(
+                    "snapshot firmware state is incomplete"
+                )
             }
-            do {
-                try Self.cloneOrCopyFile(source: identifier, destination: machineIdentifierBackup)
-                try Self.cloneOrCopyFile(source: nvram, destination: nvramBackup)
-            } catch {
-                throw MachineManagerError.persistence("could not preserve live EFI firmware before restore: \(error)")
+            if Self.isDoryPCSnapshot(snapshot) {
+                guard Self.readPrivateMetadata(path: snapshotIdentifier)
+                        == Self.doryPCSnapshotFirmwareIdentity else {
+                    throw MachineManagerError.persistence(
+                        "DoryPC snapshot firmware identity is invalid"
+                    )
+                }
+                let targetData = try Data(
+                    contentsOf: URL(fileURLWithPath: snapshotNVRAM)
+                )
+                let target = try DoryUEFIVariableStoreFile.decodeColdSnapshot(targetData)
+                guard target.platform == .pcV1 else {
+                    throw MachineManagerError.persistence(
+                        "DoryPC snapshot contains incompatible firmware state"
+                    )
+                }
+                let store = try DoryUEFIVariableStoreFile(
+                    directory: machineDoryPCFirmwareVariableDirectoryPath(id: machine.id)
+                )
+                let loaded = try store.load()
+                guard loaded.source == .primary, loaded.snapshot.platform == .pcV1 else {
+                    throw MachineManagerError.persistence(
+                        "could not preserve live DoryPC firmware before restore"
+                    )
+                }
+                try Self.writeDurablePrivateData(
+                    try DoryUEFIVariableStoreFile.encodeColdSnapshot(loaded.snapshot),
+                    toPath: nvramBackup
+                )
+                try Self.syncDirectory(path: directory)
+                firmwareRestore = .doryPC(
+                    store: store,
+                    target: target,
+                    previous: loaded.snapshot
+                )
+            } else {
+                let identifier = machineFirmwareIdentifierPath(id: machine.id)
+                let nvram = machineFirmwareNVRAMPath(id: machine.id)
+                guard Self.isPrivateRegularFile(path: identifier),
+                      Self.isPrivateRegularFile(path: nvram) else {
+                    throw MachineManagerError.persistence(
+                        "could not preserve live EFI firmware before restore"
+                    )
+                }
+                do {
+                    try Self.cloneOrCopyFile(
+                        source: identifier,
+                        destination: machineIdentifierBackup
+                    )
+                    try Self.cloneOrCopyFile(source: nvram, destination: nvramBackup)
+                } catch {
+                    throw MachineManagerError.persistence(
+                        "could not preserve live EFI firmware before restore: \(error)"
+                    )
+                }
+                firmwareRestore = .vz(
+                    identifier: identifier,
+                    nvram: nvram,
+                    snapshotIdentifier: snapshotIdentifier,
+                    snapshotNVRAM: snapshotNVRAM
+                )
             }
-            firmwareRestore = (identifier, nvram, snapshotIdentifier, snapshotNVRAM)
         } else {
             firmwareRestore = nil
         }
@@ -12813,17 +12970,22 @@ public final class MachineManager: @unchecked Sendable {
                 destination: machine.kernelPath,
                 replaceExisting: true
             )
-            if let firmwareRestore {
+            switch firmwareRestore {
+            case let .vz(identifier, nvram, snapshotIdentifier, snapshotNVRAM):
                 try Self.cloneOrCopyFile(
-                    source: firmwareRestore.snapshotIdentifier,
-                    destination: firmwareRestore.identifier,
+                    source: snapshotIdentifier,
+                    destination: identifier,
                     replaceExisting: true
                 )
                 try Self.cloneOrCopyFile(
-                    source: firmwareRestore.snapshotNVRAM,
-                    destination: firmwareRestore.nvram,
+                    source: snapshotNVRAM,
+                    destination: nvram,
                     replaceExisting: true
                 )
+            case let .doryPC(store, target, _):
+                try store.replaceFromColdSnapshot(target)
+            case nil:
+                break
             }
             guard Self.recoveredLiveArtifactsMatch(
                 snapshot: snapshot,
@@ -12864,11 +13026,12 @@ public final class MachineManager: @unchecked Sendable {
             } catch {
                 rollbackFailures.append("machine metadata rollback failed: \(error)")
             }
-            if let firmwareRestore {
+            switch firmwareRestore {
+            case let .vz(identifier, nvram, _, _):
                 do {
                     try Self.cloneOrCopyFile(
                         source: machineIdentifierBackup,
-                        destination: firmwareRestore.identifier,
+                        destination: identifier,
                         replaceExisting: true
                     )
                 } catch {
@@ -12877,12 +13040,22 @@ public final class MachineManager: @unchecked Sendable {
                 do {
                     try Self.cloneOrCopyFile(
                         source: nvramBackup,
-                        destination: firmwareRestore.nvram,
+                        destination: nvram,
                         replaceExisting: true
                     )
                 } catch {
                     rollbackFailures.append("NVRAM rollback failed: \(error)")
                 }
+            case let .doryPC(store, _, previous):
+                do {
+                    try store.replaceFromColdSnapshot(previous)
+                } catch {
+                    rollbackFailures.append(
+                        "DoryPC variable-store rollback failed: \(error)"
+                    )
+                }
+            case nil:
+                break
             }
             guard rollbackFailures.isEmpty else {
                 throw MachineManagerError.persistence(
@@ -13442,6 +13615,16 @@ public final class MachineManager: @unchecked Sendable {
     fileprivate static func validateSnapshotRuntimeIdentity(
         _ snapshot: DoryMachineSnapshot
     ) throws {
+        if isDoryPCSnapshot(snapshot) {
+            guard let evidence = snapshot.artifactEvidence,
+                  evidence.machineIdentifier
+                    == snapshotArtifact(data: doryPCSnapshotFirmwareIdentity),
+                  evidence.nvram != nil else {
+                throw MachineManagerError.persistence(
+                    "DoryPC snapshot is missing its immutable firmware identity"
+                )
+            }
+        }
         guard snapshot.installedDesktopPayloadReceipt?.hasCoherentAuthority(
             environment: snapshot.environment
         ) ?? true else {
@@ -13523,6 +13706,13 @@ public final class MachineManager: @unchecked Sendable {
         return DoryMachineSnapshotArtifact(
             byteCount: byteCount,
             sha256: hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        )
+    }
+
+    private static func snapshotArtifact(data: Data) -> DoryMachineSnapshotArtifact {
+        DoryMachineSnapshotArtifact(
+            byteCount: UInt64(data.count),
+            sha256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
         )
     }
 
@@ -16633,6 +16823,11 @@ public final class MachineManager: @unchecked Sendable {
         let kernelPath = "\(directory)/\(snapshotID).kernel"
         let machineIdentifierPath = "\(directory)/\(snapshotID).machine-identifier"
         let nvramPath = "\(directory)/\(snapshotID).nvram"
+        let machineConfiguration = readPrivateMetadata(
+            path: "\(configuration.stateDirectory)/\(machineID)/machine.json"
+        ).flatMap { try? JSONDecoder().decode(DoryMachineConfiguration.self, from: $0) }
+        let expectedArchitecture = machineConfiguration?.guestArchitecture?.rawValue
+            ?? normalizedGuestArchitecture(configuration.guestArchitecture)
         guard isPrivateDirectory(path: directory),
               let metadata = readPrivateMetadata(path: metadataPath),
               sha256(data: metadata) == authority.descriptorSHA256,
@@ -16641,7 +16836,7 @@ public final class MachineManager: @unchecked Sendable {
               snapshot.machineID == machineID,
               snapshot.rootfsPath == rootfsPath,
               snapshot.kernelPath == kernelPath,
-              snapshot.architecture == configuration.guestArchitecture,
+              snapshot.architecture == expectedArchitecture,
               snapshot.sizeBytes > 0,
               snapshot.runtimeIdentity.validate().isEmpty,
               (try? validateResources(
@@ -16678,20 +16873,42 @@ public final class MachineManager: @unchecked Sendable {
         let directory = "\(configuration.stateDirectory)/\(machineID)"
         let rootfsPath = "\(directory)/rootfs.ext4"
         let kernelPath = "\(directory)/kernel"
-        let machineIdentifierPath = snapshot.bootMode == .efi
-            ? "\(directory)/MachineIdentifier" : nil
-        let nvramPath = snapshot.bootMode == .efi ? "\(directory)/NVRAM" : nil
         guard isPrivateDirectory(path: directory),
               isPrivateRegularFile(path: rootfsPath),
-              isPrivateRegularFile(path: kernelPath),
-              machineIdentifierPath.map(isPrivateRegularFile(path:)) ?? true,
-              nvramPath.map(isPrivateRegularFile(path:)) ?? true,
-              let actual = try? snapshotArtifactEvidence(
-                  rootfsPath: rootfsPath,
-                  kernelPath: kernelPath,
-                  machineIdentifierPath: machineIdentifierPath,
-                  nvramPath: nvramPath
-              ) else { return false }
+              isPrivateRegularFile(path: kernelPath) else { return false }
+        let actual: DoryMachineSnapshotArtifactEvidence
+        if isDoryPCSnapshot(snapshot) {
+            guard let store = try? DoryUEFIVariableStoreFile(
+                directory: "\(directory)/uefi-variables"
+            ),
+            let loaded = try? store.load(),
+            loaded.source == .primary,
+            loaded.snapshot.platform == .pcV1,
+            let data = try? DoryUEFIVariableStoreFile.encodeColdSnapshot(
+                loaded.snapshot
+            ),
+            let rootfs = try? snapshotArtifact(path: rootfsPath),
+            let kernel = try? snapshotArtifact(path: kernelPath) else { return false }
+            actual = DoryMachineSnapshotArtifactEvidence(
+                rootfs: rootfs,
+                kernel: kernel,
+                machineIdentifier: snapshotArtifact(data: doryPCSnapshotFirmwareIdentity),
+                nvram: snapshotArtifact(data: data)
+            )
+        } else {
+            let machineIdentifierPath = snapshot.bootMode == .efi
+                ? "\(directory)/MachineIdentifier" : nil
+            let nvramPath = snapshot.bootMode == .efi ? "\(directory)/NVRAM" : nil
+            guard machineIdentifierPath.map(isPrivateRegularFile(path:)) ?? true,
+                  nvramPath.map(isPrivateRegularFile(path:)) ?? true,
+                  let evidence = try? snapshotArtifactEvidence(
+                      rootfsPath: rootfsPath,
+                      kernelPath: kernelPath,
+                      machineIdentifierPath: machineIdentifierPath,
+                      nvramPath: nvramPath
+                  ) else { return false }
+            actual = evidence
+        }
         return actual == expected
     }
 
@@ -16702,17 +16919,26 @@ public final class MachineManager: @unchecked Sendable {
     ) -> Bool {
         let directory = "\(configuration.stateDirectory)/\(machineID)"
         let token = operationID.uuidString.lowercased()
-        let pairs = [
+        let basePairs = [
             (".restore-\(token)-rootfs", "rootfs.ext4"),
             (".restore-\(token)-kernel", "kernel"),
             (".restore-\(token)-machine-json", "machine.json"),
+        ]
+        let vzFirmwarePairs = [
             (".restore-\(token)-machine-identifier", "MachineIdentifier"),
             (".restore-\(token)-nvram", "NVRAM"),
         ]
-        let required = Array(pairs.prefix(3))
-        guard required.allSatisfy({ pathEntryExists("\(directory)/\($0.0)") }) else {
+        guard basePairs.allSatisfy({ pathEntryExists("\(directory)/\($0.0)") }) else {
             return false
         }
+        let backupConfiguration = readPrivateMetadata(
+            path: "\(directory)/.restore-\(token)-machine-json"
+        ).flatMap { try? JSONDecoder().decode(DoryMachineConfiguration.self, from: $0) }
+        let isDoryPC = backupConfiguration?.bootMode == .efi
+            && (backupConfiguration?.guestArchitecture?.rawValue
+                ?? normalizedGuestArchitecture(configuration.guestArchitecture))
+                == DoryGuestArchitecture.x86_64.rawValue
+        let pairs = basePairs + (isDoryPC ? [] : vzFirmwarePairs)
         do {
             for (backup, destination) in pairs where pathEntryExists("\(directory)/\(backup)") {
                 try cloneOrCopyFile(
@@ -16721,8 +16947,29 @@ public final class MachineManager: @unchecked Sendable {
                     replaceExisting: true
                 )
             }
+            if isDoryPC {
+                let backupPath = "\(directory)/.restore-\(token)-nvram"
+                guard isPrivateRegularFile(path: backupPath) else { return false }
+                let data = try Data(contentsOf: URL(fileURLWithPath: backupPath))
+                let snapshot = try DoryUEFIVariableStoreFile.decodeColdSnapshot(data)
+                guard snapshot.platform == .pcV1 else { return false }
+                let store = try DoryUEFIVariableStoreFile(
+                    directory: "\(directory)/uefi-variables"
+                )
+                try store.replaceFromColdSnapshot(snapshot)
+            }
+            // Recovery authority is retained until every mutable artifact, including the
+            // descriptor-backed DoryPC variable store, has been restored successfully.
             for (backup, _) in pairs {
                 try? FileManager.default.removeItem(atPath: "\(directory)/\(backup)")
+            }
+            if isDoryPC {
+                try? FileManager.default.removeItem(
+                    atPath: "\(directory)/.restore-\(token)-nvram"
+                )
+                try? FileManager.default.removeItem(
+                    atPath: "\(directory)/.restore-\(token)-machine-identifier"
+                )
             }
             return true
         } catch {
