@@ -82,6 +82,26 @@ import Testing
     #expect(try read64(memory, 0x4000) & (1 << 6) != 0)
   }
 
+  @Test func walksOneGiBPagesAdvertisedByTheCompatibleCPUProfile() throws {
+    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let linear: UInt64 = 0x5234_5678
+    try write64(memory, 0x1000, 0x2000 | 0x7)
+    try write64(memory, 0x2000 + 8, 0x4000_0000 | 0x87)
+
+    let translation = try DoryX86PagingUnit().translate(
+      linearAddress: linear,
+      access: .read,
+      context: longModeContext(cpl: 3),
+      physicalMemory: memory
+    )
+
+    #expect(DoryX86CPUProfile.compatibleV1.supports(.oneGiBPages))
+    #expect(translation.physicalAddress == linear)
+    #expect(translation.pageSize == 1 << 30)
+    #expect(try read64(memory, 0x1000) & (1 << 5) != 0)
+    #expect(try read64(memory, 0x2000 + 8) & (1 << 5) != 0)
+  }
+
   @Test func reportsExecuteDisableAndUserProtectionPrecisely() throws {
     let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0080_0000

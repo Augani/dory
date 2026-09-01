@@ -21,6 +21,7 @@ public enum DoryX86Feature: String, Codable, CaseIterable, Sendable, Hashable {
   case cmpxchg16b
   case syscall
   case executeDisable
+  case oneGiBPages
   case longMode
   case lahf64
   case invariantTSC
@@ -73,7 +74,7 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     identifier: compatibleV1Identifier,
     features: [
       .x87, .tsc, .msr, .cmpxchg8b, .apic, .sysenter, .cmov, .clflush, .mmx, .fxsave, .sse, .sse2, .cmpxchg16b,
-      .syscall, .executeDisable, .longMode, .lahf64, .invariantTSC,
+      .syscall, .executeDisable, .oneGiBPages, .longMode, .lahf64, .invariantTSC,
     ],
     physicalAddressBits: 40,
     linearAddressBits: 48,
@@ -151,6 +152,7 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       set(.lahf64, bit: 0, in: &ecx)
       set(.syscall, bit: 11, in: &edx)
       set(.executeDisable, bit: 20, in: &edx)
+      set(.oneGiBPages, bit: 26, in: &edx)
       set(.longMode, bit: 29, in: &edx)
       return .init(ecx: ecx, edx: edx)
     case (0x8000_0007, _):

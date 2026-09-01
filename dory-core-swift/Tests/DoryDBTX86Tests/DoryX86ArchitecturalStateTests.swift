@@ -94,6 +94,7 @@ import Testing
     #expect(profile.cpuid(leaf: 1).edx & (1 << 11) != 0)
     #expect(profile.cpuid(leaf: 7).ebx & (1 << 5) == 0)
     #expect(profile.cpuid(leaf: 0x8000_0001).edx & (1 << 29) != 0)
+    #expect(profile.cpuid(leaf: 0x8000_0001).edx & (1 << 26) != 0)
     #expect(profile.cpuid(leaf: 0x8000_0001).ecx & (1 << 0) != 0)
     #expect(profile.cpuid(leaf: 0x8000_0008).eax == 40 | (48 << 8))
 
