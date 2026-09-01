@@ -305,6 +305,24 @@ public struct DoryARM64BaselineEmitter: Sendable {
     into words: inout [UInt32]
   ) -> Bool {
     switch destination {
+    case .register(let target) where isLowByteRegister(target):
+      switch source {
+      case .register, .immediate:
+        guard loadLowByteOperand(source, into: 10, words: &words) else { return false }
+      case .memory(let address, width: .i8):
+        guard emitMemoryAddress(address, into: 9, words: &words) else { return false }
+        emitMemoryRead(addressRegister: 9, width: .i8, resultRegister: 10, words: &words)
+      default:
+        return false
+      }
+      emitImmediate(0xFF, register: 11, into: &words)
+      words.append(encodeLogical(.and, left: 10, right: 11, destination: 10))
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+      emitImmediate(~UInt64(0xFF), register: 11, into: &words)
+      words.append(encodeLogical(.and, left: 9, right: 11, destination: 9))
+      words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
+      words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+      return true
     case .register(let target)
     where target.bank == "x86.gpr" && target.index < 16
       && (target.width == .i32 || target.width == .i64):

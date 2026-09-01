@@ -441,6 +441,15 @@ public struct DoryX86IRTranslator: Sendable {
     switch statement {
     case .copy(let destination, let source):
       switch destination {
+      case .register(let target) where isJITLowByteRegister(target):
+        switch source {
+        case .register(let register):
+          return isJITLowByteRegister(register)
+        case .immediate(_, let width):
+          return width == .i8
+        case .memory(let address, let width):
+          return width == .i8 && isJITMemoryAddress(address)
+        }
       case .register(let target) where isJITGeneralRegister(target):
         switch source {
         case .register(let register):
