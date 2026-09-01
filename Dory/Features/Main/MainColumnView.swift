@@ -127,15 +127,7 @@ struct MainColumnView: View {
                 )
             }
         case .desktops:
-            if AppInfo.includesDesktopLinux || store.machines.contains(where: { $0.displayMode == .desktop }) {
-                MachinesView(displayMode: .desktop)
-            } else {
-                MissingComponentView(
-                    component: .linuxDesktop,
-                    title: "Add a desktop runtime",
-                    message: "Install the desktop runtime and guest OS images you want. Optional desktop payloads stay separate from Docker Core."
-                )
-            }
+            MachinesView(displayMode: .desktop)
         case .machines:
             if AppInfo.componentAvailable(.linuxMachines)
                 || store.machines.contains(where: { $0.displayMode == .headless }) {
@@ -155,7 +147,7 @@ struct MainColumnView: View {
 
     private func primaryActionAvailable(for section: AppSection) -> Bool {
         switch section {
-        case .desktops: AppInfo.includesDesktopLinux
+        case .desktops: true
         case .machines: AppInfo.componentAvailable(.linuxMachines)
         default: true
         }

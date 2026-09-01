@@ -14,6 +14,18 @@ public enum DoryComponentID: String, Codable, CaseIterable, Hashable, Sendable {
     case desktopKali = "desktop-kali"
 
     public var isRemovable: Bool { self != .dockerCore }
+
+    /// Components offered by the current product. Desktop VMs now install an arbitrary guest from
+    /// its ISO, so the retired prebuilt desktop payload identifiers remain decodable only long
+    /// enough for stored receipts to be inspected or removed; they are never offered for install.
+    public var isUserSelectable: Bool {
+        switch self {
+        case .dockerCore, .kubernetes, .linuxMachines:
+            true
+        case .linuxDesktop, .desktopDebian, .desktopUbuntu, .desktopKali:
+            false
+        }
+    }
 }
 
 public enum DoryComponentSelectionURL {
@@ -45,6 +57,7 @@ public enum DoryComponentSelectionURL {
         for rawID in rawIDs {
             guard let id = DoryComponentID(rawValue: rawID),
                   id.isRemovable,
+                  id.isUserSelectable,
                   selected.insert(id).inserted else {
                 return nil
             }

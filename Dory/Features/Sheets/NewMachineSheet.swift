@@ -64,6 +64,7 @@ struct NewMachineSheet: View {
         if displayMode == .desktop {
             _cpus = State(initialValue: resources.cpus)
             _memoryGB = State(initialValue: resources.memoryGB)
+            _customISOInstall = State(initialValue: true)
         }
         if let installedDistro = DesktopMachineDistro.allCases.first(where: {
             AppInfo.componentAvailable($0.componentID)
@@ -255,9 +256,7 @@ struct NewMachineSheet: View {
             return "\(useCase.title) — tweak anything below"
         }
         if displayMode == .desktop {
-            return customISOInstall
-                ? "Install an arm64 Linux distribution from ISO · Apple EFI"
-                : "\(desktopDistro.displayName) \(desktopDistro.version) · \(desktopDistro.desktopName) · Apple Silicon"
+            return "Install a desktop operating system from ISO · EFI virtual machine"
         }
         return "Headless Linux · native Apple Silicon"
     }
@@ -284,30 +283,9 @@ struct NewMachineSheet: View {
     private var desktopDistroSection: some View {
         VStack(alignment: .leading, spacing: 9) {
             sectionLabel("INSTALLATION SOURCE")
-            Picker("", selection: $customISOInstall) {
-                Text("Dory desktop").tag(false)
-                Text("Custom ISO").tag(true)
-            }
-            .labelsHidden()
-            .pickerStyle(.segmented)
-            .onChange(of: customISOInstall) { _, custom in
-                if custom {
-                    selectedRecipe = nil
-                    cpus = DoryInstallerMachinePolicy.defaultCPUCount
-                }
-            }
-
-            if customISOInstall {
-                customISOSection
-            } else {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 9), count: 3), spacing: 9) {
-                    ForEach(installedDesktopDistros) { distro in
-                        desktopDistroButton(distro)
-                    }
-                }
-                Text("Only installed distributions are shown. Add or remove Debian, Ubuntu, and Kali independently in Components.")
-                    .font(.system(size: 11)).foregroundStyle(p.text3)
-            }
+            Text("Choose any compatible installer ISO. The operating system, desktop environment, and applications are entirely yours.")
+                .font(.system(size: 11.5)).foregroundStyle(p.text2)
+            customISOSection
         }
     }
 

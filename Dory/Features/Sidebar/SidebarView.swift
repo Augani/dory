@@ -69,7 +69,7 @@ struct SidebarView: View {
                     .desktops,
                     .machines,
                     "Desktops",
-                    trailing: !AppInfo.includesDesktopLinux && desktopCount == 0 ? "Get" : "\(desktopCount)"
+                    trailing: "\(desktopCount)"
                 )
                 row(
                     .machines,

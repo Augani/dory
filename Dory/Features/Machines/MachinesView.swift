@@ -50,8 +50,7 @@ struct MachinesView: View {
                         .frame(maxWidth: 460)
                 }
                 featurePills.padding(.top, 2)
-                if displayMode != .desktop || AppInfo.includesDesktopLinux {
-                    Button { store.activeSheet = displayMode == .desktop ? .newDesktop : .newMachine } label: {
+                Button { store.activeSheet = displayMode == .desktop ? .newDesktop : .newMachine } label: {
                         HStack(spacing: 7) {
                             Image(systemName: "plus").font(.system(size: 12, weight: .bold))
                             Text(displayMode == .desktop ? "Create a desktop" : "Create a headless VM")
@@ -59,11 +58,10 @@ struct MachinesView: View {
                         .foregroundStyle(.white)
                         .padding(.horizontal, 20).padding(.vertical, 10)
                         .background(p.accent, in: RoundedRectangle(cornerRadius: 9))
-                    }
-                    .buttonStyle(.plain)
-                    .padding(.top, 6)
-                    .accessibilityIdentifier(displayMode == .desktop ? "create-first-desktop" : "create-first-server")
                 }
+                .buttonStyle(.plain)
+                .padding(.top, 6)
+                .accessibilityIdentifier(displayMode == .desktop ? "create-first-desktop" : "create-first-server")
             }
             .frame(maxWidth: .infinity)
             .padding(.top, 64).padding(.bottom, 32).padding(.horizontal, 24)

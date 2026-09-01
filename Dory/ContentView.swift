@@ -25,7 +25,7 @@ struct RootView: View {
             }
         }
         .overlay {
-            if !store.launchSplashComplete {
+            if !store.launchSplashComplete && store.loadState != .ready {
                 LaunchSplashView {
                     withAnimation(.easeInOut(duration: 0.55)) { store.launchSplashComplete = true }
                 }
@@ -70,7 +70,12 @@ struct RootView: View {
         .animation(.spring(duration: 0.3), value: store.dockerHostConflict)
         .animation(.spring(duration: 0.3), value: store.dockerHostCleaned)
         .animation(.easeInOut(duration: 0.18), value: store.isSidebarVisible)
-        .task { store.startBackendIfNeeded() }
+        .task {
+            if store.loadState == .ready {
+                store.launchSplashComplete = true
+            }
+            store.startBackendIfNeeded()
+        }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await store.refreshIfIdle() }
         }

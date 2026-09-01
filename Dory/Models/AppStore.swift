@@ -5238,11 +5238,6 @@ final class AppStore {
         case .compose: openComposeFile()
         case .builds: break
         case .desktops:
-            guard AppInfo.includesDesktopLinux else {
-                actionError = "Install the Linux Desktop runtime and at least one distribution in Components."
-                self.section = .components
-                return
-            }
             activeSheet = .newDesktop
         case .machines:
             guard AppInfo.componentAvailable(.linuxMachines) else {

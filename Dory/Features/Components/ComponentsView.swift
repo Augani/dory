@@ -92,7 +92,7 @@ struct ComponentsView: View {
                         .background(p.amber.opacity(0.12), in: Capsule())
                 }
             }
-            Text("Start with Docker Core. Add only the Kubernetes, Linux machine, and desktop payloads you use. Each component updates and removes independently.")
+            Text("Docker Core powers containers and full desktop VMs. Add Kubernetes or the managed Headless VM image only when you need them.")
                 .font(.system(size: 12.5)).foregroundStyle(p.text2).lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
             if let catalog {
@@ -412,12 +412,12 @@ struct ComponentsView: View {
             }
             catalog = loadedCatalog
             catalogData = loadedData
-            statuses = store.list(
+            statuses = visibleStatuses(store.list(
                 catalog: loadedCatalog,
                 catalogDigest: DoryComponentCatalogVerifier.digest(loadedData),
                 bundledComponents: AppInfo.bundledComponents,
                 bundledVersion: AppInfo.version
-            )
+            ))
             usingCachedCatalog = cached
             errorMessage = nil
         } catch {
@@ -477,12 +477,12 @@ struct ComponentsView: View {
                 affectedBy: activatedComponents,
                 operationID: operationID
             )
-            statuses = store.list(
+            statuses = visibleStatuses(store.list(
                 catalog: catalog,
                 catalogDigest: digest,
                 bundledComponents: AppInfo.bundledComponents,
                 bundledVersion: AppInfo.version
-            )
+            ))
             HostDockerCLI.reconcileOptionalTools(enabled: appStore.routeDockerCLI)
             if showSuccess {
                 let updated = desktopUpdates.isEmpty
@@ -520,12 +520,12 @@ struct ComponentsView: View {
             let store = try DoryComponentStore.selected()
             _ = try store.verify(id)
             if let catalog {
-                statuses = store.list(
+                statuses = visibleStatuses(store.list(
                     catalog: catalog,
                     catalogDigest: DoryComponentCatalogVerifier.digest(catalogData),
                     bundledComponents: AppInfo.bundledComponents,
                     bundledVersion: AppInfo.version
-                )
+                ))
             }
             appStore.showSettingsSuccess("\(displayName(id)) passed verification.")
         } catch {
@@ -540,12 +540,12 @@ struct ComponentsView: View {
         do {
             let store = try DoryComponentStore.selected()
             try store.remove(id, catalog: catalog)
-            statuses = store.list(
+            statuses = visibleStatuses(store.list(
                 catalog: catalog,
                 catalogDigest: DoryComponentCatalogVerifier.digest(catalogData),
                 bundledComponents: AppInfo.bundledComponents,
                 bundledVersion: AppInfo.version
-            )
+            ))
             HostDockerCLI.reconcileOptionalTools(enabled: appStore.routeDockerCLI)
             appStore.showSettingsSuccess("Removed \(displayName(id)). Your workload data was preserved.")
         } catch {
@@ -575,6 +575,10 @@ struct ComponentsView: View {
     }
 
     private func isBusy(_ id: DoryComponentID) -> Bool { installingSelection || busy.contains(id) }
+
+    private func visibleStatuses(_ values: [DoryComponentStatus]) -> [DoryComponentStatus] {
+        values.filter { $0.id.isUserSelectable }
+    }
 
     private func formatted(_ bytes: UInt64) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(clamping: bytes), countStyle: .file)
