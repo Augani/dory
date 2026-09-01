@@ -790,7 +790,9 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
     pciFunction = try .init(
       address: address,
       virtioDeviceID: 16,
-      classCode: 0x030000,
+      // Modern virtio-gpu-pci is a display-other controller. Advertising VGA compatibility makes
+      // EDK2 intentionally leave device 0x1050 to QemuVideoDxe, which Dory does not implement.
+      classCode: 0x038000,
       initialBARAddress: initialBARAddress,
       queueCount: 2,
       maximumQueueSize: maximumQueueSize,

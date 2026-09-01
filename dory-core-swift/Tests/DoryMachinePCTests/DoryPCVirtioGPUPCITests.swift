@@ -51,7 +51,7 @@ import Testing
       pciFunctions: [gpu]
     )
     #expect(try gpu.readConfiguration(offset: 0, byteCount: 4) == [0xF4, 0x1A, 0x50, 0x10])
-    #expect(try gpu.readConfiguration(offset: 9, byteCount: 3) == [0, 0, 3])
+    #expect(try gpu.readConfiguration(offset: 9, byteCount: 3) == [0, 0x80, 3])
     try gpu.writeConfiguration(offset: 4, bytes: [2, 0])
     try gpu.writeConfiguration(offset: 0x54, bytes: littleEndian(UInt32(0xFEE0_0000)))
     try gpu.writeConfiguration(offset: 0x5C, bytes: [0x78, 0])

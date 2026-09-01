@@ -187,7 +187,7 @@ public enum DoryPCV1ABI {
 
     ## Interrupt and PCI contract
 
-    The IOAPIC exposes GSIs 0...23. PCI INTx uses level-triggered, active-low GSIs 16...23 with standard device/pin swizzling. MSI and MSI-X target the local APIC window. PCIe ECAM covers segment 0, buses 0...255. BAR MMIO is allocated from the frozen 256 MiB PCIe aperture.
+    The IOAPIC exposes GSIs 0...23. PCI INTx uses level-triggered, active-low GSIs 16...23 with standard device/pin swizzling. MSI and MSI-X target the local APIC window. PCIe ECAM covers segment 0, buses 0...255. BAR MMIO is allocated from the frozen 256 MiB PCIe aperture. The VirtIO GPU advertises PCI class `03:80` (display-other), never VGA class `03:00`; Dory does not expose a legacy VGA framebuffer.
 
     | Boot device | PCI address | BAR 0 |
     |---|---:|---:|
