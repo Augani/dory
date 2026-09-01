@@ -9,7 +9,8 @@ if [ -d /Applications/Xcode.app/Contents/Developer ]; then
   export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 fi
 
-python3 - "$ROOT/scripts/build.sh" <<'PY'
+python3 - "$ROOT/scripts/build.sh" \
+  "$ROOT/scripts/build-dory-armvirt-firmware.py" <<'PY'
 import pathlib
 import re
 import sys
@@ -54,15 +55,20 @@ vmm = function_body("bundle_doryd_swiftpm_helpers")
 assert 'sign_hardened_payload "$helper" "$entitlements" dory-vmm' in vmm
 assert 'sign_hardened_payload "$vmm_app" "$entitlements" dory-vmm' in vmm
 pc_firmware = function_body("bundle_dory_pc_firmware")
+pc_builder = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
 for canonical_name in (
     "firmware-code.fd",
     "manifest.json",
     "sbom.json",
     "variable-store-template.json",
 ):
-    assert canonical_name in pc_firmware
-assert "firmware-manifest.json" not in pc_firmware
-assert "firmware-sbom.spdx.json" not in pc_firmware
+    assert canonical_name in pc_builder
+assert "--package-app" in pc_firmware
+assert "verify_packaged_pc_bundle" in pc_builder
+assert "firmware-manifest.json" not in pc_builder
+assert "firmware-sbom.spdx.json" not in pc_builder
+assert "DEFAULT_VM_QUALIFICATION_BOOTSTRAP=1" in text
+assert "DORY_VM_QUALIFICATION_BOOTSTRAP:-$DEFAULT_VM_QUALIFICATION_BOOTSTRAP" in text
 assert "xcodebuild_status=$?" in text
 assert 'echo "xcodebuild_exit=$xcodebuild_status"' in text
 assert 'echo "build_exit=$status"' in text

@@ -217,7 +217,13 @@ class BuildFailure(RuntimeError):
 
 def parse_arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--output", required=True, type=Path)
+    operation = parser.add_mutually_exclusive_group(required=True)
+    operation.add_argument("--output", type=Path)
+    operation.add_argument(
+        "--package-app",
+        type=Path,
+        help="verify and package DoryPC firmware into one Xcode-built app",
+    )
     parser.add_argument(
         "--platform",
         choices=tuple(PLATFORM_DEFINITIONS),
@@ -233,6 +239,11 @@ def parse_arguments() -> argparse.Namespace:
         "--keep-workspace",
         action="store_true",
         help="retain the isolated source/build workspace for diagnosis",
+    )
+    parser.add_argument(
+        "--qualification-bootstrap",
+        choices=("0", "1"),
+        help="whether --package-app materializes or removes qualification firmware",
     )
     return parser.parse_args()
 
@@ -279,6 +290,89 @@ def sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def verify_packaged_pc_bundle(bundle: Path) -> None:
+    """Mirror the runtime's digest and ABI admission before Xcode seals the app."""
+    try:
+        bundle.lstat()
+    except OSError as error:
+        raise BuildFailure(f"cannot inspect DoryPC firmware bundle: {error}") from error
+    if not bundle.is_dir() or bundle.is_symlink():
+        raise BuildFailure("DoryPC firmware bundle must be a direct directory")
+    actual_files = {path.name for path in bundle.iterdir()}
+    if actual_files != EXPECTED_BUNDLE_FILES:
+        raise BuildFailure(
+            f"DoryPC firmware bundle has an invalid file set: {sorted(actual_files)}"
+        )
+    for file_name in EXPECTED_BUNDLE_FILES:
+        path = bundle / file_name
+        try:
+            file_metadata = path.lstat()
+        except OSError as error:
+            raise BuildFailure(f"cannot inspect DoryPC {file_name}: {error}") from error
+        if not path.is_file() or path.is_symlink() or file_metadata.st_size <= 0:
+            raise BuildFailure(f"DoryPC {file_name} must be a non-empty direct regular file")
+
+    manifest = load_json(bundle / "manifest.json")
+    expected_identities = {
+        "firmwareABIIdentity": "dory.edk2.pc@1",
+        "machineABIIdentity": "dory.pc@1",
+        "variableBridgeIdentity": "dory.uefi.variable-bridge.pc@1",
+        "variableStoreFormatIdentity": "dory.uefi.variables.pc@1",
+    }
+    if manifest.get("schemaVersion") != 1:
+        raise BuildFailure("DoryPC firmware manifest schemaVersion must be 1")
+    for key, expected in expected_identities.items():
+        if manifest.get(key) != expected:
+            raise BuildFailure(f"DoryPC firmware manifest {key} is not {expected}")
+    if manifest.get("reproducible") is not True:
+        raise BuildFailure("DoryPC firmware manifest must identify a reproducible build")
+    if manifest.get("secureBootPolicy") != "disabled":
+        raise BuildFailure("DoryPC v1 secureBootPolicy must be disabled")
+    build_identifier = manifest.get("buildIdentifier")
+    if not isinstance(build_identifier, str) or not build_identifier.startswith("dory-pc-v1-"):
+        raise BuildFailure("DoryPC firmware manifest has an invalid buildIdentifier")
+
+    def verify_artifact(
+        file_name: str,
+        digest_key: str,
+        byte_count_key: Optional[str] = None,
+    ) -> None:
+        path = bundle / file_name
+        expected_digest = manifest.get(digest_key)
+        if not isinstance(expected_digest, str) or len(expected_digest) != 64:
+            raise BuildFailure(f"DoryPC firmware manifest has an invalid {digest_key}")
+        if sha256(path) != expected_digest:
+            raise BuildFailure(f"DoryPC {file_name} does not match {digest_key}")
+        if byte_count_key is not None:
+            expected_bytes = manifest.get(byte_count_key)
+            if (
+                not isinstance(expected_bytes, int)
+                or isinstance(expected_bytes, bool)
+                or path.stat().st_size != expected_bytes
+            ):
+                raise BuildFailure(f"DoryPC {file_name} does not match {byte_count_key}")
+
+    verify_artifact("firmware-code.fd", "firmwareCodeSHA256", "firmwareCodeByteCount")
+    if (bundle / "firmware-code.fd").stat().st_size % 4_096 != 0:
+        raise BuildFailure("DoryPC firmware-code.fd must be 4 KiB aligned")
+    verify_artifact(
+        "variable-store-template.json",
+        "variableStoreTemplateSHA256",
+        "variableStoreTemplateByteCount",
+    )
+    verify_artifact("sbom.json", "sbomSHA256")
+
+    variable_store = load_json(bundle / "variable-store-template.json")
+    if variable_store.get("schemaVersion") != 1 or variable_store.get("generation") != 1:
+        raise BuildFailure("DoryPC variable-store template has an invalid generation contract")
+    if variable_store.get("formatIdentity") != "dory.uefi.variables.pc@1":
+        raise BuildFailure("DoryPC variable-store template has an incompatible formatIdentity")
+    if variable_store.get("machineABIIdentity") != "dory.pc@1":
+        raise BuildFailure("DoryPC variable-store template has an incompatible machineABIIdentity")
+    if load_json(bundle / "sbom.json").get("bomFormat") != "CycloneDX":
+        raise BuildFailure("DoryPC sbom.json must be a CycloneDX document")
 
 
 def require_keys(value: Dict[str, Any], names: Iterable[str], source: Path) -> None:
@@ -691,10 +785,7 @@ def publish(bundle: Path, destination: Path) -> None:
         raise
 
 
-def main() -> int:
-    arguments = parse_arguments()
-    configure_platform(arguments.platform)
-    verify_platform_contract()
+def build_and_publish(arguments: argparse.Namespace, output: Path) -> int:
     source_lock = load_json(SOURCE_LOCK_PATH)
     toolchain = load_json(TOOLCHAIN_LOCK_PATH)
     require_keys(
@@ -724,15 +815,76 @@ def main() -> int:
             toolchain,
             environment,
         )
-        publish(bundle, arguments.output)
-        print(f"{PLATFORM['displayName']} bundle: {arguments.output.resolve()}")
-        print(f"firmware sha256: {sha256(arguments.output.resolve() / 'firmware-code.fd')}")
+        publish(bundle, output)
+        print(f"{PLATFORM['displayName']} bundle: {output.resolve()}")
+        print(f"firmware sha256: {sha256(output.resolve() / 'firmware-code.fd')}")
         return 0
     finally:
         if arguments.keep_workspace:
             print(f"retained workspace: {workspace}")
         else:
             shutil.rmtree(workspace, ignore_errors=True)
+
+
+def remove_packaged_pc_bundle(destination: Path) -> None:
+    if destination.is_symlink() or (destination.exists() and not destination.is_dir()):
+        destination.unlink()
+    elif destination.is_dir():
+        shutil.rmtree(destination)
+
+
+def package_pc_qualification_app(arguments: argparse.Namespace) -> int:
+    if arguments.platform != "pc":
+        raise BuildFailure("--package-app requires --platform pc")
+    if arguments.qualification_bootstrap is None:
+        raise BuildFailure("--package-app requires --qualification-bootstrap 0 or 1")
+
+    app = Path(os.path.abspath(arguments.package_app))
+    if app.suffix != ".app" or not app.is_dir() or app.is_symlink():
+        raise BuildFailure(f"qualification firmware destination is not a direct app: {app}")
+    resources = app / "Contents" / "Resources"
+    destination = resources / "dory-pc-firmware"
+    if arguments.qualification_bootstrap == "0":
+        remove_packaged_pc_bundle(destination)
+        return 0
+
+    explicit_bundle = os.environ.get("DORY_PC_FIRMWARE_BUNDLE")
+    source = (
+        Path(explicit_bundle)
+        if explicit_bundle
+        else REPOSITORY_ROOT / "guest/out/dory-pc-firmware"
+    )
+    if not source.is_dir() and explicit_bundle is None:
+        print("note: building provenance-pinned DoryPC firmware for qualification", file=sys.stderr)
+        build_and_publish(arguments, source)
+    verify_packaged_pc_bundle(source)
+
+    resources.mkdir(parents=True, exist_ok=True)
+    staging = Path(tempfile.mkdtemp(prefix=".dory-pc-firmware.", dir=str(resources)))
+    try:
+        for file_name in sorted(EXPECTED_BUNDLE_FILES):
+            shutil.copy2(source / file_name, staging / file_name)
+        verify_packaged_pc_bundle(staging)
+        remove_packaged_pc_bundle(destination)
+        os.replace(staging, destination)
+        run(["/usr/bin/xattr", "-cr", str(destination)])
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+    print(f"packaged DoryPC firmware: {destination}")
+    return 0
+
+
+def main() -> int:
+    arguments = parse_arguments()
+    configure_platform(arguments.platform)
+    verify_platform_contract()
+    if arguments.package_app is not None:
+        return package_pc_qualification_app(arguments)
+    assert arguments.output is not None
+    if arguments.qualification_bootstrap is not None:
+        raise BuildFailure("--qualification-bootstrap is valid only with --package-app")
+    return build_and_publish(arguments, arguments.output)
 
 
 if __name__ == "__main__":

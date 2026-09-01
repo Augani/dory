@@ -26,6 +26,7 @@ Useful environment controls:
   DORY_REQUIRE_CORE_ASSETS=0|1    Require a bootable bundled Docker Core (defaults to 1 for Release)
   DORY_VM_QUALIFICATION_BOOTSTRAP=0|1
                                   Enable the explicitly non-release VM qualification path
+                                  (defaults to 1 for Debug and 0 for Release)
   DORY_PC_FIRMWARE_BUNDLE=PATH    Use an already-built verified DoryPC firmware bundle
   DORY_ALLOW_MISSING_GVPROXY=1    Permit an intentionally incomplete development bundle
 EOF
@@ -51,7 +52,12 @@ case "$REQUIRE_CORE_ASSETS" in
   0|1) ;;
   *) echo "error: DORY_REQUIRE_CORE_ASSETS must be '0' or '1'" >&2; exit 64 ;;
 esac
-VM_QUALIFICATION_BOOTSTRAP="${DORY_VM_QUALIFICATION_BOOTSTRAP:-0}"
+if [ "$XCODE_CONFIGURATION" = Debug ]; then
+  DEFAULT_VM_QUALIFICATION_BOOTSTRAP=1
+else
+  DEFAULT_VM_QUALIFICATION_BOOTSTRAP=0
+fi
+VM_QUALIFICATION_BOOTSTRAP="${DORY_VM_QUALIFICATION_BOOTSTRAP:-$DEFAULT_VM_QUALIFICATION_BOOTSTRAP}"
 case "$VM_QUALIFICATION_BOOTSTRAP" in
   0|1) ;;
   *) echo "error: DORY_VM_QUALIFICATION_BOOTSTRAP must be '0' or '1'" >&2; exit 64 ;;
@@ -656,46 +662,13 @@ bundle_debug_transfer_helper() {
 }
 
 bundle_dory_pc_firmware() {
-  local source_dir app destination file entry_count
-  [ "$VM_QUALIFICATION_BOOTSTRAP" = 1 ] || return 0
-  source_dir="${DORY_PC_FIRMWARE_BUNDLE:-guest/out/dory-pc-firmware}"
-  if [ ! -d "$source_dir" ] && [ -z "${DORY_PC_FIRMWARE_BUNDLE:-}" ]; then
-    echo "note: building provenance-pinned DoryPC firmware for qualification" >&2
-    /usr/bin/python3 scripts/build-dory-armvirt-firmware.py \
-      --platform pc --output "$source_dir" || return 1
-  fi
-  [ -d "$source_dir" ] && [ ! -L "$source_dir" ] || {
-    echo "error: DoryPC firmware bundle is not a direct directory: $source_dir" >&2
-    return 1
-  }
-  entry_count="$(find "$source_dir" -mindepth 1 -maxdepth 1 -print | wc -l | tr -d ' ')"
-  [ "$entry_count" = 4 ] || {
-    echo "error: DoryPC firmware bundle must contain exactly four release files" >&2
-    return 1
-  }
-  for file in \
-    firmware-code.fd manifest.json sbom.json \
-    variable-store-template.json; do
-    [ -f "$source_dir/$file" ] && [ ! -L "$source_dir/$file" ] \
-      && [ -s "$source_dir/$file" ] || {
-        echo "error: DoryPC firmware bundle has an invalid $file" >&2
-        return 1
-      }
-  done
+  local app
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
-    destination="$app/Contents/Resources/dory-pc-firmware"
-    [ ! -e "$destination" ] && [ ! -L "$destination" ] || {
-      echo "error: Xcode product unexpectedly already contains DoryPC firmware" >&2
-      return 1
-    }
-    mkdir -p "$destination" || return 1
-    for file in \
-      firmware-code.fd manifest.json sbom.json \
-      variable-store-template.json; do
-      install -m 0644 "$source_dir/$file" "$destination/$file" || return 1
-    done
-    xattr -cr "$destination" 2>/dev/null || true
+    DORY_VM_QUALIFICATION_BOOTSTRAP="$VM_QUALIFICATION_BOOTSTRAP" \
+      /usr/bin/python3 scripts/build-dory-armvirt-firmware.py --platform pc \
+        --package-app "$app" --qualification-bootstrap "$VM_QUALIFICATION_BOOTSTRAP" \
+        || return 1
   done
 }
 

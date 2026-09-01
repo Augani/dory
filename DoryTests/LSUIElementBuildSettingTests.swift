@@ -69,6 +69,33 @@ struct LSUIElementBuildSettingTests {
         #expect(text.components(separatedBy: "ENABLE_USER_SCRIPT_SANDBOXING = NO;").count - 1 >= 2)
     }
 
+    @Test func debugBuildPackagesDoryPCQualificationFirmwareBeforeSigning() throws {
+        let text = try pbxproj()
+        let debugConfiguration = try #require(
+            text.components(separatedBy: "Debug configuration for PBXNativeTarget \"Dory\"").last?
+                .components(separatedBy: "name = Debug;").first
+        )
+        let releaseConfiguration = try #require(
+            text.components(separatedBy: "Release configuration for PBXNativeTarget \"Dory\"").last?
+                .components(separatedBy: "name = Release;").first
+        )
+        let target = try #require(
+            text.components(separatedBy: "3E705CEE2FE37C790094B33C /* Dory */ = {").last?
+                .components(separatedBy: "buildRules = (").first
+        )
+
+        #expect(debugConfiguration.contains("DORY_VM_QUALIFICATION_BOOTSTRAP = 1;"))
+        #expect(releaseConfiguration.contains("DORY_VM_QUALIFICATION_BOOTSTRAP = 0;"))
+        #expect(target.contains("Package DoryPC Firmware"))
+        let firmwarePhase = try #require(target.range(of: "Package DoryPC Firmware"))
+        let extensionPhase = try #require(target.range(of: "Embed App Extensions"))
+        #expect(firmwarePhase.lowerBound < extensionPhase.lowerBound)
+        let builder = try repositoryFile("scripts/build-dory-armvirt-firmware.py")
+        #expect(builder.contains("verify_packaged_pc_bundle"))
+        #expect(builder.contains("package_pc_qualification_app"))
+        #expect(builder.contains("--qualification-bootstrap"))
+    }
+
     @Test func buildAndPublicTestRunnerScrubTransientXcodeProducts() throws {
         let build = try repositoryFile("scripts/build.sh")
         let test = try repositoryFile("scripts/test.sh")

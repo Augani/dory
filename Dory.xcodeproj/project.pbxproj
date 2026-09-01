@@ -376,6 +376,7 @@
 				3E705CEB2FE37C790094B33C /* Sources */,
 				3E705CEC2FE37C790094B33C /* Frameworks */,
 				3E705CED2FE37C790094B33C /* Resources */,
+				D0E400000000000000000003 /* Package DoryPC Firmware */,
 				AA1000000000000000000009 /* Embed App Extensions */,
 				AA00000000000000000000D0 /* Prune Stale Bundled Helpers */,
 				D0B400000000000000000004 /* Embed Linux VM Runner */,
@@ -716,6 +717,28 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		D0E400000000000000000003 /* Package DoryPC Firmware */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"$(SRCROOT)/Firmware/DoryPC/source.lock.json",
+				"$(SRCROOT)/Firmware/DoryPC/toolchain.lock.json",
+				"$(SRCROOT)/scripts/build-dory-armvirt-firmware.py",
+			);
+			name = "Package DoryPC Firmware";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "exec /usr/bin/python3 \"$SRCROOT/scripts/build-dory-armvirt-firmware.py\" --platform pc --package-app \"$TARGET_BUILD_DIR/$WRAPPER_NAME\" --qualification-bootstrap \"$DORY_VM_QUALIFICATION_BOOTSTRAP\"\n";
+		};
 		D0E400000000000000000002 /* Verify Release Guest Kernels */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;
@@ -1183,7 +1206,7 @@
 				DEVELOPMENT_TEAM = 864H636QW4;
 				DORY_BUNDLE_VENUS = 0;
 				DORY_BUNDLE_VENUS_REQUIRED = 0;
-				DORY_VM_QUALIFICATION_BOOTSTRAP = 0;
+				DORY_VM_QUALIFICATION_BOOTSTRAP = 1;
 				ENABLE_APP_SANDBOX = NO;
 				ENABLE_DEBUG_DYLIB = NO;
 				ENABLE_HARDENED_RUNTIME = YES;
