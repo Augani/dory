@@ -63,7 +63,7 @@ public final class DoryPCUEFIMachine: @unchecked Sendable {
     additionalPCIFunctions: [any DoryPCPCIFunction] = [],
     interpreter: DoryX86Interpreter = .init(),
     executionTier: DoryPCExecutionTier = .interpreter,
-    baselineJITMaximumCodeBytes: Int = 16 * 1024 * 1024
+    baselineJITMaximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes
   ) throws {
     guard firmware.manifest.platform == .pcV1 else {
       throw DoryPCUEFIMachineError.incompatibleFirmwarePlatform(firmware.manifest.platform)

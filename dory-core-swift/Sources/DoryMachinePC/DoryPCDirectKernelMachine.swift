@@ -187,7 +187,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     platformMMIODevices: [any DoryPCMMIODevice] = [],
     interpreter: DoryX86Interpreter = .init(),
     executionTier: DoryPCExecutionTier = .interpreter,
-    baselineJITMaximumCodeBytes: Int = 16 * 1024 * 1024
+    baselineJITMaximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes
   ) throws {
     guard memoryBytes >= 1024 * 1024 else {
       throw DoryPCMachineError.invalidMemorySize(memoryBytes)

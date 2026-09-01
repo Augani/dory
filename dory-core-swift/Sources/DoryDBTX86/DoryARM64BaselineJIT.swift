@@ -1539,6 +1539,12 @@ public struct DoryARM64ExecutionSummary: Sendable, Hashable {
 /// Unsupported blocks never enter executable memory and return `nil` so the caller can execute
 /// the instruction at the unchanged guest RIP with the interpreter.
 public final class DoryARM64BaselineExecutor: @unchecked Sendable {
+  /// Full-system firmware, bootloaders, kernels, and initramfs helpers touch substantially more
+  /// translated code than an application-process DBT. Keep the executable region bounded, but
+  /// large enough that a normal installer boot does not continuously discard and recompile its
+  /// cold-start working set.
+  public static let defaultMaximumCodeBytes = 128 * 1024 * 1024
+
   private struct LookupKey: Hashable {
     let guestStart: UInt64
     let addressSpaceID: UInt64
@@ -1589,7 +1595,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var nextOffset = 0
 
   public init(
-    maximumCodeBytes: Int = 16 * 1024 * 1024,
+    maximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
     decoder: DoryX86Decoder = .init(),
     cpuProfileIdentifier: String = DoryX86CPUProfile.compatibleV1Identifier,
     emitter: DoryARM64BaselineEmitter = .init(),

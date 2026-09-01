@@ -3,6 +3,13 @@ import Testing
 @testable import DoryDBTX86
 
 @Suite struct DoryARM64BaselineJITTests {
+  @Test func fullSystemDefaultCodeCacheRetainsLargeBootWorkingSet() throws {
+    let executor = try DoryARM64BaselineExecutor()
+
+    #expect(executor.maximumCodeBytes == 128 * 1024 * 1024)
+    #expect(executor.maximumCodeBytes == DoryARM64BaselineExecutor.defaultMaximumCodeBytes)
+  }
+
   @Test func emitsDeterministicARM64ForRegisterImmediateMoves() throws {
     let block = try DoryX86IRTranslator().translate(
       [0x48, 0xB8, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11, 0x90],
