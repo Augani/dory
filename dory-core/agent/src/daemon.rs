@@ -39,5 +39,6 @@ where
     }
     let handler: Handler =
         Arc::new(|req: Vec<u8>| Box::pin(async move { handle(&req).await }) as HandlerFuture);
-    let _mux = Mux::start(stream, handler);
+    let mux = Mux::start(stream, handler);
+    mux.wait_closed().await;
 }

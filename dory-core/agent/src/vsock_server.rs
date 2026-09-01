@@ -200,9 +200,11 @@ async fn serve_control() -> std::io::Result<()> {
             let handler: Handler = Arc::new(|req: Vec<u8>| {
                 Box::pin(async move { handle(&req).await }) as HandlerFuture
             });
-            // The mux owns the connection via its own spawned reader/writer tasks; it serves until
-            // the peer closes, at which point those tasks unwind.
-            let _mux = Mux::start(stream, handler);
+            // Keep the owning handle for the exact transport lifetime. Dropping it at the end of
+            // this task can retire the final outbound sender between two host RPCs even though the
+            // reader/writer pumps were only just spawned.
+            let mux = Mux::start(stream, handler);
+            mux.wait_closed().await;
         });
     }
 }

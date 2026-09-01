@@ -357,9 +357,8 @@ mod tests {
         let handler: Handler = Arc::new(|req: Vec<u8>| {
             Box::pin(async move { dory_agent_dispatch(&req) }) as HandlerFuture
         });
-        let _mux = Mux::start(stream, handler);
-        // Hold the mux alive for the test's duration.
-        std::future::pending::<()>().await;
+        let mux = Mux::start(stream, handler);
+        mux.wait_closed().await;
     }
 
     // The agent's dispatch lives in the agent binary crate (not a lib), so reproduce the one call the

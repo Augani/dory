@@ -17,11 +17,11 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, Notify};
 
 use crate::frame::{read_frame, write_frame, FrameError};
 
@@ -69,6 +69,8 @@ pub struct Mux {
     next_id: AtomicU64,
     pending: Pending,
     out: mpsc::Sender<Vec<u8>>,
+    closed: Arc<AtomicBool>,
+    closed_notify: Arc<Notify>,
 }
 
 impl Mux {
@@ -81,19 +83,29 @@ impl Mux {
         let (mut reader, mut writer) = tokio::io::split(stream);
         let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(256);
         let pending: Pending = Arc::new(Mutex::new(HashMap::new()));
+        let closed = Arc::new(AtomicBool::new(false));
+        let closed_notify = Arc::new(Notify::new());
 
         // Single writer: the only place bytes are put on the wire.
+        let pending_w = pending.clone();
+        let closed_w = closed.clone();
+        let closed_notify_w = closed_notify.clone();
         tokio::spawn(async move {
             while let Some(msg) = out_rx.recv().await {
                 if write_frame(&mut writer, &msg).await.is_err() {
                     break;
                 }
             }
+            closed_w.store(true, Ordering::Release);
+            pending_w.lock().unwrap().clear();
+            closed_notify_w.notify_waiters();
         });
 
         // Reader: demux responses to callers, dispatch requests to the handler.
         let pending_r = pending.clone();
         let out_r = out_tx.clone();
+        let closed_r = closed.clone();
+        let closed_notify_r = closed_notify.clone();
         tokio::spawn(async move {
             loop {
                 let frame = match read_frame(&mut reader).await {
@@ -125,13 +137,17 @@ impl Mux {
                 }
             }
             // Connection gone: drop every waiter so in-flight callers unblock with `Closed`.
+            closed_r.store(true, Ordering::Release);
             pending_r.lock().unwrap().clear();
+            closed_notify_r.notify_waiters();
         });
 
         Arc::new(Mux {
             next_id: AtomicU64::new(1),
             pending,
             out: out_tx,
+            closed,
+            closed_notify,
         })
     }
 
@@ -146,9 +162,18 @@ impl Mux {
     /// Issue a request and await its response. Concurrent calls are safe and may complete in any
     /// order — each is routed by its own id.
     pub async fn call(&self, payload: &[u8]) -> Result<Vec<u8>, MuxError> {
+        if self.closed.load(Ordering::Acquire) {
+            return Err(MuxError::Closed);
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
+        // Close and insertion can cross. Recheck after publication so a reader/writer that already
+        // drained the map cannot leave this new waiter stranded forever.
+        if self.closed.load(Ordering::Acquire) {
+            self.pending.lock().unwrap().remove(&id);
+            return Err(MuxError::Closed);
+        }
         if self
             .out
             .send(encode_msg(id, KIND_REQUEST, payload))
@@ -159,6 +184,21 @@ impl Mux {
             return Err(MuxError::Closed);
         }
         rx.await.map_err(|_| MuxError::Closed)
+    }
+
+    /// Retain the connection owner until either transport direction reaches its terminal boundary.
+    /// Servers use this instead of dropping the `Arc<Mux>` immediately after spawning its pumps.
+    pub async fn wait_closed(&self) {
+        loop {
+            if self.closed.load(Ordering::Acquire) {
+                return;
+            }
+            let notified = self.closed_notify.notified();
+            if self.closed.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
     }
 }
 
@@ -237,5 +277,11 @@ mod tests {
                  // The reader sees EOF and clears pending; the call must return Closed, never hang.
         let res = tokio::time::timeout(Duration::from_secs(5), client.call(b"x")).await;
         assert!(matches!(res, Ok(Err(MuxError::Closed))), "got {res:?}");
+        client.wait_closed().await;
+        let second = tokio::time::timeout(Duration::from_secs(1), client.call(b"again")).await;
+        assert!(
+            matches!(second, Ok(Err(MuxError::Closed))),
+            "got {second:?}"
+        );
     }
 }
