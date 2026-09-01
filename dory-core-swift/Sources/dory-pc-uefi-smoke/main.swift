@@ -204,6 +204,23 @@ private func hexadecimalBytes(_ bytes: [UInt8]) -> String {
   bytes.map { String(format: "%02x", $0) }.joined()
 }
 
+private func sha256<T: Encodable>(of value: T) throws -> String {
+  let encoder = JSONEncoder()
+  encoder.outputFormatting = [.sortedKeys]
+  return SHA256.hash(data: try encoder.encode(value))
+    .map { String(format: "%02x", $0) }
+    .joined()
+}
+
+private func completedInstructions(for stop: DoryPCMachineStop) -> UInt64 {
+  switch stop {
+  case .halted(let instructionCount), .exception(_, let instructionCount),
+    .tripleFault(let instructionCount), .poweredOff(let instructionCount),
+    .reset(let instructionCount), .instructionBudget(let instructionCount):
+    instructionCount
+  }
+}
+
 private func blockDeviceDiagnostics(
   _ blockDevices: [DoryPCVirtioBlockPCIDevice],
   memory: any DoryX86Memory
@@ -457,6 +474,7 @@ private func run() throws {
   let stop = execution.stop
   let executionStatistics = composed.machine.executionStatistics
   let state = composed.machine.state
+  let architecturalStateSHA256 = try state.map(sha256(of:))
   let rip = state.map { hexadecimal($0.cs.base &+ $0.rip) } ?? "unavailable"
   let pageTrace =
     state.map {
@@ -508,6 +526,8 @@ private func run() throws {
     "bootOrder": bootOrder,
     "exceptionPolicy": arguments.exceptionPolicy == .stop ? "stop" : "deliver",
     "executionTier": arguments.executionTier.rawValue,
+    "completedInstructions": completedInstructions(for: stop),
+    "architecturalStateSHA256": architecturalStateSHA256.map { $0 as Any } ?? NSNull(),
     "interpreterInstructions": executionStatistics.interpreterInstructions,
     "baselineJITInstructions": executionStatistics.baselineJITInstructions,
     "baselineJITBlocks": executionStatistics.baselineJITBlocks,
