@@ -812,9 +812,23 @@ enum DoryPCMode {
                         throw VMError.bootFailure(
                             "DoryPC stopped on unhandled \(exception) after \(count) instructions"
                         )
-                    case .tripleFault(let count):
+                    case .tripleFault(let source, let count):
+                        let state = composed.machine.state
+                        let statistics = composed.machine.executionStatistics
+                        let detail = state.map {
+                            let rip = String($0.cs.base &+ $0.rip, radix: 16)
+                            let cr0 = String($0.control.cr0, radix: 16)
+                            let cr3 = String($0.control.cr3, radix: 16)
+                            let cr4 = String($0.control.cr4, radix: 16)
+                            let efer = String($0.control.efer, radix: 16)
+                            return "rip=0x\(rip) cr0=0x\(cr0) cr3=0x\(cr3) "
+                                + "cr4=0x\(cr4) efer=0x\(efer)"
+                        } ?? "architectural-state=unavailable"
                         throw VMError.bootFailure(
-                            "DoryPC triple-faulted after \(count) instructions"
+                            "DoryPC triple-faulted from \(source) after \(count) instructions; "
+                                + "\(detail); interpreter=\(statistics.interpreterInstructions) "
+                                + "baseline=\(statistics.baselineJITInstructions) "
+                                + "optimizing=\(statistics.optimizingJITInstructions)"
                         )
                     }
                 }

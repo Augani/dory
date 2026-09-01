@@ -243,7 +243,7 @@ private func sha256(of bytes: [UInt8]) -> String {
 private func completedInstructions(for stop: DoryPCMachineStop) -> UInt64 {
   switch stop {
   case .halted(let instructionCount), .exception(_, let instructionCount),
-    .tripleFault(let instructionCount), .poweredOff(let instructionCount),
+    .tripleFault(_, let instructionCount), .poweredOff(let instructionCount),
     .reset(let instructionCount), .instructionBudget(let instructionCount):
     instructionCount
   }
@@ -431,8 +431,12 @@ private func runWithProgress(
     case .halted(let count): return (.halted(instructionCount: completed &+ count), trace, nil)
     case .exception(let exception, let count):
       return (.exception(exception, instructionCount: completed &+ count), trace, nil)
-    case .tripleFault(let count):
-      return (.tripleFault(instructionCount: completed &+ count), trace, nil)
+    case .tripleFault(let source, let count):
+      return (
+        .tripleFault(source: source, instructionCount: completed &+ count),
+        trace,
+        nil
+      )
     case .poweredOff(let count):
       return (.poweredOff(instructionCount: completed &+ count), trace, nil)
     case .reset(let count): return (.reset(instructionCount: completed &+ count), trace, nil)

@@ -36,10 +36,15 @@ public struct DoryPCExecutionStatistics: Codable, Sendable, Hashable {
   }
 }
 
+public enum DoryPCTripleFaultSource: Sendable, Hashable {
+  case exception(DoryX86Exception)
+  case interrupt(vector: UInt8, source: DoryX86InterruptSource, processor: Int)
+}
+
 public enum DoryPCMachineStop: Sendable, Hashable {
   case halted(instructionCount: UInt64)
   case exception(DoryX86Exception, instructionCount: UInt64)
-  case tripleFault(instructionCount: UInt64)
+  case tripleFault(source: DoryPCTripleFaultSource, instructionCount: UInt64)
   case poweredOff(instructionCount: UInt64)
   case reset(instructionCount: UInt64)
   case instructionBudget(UInt64)
@@ -498,7 +503,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
               mode: executionMode(processorState.value)
             )
           } catch {
-            return .tripleFault(instructionCount: completed - 1)
+            return .tripleFault(
+              source: .exception(exception),
+              instructionCount: completed - 1
+            )
           }
         }
       }
@@ -776,7 +784,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         )
         haltedProcessors[index] = false
       } catch {
-        return .tripleFault(instructionCount: instructionCount)
+        return .tripleFault(
+          source: .interrupt(vector: vector, source: source, processor: index),
+          instructionCount: instructionCount
+        )
       }
     }
     return nil
