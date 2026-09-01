@@ -46,6 +46,10 @@ for payload in (
     assert f"sign_hardened_payload {payload}" in runner
     assert f"verify_hardened_runtime_signature {payload}" in runner
 assert "codesign --verify --deep --strict \"$runner_app\"" in runner
+renderer_verifier = function_body("verify_debug_renderer_packaging")
+assert 'renderer_enabled="${DORY_BUNDLE_RENDERER:-${DORY_BUNDLE_VENUS:-}}"' in renderer_verifier
+assert '[ "$XCODE_CONFIGURATION" = Release ] && [ "$renderer_enabled" = 1 ]' in renderer_verifier
+assert "renderer-disabled runner retained a production renderer inventory" in renderer_verifier
 vmm = function_body("bundle_doryd_swiftpm_helpers")
 assert 'sign_hardened_payload "$helper" "$entitlements" dory-vmm' in vmm
 assert 'sign_hardened_payload "$vmm_app" "$entitlements" dory-vmm' in vmm

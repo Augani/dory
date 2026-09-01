@@ -537,14 +537,26 @@ bundle_debug_hv_helper() {
 }
 
 verify_debug_renderer_packaging() {
-  local app runner_app legacy managed_kernel
+  local app runner_app legacy managed_kernel renderer_enabled
   managed_kernel="${DORY_RENDERER_MANAGED_KERNEL:-guest/out/Image-desktop}"
+  renderer_enabled="${DORY_BUNDLE_RENDERER:-${DORY_BUNDLE_VENUS:-}}"
+  if [ -z "$renderer_enabled" ]; then
+    if [ "$XCODE_CONFIGURATION" = Release ]; then
+      renderer_enabled=1
+    else
+      renderer_enabled=0
+    fi
+  fi
+  case "$renderer_enabled" in
+    0|1) ;;
+    *) echo "error: renderer bundle control must be 0 or 1" >&2; return 1 ;;
+  esac
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
     runner_app="$app/Contents/Helpers/DoryHVRunner.app"
     [ -d "$runner_app" ] && [ ! -L "$runner_app" ] \
       || { echo "error: Xcode did not embed a direct DoryHVRunner.app" >&2; return 1; }
-    if [ "$XCODE_CONFIGURATION" = Release ]; then
+    if [ "$XCODE_CONFIGURATION" = Release ] && [ "$renderer_enabled" = 1 ]; then
       [ -f "$managed_kernel" ] && [ ! -L "$managed_kernel" ] \
         || { echo "error: renderer verification requires the exact managed desktop kernel: $managed_kernel" >&2; return 1; }
       if [ "$BUNDLE_EXPECTED_TEAM" = - ]; then
@@ -561,7 +573,7 @@ verify_debug_renderer_packaging() {
       continue
     fi
     [ ! -e "$runner_app/Contents/Resources/renderer-production-inventory.json" ] \
-      || { echo "error: Debug runner fabricated a production renderer inventory" >&2; return 1; }
+      || { echo "error: renderer-disabled runner retained a production renderer inventory" >&2; return 1; }
     for legacy in \
       libEGL.dylib libGLESv2.dylib libepoxy.0.dylib libMoltenVK.dylib \
       libvirglrenderer.dylib libvulkan.1.dylib; do
