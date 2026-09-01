@@ -234,28 +234,27 @@ struct MachineManagerWorkspaceProjectionTests {
         }
     }
 
-    @Test("unsupported migration facts do not prevent legacy create or load")
-    func unsupportedFactsRemainDiagnosticOnly() throws {
+    @Test("unsupported migration facts reject create before publication")
+    func unsupportedFactsRejectCreate() throws {
         try withStateRoot("unsupported") { _, state in
             let manager = makeManager(state: state, architecture: "mips64")
-            let created = try manager.create(DoryMachineConfiguration(
-                id: "legacy",
-                kernelPath: doryTestKernelPath,
-                rootfsPath: doryTestRootfsPath
-            ))
-            #expect(created.state == .created)
-            let diagnostic = try #require(manager.workspaceProjectionDiagnostic(id: "legacy"))
-            #expect(diagnostic.state == .unavailable)
-            #expect(diagnostic.failureCode == .unsupportedLegacyConfiguration)
-            #expect(FileManager.default.fileExists(atPath: state + "/legacy/machine.json"))
+            #expect(throws: (any Error).self) {
+                _ = try manager.create(DoryMachineConfiguration(
+                    id: "unsupported",
+                    kernelPath: doryTestKernelPath,
+                    rootfsPath: doryTestRootfsPath
+                ))
+            }
+            #expect(manager.status(id: "unsupported") == nil)
             #expect(!FileManager.default.fileExists(
-                atPath: recordPath(state: state, id: "legacy")
+                atPath: state + "/unsupported/machine.json"
+            ))
+            #expect(!FileManager.default.fileExists(
+                atPath: recordPath(state: state, id: "unsupported")
             ))
 
             let reloaded = makeManager(state: state, architecture: "mips64")
-            #expect(reloaded.status(id: "legacy")?.state == .stopped)
-            #expect(reloaded.workspaceProjectionDiagnostic(id: "legacy")?.failureCode
-                == .unsupportedLegacyConfiguration)
+            #expect(reloaded.status(id: "unsupported") == nil)
         }
     }
 

@@ -2067,7 +2067,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev/snapshots/s1.json"))
     }
 
-    func testImportSnapshotRejectsIncompatibleArchitectureBeforeExtractingArtifacts() throws {
+    func testImportSnapshotRejectsUnavailableTranslatedArchitectureBeforeExtractingArtifacts() throws {
         let base = "/tmp/dory-machine-import-architecture-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
@@ -2101,7 +2101,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertThrowsError(try manager.importSnapshot(fromPath: bundlePath)) { error in
             XCTAssertEqual(
                 error as? MachineManagerError,
-                .persistence("machine snapshot architecture amd64 is incompatible with arm64")
+                .persistence("machine snapshot architecture amd64 is unavailable on this host")
             )
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev"))
@@ -4259,7 +4259,9 @@ final class MachineManagerTests: XCTestCase {
 
         let installer = "\(base)/installer.iso"
         let disk = "\(base)/installed-disk.img"
-        try Data("arm64 installer".utf8).write(to: URL(fileURLWithPath: installer))
+        try Data("EFI/BOOT/BOOTAA64.EFI\narm64 installer".utf8).write(
+            to: URL(fileURLWithPath: installer)
+        )
         try Data("installed system".utf8).write(to: URL(fileURLWithPath: disk))
         let state = "\(base)/machines"
         let manager = MachineManager(configuration: MachineManagerConfiguration(

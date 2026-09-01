@@ -172,7 +172,7 @@ struct MachineManagerPlanningMutationAuthorityTests {
         }
     }
 
-    @Test("legacy policy and unrepresentable migration facts fail closed")
+    @Test("legacy planning and unsupported architecture publication fail closed")
     func unsupportedPromotionFailsClosed() throws {
         try PlanningMutationFixture.withFixture("unsupported") { fixture in
             let legacy = fixture.makeManager(launchPolicy: .legacyCompatibility)
@@ -186,17 +186,18 @@ struct MachineManagerPlanningMutationAuthorityTests {
                 )
             }
 
+            #expect(fixture.processStartCount == 0)
+        }
+        try PlanningMutationFixture.withFixture("unsupported-architecture") { fixture in
             let unsupported = fixture.makeManager(
                 launchPolicy: .requireResolvedPlan,
                 architecture: "mips64"
             )
-            try Self.expectFailure(containing: "unsupported guest architecture") {
-                _ = try unsupported.acquirePlanningMutationFence(
-                    machine: input.machine,
-                    definition: input.definition,
-                    canonicalDefinitionData: input.canonicalDefinitionData
-                )
+            try Self.expectFailure(containing: "unsupported daemon guest architecture") {
+                _ = try fixture.createMachine(unsupported)
             }
+            #expect(!FileManager.default.fileExists(atPath: fixture.machineJSONPath))
+            #expect(unsupported.status(id: fixture.machineID) == nil)
             #expect(fixture.processStartCount == 0)
         }
     }
