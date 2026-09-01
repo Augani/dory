@@ -571,7 +571,12 @@ enum DoryPCMode {
             }
             lifecycleServer = VmmLifecycleReceiptServer(
                 socketPath: configuration.controlSocketPath,
-                deviceTelemetryProvider: { telemetrySampler.snapshot() }
+                deviceTelemetryProvider: { telemetrySampler.snapshot() },
+                lifecycleHandler: { [networkRuntime] action in
+                    if action == .prepareStop {
+                        networkRuntime?.stop()
+                    }
+                }
             )
 
             if let display = devices.displays.first, let mailbox {

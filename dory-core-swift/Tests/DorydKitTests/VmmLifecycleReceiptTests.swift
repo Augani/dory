@@ -5,6 +5,44 @@ import Foundation
 import XCTest
 
 final class VmmLifecycleReceiptTests: XCTestCase {
+    private final class ActionRecorder: @unchecked Sendable {
+        private let lock = NSLock()
+        private var actions: [DoryLifecycleReceiptAction] = []
+
+        func append(_ action: DoryLifecycleReceiptAction) {
+            lock.withLock { actions.append(action) }
+        }
+
+        var snapshot: [DoryLifecycleReceiptAction] {
+            lock.withLock { actions }
+        }
+    }
+
+    func testLifecycleHandlerRunsBeforeAcknowledgement() throws {
+        let root = "/tmp/dory-vmm-handler-\(getpid())-\(UInt32.random(in: 0...UInt32.max))"
+        let socketPath = root + "/control.sock"
+        let recorder = ActionRecorder()
+        let server = VmmLifecycleReceiptServer(
+            socketPath: socketPath,
+            lifecycleHandler: { recorder.append($0) }
+        )
+        defer {
+            server.stop()
+            try? FileManager.default.removeItem(atPath: root)
+        }
+
+        try server.start()
+        let operationID = UUID()
+        let controller = UnixMachineVZLifecycleController()
+        try controller.acknowledgeLifecycle(
+            socketPath: socketPath,
+            action: .prepareStop,
+            operationID: operationID
+        )
+
+        XCTAssertEqual(recorder.snapshot, [.prepareStop])
+    }
+
     func testRawHelperReceiptServerEchoesExactLifecycleAuthority() throws {
         let root = "/tmp/dory-helper-receipt-\(getpid())-\(UInt32.random(in: 0...UInt32.max))"
         let socketPath = root + "/control.sock"

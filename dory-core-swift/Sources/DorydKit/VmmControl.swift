@@ -433,9 +433,9 @@ private func readAll(from fd: Int32) throws -> Data {
     }
 }
 
-/// Raw-HV helper-side control endpoint. Lifecycle requests never mutate VM state here; they prove
-/// that the exact operation identity reached the live helper around the daemon-owned signal
-/// transition. Telemetry requests return a bounded snapshot supplied by the live device graph.
+/// Raw-HV helper-side control endpoint. Lifecycle requests prove that the exact operation identity
+/// reached the live helper around the daemon-owned signal transition. A helper may also retire
+/// runner-owned host resources before acknowledging a stop; guest state remains daemon-owned.
 public final class VmmLifecycleReceiptServer: @unchecked Sendable {
     private let socketPath: String
     private let queue = DispatchQueue(label: "dev.dory.helper-lifecycle-receipt")
@@ -444,13 +444,16 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
     private var running = false
     private var boundIdentity: (device: dev_t, inode: ino_t)?
     private let deviceTelemetryProvider: (@Sendable () throws -> DoryDeviceTelemetrySnapshot)?
+    private let lifecycleHandler: (@Sendable (DoryLifecycleReceiptAction) throws -> Void)?
 
     public init(
         socketPath: String,
-        deviceTelemetryProvider: (@Sendable () throws -> DoryDeviceTelemetrySnapshot)? = nil
+        deviceTelemetryProvider: (@Sendable () throws -> DoryDeviceTelemetrySnapshot)? = nil,
+        lifecycleHandler: (@Sendable (DoryLifecycleReceiptAction) throws -> Void)? = nil
     ) {
         self.socketPath = socketPath
         self.deviceTelemetryProvider = deviceTelemetryProvider
+        self.lifecycleHandler = lifecycleHandler
     }
 
     public func start() throws {
@@ -565,6 +568,7 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
                   operationID != "00000000-0000-0000-0000-000000000000" else {
                 throw VmmControlError.rejected("invalid helper lifecycle receipt request")
             }
+            try lifecycleHandler?(action)
             response = VmmControlResponse(
                 ok: true,
                 lifecycleAction: action,
