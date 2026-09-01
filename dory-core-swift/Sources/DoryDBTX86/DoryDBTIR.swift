@@ -235,7 +235,7 @@ public struct DoryX86IRTranslator: Sendable {
       return (
         [
           .binary(
-            DoryIRBinaryOperation(rawValue: operation.rawValue)!,
+            irBinaryOperation(operation),
             destination: operand(
               destination,
               instructionRelativeBase: instruction.nextInstructionAddress
@@ -253,7 +253,7 @@ public struct DoryX86IRTranslator: Sendable {
       return (
         [
           .unary(
-            DoryIRUnaryOperation(rawValue: operation.rawValue)!,
+            irUnaryOperation(operation),
             operand: operand(
               source,
               instructionRelativeBase: instruction.nextInstructionAddress
@@ -559,7 +559,47 @@ public struct DoryX86IRTranslator: Sendable {
   }
 
   private func registerIndex(_ register: DoryX86GeneralRegister) -> UInt16 {
-    UInt16(DoryX86GeneralRegister.allCases.firstIndex(of: register)!)
+    switch register {
+    case .rax: 0
+    case .rcx: 1
+    case .rdx: 2
+    case .rbx: 3
+    case .rsp: 4
+    case .rbp: 5
+    case .rsi: 6
+    case .rdi: 7
+    case .r8: 8
+    case .r9: 9
+    case .r10: 10
+    case .r11: 11
+    case .r12: 12
+    case .r13: 13
+    case .r14: 14
+    case .r15: 15
+    }
+  }
+
+  private func irBinaryOperation(_ operation: DoryX86ALUOperation) -> DoryIRBinaryOperation {
+    switch operation {
+    case .add: .add
+    case .addWithCarry: .addWithCarry
+    case .or: .or
+    case .subtractWithBorrow: .subtractWithBorrow
+    case .and: .and
+    case .subtract: .subtract
+    case .xor: .xor
+    case .compare: .compare
+    case .test: .test
+    }
+  }
+
+  private func irUnaryOperation(_ operation: DoryX86UnaryOperation) -> DoryIRUnaryOperation {
+    switch operation {
+    case .increment: .increment
+    case .decrement: .decrement
+    case .bitwiseNot: .bitwiseNot
+    case .negate: .negate
+    }
   }
 
   private func irWidth(_ width: DoryX86OperandWidth) -> DoryIRIntegerWidth {
@@ -572,7 +612,24 @@ public struct DoryX86IRTranslator: Sendable {
   }
 
   private func conditionName(_ condition: DoryX86Condition) -> String {
-    "x86.condition.\(condition.rawValue)"
+    switch condition {
+    case .overflow: "x86.condition.0"
+    case .notOverflow: "x86.condition.1"
+    case .below: "x86.condition.2"
+    case .aboveOrEqual: "x86.condition.3"
+    case .equal: "x86.condition.4"
+    case .notEqual: "x86.condition.5"
+    case .belowOrEqual: "x86.condition.6"
+    case .above: "x86.condition.7"
+    case .sign: "x86.condition.8"
+    case .notSign: "x86.condition.9"
+    case .parity: "x86.condition.10"
+    case .notParity: "x86.condition.11"
+    case .less: "x86.condition.12"
+    case .greaterOrEqual: "x86.condition.13"
+    case .lessOrEqual: "x86.condition.14"
+    case .greater: "x86.condition.15"
+    }
   }
 
   private func addRelative(_ address: UInt64, _ displacement: Int64) -> UInt64 {
