@@ -23,6 +23,33 @@ import Testing
     #expect(read32(response, 48 + 12) == 1_080)
   }
 
+  @Test func retainsBoundedCommandDiagnosticsAcrossReset() throws {
+    let device = try makeDevice()
+    let memory = GPUGuestMemory(byteCount: 0x5000)
+
+    for _ in 0..<70 {
+      _ = try command(
+        device,
+        bytes: header(0x0100),
+        responseBytes: 24 + 16 * 24,
+        memory: memory
+      )
+    }
+    _ = try command(device, bytes: header(0xFFFF_FFFF), memory: memory)
+    device.reset()
+
+    let diagnostics = device.commandDiagnostics
+    #expect(diagnostics.completedCommandCount == 71)
+    #expect(diagnostics.failedCommandCount == 0)
+    #expect(diagnostics.resetCount == 1)
+    #expect(diagnostics.recentCommands.count == 64)
+    #expect(diagnostics.recentCommands.first?.sequenceNumber == 8)
+    #expect(diagnostics.recentCommands.last?.requestType == 0xFFFF_FFFF)
+    #expect(diagnostics.recentCommands.last?.requestByteCount == 24)
+    #expect(diagnostics.recentCommands.last?.responseType == 0x1200)
+    #expect(diagnostics.recentCommands.last?.responseByteCount == 24)
+  }
+
   @Test func publishesOnlyRendererAuthenticatedFeaturesAndCapsets() throws {
     let authority = try GPUAccelerationAuthority(
       features: [.gpuVirgl, .gpuResourceBlob, .gpuContextInit],

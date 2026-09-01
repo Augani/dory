@@ -294,6 +294,7 @@ private func displayDeviceDiagnostics(
   memory: any DoryX86Memory
 ) -> [String: Any] {
   let state = device.transport.deviceState.snapshot()
+  let commandDiagnostics = device.gpuDevice.commandDiagnostics
   let bar = try? device.configurationFunction.bar(at: 0)
   let queues: [[String: Any]] = (0..<device.transport.queueCount).map { index in
     let queueNumber = UInt16(index)
@@ -330,6 +331,20 @@ private func displayDeviceDiagnostics(
     "offeredFeatures": state.offeredFeatures.rawValue,
     "negotiatedFeatures": state.negotiatedFeatures.rawValue,
     "status": state.status.rawValue,
+    "completedCommandCount": commandDiagnostics.completedCommandCount,
+    "failedCommandCount": commandDiagnostics.failedCommandCount,
+    "resetCount": commandDiagnostics.resetCount,
+    "recentCommands": commandDiagnostics.recentCommands.map { command in
+      [
+        "sequenceNumber": command.sequenceNumber,
+        "queue": command.queue,
+        "requestType": String(format: "0x%04x", command.requestType),
+        "requestByteCount": command.requestByteCount,
+        "responseType": command.responseType.map { String(format: "0x%04x", $0) }
+          ?? "unavailable",
+        "responseByteCount": command.responseByteCount.map { $0 as Any } ?? NSNull(),
+      ] as [String: Any]
+    },
     "queues": queues,
   ]
 }

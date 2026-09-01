@@ -153,11 +153,56 @@ public enum DoryVirtioGPUError: Error, Sendable, Equatable {
   case invalidAccelerationCapabilities
 }
 
+public struct DoryVirtioGPUCommandRecord: Sendable, Hashable {
+  public let sequenceNumber: UInt64
+  public let queue: UInt16
+  public let requestType: UInt32
+  public let requestByteCount: Int
+  public let responseType: UInt32?
+  public let responseByteCount: Int?
+
+  public init(
+    sequenceNumber: UInt64,
+    queue: UInt16,
+    requestType: UInt32,
+    requestByteCount: Int,
+    responseType: UInt32?,
+    responseByteCount: Int?
+  ) {
+    self.sequenceNumber = sequenceNumber
+    self.queue = queue
+    self.requestType = requestType
+    self.requestByteCount = requestByteCount
+    self.responseType = responseType
+    self.responseByteCount = responseByteCount
+  }
+}
+
+public struct DoryVirtioGPUCommandDiagnostics: Sendable, Hashable {
+  public let completedCommandCount: UInt64
+  public let failedCommandCount: UInt64
+  public let resetCount: UInt64
+  public let recentCommands: [DoryVirtioGPUCommandRecord]
+
+  public init(
+    completedCommandCount: UInt64,
+    failedCommandCount: UInt64,
+    resetCount: UInt64,
+    recentCommands: [DoryVirtioGPUCommandRecord]
+  ) {
+    self.completedCommandCount = completedCommandCount
+    self.failedCommandCount = failedCommandCount
+    self.resetCount = resetCount
+    self.recentCommands = recentCommands
+  }
+}
+
 /// Transport-neutral VirtIO GPU 2D device. The core deliberately exposes only bounded software
 /// resources; Metal presentation and PCI/MMIO transport live outside this module.
 public final class DoryVirtioGPUDevice: @unchecked Sendable {
   public static let controlQueue: UInt16 = 0
   public static let cursorQueue: UInt16 = 1
+  private static let maximumDiagnosticCommands = 64
 
   private enum Command: UInt32 {
     case getDisplayInfo = 0x0100
@@ -237,6 +282,10 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
   private var rendererContexts: Set<UInt32> = []
   private var resourceUUIDs: [UInt32: [UInt8]] = [:]
   private var bindings: [UInt32: ScanoutBinding] = [:]
+  private var completedCommandCount: UInt64 = 0
+  private var failedCommandCount: UInt64 = 0
+  private var resetCount: UInt64 = 0
+  private var recentCommands: [DoryVirtioGPUCommandRecord] = []
 
   public init(
     scanouts: [DoryVirtioGPUScanout],
@@ -277,6 +326,19 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
   }
 
   public var scanouts: [DoryVirtioGPUScanout] { lock.withLock { scanoutState } }
+
+  /// Bounded command history retained across device resets so a failed firmware or guest driver
+  /// initialization can be diagnosed after it has returned the transport to reset state.
+  public var commandDiagnostics: DoryVirtioGPUCommandDiagnostics {
+    lock.withLock {
+      .init(
+        completedCommandCount: completedCommandCount,
+        failedCommandCount: failedCommandCount,
+        resetCount: resetCount,
+        recentCommands: recentCommands
+      )
+    }
+  }
 
   /// Publishes a new preferred mode. The PCI wrapper refreshes device configuration and raises the
   /// standard VIRTIO_GPU_EVENT_DISPLAY configuration interrupt when this returns true.
@@ -322,6 +384,7 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
 
   public func reset() {
     lock.withLock {
+      resetCount &+= 1
       resources.removeAll(keepingCapacity: true)
       rendererResources.removeAll(keepingCapacity: true)
       rendererContexts.removeAll(keepingCapacity: true)
@@ -353,22 +416,68 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       contextID: read32(request, 16),
       ringIndex: request[20]
     )
-    let command = Command(rawValue: read32(request, 0))
+    let requestType = read32(request, 0)
+    let command = Command(rawValue: requestType)
     let cursorCommand = command == .updateCursor || command == .moveCursor
-    guard (queue == Self.cursorQueue) == cursorCommand else {
-      let response = response(.errorInvalidParameter, header: header)
-      guard UInt64(response.count) <= chain.writableByteCount else {
+    do {
+      let responseBytes: [UInt8]
+      if (queue == Self.cursorQueue) != cursorCommand {
+        responseBytes = response(.errorInvalidParameter, header: header)
+      } else {
+        responseBytes = try execute(command, request: request, header: header, memory: memory)
+      }
+      guard UInt64(responseBytes.count) <= chain.writableByteCount else {
         throw DoryVirtioGPUError.malformedRequest
       }
-      try scatter(response, into: writable, memory: memory)
-      return UInt32(response.count)
+      try scatter(responseBytes, into: writable, memory: memory)
+      recordCommand(
+        queue: queue,
+        requestType: requestType,
+        requestByteCount: request.count,
+        response: responseBytes
+      )
+      return UInt32(responseBytes.count)
+    } catch {
+      recordCommand(
+        queue: queue,
+        requestType: requestType,
+        requestByteCount: request.count,
+        response: nil
+      )
+      throw error
     }
-    let response = try execute(command, request: request, header: header, memory: memory)
-    guard UInt64(response.count) <= chain.writableByteCount else {
-      throw DoryVirtioGPUError.malformedRequest
+  }
+
+  private func recordCommand(
+    queue: UInt16,
+    requestType: UInt32,
+    requestByteCount: Int,
+    response: [UInt8]?
+  ) {
+    let responseType = response.flatMap { bytes in
+      bytes.count >= 4 ? read32(bytes, 0) : nil
     }
-    try scatter(response, into: writable, memory: memory)
-    return UInt32(response.count)
+    lock.withLock {
+      if response == nil {
+        failedCommandCount &+= 1
+      } else {
+        completedCommandCount &+= 1
+      }
+      let sequenceNumber = completedCommandCount &+ failedCommandCount
+      recentCommands.append(
+        .init(
+          sequenceNumber: sequenceNumber,
+          queue: queue,
+          requestType: requestType,
+          requestByteCount: requestByteCount,
+          responseType: responseType,
+          responseByteCount: response?.count
+        )
+      )
+      if recentCommands.count > Self.maximumDiagnosticCommands {
+        recentCommands.removeFirst(recentCommands.count - Self.maximumDiagnosticCommands)
+      }
+    }
   }
 
   private func execute(
