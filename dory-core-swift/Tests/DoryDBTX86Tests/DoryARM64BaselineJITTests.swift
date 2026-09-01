@@ -6,7 +6,7 @@ import Testing
   @Test func fullSystemDefaultCodeCacheRetainsLargeBootWorkingSet() throws {
     let executor = try DoryARM64BaselineExecutor()
 
-    #expect(executor.maximumCodeBytes == 128 * 1024 * 1024)
+    #expect(executor.maximumCodeBytes == 512 * 1024 * 1024)
     #expect(executor.maximumCodeBytes == DoryARM64BaselineExecutor.defaultMaximumCodeBytes)
   }
 
