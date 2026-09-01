@@ -1586,6 +1586,23 @@ public struct DoryARM64ExecutionSummary: Sendable, Hashable {
   }
 }
 
+/// Cumulative cache-path evidence for one JIT executor. This remains process-local rather than
+/// part of the daemon wire contract so a runner can diagnose throughput without coupling older
+/// daemons to a newer helper's telemetry schema.
+public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
+  public let recentLookupHits: UInt64
+  public let dictionaryLookupHits: UInt64
+  public let lookupMisses: UInt64
+  public let memoryGenerationHits: UInt64
+  public let byteValidationHits: UInt64
+  public let sharedCodeHits: UInt64
+  public let compiledBlocks: UInt64
+  public let declinedCompilations: UInt64
+  public let codeCacheWraps: UInt64
+  public let nativeTraceAttempts: UInt64
+  public let nativeTraceReplays: UInt64
+}
+
 struct DoryARM64NativeBatchExecution: Sendable, Hashable {
   let guestInstructionCount: UInt32
   let residentBlockCount: UInt32
@@ -1673,6 +1690,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var recentEntries: [RecentResidentBlock?] = .init(repeating: nil, count: 256)
   private var nativeTraces: [NativeTrace?] = .init(repeating: nil, count: 4_096)
   private var nativeBatchExecutionCountValue: UInt64 = 0
+  private var recentLookupHitCount: UInt64 = 0
+  private var dictionaryLookupHitCount: UInt64 = 0
+  private var lookupMissCount: UInt64 = 0
+  private var memoryGenerationHitCount: UInt64 = 0
+  private var byteValidationHitCount: UInt64 = 0
+  private var sharedCodeHitCount: UInt64 = 0
+  private var compiledBlockCount: UInt64 = 0
+  private var declinedCompilationCount: UInt64 = 0
+  private var codeCacheWrapCount: UInt64 = 0
+  private var nativeTraceAttemptCount: UInt64 = 0
+  private var nativeTraceReplayCount: UInt64 = 0
   private var nextOffset = 0
 
   public init(
@@ -1696,6 +1724,23 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   public var residentByteCount: Int { lock.withLock { nextOffset } }
   public var nativeBatchExecutionCount: UInt64 {
     lock.withLock { nativeBatchExecutionCountValue }
+  }
+  public var diagnostics: DoryARM64BaselineExecutorDiagnostics {
+    lock.withLock {
+      .init(
+        recentLookupHits: recentLookupHitCount,
+        dictionaryLookupHits: dictionaryLookupHitCount,
+        lookupMisses: lookupMissCount,
+        memoryGenerationHits: memoryGenerationHitCount,
+        byteValidationHits: byteValidationHitCount,
+        sharedCodeHits: sharedCodeHitCount,
+        compiledBlocks: compiledBlockCount,
+        declinedCompilations: declinedCompilationCount,
+        codeCacheWraps: codeCacheWrapCount,
+        nativeTraceAttempts: nativeTraceAttemptCount,
+        nativeTraceReplays: nativeTraceReplayCount
+      )
+    }
   }
 
   public func invalidateAll() {
@@ -1842,6 +1887,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           let recordedTrace = nativeTraces[traceIndex].flatMap {
             $0.key == traceKey ? $0.guestStarts : nil
           }
+          if recordedTrace != nil { nativeTraceAttemptCount &+= 1 }
           if let recordedTrace,
             let replay = try replayNativeTrace(
               recordedTrace,
@@ -1855,6 +1901,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               memory: memory
             )
           {
+            nativeTraceReplayCount &+= 1
             completed = replay.guestInstructionCount
             blockCount = replay.residentBlockCount
             if replay.exitCode != .dispatch || completed >= maximumInstructions {
@@ -2022,12 +2069,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       if let cachedMemoryGeneration = cached.memoryCodeGeneration,
         cachedMemoryGeneration == memoryGeneration
       {
+        memoryGenerationHitCount &+= 1
         return cached
       }
       let currentBytes = try byteProvider(byteCount)
       guard currentBytes.count == byteCount else { return nil }
       let generation = Self.fingerprint(bytes: currentBytes, mode: mode)
       if generation == cached.codeGeneration {
+        byteValidationHitCount &+= 1
         let resident = ResidentBlock(
           block: cached.block,
           offset: cached.offset,
@@ -2049,6 +2098,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         let guestBytes = Array(bytes.prefix(byteCount))
         let generation = Self.fingerprint(bytes: guestBytes, mode: mode)
         if generation == shared.codeGeneration {
+          sharedCodeHitCount &+= 1
           let resident = ResidentBlock(
             block: shared.block,
             offset: shared.offset,
@@ -2060,7 +2110,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         }
       }
     }
-    return try compileResident(
+    let compiled = try compileResident(
       key: key,
       bytes: bytes,
       codeGenerationProvider: codeGenerationProvider,
@@ -2069,6 +2119,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       maximumInstructions: maximumInstructions,
       memory: memory
     )
+    if compiled == nil { declinedCompilationCount &+= 1 }
+    return compiled
   }
 
   private func compileResident(
@@ -2103,6 +2155,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       recentEntries = .init(repeating: nil, count: recentEntries.count)
       nativeTraces = .init(repeating: nil, count: nativeTraces.count)
       nextOffset = 0
+      codeCacheWrapCount &+= 1
     }
     let offset = nextOffset
     try region.publish(compiled, at: offset)
@@ -2116,6 +2169,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       memoryCodeGeneration: memoryCodeGeneration
     )
     publish(resident, for: key)
+    compiledBlockCount &+= 1
     return resident
   }
 
@@ -2229,8 +2283,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
 
   private func lookupResident(for key: LookupKey) -> ResidentBlock? {
     let index = recentIndex(for: key)
-    if let recent = recentEntries[index], recent.key == key { return recent.resident }
-    guard let resident = entries[key] else { return nil }
+    if let recent = recentEntries[index], recent.key == key {
+      recentLookupHitCount &+= 1
+      return recent.resident
+    }
+    guard let resident = entries[key] else {
+      lookupMissCount &+= 1
+      return nil
+    }
+    dictionaryLookupHitCount &+= 1
     recentEntries[index] = .init(key: key, resident: resident)
     return resident
   }

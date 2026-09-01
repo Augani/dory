@@ -87,6 +87,8 @@ import Testing
       )
       #expect(replay == summary)
       #expect(executor.nativeBatchExecutionCount == 1)
+      #expect(executor.diagnostics.nativeTraceAttempts == 1)
+      #expect(executor.diagnostics.nativeTraceReplays == 1)
       #expect(state.registers.rcx == 0)
       #expect(state.rip == base + UInt64(bytes.count))
     #endif
@@ -1033,6 +1035,15 @@ import Testing
       state.rip = 0x7000
       _ = try #require(try execute())
       #expect(requestedCounts == [15, program.count, 15])
+      let diagnostics = executor.diagnostics
+      #expect(diagnostics.recentLookupHits == 3)
+      #expect(diagnostics.dictionaryLookupHits == 0)
+      #expect(diagnostics.lookupMisses == 1)
+      #expect(diagnostics.memoryGenerationHits == 2)
+      #expect(diagnostics.byteValidationHits == 0)
+      #expect(diagnostics.sharedCodeHits == 0)
+      #expect(diagnostics.compiledBlocks == 2)
+      #expect(diagnostics.declinedCompilations == 0)
     #endif
   }
 

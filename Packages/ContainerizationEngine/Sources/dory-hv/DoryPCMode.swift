@@ -805,6 +805,12 @@ enum DoryPCMode {
                                 + "baseline=\(statistics.baselineJITInstructions) "
                                 + "optimizing=\(statistics.optimizingJITInstructions)"
                         )
+                        if let diagnostics = composed.machine.baselineJITDiagnostics {
+                            Self.log(Self.jitProgress("baseline", diagnostics))
+                        }
+                        if let diagnostics = composed.machine.optimizingJITDiagnostics {
+                            Self.log(Self.jitProgress("optimizing", diagnostics))
+                        }
                         Self.log(Self.blockDeviceProgress(composed))
                         nextProgressLogNanoseconds = now &+ progressLogIntervalNanoseconds
                     }
@@ -1070,6 +1076,24 @@ enum DoryPCMode {
                     + "unsupported=\(requests.unsupportedRequestCount),recent-reads=[\(ranges)]}"
             }
             return "block progress " + devices.joined(separator: " ")
+        }
+
+        private nonisolated static func jitProgress(
+            _ tier: String,
+            _ diagnostics: DoryPCJITCacheStatistics
+        ) -> String {
+            "jit progress tier=\(tier) "
+                + "recent-hits=\(diagnostics.recentLookupHits) "
+                + "dictionary-hits=\(diagnostics.dictionaryLookupHits) "
+                + "misses=\(diagnostics.lookupMisses) "
+                + "generation-hits=\(diagnostics.memoryGenerationHits) "
+                + "byte-hits=\(diagnostics.byteValidationHits) "
+                + "shared-hits=\(diagnostics.sharedCodeHits) "
+                + "compiled=\(diagnostics.compiledBlocks) "
+                + "declined=\(diagnostics.declinedCompilations) "
+                + "wraps=\(diagnostics.codeCacheWraps) "
+                + "trace-attempts=\(diagnostics.nativeTraceAttempts) "
+                + "trace-replays=\(diagnostics.nativeTraceReplays)"
         }
 
         private func requestGuestShutdown() {

@@ -81,6 +81,34 @@ public struct DoryPCExecutionStatistics: Codable, Sendable, Hashable {
   }
 }
 
+public struct DoryPCJITCacheStatistics: Sendable, Hashable {
+  public let recentLookupHits: UInt64
+  public let dictionaryLookupHits: UInt64
+  public let lookupMisses: UInt64
+  public let memoryGenerationHits: UInt64
+  public let byteValidationHits: UInt64
+  public let sharedCodeHits: UInt64
+  public let compiledBlocks: UInt64
+  public let declinedCompilations: UInt64
+  public let codeCacheWraps: UInt64
+  public let nativeTraceAttempts: UInt64
+  public let nativeTraceReplays: UInt64
+
+  fileprivate init(_ source: DoryARM64BaselineExecutorDiagnostics) {
+    recentLookupHits = source.recentLookupHits
+    dictionaryLookupHits = source.dictionaryLookupHits
+    lookupMisses = source.lookupMisses
+    memoryGenerationHits = source.memoryGenerationHits
+    byteValidationHits = source.byteValidationHits
+    sharedCodeHits = source.sharedCodeHits
+    compiledBlocks = source.compiledBlocks
+    declinedCompilations = source.declinedCompilations
+    codeCacheWraps = source.codeCacheWraps
+    nativeTraceAttempts = source.nativeTraceAttempts
+    nativeTraceReplays = source.nativeTraceReplays
+  }
+}
+
 public struct DoryPCProcessorExecutionSnapshot: Sendable, Hashable {
   public let index: Int
   public let lifecycle: DoryPCProcessorLifecycle
@@ -505,6 +533,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   public var executionStatistics: DoryPCExecutionStatistics {
     executionStatisticsLock.withLock { publishedExecutionStatistics }
+  }
+
+  public var baselineJITDiagnostics: DoryPCJITCacheStatistics? {
+    baselineJIT.map { .init($0.diagnostics) }
+  }
+
+  public var optimizingJITDiagnostics: DoryPCJITCacheStatistics? {
+    optimizingJIT.map { .init($0.diagnostics) }
   }
 
   public func state(forProcessor index: Int) -> DoryX86ArchitecturalState? {
