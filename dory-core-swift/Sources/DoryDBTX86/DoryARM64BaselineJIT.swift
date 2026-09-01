@@ -152,6 +152,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
         source: source,
         into: &words
       )
+    case .stackPush(let source):
+      return emitStackPush(source: source, into: &words)
+    case .stackPop(let destination):
+      return emitStackPop(destination: destination, into: &words)
     case .signedMultiply(let destination, let lhs, let rhs):
       return emitSignedMultiply(destination: destination, lhs: lhs, rhs: rhs, into: &words)
     case .extendMove(let destination, let source, let signed):
@@ -179,6 +183,43 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeLogical(.and, left: 9, right: 11, destination: 9))
     words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
     words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+    return true
+  }
+
+  private func emitStackPush(
+    source: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard case .register(let register) = source,
+      register.bank == "x86.gpr", register.index < 16, register.width == .i64,
+      load(register, into: 10, words: &words)
+    else { return false }
+
+    // Read the source before changing the temporary RSP so `push rsp` stores the old value.
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
+    emitImmediate(UInt64(bitPattern: -8), register: 11, into: &words)
+    words.append(encodeAdd(is64Bit: true, left: 9, right: 11, destination: 12))
+    words.append(encodeStore64(register: 12, base: 0, byteOffset: Self.rspOffset))
+    emitMemoryWrite(addressRegister: 12, valueRegister: 10, width: .i64, words: &words)
+    return true
+  }
+
+  private func emitStackPop(
+    destination: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard case .register(let register) = destination,
+      register.bank == "x86.gpr", register.index < 16, register.index != 4,
+      register.width == .i64
+    else { return false }
+
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
+    emitMemoryRead(addressRegister: 9, width: .i64, resultRegister: 10, words: &words)
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
+    emitImmediate(8, register: 11, into: &words)
+    words.append(encodeAdd(is64Bit: true, left: 9, right: 11, destination: 9))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.rspOffset))
+    words.append(encodeStore64(register: 10, base: 0, byteOffset: Int(register.index) * 8))
     return true
   }
 
@@ -335,6 +376,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       if case .memory = destination { return 1 }
       if case .memory = source { return 1 }
       return 0
+    case .stackPush, .stackPop:
+      return 1
     case .signedMultiply(let destination, let lhs, let rhs):
       if case .memory = destination { return 1 }
       if case .memory = lhs { return 1 }

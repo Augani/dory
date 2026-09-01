@@ -797,6 +797,185 @@ import Testing
     #endif
   }
 
+  @Test func registerPushAndPopMatchInterpreterAcrossTiers() throws {
+    #if arch(arm64)
+      struct StackCase {
+        let bytes: [UInt8]
+        let registers: DoryX86GeneralRegisters
+        let stackValue: UInt64?
+      }
+      let cases = [
+        StackCase(
+          bytes: [0x41, 0x55],  // push r13
+          registers: .init(rsp: 0x100, r13: 0x1122_3344_5566_7788),
+          stackValue: nil
+        ),
+        StackCase(
+          bytes: [0x54],  // push rsp must store the pre-decrement value
+          registers: .init(rsp: 0x100),
+          stackValue: nil
+        ),
+        StackCase(
+          bytes: [0x5A],  // pop rdx
+          registers: .init(rdx: 0xDEAD_BEEF, rsp: 0x100),
+          stackValue: 0x8877_6655_4433_2211
+        ),
+      ]
+      let flags: DoryX86RFLAGS = [
+        .reservedOne, .carry, .parity, .direction, .interruptEnable, .overflow,
+      ]
+
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        for testCase in cases {
+          let executor = try DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024,
+            optimization: optimization
+          )
+          let interpretedMemory = DoryX86ByteArrayMemory(byteCount: 0x200)
+          let translatedMemory = DoryX86ByteArrayMemory(byteCount: 0x200)
+          try interpretedMemory.write(at: 0x20, bytes: testCase.bytes)
+          try translatedMemory.write(at: 0x20, bytes: testCase.bytes)
+          if let stackValue = testCase.stackValue {
+            let stackBytes = (0..<8).map { UInt8(truncatingIfNeeded: stackValue >> ($0 * 8)) }
+            try interpretedMemory.write(at: 0x100, bytes: stackBytes)
+            try translatedMemory.write(at: 0x100, bytes: stackBytes)
+          }
+
+          var interpreted = try DoryX86ArchitecturalState(
+            registers: testCase.registers,
+            rip: 0x20,
+            rflags: flags
+          )
+          _ = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: interpretedMemory,
+            mode: .long64
+          )
+
+          var translated = try DoryX86ArchitecturalState(
+            registers: testCase.registers,
+            rip: 0x20,
+            rflags: flags
+          )
+          let execution = try #require(
+            executor.execute(
+              bytes: testCase.bytes,
+              at: translated.rip,
+              mode: .long64,
+              addressSpaceID: 0,
+              maximumInstructions: 1,
+              state: &translated,
+              memory: translatedMemory
+            )
+          )
+
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(execution.block.requiresMemoryCallbacks)
+          #expect(translated == interpreted)
+          #expect(
+            try translatedMemory.read(at: 0, byteCount: 0x200)
+              == interpretedMemory.read(at: 0, byteCount: 0x200))
+        }
+      }
+    #endif
+  }
+
+  @Test func registerStackMemoryFailuresLeaveArchitecturalStateRestartable() throws {
+    #if arch(arm64)
+      let cases: [([UInt8], DoryX86GeneralRegisters)] = [
+        ([0x41, 0x55], .init(rsp: 4, r13: 0x1122_3344_5566_7788)),
+        ([0x5A], .init(rdx: 0xDEAD_BEEF, rsp: 0x100)),
+      ]
+
+      for (bytes, registers) in cases {
+        let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024)
+        let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+        let initial = try DoryX86ArchitecturalState(registers: registers, rip: 0x7000)
+        var state = initial
+        let execution = try #require(
+          executor.execute(
+            bytes: bytes,
+            at: state.rip,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &state,
+            memory: memory
+          )
+        )
+
+        #expect(execution.block.tier == .baseline)
+        #expect(execution.exitCode == .interpreter)
+        #expect(state == initial)
+      }
+    #endif
+  }
+
+  @Test func measuredRegisterStackSitesCompileNativelyWhileComplexFormsStayBounded() throws {
+    let measured: [([UInt8], UInt64)] = [
+      ([0x41, 0x55], 0x12E4_D060A),  // push r13
+      ([0x5A], 0x12E4_D06C9),  // pop rdx
+    ]
+    for (bytes, address) in measured {
+      let block = try DoryX86IRTranslator().translate(bytes, at: address, mode: .long64)
+      for tier in [DoryARM64CompilationTier.baseline, .optimizing] {
+        let candidate = tier == .optimizing ? DoryIROptimizer().optimize(block).block : block
+        let compiled = DoryARM64BaselineEmitter().compile(candidate, tier: tier)
+        #expect(compiled.tier == tier)
+        #expect(compiled.requiresMemoryCallbacks)
+      }
+    }
+
+    let stackPointerFlow = try DoryX86IRTranslator().translate(
+      [
+        0x48, 0xBC, 0x00, 0x01, 0, 0, 0, 0, 0, 0,  // mov rsp,0x100
+        0x58,  // pop rax
+        0x48, 0x89, 0xE3,  // mov rbx,rsp
+      ],
+      at: 0,
+      mode: .long64
+    )
+    let optimizedFlow = DoryIROptimizer().optimize(stackPointerFlow).block
+    guard case .copy(
+      destination: .register(let target),
+      source: .register(let source)
+    ) = optimizedFlow.statements.last
+    else {
+      Issue.record("stack pop must invalidate the optimizer's pre-pop RSP constant")
+      return
+    }
+    #expect(target.index == 3)
+    #expect(source.index == 4)
+
+    let excluded: [([UInt8], DoryX86ExecutionMode)] = [
+      ([0x5C], .long64),  // pop rsp has special final-pointer semantics
+      ([0xFF, 0x30], .long64),  // push qword ptr [rax]
+      ([0x8F, 0x00], .long64),  // pop qword ptr [rax]
+      ([0x66, 0x50], .long64),  // push ax
+      ([0x66, 0x58], .long64),  // pop ax
+      ([0x50], .protected32),
+    ]
+    for (bytes, mode) in excluded {
+      let block = try DoryX86IRTranslator().translate(bytes, at: 0, mode: mode)
+      #expect(DoryARM64BaselineEmitter().compile(block).tier == .interpreterFallback)
+    }
+
+    let invalid = DoryIRRegister(bank: "not.x86.gpr", index: 0, width: .i64)
+    for statement in [
+      DoryIRStatement.stackPush(source: .register(invalid)),
+      .stackPop(destination: .register(invalid)),
+    ] {
+      let block = DoryIRBasicBlock(
+        guestStart: 0,
+        guestByteCount: 1,
+        guestInstructionCount: 1,
+        statements: [statement],
+        terminator: .next(1)
+      )
+      #expect(DoryARM64BaselineEmitter().compile(block).tier == .interpreterFallback)
+    }
+  }
+
   @Test func returnAndPopAndIndirectJumpStayNativeInLongMode() throws {
     #if arch(arm64)
       let memory = DoryX86ByteArrayMemory(byteCount: 0x200)

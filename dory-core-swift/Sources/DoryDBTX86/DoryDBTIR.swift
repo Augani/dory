@@ -87,6 +87,8 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   )
   case setCondition(DoryX86Condition, destination: DoryIROperand)
   case bitScan(reverse: Bool, destination: DoryIROperand, source: DoryIROperand)
+  case stackPush(source: DoryIROperand)
+  case stackPop(destination: DoryIROperand)
   case signedMultiply(destination: DoryIROperand, lhs: DoryIROperand, rhs: DoryIROperand)
   case extendMove(destination: DoryIROperand, source: DoryIROperand, signed: Bool)
   case effectiveAddress(destination: DoryIROperand, address: DoryIRMemoryAddress)
@@ -333,6 +335,30 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .push(let source) where mode == .long64:
+      return (
+        [
+          .stackPush(
+            source: operand(
+              source,
+              instructionRelativeBase: instruction.nextInstructionAddress
+            )
+          )
+        ],
+        nil
+      )
+    case .pop(let destination) where mode == .long64:
+      return (
+        [
+          .stackPop(
+            destination: operand(
+              destination,
+              instructionRelativeBase: instruction.nextInstructionAddress
+            )
+          )
+        ],
+        nil
+      )
     case .signedMultiply(let destination, let lhs, let rhs):
       return (
         [
@@ -500,6 +526,15 @@ public struct DoryX86IRTranslator: Sendable {
         case .register(let origin) = source, origin.width == .i32
       else { return false }
       return isJITGeneralRegister(target) && isJITGeneralRegister(origin)
+    case .stackPush(let source):
+      guard case .register(let register) = source, register.width == .i64 else { return false }
+      return isJITGeneralRegister(register)
+    case .stackPop(let destination):
+      guard case .register(let register) = destination,
+        register.width == .i64,
+        register.index != 4
+      else { return false }
+      return isJITGeneralRegister(register)
     case .signedMultiply(let destination, let lhs, let rhs):
       guard case .register(let target) = destination,
         target.width == .i32 || target.width == .i64,
@@ -578,6 +613,10 @@ public struct DoryX86IRTranslator: Sendable {
     case .bitScan(_, let destination, let source):
       if isMemory(destination) { return .write }
       return isMemory(source) ? .read : .none
+    case .stackPush:
+      return .write
+    case .stackPop:
+      return .read
     case .signedMultiply(let destination, let lhs, let rhs):
       if isMemory(destination) { return .write }
       return isMemory(lhs) || isMemory(rhs) ? .read : .none

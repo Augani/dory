@@ -91,6 +91,15 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)
 
+      case .stackPush:
+        statements.append(statement)
+        invalidateStackPointer(knownConstants: &knownConstants)
+
+      case .stackPop(let destination):
+        statements.append(statement)
+        invalidate(destination, knownConstants: &knownConstants)
+        invalidateStackPointer(knownConstants: &knownConstants)
+
       case .signedMultiply(let destination, _, _):
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)
@@ -160,6 +169,12 @@ public struct DoryIROptimizer: Sendable {
     knownConstants.removeValue(
       forKey: .init(bank: register.bank, index: register.index)
     )
+  }
+
+  private func invalidateStackPointer(
+    knownConstants: inout [RegisterIdentity: UInt64]
+  ) {
+    knownConstants.removeValue(forKey: .init(bank: "x86.gpr", index: 4))
   }
 
   private func mask(_ value: UInt64, to width: DoryIRIntegerWidth) -> UInt64 {
