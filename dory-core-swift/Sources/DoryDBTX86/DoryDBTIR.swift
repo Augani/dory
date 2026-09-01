@@ -80,6 +80,11 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   )
   case unary(DoryIRUnaryOperation, operand: DoryIROperand)
   case shift(DoryIRShiftOperation, destination: DoryIROperand, count: DoryIRShiftCount)
+  case conditionalMove(
+    DoryX86Condition,
+    destination: DoryIROperand,
+    source: DoryIROperand
+  )
   case signedMultiply(destination: DoryIROperand, lhs: DoryIROperand, rhs: DoryIROperand)
   case extendMove(destination: DoryIROperand, source: DoryIROperand, signed: Bool)
   case effectiveAddress(destination: DoryIROperand, address: DoryIRMemoryAddress)
@@ -293,6 +298,17 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .conditionalMove(let condition, let destination, let source):
+      return (
+        [
+          .conditionalMove(
+            condition,
+            destination: operand(destination),
+            source: operand(source, instructionRelativeBase: instruction.nextInstructionAddress)
+          )
+        ],
+        nil
+      )
     case .signedMultiply(let destination, let lhs, let rhs):
       return (
         [
@@ -441,6 +457,13 @@ public struct DoryX86IRTranslator: Sendable {
     case .shift(_, let destination, _):
       guard case .register(let register) = destination else { return false }
       return isJITGeneralRegister(register)
+    case .conditionalMove(_, let destination, let source):
+      guard case .register(let target) = destination,
+        case .register(let origin) = source,
+        target.width == origin.width,
+        target.width == .i32 || target.width == .i64
+      else { return false }
+      return isJITGeneralRegister(target) && isJITGeneralRegister(origin)
     case .signedMultiply(let destination, let lhs, let rhs):
       guard case .register(let target) = destination, target.width == .i32,
         case .register(let left) = lhs, left.width == .i32,
@@ -510,6 +533,9 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(operand) ? .write : .none
     case .shift(_, let destination, _):
       return isMemory(destination) ? .write : .none
+    case .conditionalMove(_, let destination, let source):
+      if isMemory(destination) { return .write }
+      return isMemory(source) ? .read : .none
     case .signedMultiply(let destination, let lhs, let rhs):
       if isMemory(destination) { return .write }
       return isMemory(lhs) || isMemory(rhs) ? .read : .none

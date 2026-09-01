@@ -140,6 +140,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitUnary(operation, operand: operand, into: &words)
     case .shift(let operation, let destination, let count):
       return emitShift(operation, destination: destination, count: count, into: &words)
+    case .conditionalMove(let condition, let destination, let source):
+      return emitConditionalMove(
+        condition, destination: destination, source: source, into: &words)
     case .signedMultiply(let destination, let lhs, let rhs):
       return emitSignedMultiply(destination: destination, lhs: lhs, rhs: rhs, into: &words)
     case .extendMove(let destination, let source, let signed):
@@ -150,6 +153,43 @@ public struct DoryARM64BaselineEmitter: Sendable {
     default:
       return false
     }
+  }
+
+  private func emitConditionalMove(
+    _ condition: DoryX86Condition,
+    destination: DoryIROperand,
+    source: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard case .register(let target) = destination,
+      case .register(let origin) = source,
+      target.bank == "x86.gpr", target.index < 16,
+      origin.bank == "x86.gpr", origin.index < 16,
+      target.width == origin.width,
+      target.width == .i32 || target.width == .i64,
+      emitX86Condition(condition, into: 10, words: &words)
+    else { return false }
+
+    words.append(
+      target.width == .i64
+        ? encodeLoad64(register: 11, base: 0, byteOffset: Int(origin.index) * 8)
+        : encodeLoad32(register: 11, base: 0, byteOffset: Int(origin.index) * 8)
+    )
+    words.append(
+      target.width == .i64
+        ? encodeLoad64(register: 12, base: 0, byteOffset: Int(target.index) * 8)
+        : encodeLoad32(register: 12, base: 0, byteOffset: Int(target.index) * 8)
+    )
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 10, 31, 31))
+    words.append(
+      encodeConditionalSelect(
+        destination: 9,
+        trueRegister: 11,
+        falseRegister: 12,
+        condition: .notEqual
+      ))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+    return true
   }
 
   private func emitCopy(
@@ -222,6 +262,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return 0
     case .shift(_, let destination, _):
       if case .memory = destination { return 2 }
+      return 0
+    case .conditionalMove:
       return 0
     case .signedMultiply(let destination, let lhs, let rhs):
       if case .memory = destination { return 1 }
@@ -1198,6 +1240,14 @@ public struct DoryARM64BaselineEmitter: Sendable {
       let condition = DoryX86Condition(rawValue: rawValue)
     else { return false }
 
+    return emitX86Condition(condition, into: result, words: &words)
+  }
+
+  private func emitX86Condition(
+    _ condition: DoryX86Condition,
+    into result: UInt32,
+    words: inout [UInt32]
+  ) -> Bool {
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
     emitImmediate(1, register: 15, into: &words)
     switch condition {

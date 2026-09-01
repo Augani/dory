@@ -1086,6 +1086,203 @@ import Testing
     #endif
   }
 
+  @Test func nativeConditionalMovesHonorEveryConditionAndPreserveFlagsAcrossTiers() throws {
+    #if arch(arm64)
+      let conditionFlags: [(DoryX86RFLAGS, DoryX86RFLAGS)] = [
+        ([.overflow], []),
+        ([], [.overflow]),
+        ([.carry], []),
+        ([], [.carry]),
+        ([.zero], []),
+        ([], [.zero]),
+        ([.carry], []),
+        ([], [.carry]),
+        ([.sign], []),
+        ([], [.sign]),
+        ([.parity], []),
+        ([], [.parity]),
+        ([.sign], []),
+        ([], [.sign]),
+        ([.zero], []),
+        ([], [.zero]),
+      ]
+      let preservedFlags: DoryX86RFLAGS = [
+        .reservedOne, .trap, .interruptEnable, .direction, .identification,
+      ]
+
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        for rawCondition in UInt8(0)..<UInt8(16) {
+          for (isTrue, conditionFlags) in [
+            (true, conditionFlags[Int(rawCondition)].0),
+            (false, conditionFlags[Int(rawCondition)].1),
+          ] {
+            let bytes: [UInt8] = [0x48, 0x0F, 0x40 | rawCondition, 0xC3]
+            let initialFlags = preservedFlags.union(conditionFlags)
+            let registers = DoryX86GeneralRegisters(
+              rax: 0x1111_2222_3333_4444,
+              rcx: 0x5555_6666_7777_8888,
+              rdx: 0x9999_AAAA_BBBB_CCCC,
+              rbx: 0xDEAD_BEEF_CAFE_BABE,
+              rsp: 0x1000,
+              rbp: 0x1010,
+              rsi: 0x2020,
+              rdi: 0x3030,
+              r8: 0x4040,
+              r9: 0x5050,
+              r10: 0x6060,
+              r11: 0x7070,
+              r12: 0x8080,
+              r13: 0x9090,
+              r14: 0xA0A0,
+              r15: 0xB0B0
+            )
+            var interpreted = try DoryX86ArchitecturalState(
+              registers: registers, rip: 0, rflags: initialFlags)
+            guard
+              case .retired = DoryX86Interpreter().step(
+                state: &interpreted,
+                memory: DoryX86ByteArrayMemory(bytes: bytes),
+                mode: .long64
+              )
+            else {
+              Issue.record("reference CMOV unexpectedly faulted")
+              return
+            }
+            var state = try DoryX86ArchitecturalState(
+              registers: registers, rip: 0, rflags: initialFlags)
+            let executor = try DoryARM64BaselineExecutor(
+              maximumCodeBytes: 4096, optimization: optimization)
+
+            let execution = try #require(
+              executor.execute(
+                bytes: bytes,
+                at: 0,
+                mode: .long64,
+                addressSpaceID: UInt64(rawCondition),
+                maximumInstructions: 1,
+                state: &state
+              ))
+
+            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(state.registers.rax == (isTrue ? registers.rbx : registers.rax))
+            #expect(state.registers == interpreted.registers)
+            #expect(state.rflags == initialFlags)
+            #expect(state == interpreted)
+            #expect(executor.diagnostics.declinedCompilations == 0)
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func hotConditionalMovePairExecutesNativelyWithExactRegisterWidths() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [
+        0x41, 0x0F, 0x42, 0xF9,  // cmovb edi,r9d
+        0x48, 0x0F, 0x42, 0xCA,  // cmovb rcx,rdx
+      ]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        for carry in [false, true] {
+          let registers = DoryX86GeneralRegisters(
+            rcx: 0x1111_2222_3333_4444,
+            rdx: 0x5555_6666_7777_8888,
+            rdi: 0xFFFF_FFFF_1234_5678,
+            r9: 0xAAAA_AAAA_DEAD_BEEF
+          )
+          var flags: DoryX86RFLAGS = [.reservedOne, .interruptEnable, .direction]
+          if carry { flags.insert(.carry) }
+          var interpreted = try DoryX86ArchitecturalState(
+            registers: registers, rip: 0, rflags: flags)
+          let referenceMemory = DoryX86ByteArrayMemory(bytes: bytes)
+          for _ in 0..<2 {
+            guard
+              case .retired = DoryX86Interpreter().step(
+                state: &interpreted, memory: referenceMemory, mode: .long64)
+            else {
+              Issue.record("reference CMOV pair unexpectedly faulted")
+              return
+            }
+          }
+          var state = try DoryX86ArchitecturalState(
+            registers: registers, rip: 0, rflags: flags)
+          let executor = try DoryARM64BaselineExecutor(
+            maximumCodeBytes: 4096, optimization: optimization)
+
+          let execution = try #require(
+            executor.execute(
+              bytes: bytes,
+              at: 0,
+              mode: .long64,
+              addressSpaceID: 0,
+              maximumInstructions: 2,
+              state: &state
+            ))
+
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(execution.block.guestInstructionCount == 2)
+          #expect(state.registers.rdi == (carry ? 0xDEAD_BEEF : 0x1234_5678))
+          #expect(state.registers.rcx == (carry ? registers.rdx : registers.rcx))
+          #expect(state.registers == interpreted.registers)
+          #expect(state.rflags == flags)
+          #expect(state == interpreted)
+          #expect(executor.diagnostics.declinedCompilations == 0)
+        }
+      }
+    #endif
+  }
+
+  @Test func falseDoublewordSelfConditionalMoveStillZeroExtendsNatively() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x0F, 0x42, 0xFF]  // cmovb edi,edi
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        var state = try DoryX86ArchitecturalState(
+          registers: .init(rdi: 0xFFFF_FFFF_1234_5678),
+          rip: 0,
+          rflags: [.reservedOne, .interruptEnable]
+        )
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096, optimization: optimization)
+
+        let execution = try #require(
+          executor.execute(
+            bytes: bytes,
+            at: 0,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &state
+          ))
+
+        #expect(execution.block.tier.rawValue == optimization.rawValue)
+        #expect(state.registers.rdi == 0x1234_5678)
+        #expect(state.rflags == [.reservedOne, .interruptEnable])
+      }
+    #endif
+  }
+
+  @Test func optimizerRetainsConditionalMoveAndInvalidatesItsDestination() throws {
+    let bytes: [UInt8] = [
+      0xBF, 0x01, 0x00, 0x00, 0x00,  // mov edi,1
+      0x41, 0xB9, 0x02, 0x00, 0x00, 0x00,  // mov r9d,2
+      0x41, 0x0F, 0x42, 0xF9,  // cmovb edi,r9d
+      0x89, 0xF8,  // mov eax,edi
+    ]
+    let block = try DoryX86IRTranslator().translate(bytes, at: 0x4000, mode: .long64)
+    let optimized = DoryIROptimizer().optimize(block).block
+
+    guard
+      case .conditionalMove(_, _, .register(let conditionalSource)) =
+        optimized.statements[2],
+      case .copy(_, .register(let consumerSource)) = optimized.statements[3]
+    else {
+      Issue.record("optimizer rewrote CMOV operands as unconditional constants")
+      return
+    }
+    #expect(conditionalSource.index == 9)
+    #expect(consumerSource.index == 7)
+    #expect(DoryARM64BaselineEmitter().compile(optimized, tier: .optimizing).tier == .optimizing)
+  }
+
   @Test func lowByteFlagsOnlyCoverageExcludesHighByteMemoryAndDestinationWrites() throws {
     let excluded: [[UInt8]] = [
       [0x84, 0xE4],  // test ah,ah

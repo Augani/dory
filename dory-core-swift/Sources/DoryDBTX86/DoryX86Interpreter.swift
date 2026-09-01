@@ -297,6 +297,10 @@ public struct DoryX86Interpreter: Sendable {
             state: &state,
             memory: executionMemory
           )
+        } else if mode == .long64,
+          case .register(let register, .doubleword) = destination
+        {
+          state.registers[register] &= 0xffff_ffff
         }
       case .setCondition(let condition, let destination):
         try write(

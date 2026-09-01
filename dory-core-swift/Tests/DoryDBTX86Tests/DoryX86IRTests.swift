@@ -39,6 +39,47 @@ import Testing
     #expect(block.terminator == .exit(.interpreter, resumeAt: 0x2000))
   }
 
+  @Test func registerConditionalMovesLowerToTypedNativeIR() throws {
+    let bytes: [UInt8] = [
+      0x41, 0x0F, 0x42, 0xF9,  // cmovb edi,r9d
+      0x48, 0x0F, 0x42, 0xCA,  // cmovb rcx,rdx
+    ]
+    let block = try DoryX86IRTranslator().translate(bytes, at: 0x102_D533, mode: .long64)
+
+    #expect(block.guestByteCount == bytes.count)
+    #expect(block.guestInstructionCount == 2)
+    #expect(block.statements.count == 2)
+    guard
+      case .conditionalMove(.below, let firstDestination, let firstSource) =
+        block.statements[0],
+      case .conditionalMove(.below, let secondDestination, let secondSource) =
+        block.statements[1]
+    else {
+      Issue.record("hot CMOV pair did not lower to typed IR")
+      return
+    }
+    #expect(
+      firstDestination == .register(.init(bank: "x86.gpr", index: 7, width: .i32)))
+    #expect(firstSource == .register(.init(bank: "x86.gpr", index: 9, width: .i32)))
+    #expect(
+      secondDestination == .register(.init(bank: "x86.gpr", index: 1, width: .i64)))
+    #expect(secondSource == .register(.init(bank: "x86.gpr", index: 2, width: .i64)))
+    #expect(DoryARM64BaselineEmitter().compile(block).tier == .baseline)
+  }
+
+  @Test func memoryAndWordConditionalMovesRemainInterpreterFallbacks() throws {
+    let cases: [[UInt8]] = [
+      [0x4C, 0x0F, 0x43, 0x6C, 0x24, 0x68],  // cmovae r13,[rsp+0x68]
+      [0x66, 0x0F, 0x42, 0xC3],  // cmovb ax,bx
+    ]
+
+    for bytes in cases {
+      let block = try DoryX86IRTranslator().translate(bytes, at: 0x3000, mode: .long64)
+      #expect(block.guestInstructionCount == 1)
+      #expect(DoryARM64BaselineEmitter().compile(block).tier == .interpreterFallback)
+    }
+  }
+
   @Test func packsMultipleReadsWithRegisterWorkIntoOneRestartableBlock() throws {
     let block = try DoryX86IRTranslator().translate(
       [

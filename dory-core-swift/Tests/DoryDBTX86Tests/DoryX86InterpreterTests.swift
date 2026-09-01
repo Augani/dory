@@ -65,6 +65,66 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
 @Suite struct DoryX86InterpreterTests {
   private let interpreter = DoryX86Interpreter()
 
+  @Test func falseLongModeDoublewordConditionalMoveStillZeroExtendsDestination() throws {
+    let bytes: [UInt8] = [0x0F, 0x42, 0xCB]  // cmovb ecx,ebx
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 0xFFFF_FFFF_1234_5678, rbx: 0xAAAA_AAAA_DEAD_BEEF),
+      rip: 0,
+      rflags: [.reservedOne, .interruptEnable, .direction]
+    )
+
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64)
+    else {
+      Issue.record("false CMOV unexpectedly faulted")
+      return
+    }
+    #expect(state.registers.rcx == 0x1234_5678)
+    #expect(state.registers.rbx == 0xAAAA_AAAA_DEAD_BEEF)
+    #expect(state.rflags == [.reservedOne, .interruptEnable, .direction])
+  }
+
+  @Test func falseLongModeQuadwordConditionalMovePreservesDestination() throws {
+    let bytes: [UInt8] = [0x48, 0x0F, 0x42, 0xCB]  // cmovb rcx,rbx
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 0xFFFF_FFFF_1234_5678, rbx: 0xAAAA_AAAA_DEAD_BEEF),
+      rip: 0,
+      rflags: [.reservedOne, .interruptEnable, .direction]
+    )
+
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64)
+    else {
+      Issue.record("false CMOV unexpectedly faulted")
+      return
+    }
+    #expect(state.registers.rcx == 0xFFFF_FFFF_1234_5678)
+    #expect(state.registers.rbx == 0xAAAA_AAAA_DEAD_BEEF)
+    #expect(state.rflags == [.reservedOne, .interruptEnable, .direction])
+  }
+
+  @Test func falseMemoryConditionalMoveStillReadsAndFaultsBeforeMutation() throws {
+    let bytes: [UInt8] = [0x0F, 0x44, 0x08]  // cmove ecx,[rax]
+    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let registers = DoryX86GeneralRegisters(rax: 0x1000, rcx: 0xFFFF_FFFF_1234_5678)
+    var state = try DoryX86ArchitecturalState(
+      registers: registers,
+      rip: 0,
+      rflags: [.reservedOne]
+    )
+
+    guard
+      case .exception(let exception) =
+        interpreter.step(state: &state, memory: memory, mode: .long64)
+    else {
+      Issue.record("false memory CMOV skipped its mandatory source read")
+      return
+    }
+    #expect(exception.kind == .pageFault)
+    #expect(state.registers == registers)
+    #expect(state.rip == 0)
+  }
+
   @Test func executesIntegerControlFlowWithoutHostAssumptions() throws {
     // mov rax,5; mov rcx,3; add rax,rcx; mov rdx,8; cmp rax,rdx;
     // jne +10; mov rbx,42; hlt
