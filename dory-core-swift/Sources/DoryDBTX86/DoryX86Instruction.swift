@@ -505,6 +505,23 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case insertPackedQword(
     destination: UInt8, source: DoryX86Operand, index: UInt8
   )
+  /// PINSRW (66 0F C4): insert a word from GPR/memory into XMM at the given index.
+  case insertPackedWord(
+    destination: UInt8, source: DoryX86Operand, index: UInt8, mmx: Bool
+  )
+  /// UNPCKLPS/LPD/HPS/HPD (0F 14/15): interleave low/high elements.
+  case unpackVector(
+    high: Bool,
+    doublePrecision: Bool,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
+  /// CVTTPD2DQ/CVTPD2DQ/CVTDQ2PD (66/F3/F2 0F E6): convert packed double ↔ dword.
+  case convertPackedDoubleToDword(
+    truncated: Bool,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
   /// PCMPISTRI (66 0F 3A 63): SSE4.2 packed compare implicit-length strings,
   /// producing a byte or word index in ECX. The immediate encodes data size,
   /// aggregation, polarity, and output selection.

@@ -1134,6 +1134,46 @@ public struct DoryX86Decoder: Sendable {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "unsupported vector move mandatory prefix")
         }
+      case 0x14, 0x15:
+        // UNPCKLPS (no prefix) / UNPCKLPD (66) / UNPCKHPS (no prefix) / UNPCKHPD (66)
+        let doublePrecision = prefixes.operandSizeOverride
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        operation = .unpackVector(
+          high: second == 0x15,
+          doublePrecision: doublePrecision,
+          destination: vectorRegister(operands.reg),
+          source: vectorOperand(operands.rm))
+      case 0x17:
+        // MOVHPS store (0F 17 /r mem): store high 64 bits of XMM to memory.
+        // MOVHPD store (66 0F 17 /r mem): same with 66 prefix.
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        operation = .moveVectorQwordHalf(
+          destination: vectorOperand(operands.rm),
+          source: vectorOperand(operands.reg),
+          sourceHigh: true,
+          destinationHigh: false)
+      case 0xC4:
+        // PINSRW (66 0F C4 /r ib): insert word from GPR/memory into XMM at index.
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
+        let index = try cursor.readByte() & 0x07
+        operation = .insertPackedWord(
+          destination: vectorRegister(operands.reg),
+          source: operands.rm,
+          index: index,
+          mmx: false)
+      case 0xE6:
+        // CVTTPD2DQ (66 0F E6): convert truncated packed double to packed dword.
+        // CVTDQ2PD (F2 0F E6): convert packed dword to packed double.
+        // CVTPD2DQ (F3 0F E6): convert packed double to packed dword (rounded).
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        operation = .convertPackedDoubleToDword(
+          truncated: prefixes.repeatPrefix != 0xF3,
+          destination: vectorRegister(operands.reg),
+          source: vectorOperand(operands.rm))
       case 0x2E, 0x2F:
         guard prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(

@@ -1214,6 +1214,75 @@ public struct DoryX86Interpreter: Sendable {
         registerBytes.replaceSubrange(offset..<offset + 8, with: qwordBytes)
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
+      case .insertPackedWord(let destination, let source, let index, let mmx):
+        // PINSRW: insert a word from GPR/memory into XMM at selected word index.
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        let wordBytes = littleEndian(value, width: .word)
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        let offset = Int(index) * 2
+        registerBytes.replaceSubrange(offset..<offset + 2, with: wordBytes)
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .unpackVector(let high, let doublePrecision, let destination, let source):
+        let lhs = Array(state.floatingPoint.ymm[Int(destination)].bytes.prefix(16))
+        let rhs = try readVectorBytes(
+          source, byteCount: 16, instruction: instruction,
+          state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: 16)
+        if doublePrecision {
+          if high {
+            result.replaceSubrange(0..<8, with: lhs[8..<16])
+            result.replaceSubrange(8..<16, with: rhs[8..<16])
+          } else {
+            result.replaceSubrange(0..<8, with: lhs[0..<8])
+            result.replaceSubrange(8..<16, with: rhs[0..<8])
+          }
+        } else {
+          if high {
+            result.replaceSubrange(0..<4, with: lhs[8..<12])
+            result.replaceSubrange(4..<8, with: rhs[8..<12])
+            result.replaceSubrange(8..<12, with: lhs[12..<16])
+            result.replaceSubrange(12..<16, with: rhs[12..<16])
+          } else {
+            result.replaceSubrange(0..<4, with: lhs[0..<4])
+            result.replaceSubrange(4..<8, with: rhs[0..<4])
+            result.replaceSubrange(8..<12, with: lhs[4..<8])
+            result.replaceSubrange(12..<16, with: rhs[4..<8])
+          }
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<16, with: result)
+        registerBytes.replaceSubrange(16..<32, with: repeatElement(0, count: 16))
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .convertPackedDoubleToDword(let truncated, let destination, let source):
+        // CVTTPD2DQ (truncated) / CVTPD2DQ (rounded): convert 2 doubles to 2 dwords.
+        let sourceBytes = try readVectorBytes(
+          source, byteCount: 16, instruction: instruction,
+          state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: 16)
+        for lane in 0..<2 {
+          let offset = lane * 8
+          let doubleValue = Double(bitPattern: fromLittleEndian(
+            Array(sourceBytes[offset..<offset + 8])))
+          let intValue: Int32
+          if truncated {
+            intValue = Int32(doubleValue.rounded(.towardZero))
+          } else {
+            intValue = Int32(doubleValue.rounded(.toNearestOrEven))
+          }
+          let bits = UInt32(bitPattern: intValue)
+          for i in 0..<4 {
+            result[lane * 4 + i] = UInt8(truncatingIfNeeded: bits >> UInt32(i * 8))
+          }
+        }
+        // Upper 8 bytes are zeroed
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<16, with: result)
+        registerBytes.replaceSubrange(16..<32, with: repeatElement(0, count: 16))
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
       case .packedCompareStringIndex(let destination, let source, let immediate):
         // PCMPISTRI: SSE4.2 packed compare implicit-length strings.
         // Produces an index in ECX. The immediate encodes:
