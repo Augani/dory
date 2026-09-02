@@ -2667,6 +2667,22 @@ Post-implementation audit results:
 | `BOOTx64.EFI` (UEFI bootloader) | 14428 | 14429 | 1 (truncated) |
 | `busybox-x86_64` (Linux musl static) | 245687 | 245687 | 0 |
 
+A broad audit of x86_64 Linux userspace binaries from the omarchy squashfs
+was also performed:
+
+| Binary | Decoded | Total | Real failures |
+| --- | --- | --- | --- |
+| `bash` | 197324 | 197324 | 0 |
+| `vim` | 912185 | 912185 | 0 |
+| `awk` | 151657 | 151657 | 0 |
+| `openssl` | 109998 | 109998 | 0 |
+| `tar` | 72547 | 72547 | 0 |
+| `sed` | 17928 | 17928 | 0 |
+| `grep` | 27369 | 27369 | 0 |
+| `python3` | 75 | 75 | 0 |
+
+**All audited x86_64 Linux userspace binaries decode with 0 failures.**
+
 The kernel's remaining failures are almost entirely data bytes (linear sweep
 artifacts in the 70MB binary — `0xFFFF`, invalid 64-bit opcodes like `PUSHA`/
 `POPA`, segment register ops, far call/jump, etc.). The glibc remaining
