@@ -996,6 +996,141 @@ public struct DoryX86Interpreter: Sendable {
             memory: executionMemory
           )
         }
+      case .moveVectorQwordHalf(let destination, let source, let sourceHigh, let destinationHigh):
+        // MOVLPS/MOVHLPS/MOVHPS/MOVLHPS move a 64-bit half between the low 128
+        // bits, preserving the untouched destination half and the upper YMM half.
+        let half: [UInt8]
+        switch source {
+        case .register(let register):
+          let full = state.floatingPoint.ymm[Int(register)].bytes
+          half = Array(sourceHigh ? full[8..<16] : full[0..<8])
+        case .memory(let memoryOperand):
+          try validateSegmentAccess(
+            memoryOperand,
+            byteCount: 8,
+            write: false,
+            instruction: instruction,
+            state: state
+          )
+          let address = effectiveAddress(memoryOperand, instruction: instruction, state: state)
+          half = try executionMemory.read(at: address, byteCount: 8)
+        }
+        switch destination {
+        case .register(let register):
+          var registerBytes = state.floatingPoint.ymm[Int(register)].bytes
+          let range = destinationHigh ? 8..<16 : 0..<8
+          registerBytes.replaceSubrange(range, with: half)
+          state.floatingPoint.ymm[Int(register)] = try .init(
+            bytes: registerBytes, expectedByteCount: 32)
+        case .memory(let memoryOperand):
+          try writeVectorBytes(
+            half,
+            to: memoryOperand,
+            instruction: instruction,
+            state: state,
+            memory: executionMemory
+          )
+        }
+      case .duplicateVectorScalar(let destination, let source, let mode):
+        // MOVDDUP/MOVSLDUP/MOVSHDUP broadcast source elements into the low 128
+        // bits, preserving the upper YMM half.
+        let sourceByteCount = mode == .doubleLow64 ? 8 : 16
+        let sourceBytes = try readVectorBytes(
+          source,
+          byteCount: sourceByteCount,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        var result = [UInt8](repeating: 0, count: 16)
+        switch mode {
+        case .doubleLow64:
+          let low = Array(sourceBytes.prefix(8))
+          result.replaceSubrange(0..<8, with: low)
+          result.replaceSubrange(8..<16, with: low)
+        case .singleLow32:
+          for pair in 0..<2 {
+            let lowDword = Array(sourceBytes[(pair * 2) * 4..<(pair * 2) * 4 + 4])
+            result.replaceSubrange((pair * 2) * 4..<(pair * 2) * 4 + 4, with: lowDword)
+            result.replaceSubrange((pair * 2 + 1) * 4..<(pair * 2 + 1) * 4 + 4, with: lowDword)
+          }
+        case .singleHigh32:
+          for pair in 0..<2 {
+            let highDword = Array(sourceBytes[(pair * 2 + 1) * 4..<(pair * 2 + 1) * 4 + 4])
+            result.replaceSubrange((pair * 2) * 4..<(pair * 2) * 4 + 4, with: highDword)
+            result.replaceSubrange((pair * 2 + 1) * 4..<(pair * 2 + 1) * 4 + 4, with: highDword)
+          }
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<16, with: result)
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .shufflePackedBytes(let destination, let source):
+        // PSHUFB: each source byte selects a destination lane (high bit zeroes).
+        let indices = try readVectorBytes(
+          source, byteCount: 16, instruction: instruction, state: state, memory: executionMemory)
+        var table = state.floatingPoint.ymm[Int(destination)].bytes
+        var result = [UInt8](repeating: 0, count: 16)
+        for lane in 0..<16 {
+          let index = indices[lane]
+          if index & 0x80 != 0 {
+            result[lane] = 0
+          } else {
+            result[lane] = table[Int(index & 0x0F)]
+          }
+        }
+        table.replaceSubrange(0..<16, with: result)
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: table, expectedByteCount: 32)
+      case .alignPackedBytes(let destination, let source, let count):
+        // PALIGNR: concatenate source:destination (source low) and extract 16
+        // bytes starting at `count`, zero-filling beyond the 32-byte window.
+        let sourceBytes = try readVectorBytes(
+          source, byteCount: 16, instruction: instruction, state: state, memory: executionMemory)
+        var destinationBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        let combined = sourceBytes + Array(destinationBytes.prefix(16))
+        var result = [UInt8](repeating: 0, count: 16)
+        for lane in 0..<16 {
+          let index = Int(count) + lane
+          if index < combined.count { result[lane] = combined[index] }
+        }
+        destinationBytes.replaceSubrange(0..<16, with: result)
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: destinationBytes, expectedByteCount: 32)
+      case .testPackedBits(let destination, let source):
+        // PTEST: ZF = (DEST AND SRC) == 0; CF = ((NOT DEST) AND SRC) == 0.
+        let sourceBytes = try readVectorBytes(
+          source, byteCount: 16, instruction: instruction, state: state, memory: executionMemory)
+        let destinationBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        var andResult: UInt8 = 0
+        var andNotResult: UInt8 = 0
+        for lane in 0..<16 {
+          andResult |= destinationBytes[lane] & sourceBytes[lane]
+          andNotResult |= (~destinationBytes[lane]) & sourceBytes[lane]
+        }
+        state.rflags.remove([.zero, .carry, .auxiliaryCarry, .overflow, .sign, .parity])
+        if andResult == 0 { state.rflags.insert(.zero) }
+        if andNotResult == 0 { state.rflags.insert(.carry) }
+      case .extendPackedDwordToQword(let destination, let source, let signed):
+        // PMOVZXDQ/PMOVSXDQ: extend two low doublewords to two quadwords.
+        let sourceBytes = try readVectorBytes(
+          source, byteCount: 8, instruction: instruction, state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: 16)
+        for lane in 0..<2 {
+          let dword = Array(sourceBytes[lane * 4..<lane * 4 + 4])
+          let extensionBytes: [UInt8]
+          if signed && (dword[3] & 0x80 != 0) {
+            extensionBytes = [0xFF, 0xFF, 0xFF, 0xFF]
+          } else {
+            extensionBytes = [0, 0, 0, 0]
+          }
+          result.replaceSubrange(lane * 8..<lane * 8 + 4, with: dword)
+          result.replaceSubrange(lane * 8 + 4..<lane * 8 + 8, with: extensionBytes)
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<16, with: result)
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
       case .moveIntegerToVector(let destination, let source):
         let width = operandWidth(source)
         let value = try read(

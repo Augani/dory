@@ -2500,3 +2500,40 @@ Backend and reference implementations:
 Issue-history inputs are linked inline in Section 19. They are evidence of recurring failure modes,
 not a claim that Dory inherits the upstream implementation or that every report is reproducible in
 Dory.
+
+## 27. x86_64 decode-coverage status (2026-09-02)
+
+A `dory-x86-decode-audit` sweep of real x86_64 system libraries
+(`libsystem_kernel.dylib`, `libsystem_platform.dylib`) confirmed the legacy
+SSE/SSSE3/SSE4.1 decode surface is now fully covered for the instructions those
+binaries actually emit. The previously identified gaps were closed in this pass:
+
+- `0F 12` / `0F 16` half-move and duplication family: `MOVLPS`, `MOVHPS`,
+  `MOVHLPS`, `MOVLHPS`, `MOVDDUP`, `MOVSLDUP`, `MOVSHDUP` — decoded and
+  interpreted, with correct register/memory form selection and YMM upper-half
+  preservation.
+- `0F 38` three-byte map: `PSHUFB` (`00`), `PTEST` (`17`), `PMOVSXDQ` (`25`),
+  `PMOVZXDQ` (`35`) — decoded and interpreted.
+- `0F 3A` three-byte map: `PALIGNR` (`0F`) — decoded and interpreted.
+
+Decode counts after the change (long64 mode):
+
+| Binary | Before | After | Remaining real failures |
+| --- | --- | --- | --- |
+| `libsystem_kernel.dylib` | 51481/51761 | 51504/51761 | VEX `C4`/`C5` only |
+| `libsystem_platform.dylib` | 8784/8975 | 8840/8975 | VEX `C4`/`C5` only |
+
+The only remaining real decode failures on these binaries are VEX-prefixed
+AVX/AVX2 instructions (`C4`/`C5`): `vmovups`, `vmovaps`, `vxorps`, `vpcmpeqb`,
+`vpmovmskb`, `vpshufb`, `vbroadcastss`, `vzeroupper`, `vpbroadcastb`,
+`vbroadcastsd`, `vbroadcasti128`, `vbroadcastf128`, and similar. All other
+`.long`-style "failures" are correct rejections of undefined/reserved
+encodings, not missing decoder coverage.
+
+VEX/AVX is intentionally staged as a separate profile effort per the delivery
+plan (Section 21, "staged AVX/AVX2 profiles"). The DBT JIT continues to
+gracefully fall back to the interpreter for any operation it does not yet
+lower to native ARM64, so correctness is preserved while native coverage is
+expanded incrementally. The full `DoryDBTX86Tests` suite (1013 tests,
+including 12 new SSE3/SSSE3/SSE4.1 tests) passes with 0 failures.
+

@@ -1021,6 +1021,50 @@ public struct DoryX86Decoder: Sendable {
             requiresAlignment: aligned
           )
         }
+      case 0x12, 0x16:
+        // SSE/SSE3 64-bit-half and element-duplication moves. The mandatory prefix
+        // selects the operation; `66` is reserved for both opcodes.
+        //   no prefix, 0F 12: MOVLPS (mem) / MOVHLPS (reg)
+        //   no prefix, 0F 16: MOVHPS (mem) / MOVLHPS (reg)
+        //   F3 0F 12: MOVSLDUP   F3 0F 16: MOVSHDUP
+        //   F2 0F 12: MOVDDUP    (F2 0F 16 is reserved)
+        switch (prefixes.repeatPrefix, prefixes.operandSizeOverride) {
+        case (0xF3, false):
+          let operands = try decodeModRM(
+            cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+          operation = .duplicateVectorScalar(
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm),
+            mode: second == 0x12 ? .singleLow32 : .singleHigh32
+          )
+        case (0xF2, false) where second == 0x12:
+          let operands = try decodeModRM(
+            cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+          operation = .duplicateVectorScalar(
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm),
+            mode: .doubleLow64
+          )
+        case (nil, false):
+          let operands = try decodeModRM(
+            cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+          let isRegisterForm: Bool
+          if case .register = operands.rm { isRegisterForm = true } else { isRegisterForm = false }
+          // 0F 12 writes the destination low half; 0F 16 writes the high half.
+          let destinationHigh = second == 0x16
+          // MOVHLPS (reg form of 0F 12) reads the source high half; every other
+          // form reads the source low half (memory supplies only 8 bytes).
+          let sourceHigh = second == 0x12 && isRegisterForm
+          operation = .moveVectorQwordHalf(
+            destination: vectorOperand(operands.reg),
+            source: vectorOperand(operands.rm),
+            sourceHigh: sourceHigh,
+            destinationHigh: destinationHigh
+          )
+        default:
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "unsupported vector move mandatory prefix")
+        }
       case 0x2E, 0x2F:
         guard prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
@@ -1652,6 +1696,60 @@ public struct DoryX86Decoder: Sendable {
         operation = .byteSwap(
           .register(target, width: prefixes.rex?.w == true ? .quadword : .doubleword)
         )
+      case 0x38:
+        // Three-byte opcode map 0F 38 (SSSE3/SSE4.1). Only the 66-prefixed 128-bit
+        // XMM forms are decoded here; other mandatory prefixes are reserved.
+        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.unsupportedOpcode(
+            address: address, bytes: cursor.consumedBytes)
+        }
+        let third = try cursor.readByte()
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        switch third {
+        case 0x00:
+          operation = .shufflePackedBytes(
+            destination: vectorRegister(operands.reg), source: vectorOperand(operands.rm))
+        case 0x17:
+          operation = .testPackedBits(
+            destination: vectorRegister(operands.reg), source: vectorOperand(operands.rm))
+        case 0x25:
+          operation = .extendPackedDwordToQword(
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm),
+            signed: true
+          )
+        case 0x35:
+          operation = .extendPackedDwordToQword(
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm),
+            signed: false
+          )
+        default:
+          throw DoryX86DecodeError.unsupportedOpcode(
+            address: address, bytes: cursor.consumedBytes)
+        }
+      case 0x3A:
+        // Three-byte opcode map 0F 3A (SSSE3/SSE4 immediate forms). 66-prefixed
+        // 128-bit XMM forms only; other mandatory prefixes are reserved.
+        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.unsupportedOpcode(
+            address: address, bytes: cursor.consumedBytes)
+        }
+        let third = try cursor.readByte()
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        switch third {
+        case 0x0F:
+          operation = .alignPackedBytes(
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm),
+            count: try cursor.readByte()
+          )
+        default:
+          throw DoryX86DecodeError.unsupportedOpcode(
+            address: address, bytes: cursor.consumedBytes)
+        }
       default:
         throw DoryX86DecodeError.unsupportedOpcode(
           address: address,

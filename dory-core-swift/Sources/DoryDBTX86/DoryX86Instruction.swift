@@ -132,6 +132,19 @@ public enum DoryX86VectorScalarUpperPolicy: String, Codable, Sendable, Hashable 
   case zeroOnMemorySource
 }
 
+/// SSE3 element-duplication selects for `0F 12`/`0F 16` repeat-prefixed moves.
+public enum DoryX86VectorDuplicateMode: String, Codable, Sendable, Hashable {
+  /// `MOVDDUP` (`F2 0F 12`): broadcast the low 64 bits of the source into both
+  /// 64-bit halves of the 128-bit destination.
+  case doubleLow64
+  /// `MOVSLDUP` (`F3 0F 12`): duplicate the low single-precision element of each
+  /// dword pair across the 128-bit destination.
+  case singleLow32
+  /// `MOVSHDUP` (`F3 0F 16`): duplicate the high single-precision element of each
+  /// dword pair across the 128-bit destination.
+  case singleHigh32
+}
+
 public enum DoryX86VectorBitwiseOperation: String, Codable, Sendable, Hashable {
   case and, andNot, or, xor
 }
@@ -360,6 +373,40 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     source: DoryX86VectorOperand,
     byteCount: UInt8,
     upperPolicy: DoryX86VectorScalarUpperPolicy
+  )
+  /// `MOVLPS`/`MOVHLPS`/`MOVHPS`/`MOVLHPS`: move a 64-bit half between a source
+  /// half and a destination half of the low 128 bits, preserving the untouched
+  /// 64-bit half of the destination and the upper 128 bits of the YMM register.
+  /// Memory sources always supply 8 bytes (the low half); `sourceHigh` only
+  /// selects the half for register sources.
+  case moveVectorQwordHalf(
+    destination: DoryX86VectorOperand,
+    source: DoryX86VectorOperand,
+    sourceHigh: Bool,
+    destinationHigh: Bool
+  )
+  /// `MOVDDUP`/`MOVSLDUP`/`MOVSHDUP`: broadcast source elements across the
+  /// 128-bit destination, preserving the upper 128 bits of the YMM register.
+  case duplicateVectorScalar(
+    destination: UInt8,
+    source: DoryX86VectorOperand,
+    mode: DoryX86VectorDuplicateMode
+  )
+  /// `PSHUFB` (`66 0F 38 00`): per-byte shuffle of the destination by the source
+  /// index bytes, zeroing lanes whose index high bit is set. SSSE3.
+  case shufflePackedBytes(destination: UInt8, source: DoryX86VectorOperand)
+  /// `PALIGNR` (`66 0F 3A 0F`): concatenate `source:destination` and extract the
+  /// 16 bytes starting at `count`. SSSE3.
+  case alignPackedBytes(
+    destination: UInt8, source: DoryX86VectorOperand, count: UInt8
+  )
+  /// `PTEST` (`66 0F 38 17`): set ZF/CF from bitwise tests of destination and
+  /// source without modifying the destination. SSE4.1.
+  case testPackedBits(destination: UInt8, source: DoryX86VectorOperand)
+  /// `PMOVZXDQ`/`PMOVSXDQ` (`66 0F 38 35` / `66 0F 38 25`): extend each of the
+  /// two low doublewords of the source to a destination quadword. SSE4.1.
+  case extendPackedDwordToQword(
+    destination: UInt8, source: DoryX86VectorOperand, signed: Bool
   )
   case moveIntegerToVector(destination: UInt8, source: DoryX86Operand)
   case moveVectorToInteger(destination: DoryX86Operand, source: UInt8)

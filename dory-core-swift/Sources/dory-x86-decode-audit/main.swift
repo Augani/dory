@@ -197,12 +197,30 @@ private enum DoryX86DecodeAudit {
         )
       else { continue }
 
-      let byteFields = fields[0][fields[0].index(after: colon)...]
-        .split(whereSeparator: { $0 == " " })
+      // Two objdump layouts appear in the wild:
+      //   GNU binutils:  "  address: 55 89 e5\tpush\t%rbp"  (bytes share the address field)
+      //   llvm-objdump:  "address:\t55 89 e5\tpush\t%rbp"   (bytes in their own tab field)
+      // Pick the bytes from whichever field actually holds them, then take the mnemonic from
+      // the field that follows the bytes.
+      let addressSuffix = fields[0][fields[0].index(after: colon)...]
+        .trimmingCharacters(in: .whitespaces)
+      let bytesField: Substring
+      let mnemonicField: Substring
+      if addressSuffix.isEmpty {
+        // llvm-objdump layout: fields = [address:, bytes, mnemonic, operands...]
+        guard fields.count >= 3 else { continue }
+        bytesField = fields[1]
+        mnemonicField = fields[2]
+      } else {
+        // GNU binutils layout: fields = [address: bytes, mnemonic, operands...]
+        bytesField = Substring(addressSuffix)
+        mnemonicField = fields[1]
+      }
+      let byteFields = bytesField.split(whereSeparator: { $0 == " " })
       var bytes = byteFields.compactMap { UInt8($0, radix: 16) }
       guard !bytes.isEmpty, bytes.count == byteFields.count else { continue }
 
-      var mnemonic = fields[1].trimmingCharacters(in: .whitespaces)
+      var mnemonic = mnemonicField.trimmingCharacters(in: .whitespaces)
       guard !mnemonic.isEmpty else { continue }
 
       // llvm-objdump renders LOCK as a standalone one-byte record and the opcode as the next
