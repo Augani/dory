@@ -1343,6 +1343,41 @@ public struct DoryX86Interpreter: Sendable {
         }
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: table, expectedByteCount: 32)
+      case .vexVectorShiftImmediate(let operation, let destination, let source, let immediate, let laneWidth, let length):
+        // VPSRLQ/VPSLLQ/VPSRAD: shift each lane of source by immediate.
+        let byteCount = Int(length.rawValue)
+        let laneByteCount = Int(laneWidth.rawValue)
+        let laneCount = byteCount / laneByteCount
+        var sourceBytes = state.floatingPoint.ymm[Int(source)].bytes
+        var result = [UInt8](repeating: 0, count: byteCount)
+        let shift = Int(immediate)
+        for lane in 0..<laneCount {
+          let offset = lane * laneByteCount
+          let laneValue = fromLittleEndian(Array(sourceBytes[offset..<offset + laneByteCount]))
+          let shifted: UInt64
+          switch operation {
+          case .logicalLeft:
+            shifted = shift < 64 ? (laneValue << UInt64(shift)) : 0
+          case .logicalRight:
+            shifted = shift < 64 ? (laneValue >> UInt64(shift)) : 0
+          case .arithmeticRight:
+            if shift < 64 {
+              let signed = Int64(bitPattern: laneValue)
+              shifted = UInt64(bitPattern: signed >> shift)
+            } else {
+              shifted = laneValue & (1 << 63) != 0 ? UInt64.max : 0
+            }
+          }
+          for i in 0..<laneByteCount {
+            result[offset + i] = UInt8(truncatingIfNeeded: shifted >> UInt64(i * 8))
+          }
+        }
+        sourceBytes.replaceSubrange(0..<byteCount, with: result)
+        if length == .xmm128 {
+          sourceBytes.replaceSubrange(byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: sourceBytes, expectedByteCount: 32)
       case .vexBroadcast(let destination, let source, let mode, let length):
         let byteCount = Int(length.rawValue)
         let sourceBytes = try readVectorBytes(

@@ -634,6 +634,17 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     secondSource: DoryX86VectorOperand,
     length: DoryX86VectorLength
   )
+  /// VEX packed shift by immediate (`VPSRLQ`/`VPSLLQ`/`VPSRAD`): shift each
+  /// lane of the source register by an immediate count, storing the result
+  /// in the destination. The `vvvv` field encodes the source register.
+  case vexVectorShiftImmediate(
+    operation: DoryX86VectorShiftOperation,
+    destination: UInt8,
+    source: UInt8,
+    immediate: UInt8,
+    laneWidth: DoryX86VectorLaneWidth,
+    length: DoryX86VectorLength
+  )
   /// VEX broadcast family: replicate a source element across the destination.
   case vexBroadcast(
     destination: UInt8,

@@ -518,6 +518,10 @@ public struct DoryX86Decoder: Sendable {
       operation = .softwareInterrupt(vector: 3)
     case 0xCD:
       operation = .softwareInterrupt(vector: try cursor.readByte())
+    case 0xF1:
+      // ICEBP / INT1: raise debug exception (vector 1). Used by the Linux
+      // kernel for breakpoints and self-IPI in certain code paths.
+      operation = .softwareInterrupt(vector: 1)
     case 0xE9:
       operation = .jump(
         relative: Int64(try cursor.readSigned(byteCount: width == .word ? 2 : 4)))
@@ -2099,15 +2103,44 @@ public struct DoryX86Decoder: Sendable {
         destination: operands.rm, source: vectorRegister(operands.reg),
         quadword: vex.w)
     case 0x6F:
-      // VMOVDQA (pp=66, aligned)
-      let operands = try decodeModRM(
+      // VMOVDQA (pp=66, aligned) — load form: reg <- rm
+      let operands6F = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-      let isLoad = true  // 6F is always reg <- rm for MOVDQA
-      let destination = vectorOperand(isLoad ? operands.reg : operands.rm)
-      let source = vectorOperand(isLoad ? operands.rm : operands.reg)
       return .vexMoveVector(
-        destination: destination, source: source,
+        destination: vectorOperand(operands6F.reg),
+        source: vectorOperand(operands6F.rm),
         length: length, requiresAlignment: true)
+    case 0x7F:
+      // VMOVDQA (pp=66, aligned) — store form: rm <- reg
+      let operands7F = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      return .vexMoveVector(
+        destination: vectorOperand(operands7F.rm),
+        source: vectorOperand(operands7F.reg),
+        length: length, requiresAlignment: true)
+    case 0x73:
+      // VPSRLQ/VPSLLQ/VPSRAD (pp=66): packed shift by immediate.
+      // ModRM reg field selects the operation: /2 = VPSRLQ, /6 = VPSLLQ, /4 = VPSRAD
+      let operands73 = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      let immediate = try cursor.readByte()
+      let shiftOperation: DoryX86VectorShiftOperation
+      switch operands73.group {
+      case 2: shiftOperation = .logicalRight
+      case 4: shiftOperation = .arithmeticRight
+      case 6: shiftOperation = .logicalLeft
+      default:
+        throw DoryX86DecodeError.invalidEncoding(
+          address: cursor.address,
+          detail: "VEX 0F 73 group \(operands73.group) is not a valid packed shift")
+      }
+      return .vexVectorShiftImmediate(
+        operation: shiftOperation,
+        destination: vectorRegister(operands73.reg),
+        source: vex.vvvv,
+        immediate: immediate,
+        laneWidth: .quadword,
+        length: length)
     case 0x74:
       // VPCMPEQB (pp=66)
       let operands = try decodeModRM(
