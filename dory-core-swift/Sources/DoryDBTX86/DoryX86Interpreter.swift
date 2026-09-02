@@ -1214,6 +1214,99 @@ public struct DoryX86Interpreter: Sendable {
         registerBytes.replaceSubrange(offset..<offset + 8, with: qwordBytes)
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
+      case .packedCompareStringIndex(let destination, let source, let immediate):
+        // PCMPISTRI: SSE4.2 packed compare implicit-length strings.
+        // Produces an index in ECX. The immediate encodes:
+        //   bits 0: data size (0=byte, 1=word)
+        //   bits 2:1: aggregation (0=equal any, 1=ranges, 2=equal each, 3=equal ordered)
+        //   bits 4:3: polarity (0=positive, 1=negative, 2=masked positive)
+        //   bit 5: output (0=index, 1=mask)
+        let lhs = Array(state.floatingPoint.ymm[Int(destination)].bytes.prefix(16))
+        let rhs = try readVectorBytes(
+          source, byteCount: 16, instruction: instruction,
+          state: state, memory: executionMemory)
+        let isWord = immediate & 1 != 0
+        let aggregation = (immediate >> 1) & 3
+        let polarity = (immediate >> 3) & 3
+        let outputMask = immediate & 0x20 != 0
+        let elementSize = isWord ? 2 : 1
+        let elementCount = 16 / elementSize
+        // Find null terminators (implicit length)
+        var lhsLen = elementCount
+        var rhsLen = elementCount
+        for i in 0..<elementCount {
+          let offset = i * elementSize
+          if isWord {
+            if lhs[offset] == 0 && lhs[offset + 1] == 0 { lhsLen = i; break }
+          } else {
+            if lhs[offset] == 0 { lhsLen = i; break }
+          }
+        }
+        for i in 0..<elementCount {
+          let offset = i * elementSize
+          if isWord {
+            if rhs[offset] == 0 && rhs[offset + 1] == 0 { rhsLen = i; break }
+          } else {
+            if rhs[offset] == 0 { rhsLen = i; break }
+          }
+        }
+        // Build string comparison result
+        var intRes: UInt32 = 0
+        switch aggregation {
+        case 0: // Equal Any: OR of all pairwise equals
+          for i in 0..<lhsLen {
+            for j in 0..<rhsLen {
+              let li = i * elementSize
+              let rj = j * elementSize
+              let equal = isWord
+                ? (lhs[li] == rhs[rj] && lhs[li + 1] == rhs[rj + 1])
+                : (lhs[li] == rhs[rj])
+              if equal { intRes |= 1 << i; break }
+            }
+          }
+        case 2: // Equal Each: pairwise equals
+          for i in 0..<min(lhsLen, rhsLen) {
+            let li = i * elementSize
+            let rj = i * elementSize
+            let equal = isWord
+              ? (lhs[li] == rhs[rj] && lhs[li + 1] == rhs[rj + 1])
+              : (lhs[li] == rhs[rj])
+            if equal { intRes |= 1 << i }
+          }
+        case 1, 3: // Ranges / Equal Ordered: simplified
+          for i in 0..<lhsLen {
+            intRes |= 1 << i
+          }
+        default:
+          break
+        }
+        // Apply polarity
+        switch polarity {
+        case 1: intRes = ~intRes & ((1 << elementCount) - 1)
+        case 2:
+          // Masked positive: use valid bits only
+          let valid = UInt32((1 << min(lhsLen, rhsLen)) - 1)
+          intRes &= valid
+        default: break
+        }
+        // Set flags
+        state.rflags.remove([.overflow, .carry, .zero, .sign])
+        if intRes == 0 { state.rflags.insert(.zero) }
+        // Output: index or mask in ECX
+        if outputMask {
+          try write(
+            UInt64(intRes), to: .register(.rcx, width: .doubleword),
+            instruction: instruction, state: &state, memory: executionMemory)
+        } else {
+          // Find index of least significant set bit (or elementCount if none)
+          var index: UInt64 = UInt64(elementCount)
+          for i in 0..<elementCount {
+            if intRes & (1 << i) != 0 { index = UInt64(i); break }
+          }
+          try write(
+            index, to: .register(.rcx, width: .doubleword),
+            instruction: instruction, state: &state, memory: executionMemory)
+        }
       // MARK: - VEX (AVX/AVX2) execution
       case .vexZeroUpper:
         // VZEROUPPER: zero the upper 128 bits of all 16 YMM registers.
@@ -1268,6 +1361,345 @@ public struct DoryX86Interpreter: Sendable {
           case .or: result[i] = lhs[i] | rhs[i]
           case .xor: result[i] = lhs[i] ^ rhs[i]
           }
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<byteCount, with: result)
+        if length == .xmm128 {
+          registerBytes.replaceSubrange(
+            byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .vexVectorFloatingBinary(let operation, let format, let destination, let firstSource, let secondSource, let length):
+        let byteCount = Int(length.rawValue)
+        var lhs = Array(state.floatingPoint.ymm[Int(firstSource)].bytes.prefix(byteCount))
+        let rhs = try readVectorBytes(
+          secondSource, byteCount: byteCount, instruction: instruction,
+          state: state, memory: executionMemory)
+        executeVectorFloatingBinary(operation, format: format, destination: &lhs, source: rhs)
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<byteCount, with: lhs)
+        if length == .xmm128 {
+          registerBytes.replaceSubrange(
+            byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .vexCompareScalar(let ordered, let doublePrecision, let destination, let source):
+        // VUCOMISS/COMISS/VUCOMISD/COMISD: compare and set EFLAGS.
+        let elementSize = doublePrecision ? 8 : 4
+        let lhs = Array(state.floatingPoint.ymm[Int(destination)].bytes.prefix(elementSize))
+        let rhs = try readVectorBytes(
+          source, byteCount: elementSize, instruction: instruction,
+          state: state, memory: executionMemory)
+        let unordered: Bool
+        let equal: Bool
+        let lessThan: Bool
+        if doublePrecision {
+          let a = Double(bitPattern: fromLittleEndian(lhs))
+          let b = Double(bitPattern: fromLittleEndian(rhs))
+          unordered = a.isNaN || b.isNaN
+          equal = !unordered && a == b
+          lessThan = !unordered && a < b
+        } else {
+          let a = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(lhs)))
+          let b = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(rhs)))
+          unordered = a.isNaN || b.isNaN
+          equal = !unordered && a == b
+          lessThan = !unordered && a < b
+        }
+        // Set EFLAGS: ZF, PF, CF. For ordered compare, unordered sets all three.
+        state.rflags.remove([.zero, .parity, .carry])
+        if unordered {
+          state.rflags.insert([.zero, .parity, .carry])
+        } else if equal {
+          state.rflags.insert(.zero)
+        } else if lessThan {
+          state.rflags.insert(.carry)
+        }
+        // OF=0, SF=0, AF=0
+        state.rflags.remove([.overflow, .sign, .auxiliaryCarry])
+      case .vexComparePackedIntegers(let greaterThan, let laneWidth, let destination, let firstSource, let secondSource, let length):
+        let byteCount = Int(length.rawValue)
+        let laneByteCount = Int(laneWidth.rawValue)
+        let laneCount = byteCount / laneByteCount
+        let lhs = Array(state.floatingPoint.ymm[Int(firstSource)].bytes.prefix(byteCount))
+        let rhs = try readVectorBytes(
+          secondSource, byteCount: byteCount, instruction: instruction,
+          state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: byteCount)
+        for lane in 0..<laneCount {
+          let offset = lane * laneByteCount
+          let lhsValue = fromLittleEndian(Array(lhs[offset..<offset + laneByteCount]))
+          let rhsValue = fromLittleEndian(Array(rhs[offset..<offset + laneByteCount]))
+          let match: Bool
+          if greaterThan {
+            switch laneWidth {
+            case .byte:
+              match = Int8(bitPattern: UInt8(truncatingIfNeeded: lhsValue))
+                > Int8(bitPattern: UInt8(truncatingIfNeeded: rhsValue))
+            case .word:
+              match = Int16(bitPattern: UInt16(truncatingIfNeeded: lhsValue))
+                > Int16(bitPattern: UInt16(truncatingIfNeeded: rhsValue))
+            case .doubleword:
+              match = Int32(bitPattern: UInt32(truncatingIfNeeded: lhsValue))
+                > Int32(bitPattern: UInt32(truncatingIfNeeded: rhsValue))
+            case .quadword:
+              match = Int64(bitPattern: lhsValue) > Int64(bitPattern: rhsValue)
+            }
+          } else {
+            match = lhsValue == rhsValue
+          }
+          let mask: UInt8 = match ? 0xFF : 0
+          for i in 0..<laneByteCount {
+            result[offset + i] = mask
+          }
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<byteCount, with: result)
+        if length == .xmm128 {
+          registerBytes.replaceSubrange(
+            byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .vexAddPackedIntegers(let laneWidth, let destination, let firstSource, let secondSource, let length):
+        let byteCount = Int(length.rawValue)
+        let laneByteCount = Int(laneWidth.rawValue)
+        let laneCount = byteCount / laneByteCount
+        let lhs = Array(state.floatingPoint.ymm[Int(firstSource)].bytes.prefix(byteCount))
+        let rhs = try readVectorBytes(
+          secondSource, byteCount: byteCount, instruction: instruction,
+          state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: byteCount)
+        for lane in 0..<laneCount {
+          let offset = lane * laneByteCount
+          let lhsValue = fromLittleEndian(Array(lhs[offset..<offset + laneByteCount]))
+          let rhsValue = fromLittleEndian(Array(rhs[offset..<offset + laneByteCount]))
+          let sum = lhsValue &+ rhsValue
+          for i in 0..<laneByteCount {
+            result[offset + i] = UInt8(truncatingIfNeeded: sum >> UInt64(i * 8))
+          }
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<byteCount, with: result)
+        if length == .xmm128 {
+          registerBytes.replaceSubrange(
+            byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .vexLoadMXCSR(let source):
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        state.floatingPoint.mxcsr = UInt32(truncatingIfNeeded: value)
+      case .vexStoreMXCSR(let destination):
+        try write(
+          UInt64(state.floatingPoint.mxcsr), to: destination,
+          instruction: instruction, state: &state, memory: executionMemory)
+      case .vexMaskMove(let destination, let source):
+        // KMOVD: move 32 bits from GPR/memory to mask register (low 32 bits of XMM).
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        let bits = UInt32(truncatingIfNeeded: value)
+        for i in 0..<4 {
+          registerBytes[i] = UInt8(truncatingIfNeeded: bits >> UInt32(i * 8))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .vexPackedMinMax(let signed, let minimum, let laneWidth, let destination, let firstSource, let secondSource, let length):
+        let byteCount = Int(length.rawValue)
+        let laneByteCount = Int(laneWidth.rawValue)
+        let laneCount = byteCount / laneByteCount
+        let lhs = Array(state.floatingPoint.ymm[Int(firstSource)].bytes.prefix(byteCount))
+        let rhs = try readVectorBytes(
+          secondSource, byteCount: byteCount, instruction: instruction,
+          state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: byteCount)
+        for lane in 0..<laneCount {
+          let offset = lane * laneByteCount
+          let lhsVal = fromLittleEndian(Array(lhs[offset..<offset + laneByteCount]))
+          let rhsVal = fromLittleEndian(Array(rhs[offset..<offset + laneByteCount]))
+          let pickLhs: Bool
+          if signed {
+            let lhsSigned = Int64(bitPattern: lhsVal)
+            let rhsSigned = Int64(bitPattern: rhsVal)
+            pickLhs = minimum ? (lhsSigned < rhsSigned) : (lhsSigned > rhsSigned)
+          } else {
+            pickLhs = minimum ? (lhsVal < rhsVal) : (lhsVal > rhsVal)
+          }
+          let winner = pickLhs ? lhsVal : rhsVal
+          for i in 0..<laneByteCount {
+            result[offset + i] = UInt8(truncatingIfNeeded: winner >> UInt64(i * 8))
+          }
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<byteCount, with: result)
+        if length == .xmm128 {
+          registerBytes.replaceSubrange(
+            byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .vexSubPackedIntegers(let laneWidth, let saturating, let unsigned, let destination, let firstSource, let secondSource, let length):
+        let byteCount = Int(length.rawValue)
+        let laneByteCount = Int(laneWidth.rawValue)
+        let laneCount = byteCount / laneByteCount
+        let lhs = Array(state.floatingPoint.ymm[Int(firstSource)].bytes.prefix(byteCount))
+        let rhs = try readVectorBytes(
+          secondSource, byteCount: byteCount, instruction: instruction,
+          state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: byteCount)
+        for lane in 0..<laneCount {
+          let offset = lane * laneByteCount
+          let lhsVal = fromLittleEndian(Array(lhs[offset..<offset + laneByteCount]))
+          let rhsVal = fromLittleEndian(Array(rhs[offset..<offset + laneByteCount]))
+          let diff: UInt64
+          if saturating {
+            if unsigned {
+              diff = lhsVal >= rhsVal ? lhsVal &- rhsVal : 0
+            } else {
+              let l = Int64(bitPattern: lhsVal)
+              let r = Int64(bitPattern: rhsVal)
+              let res = l &- r
+              if res < 0 {
+                diff = 0
+              } else if res > Int64(UInt64.max >> 1) {
+                diff = UInt64.max
+              } else {
+                diff = UInt64(res)
+              }
+            }
+          } else {
+            diff = lhsVal &- rhsVal
+          }
+          for i in 0..<laneByteCount {
+            result[offset + i] = UInt8(truncatingIfNeeded: diff >> UInt64(i * 8))
+          }
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<byteCount, with: result)
+        if length == .xmm128 {
+          registerBytes.replaceSubrange(
+            byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .vexVariableShift(let arithmetic, let laneWidth, let destination, let firstSource, let secondSource, let length):
+        let byteCount = Int(length.rawValue)
+        let laneByteCount = Int(laneWidth.rawValue)
+        let laneCount = byteCount / laneByteCount
+        let lhs = Array(state.floatingPoint.ymm[Int(firstSource)].bytes.prefix(byteCount))
+        let rhs = try readVectorBytes(
+          secondSource, byteCount: byteCount, instruction: instruction,
+          state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: byteCount)
+        for lane in 0..<laneCount {
+          let offset = lane * laneByteCount
+          let lhsVal = fromLittleEndian(Array(lhs[offset..<offset + laneByteCount]))
+          let shiftAmount = Int(rhs[offset] & 0x1F)  // use low byte, mask to lane width
+          let shifted: UInt64
+          if arithmetic {
+            if shiftAmount < 64 {
+              let signed = Int64(bitPattern: lhsVal)
+              shifted = UInt64(bitPattern: signed >> shiftAmount)
+            } else {
+              shifted = lhsVal & (1 << 63) != 0 ? UInt64.max : 0
+            }
+          } else {
+            shifted = shiftAmount < 64 ? (lhsVal >> UInt64(shiftAmount)) : 0
+          }
+          for i in 0..<laneByteCount {
+            result[offset + i] = UInt8(truncatingIfNeeded: shifted >> UInt64(i * 8))
+          }
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<byteCount, with: result)
+        if length == .xmm128 {
+          registerBytes.replaceSubrange(
+            byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .vexScalarConvert(let direction, let destination, let firstSource, let secondSource):
+        let sourceBytes = try readVectorBytes(
+          secondSource, byteCount: direction == .doubleToSingle ? 8 : 4,
+          instruction: instruction, state: state, memory: executionMemory)
+        var registerBytes = Array(state.floatingPoint.ymm[Int(firstSource)].bytes.prefix(16))
+        switch direction {
+        case .doubleToSingle:
+          let doubleValue = Double(bitPattern: fromLittleEndian(sourceBytes))
+          let singleValue = Float(doubleValue)
+          let singleBits = littleEndian(UInt64(singleValue.bitPattern), width: .doubleword)
+          registerBytes.replaceSubrange(0..<4, with: singleBits)
+        case .singleToDouble:
+          let singleValue = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(sourceBytes)))
+          let doubleValue = Double(singleValue)
+          let doubleBits = littleEndian(doubleValue.bitPattern, width: .quadword)
+          registerBytes.replaceSubrange(0..<8, with: doubleBits)
+        }
+        var destBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        destBytes.replaceSubrange(0..<16, with: registerBytes)
+        destBytes.replaceSubrange(16..<32, with: repeatElement(0, count: 16))
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: destBytes, expectedByteCount: 32)
+      case .vexConvertScalarToInteger(let truncated, let doublePrecision, let destination, let source):
+        let sourceBytes = Array(state.floatingPoint.ymm[Int(source)].bytes.prefix(doublePrecision ? 8 : 4))
+        let intValue: UInt64
+        if doublePrecision {
+          let value = Double(bitPattern: fromLittleEndian(sourceBytes))
+          intValue = truncated ? UInt64(bitPattern: Int64(value.rounded(.towardZero))) : UInt64(value.rounded(.toNearestOrEven))
+        } else {
+          let value = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(sourceBytes)))
+          intValue = truncated ? UInt64(bitPattern: Int64(value.rounded(.towardZero))) : UInt64(value.rounded(.toNearestOrEven))
+        }
+        try write(
+          intValue, to: destination,
+          instruction: instruction, state: &state, memory: executionMemory)
+      case .vexUnpackLow(let doublePrecision, let destination, let firstSource, let secondSource, let length):
+        let byteCount = Int(length.rawValue)
+        let lhs = Array(state.floatingPoint.ymm[Int(firstSource)].bytes.prefix(byteCount))
+        let rhs = try readVectorBytes(
+          secondSource, byteCount: byteCount, instruction: instruction,
+          state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: byteCount)
+        if doublePrecision {
+          // Interleave low doubles: dst[0]=lhs[0], dst[1]=rhs[0]
+          result.replaceSubrange(0..<8, with: lhs[0..<8])
+          result.replaceSubrange(8..<16, with: rhs[0..<8])
+        } else {
+          // Interleave low singles: dst[0]=lhs[0], dst[1]=rhs[0], dst[2]=lhs[1], dst[3]=rhs[1]
+          result.replaceSubrange(0..<4, with: lhs[0..<4])
+          result.replaceSubrange(4..<8, with: rhs[0..<4])
+          result.replaceSubrange(8..<12, with: lhs[4..<8])
+          result.replaceSubrange(12..<16, with: rhs[4..<8])
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<byteCount, with: result)
+        if length == .xmm128 {
+          registerBytes.replaceSubrange(
+            byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .vexUnpackHigh(let doublePrecision, let destination, let firstSource, let secondSource, let length):
+        let byteCount = Int(length.rawValue)
+        let lhs = Array(state.floatingPoint.ymm[Int(firstSource)].bytes.prefix(byteCount))
+        let rhs = try readVectorBytes(
+          secondSource, byteCount: byteCount, instruction: instruction,
+          state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: byteCount)
+        if doublePrecision {
+          // Interleave high doubles: dst[0]=lhs[1], dst[1]=rhs[1]
+          result.replaceSubrange(0..<8, with: lhs[8..<16])
+          result.replaceSubrange(8..<16, with: rhs[8..<16])
+        } else {
+          // Interleave high singles: dst[0]=lhs[2], dst[1]=rhs[2], dst[2]=lhs[3], dst[3]=rhs[3]
+          result.replaceSubrange(0..<4, with: lhs[8..<12])
+          result.replaceSubrange(4..<8, with: rhs[8..<12])
+          result.replaceSubrange(8..<12, with: lhs[12..<16])
+          result.replaceSubrange(12..<16, with: rhs[12..<16])
         }
         var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
         registerBytes.replaceSubrange(0..<byteCount, with: result)

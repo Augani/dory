@@ -171,7 +171,8 @@ import Testing
       [0xC5, 0xFD, 0x74, 0xC8], at: 0x1000, mode: .long64)
     #expect(
       instruction.operation
-        == .vexComparePackedBytes(
+        == .vexComparePackedIntegers(
+          greaterThan: false, laneWidth: .byte,
           destination: 1, firstSource: 0, secondSource: .register(0),
           length: .ymm256))
 

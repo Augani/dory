@@ -505,6 +505,14 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case insertPackedQword(
     destination: UInt8, source: DoryX86Operand, index: UInt8
   )
+  /// PCMPISTRI (66 0F 3A 63): SSE4.2 packed compare implicit-length strings,
+  /// producing a byte or word index in ECX. The immediate encodes data size,
+  /// aggregation, polarity, and output selection.
+  case packedCompareStringIndex(
+    destination: UInt8,
+    source: DoryX86VectorOperand,
+    immediate: UInt8
+  )
   case moveIntegerToVector(destination: UInt8, source: DoryX86Operand)
   case moveVectorToInteger(destination: DoryX86Operand, source: UInt8)
   case extractPackedWord(
@@ -602,6 +610,109 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   /// `destination = firstSource OP secondSource`.
   case vexVectorBinary(
     _ operation: DoryX86VectorBitwiseOperation,
+    destination: UInt8,
+    firstSource: UInt8,
+    secondSource: DoryX86VectorOperand,
+    length: DoryX86VectorLength
+  )
+  /// VEX-encoded 3-operand scalar/packed floating-point binary
+  /// (VADDSS/SD, VMULSS/SD, VSUBSS/SD, VMINSS/SD, VDIVSS/SD, VMAXSS/SD).
+  case vexVectorFloatingBinary(
+    _ operation: DoryX86VectorFloatingOperation,
+    format: DoryX86VectorFloatingFormat,
+    destination: UInt8,
+    firstSource: UInt8,
+    secondSource: DoryX86VectorOperand,
+    length: DoryX86VectorLength
+  )
+  /// VEX-encoded VUCOMISS/COMISS/VUCOMISD/COMISD.
+  case vexCompareScalar(
+    ordered: Bool,
+    doublePrecision: Bool,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
+  /// VEX-encoded packed integer comparison (VPCMPGTB/W/D, VPCMPEQB/W/D).
+  case vexComparePackedIntegers(
+    greaterThan: Bool,
+    laneWidth: DoryX86VectorLaneWidth,
+    destination: UInt8,
+    firstSource: UInt8,
+    secondSource: DoryX86VectorOperand,
+    length: DoryX86VectorLength
+  )
+  /// VEX-encoded packed integer addition (VPADDB/W/D).
+  case vexAddPackedIntegers(
+    laneWidth: DoryX86VectorLaneWidth,
+    destination: UInt8,
+    firstSource: UInt8,
+    secondSource: DoryX86VectorOperand,
+    length: DoryX86VectorLength
+  )
+  /// VEX-encoded VLDMXCSR (load MXCSR from memory).
+  case vexLoadMXCSR(source: DoryX86Operand)
+  /// VEX-encoded VSTMXCSR (store MXCSR to memory).
+  case vexStoreMXCSR(destination: DoryX86Operand)
+  /// VEX-encoded KMOVD (AVX-512 mask register move). Dory models mask
+  /// registers as the low 32 bits of the destination XMM register.
+  case vexMaskMove(
+    destination: UInt8,
+    source: DoryX86Operand
+  )
+  /// VEX-encoded packed min/max (VPMINUB, VPMINSW, VPMAXUB, VPMAXSW).
+  case vexPackedMinMax(
+    signed: Bool,
+    minimum: Bool,
+    laneWidth: DoryX86VectorLaneWidth,
+    destination: UInt8,
+    firstSource: UInt8,
+    secondSource: DoryX86VectorOperand,
+    length: DoryX86VectorLength
+  )
+  /// VEX-encoded packed subtract (VPSUBB/W, VPSUBUSB/W).
+  case vexSubPackedIntegers(
+    laneWidth: DoryX86VectorLaneWidth,
+    saturating: Bool,
+    unsigned: Bool,
+    destination: UInt8,
+    firstSource: UInt8,
+    secondSource: DoryX86VectorOperand,
+    length: DoryX86VectorLength
+  )
+  /// VEX-encoded variable shift (VPSRLVD, VPSRAVD).
+  case vexVariableShift(
+    arithmetic: Bool,
+    laneWidth: DoryX86VectorLaneWidth,
+    destination: UInt8,
+    firstSource: UInt8,
+    secondSource: DoryX86VectorOperand,
+    length: DoryX86VectorLength
+  )
+  /// VEX-encoded VCVTSD2SS / VCVTSS2SD (3-operand scalar convert).
+  case vexScalarConvert(
+    direction: DoryX86ScalarConvertDirection,
+    destination: UInt8,
+    firstSource: UInt8,
+    secondSource: DoryX86VectorOperand
+  )
+  /// VEX-encoded VCVTTSD2SI / VCVTSD2SI (scalar float to integer).
+  case vexConvertScalarToInteger(
+    truncated: Bool,
+    doublePrecision: Bool,
+    destination: DoryX86Operand,
+    source: UInt8
+  )
+  /// VEX-encoded VUNPCKLPS/VUNPCKLPD.
+  case vexUnpackLow(
+    doublePrecision: Bool,
+    destination: UInt8,
+    firstSource: UInt8,
+    secondSource: DoryX86VectorOperand,
+    length: DoryX86VectorLength
+  )
+  /// VEX-encoded VUNPCKHPS/VUNPCKHPD.
+  case vexUnpackHigh(
+    doublePrecision: Bool,
     destination: UInt8,
     firstSource: UInt8,
     secondSource: DoryX86VectorOperand,

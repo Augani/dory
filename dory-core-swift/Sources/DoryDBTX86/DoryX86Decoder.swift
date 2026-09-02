@@ -925,6 +925,15 @@ public struct DoryX86Decoder: Sendable {
         } else if cursor.peek() == 0xD1 {
           _ = try cursor.readByte()
           operation = .writeExtendedControlRegister
+        } else if cursor.peek() == 0xD5 {
+          // XEND (0F 01 D5): transactional end (always raises #GP in Dory).
+          _ = try cursor.readByte()
+          operation = .softwareInterrupt(vector: 13)
+        } else if cursor.peek() == 0xD6 {
+          // XTEST (0F 01 D6): test if in RTM transaction. Always sets ZF=1
+          // (not in a transaction) since Dory doesn't model RTM.
+          _ = try cursor.readByte()
+          operation = .noOperation
         } else if cursor.peek() == 0xF8 {
           _ = try cursor.readByte()
           guard mode == .long64 else {
@@ -1013,6 +1022,13 @@ public struct DoryX86Decoder: Sendable {
           case 1: operation = .restoreFloatingPointState(memory)
           case 2: operation = .loadMXCSR(operands.rm)
           case 3: operation = .storeMXCSR(operands.rm)
+          case 4:
+            // XSAVE (0F AE /4): save extended processor state to memory.
+            // Dory doesn't model XSAVE state; decode as no-op.
+            operation = .noOperation
+          case 5:
+            // XRSTOR (0F AE /5): restore extended processor state from memory.
+            operation = .noOperation
           case 7:
             guard prefixes.repeatPrefix == nil, !prefixes.operandSizeOverride else {
               throw DoryX86DecodeError.invalidEncoding(
@@ -1066,6 +1082,22 @@ public struct DoryX86Decoder: Sendable {
         //   F3 0F 12: MOVSLDUP   F3 0F 16: MOVSHDUP
         //   F2 0F 12: MOVDDUP    (F2 0F 16 is reserved)
         switch (prefixes.repeatPrefix, prefixes.operandSizeOverride) {
+        case (nil, true):
+          // 66 0F 12: MOVLPD (load low 64 bits from memory to XMM low half)
+          // 66 0F 16: MOVHPD (load high 64 bits from memory to XMM high half)
+          // Register form is reserved for 66 prefix.
+          let operands = try decodeModRM(
+            cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+          guard case .memory = operands.rm else {
+            throw DoryX86DecodeError.invalidEncoding(
+              address: address, detail: "MOVLPD/MOVHPD requires a memory operand")
+          }
+          operation = .moveVectorQwordHalf(
+            destination: vectorOperand(operands.reg),
+            source: vectorOperand(operands.rm),
+            sourceHigh: false,
+            destinationHigh: second == 0x16
+          )
         case (0xF3, false):
           let operands = try decodeModRM(
             cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
@@ -1859,6 +1891,16 @@ public struct DoryX86Decoder: Sendable {
             source: operands.rm,
             index: index
           )
+        case 0x63:
+          // PCMPISTRI (66 0F 3A 63): SSE4.2 packed compare implicit-length
+          // strings, return index in ECX. The immediate controls the
+          // comparison mode (data size, aggregation, polarity, output).
+          let immediate = try cursor.readByte()
+          operation = .packedCompareStringIndex(
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm),
+            immediate: immediate
+          )
         default:
           throw DoryX86DecodeError.unsupportedOpcode(
             address: address, bytes: cursor.consumedBytes)
@@ -2086,6 +2128,205 @@ public struct DoryX86Decoder: Sendable {
         .xor, destination: vectorRegister(operands.reg),
         firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
         length: length)
+    case 0x54, 0x55, 0x56:
+      // VANDPS/VANDNPS/VORPS (pp=00) / VANDPD/VANDNPD/VORPD (pp=66)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      let op: DoryX86VectorBitwiseOperation =
+        switch opcode {
+        case 0x54: .and
+        case 0x55: .andNot
+        default: .or
+        }
+      return .vexVectorBinary(
+        op, destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    case 0x58, 0x59, 0x5C, 0x5D, 0x5E, 0x5F:
+      // VADDSS/SD, VMULSS/SD, VSUBSS/SD, VMINSS/SD, VDIVSS/SD, VMAXSS/SD
+      let format: DoryX86VectorFloatingFormat =
+        switch vex.pp {
+        case 1: .packedDouble    // 66 -> packed double (but scalar for these)
+        case 2: .scalarSingle    // F3
+        case 3: .scalarDouble    // F2
+        default: .packedSingle   // no prefix
+        }
+      // For scalar forms (F2/F3), use scalar format; for packed (66/none), use packed
+      let actualFormat: DoryX86VectorFloatingFormat =
+        vex.pp == 3 ? .scalarDouble : (vex.pp == 2 ? .scalarSingle : (vex.pp == 1 ? .packedDouble : .packedSingle))
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      let fpOp: DoryX86VectorFloatingOperation =
+        switch opcode {
+        case 0x58: .add
+        case 0x59: .multiply
+        case 0x5C: .subtract
+        case 0x5D: .minimum
+        case 0x5E: .divide
+        default: .maximum
+        }
+      return .vexVectorFloatingBinary(
+        fpOp, format: actualFormat,
+        destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    case 0x2E, 0x2F:
+      // VUCOMISS/COMISS (pp=00) / VUCOMISD/COMISD (pp=66)
+      // These are 2-operand (reg, rm), vvvv must be 0
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      return .vexCompareScalar(
+        ordered: opcode == 0x2F,
+        doublePrecision: vex.pp == 1,
+        destination: vectorRegister(operands.reg),
+        source: vectorOperand(operands.rm))
+    case 0x64, 0x65, 0x66, 0x74, 0x76:
+      // VPCMPGTB (64) / VPCMPGTW (65) / VPCMPGTD (66) / VPCMPEQB (74) / VPCMPEQD (76)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      let laneWidth: DoryX86VectorLaneWidth =
+        switch opcode {
+        case 0x64, 0x74: .byte
+        case 0x65: .word
+        default: .doubleword  // 0x66, 0x76
+        }
+      let isGreaterThan = opcode == 0x64 || opcode == 0x65 || opcode == 0x66
+      return .vexComparePackedIntegers(
+        greaterThan: isGreaterThan,
+        laneWidth: laneWidth,
+        destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    case 0xFC, 0xFD, 0xFE:
+      // VPADDB (FC) / VPADDW (FD) / VPADDD (FE)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      let laneWidth: DoryX86VectorLaneWidth =
+        switch opcode {
+        case 0xFC: .byte
+        case 0xFD: .word
+        default: .doubleword
+        }
+      return .vexAddPackedIntegers(
+        laneWidth: laneWidth,
+        destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    case 0xDB, 0xDF, 0xEB, 0xEF:
+      // VPAND (DB) / VPANDN (DF) / VPOR (EB) / VPXOR (EF)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      let op: DoryX86VectorBitwiseOperation =
+        switch opcode {
+        case 0xDB: .and
+        case 0xDF: .andNot
+        case 0xEB: .or
+        default: .xor
+        }
+      return .vexVectorBinary(
+        op, destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    case 0xDA, 0xE2, 0xE3, 0xEA:
+      // VPMINUB (DA) / VPSRLVD (E2) / VPSRAVD (E3) / VPMINSW (EA)
+      // For now, decode DA and EA as packed min, E2/E3 as variable shifts
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      switch opcode {
+      case 0xDA:
+        return .vexPackedMinMax(
+          signed: false, minimum: true, laneWidth: .byte,
+          destination: vectorRegister(operands.reg),
+          firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+          length: length)
+      case 0xEA:
+        return .vexPackedMinMax(
+          signed: true, minimum: true, laneWidth: .word,
+          destination: vectorRegister(operands.reg),
+          firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+          length: length)
+      default:
+        // VPSRLVD/VPSRAVD: variable shift by packed count
+        return .vexVariableShift(
+          arithmetic: opcode == 0xE3,
+          laneWidth: .doubleword,
+          destination: vectorRegister(operands.reg),
+          firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+          length: length)
+      }
+    case 0xD8, 0xD9, 0xFA, 0xFB:
+      // VPSUBUSB (D8) / VPSUBUSW (D9) / VPSUBB (FA) / VPSUBW (FB)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      let laneWidth: DoryX86VectorLaneWidth =
+        (opcode == 0xD8 || opcode == 0xFA) ? .byte : .word
+      let saturating = opcode == 0xD8 || opcode == 0xD9
+      let unsigned = opcode == 0xD8 || opcode == 0xD9
+      return .vexSubPackedIntegers(
+        laneWidth: laneWidth, saturating: saturating, unsigned: unsigned,
+        destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    case 0x5A:
+      // VCVTSD2SS (F2) / VCVTSS2SD (F3)
+      let direction: DoryX86ScalarConvertDirection =
+        vex.pp == 3 ? .doubleToSingle : .singleToDouble
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      return .vexScalarConvert(
+        direction: direction,
+        destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm))
+    case 0x2C, 0x2D:
+      // VCVTTSD2SI (2C, F2) / VCVTSD2SI (2D, F2) / VCVTTSS2SI (2C, F3) / VCVTSS2SI (2D, F3)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: vex.w ? .quadword : .doubleword,
+        prefixes: prefixes, mode: mode)
+      return .vexConvertScalarToInteger(
+        truncated: opcode == 0x2C,
+        doublePrecision: vex.pp == 3,
+        destination: operands.rm,
+        source: vectorRegister(operands.reg))
+    case 0x14:
+      // VUNPCKLPS (pp=00) / VUNPCKLPD (pp=66)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      return .vexUnpackLow(
+        doublePrecision: vex.pp == 1,
+        destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    case 0x15:
+      // VUNPCKHPS (pp=00) / VUNPCKHPD (pp=66)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      return .vexUnpackHigh(
+        doublePrecision: vex.pp == 1,
+        destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    case 0xAE:
+      // VLDMXCSR/VSTMXCSR (pp=66, group 2/3): load/store MXCSR from memory.
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .doubleword, prefixes: prefixes, mode: mode)
+      switch operands.group {
+      case 2:
+        return .vexLoadMXCSR(source: operands.rm)
+      case 3:
+        return .vexStoreMXCSR(destination: operands.rm)
+      default:
+        throw DoryX86DecodeError.unsupportedOpcode(
+          address: cursor.address, bytes: cursor.consumedBytes)
+      }
+    case 0x93:
+      // KMOVD (C5 FB 93): move between mask register and GPR/vector.
+      // For now, decode as a no-op mask move since Dory doesn't model AVX-512
+      // mask registers — treat as a move of the low 32 bits.
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .doubleword, prefixes: prefixes, mode: mode)
+      return .vexMaskMove(
+        destination: vectorRegister(operands.reg),
+        source: operands.rm)
     case 0x6E:
       // VMOVD/VMOVQ (register from integer): 66 0F 6E, W=1 for VMOVQ
       let operands = try decodeModRM(
