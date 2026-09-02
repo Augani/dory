@@ -1189,6 +1189,60 @@ public struct DoryX86Decoder: Sendable {
             source: vectorOperand(operands.rm)
           )
         }
+      case 0x51:
+        // SQRTSS (F3 0F 51) / SQRTSD (F2 0F 51)
+        guard prefixes.operandSizeOverride == false,
+              prefixes.repeatPrefix == 0xF3 || prefixes.repeatPrefix == 0xF2 else {
+          throw DoryX86DecodeError.unsupportedOpcode(
+            address: address, bytes: cursor.consumedBytes)
+        }
+        let format: DoryX86VectorFloatingFormat =
+          prefixes.repeatPrefix == 0xF2 ? .scalarDouble : .scalarSingle
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        operation = .scalarSquareRoot(
+          format: format,
+          destination: vectorRegister(operands.reg),
+          source: vectorOperand(operands.rm)
+        )
+      case 0x5A:
+        // CVTSD2SS (F2 0F 5A) / CVTSS2SD (F3 0F 5A)
+        guard prefixes.operandSizeOverride == false,
+              prefixes.repeatPrefix == 0xF2 || prefixes.repeatPrefix == 0xF3 else {
+          throw DoryX86DecodeError.unsupportedOpcode(
+            address: address, bytes: cursor.consumedBytes)
+        }
+        let direction: DoryX86ScalarConvertDirection =
+          prefixes.repeatPrefix == 0xF2 ? .doubleToSingle : .singleToDouble
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        operation = .scalarConvert(
+          direction: direction,
+          destination: vectorRegister(operands.reg),
+          source: vectorOperand(operands.rm)
+        )
+      case 0xC2:
+        // CMPSS (F3 0F C2) / CMPSD (F2 0F C2) with immediate predicate
+        guard prefixes.operandSizeOverride == false,
+              prefixes.repeatPrefix == 0xF3 || prefixes.repeatPrefix == 0xF2 else {
+          throw DoryX86DecodeError.unsupportedOpcode(
+            address: address, bytes: cursor.consumedBytes)
+        }
+        let format: DoryX86VectorFloatingFormat =
+          prefixes.repeatPrefix == 0xF2 ? .scalarDouble : .scalarSingle
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        let predicate = try cursor.readByte()
+        guard let comparePredicate = DoryX86ScalarComparePredicate(rawValue: predicate) else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "scalar compare predicate must be 0-7")
+        }
+        operation = .scalarCompare(
+          predicate: comparePredicate,
+          format: format,
+          destination: vectorRegister(operands.reg),
+          source: vectorOperand(operands.rm)
+        )
       case 0x58, 0x59, 0x5C...0x5F:
         let format = try vectorFloatingFormat(prefixes: prefixes, address: address)
         let operands = try decodeModRM(

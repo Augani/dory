@@ -1479,6 +1479,66 @@ public struct DoryX86Interpreter: Sendable {
         )
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
+      case .scalarCompare(let predicate, let format, let destination, let source):
+        // CMPSS/CMPSD: compare low scalar elements, set low element to mask.
+        let elementSize = format == .scalarDouble ? 8 : 4
+        let rhs = try readVectorBytes(
+          source, byteCount: elementSize,
+          instruction: instruction, state: state, memory: executionMemory)
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        let lhs = Array(registerBytes.prefix(elementSize))
+        let result: Bool
+        if format == .scalarDouble {
+          let a = Double(bitPattern: fromLittleEndian(lhs))
+          let b = Double(bitPattern: fromLittleEndian(rhs))
+          result = evaluateScalarCompare(predicate, a: a, b: b)
+        } else {
+          let a = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(lhs)))
+          let b = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(rhs)))
+          result = evaluateScalarCompare(predicate, a: Double(a), b: Double(b))
+        }
+        let mask: [UInt8] = Array(repeating: result ? 0xFF : 0, count: elementSize)
+        registerBytes.replaceSubrange(0..<elementSize, with: mask)
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .scalarConvert(let direction, let destination, let source):
+        // CVTSD2SS / CVTSS2SD: convert scalar double↔single.
+        let sourceBytes = try readVectorBytes(
+          source, byteCount: direction == .doubleToSingle ? 8 : 4,
+          instruction: instruction, state: state, memory: executionMemory)
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        switch direction {
+        case .doubleToSingle:
+          let doubleValue = Double(bitPattern: fromLittleEndian(sourceBytes))
+          let singleValue = Float(doubleValue)
+          let singleBits = littleEndian(UInt64(singleValue.bitPattern), width: .doubleword)
+          registerBytes.replaceSubrange(0..<4, with: singleBits)
+        case .singleToDouble:
+          let singleValue = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(sourceBytes)))
+          let doubleValue = Double(singleValue)
+          let doubleBits = littleEndian(doubleValue.bitPattern, width: .quadword)
+          registerBytes.replaceSubrange(0..<8, with: doubleBits)
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .scalarSquareRoot(let format, let destination, let source):
+        // SQRTSS / SQRTSD: scalar square root of low element.
+        let elementSize = format == .scalarDouble ? 8 : 4
+        let sourceBytes = try readVectorBytes(
+          source, byteCount: elementSize,
+          instruction: instruction, state: state, memory: executionMemory)
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        if format == .scalarDouble {
+          let value = Double(bitPattern: fromLittleEndian(sourceBytes))
+          let result = value.squareRoot()
+          registerBytes.replaceSubrange(0..<8, with: littleEndian(result.bitPattern, width: .quadword))
+        } else {
+          let value = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(sourceBytes)))
+          let result = value.squareRoot()
+          registerBytes.replaceSubrange(0..<4, with: littleEndian(UInt64(result.bitPattern), width: .doubleword))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
       case .vectorIntegerBinary(let operation, let laneWidth, let destination, let source):
         let rhs = try readVectorBytes(
           source,
@@ -5553,6 +5613,23 @@ public struct DoryX86Interpreter: Sendable {
 
   private func fromLittleEndian(_ bytes: [UInt8]) -> UInt64 {
     bytes.enumerated().reduce(0) { $0 | UInt64($1.element) << UInt64($1.offset * 8) }
+  }
+
+  /// Evaluate an SSE scalar comparison predicate for CMPSS/CMPSD.
+  private func evaluateScalarCompare(
+    _ predicate: DoryX86ScalarComparePredicate, a: Double, b: Double
+  ) -> Bool {
+    let unordered = a.isNaN || b.isNaN
+    switch predicate {
+    case .equal: return !unordered && a == b
+    case .lessThan: return !unordered && a < b
+    case .lessEqual: return !unordered && a <= b
+    case .unordered: return unordered
+    case .notEqual: return unordered || a != b
+    case .notLessThan: return unordered || a >= b
+    case .notLessEqual: return unordered || a > b
+    case .ordered: return !unordered
+    }
   }
 
   private func addRelative(_ address: UInt64, _ displacement: Int64) -> UInt64 {

@@ -201,6 +201,24 @@ public enum DoryX86VectorFloatingOperation: String, Codable, Sendable, Hashable 
   case add, multiply, subtract, minimum, divide, maximum
 }
 
+/// SSE scalar comparison predicates for `CMPSS`/`CMPSD` (`0F C2`).
+public enum DoryX86ScalarComparePredicate: UInt8, Codable, Sendable, Hashable {
+  case equal = 0
+  case lessThan = 1
+  case lessEqual = 2
+  case unordered = 3
+  case notEqual = 4
+  case notLessThan = 5
+  case notLessEqual = 6
+  case ordered = 7
+}
+
+/// SSE2 scalar conversion directions for `CVTSD2SS`/`CVTSS2SD`.
+public enum DoryX86ScalarConvertDirection: String, Codable, Sendable, Hashable {
+  case doubleToSingle
+  case singleToDouble
+}
+
 public enum DoryX86VectorFloatingFormat: String, Codable, Sendable, Hashable {
   case packedSingle, packedDouble, scalarSingle, scalarDouble
 }
@@ -508,6 +526,26 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   )
   case vectorFloatingBinary(
     DoryX86VectorFloatingOperation,
+    format: DoryX86VectorFloatingFormat,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
+  /// `CMPSS`/`CMPSD` (`0F C2`): scalar single/double compare with immediate
+  /// predicate. Sets the low element to all-1s or all-0s; preserves upper bits.
+  case scalarCompare(
+    predicate: DoryX86ScalarComparePredicate,
+    format: DoryX86VectorFloatingFormat,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
+  /// `CVTSD2SS`/`CVTSS2SD` (`F2/F3 0F 5A`): convert scalar double↔single.
+  case scalarConvert(
+    direction: DoryX86ScalarConvertDirection,
+    destination: UInt8,
+    source: DoryX86VectorOperand
+  )
+  /// `SQRTSS`/`SQRTSD` (`F3/F2 0F 51`): scalar square root.
+  case scalarSquareRoot(
     format: DoryX86VectorFloatingFormat,
     destination: UInt8,
     source: DoryX86VectorOperand

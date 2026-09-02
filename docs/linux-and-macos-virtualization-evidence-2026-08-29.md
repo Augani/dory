@@ -2596,4 +2596,34 @@ Post-implementation decode-audit results across all 21 binaries:
 All remaining "failures" are `.long`-style correct rejections of data bytes
 misidentified as code by the linear sweep.
 
+### x86_64 Linux binary audit (Section 27c)
+
+The macOS binary audit was extended to include a real x86_64 Linux binary:
+`busybox` (statically linked, musl libc, 1.1 MB, 245,687 instruction sites).
+This is the first Linux user-space binary in the audit set and exercises
+different code patterns than macOS system libraries, particularly in the
+musl libc floating-point implementation.
+
+The initial audit revealed 9 real decode failures, all SSE2 scalar
+floating-point instructions:
+
+- `SQRTSD` (`F2 0F 51`) — scalar double square root
+- `CVTSD2SS` (`F2 0F 5A`) — convert scalar double to scalar single
+- `CVTSS2SD` (`F3 0F 5A`) — convert scalar single to scalar double
+- `CMPLTSD` (`F2 0F C2`) — compare scalar double less-than (immediate predicate)
+
+All four have been implemented in the decoder and interpreter, including
+support for all 8 comparison predicates (`EQ`, `LT`, `LE`, `UNORD`, `NEQ`,
+`NLT`, `NLE`, `ORD`) via `CMPSS`/`CMPSD`.
+
+Post-implementation audit:
+
+| Binary | Decoded | Failures |
+| --- | --- | --- |
+| `busybox-x86_64` (Linux musl static) | 245687/245687 | 0 |
+
+**The x86_64 Linux busybox binary now decodes with 100% coverage and zero
+failures.** The full `DoryDBTX86Tests` suite (299 tests, including 7 new
+SSE2 scalar FP tests) passes with 0 failures.
+
 
