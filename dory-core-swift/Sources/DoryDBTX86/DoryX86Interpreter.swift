@@ -1131,6 +1131,167 @@ public struct DoryX86Interpreter: Sendable {
         registerBytes.replaceSubrange(0..<16, with: result)
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
+      // MARK: - VEX (AVX/AVX2) execution
+      case .vexZeroUpper:
+        // VZEROUPPER: zero the upper 128 bits of all 16 YMM registers.
+        for index in state.floatingPoint.ymm.indices {
+          var bytes = state.floatingPoint.ymm[index].bytes
+          bytes.replaceSubrange(16..<32, with: repeatElement(0, count: 16))
+          state.floatingPoint.ymm[index] = try .init(
+            bytes: bytes, expectedByteCount: 32)
+        }
+      case .vexMoveVector(let destination, let source, let length, let requiresAlignment):
+        let byteCount = Int(length.rawValue)
+        let bytes: [UInt8]
+        switch source {
+        case .register(let register):
+          bytes = Array(state.floatingPoint.ymm[Int(register)].bytes.prefix(byteCount))
+        case .memory(let memoryOperand):
+          try validateSegmentAccess(
+            memoryOperand, byteCount: byteCount, write: false,
+            instruction: instruction, state: state)
+          let address = effectiveAddress(memoryOperand, instruction: instruction, state: state)
+          if requiresAlignment, address & (byteCount == 32 ? 0x1F : 0xF) != 0 {
+            return generalProtection(at: originalRIP)
+          }
+          bytes = try executionMemory.read(at: address, byteCount: byteCount)
+        }
+        switch destination {
+        case .register(let register):
+          var registerBytes = state.floatingPoint.ymm[Int(register)].bytes
+          registerBytes.replaceSubrange(0..<byteCount, with: bytes)
+          if length == .xmm128 {
+            registerBytes.replaceSubrange(
+              byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+          }
+          state.floatingPoint.ymm[Int(register)] = try .init(
+            bytes: registerBytes, expectedByteCount: 32)
+        case .memory(let memoryOperand):
+          try writeVectorBytes(
+            bytes, to: memoryOperand, instruction: instruction,
+            state: state, memory: executionMemory)
+        }
+      case .vexVectorBinary(let operation, let destination, let firstSource, let secondSource, let length):
+        let byteCount = Int(length.rawValue)
+        let lhs = Array(state.floatingPoint.ymm[Int(firstSource)].bytes.prefix(byteCount))
+        let rhs = try readVectorBytes(
+          secondSource, byteCount: byteCount, instruction: instruction,
+          state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: byteCount)
+        for i in 0..<byteCount {
+          switch operation {
+          case .and: result[i] = lhs[i] & rhs[i]
+          case .andNot: result[i] = lhs[i] & ~rhs[i]
+          case .or: result[i] = lhs[i] | rhs[i]
+          case .xor: result[i] = lhs[i] ^ rhs[i]
+          }
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<byteCount, with: result)
+        if length == .xmm128 {
+          registerBytes.replaceSubrange(
+            byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .vexComparePackedBytes(let destination, let firstSource, let secondSource, let length):
+        let byteCount = Int(length.rawValue)
+        let lhs = Array(state.floatingPoint.ymm[Int(firstSource)].bytes.prefix(byteCount))
+        let rhs = try readVectorBytes(
+          secondSource, byteCount: byteCount, instruction: instruction,
+          state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: byteCount)
+        for i in 0..<byteCount {
+          result[i] = lhs[i] == rhs[i] ? 0xFF : 0
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<byteCount, with: result)
+        if length == .xmm128 {
+          registerBytes.replaceSubrange(
+            byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .vexMoveMaskToInteger(let destination, let source, let length):
+        let byteCount = Int(length.rawValue)
+        let vectorBytes = state.floatingPoint.ymm[Int(source)].bytes
+        var mask: UInt64 = 0
+        for i in 0..<byteCount {
+          if vectorBytes[i] & 0x80 != 0 { mask |= 1 << i }
+        }
+        try write(
+          mask, to: destination, instruction: instruction,
+          state: &state, memory: executionMemory)
+      case .vexMoveIntegerToVector(let destination, let source, let quadword):
+        let width = quadword ? DoryX86OperandWidth.quadword : .doubleword
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<16, with: repeatElement(0, count: 16))
+        registerBytes.replaceSubrange(0..<width.byteCount, with: littleEndian(value, width: width))
+        registerBytes.replaceSubrange(16..<32, with: repeatElement(0, count: 16))
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .vexMoveVectorToInteger(let destination, let source, let quadword):
+        let width = quadword ? DoryX86OperandWidth.quadword : .doubleword
+        let value = fromLittleEndian(
+          Array(state.floatingPoint.ymm[Int(source)].bytes.prefix(width.byteCount)))
+        try write(
+          value, to: destination, instruction: instruction,
+          state: &state, memory: executionMemory)
+      case .vexShufflePackedBytes(let destination, let firstSource, let secondSource, let length):
+        let byteCount = Int(length.rawValue)
+        let indices = try readVectorBytes(
+          secondSource, byteCount: byteCount, instruction: instruction,
+          state: state, memory: executionMemory)
+        var table = state.floatingPoint.ymm[Int(firstSource)].bytes
+        var result = [UInt8](repeating: 0, count: byteCount)
+        for lane in 0..<byteCount {
+          let index = indices[lane]
+          if index & 0x80 != 0 {
+            result[lane] = 0
+          } else {
+            result[lane] = table[Int(index) & (byteCount - 1)]
+          }
+        }
+        table.replaceSubrange(0..<byteCount, with: result)
+        if length == .xmm128 {
+          table.replaceSubrange(byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: table, expectedByteCount: 32)
+      case .vexBroadcast(let destination, let source, let mode, let length):
+        let byteCount = Int(length.rawValue)
+        let sourceBytes = try readVectorBytes(
+          source, byteCount: mode == .packed128 ? 16 : (mode == .double64 ? 8 : 4),
+          instruction: instruction, state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: byteCount)
+        switch mode {
+        case .single32:
+          let element = Array(sourceBytes.prefix(4))
+          for offset in stride(from: 0, to: byteCount, by: 4) {
+            result.replaceSubrange(offset..<offset + 4, with: element)
+          }
+        case .double64:
+          let element = Array(sourceBytes.prefix(8))
+          for offset in stride(from: 0, to: byteCount, by: 8) {
+            result.replaceSubrange(offset..<offset + 8, with: element)
+          }
+        case .packed128:
+          let element = Array(sourceBytes.prefix(16))
+          result.replaceSubrange(0..<16, with: element)
+          if byteCount == 32 {
+            result.replaceSubrange(16..<32, with: element)
+          }
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<byteCount, with: result)
+        if length == .xmm128 {
+          registerBytes.replaceSubrange(
+            byteCount..<32, with: repeatElement(0, count: 32 - byteCount))
+        }
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
       case .moveIntegerToVector(let destination, let source):
         let width = operandWidth(source)
         let value = try read(

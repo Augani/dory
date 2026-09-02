@@ -28,6 +28,53 @@ public struct DoryX86REXPrefix: Codable, Sendable, Hashable {
     x = byte & 0x2 != 0
     b = byte & 0x1 != 0
   }
+
+  init(w: Bool, r: Bool, x: Bool, b: Bool) {
+    self.w = w
+    self.r = r
+    self.x = x
+    self.b = b
+  }
+}
+
+/// VEX prefix decoded from `C4` (3-byte) or `C5` (2-byte) in long mode. The
+/// prefix encodes REX-equivalent bits, an additional operand register (`vvvv`),
+/// the vector length (`L`), a mandatory-prefix selector (`pp`), and the opcode
+/// map selector (`mmmmm`).
+public struct DoryX86VEXPrefix: Codable, Sendable, Hashable {
+  /// The additional source register encoded in inverted form in bits 6:3.
+  /// `0` means no third operand (2-operand form); `1...15` is the register index.
+  public let vvvv: UInt8
+  /// `true` for 256-bit YMM operation, `false` for 128-bit XMM.
+  public let largeVector: Bool
+  /// REX-equivalent bits.
+  public let r: Bool
+  public let x: Bool
+  public let b: Bool
+  public let w: Bool
+  /// Opcode map: `1` = `0F`, `2` = `0F 38`, `3` = `0F 3A`.
+  public let map: UInt8
+  /// Mandatory prefix encoding: `0` = none, `1` = `66`, `2` = `F3`, `3` = `F2`.
+  public let pp: UInt8
+
+  public init(vvvv: UInt8, largeVector: Bool, r: Bool, x: Bool, b: Bool, w: Bool, map: UInt8, pp: UInt8) {
+    self.vvvv = vvvv
+    self.largeVector = largeVector
+    self.r = r
+    self.x = x
+    self.b = b
+    self.w = w
+    self.map = map
+    self.pp = pp
+  }
+}
+
+/// Vector length for VEX-encoded operations.
+public enum DoryX86VectorLength: UInt8, Codable, Sendable, Hashable {
+  /// 128-bit XMM (low half of YMM, upper half preserved).
+  case xmm128 = 16
+  /// 256-bit YMM (full 32 bytes).
+  case ymm256 = 32
 }
 
 public struct DoryX86InstructionPrefixes: Codable, Sendable, Hashable {
@@ -37,6 +84,7 @@ public struct DoryX86InstructionPrefixes: Codable, Sendable, Hashable {
   public var operandSizeOverride = false
   public var addressSizeOverride = false
   public var rex: DoryX86REXPrefix?
+  public var vex: DoryX86VEXPrefix?
 
   public init() {}
 }
@@ -185,6 +233,17 @@ public enum DoryX86VectorLaneWidth: UInt8, Codable, Sendable, Hashable {
   case word = 2
   case doubleword = 4
   case quadword = 8
+}
+
+/// VEX broadcast element width selectors for `VBROADCASTSS/SD/F128/I128` and
+/// `VPBROADCASTB`.
+public enum DoryX86VEXBroadcastMode: String, Codable, Sendable, Hashable {
+  /// `VBROADCASTSS`: broadcast a 32-bit single-precision element to all dword lanes.
+  case single32
+  /// `VBROADCASTSD`: broadcast a 64-bit double-precision element to all qword lanes.
+  case double64
+  /// `VBROADCASTF128` / `VBROADCASTI128`: broadcast 128 bits to both halves of YMM.
+  case packed128
 }
 
 public enum DoryX86VectorShuffleFormat: String, Codable, Sendable, Hashable {
@@ -469,6 +528,60 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     destination: UInt8,
     source: DoryX86VectorOperand,
     control: UInt8
+  )
+  // MARK: - VEX (AVX/AVX2) operations
+  /// `VZEROUPPER` (`C5 F8 77`): zero the upper 128 bits of all YMM registers.
+  case vexZeroUpper
+  /// VEX-encoded 128/256-bit vector move (VMOVUPS/VMOVAPS/VMOVDQA). The
+  /// `requiresAlignment` flag distinguishes aligned from unaligned forms.
+  case vexMoveVector(
+    destination: DoryX86VectorOperand,
+    source: DoryX86VectorOperand,
+    length: DoryX86VectorLength,
+    requiresAlignment: Bool
+  )
+  /// VEX-encoded 3-operand floating-point binary (VXORPS/VPOR/VPXOR etc.).
+  /// `destination = firstSource OP secondSource`.
+  case vexVectorBinary(
+    _ operation: DoryX86VectorBitwiseOperation,
+    destination: UInt8,
+    firstSource: UInt8,
+    secondSource: DoryX86VectorOperand,
+    length: DoryX86VectorLength
+  )
+  /// VEX-encoded 3-operand packed-byte comparison (VPCMPEQB).
+  case vexComparePackedBytes(
+    destination: UInt8,
+    firstSource: UInt8,
+    secondSource: DoryX86VectorOperand,
+    length: DoryX86VectorLength
+  )
+  /// VEX-encoded `VPMOVMSKB`: extract the high bit of each byte into a GPR.
+  case vexMoveMaskToInteger(
+    destination: DoryX86Operand,
+    source: UInt8,
+    length: DoryX86VectorLength
+  )
+  /// VEX-encoded `VMOVD`/`VMOVQ` between GPR and XMM.
+  case vexMoveIntegerToVector(
+    destination: UInt8, source: DoryX86Operand, quadword: Bool
+  )
+  case vexMoveVectorToInteger(
+    destination: DoryX86Operand, source: UInt8, quadword: Bool
+  )
+  /// VEX-encoded 3-operand `VPSHUFB`: `destination = PSHUFB(firstSource, secondSource)`.
+  case vexShufflePackedBytes(
+    destination: UInt8,
+    firstSource: UInt8,
+    secondSource: DoryX86VectorOperand,
+    length: DoryX86VectorLength
+  )
+  /// VEX broadcast family: replicate a source element across the destination.
+  case vexBroadcast(
+    destination: UInt8,
+    source: DoryX86VectorOperand,
+    mode: DoryX86VEXBroadcastMode,
+    length: DoryX86VectorLength
   )
   case convertIntegerToScalarFloat(
     format: DoryX86VectorFloatingFormat,

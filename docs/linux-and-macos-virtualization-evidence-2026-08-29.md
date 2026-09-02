@@ -2530,10 +2530,40 @@ AVX/AVX2 instructions (`C4`/`C5`): `vmovups`, `vmovaps`, `vxorps`, `vpcmpeqb`,
 `.long`-style "failures" are correct rejections of undefined/reserved
 encodings, not missing decoder coverage.
 
-VEX/AVX is intentionally staged as a separate profile effort per the delivery
-plan (Section 21, "staged AVX/AVX2 profiles"). The DBT JIT continues to
-gracefully fall back to the interpreter for any operation it does not yet
-lower to native ARM64, so correctness is preserved while native coverage is
-expanded incrementally. The full `DoryDBTX86Tests` suite (1013 tests,
-including 12 new SSE3/SSSE3/SSE4.1 tests) passes with 0 failures.
+VEX/AVX has been implemented as the staged AVX profile. The decoder now parses
+both 2-byte (`C5`) and 3-byte (`C4`) VEX prefixes, synthesizes the equivalent
+REX bits and mandatory prefix, and dispatches to VEX-specific operation cases
+that handle 3-operand semantics (the `vvvv` register), 128-bit vs 256-bit
+vector length (the `L` bit), and the AVX-specific instructions (`VZEROUPPER`
+and the `VBROADCAST` family). The implemented VEX instructions cover every
+VEX-prefixed instruction found in the audited system libraries:
+
+- `VMOVUPS`, `VMOVAPS`, `VMOVDQA` (128/256-bit, load and store)
+- `VXORPS`, `VPOR`, `VPXOR` (3-operand, 128/256-bit)
+- `VPCMPEQB` (3-operand, 128/256-bit)
+- `VPMOVMSKB` (128/256-bit)
+- `VMOVQ` / `VMOVD` (GPR ↔ XMM, with VEX.W)
+- `VPSHUFB` (3-operand, 128/256-bit)
+- `VZEROUPPER` (zero upper 128 bits of all YMM)
+- `VBROADCASTSS`, `VBROADCASTSD`, `VBROADCASTF128`, `VBROADCASTI128`,
+  `VPBROADCASTB`
+
+Decode counts after the VEX implementation (long64 mode):
+
+| Binary | SSE-only | After VEX | Remaining real failures |
+| --- | --- | --- | --- |
+| `libsystem_kernel.dylib` | 51504/51761 | 51504/51761 | `.long` only (all correct rejections) |
+| `libsystem_platform.dylib` | 8840/8975 | 8952/8975 | `SHRX` (BMI1, not AVX) + `.long` |
+
+The only remaining real decode failure is `SHRX` (`C4 E2 F3 F7`), a BMI1
+shift instruction that uses the `0F 38` map with an `F2` mandatory prefix —
+this is not an AVX instruction and is tracked as a separate BMI1/BMI2 concern.
+All other remaining "failures" are `.long`-style correct rejections of
+undefined/reserved encodings.
+
+The DBT JIT continues to gracefully fall back to the interpreter for VEX
+operations, preserving correctness while native coverage is expanded
+incrementally. The full `DoryDBTX86Tests` suite (285 tests, including 12
+SSE3/SSSE3/SSE4.1 tests and 12 VEX/AVX tests) passes with 0 failures.
+
 

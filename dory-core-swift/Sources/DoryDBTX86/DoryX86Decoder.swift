@@ -38,37 +38,70 @@ public struct DoryX86Decoder: Sendable {
   ) throws -> DoryX86DecodedInstruction {
     var cursor = Cursor(input: input, address: address)
     var prefixes = DoryX86InstructionPrefixes()
-    while let byte = cursor.peek() {
-      let consumed: Bool
-      switch byte {
-      case 0xF0:
-        prefixes.lock = true
-        consumed = true
-      case 0xF2, 0xF3:
-        prefixes.repeatPrefix = byte
-        consumed = true
-      case 0x2E, 0x36, 0x3E, 0x26, 0x64, 0x65:
-        prefixes.segmentOverride = byte
-        consumed = true
-      case 0x66:
-        prefixes.operandSizeOverride = true
-        consumed = true
-      case 0x67:
-        prefixes.addressSizeOverride = true
-        consumed = true
-      case 0x40...0x4F where mode == .long64:
-        prefixes.rex = DoryX86REXPrefix(byte: byte)
-        consumed = true
-      default:
-        consumed = false
+    // VEX prefixes (C4/C5) must be detected before the legacy prefix loop ends,
+    // because they are not legacy prefixes — they replace the REX + mandatory
+    // prefix + opcode-map selection in a single multi-byte encoding. In long
+    // mode, C4/C5 are always VEX (LES/LDS are not encodable in 64-bit).
+    if mode == .long64, let first = cursor.peek(), first == 0xC5 || first == 0xC4 {
+      prefixes.vex = try parseVEXPrefix(&cursor)
+      // Synthesize REX-equivalent bits so ModRM decoding extends registers.
+      let v = prefixes.vex!
+      prefixes.rex = DoryX86REXPrefix(w: v.w, r: v.r, x: v.x, b: v.b)
+      // Synthesize the mandatory prefix from pp so existing opcode dispatch
+      // sees the same prefix state as the equivalent legacy SSE encoding.
+      switch v.pp {
+      case 1: prefixes.operandSizeOverride = true   // 66
+      case 2: prefixes.repeatPrefix = 0xF3           // F3
+      case 3: prefixes.repeatPrefix = 0xF2           // F2
+      default: break                                  // 00 = no prefix
       }
-      guard consumed else { break }
-      _ = try cursor.readByte()
+    } else {
+      while let byte = cursor.peek() {
+        let consumed: Bool
+        switch byte {
+        case 0xF0:
+          prefixes.lock = true
+          consumed = true
+        case 0xF2, 0xF3:
+          prefixes.repeatPrefix = byte
+          consumed = true
+        case 0x2E, 0x36, 0x3E, 0x26, 0x64, 0x65:
+          prefixes.segmentOverride = byte
+          consumed = true
+        case 0x66:
+          prefixes.operandSizeOverride = true
+          consumed = true
+        case 0x67:
+          prefixes.addressSizeOverride = true
+          consumed = true
+        case 0x40...0x4F where mode == .long64:
+          prefixes.rex = DoryX86REXPrefix(byte: byte)
+          consumed = true
+        default:
+          consumed = false
+        }
+        guard consumed else { break }
+        _ = try cursor.readByte()
+      }
     }
 
     let opcode = try cursor.readByte()
     let width = operandWidth(mode: mode, prefixes: prefixes)
     let operation: DoryX86InstructionOperation
+    // VEX-prefixed instructions have their own dispatch path. The VEX prefix
+    // selects the opcode map (0F, 0F38, 0F3A), mandatory prefix, and vector
+    // length, so we decode them separately from the legacy opcode switch.
+    if let vex = prefixes.vex {
+      operation = try decodeVEXOpcode(
+        vex, opcode: opcode, cursor: &cursor, prefixes: prefixes, mode: mode)
+      try validateLockPrefix(prefixes, operation: operation, address: address)
+      guard cursor.offset <= 15 else {
+        throw DoryX86DecodeError.instructionTooLong(address: address)
+      }
+      return DoryX86DecodedInstruction(
+        address: address, bytes: cursor.consumedBytes,
+        prefixes: prefixes, operation: operation)
+    }
     switch opcode {
     case 0x90:
       if prefixes.repeatPrefix == 0xF3, prefixes.rex?.b != true {
@@ -1873,6 +1906,223 @@ public struct DoryX86Decoder: Sendable {
       .memory(memory)
     default:
       preconditionFailure("ModRM vector operand must be a register or memory")
+    }
+  }
+
+  /// Parse a 2-byte (`C5`) or 3-byte (`C4`) VEX prefix from the cursor. In
+  /// long mode these bytes are unambiguously VEX (LES/LDS are not encodable).
+  private func parseVEXPrefix(_ cursor: inout Cursor) throws -> DoryX86VEXPrefix {
+    let marker = try cursor.readByte()  // C4 or C5
+    if marker == 0xC5 {
+      // 2-byte VEX: C5 [R~|vvvv~|L|pp]
+      let byte = try cursor.readByte()
+      let r = byte & 0x80 == 0          // inverted
+      let vvvv = (~byte >> 3) & 0x0F    // inverted, 0 means no third operand
+      let largeVector = byte & 0x04 != 0
+      let pp = byte & 0x03
+      return DoryX86VEXPrefix(
+        vvvv: vvvv, largeVector: largeVector, r: r, x: false, b: false,
+        w: false, map: 1, pp: pp)
+    }
+    // 3-byte VEX: C4 [R~|X~|B~|mmmmm] [W|vvvv~|L|pp]
+    let byte1 = try cursor.readByte()
+    let byte2 = try cursor.readByte()
+    let r = byte1 & 0x80 == 0
+    let x = byte1 & 0x40 == 0
+    let b = byte1 & 0x20 == 0
+    let map = byte1 & 0x1F
+    let w = byte2 & 0x80 != 0
+    let vvvv = (~byte2 >> 3) & 0x0F
+    let largeVector = byte2 & 0x04 != 0
+    let pp = byte2 & 0x03
+    return DoryX86VEXPrefix(
+      vvvv: vvvv, largeVector: largeVector, r: r, x: x, b: b,
+      w: w, map: map, pp: pp)
+  }
+
+  /// Decode a VEX-prefixed opcode. The VEX prefix has already been parsed and
+  /// the equivalent REX/mandatory-prefix state has been synthesized into
+  /// `prefixes`. This method reads the opcode byte and ModRM, then dispatches
+  /// to the appropriate VEX operation based on the opcode map.
+  private func decodeVEXOpcode(
+    _ vex: DoryX86VEXPrefix,
+    opcode: UInt8,
+    cursor: inout Cursor,
+    prefixes: DoryX86InstructionPrefixes,
+    mode: DoryX86ExecutionMode
+  ) throws -> DoryX86InstructionOperation {
+    let length: DoryX86VectorLength = vex.largeVector ? .ymm256 : .xmm128
+    switch vex.map {
+    case 1:  // 0F map
+      return try decodeVEX0FOpcode(
+        vex, opcode: opcode, cursor: &cursor, prefixes: prefixes,
+        mode: mode, length: length)
+    case 2:  // 0F 38 map
+      return try decodeVEX0F38Opcode(
+        vex, opcode: opcode, cursor: &cursor, prefixes: prefixes,
+        mode: mode, length: length)
+    default:
+      throw DoryX86DecodeError.unsupportedOpcode(
+        address: cursor.address, bytes: cursor.consumedBytes)
+    }
+  }
+
+  /// Decode VEX instructions in the `0F` opcode map.
+  private func decodeVEX0FOpcode(
+    _ vex: DoryX86VEXPrefix,
+    opcode: UInt8,
+    cursor: inout Cursor,
+    prefixes: DoryX86InstructionPrefixes,
+    mode: DoryX86ExecutionMode,
+    length: DoryX86VectorLength
+  ) throws -> DoryX86InstructionOperation {
+    switch opcode {
+    case 0x10, 0x11:
+      // VMOVUPS (pp=00) / VMOVSS (pp=F3) / VMOVSD (pp=F2) / VMOVAPS (pp=66)
+      let isLoad = opcode == 0x10
+      let aligned = vex.pp == 1  // 66 -> aligned
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      let destination = vectorOperand(isLoad ? operands.reg : operands.rm)
+      let source = vectorOperand(isLoad ? operands.rm : operands.reg)
+      return .vexMoveVector(
+        destination: destination, source: source,
+        length: length, requiresAlignment: aligned)
+    case 0x28, 0x29:
+      // VMOVAPS (pp=66, aligned)
+      let isLoad = opcode == 0x28
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      let destination = vectorOperand(isLoad ? operands.reg : operands.rm)
+      let source = vectorOperand(isLoad ? operands.rm : operands.reg)
+      return .vexMoveVector(
+        destination: destination, source: source,
+        length: length, requiresAlignment: true)
+    case 0x57:
+      // VXORPS (pp=00) / VXORPD (pp=66)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      return .vexVectorBinary(
+        .xor, destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    case 0x6E:
+      // VMOVD/VMOVQ (register from integer): 66 0F 6E, W=1 for VMOVQ
+      let operands = try decodeModRM(
+        cursor: &cursor, width: vex.w ? .quadword : .doubleword,
+        prefixes: prefixes, mode: mode)
+      return .vexMoveIntegerToVector(
+        destination: vectorRegister(operands.reg),
+        source: operands.rm, quadword: vex.w)
+    case 0x7E:
+      // VMOVD/VMOVQ (integer from register): 66 0F 7E, W=1 for VMOVQ
+      let operands = try decodeModRM(
+        cursor: &cursor, width: vex.w ? .quadword : .doubleword,
+        prefixes: prefixes, mode: mode)
+      return .vexMoveVectorToInteger(
+        destination: operands.rm, source: vectorRegister(operands.reg),
+        quadword: vex.w)
+    case 0x6F:
+      // VMOVDQA (pp=66, aligned)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      let isLoad = true  // 6F is always reg <- rm for MOVDQA
+      let destination = vectorOperand(isLoad ? operands.reg : operands.rm)
+      let source = vectorOperand(isLoad ? operands.rm : operands.reg)
+      return .vexMoveVector(
+        destination: destination, source: source,
+        length: length, requiresAlignment: true)
+    case 0x74:
+      // VPCMPEQB (pp=66)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      return .vexComparePackedBytes(
+        destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    case 0x77:
+      // VZEROUPPER / VZEROALL (L=0 -> VZEROUPPER, L=1 -> VZEROALL)
+      return .vexZeroUpper
+    case 0xD7:
+      // VPMOVMSKB (pp=66): GPR width depends on VEX.W.
+      let gprWidth: DoryX86OperandWidth = vex.w ? .quadword : .doubleword
+      let operands = try decodeModRM(
+        cursor: &cursor, width: gprWidth, prefixes: prefixes, mode: mode)
+      return .vexMoveMaskToInteger(
+        destination: operands.reg, source: vectorRegister(operands.rm),
+        length: length)
+    case 0xEB:
+      // VPOR (pp=66)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      return .vexVectorBinary(
+        .or, destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    case 0xEF:
+      // VPXOR (pp=66)
+      let operands = try decodeModRM(
+        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+      return .vexVectorBinary(
+        .xor, destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    default:
+      throw DoryX86DecodeError.unsupportedOpcode(
+        address: cursor.address, bytes: cursor.consumedBytes)
+    }
+  }
+
+  /// Decode VEX instructions in the `0F 38` opcode map.
+  private func decodeVEX0F38Opcode(
+    _ vex: DoryX86VEXPrefix,
+    opcode: UInt8,
+    cursor: inout Cursor,
+    prefixes: DoryX86InstructionPrefixes,
+    mode: DoryX86ExecutionMode,
+    length: DoryX86VectorLength
+  ) throws -> DoryX86InstructionOperation {
+    guard vex.pp == 1 else {  // 66 mandatory prefix for all 0F38 VEX forms here
+      throw DoryX86DecodeError.unsupportedOpcode(
+        address: cursor.address, bytes: cursor.consumedBytes)
+    }
+    let operands = try decodeModRM(
+      cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+    switch opcode {
+    case 0x00:
+      // VPSHUFB
+      return .vexShufflePackedBytes(
+        destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    case 0x18:
+      // VBROADCASTSS
+      return .vexBroadcast(
+        destination: vectorRegister(operands.reg),
+        source: vectorOperand(operands.rm), mode: .single32, length: length)
+    case 0x19:
+      // VBROADCASTSD (requires L=1)
+      return .vexBroadcast(
+        destination: vectorRegister(operands.reg),
+        source: vectorOperand(operands.rm), mode: .double64, length: length)
+    case 0x1A:
+      // VBROADCASTF128 (requires L=1)
+      return .vexBroadcast(
+        destination: vectorRegister(operands.reg),
+        source: vectorOperand(operands.rm), mode: .packed128, length: length)
+    case 0x5A:
+      // VBROADCASTI128 (requires L=1)
+      return .vexBroadcast(
+        destination: vectorRegister(operands.reg),
+        source: vectorOperand(operands.rm), mode: .packed128, length: length)
+    case 0x78:
+      // VPBROADCASTB
+      return .vexBroadcast(
+        destination: vectorRegister(operands.reg),
+        source: vectorOperand(operands.rm), mode: .single32, length: length)
+    default:
+      throw DoryX86DecodeError.unsupportedOpcode(
+        address: cursor.address, bytes: cursor.consumedBytes)
     }
   }
 
