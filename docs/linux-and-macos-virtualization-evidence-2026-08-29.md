@@ -2626,4 +2626,54 @@ Post-implementation audit:
 failures.** The full `DoryDBTX86Tests` suite (299 tests, including 7 new
 SSE2 scalar FP tests) passes with 0 failures.
 
+### x86_64 Linux kernel and glibc audit (Section 27d)
+
+The audit was extended to include the most critical x86_64 Linux binaries
+from the omarchy-4.0.2 Arch Linux ISO:
+
+- **Linux 7.1.8 kernel** (`vmlinux-linux-t2`, 70MB ELF, 8.33M instruction sites)
+- **glibc** (`libc.so.6`, `libm.so.6`, `ld-linux-x86-64.so.2`)
+- **UEFI bootloader** (`BOOTx64.EFI`)
+
+The kernel and glibc audits revealed significant VEX/AVX and SSE4.2 decode
+gaps that were not exercised by macOS system libraries:
+
+**Kernel decode gaps (implemented):**
+- `ICEBP`/`INT1` (`F1`) — debug exception, 1181 hits
+- `VPSRLQ`/`VPSLLQ`/`VPSRAD` (`C5 73`) — VEX packed shift by immediate, ~200 hits
+- `VMOVDQA` store (`C5 F9 7F`) — VEX aligned store, 40 hits
+
+**glibc decode gaps (implemented):**
+- VEX scalar FP: `VADDSD`/`VSUBSD`/`VMULSD`/`VDIVSD`/`VMAXSD`/`VMINSD`,
+  `VUCOMISD`/`VCOMISD`, `VORPD`/`VANDNPD`/`VANDPD`,
+  `VCVTSD2SS`/`VCVTSS2SD`, `VCVTTSD2SI`/`VCVTSD2SI`,
+  `VUNPCKLPS`/`VUNPCKLPD`/`VUNPCKHPS`/`VUNPCKHPD` — ~4000 hits in libm
+- VEX packed integer: `VPAND`/`VPANDN`/`VPOR`/`VPXOR`,
+  `VPCMPGTB`/`W`/`D`, `VPCMPEQB`/`D`, `VPADDB`/`W`/`D`,
+  `VPSUBB`/`W`/`USB`/`USW`, `VPMINUB`/`VPMINSW`,
+  `VPSRLVD`/`VPSRAVD` — ~1000 hits in libc
+- VEX system: `VLDMXCSR`/`VSTMXCSR`, `KMOVD` (AVX-512 mask register)
+- SSE4.2: `PCMPISTRI` (packed compare implicit-length strings)
+- System: `XTEST` (RTM), `XSAVE`/`XRSTOR`, `MOVLPD`/`MOVHPD`
+
+Post-implementation audit results:
+
+| Binary | Decoded | Total | Real failures |
+| --- | --- | --- | --- |
+| `vmlinux-linux-t2` (Linux 7.1.8 kernel) | 8164043 | 8330219 | 4057 unique |
+| `libc.so.6` (glibc) | 360229 | 363691 | 1096 |
+| `libm.so.6` (glibc math) | 141727 | 143392 | 1281 |
+| `ld-linux-x86-64.so.2` (dynamic linker) | 41044 | 41093 | 46 |
+| `BOOTx64.EFI` (UEFI bootloader) | 14428 | 14429 | 1 (truncated) |
+| `busybox-x86_64` (Linux musl static) | 245687 | 245687 | 0 |
+
+The kernel's remaining failures are almost entirely data bytes (linear sweep
+artifacts in the 70MB binary — `0xFFFF`, invalid 64-bit opcodes like `PUSHA`/
+`POPA`, segment register ops, far call/jump, etc.). The glibc remaining
+failures are primarily EVEX/AVX-512 instructions (`62` prefix) and FMA
+instructions (`VFMADDSD`/`VFMADD213SD`), which are used in optimized string
+and math routines but are not required for basic Linux boot.
+
+The full `DoryDBTX86Tests` suite (299 tests, 13 suites) passes with 0 failures.
+
 
