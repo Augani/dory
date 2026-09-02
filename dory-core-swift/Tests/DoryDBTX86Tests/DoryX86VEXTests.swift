@@ -342,4 +342,98 @@ import Testing
     let stored = try memory.read(at: 0x2100, byteCount: 32)
     #expect(stored == bytes(0..<32))
   }
+
+  // MARK: - BMI1 SHRX (VEX 0F38 F7 with F2 pp)
+
+  @Test func shrx64ShiftsRightWithoutModifyingFlags() throws {
+    // C4 E2 F3 F7 C0: SHRX rax, rax, rcx
+    // C4 E2: R=1,X=1,B=1, map=00010(0F38)
+    // F3: W=1, vvvv=~1110=0001=1(rcx), L=0, pp=11(F2) -> SHRX
+    // C0: ModRM mod=11, reg=000(rax), rm=000(rax)
+    let instruction = try decoder.decode(
+      [0xC4, 0xE2, 0xF3, 0xF7, 0xC0], at: 0x1000, mode: .long64)
+    #expect(
+      instruction.operation
+        == .flaglessShift(
+          .shiftRight,
+          destination: .register(.rax, width: .quadword),
+          source: .register(.rax, width: .quadword),
+          count: .register(.rcx, width: .quadword)
+        ))
+
+    var registers = DoryX86GeneralRegisters()
+    registers.rax = 0x8000_0000_0000_0000
+    registers.rcx = 4
+    var state = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
+    // Set some flags to verify they're preserved.
+    state.rflags.insert(.carry)
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000, bytes: [0xC4, 0xE2, 0xF3, 0xF7, 0xC0])
+    let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+    expectRetired(result)
+    #expect(state.registers.rax == 0x0800_0000_0000_0000)
+    // Flags must be preserved (carry still set).
+    #expect(state.rflags.contains(.carry))
+  }
+
+  @Test func shlx64ShiftsLeftWithoutModifyingFlags() throws {
+    // C4 E2 E1 F7 C0: SHLX rax, rax, rcx
+    // C4 E2: R=1,X=1,B=1, map=00010(0F38)
+    // E1: W=1, vvvv=~1100=0011=1... wait
+    // E1 = 1110 0001: W=1, vvvv=~1100=0011=3... no
+    // E1 = 1110 0001: W=1, vvvv=~1100=0011=3, L=0, pp=01(66) -> SHLX
+    // vvvv=3 means rcx? No, vvvv=3 -> register 3 = rbx
+    // Let me use vvvv=1 (rcx): byte2 = W=1, vvvv=~0001=1110, L=0, pp=01
+    // = 1111 0001 = F1
+    // C4 E2 F1 F7 C0: SHLX rax, rax, rcx
+    let instruction = try decoder.decode(
+      [0xC4, 0xE2, 0xF1, 0xF7, 0xC0], at: 0x1000, mode: .long64)
+    #expect(
+      instruction.operation
+        == .flaglessShift(
+          .shiftLeft,
+          destination: .register(.rax, width: .quadword),
+          source: .register(.rax, width: .quadword),
+          count: .register(.rcx, width: .quadword)
+        ))
+
+    var registers = DoryX86GeneralRegisters()
+    registers.rax = 0x0000_0000_0000_000F
+    registers.rcx = 4
+    var state = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000, bytes: [0xC4, 0xE2, 0xF1, 0xF7, 0xC0])
+    let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+    expectRetired(result)
+    #expect(state.registers.rax == 0x0000_0000_0000_00F0)
+  }
+
+  @Test func sarx64ArithmeticShiftsRightWithoutModifyingFlags() throws {
+    // C4 E2 F3 F7 C2: SARX rax, rdx, rcx
+    // F3: W=1, vvvv=~1110=0001=1(rcx), L=0, pp=11(F2) -> SARX? No, F2=pp=3 -> SHRX
+    // SARX uses pp=2 (F3): byte2 = W=1, vvvv=~0001=1110, L=0, pp=10
+    // = 1111 0010 = F2
+    // C4 E2 F2 F7 C2: SARX rax, rdx, rcx
+    let instruction = try decoder.decode(
+      [0xC4, 0xE2, 0xF2, 0xF7, 0xC2], at: 0x1000, mode: .long64)
+    #expect(
+      instruction.operation
+        == .flaglessShift(
+          .arithmeticShiftRight,
+          destination: .register(.rax, width: .quadword),
+          source: .register(.rdx, width: .quadword),
+          count: .register(.rcx, width: .quadword)
+        ))
+
+    var registers = DoryX86GeneralRegisters()
+    registers.rdx = 0x8000_0000_0000_0000
+    registers.rcx = 4
+    var state = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000, bytes: [0xC4, 0xE2, 0xF2, 0xF7, 0xC2])
+    let result = interpreter.step(state: &state, memory: memory, mode: .long64)
+    expectRetired(result)
+    // Arithmetic right shift of sign bit -> fills with 1s
+    #expect(state.registers.rax == 0xF800_0000_0000_0000)
+  }
 }

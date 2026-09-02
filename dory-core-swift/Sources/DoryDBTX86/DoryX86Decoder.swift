@@ -1758,6 +1758,19 @@ public struct DoryX86Decoder: Sendable {
             source: vectorOperand(operands.rm),
             signed: false
           )
+        case 0x22:
+          // PMOVSXBQ: sign-extend 2 low bytes to 2 quadwords. SSE4.1.
+          operation = .extendPackedByteToQword(
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm),
+            signed: true
+          )
+        case 0x29:
+          // PCMPEQQ: compare packed quadwords for equality. SSE4.1.
+          operation = .comparePackedQwords(
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm)
+          )
         default:
           throw DoryX86DecodeError.unsupportedOpcode(
             address: address, bytes: cursor.consumedBytes)
@@ -1778,6 +1791,15 @@ public struct DoryX86Decoder: Sendable {
             destination: vectorRegister(operands.reg),
             source: vectorOperand(operands.rm),
             count: try cursor.readByte()
+          )
+        case 0x22:
+          // PINSRQ: insert qword from GPR/memory into XMM lane. SSE4.1.
+          // REX.W selects 64-bit operand width.
+          let index = try cursor.readByte() & 0x01
+          operation = .insertPackedQword(
+            destination: vectorRegister(operands.reg),
+            source: operands.rm,
+            index: index
           )
         default:
           throw DoryX86DecodeError.unsupportedOpcode(
@@ -2082,7 +2104,32 @@ public struct DoryX86Decoder: Sendable {
     mode: DoryX86ExecutionMode,
     length: DoryX86VectorLength
   ) throws -> DoryX86InstructionOperation {
-    guard vex.pp == 1 else {  // 66 mandatory prefix for all 0F38 VEX forms here
+    // BMI1 flagless shifts (SHRX/SARX/SHLX) use opcode F7 with pp selecting
+    // the direction. These operate on GPRs, not vector registers.
+    if opcode == 0xF7 {
+      let gprWidth: DoryX86OperandWidth = vex.w ? .quadword : .doubleword
+      let operands = try decodeModRM(
+        cursor: &cursor, width: gprWidth, prefixes: prefixes, mode: mode)
+      let operation: DoryX86ShiftOperation
+      switch vex.pp {
+      case 1: operation = .shiftLeft       // 66 -> SHLX
+      case 2: operation = .arithmeticShiftRight  // F3 -> SARX
+      case 3: operation = .shiftRight      // F2 -> SHRX
+      default:
+        throw DoryX86DecodeError.invalidEncoding(
+          address: cursor.address,
+          detail: "BMI1 shift requires 66/F3/F2 mandatory prefix")
+      }
+      // vvvv encodes the count register; reg is destination, rm is source.
+      let countRegister = register(Int(vex.vvvv), extensionBit: false)
+      return .flaglessShift(
+        operation,
+        destination: operands.reg,
+        source: operands.rm,
+        count: .register(countRegister, width: gprWidth)
+      )
+    }
+    guard vex.pp == 1 else {  // 66 mandatory prefix for all 0F38 VEX vector forms
       throw DoryX86DecodeError.unsupportedOpcode(
         address: cursor.address, bytes: cursor.consumedBytes)
     }

@@ -247,6 +247,42 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
+      case .flaglessShift(let operation, let destination, let source, let countOperand):
+        // BMI1 SHRX/SARX/SHLX: shift source by count, no flags modified.
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        let countValue = try read(
+          countOperand, instruction: instruction, state: state, memory: executionMemory)
+        let width = operandWidth(destination)
+        let count = UInt8(truncatingIfNeeded: countValue)
+        let bitCount = Int(width.rawValue)
+        let countMask: UInt8 = width == .quadword ? 0x3f : 0x1f
+        let maskedCount = Int(count & countMask)
+        let widthMask = mask(width)
+        let maskedValue = value & widthMask
+        let result: UInt64
+        switch operation {
+        case .shiftLeft:
+          result = maskedCount < bitCount
+            ? (maskedValue << maskedCount) & widthMask : 0
+        case .shiftRight:
+          result = maskedCount < bitCount
+            ? maskedValue >> maskedCount : 0
+        case .arithmeticShiftRight:
+          let signed = signExtendedInt64(maskedValue, width: width)
+          result = maskedCount < bitCount
+            ? UInt64(bitPattern: signed >> maskedCount) & widthMask
+            : UInt64(bitPattern: signed >> (bitCount - 1)) & widthMask
+        case .rotateLeft, .rotateRight, .rotateCarryLeft, .rotateCarryRight:
+          preconditionFailure("BMI1 flagless shift cannot be a rotate")
+        }
+        try write(
+          result,
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
       case .doubleShift(let operation, let destination, let source, let countSource):
         let destinationValue = try read(
           destination, instruction: instruction, state: state, memory: executionMemory)
@@ -1129,6 +1165,53 @@ public struct DoryX86Interpreter: Sendable {
         }
         var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
         registerBytes.replaceSubrange(0..<16, with: result)
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .extendPackedByteToQword(let destination, let source, let signed):
+        // PMOVSXBQ/PMOVZXBQ: extend two low bytes to two quadwords. SSE4.1.
+        let sourceBytes = try readVectorBytes(
+          source, byteCount: 2, instruction: instruction, state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: 16)
+        for lane in 0..<2 {
+          let byte = sourceBytes[lane]
+          let extensionBytes: [UInt8]
+          if signed && (byte & 0x80 != 0) {
+            extensionBytes = [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+          } else {
+            extensionBytes = [0, 0, 0, 0, 0, 0, 0]
+          }
+          result[lane * 8] = byte
+          result.replaceSubrange(lane * 8 + 1..<lane * 8 + 8, with: extensionBytes)
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<16, with: result)
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .comparePackedQwords(let destination, let source):
+        // PCMPEQQ: compare packed quadwords for equality. SSE4.1.
+        let sourceBytes = try readVectorBytes(
+          source, byteCount: 16, instruction: instruction, state: state, memory: executionMemory)
+        let destinationBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        var result = [UInt8](repeating: 0, count: 16)
+        for lane in 0..<2 {
+          let lhs = Array(destinationBytes[lane * 8..<lane * 8 + 8])
+          let rhs = Array(sourceBytes[lane * 8..<lane * 8 + 8])
+          if lhs == rhs {
+            result.replaceSubrange(lane * 8..<lane * 8 + 8, with: repeatElement(0xFF, count: 8))
+          }
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<16, with: result)
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .insertPackedQword(let destination, let source, let index):
+        // PINSRQ: insert a qword from GPR/memory into selected XMM lane. SSE4.1.
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        let qwordBytes = littleEndian(value, width: .quadword)
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        let offset = Int(index) * 8
+        registerBytes.replaceSubrange(offset..<offset + 8, with: qwordBytes)
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
       // MARK: - VEX (AVX/AVX2) execution

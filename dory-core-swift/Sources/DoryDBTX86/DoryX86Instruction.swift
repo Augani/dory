@@ -326,6 +326,14 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case alu(DoryX86ALUOperation, destination: DoryX86Operand, source: DoryX86Operand)
   case unary(DoryX86UnaryOperation, operand: DoryX86Operand)
   case shift(DoryX86ShiftOperation, destination: DoryX86Operand, count: DoryX86ShiftCount)
+  /// BMI1 flagless variable shifts (`SHRX`/`SARX`/`SHLX`): shift `source` by
+  /// the count in the source register, without modifying RFLAGS.
+  case flaglessShift(
+    _ operation: DoryX86ShiftOperation,
+    destination: DoryX86Operand,
+    source: DoryX86Operand,
+    count: DoryX86Operand
+  )
   case doubleShift(
     DoryX86DoubleShiftOperation,
     destination: DoryX86Operand,
@@ -466,6 +474,18 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   /// two low doublewords of the source to a destination quadword. SSE4.1.
   case extendPackedDwordToQword(
     destination: UInt8, source: DoryX86VectorOperand, signed: Bool
+  )
+  /// `PMOVSXBQ`/`PMOVZXBQ` (`66 0F 38 22` / `66 0F 38 32`): extend two low
+  /// bytes of the source to two destination quadwords. SSE4.1.
+  case extendPackedByteToQword(
+    destination: UInt8, source: DoryX86VectorOperand, signed: Bool
+  )
+  /// `PCMPEQQ` (`66 0F 38 29`): compare packed quadwords for equality. SSE4.1.
+  case comparePackedQwords(destination: UInt8, source: DoryX86VectorOperand)
+  /// `PINSRQ` (`66 48 0F 3A 22`): insert a qword from a GPR or memory into a
+  /// selected lane of an XMM register. SSE4.1.
+  case insertPackedQword(
+    destination: UInt8, source: DoryX86Operand, index: UInt8
   )
   case moveIntegerToVector(destination: UInt8, source: DoryX86Operand)
   case moveVectorToInteger(destination: DoryX86Operand, source: UInt8)

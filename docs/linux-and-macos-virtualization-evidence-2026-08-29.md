@@ -2563,7 +2563,37 @@ undefined/reserved encodings.
 
 The DBT JIT continues to gracefully fall back to the interpreter for VEX
 operations, preserving correctness while native coverage is expanded
-incrementally. The full `DoryDBTX86Tests` suite (285 tests, including 12
-SSE3/SSSE3/SSE4.1 tests and 12 VEX/AVX tests) passes with 0 failures.
+incrementally. The full `DoryDBTX86Tests` suite (292 tests, including 16
+SSE3/SSSE3/SSE4.1 tests, 15 VEX/AVX/BMI1 tests) passes with 0 failures.
+
+### BMI1 flagless shifts and broad binary audit (Section 27b)
+
+A broad decode-audit of 21 x86_64 binaries (coreutils utilities from `/usr/bin`
+plus the two system libraries) revealed three additional SSE4.1 decode gaps
+and one BMI1 gap that were not exercised by the system libraries alone:
+
+- `PINSRQ` (`66 48 0F 3A 22`) — SSE4.1 insert qword from GPR into XMM lane
+- `PMOVSXBQ` (`66 0F 38 22`) — SSE4.1 sign-extend two bytes to two quadwords
+- `PCMPEQQ` (`66 0F 38 29`) — SSE4.1 compare packed quadwords for equality
+- `SHRX`/`SARX`/`SHLX` (`C4 E2 F3/F2/F1 F7`) — BMI1 flagless variable shifts
+
+All four have been implemented in the decoder and interpreter. The BMI1
+shifts use a new `flaglessShift` operation that does not modify RFLAGS,
+matching the BMI1 architecture contract. The three SSE4.1 instructions
+extend the existing `0F 38`/`0F 3A` opcode map coverage.
+
+Post-implementation decode-audit results across all 21 binaries:
+
+| Binary | Decoded | Failures | Real failures |
+| --- | --- | --- | --- |
+| `libsystem_kernel.dylib` | 51504/51761 | 73 | 0 (all `.long`) |
+| `libsystem_platform.dylib` | 8954/8975 | 9 | 0 (all `.long`) |
+| `sort` | 8833/8833 | 0 | 0 |
+| `uptime` / `w` | 1200/1200 | 0 | 0 |
+| All other 17 binaries | full | 0 | 0 |
+
+**Every x86_64 binary in the audit set now decodes with zero real failures.**
+All remaining "failures" are `.long`-style correct rejections of data bytes
+misidentified as code by the linear sweep.
 
 

@@ -322,4 +322,106 @@ import Testing
     #expect(current.rflags.contains(.zero))
     #expect(!current.rflags.contains(.carry))
   }
+
+  // MARK: - Additional SSE4.1 instructions from broad binary audit
+
+  @Test func pcmpeqqComparesPackedQwordsForEquality() throws {
+    // 66 0F 38 29 C8: PCMPEQQ xmm1, xmm0
+    let instruction = try decoder.decode(
+      [0x66, 0x0F, 0x38, 0x29, 0xC8], at: 0x1000, mode: .long64)
+    #expect(
+      instruction.operation
+        == .comparePackedQwords(destination: 1, source: .register(0)))
+
+    var current = try state { floatingPoint in
+      // Lane 0: equal (both 0x1122334455667788). Lane 1: different.
+      var bytes0 = [UInt8](repeating: 0, count: 32)
+      bytes0.replaceSubrange(0..<8, with: [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11])
+      bytes0.replaceSubrange(8..<16, with: [0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08])
+      floatingPoint.ymm[0] = try .init(bytes: bytes0, expectedByteCount: 32)
+      var bytes1 = [UInt8](repeating: 0, count: 32)
+      bytes1.replaceSubrange(0..<8, with: [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11])
+      bytes1.replaceSubrange(8..<16, with: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+      floatingPoint.ymm[1] = try .init(bytes: bytes1, expectedByteCount: 32)
+    }
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000, bytes: [0x66, 0x0F, 0x38, 0x29, 0xC8])
+    let result = interpreter.step(state: &current, memory: memory, mode: .long64)
+    expectRetired(result)
+    let lanes = ymmBytes(1, in: current)
+    // Lane 0 equal -> all FF. Lane 1 different -> all 00.
+    #expect(Array(lanes[0..<8]) == Array(repeating: 0xFF, count: 8))
+    #expect(Array(lanes[8..<16]) == Array(repeating: 0, count: 8))
+  }
+
+  @Test func pmovsxbqSignExtendsTwoBytesToTwoQuadwords() throws {
+    // 66 0F 38 22 C8: PMOVSXBQ xmm1, xmm0
+    let instruction = try decoder.decode(
+      [0x66, 0x0F, 0x38, 0x22, 0xC8], at: 0x1000, mode: .long64)
+    #expect(
+      instruction.operation
+        == .extendPackedByteToQword(destination: 1, source: .register(0), signed: true))
+
+    var current = try state { floatingPoint in
+      floatingPoint.ymm[0] = try .init(
+        bytes: [0x7F, 0x80] + Array(repeating: 0, count: 30),
+        expectedByteCount: 32)
+    }
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000, bytes: [0x66, 0x0F, 0x38, 0x22, 0xC8])
+    let result = interpreter.step(state: &current, memory: memory, mode: .long64)
+    expectRetired(result)
+    let lanes = ymmBytes(1, in: current)
+    // 0x7F is positive -> zero-extended. 0x80 is negative -> sign-extended.
+    #expect(Array(lanes[0..<8]) == [0x7F, 0, 0, 0, 0, 0, 0, 0])
+    #expect(Array(lanes[8..<16]) == [0x80, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
+  }
+
+  @Test func pinsrqInsertsQwordFromGPRIntoLane0() throws {
+    // 66 48 0F 3A 22 C0 00: PINSRQ xmm0, rax, 0
+    let instruction = try decoder.decode(
+      [0x66, 0x48, 0x0F, 0x3A, 0x22, 0xC0, 0x00], at: 0x1000, mode: .long64)
+    #expect(
+      instruction.operation
+        == .insertPackedQword(
+          destination: 0, source: .register(.rax, width: .quadword), index: 0))
+
+    var registers = DoryX86GeneralRegisters()
+    registers.rax = 0x1122_3344_5566_7788
+    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
+    current.floatingPoint.ymm[0] = try .init(
+      bytes: Array(repeating: 0xAA, count: 32), expectedByteCount: 32)
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000, bytes: [0x66, 0x48, 0x0F, 0x3A, 0x22, 0xC0, 0x00])
+    let result = interpreter.step(state: &current, memory: memory, mode: .long64)
+    expectRetired(result)
+    let lanes = ymmBytes(0, in: current)
+    // Lane 0 should be the value, lane 1 preserved (0xAA bytes).
+    #expect(Array(lanes[0..<8]) == [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11])
+    #expect(Array(lanes[8..<16]) == Array(repeating: 0xAA, count: 8))
+  }
+
+  @Test func pinsrqInsertsQwordFromGPRIntoLane1() throws {
+    // 66 48 0F 3A 22 C0 01: PINSRQ xmm0, rax, 1
+    let instruction = try decoder.decode(
+      [0x66, 0x48, 0x0F, 0x3A, 0x22, 0xC0, 0x01], at: 0x1000, mode: .long64)
+    #expect(
+      instruction.operation
+        == .insertPackedQword(
+          destination: 0, source: .register(.rax, width: .quadword), index: 1))
+
+    var registers = DoryX86GeneralRegisters()
+    registers.rax = 0x1122_3344_5566_7788
+    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
+    current.floatingPoint.ymm[0] = try .init(
+      bytes: Array(repeating: 0xAA, count: 32), expectedByteCount: 32)
+    let memory = DoryX86ByteArrayMemory(
+      baseAddress: 0x1000, bytes: [0x66, 0x48, 0x0F, 0x3A, 0x22, 0xC0, 0x01])
+    let result = interpreter.step(state: &current, memory: memory, mode: .long64)
+    expectRetired(result)
+    let lanes = ymmBytes(0, in: current)
+    // Lane 0 preserved (0xAA), lane 1 should be the value.
+    #expect(Array(lanes[0..<8]) == Array(repeating: 0xAA, count: 8))
+    #expect(Array(lanes[8..<16]) == [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11])
+  }
 }
