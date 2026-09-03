@@ -227,7 +227,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
-  public let memory: DoryX86ByteArrayMemory
+  public let memory: any DoryX86PhysicalRAM
   public let physicalMemory: DoryPCPhysicalMemoryBus
   public let physicalMemories: [DoryPCPhysicalMemoryBus]
   public let ioBus: DoryPCPortIOBus
@@ -282,6 +282,17 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var jitHotness = [JITHotnessEntry](repeating: .init(), count: 1 << 16)
   private let translatedMemories: [DoryX86TranslatedMemory]
   private var interpreterInstructionCount: UInt64 = 0
+  // Temporary debug: trace key kernel function calls
+  private let traceRIPs: Set<UInt64> = [
+    0xffffffff816f9750,  // per_cpu_pages_init
+    0xffffffff84072c10,  // build_all_zonelists_init
+    0xffffffff8256b000,  // build_all_zonelists
+    0xffffffff81706120,  // __build_all_zonelists
+    0xffffffff8406fde0,  // mm_core_init
+    0xffffffff8404d920,  // mem_init
+    0xffffffff84072c90,  // setup_per_cpu_pageset
+  ]
+  private var traceLog: [(UInt64, UInt64, UInt64, UInt64, UInt64)] = []  // (rip, rdi, rsi, rax, rbx)
   private var baselineJITInstructionCount: UInt64 = 0
   private var baselineJITBlockCount: UInt64 = 0
   private var optimizingJITInstructionCount: UInt64 = 0
@@ -375,7 +386,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       smbiosEntryAddress: smbiosLayout.entryPoint
     )
     self.platformMMIODevices = [firmwareConfiguration] + platformMMIODevices
-    let sharedMemory = DoryX86ByteArrayMemory(byteCount: memoryBytes)
+    let sharedMemory: any DoryX86PhysicalRAM =
+      if memoryBytes >= 2 * 1024 * 1024 * 1024 {
+        DoryX86MmapMemory(byteCount: memoryBytes)
+      } else {
+        DoryX86ByteArrayMemory(byteCount: memoryBytes)
+      }
     memory = sharedMemory
     physicalMemories = (0..<processorCount).map {
       _ in DoryPCPhysicalMemoryBus(ram: sharedMemory)
@@ -450,7 +466,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     try ioBus.attach(systemControlPort)
     try ioBus.attach(rtc)
     try ioBus.attach(serial)
+    try ioBus.attach(DoryPCACPIPMEventPort(controller: powerController))
     try ioBus.attach(DoryPCACPIPMControlPort(controller: powerController))
+    try ioBus.attach(DoryPCACPMPMTimerPort(controller: powerController))
     try ioBus.attach(DoryPCResetControlPort(controller: powerController))
     ioBus.seal()
     for (index, bus) in physicalMemories.enumerated() {
@@ -490,7 +508,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         profile: interpreter.profile,
         decoder: interpreter.decoder,
         processorID: UInt32($0),
-        logicalProcessorCount: UInt16(processorCount)
+        logicalProcessorCount: UInt16(processorCount),
+        xenMemoryMap: DoryPCPVHBootBuilder.xenE820MemoryMap(memoryBytes: UInt64(memoryBytes))
       )
     }
     self.interpreter = interpreters[0]
@@ -513,7 +532,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public func load(
     kernel: Data,
     initrd: [UInt8] = [],
-    commandLine: String = "console=ttyS0 earlyprintk=serial,ttyS0,115200"
+    commandLine: String = "console=ttyS0 earlycon=uart,io,0x3f8,115200 earlyprintk=serial,ttyS0,115200 memblock=debug loglevel=8 e820=debug"
   ) throws {
     try lock.withLock {
       guard !consumedPayload else { throw DoryPCMachineError.alreadyLoaded }
@@ -578,6 +597,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   }
 
   public var state: DoryX86ArchitecturalState? { state(forProcessor: 0) }
+
+  /// Temporary debug: returns trace log of key kernel function calls.
+  public var functionTraceLog: [(rip: UInt64, rdi: UInt64, rsi: UInt64, rax: UInt64, rbx: UInt64)] {
+    lock.withLock { traceLog.map { (rip: $0.0, rdi: $0.1, rsi: $0.2, rax: $0.3, rbx: $0.4) } }
+  }
 
   public var executionStatistics: DoryPCExecutionStatistics {
     executionStatisticsLock.withLock { publishedExecutionStatistics }
@@ -681,6 +705,17 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           jitInstructionBudget: jitInstructionBudget
         )
         completed += execution.instructionCount
+        // Temporary debug: check boot_pageset every 10M instructions
+        if completed / 10_000_000 != (completed - execution.instructionCount) / 10_000_000 {
+          let bpPhys: UInt64 = 0x44de080
+          if let data = try? physicalMemories[processor].read(at: bpPhys, byteCount: 32) {
+            let vals = (0..<4).map { i in
+              data[i*8..<i*8+8].withUnsafeBytes { $0.load(as: UInt64.self) }
+            }
+            let rip = processorState.value.rip
+            print("[DBG] instr=\(completed) RIP=0x\(String(rip, radix: 16)) boot_pageset: +0=0x\(String(vals[0], radix: 16)) +8=0x\(String(vals[1], radix: 16)) +10=0x\(String(vals[2], radix: 16)) +18=0x\(String(vals[3], radix: 16))")
+          }
+        }
         switch execution.jitTier {
         case .baseline:
           baselineJITInstructionCount &+= execution.instructionCount
@@ -784,6 +819,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     jitInstructionBudget: Int?
   ) throws -> ProcessorExecution {
     let mode = executionMode(state)
+    // Temporary debug: trace key function entries
+    if traceRIPs.contains(state.rip) {
+      traceLog.append((state.rip, state.registers.rdi, state.registers.rsi, state.registers.rax, state.registers.rbx))
+    }
     if let jit = selectedJIT(for: state, mode: mode),
       mode == .long64 || (mode == .protected32 && state.cs.base == 0),
       !state.rflags.contains(.trap)
@@ -921,6 +960,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     legacyPIT.advance(by: pitTicks)
     rtc.advance(by: rtcTicks)
     hpet.advance(by: ticks)
+    // ACPI PM timer ticks at the same rate as the machine clock (HPET base clock).
+    // The 32-bit counter wraps every ~3.58 seconds at 100ns granularity.
+    powerController.advancePMTimer(by: ticks)
   }
 
   private func advanceTSCs(byMachineTicks ticks: UInt64) {

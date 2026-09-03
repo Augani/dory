@@ -64,7 +64,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     }
   }
 
-  public let ram: DoryX86ByteArrayMemory
+  public let ram: any DoryX86PhysicalRAM
   private let mmioHoleStart: UInt64
   private let above4GRAMStart: UInt64
   private let lock = NSLock()
@@ -73,7 +73,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   private var sealedMappings: SealedMappings?
   private let hasPublishedSealedMappings: UnsafeMutablePointer<UInt8>
 
-  public convenience init(ram: DoryX86ByteArrayMemory) {
+  public convenience init(ram: any DoryX86PhysicalRAM) {
     self.init(
       ram: ram,
       mmioHoleStart: DoryPCV1ABI.mmioHoleStart,
@@ -82,7 +82,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   init(
-    ram: DoryX86ByteArrayMemory,
+    ram: any DoryX86PhysicalRAM,
     mmioHoleStart: UInt64,
     above4GRAMStart: UInt64
   ) {

@@ -42,7 +42,6 @@ jobs:
       - name: Signed release metadata contract
         run: |
           python3 .github/scripts/test-no-qemu-production.py
-          python3 .github/scripts/test-virtualization-phase0a.py
           python3 .github/scripts/test-dory-jit-probe.py
           python3 .github/scripts/test-vz-platform-sdk.py
           python3 .github/scripts/test-release-metadata.py

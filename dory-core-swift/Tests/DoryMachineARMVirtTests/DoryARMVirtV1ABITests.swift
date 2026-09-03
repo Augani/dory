@@ -87,7 +87,7 @@ import Testing
       .deletingLastPathComponent()
     let specificationURL =
       repositoryRoot
-      .appendingPathComponent("docs/virtualization/dory-armvirt-v1-abi.md")
+      .appendingPathComponent("Firmware/DoryARMVirt/abi.txt")
     let checkedIn = try String(contentsOf: specificationURL, encoding: .utf8)
     #expect(checkedIn == DoryARMVirtV1ABI.markdown + "\n")
   }

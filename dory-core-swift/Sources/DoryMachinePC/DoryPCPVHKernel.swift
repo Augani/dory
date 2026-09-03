@@ -72,7 +72,18 @@ public struct DoryPCPVHKernelImage: Sendable, Hashable {
       let fileSize = Self.read(UInt64.self, from: data, at: offset + 32)
       switch type {
       case 1:
-        let physicalAddress = Self.read(UInt64.self, from: data, at: offset + 24)
+        // Linux kernel ELF segments carry canonical virtual addresses in p_paddr
+        // (e.g. 0xffffffff81000000). For PVH boot the physical load address is
+        // obtained by stripping the canonical sign-extension and the kernel
+        // virtual base offset. The x86_64 kernel maps virtual
+        // 0xffffffff80000000 to physical 0x00000000, so masking with
+        // 0x7FFFFFFF recovers the physical address (0xffffffff81000000 ->
+        // 0x1000000). Userspace ELF addresses pass through unchanged.
+        let rawAddress = Self.read(UInt64.self, from: data, at: offset + 24)
+        let physicalAddress =
+          (rawAddress & (1 << 47)) != 0
+          ? rawAddress & 0x7FFF_FFFF
+          : rawAddress
         let memorySize = Self.read(UInt64.self, from: data, at: offset + 40)
         guard fileSize <= memorySize,
           Self.range(offset: fileOffset, count: (fileSize, false), limit: data.count) != nil,
@@ -141,9 +152,73 @@ public struct DoryPCPVHKernelImage: Sendable, Hashable {
           remaining -= UInt64(count)
         }
       }
+      // Also load SHF_ALLOC sections not covered by any PT_LOAD segment.
+      // Some kernel builds (e.g. Linux PVH) place critical boot data like
+      // the PVH load-address constant in the .notes section, which has
+      // SHF_ALLOC but may fall in a gap between PT_LOAD segments.
+      for section in try uncoveredAllocSections() {
+        let source = Self.range(
+          offset: section.fileOffset,
+          count: (section.fileSize, false),
+          limit: data.count
+        )!
+        try memory.write(at: section.physicalAddress, bytes: Array(data[source]))
+      }
     } catch let error as DoryX86MemoryError {
       throw DoryPCPVHKernelError.guestMemoryRejected(error)
     }
+  }
+
+  private struct UncoveredSection {
+    let physicalAddress: UInt64
+    let fileOffset: UInt64
+    let fileSize: UInt64
+  }
+
+  private func uncoveredAllocSections() throws -> [UncoveredSection] {
+    guard data.count >= 64 else { return [] }
+    let sectionHeaderOffset = Self.read(UInt64.self, from: data, at: 40)
+    let sectionHeaderSize = Int(Self.read(UInt16.self, from: data, at: 58))
+    let sectionHeaderCount = Int(Self.read(UInt16.self, from: data, at: 60))
+    guard sectionHeaderSize >= 40, sectionHeaderCount > 0,
+      let headers = Self.range(
+        offset: sectionHeaderOffset,
+        count: UInt64(sectionHeaderSize).multipliedReportingOverflow(by: UInt64(sectionHeaderCount)),
+        limit: data.count
+      )
+    else { return [] }
+
+    let SHF_ALLOC: UInt64 = 0x2
+    var result: [UncoveredSection] = []
+    for index in 0..<sectionHeaderCount {
+      let offset = headers.lowerBound + index * sectionHeaderSize
+      let flags = Self.read(UInt64.self, from: data, at: offset + 8)
+      guard flags & SHF_ALLOC != 0 else { continue }
+      let virtualAddress = Self.read(UInt64.self, from: data, at: offset + 16)
+      guard virtualAddress != 0 else { continue }
+      let fileOffset = Self.read(UInt64.self, from: data, at: offset + 24)
+      let fileSize = Self.read(UInt64.self, from: data, at: offset + 32)
+      guard fileSize > 0 else { continue }
+      let physicalAddress =
+        (virtualAddress & (1 << 47)) != 0
+        ? virtualAddress & 0x7FFF_FFFF
+        : virtualAddress
+      let sectionEnd = physicalAddress.addingReportingOverflow(fileSize)
+      guard !sectionEnd.overflow else { continue }
+      let covered = segments.contains { segment in
+        segment.physicalAddress <= physicalAddress
+          && sectionEnd.partialValue <= segment.physicalAddress + segment.memorySize
+      }
+      guard !covered else { continue }
+      guard Self.range(
+        offset: fileOffset,
+        count: (fileSize, false),
+        limit: data.count
+      ) != nil else { continue }
+      result.append(
+        .init(physicalAddress: physicalAddress, fileOffset: fileOffset, fileSize: fileSize))
+    }
+    return result
   }
 
   private static func findPhysicalEntry(in data: Data, range: Range<Int>) -> UInt64? {

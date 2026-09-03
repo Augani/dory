@@ -1921,7 +1921,7 @@ jobs:
           arm64 zip sha256: @PRIMARY_SHA256@
           ```
 
-          Read next: `README.md`, `CHANGELOG.md`, `COMPATIBILITY.md`, and the documentation at
+          Read next: `README.md`, `CHANGELOG.md`, `PLAN.md`, and the documentation at
           https://augani.github.io/dory/docs/.
           EOF
           python3 - "$body" "$VERSION" "$PRIMARY_SHA256" <<'PY'

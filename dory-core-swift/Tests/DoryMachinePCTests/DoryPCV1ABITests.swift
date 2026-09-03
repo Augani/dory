@@ -44,7 +44,7 @@ import Testing
     let packageRoot = source.deletingLastPathComponent().deletingLastPathComponent()
       .deletingLastPathComponent()
     let document = packageRoot.deletingLastPathComponent()
-      .appendingPathComponent("docs/virtualization/dory-pc-v1-abi.md")
+      .appendingPathComponent("Firmware/DoryPC/abi.txt")
     let checkedIn = try String(contentsOf: document, encoding: .utf8)
     #expect(checkedIn == DoryPCV1ABI.markdown + "\n")
   }

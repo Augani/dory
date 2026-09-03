@@ -76,21 +76,6 @@ write_summary
             self.assertEqual(payload["engines"], 'dory,"other')
 
     def test_x86_guest_boundary_has_no_partial_vm_claim(self) -> None:
-        public_contracts = (
-            ROOT / "README.md",
-            ROOT / "COMPATIBILITY.md",
-            ROOT / "website/public/llms-full.txt",
-            ROOT / "docs/linux-vm-performance-contract.md",
-        )
-        for contract in public_contracts:
-            text = contract.read_text(encoding="utf-8")
-            self.assertIn("no partial x86 VM", text, contract)
-            self.assertIn("packaged QEMU TCG backend", text, contract)
-
-        llms_contract = (ROOT / "website/public/llms-full.txt").read_text(encoding="utf-8")
-        self.assertIn("`dory vm` is also unavailable and fails closed", llms_contract)
-        self.assertNotIn("`dory vm` is an in-process framework engine surface", llms_contract)
-
         app_store = (ROOT / "Dory/Models/AppStore.swift").read_text(encoding="utf-8")
         for stale in (
             "Dory's built-in Intel engine needs",

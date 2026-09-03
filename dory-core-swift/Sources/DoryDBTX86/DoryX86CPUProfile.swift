@@ -159,6 +159,26 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       return .init(edx: supports(.invariantTSC) ? 1 << 8 : 0)
     case (0x8000_0008, _):
       return .init(eax: UInt32(physicalAddressBits) | UInt32(linearAddressBits) << 8)
+    case (0x4000_0000, _):
+      // Xen hypervisor leaf: return "XenVMMXenVMM" signature so PVH-booted
+      // kernels recognize the environment and process the PVH start info.
+      // EBX, ECX, EDX contain the 12-byte vendor string in little-endian.
+      return .init(eax: 0x4000_0005, ebx: 0x566e_6558, ecx: 0x6558_4d4d, edx: 0x4d4d_566e)
+    case (0x4000_0001, _):
+      // Xen hypervisor leaf 1: basic version/feature info.
+      return .init(eax: 0, ebx: 0, ecx: 0, edx: 0)
+    case (0x4000_0002, _):
+      // Xen hypervisor leaf 2: system information.
+      return .init(eax: 0, ebx: 0, ecx: 0, edx: 0)
+    case (0x4000_0003, _):
+      // Xen hypervisor leaf 3: CPU topology info.
+      return .init(eax: 0, ebx: 0, ecx: 0, edx: 0)
+    case (0x4000_0004, _):
+      // Xen hypervisor leaf 4: APIC ID.
+      return .init(eax: 0, ebx: 0, ecx: 0, edx: 0)
+    case (0x4000_0005, _):
+      // Xen hypervisor leaf 5: max leaf.
+      return .init(eax: 0, ebx: 0, ecx: 0, edx: 0)
     default:
       return .init()
     }

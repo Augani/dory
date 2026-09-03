@@ -191,16 +191,39 @@ public enum DoryPCPVHBootBuilder {
     let above4GSize =
       memoryBytes > DoryPCV1Layout.mmioHoleStart
       ? memoryBytes - DoryPCV1Layout.mmioHoleStart : 0
-    return [
+    var entries: [DoryPCMemoryMapEntry] = [
       .init(address: 0, size: DoryPCV1Layout.lowRAMEnd, kind: .ram),
       .init(
         address: DoryPCV1Layout.pvhStartInfo,
-        size: DoryPCV1Layout.lowReservedEnd - DoryPCV1Layout.pvhStartInfo,
+        size: DoryPCV1Layout.highRAMStart - DoryPCV1Layout.pvhStartInfo,
         kind: .reserved
       ),
       .init(address: DoryPCV1Layout.highRAMStart, size: lowHighSize, kind: .ram),
-      .init(address: DoryPCV1ABI.above4GRAMStart, size: above4GSize, kind: .ram),
-    ].filter { $0.size > 0 }
+    ]
+    if above4GSize > 0 {
+      // Mark the MMIO hole (PCIe ECAM + MMIO base) as reserved.
+      entries.append(
+        .init(
+          address: DoryPCV1Layout.mmioHoleStart,
+          size: DoryPCV1ABI.above4GRAMStart - DoryPCV1Layout.mmioHoleStart,
+          kind: .reserved
+        ))
+      entries.append(
+        .init(address: DoryPCV1ABI.above4GRAMStart, size: above4GSize, kind: .ram))
+    }
+    return entries.filter { $0.size > 0 }
+  }
+
+  /// Returns the memory map in e820 entry format for the Xen PVH
+  /// `XENMEM_memory_map` hypercall.
+  public static func xenE820MemoryMap(memoryBytes: UInt64) -> [DoryX86XenE820Entry] {
+    memoryMap(memoryBytes: memoryBytes).map { entry in
+      DoryX86XenE820Entry(
+        address: entry.address,
+        size: entry.size,
+        type: entry.kind.rawValue
+      )
+    }
   }
 
   private static func artifactRanges(

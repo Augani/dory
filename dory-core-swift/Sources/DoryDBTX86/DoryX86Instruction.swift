@@ -1,5 +1,18 @@
 import Foundation
 
+/// An E820 memory map entry used by the Xen PVH `XENMEM_memory_map` hypercall.
+public struct DoryX86XenE820Entry: Codable, Sendable, Hashable {
+  public let address: UInt64
+  public let size: UInt64
+  public let type: UInt32
+
+  public init(address: UInt64, size: UInt64, type: UInt32) {
+    self.address = address
+    self.size = size
+    self.type = type
+  }
+}
+
 public enum DoryX86ExecutionMode: String, Codable, Sendable, Hashable {
   case real16
   case protected16
@@ -814,6 +827,7 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case farCallIndirect(address: DoryX86MemoryOperand, width: DoryX86OperandWidth)
   case farReturn(popBytes: UInt16, width: DoryX86OperandWidth)
   case machineStatusWord(load: Bool, operand: DoryX86Operand)
+  case vmCall
   case clearTaskSwitched
   case storeSystemSegment(task: Bool, destination: DoryX86Operand)
   case loadSystemSegment(task: Bool, source: DoryX86Operand)

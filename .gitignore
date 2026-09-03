@@ -149,30 +149,17 @@ docs-build/
 guest/agent/agent
 
 # Built GitHub Pages site (CI builds website/ and deploys the output directly) plus local-only
-# planning notes. Keep the source platform ADR and its Linux execution contracts under docs/.
+# evidence. The team implementation guide is PLAN.md; retain machine-readable gates under docs/.
 docs/
 !/docs/
 /docs/*
-!/docs/virtual-workspace-platform.md
-!/docs/linux-virtual-workspace-architecture.md
-!/docs/linux-virtual-workspace-delivery-plan.md
-!/docs/linux-capability-and-qualification-matrix.md
-!/docs/linux-vm-performance-contract.md
-!/docs/linux-iso-and-gpu-recovery-review.md
-!/docs/container-engine-performance-qualification.md
-!/docs/linux-and-macos-virtualization-delivery-plan.md
-!/docs/linux-and-macos-virtualization-evidence-2026-08-29.md
 !/docs/virtualization/
 /docs/virtualization/*
 !/docs/virtualization/no-qemu-source-debt.json
-!/docs/virtualization/phase-0a-decision-records.md
-!/docs/virtualization/phase-0a-program.json
-!/docs/virtualization/dory-pc-v1-abi.md
 !/docs/architecture-gates/
 /docs/architecture-gates/*
 !/docs/architecture-gates/virtiofs-worker-xpc.json
 !/docs/architecture-gates/vz-custom-virtio-gpu.json
-!/docs/architecture-gates/vulkan-13-application-readiness.md
 !website/public/docs/
 !website/public/docs/**
 
@@ -223,12 +210,3 @@ scripts/__pycache__/
 #codex
 .codex-bench/
 .dory-build/
-
-# Internal planning and qualification documents
-/ARCHITECTURE.md
-/COMPETITOR_ISSUE_COVERAGE.md
-/DESTRUCTIVE_ACTIONS.md
-/DORY_V0.4_RESEARCH_REPORT.md
-/MACHINE_IMAGE_CONTRACT.md
-/POST_V0.4_PRODUCT_DESIGNS.md
-/RELEASE_READINESS.md

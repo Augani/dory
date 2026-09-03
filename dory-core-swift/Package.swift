@@ -405,6 +405,11 @@ let package = Package(
       name: "dory-x86-decode-audit",
       dependencies: ["DoryDBTX86"]
     ),
+    .executableTarget(
+      name: "dory-pc-linux-boot-runner",
+      dependencies: ["DoryDBTX86", "DoryMachinePC"],
+      path: "Tests/DoryMachinePCLinuxBootRunner"
+    ),
     .testTarget(
       name: "DoryCoreTests",
       dependencies: ["DoryCore"]

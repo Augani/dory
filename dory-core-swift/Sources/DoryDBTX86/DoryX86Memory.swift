@@ -107,6 +107,16 @@ public protocol DoryX86BulkMemory: DoryX86Memory {
   ) throws -> Int?
 }
 
+/// Protocol uniting all memory protocols required by the physical RAM backing store.
+/// Both `DoryX86ByteArrayMemory` and `DoryX86MmapMemory` conform.
+public protocol DoryX86PhysicalRAM:
+  DoryX86Memory, DoryX86ScalarMemory, DoryX86RestartableScalarMemory,
+  DoryX86CodeGenerationMemory, DoryX86BulkMemory
+{
+  var baseAddress: UInt64 { get }
+  var byteCount: Int { get }
+}
+
 extension DoryX86Memory {
   public func validateWrite(at address: UInt64, byteCount: Int) throws {
     _ = try read(at: address, byteCount: byteCount)
@@ -160,7 +170,7 @@ extension DoryX86ScalarMemory {
 /// Deterministic flat address space for interpreter conformance, firmware bring-up, and replay.
 /// Product paging composes a translator in front of the same protocol rather than weakening this
 /// exact bounds behavior.
-public final class DoryX86ByteArrayMemory: DoryX86Memory, DoryX86ScalarMemory, @unchecked Sendable {
+public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, @unchecked Sendable {
   public let baseAddress: UInt64
   public let byteCount: Int
   private let lock = NSLock()

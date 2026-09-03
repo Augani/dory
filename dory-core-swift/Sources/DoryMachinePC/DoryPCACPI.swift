@@ -175,9 +175,18 @@ public enum DoryPCACPIBuilder {
     put(UInt32(truncatingIfNeeded: facsAddress), at: 0, in: &body)
     put(UInt32(truncatingIfNeeded: dsdtAddress), at: 4, in: &body)
     body[9] = 1  // Desktop preferred power-management profile.
-    put(UInt16(9), at: 10, in: &body)
+    put(UInt16(9), at: 10, in: &body)  // SCI interrupt is IRQ 9.
+    // SMI command port, ACPI enable/disable — not used (ACPI mode is always on).
+    // PM1a event block at offset 20, PM1b event block at offset 24 (none).
+    put(UInt32(DoryPCPowerController.pm1EventPort), at: 20, in: &body)
+    // PM1a control block at offset 28.
     put(UInt32(DoryPCPowerController.pm1ControlPort), at: 28, in: &body)
+    // PM timer block at offset 40.
+    put(UInt32(DoryPCPowerController.pmTimerPort), at: 40, in: &body)
+    // Register lengths.
+    body[52] = 4  // PM1 event register length (status + enable, 2+2 bytes).
     body[53] = 2  // PM1 control register width.
+    body[55] = 4  // PM timer register length (32-bit).
     body[72] = 0x32  // RTC century register.
     put(UInt16(0b1_0101), at: 73, in: &body)  // Legacy devices, no VGA probing, no ASPM.
     put(UInt32((1 << 2) | (1 << 10)), at: 76, in: &body)  // C1 and RESET_REG.
@@ -193,12 +202,31 @@ public enum DoryPCACPIBuilder {
     body[95] = 6
     put(facsAddress, at: 96, in: &body)
     put(dsdtAddress, at: 104, in: &body)
+    // X_PM1a event block (extended GAS at offset 112).
+    putGAS(
+      spaceID: 1,
+      bitWidth: 32,
+      accessSize: 2,
+      address: UInt64(DoryPCPowerController.pm1EventPort),
+      at: 112,
+      in: &body
+    )
+    // X_PM1a control block (extended GAS at offset 136).
     putGAS(
       spaceID: 1,
       bitWidth: 16,
       accessSize: 2,
       address: UInt64(DoryPCPowerController.pm1ControlPort),
       at: 136,
+      in: &body
+    )
+    // X_PM timer block (extended GAS at offset 172).
+    putGAS(
+      spaceID: 1,
+      bitWidth: 32,
+      accessSize: 3,
+      address: UInt64(DoryPCPowerController.pmTimerPort),
+      at: 172,
       in: &body
     )
     return table(signature: "FACP", revision: 6, body: body)
