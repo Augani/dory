@@ -2705,7 +2705,7 @@ public final class MachineManager: @unchecked Sendable {
             if let proof = context.creationArtifactProof {
                 try proof.validate(configuration: entry.configuration, evidence: expected)
             } else {
-                context.creationArtifactProof = try DoryMachineCreationArtifactProof(
+                context.creationArtifactProof = try DoryMachineArtifactProof(
                     configuration: entry.configuration, evidence: expected, hash: Self.sha256(descriptor:))
             }
         }
@@ -10784,7 +10784,11 @@ public final class MachineManager: @unchecked Sendable {
                 retention: directMutation
             )
         }
-        let snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
+        let verifiedInput = launchPolicy == .perWorkspaceAuthority
+            ? try loadSnapshotForRestore(machineID: machineID, snapshotID: snapshotID,
+                operationID: durableOperationID) : nil
+        let snapshot = try verifiedInput?.snapshot
+            ?? loadSnapshot(machineID: machineID, snapshotID: snapshotID)
         let (machine, wasRunning) = try configurationAndRunningState(
             id: machineID, permitsPaused: launchPolicy == .perWorkspaceAuthority
         )
@@ -10880,7 +10884,7 @@ public final class MachineManager: @unchecked Sendable {
             return try performResolvedSnapshotRestore(
                 source: machine, target: restoredMachine, snapshot: snapshot,
                 targetNativeDefinition: restoredNativeWorkspace?.definition,
-                operationID: durableOperationID
+                operationID: durableOperationID, verifiedInput: verifiedInput
             )
         }
         let targetIdentity = runtimeIdentityAfterSnapshotRestore(
@@ -11015,7 +11019,7 @@ public final class MachineManager: @unchecked Sendable {
     private func performResolvedSnapshotRestore(
         source: DoryMachineConfiguration, target: DoryMachineConfiguration,
         snapshot: DoryMachineSnapshot, targetNativeDefinition: DoryVirtualMachineDefinition?,
-        operationID: UUID
+        operationID: UUID, verifiedInput: ValidatedSnapshotRestoreInput?
     ) throws -> DoryMachineStatus {
         let id = source.id
         guard productionAdmissionComponentsSnapshot().controller != nil,
@@ -11062,7 +11066,108 @@ public final class MachineManager: @unchecked Sendable {
             sourceRuntimeOperationID: sourceOperationID, snapshotRestore: restore,
             readiness: targetState == .running || targetState == .paused
         )
-        return try resumeResolvedSnapshotRestore(parent, restore: restore)
+        return try resumeResolvedSnapshotRestore(parent, restore: restore, verifiedInput: verifiedInput)
+    }
+
+    /// These handoffs exist only on the active call stack. Journal recovery must open and hash
+    /// the artifacts again; an artifactsPublished checkpoint cannot recreate either proof.
+    private struct ValidatedSnapshotRestoreInput {
+        let operationID: UUID
+        let snapshot: DoryMachineSnapshot
+        let metadata: Data
+        let artifacts: DoryMachineArtifactProof
+    }
+
+    private struct ValidatedSnapshotRestoreTarget {
+        let operationID: UUID
+        let snapshot: DoryMachineSnapshot
+        let artifacts: DoryMachineArtifactProof
+    }
+
+    private func loadSnapshotForRestore(machineID: String, snapshotID: String,
+        operationID: UUID) throws -> ValidatedSnapshotRestoreInput {
+        let descriptor = try loadSnapshotDescriptor(machineID: machineID, snapshotID: snapshotID)
+        let bindings = try snapshotRestoreInputBindings(descriptor.snapshot)
+        let proof = try DoryMachineArtifactProof(bindings: bindings, hash: Self.sha256(descriptor:))
+        var snapshot = descriptor.snapshot
+        guard let size = Int64(exactly: bindings[0].evidence.byteCount) else {
+            throw MachineManagerError.persistence("snapshot restore size is not representable")
+        }
+        snapshot.sizeBytes = size
+        return .init(operationID: operationID, snapshot: snapshot,
+            metadata: descriptor.data, artifacts: proof)
+    }
+
+    private func snapshotRestoreInputBindings(_ snapshot: DoryMachineSnapshot) throws
+        -> [DoryMachineArtifactProof.Binding] {
+        guard let evidence = snapshot.artifactEvidence, evidence.isValid else {
+            throw MachineManagerError.persistence("snapshot restore requires immutable artifact evidence")
+        }
+        var bindings: [DoryMachineArtifactProof.Binding] = [
+            .init(path: snapshot.rootfsPath, evidence: evidence.rootfs),
+            .init(path: snapshot.kernelPath, evidence: evidence.kernel)
+        ]
+        for (path, artifact) in [(snapshot.machineIdentifierPath, evidence.machineIdentifier),
+                                  (snapshot.nvramPath, evidence.nvram)] {
+            guard (path != nil) == (artifact != nil) else {
+                throw MachineManagerError.persistence("snapshot restore firmware evidence is incomplete")
+            }
+            if let path, let artifact { bindings.append(.init(path: path, evidence: artifact)) }
+        }
+        return bindings
+    }
+
+    private func validateSnapshotRestoreInput(_ input: ValidatedSnapshotRestoreInput,
+        restore: DoryMachineSnapshotRestoreJournal) throws {
+        guard input.operationID == restore.operationID, input.snapshot == restore.snapshot,
+              Self.isPrivateDirectory(path: snapshotDirectory(machineID: restore.machineID)),
+              Self.readPrivateMetadata(path: snapshotMetadataPath(machineID: restore.machineID,
+                snapshotID: restore.snapshot.id)) == input.metadata else {
+            throw MachineManagerError.persistence("snapshot restore input handoff changed")
+        }
+        try input.artifacts.validate(bindings: snapshotRestoreInputBindings(restore.snapshot))
+    }
+
+    private func snapshotRestoreTargetBindings(_ snapshot: DoryMachineSnapshot,
+        machineID: String) throws -> [DoryMachineArtifactProof.Binding] {
+        guard snapshot.machineID == machineID, snapshot.bootMode == .linuxKernel,
+              let evidence = snapshot.artifactEvidence, evidence.isValid,
+              Self.isPrivateDirectory(path: machineStateDirectory(id: machineID)) else {
+            throw MachineManagerError.persistence("snapshot restore target proof has no exact private artifacts")
+        }
+        return [.init(path: machineRootfsPath(id: machineID), evidence: evidence.rootfs),
+                .init(path: machineKernelPath(id: machineID), evidence: evidence.kernel)]
+    }
+
+    private func validateRestoredSnapshotArtifacts(snapshot: DoryMachineSnapshot,
+        machineID: String, operationID: UUID) throws -> ValidatedSnapshotRestoreTarget? {
+        if snapshot.bootMode == .linuxKernel {
+            do {
+                let bindings = try snapshotRestoreTargetBindings(snapshot, machineID: machineID)
+                return try .init(operationID: operationID, snapshot: snapshot,
+                    artifacts: DoryMachineArtifactProof(bindings: bindings, hash: Self.sha256(descriptor:)))
+            } catch {
+                throw MachineManagerError.persistence(
+                    "restored machine artifacts do not match bound snapshot evidence: \(error)"
+                )
+            }
+        }
+        // EFI firmware may be re-encoded by a variable-store owner. Retain its complete
+        // validation at each boundary rather than treating its snapshot file as live backing.
+        guard Self.recoveredLiveArtifactsMatch(snapshot: snapshot,
+            machineID: machineID, configuration: configuration) else {
+            throw MachineManagerError.persistence("restored machine artifacts do not match bound snapshot evidence")
+        }
+        return nil
+    }
+
+    private func validateSnapshotRestoreTarget(_ target: ValidatedSnapshotRestoreTarget,
+        restore: DoryMachineSnapshotRestoreJournal) throws {
+        guard target.operationID == restore.operationID, target.snapshot == restore.snapshot else {
+            throw MachineManagerError.persistence("snapshot restore target handoff changed")
+        }
+        try target.artifacts.validate(bindings: snapshotRestoreTargetBindings(restore.snapshot,
+            machineID: restore.machineID))
     }
 
     /// The source disk will be replaced without being launched. Validate ownership and the
@@ -11118,7 +11223,8 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     private func resumeResolvedSnapshotRestore(
-        _ context: MachineLifecycleJournalContext, restore: DoryMachineSnapshotRestoreJournal
+        _ context: MachineLifecycleJournalContext, restore: DoryMachineSnapshotRestoreJournal,
+        verifiedInput: ValidatedSnapshotRestoreInput? = nil
     ) throws -> DoryMachineStatus {
         let id = restore.machineID
         guard let controller = productionAdmissionComponentsSnapshot().controller else {
@@ -11132,12 +11238,15 @@ public final class MachineManager: @unchecked Sendable {
                 machines[id]?.activeOperationPhase = state.phase
             }
             let published: UUID? = try context.lease.snapshotRestoreCheckpoint(.artifactsPublished)
+            var verifiedTarget: ValidatedSnapshotRestoreTarget?
             if published == nil {
                 guard Self.readPrivateMetadata(path: machineConfigPath(id: id)) == restore.sourceConfigurationData,
-                      Self.readPrivateMetadata(path: machineStateDirectory(id: id) + "/" + DoryWorkspaceRepository.recordFileName) == restore.sourceWorkspaceData,
-                      try loadSnapshot(machineID: id, snapshotID: restore.snapshot.id) == restore.snapshot else {
+                      Self.readPrivateMetadata(path: machineStateDirectory(id: id) + "/" + DoryWorkspaceRepository.recordFileName) == restore.sourceWorkspaceData else {
                     throw MachineManagerError.persistence("snapshot restore source or selected snapshot changed")
                 }
+                let input = try verifiedInput ?? loadSnapshotForRestore(machineID: id,
+                    snapshotID: restore.snapshot.id, operationID: restore.operationID)
+                try validateSnapshotRestoreInput(input, restore: restore)
 #if DEBUG
                 try injectLifecycleFault(.restoreBeforeStop)
 #endif
@@ -11152,7 +11261,7 @@ public final class MachineManager: @unchecked Sendable {
                 }
                 lock.withLock { machines[id]?.state = .stopped }
                 try advanceLifecycle(context)
-                try restoreManagedArtifacts(
+                verifiedTarget = try restoreManagedArtifacts(
                     machine: restore.sourceConfiguration, snapshot: restore.snapshot,
                     operationID: restore.operationID, retainBackups: true,
                     reuseBackups: {
@@ -11175,7 +11284,7 @@ public final class MachineManager: @unchecked Sendable {
             } else if published != restore.operationID {
                 throw MachineManagerError.persistence("snapshot restore artifact publication changed")
             }
-            try publishSnapshotRestoreTarget(context, restore: restore)
+            try publishSnapshotRestoreTarget(context, restore: restore, verifiedTarget: verifiedTarget)
             if lock.withLock({ machines[id]?.process?.isRunning == true }) {
                 try requireSnapshotRestoreOwnedHelper(context, restore: restore, sourceAllowed: false)
             } else {
@@ -11239,7 +11348,8 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     private func publishSnapshotRestoreTarget(
-        _ context: MachineLifecycleJournalContext, restore: DoryMachineSnapshotRestoreJournal
+        _ context: MachineLifecycleJournalContext, restore: DoryMachineSnapshotRestoreJournal,
+        verifiedTarget: ValidatedSnapshotRestoreTarget? = nil
     ) throws {
         let id = restore.machineID
         let source = try restore.sourceWorkspace
@@ -11255,8 +11365,13 @@ public final class MachineManager: @unchecked Sendable {
             try validateSnapshotRestorePublication(restore)
             return
         }
-        guard try !liveResolvedHelperExists(machineID: id),
-              Self.recoveredLiveArtifactsMatch(snapshot: restore.snapshot, machineID: id, configuration: configuration) else {
+        guard try !liveResolvedHelperExists(machineID: id) else {
+            throw MachineManagerError.persistence("snapshot restore publication has no exact stopped artifacts")
+        }
+        if let verifiedTarget {
+            try validateSnapshotRestoreTarget(verifiedTarget, restore: restore)
+        } else if !Self.recoveredLiveArtifactsMatch(snapshot: restore.snapshot,
+            machineID: id, configuration: configuration) {
             throw MachineManagerError.persistence("snapshot restore publication has no exact stopped artifacts")
         }
         let target = try restore.targetConfiguration
@@ -17406,6 +17521,7 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    @discardableResult
     private func restoreManagedArtifacts(
         machine: DoryMachineConfiguration,
         snapshot: DoryMachineSnapshot,
@@ -17414,7 +17530,7 @@ public final class MachineManager: @unchecked Sendable {
         reuseBackups: (() throws -> Bool)? = nil,
         recordBackups: (() throws -> Void)? = nil,
         commit: () throws -> Void
-    ) throws {
+    ) throws -> ValidatedSnapshotRestoreTarget? {
         let directory = machineStateDirectory(id: machine.id)
         let token = operationID.uuidString.lowercased()
         let rootfsBackup = "\(directory)/.restore-\(token)-rootfs"
@@ -17570,16 +17686,10 @@ public final class MachineManager: @unchecked Sendable {
             case nil:
                 break
             }
-            guard Self.recoveredLiveArtifactsMatch(
-                snapshot: snapshot,
-                machineID: machine.id,
-                configuration: configuration
-            ) else {
-                throw MachineManagerError.persistence(
-                    "restored machine artifacts do not match bound snapshot evidence"
-                )
-            }
+            let verifiedTarget = try validateRestoredSnapshotArtifacts(snapshot: snapshot,
+                machineID: machine.id, operationID: operationID)
             try commit()
+            return verifiedTarget
         } catch {
             var rollbackFailures: [String] = []
             do {
@@ -18332,6 +18442,15 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     private func loadSnapshot(machineID: String, snapshotID: String) throws -> DoryMachineSnapshot {
+        let descriptor = try loadSnapshotDescriptor(machineID: machineID, snapshotID: snapshotID)
+        try Self.validateSnapshotArtifactEvidence(descriptor.snapshot)
+        var validated = descriptor.snapshot
+        validated.sizeBytes = Self.fileSize(path: snapshotRootfsPath(machineID: machineID, snapshotID: snapshotID))
+        return validated
+    }
+
+    private func loadSnapshotDescriptor(machineID: String, snapshotID: String) throws
+        -> (snapshot: DoryMachineSnapshot, data: Data) {
         guard Self.isValidID(machineID) else {
             throw MachineManagerError.invalidID(machineID)
         }
@@ -18375,10 +18494,7 @@ public final class MachineManager: @unchecked Sendable {
         case .macOSRestore:
             throw MachineManagerError.unknownSnapshot(snapshotID)
         }
-        try Self.validateSnapshotArtifactEvidence(snapshot)
-        var validated = snapshot
-        validated.sizeBytes = Self.fileSize(path: expectedRootfsPath)
-        return validated
+        return (snapshot, data)
     }
 
     private static func snapshotDescriptorData(_ snapshot: DoryMachineSnapshot) throws -> Data {
@@ -19551,6 +19667,13 @@ public final class MachineManager: @unchecked Sendable {
                         "could not finalize \(destination): \(String(cString: strerror(errno)))"
                     )
                 }
+            }
+            // The file fsync above does not make the published directory entry durable.
+            // Callers may checkpoint immediately after this return, including restore backups.
+            guard fsync(parentDescriptor) == 0 else {
+                throw MachineManagerError.persistence(
+                    "could not synchronize managed artifact directory: \(String(cString: strerror(errno)))"
+                )
             }
         } catch {
             _ = unlinkat(parentDescriptor, temporaryName, 0)
@@ -23010,7 +23133,7 @@ private struct MachineManagerResolvedLaunchInfrastructure {
 
 private final class MachineLifecycleJournalContext: @unchecked Sendable {
     let operation: DoryWorkspaceLifecycleOperation
-    var creationArtifactProof: DoryMachineCreationArtifactProof?
+    var creationArtifactProof: DoryMachineArtifactProof?
     private(set) var lease: DoryOperationLease!
     private(set) var workspaceLock: EngineStateDirectoryLock?
     private(set) var additionalWorkspaceLocks: [EngineStateDirectoryLock]
