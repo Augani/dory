@@ -17,6 +17,7 @@ nonisolated protocol DorydControlXPC {
     func dockerAgentTelemetry(reply: @escaping (NSDictionary, String) -> Void)
     func dockerGuestDataDiskUsage(reply: @escaping (NSDictionary, String) -> Void)
     func machineCreate(_ config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineCreate(_ config: NSDictionary, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineStart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineStart(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineStop(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -58,6 +59,7 @@ nonisolated protocol DorydControlXPC {
     func machineSnapshot(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineSnapshots(_ machineID: String, reply: @escaping (NSArray, String) -> Void)
     func machineCloneSnapshot(_ machineID: String, snapshotID: String, newID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineCloneSnapshot(_ machineID: String, snapshotID: String, newID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineRestoreSnapshot(_ machineID: String, snapshotID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDeleteSnapshot(_ machineID: String, snapshotID: String, reply: @escaping (Bool, String) -> Void)
     func machineExportSnapshot(_ machineID: String, snapshotID: String, path: String, reply: @escaping (Bool, String) -> Void)
@@ -2071,9 +2073,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
-    func machineCreate(_ config: DorydMachineConfiguration) async throws -> DorydMachineStatus {
+    func machineCreate(_ config: DorydMachineConfiguration, operationID: UUID = UUID()) async throws -> DorydMachineStatus {
         try await withTimeout(atLeast: DoryMachineControlTiming.fileMutationSeconds).statusCommand { proxy, reply in
-            proxy.machineCreate(config.xpcDictionary, reply: reply)
+            proxy.machineCreate(config.xpcDictionary, operationID: operationID.uuidString.lowercased(), reply: reply)
         } decode: {
             Self.machineStatus(from: $0)
         }
@@ -2582,9 +2584,10 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
-    func machineCloneSnapshot(machineID: String, snapshotID: String, newID: String) async throws -> DorydMachineStatus {
+    func machineCloneSnapshot(machineID: String, snapshotID: String, newID: String, operationID: UUID = UUID()) async throws -> DorydMachineStatus {
         try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
-            proxy.machineCloneSnapshot(machineID, snapshotID: snapshotID, newID: newID, reply: reply)
+            proxy.machineCloneSnapshot(machineID, snapshotID: snapshotID, newID: newID,
+                operationID: operationID.uuidString.lowercased(), reply: reply)
         } decode: {
             Self.machineStatus(from: $0)
         }

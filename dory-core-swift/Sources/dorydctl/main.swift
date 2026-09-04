@@ -1420,8 +1420,9 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         // Creating a machine can copy a multi-gigabyte root disk or installer ISO.
         // Keep the request alive long enough for that transactional mutation to
         // finish so the CLI cannot report a timeout after the daemon has succeeded.
+        let operationID = DoryOperationIdentity.canonical(UUID())
         let status = try client.withTimeout(atLeast: machineFileMutationTimeout).statusCommand { proxy, reply in
-            proxy.machineCreate(config as NSDictionary, reply: reply)
+            proxy.machineCreate(config as NSDictionary, operationID: operationID, reply: reply)
         }
         try emitJSON(status)
     case "start":
@@ -1529,8 +1530,10 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         guard cursor.values.isEmpty else {
             throw DorydCtlError.usage("unexpected clone-snapshot argument: \(cursor.values[0])")
         }
+        let operationID = DoryOperationIdentity.canonical(UUID())
         try emitJSON(try client.withTimeout(atLeast: machineFileMutationTimeout).statusCommand { proxy, reply in
-            proxy.machineCloneSnapshot(name, snapshotID: snapshotID, newID: newName, reply: reply)
+            proxy.machineCloneSnapshot(name, snapshotID: snapshotID, newID: newName,
+                operationID: operationID, reply: reply)
         })
     case "restore-snapshot":
         let name = try cursor.take("usage: dorydctl machine restore-snapshot NAME SNAPSHOT_ID")

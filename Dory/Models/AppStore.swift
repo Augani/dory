@@ -6935,7 +6935,8 @@ final class AppStore {
             ) else {
                 throw DesktopMachineAssetError.missingAsset("kernel or root filesystem")
             }
-            _ = try await dorydClient.machineCreate(config)
+            let creationOperationID = UUID()
+            _ = try await dorydClient.machineCreate(config, operationID: creationOperationID)
             createdDefinition = true
             if let displayPresentation = settings.displayPresentation {
                 _ = try await dorydClient.machineDisplayPresentationSet(
@@ -7120,11 +7121,13 @@ final class AppStore {
                 token: Self.generatedMachineToken()
             )
             appendMachineCreationLog("Creating \(candidate)…")
+            let cloneOperationID = UUID()
             do {
                 _ = try await dorydClient.machineCloneSnapshot(
                     machineID: machineID,
                     snapshotID: snapshotID,
-                    newID: candidate
+                    newID: candidate,
+                    operationID: cloneOperationID
                 )
                 return candidate
             } catch {
@@ -7317,7 +7320,7 @@ final class AppStore {
                     appendMachineCreationLog("Clone created, but temporary snapshot cleanup failed: \(cleanupFailure)")
                     actionError = "Clone \(newName) was created, but Dory could not remove its temporary snapshot: \(cleanupFailure)"
                 }
-                appendMachineCreationLog("Clone \(newName) created and started.")
+                appendMachineCreationLog("Clone \(newName) created and ready to start.")
                 activeSheet = nil
                 await refreshMachines()
             } catch {
@@ -7381,7 +7384,7 @@ final class AppStore {
                     base: snapshot.machineName,
                     operation: "copy"
                 )
-                appendMachineCreationLog("Clone \(newName) created and started.")
+                appendMachineCreationLog("Clone \(newName) created and ready to start.")
                 activeSheet = nil
                 await refreshMachines()
             } catch {

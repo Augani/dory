@@ -1746,6 +1746,7 @@ struct DorydClientTests {
         let dockerGuestDataDiskUsage = try await client.dockerGuestDataDiskUsage()
         let stopped = try await client.engineStop()
         let shareBookmark = Data([0x44, 0x4f, 0x52, 0x59])
+        let creationOperationID = UUID()
         let createdMachine = try await client.machineCreate(DorydMachineConfiguration(
             id: "dev",
             guestArchitecture: "x86_64",
@@ -1785,7 +1786,8 @@ struct DorydClientTests {
                     DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
                 ]
             )
-        ))
+        ), operationID: creationOperationID)
+        #expect(service.latestMachineCreateOperationID == creationOperationID.uuidString.lowercased())
         let startOperationID = UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")!
         let startedMachine = try await client.machineStart(
             "dev",
@@ -1837,7 +1839,9 @@ struct DorydClientTests {
             snapshotID: "s1"
         )
         let snapshots = try await client.machineSnapshots(machineID: "dev")
-        let clonedSnapshot = try await client.machineCloneSnapshot(machineID: "dev", snapshotID: "s1", newID: "dev-copy")
+        let cloneOperationID = UUID()
+        let clonedSnapshot = try await client.machineCloneSnapshot(machineID: "dev", snapshotID: "s1", newID: "dev-copy", operationID: cloneOperationID)
+        #expect(service.latestMachineCloneOperationID == cloneOperationID.uuidString.lowercased())
         let restoredSnapshot = try await client.machineRestoreSnapshot(machineID: "dev", snapshotID: "s1")
         let exportedSnapshot = try await client.machineExportSnapshot(machineID: "dev", snapshotID: "s1", to: "/tmp/dev.dorymachine")
         let importedSnapshot = try await client.machineImportSnapshot(from: "/tmp/dev.dorymachine")
@@ -5123,6 +5127,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         )
     ]
     private var _machineStartCount = 0
+    private var _latestMachineCreateOperationID: String?
+    private var _latestMachineCloneOperationID: String?
     private var _latestMachineStartOperationID: String?
     private var _machineStopCount = 0
     private var _latestMachineStopOperationID: String?
@@ -5345,6 +5351,16 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var machineStartCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _machineStartCount
+    }
+
+    var latestMachineCreateOperationID: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachineCreateOperationID
+    }
+
+    var latestMachineCloneOperationID: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachineCloneOperationID
     }
 
     var latestMachineStartOperationID: String? {
@@ -5924,6 +5940,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
             "usedBytes": UInt64(8 * 1024 * 1024 * 1024),
             "availableBytes": UInt64(120 * 1024 * 1024 * 1024),
         ]
+    }
+
+    func machineCreate(_ config: NSDictionary, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        lock.lock(); _latestMachineCreateOperationID = operationID; lock.unlock()
+        machineCreate(config, reply: reply)
     }
 
     func machineCreate(_ config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {
@@ -6646,6 +6667,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         }
         lock.unlock()
         reply(rows as NSArray, "")
+    }
+
+    func machineCloneSnapshot(_ machineID: String, snapshotID: String, newID: String,
+        operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        lock.lock(); _latestMachineCloneOperationID = operationID; lock.unlock()
+        machineCloneSnapshot(machineID, snapshotID: snapshotID, newID: newID, reply: reply)
     }
 
     func machineCloneSnapshot(
