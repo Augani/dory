@@ -2564,7 +2564,7 @@ public struct DoryX86Interpreter: Sendable {
         guard currentPrivilegeLevel(state, mode: mode) == 0 else {
           return generalProtection(at: originalRIP)
         }
-        pagingUnit?.invalidate(
+        (pagingUnit ?? translatedMemory?.translationUnit)?.invalidate(
           linearAddress: effectiveAddress(operand, instruction: instruction, state: state)
         )
       case .descriptorTable(let table, let load, let address):
@@ -2842,8 +2842,11 @@ public struct DoryX86Interpreter: Sendable {
           state.control.cr0 =
             (state.control.cr0 & ~UInt64(0xF)) | (requested & 0xE) | preservedPE
             | (requested & 1)
-          pagingUnit?.invalidateAll()
+          (pagingUnit ?? translatedMemory?.translationUnit)?.invalidateAll()
         } else {
+          guard state.control.cr4 & (1 << 11) == 0 || currentPrivilegeLevel(state, mode: mode) == 0 else {
+            return generalProtection(at: originalRIP)
+          }
           // Intel SDM 092 Vol. 2B p. 4-658: in 64-bit mode SMSW r32/r64
           // stores the corresponding CR0 width; every memory form remains m16.
           let value: UInt64

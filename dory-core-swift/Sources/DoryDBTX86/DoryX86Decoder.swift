@@ -1045,9 +1045,12 @@ public struct DoryX86Decoder: Sendable {
       case 0xAE:
         if let modRM = cursor.peek(), modRM >> 6 == 3 {
           _ = try cursor.readByte()
-          guard modRM & 7 == 0 else {
+          // Intel SDM 092 LFENCE/MFENCE/SFENCE use NP and ignore ModRM.R/M.
+          // 66/F2/F3 select different facilities, including WAITPKG and CET;
+          // unsupported refinements must not execute as successful fences.
+          guard prefixes.repeatPrefix == nil, !prefixes.operandSizeOverride else {
             throw DoryX86DecodeError.invalidEncoding(
-              address: address, detail: "memory fence requires its fixed register encoding")
+              address: address, detail: "unsupported 0F AE register prefix refinement")
           }
           switch (modRM >> 3) & 7 {
           case 5: operation = .memoryFence(.load)
