@@ -1571,98 +1571,19 @@ public struct DoryX86Interpreter: Sendable {
           memory: executionMemory
         ) { return fault }
       case .packedCompareStringIndex(let destination, let source, let immediate):
-        // PCMPISTRI: SSE4.2 packed compare implicit-length strings.
-        // Produces an index in ECX. The immediate encodes:
-        //   bits 0: data size (0=byte, 1=word)
-        //   bits 2:1: aggregation (0=equal any, 1=ranges, 2=equal each, 3=equal ordered)
-        //   bits 4:3: polarity (0=positive, 1=negative, 2=masked positive)
-        //   bit 5: output (0=index, 1=mask)
         let lhs = Array(state.floatingPoint.ymm[Int(destination)].bytes.prefix(16))
         let rhs = try readVectorBytes(
           source, byteCount: 16, instruction: instruction,
           state: state, memory: executionMemory)
-        let isWord = immediate & 1 != 0
-        let aggregation = (immediate >> 1) & 3
-        let polarity = (immediate >> 3) & 3
-        let outputMask = immediate & 0x20 != 0
-        let elementSize = isWord ? 2 : 1
-        let elementCount = 16 / elementSize
-        // Find null terminators (implicit length)
-        var lhsLen = elementCount
-        var rhsLen = elementCount
-        for i in 0..<elementCount {
-          let offset = i * elementSize
-          if isWord {
-            if lhs[offset] == 0 && lhs[offset + 1] == 0 { lhsLen = i; break }
-          } else {
-            if lhs[offset] == 0 { lhsLen = i; break }
-          }
-        }
-        for i in 0..<elementCount {
-          let offset = i * elementSize
-          if isWord {
-            if rhs[offset] == 0 && rhs[offset + 1] == 0 { rhsLen = i; break }
-          } else {
-            if rhs[offset] == 0 { rhsLen = i; break }
-          }
-        }
-        // Build string comparison result
-        var intRes: UInt32 = 0
-        switch aggregation {
-        case 0: // Equal Any: OR of all pairwise equals
-          for i in 0..<lhsLen {
-            for j in 0..<rhsLen {
-              let li = i * elementSize
-              let rj = j * elementSize
-              let equal = isWord
-                ? (lhs[li] == rhs[rj] && lhs[li + 1] == rhs[rj + 1])
-                : (lhs[li] == rhs[rj])
-              if equal { intRes |= 1 << i; break }
-            }
-          }
-        case 2: // Equal Each: pairwise equals
-          for i in 0..<min(lhsLen, rhsLen) {
-            let li = i * elementSize
-            let rj = i * elementSize
-            let equal = isWord
-              ? (lhs[li] == rhs[rj] && lhs[li + 1] == rhs[rj + 1])
-              : (lhs[li] == rhs[rj])
-            if equal { intRes |= 1 << i }
-          }
-        case 1, 3: // Ranges / Equal Ordered: simplified
-          for i in 0..<lhsLen {
-            intRes |= 1 << i
-          }
-        default:
-          break
-        }
-        // Apply polarity
-        switch polarity {
-        case 1: intRes = ~intRes & ((1 << elementCount) - 1)
-        case 2:
-          // Masked positive: use valid bits only
-          let valid = UInt32((1 << min(lhsLen, rhsLen)) - 1)
-          intRes &= valid
-        default: break
-        }
-        // Set flags
-        state.rflags.remove([.overflow, .carry, .zero, .sign])
-        if intRes == 0 { state.rflags.insert(.zero) }
-        // Output: index or mask in ECX
-        if outputMask {
-          try write(
-            UInt64(intRes), to: .register(.rcx, width: .doubleword),
-            instruction: instruction, state: &state, memory: executionMemory)
-        } else {
-          // Find index of least significant set bit (or elementCount if none)
-          var index: UInt64 = UInt64(elementCount)
-          for i in 0..<elementCount {
-            if intRes & (1 << i) != 0 { index = UInt64(i); break }
-          }
-          try write(
-            index, to: .register(.rcx, width: .doubleword),
-            instruction: instruction, state: &state, memory: executionMemory)
-        }
+        let comparison = comparePackedImplicitStrings(lhs, rhs, immediate: immediate)
+        state.rflags.remove([.carry, .parity, .auxiliaryCarry, .zero, .sign, .overflow])
+        setFlag(.carry, comparison.intRes2 != 0, in: &state.rflags)
+        setFlag(.zero, comparison.rhsTerminated, in: &state.rflags)
+        setFlag(.sign, comparison.lhsTerminated, in: &state.rflags)
+        setFlag(.overflow, comparison.intRes2 & 1 != 0, in: &state.rflags)
+        try write(
+          UInt64(comparison.index), to: .register(.rcx, width: .doubleword),
+          instruction: instruction, state: &state, memory: executionMemory)
       // MARK: - VEX (AVX/AVX2) execution
       case .vexZeroUpper:
         // VZEROUPPER: zero the upper 128 bits of all 16 YMM registers.
@@ -3816,6 +3737,145 @@ public struct DoryX86Interpreter: Sendable {
     for index in 0..<MemoryLayout<T>.size {
       bytes[offset + index] = UInt8(truncatingIfNeeded: value >> T(index * 8))
     }
+  }
+
+  /// Implements the implicit-length comparison core shared by the byte and
+  /// word PCMPISTRI forms. Intel's SSE4 Programming Reference §5.3.1
+  /// defines the validity overrides before polarity is applied; result bit j
+  /// always describes element j of the second source operand.
+  private func comparePackedImplicitStrings(
+    _ lhsBytes: [UInt8],
+    _ rhsBytes: [UInt8],
+    immediate: UInt8
+  ) -> (intRes2: UInt32, index: UInt32, lhsTerminated: Bool, rhsTerminated: Bool) {
+    let isWord = immediate & 0x01 != 0
+    let isSigned = immediate & 0x02 != 0
+    let elementCount = isWord ? 8 : 16
+
+    func rawElements(_ bytes: [UInt8]) -> [UInt16] {
+      if isWord {
+        return (0..<elementCount).map { index in
+          let offset = index * 2
+          return UInt16(bytes[offset]) | (UInt16(bytes[offset + 1]) << 8)
+        }
+      }
+      return bytes.prefix(elementCount).map(UInt16.init)
+    }
+
+    func comparisonValue(_ raw: UInt16) -> Int32 {
+      if isWord {
+        return isSigned
+          ? Int32(Int16(bitPattern: raw))
+          : Int32(raw)
+      }
+      let byte = UInt8(truncatingIfNeeded: raw)
+      return isSigned
+        ? Int32(Int8(bitPattern: byte))
+        : Int32(byte)
+    }
+
+    let lhsRaw = rawElements(lhsBytes)
+    let rhsRaw = rawElements(rhsBytes)
+    let lhsLength = lhsRaw.firstIndex(of: 0) ?? elementCount
+    let rhsLength = rhsRaw.firstIndex(of: 0) ?? elementCount
+    let lhs = lhsRaw.map(comparisonValue)
+    let rhs = rhsRaw.map(comparisonValue)
+    let aggregation = (immediate >> 2) & 0x03
+
+    // Table 5-7 in the SSE4 Programming Reference defines the invalid-element
+    // overrides. `rhsIndex` is the result-bit dimension.
+    func elementComparison(rhsIndex: Int, lhsIndex: Int) -> Bool {
+      let lhsValid = lhsIndex < lhsLength
+      let rhsValid = rhsIndex < rhsLength
+      switch aggregation {
+      case 0, 1:  // Equal any / ranges.
+        guard lhsValid && rhsValid else { return false }
+      case 2:  // Equal each.
+        if !lhsValid || !rhsValid { return !lhsValid && !rhsValid }
+      default:  // Equal ordered.
+        if !lhsValid { return true }
+        if !rhsValid { return false }
+      }
+
+      if aggregation == 1 {
+        return lhsIndex & 1 == 0
+          ? rhs[rhsIndex] >= lhs[lhsIndex]
+          : rhs[rhsIndex] <= lhs[lhsIndex]
+      }
+      return rhs[rhsIndex] == lhs[lhsIndex]
+    }
+
+    var intRes1: UInt32 = 0
+    switch aggregation {
+    case 0:  // Equal any.
+      for rhsIndex in 0..<elementCount {
+        if (0..<elementCount).contains(where: {
+          elementComparison(rhsIndex: rhsIndex, lhsIndex: $0)
+        }) {
+          intRes1 |= UInt32(1) << UInt32(rhsIndex)
+        }
+      }
+    case 1:  // Ranges; consecutive lhs elements are low/high endpoints.
+      for rhsIndex in 0..<elementCount {
+        for lhsIndex in stride(from: 0, to: elementCount, by: 2) {
+          if elementComparison(rhsIndex: rhsIndex, lhsIndex: lhsIndex)
+            && elementComparison(rhsIndex: rhsIndex, lhsIndex: lhsIndex + 1)
+          {
+            intRes1 |= UInt32(1) << UInt32(rhsIndex)
+            break
+          }
+        }
+      }
+    case 2:  // Equal each.
+      for index in 0..<elementCount
+      where
+        elementComparison(rhsIndex: index, lhsIndex: index)
+      {
+        intRes1 |= UInt32(1) << UInt32(index)
+      }
+    default:  // Equal ordered.
+      for rhsStart in 0..<elementCount {
+        var matches = true
+        // Comparisons beyond the physical end of the second operand are not
+        // performed; this is the SDM's IntRes1 ordered-aggregation loop.
+        for lhsIndex in 0..<(elementCount - rhsStart) {
+          if !elementComparison(rhsIndex: rhsStart + lhsIndex, lhsIndex: lhsIndex) {
+            matches = false
+            break
+          }
+        }
+        if matches { intRes1 |= UInt32(1) << UInt32(rhsStart) }
+      }
+    }
+
+    let allElementsMask = (UInt32(1) << UInt32(elementCount)) - 1
+    let validRhsMask =
+      rhsLength == elementCount
+      ? allElementsMask
+      : (UInt32(1) << UInt32(rhsLength)) - 1
+    let intRes2: UInt32
+    if immediate & 0x10 == 0 {
+      intRes2 = intRes1
+    } else {
+      // Masked-negative polarity complements only valid elements of operand 2.
+      let complementMask = immediate & 0x20 != 0 ? validRhsMask : allElementsMask
+      intRes2 = (intRes1 ^ complementMask) & allElementsMask
+    }
+
+    let index: UInt32
+    if intRes2 == 0 {
+      index = UInt32(elementCount)
+    } else if immediate & 0x40 == 0 {
+      index = UInt32(intRes2.trailingZeroBitCount)
+    } else {
+      index = UInt32(UInt32.bitWidth - 1 - intRes2.leadingZeroBitCount)
+    }
+    return (
+      intRes2: intRes2,
+      index: index,
+      lhsTerminated: lhsLength < elementCount,
+      rhsTerminated: rhsLength < elementCount
+    )
   }
 
   private func readVectorBytes(
