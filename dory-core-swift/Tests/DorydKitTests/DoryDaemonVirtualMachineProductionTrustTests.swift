@@ -2013,7 +2013,7 @@ private final class ProductionIntegrationTestCompletion: @unchecked Sendable {
 /// Swift Testing runs synchronous cases on a bounded cooperative stack. This end-to-end case
 /// deliberately nests the complete production planning and lifecycle transaction, whose Debug
 /// frames exceed that test-only stack even though normal daemon threads and release builds do not.
-private func withProductionIntegrationTestStack(
+func withProductionIntegrationTestStack(
     _ operation: @escaping @Sendable () throws -> Void
 ) throws {
     let completion = ProductionIntegrationTestCompletion()
@@ -2152,9 +2152,12 @@ extension DoryDaemonVirtualMachineProductionTrustTests {
             }
             #expect(result.operationID == harness.request.operationID.uuidString.lowercased())
             #expect(result.status.state.rawValue == sourceState)
+            #expect(result.status.activeOperationID == nil)
+            #expect(result.status.failure == nil)
             #expect(result.inputSHA256 == ProductionDesktopAgent.inputSHA256)
             #expect(harness.agent.applyCount == 1)
             #expect(harness.agent.controlledPushCount == 1)
+            #expect(harness.agent.controlledExecCount > 0)
             #expect(try harness.diskPrefix().starts(with: Data("desktop-after".utf8)))
             #expect(try Data(contentsOf: URL(fileURLWithPath: harness.managedKernelPath))
                 == Data("desktop-kernel-after".utf8))
@@ -2179,6 +2182,7 @@ extension DoryDaemonVirtualMachineProductionTrustTests {
             #expect(replay == result)
             #expect(harness.agent.applyCount == 1)
             #expect(harness.agent.controlledPushCount == 1)
+            #expect(harness.agent.controlledExecCount > 0)
             #expect(try harness.context.planning.plans.read(id: harness.id) == plan)
             #expect(try harness.journal.list().count == before + 1)
             var conflicting = harness.request
@@ -2224,6 +2228,7 @@ extension DoryDaemonVirtualMachineProductionTrustTests {
             }
             #expect(harness.agent.applyCount == 1)
             #expect(harness.agent.controlledPushCount == 1)
+            #expect(harness.agent.controlledExecCount > 0)
             #expect(harness.agent.receiptReadCount == (failureMode == "duplicate-receipt" ? 1 : 0))
             let restored = try #require(manager.status(id: harness.id))
             #expect(restored.state.rawValue == sourceState)
@@ -2269,10 +2274,13 @@ extension DoryDaemonVirtualMachineProductionTrustTests {
             manager.installLifecycleFaultInjectorForTesting { _ in }
             let replay = try harness.drive { try manager.updateDesktop(id: harness.id, request: harness.request) }
             #expect(replay.status.state.rawValue == sourceState)
+            #expect(replay.status.activeOperationID == nil)
+            #expect(replay.status.failure == nil)
             #expect(replay.status.pid == qualified.pid)
             #expect(replay.inputSHA256 == ProductionDesktopAgent.inputSHA256)
             #expect(harness.agent.applyCount == 1)
             #expect(harness.agent.controlledPushCount == 1)
+            #expect(harness.agent.controlledExecCount > 0)
             #expect(try harness.context.planning.plans.read(id: harness.id) == qualifiedPlan)
             #expect(try harness.journal.list().count == before + 1)
             #expect(try harness.journal.read(harness.request.operationID).state.status == .completed)
@@ -2323,6 +2331,7 @@ extension DoryDaemonVirtualMachineProductionTrustTests {
             }?.state == (sourceState == "stopped" ? .stopped : .running))
             #expect(harness.agent.applyCount == 1)
             #expect(harness.agent.controlledPushCount == 1)
+            #expect(harness.agent.controlledExecCount > 0)
             #expect(try harness.journal.list().count == before + 1)
             #expect(try harness.journal.read(harness.request.operationID).state.status == .failed)
         }
@@ -2413,11 +2422,262 @@ struct ProductionDesktopRecoveryCase: Sendable {
     ]
 }
 
-private final class ProductionDesktopUpdateHarness: @unchecked Sendable {
+extension DoryDaemonVirtualMachineProductionTrustTests {
+    @Test("public production snapshot restore owns publication, restart and replay",
+          arguments: ["stopped", "running", "paused"])
+    func productionSnapshotRestoreRootSuccess(sourceState: String) throws {
+        try withProductionIntegrationTestStack {
+            let harness = try ProductionDesktopUpdateHarness(sourceState: "stopped")
+            defer { harness.cleanup() }
+            let manager = harness.context.machineManager
+            let snapshot = try harness.prepareRestoreSource(state: sourceState)
+            let snapshots = try manager.listSnapshots(machineID: harness.id)
+            #expect(snapshots == [snapshot])
+            let source = try #require(manager.status(id: harness.id))
+            let workspaceStore = DoryWorkspaceRepository(root: harness.fixture.machineConfiguration.stateDirectory)
+            let sourceWorkspace = try workspaceStore.readPersistedRecord(id: harness.id)
+            let sourcePlan = try harness.context.planning.plans.read(id: harness.id)
+            let reconnectStore = DoryRuntimeReconnectRecordStore(root: harness.fixture.machineConfiguration.stateDirectory)
+            let sourceReconnect = sourceState == "stopped" ? nil : try reconnectStore.read(machineID: harness.id)
+            let before = try harness.journal.list().count
+            let operationID = UUID()
+            let result = try harness.drive {
+                try manager.restoreSnapshot(machineID: harness.id, snapshotID: snapshot.id,
+                                            operationID: operationID)
+            }
+            #expect(result.state.rawValue == sourceState)
+            #expect(result.activeOperationID == nil)
+            #expect(result.failure == nil)
+            #expect(result.shares == source.shares)
+            #expect(result.environment.isEmpty)
+            #expect(try harness.diskPrefix() == harness.sourceDiskPrefix)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: harness.managedKernelPath)) == harness.sourceKernel)
+            let targetWorkspace = try workspaceStore.readPersistedRecord(id: harness.id)
+            #expect(targetWorkspace.definition.lifecycle.revision == sourceWorkspace.definition.lifecycle.revision + 1)
+            let plan = try harness.context.planning.plans.read(id: harness.id)
+            #expect(plan == result.runtimeIdentity.resolvedPlan)
+            #expect(plan.planRevision > sourcePlan.planRevision)
+            #expect(try harness.context.planning.resourceLedger.snapshot().leases.first {
+                $0.binding.machineID == harness.id
+            }?.state == (sourceState == "stopped" ? .stopped : .running))
+            #expect(try harness.journal.list().count == before + 1)
+            let operation = try harness.journal.read(operationID)
+            #expect(operation.plan.kind == .workspaceRestore)
+            #expect(operation.state.status == .completed)
+            #expect(operation.state.result == .succeeded)
+            do {
+                let lease = try harness.journal.acquire(operationID)
+                let root = try lease.readWorkspaceLifecycleOperation()
+                #expect(root.kind == .restoring)
+                #expect(root.targetResourceID == snapshot.id)
+                #expect(root.source.state.rawValue == sourceState)
+                #expect(root.target.state.rawValue == sourceState)
+                #expect(root.source.definitionRevision == sourceWorkspace.definition.lifecycle.revision)
+                #expect(root.target.definitionRevision == targetWorkspace.definition.lifecycle.revision)
+                #expect(try root.source.configurationAuthority?.canonicalDefinitionSHA256
+                    == DoryMachineDesktopUpdateJournal.digest(sourceWorkspace.definition))
+                #expect(try root.target.configurationAuthority?.canonicalDefinitionSHA256
+                    == DoryMachineDesktopUpdateJournal.digest(targetWorkspace.definition))
+                let restore = try DoryMachineSnapshotRestoreJournal.read(from: lease)
+                #expect(restore.snapshot == snapshot)
+                #expect(restore.operationID == operationID)
+                let recordedPlan: DoryResolvedMachinePlan? = try lease.snapshotRestoreCheckpoint(.plan)
+                #expect(recordedPlan == plan)
+            }
+            let targetReconnect = sourceState == "stopped" ? nil : try reconnectStore.read(machineID: harness.id)
+            if let targetReconnect {
+                #expect(targetReconnect.launchIdentity.operationID == operationID.uuidString.lowercased())
+                #expect(targetReconnect.launchIdentity.resolvedPlanSHA256 == result.runtimeIdentity.resolvedPlanSHA256)
+                #expect(targetReconnect.processIdentity != sourceReconnect?.processIdentity)
+                #expect(targetReconnect.processIdentity?.matchesCurrentProcess() == true)
+            } else {
+                #expect(result.pid == nil)
+            }
+            let replay = try manager.restoreSnapshot(machineID: harness.id, snapshotID: snapshot.id,
+                                                     operationID: operationID)
+            #expect(replay == result)
+            #expect(try harness.context.planning.plans.read(id: harness.id) == plan)
+            #expect(try workspaceStore.readPersistedRecord(id: harness.id) == targetWorkspace)
+            #expect(try manager.listSnapshots(machineID: harness.id) == snapshots)
+            #expect(try harness.journal.list().count == before + 1)
+            if let targetReconnect {
+                #expect(try reconnectStore.read(machineID: harness.id) == targetReconnect)
+            }
+            #expect(harness.agent.applyCount == 0)
+            #expect(harness.agent.controlledPushCount == 0)
+            #expect(source.state.rawValue == sourceState)
+        }
+    }
+
+    @Test("stopped restore completion retry preserves its qualified plan")
+    func productionSnapshotRestoreCompletionReplay() throws {
+        try withProductionIntegrationTestStack {
+            let harness = try ProductionDesktopUpdateHarness(sourceState: "stopped")
+            defer { harness.cleanup() }
+            let snapshot = try harness.prepareRestoreSource(state: "stopped")
+            let manager = harness.context.machineManager
+            let operationID = UUID()
+            let before = try harness.journal.list().count
+            let observed = ConfigurationUpdateFaultObservation()
+            manager.installLifecycleFaultInjectorForTesting { point in
+                if point == .completionBeforeJournalWrite(.restoring), observed.recordOnce() {
+                    throw MachineLifecycleInjectedCrash()
+                }
+            }
+            #expect(throws: (any Error).self) {
+                try harness.drive {
+                    try manager.restoreSnapshot(machineID: harness.id, snapshotID: snapshot.id,
+                                                operationID: operationID)
+                }
+            }
+            try #require(observed.wasObserved)
+            #expect(try harness.journal.read(operationID).state.status != .completed)
+            let plan = try harness.context.planning.plans.read(id: harness.id)
+            let workspace = try DoryWorkspaceRepository(root: harness.fixture.machineConfiguration.stateDirectory)
+                .readPersistedRecord(id: harness.id)
+            manager.installLifecycleFaultInjectorForTesting { _ in }
+            let result = try harness.drive {
+                try manager.restoreSnapshot(machineID: harness.id, snapshotID: snapshot.id,
+                                            operationID: operationID)
+            }
+            #expect(result.state == .stopped)
+            #expect(result.pid == nil)
+            #expect(result.activeOperationID == nil)
+            #expect(result.failure == nil)
+            #expect(try harness.context.planning.plans.read(id: harness.id) == plan)
+            #expect(result.runtimeIdentity.resolvedPlan == plan)
+            #expect(try DoryWorkspaceRepository(root: harness.fixture.machineConfiguration.stateDirectory)
+                .readPersistedRecord(id: harness.id) == workspace)
+            #expect(try harness.diskPrefix() == harness.sourceDiskPrefix)
+            #expect(try harness.journal.list().count == before + 1)
+            #expect(try harness.journal.read(operationID).state.status == .completed)
+            #expect(try harness.context.planning.resourceLedger.snapshot().leases.first {
+                $0.binding.machineID == harness.id
+            }?.state == .stopped)
+        }
+    }
+
+    @Test("fresh production activation resumes the original snapshot restore",
+          arguments: ProductionSnapshotRestoreRecoveryCase.all)
+    func productionSnapshotRestoreFaultRecovery(scenario: ProductionSnapshotRestoreRecoveryCase) throws {
+        try withProductionIntegrationTestStack {
+            let harness = try ProductionDesktopUpdateHarness(sourceState: "stopped")
+            defer { harness.cleanup() }
+            let snapshot = try harness.prepareRestoreSource(state: scenario.sourceState)
+            let manager = harness.context.machineManager
+            let operationID = UUID()
+            let before = try harness.journal.list().count
+            let observed = ConfigurationUpdateFaultObservation()
+            manager.installLifecycleFaultInjectorForTesting { point in
+                if point == scenario.point, observed.recordOnce() { throw MachineLifecycleInjectedCrash() }
+            }
+            #expect(throws: (any Error).self) {
+                try harness.drive {
+                    try manager.restoreSnapshot(machineID: harness.id, snapshotID: snapshot.id,
+                                                operationID: operationID)
+                }
+            }
+            try #require(observed.wasObserved)
+            #expect(try harness.journal.read(operationID).state.status != .completed)
+            let previousPlan = try harness.context.planning.plans.read(id: harness.id)
+            let reconnectStore = DoryRuntimeReconnectRecordStore(root: harness.fixture.machineConfiguration.stateDirectory)
+            let qualifiedReconnect = scenario.qualified && scenario.sourceState != "stopped"
+                ? try reconnectStore.read(machineID: harness.id) : nil
+            let activation = harness.fixture.factory.activate(
+                store: harness.fixture.store, machineConfiguration: harness.fixture.machineConfiguration,
+                appVersion: harness.fixture.appVersion, publicKey: harness.fixture.publicKey,
+                expectedArchitecture: "arm64")
+            guard case .activated(let recovered) = activation else {
+                throw MachineManagerError.persistence("Snapshot restore recovery failed: \(activation)")
+            }
+            defer { try? recovered.machineManager.delete(id: harness.id) }
+            let result = try #require(recovered.machineManager.status(id: harness.id))
+            #expect(result.state.rawValue == scenario.sourceState)
+            #expect(result.activeOperationID == nil)
+            #expect(result.failure == nil)
+            #expect(try harness.diskPrefix() == harness.sourceDiskPrefix)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: harness.managedKernelPath)) == harness.sourceKernel)
+            let workspace = try DoryWorkspaceRepository(root: harness.fixture.machineConfiguration.stateDirectory)
+                .readPersistedRecord(id: harness.id)
+            #expect(workspace.definition.lifecycle.revision == harness.sourceWorkspace.definition.lifecycle.revision + 1)
+            let plan = try recovered.planning.plans.read(id: harness.id)
+            #expect(result.runtimeIdentity.resolvedPlan == plan)
+            if scenario.qualified { #expect(plan == previousPlan) }
+            #expect(try recovered.planning.resourceLedger.snapshot().leases.first {
+                $0.binding.machineID == harness.id
+            }?.state == (scenario.sourceState == "stopped" ? .stopped : .running))
+            if let qualifiedReconnect {
+                let reconnect = try reconnectStore.read(machineID: harness.id)
+                #expect(reconnect.processIdentity == qualifiedReconnect.processIdentity)
+                #expect(reconnect.launchIdentity == qualifiedReconnect.launchIdentity)
+            }
+            if scenario.sourceState != "stopped" {
+                #expect(try reconnectStore.read(machineID: harness.id).launchIdentity.operationID
+                    == operationID.uuidString.lowercased())
+            }
+            #expect(try harness.journal.list().count == before + 1)
+            #expect(try harness.journal.read(operationID).state.status == .completed)
+            let replay = try recovered.machineManager.restoreSnapshot(
+                machineID: harness.id, snapshotID: snapshot.id, operationID: operationID)
+            #expect(replay == result)
+            #expect(try recovered.planning.plans.read(id: harness.id) == plan)
+            #expect(try recovered.machineManager.listSnapshots(machineID: harness.id) == [snapshot])
+            #expect(try FileManager.default.contentsOfDirectory(atPath: harness.directory)
+                .contains { $0.hasPrefix(".restore-" + operationID.uuidString.lowercased()) } == false)
+            #expect(try harness.journal.list().count == before + 1)
+        }
+    }
+}
+
+struct ProductionSnapshotRestoreRecoveryCase: Sendable {
+    let point: MachineLifecycleFaultPoint
+    let sourceState: String
+    var qualified: Bool { point == .completionBeforeJournalWrite(.restoring) }
+    static let all: [Self] = [
+        .init(point: .restoreAfterBackups, sourceState: "stopped"),
+        .init(point: .restoreAfterBackups, sourceState: "paused"),
+        .init(point: .completionBeforeJournalWrite(.restoring), sourceState: "stopped"),
+        .init(point: .completionBeforeJournalWrite(.restoring), sourceState: "running"),
+    ]
+}
+
+private extension ProductionDesktopUpdateHarness {
+    func prepareRestoreSource(state sourceState: String) throws -> DoryMachineSnapshot {
+        let manager = context.machineManager
+        let harness = self
+        let snapshot = try harness.drive {
+            try manager.snapshot(id: harness.id, note: "separate source snapshot",
+                                 snapshotID: "restore-source")
+        }
+        let disk = try FileHandle(forWritingTo: URL(fileURLWithPath: harness.directory + "/rootfs.ext4"))
+        try disk.write(contentsOf: Data("workload-after-snapshot".utf8))
+        try disk.synchronize()
+        try disk.close()
+        #expect(try harness.diskPrefix() != harness.sourceDiskPrefix)
+        if sourceState != "stopped" {
+            try harness.drive {
+                _ = try manager.start(id: harness.id)
+                let deadline = Date().addingTimeInterval(15)
+                while manager.status(id: harness.id)?.state != .running {
+                    guard manager.status(id: harness.id)?.state != .failed, Date() < deadline else {
+                        throw MachineManagerError.persistence("restore source did not become ready")
+                    }
+                    Thread.sleep(forTimeInterval: 0.01)
+                }
+            }
+            // A lifecycle command also waits for the asynchronous start root to settle.
+            _ = try manager.pause(id: harness.id)
+            if sourceState == "running" { _ = try manager.resume(id: harness.id) }
+        }
+        return snapshot
+    }
+}
+
+final class ProductionDesktopUpdateHarness: @unchecked Sendable {
     let id = "desktop-root"
     let fixture: ProductionTrustFixture
     let context: DoryDaemonVirtualMachineProductionActivationContext
-    let agent: ProductionDesktopAgent
+    fileprivate let agent: ProductionDesktopAgent
     let request: DoryDesktopUpdateRequest
     let journal: DoryOperationJournalStore
     let source: DoryMachineStatus
@@ -2427,12 +2687,19 @@ private final class ProductionDesktopUpdateHarness: @unchecked Sendable {
     let sourceKernel: Data
     var directory: String { fixture.machineConfiguration.stateDirectory + "/" + id }
     var managedKernelPath: String { directory + "/kernel" }
+    var snapshotFreezeReceiptIDs: [String] { agent.snapshotFreezeReceiptIDs }
+    var snapshotThawReceiptIDs: [String] { agent.snapshotThawReceiptIDs }
 
-    init(sourceState: String, failApply: Bool = false, duplicateReceipt: Bool = false) throws {
+    init(sourceState: String, failApply: Bool = false, duplicateReceipt: Bool = false,
+         diskByteCount: UInt64 = 32 * 1_024 * 1_024 * 1_024,
+         snapshotQuiesceFailure: Bool = false) throws {
         let id = "desktop-root"
-        let agent = ProductionDesktopAgent(failApply: failApply, duplicateReceipt: duplicateReceipt)
+        let agent = ProductionDesktopAgent(failApply: failApply, duplicateReceipt: duplicateReceipt,
+                                           snapshotQuiesceFailure: snapshotQuiesceFailure)
         self.agent = agent
-        let fixture = try ProductionTrustFixture(authenticatedRuntime: true, agentConnector: { _ in agent })
+        let fixture = try ProductionTrustFixture(authenticatedRuntime: true,
+                                                 snapshotQuiesceFailure: snapshotQuiesceFailure,
+                                                 agentConnector: { _ in agent })
         self.fixture = fixture
         var initialized = false
         var activatedManager: MachineManager?
@@ -2452,7 +2719,7 @@ private final class ProductionDesktopUpdateHarness: @unchecked Sendable {
         let disk = fixture.root.appendingPathComponent("desktop.raw")
         try Data("desktop-before".utf8).write(to: disk)
         let diskHandle = try FileHandle(forWritingTo: disk)
-        try diskHandle.truncate(atOffset: 32 * 1_024 * 1_024 * 1_024)
+        try diskHandle.truncate(atOffset: diskByteCount)
         try diskHandle.close()
         let reply = LockedPlanningCreateReply()
         let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
@@ -2564,7 +2831,8 @@ final class DoryProductionDesktopRuntimeTests: XCTestCase {
         try sendVmmHandoff(path: handoffSocket, ready: .init(
             machineID: identity.machineID, operationID: identity.operationID,
             agentBuild: ProductionDesktopAgent.build, agentProtocolVersion: DoryCore.protocolVersion(),
-            agentCapabilities: ProductionDesktopAgent.capabilities,
+            agentCapabilities: ProductionDesktopAgent.capabilities(
+                snapshotQuiesceFailure: environment["DORY_DESKTOP_TEST_SNAPSHOT_QUIESCE_FAILURE"] == "1"),
             agentSocketPath: "/run/dory-desktop-agent.sock", controlSocketPath: controlSocket,
             graphicsSelection: .resolvedSoftware(operationID: operationID,
                 resolvedPlanSHA256: identity.resolvedPlanSHA256, planRevision: identity.planRevision),
@@ -2606,14 +2874,24 @@ private final class ProductionDesktopCompletion<T: Sendable>: @unchecked Sendabl
 private final class ProductionDesktopAgent: AgentControlClient, @unchecked Sendable {
     static let build = "dory-agent/production-desktop-test"
     static let inputSHA256 = String(repeating: "a", count: 64)
-    static let capabilities = [
-        DoryAgentCapability(id: "clock-sync", version: 1),
-        DoryAgentCapability(id: "exec", version: 1),
-        DoryAgentCapability(id: "sync-push", version: 2),
-    ]
+    static func capabilities(snapshotQuiesceFailure: Bool) -> [DoryAgentCapability] {
+        let base = [
+            DoryAgentCapability(id: "clock-sync", version: 1),
+            DoryAgentCapability(id: "exec", version: 1),
+            DoryAgentCapability(id: "sync-push", version: 2),
+        ]
+        let capabilities = snapshotQuiesceFailure
+            ? base + [DoryAgentCapability(id: "snapshot-quiesce", version: 2)] : base
+        return capabilities.sorted { $0.id < $1.id }
+    }
     private let lock = NSLock()
     private let failApply: Bool
     private let duplicateReceipt: Bool
+    private let snapshotQuiesceFailure: Bool
+    private var freezeReceiptIDs: [String] = []
+    private var thawReceiptIDs: [String] = []
+    var snapshotFreezeReceiptIDs: [String] { lock.withLock { freezeReceiptIDs } }
+    var snapshotThawReceiptIDs: [String] { lock.withLock { thawReceiptIDs } }
     private var diskPath = ""
     private var transferredSHA256 = ""
     private var applications = 0
@@ -2631,14 +2909,26 @@ private final class ProductionDesktopAgent: AgentControlClient, @unchecked Senda
     var applyWasCancelled: Bool { lock.withLock { blockedControl?.isCancelled == true } }
     func blockControlledApply() { lock.withLock { blockApply = true } }
     func releaseControlledApply() { lock.withLock { releaseApply = true } }
-    init(failApply: Bool, duplicateReceipt: Bool) {
+    init(failApply: Bool, duplicateReceipt: Bool, snapshotQuiesceFailure: Bool) {
         self.failApply = failApply
         self.duplicateReceipt = duplicateReceipt
+        self.snapshotQuiesceFailure = snapshotQuiesceFailure
     }
     func setDiskPath(_ path: String) { lock.withLock { diskPath = path } }
     func info() throws -> DoryAgentInfo {
         .init(protocolVersion: DoryCore.protocolVersion(), kernel: "Linux desktop fixture",
-              agentBuild: Self.build, uptimeSeconds: 1, capabilities: Self.capabilities)
+              agentBuild: Self.build, uptimeSeconds: 1,
+              capabilities: Self.capabilities(snapshotQuiesceFailure: snapshotQuiesceFailure))
+    }
+    func snapshotFreeze(receiptID: String) throws -> String {
+        guard snapshotQuiesceFailure else { throw AgentControlError.capabilityUnavailable("snapshot-quiesce") }
+        lock.withLock { freezeReceiptIDs.append(receiptID) }
+        throw MachineManagerError.persistence("injected guest snapshot freeze failure")
+    }
+    func snapshotThaw(receiptID: String) throws {
+        guard snapshotQuiesceFailure else { throw AgentControlError.capabilityUnavailable("snapshot-quiesce") }
+        lock.withLock { thawReceiptIDs.append(receiptID) }
+        throw MachineManagerError.persistence("injected guest snapshot thaw failure")
     }
     func clockSync(hostEpochNs: Int64) throws -> Bool { true }
     func portsWatch() throws -> DoryPortsSnapshot { .init(ports: [], added: [], removed: []) }
@@ -2734,7 +3024,7 @@ private final class ConfigurationUpdateFaultObservation: @unchecked Sendable {
     var wasObserved: Bool { lock.withLock { observed } }
 }
 
-private final class LockedPlanningCreateReply: @unchecked Sendable {
+final class LockedPlanningCreateReply: @unchecked Sendable {
     struct Value {
         var ok = false
         var body: NSDictionary = [:]
@@ -3062,7 +3352,7 @@ private func portableARM64ISO9660() -> Data {
     return image
 }
 
-private final class ProductionTrustFixture: @unchecked Sendable {
+final class ProductionTrustFixture: @unchecked Sendable {
     let root: URL
     let drive: DoryDataDrive
     let store: DoryComponentStore
@@ -3100,11 +3390,11 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             freeStorageBytes: 512 * 1_024 * 1_024 * 1_024
         )
     )
-    let hostState: ProductionHostState
+    fileprivate let hostState: ProductionHostState
     var factory: DoryDaemonVirtualMachineProductionTrustFactory!
     var publicKey: String { privateKey.publicKey.rawRepresentation.base64EncodedString() }
 
-    init(
+    fileprivate init(
         catalogSchemaVersion: Int = 2,
         catalogReleaseVersion: String = "1.0.0",
         catalogGeneratedAt: String = "2026-08-20T12:00:00.000Z",
@@ -3116,6 +3406,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         trustFloorActivationState: ProductionTrustFloorActivationState? = nil,
         helperLifetimeSeconds: UInt = 30,
         authenticatedRuntime: Bool = false,
+        snapshotQuiesceFailure: Bool = false,
         agentConnector: @escaping MachineManager.AgentConnector = {
             try LocalAgentControl.connect(socketPath: $0)
         }
@@ -3133,6 +3424,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             helperData = Data(("""
             #!/bin/sh
             \(developer)export DORY_DESKTOP_TEST_CONTROL_SOCKET=\(quote(fixtureRoot.appendingPathComponent("control.sock").path))
+            export DORY_DESKTOP_TEST_SNAPSHOT_QUIESCE_FAILURE=\(snapshotQuiesceFailure ? "1" : "0")
             while [ "$#" -gt 0 ]; do
                 case "$1" in
                     --handoff-sock) shift; export DORY_DESKTOP_TEST_HANDOFF_SOCKET="$1" ;;
