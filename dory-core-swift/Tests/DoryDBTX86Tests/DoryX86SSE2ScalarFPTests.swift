@@ -16,7 +16,8 @@ import Testing
   ) throws -> DoryX86ArchitecturalState {
     var floatingPoint = try DoryX86FloatingPointState()
     try configuring(&floatingPoint)
-    return try DoryX86ArchitecturalState(rip: rip, floatingPoint: floatingPoint)
+    return try DoryX86ArchitecturalState(rip: rip,
+      control: .init(cr4: 1 << 9), floatingPoint: floatingPoint)
   }
 
   private func ymmBytes(_ index: Int, in state: DoryX86ArchitecturalState) -> [UInt8] {

@@ -21,7 +21,8 @@ import Testing
   ) throws -> DoryX86ArchitecturalState {
     var floatingPoint = try DoryX86FloatingPointState()
     try configuring(&floatingPoint)
-    return try DoryX86ArchitecturalState(rip: rip, floatingPoint: floatingPoint)
+    return try DoryX86ArchitecturalState(rip: rip,
+      control: .init(cr4: 1 << 9), floatingPoint: floatingPoint)
   }
 
   private func ymmBytes(_ index: Int, in state: DoryX86ArchitecturalState) -> [UInt8] {
@@ -164,6 +165,7 @@ import Testing
     var current = try DoryX86ArchitecturalState(
       registers: registers,
       rip: 0x1000,
+      control: .init(cr4: 1 << 9),
       floatingPoint: {
         var fp = try DoryX86FloatingPointState()
         fp.ymm[1] = try .init(bytes: Array(32..<64), expectedByteCount: 32)
@@ -392,7 +394,8 @@ import Testing
 
     var registers = DoryX86GeneralRegisters()
     registers.rax = 0x1122_3344_5566_7788
-    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
+    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000,
+      control: .init(cr4: 1 << 9))
     current.floatingPoint.ymm[0] = try .init(
       bytes: Array(repeating: 0xAA, count: 32), expectedByteCount: 32)
     let memory = try DoryX86ByteArrayMemory(
@@ -416,7 +419,8 @@ import Testing
 
     var registers = DoryX86GeneralRegisters()
     registers.rax = 0x1122_3344_5566_7788
-    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
+    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000,
+      control: .init(cr4: 1 << 9))
     current.floatingPoint.ymm[0] = try .init(
       bytes: Array(repeating: 0xAA, count: 32), expectedByteCount: 32)
     let memory = try DoryX86ByteArrayMemory(

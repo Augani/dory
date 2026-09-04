@@ -596,6 +596,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max),
       floatingPoint: floatingPoint
     )
+    state.control.cr4 |= 1 << 9
 
     for _ in 0..<6 {
       let result = interpreter.step(state: &state, memory: memory, mode: .long64)
@@ -959,6 +960,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max),
       floatingPoint: floatingPoint
     )
+    state.control.cr4 |= 1 << 9
 
     let result = interpreter.step(state: &state, memory: memory, mode: .long64)
     guard case .retired = result else {
@@ -981,6 +983,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max),
       floatingPoint: floatingPoint
     )
+    state.control.cr4 |= 1 << 9
 
     guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64),
       case .retired = interpreter.step(state: &state, memory: memory, mode: .long64)
@@ -1001,6 +1004,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       rip: 0x2000,
       cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max)
     )
+    misalignedState.control.cr4 |= 1 << 9
     #expect(
       interpreter.step(state: &misalignedState, memory: misalignedMemory, mode: .long64)
         == .exception(
@@ -1070,6 +1074,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max),
       floatingPoint: floatingPoint
     )
+    state.control.cr4 |= 1 << 9
 
     guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64) else {
       Issue.record("register MOVSS unexpectedly faulted")
@@ -1141,6 +1146,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max),
       floatingPoint: floatingPoint
     )
+    state.control.cr4 |= 1 << 9
 
     guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64) else {
       Issue.record("ADDSS unexpectedly faulted")
@@ -1194,6 +1200,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max),
       floatingPoint: floatingPoint
     )
+    state.control.cr4 |= 1 << 9
 
     guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64) else {
       Issue.record("PADDB unexpectedly faulted")
@@ -1242,6 +1249,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       ] + .init(repeating: 0, count: 16)
     )
     var state = try DoryX86ArchitecturalState(rip: 0x1000)
+    state.control.cr4 |= 1 << 9
 
     func setVectors(_ lhs: [UInt8], _ rhs: [UInt8]) throws {
       state.floatingPoint.ymm[0] = try .init(
@@ -1283,6 +1291,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       ] + .init(repeating: 0, count: 16)
     )
     var state = try DoryX86ArchitecturalState(rip: 0x1000)
+    state.control.cr4 |= 1 << 9
     func wordBytes(_ values: [Int16]) -> [UInt8] {
       values.flatMap { Array(littleEndian(UInt64(UInt16(bitPattern: $0))).prefix(2)) }
     }
@@ -1346,6 +1355,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     floatingPoint.ymm[1] = try .init(bytes: source, expectedByteCount: 32)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rax: .max), rip: 0x1000, floatingPoint: floatingPoint)
+    state.control.cr4 |= 1 << 9
 
     _ = interpreter.step(state: &state, memory: memory, mode: .long64)
     #expect(state.registers.rax == 0b1101)
@@ -1386,6 +1396,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       rflags: [.reservedOne, .overflow, .sign, .auxiliaryCarry],
       floatingPoint: floatingPoint
     )
+    state.control.cr4 |= 1 << 9
 
     _ = interpreter.step(state: &state, memory: memory, mode: .long64)
     #expect(state.rflags.contains(.carry))
@@ -1412,6 +1423,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     floatingPoint.ymm[0] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
     floatingPoint.ymm[1] = try .init(bytes: Array(0x40..<0x60), expectedByteCount: 32)
     var state = try DoryX86ArchitecturalState(rip: 0x1000, floatingPoint: floatingPoint)
+    state.control.cr4 |= 1 << 9
 
     _ = interpreter.step(state: &state, memory: memory, mode: .long64)
     #expect(state.floatingPoint.ymm[0].bytes[0..<8] == [0, 0x40, 1, 0x41, 2, 0x42, 3, 0x43][...])
@@ -1436,6 +1448,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     floatingPoint.ymm[0] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
     floatingPoint.ymm[1] = try .init(bytes: Array(0x40..<0x60), expectedByteCount: 32)
     var state = try DoryX86ArchitecturalState(rip: 0x1000, floatingPoint: floatingPoint)
+    state.control.cr4 |= 1 << 9
 
     _ = interpreter.step(state: &state, memory: memory, mode: .long64)
     #expect(
@@ -1465,6 +1478,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       ] + .init(repeating: 0, count: 16)
     )
     var state = try DoryX86ArchitecturalState(registers: .init(rax: 42), rip: 0x1000)
+    state.control.cr4 |= 1 << 9
 
     _ = interpreter.step(state: &state, memory: memory, mode: .long64)
     let doubleBits = try memoryInteger(bytes: Array(state.floatingPoint.ymm[0].bytes[0..<8]))
@@ -1520,6 +1534,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     floatingPoint.ymm[3] = try .init(
       bytes: Array(repeating: 0xFF, count: 32), expectedByteCount: 32)
     var state = try DoryX86ArchitecturalState(rip: 0x1000, floatingPoint: floatingPoint)
+    state.control.cr4 |= 1 << 9
 
     _ = interpreter.step(state: &state, memory: memory, mode: .long64)
     #expect(
@@ -1562,6 +1577,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       rflags: flags,
       floatingPoint: floatingPoint
     )
+    state.control.cr4 |= 1 << 9
 
     for _ in 0..<4 {
       guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64)
@@ -1623,6 +1639,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       rflags: flags,
       floatingPoint: floatingPoint
     )
+    state.control.cr4 |= 1 << 9
 
     _ = interpreter.step(state: &state, memory: memory, mode: .long64)
     _ = interpreter.step(state: &state, memory: memory, mode: .long64)
@@ -1651,6 +1668,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     floatingPoint.ymm[4] = try vectorRegister(doublewords: [2, 99, 4, 99])
     floatingPoint.ymm[5] = try vectorRegister(words: [2, 7, 0xFFFF, 8, 3, 9, 0xFFFE, 10])
     var state = try DoryX86ArchitecturalState(rip: 0x1000, floatingPoint: floatingPoint)
+    state.control.cr4 |= 1 << 9
 
     _ = interpreter.step(state: &state, memory: memory, mode: .long64)
     #expect(vectorWords(state.floatingPoint.ymm[0]) == [6, 0, 0xFFFC, 0, 0x8000, 0, 42, 0])

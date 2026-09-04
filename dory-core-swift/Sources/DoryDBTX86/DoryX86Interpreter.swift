@@ -5,6 +5,7 @@ public struct DoryX86Exception: Error, Codable, Sendable, Hashable {
     case divideError
     case debug
     case invalidOpcode
+    case deviceNotAvailable
     case segmentNotPresent
     case stackSegment
     case generalProtection
@@ -160,6 +161,9 @@ public struct DoryX86Interpreter: Sendable {
 
     guard DoryX86InstructionFeaturePolicy.permits(instruction, profile: profile) else {
       return invalidOpcode(at: originalRIP)
+    }
+    if let fault = simdExecutionStateFault(instruction, state: state, mode: mode) {
+      return fault
     }
 
     do {
@@ -3262,6 +3266,53 @@ public struct DoryX86Interpreter: Sendable {
           instructionPointer: originalRIP
         ))
     }
+  }
+
+  private func simdExecutionStateFault(
+    _ instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState,
+    mode: DoryX86ExecutionMode
+  ) -> DoryX86InterpreterResult? {
+    if instruction.prefixes.vex != nil {
+      // Only admitted AVX encodings reach this point. Intel SDM Vol. 2A §2.5
+      // Types 1–7 use OSXSAVE/XCR0, not legacy SSE's EM/OSFXSR conditions.
+      let virtual8086 = mode != .long64 && state.control.efer & (1 << 10) == 0
+        && state.rflags.contains(.virtual8086)
+      guard mode != .real16, !virtual8086,
+        state.control.cr4 & (1 << 18) != 0, state.control.xcr0 & 6 == 6
+      else { return invalidOpcode(at: instruction.address) }
+    } else {
+      let usesSSEState: Bool
+      switch instruction.operation {
+      case .loadMXCSR, .storeMXCSR, .moveVector128, .moveVectorScalar, .moveVectorQwordHalf,
+        .duplicateVectorScalar, .shufflePackedBytes, .alignPackedBytes, .testPackedBits,
+        .extendPackedDwordToQword, .extendPackedByteToQword, .comparePackedQwords,
+        .insertPackedQword, .unpackVector, .convertPackedDoubleToDword, .convertPackedDwordToDouble,
+        .packedCompareStringIndex, .moveIntegerToVector, .moveVectorToInteger, .vectorBitwise,
+        .vectorFloatingBinary, .scalarCompare, .scalarConvert, .scalarSquareRoot,
+        .vectorIntegerBinary, .vectorIntegerShift, .vectorByteShift, .vectorFloatingCompare,
+        .vectorIntegerInterleave, .vectorIntegerPack, .vectorShuffle,
+        .convertIntegerToScalarFloat, .convertScalarFloatToInteger:
+        usesSSEState = true
+      case .insertPackedWord(_, _, _, let mmx), .extractPackedWord(_, _, _, let mmx):
+        usesSSEState = !mmx
+      case .moveVectorMask(_, _, _, let vectorByteCount):
+        usesSSEState = vectorByteCount == 16
+      default:
+        // x87, MMX, and FXSAVE/FXRSTOR have different enable-state rules.
+        // PAUSE/PREFETCH/fences/MOVNTI/CLFLUSH do not use SSE state.
+        return nil
+      }
+      guard usesSSEState else { return nil }
+      // Vol. 3A Tables 16-1/16-2 explicitly give these #UD conditions priority
+      // over TS (#NM), with TS marked don't-care in the #UD rows.
+      guard state.control.cr0 & (1 << 2) == 0, state.control.cr4 & (1 << 9) != 0 else {
+        return invalidOpcode(at: instruction.address)
+      }
+    }
+    guard state.control.cr0 & (1 << 3) != 0 else { return nil }
+    return .exception(.init(kind: .deviceNotAvailable, vector: 7,
+      instructionPointer: instruction.address))
   }
 
   private func floatingPointTransferByteCount(mode: DoryX86ExecutionMode) -> Int {

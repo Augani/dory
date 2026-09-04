@@ -105,7 +105,8 @@ import Testing
     // A real admitted register operation can execute only with the explicit synthetic profile.
     let bytes: [UInt8] = [0xC5, 0xFC, 0x57, 0xC0] // VXORPS YMM0,YMM0,YMM0
     let memory = FeaturePolicyOperandMemory(code: bytes)
-    var state = try DoryX86ArchitecturalState(rip: 0x1000)
+    var state = try DoryX86ArchitecturalState(rip: 0x1000,
+      control: .init(cr4: (1 << 9) | (1 << 18), xcr0: 7))
     state.floatingPoint.ymm[0] = try .init(bytes: .init(repeating: 0xA5, count: 32), expectedByteCount: 32)
     let instruction = try decoder.decode(bytes, at: state.rip, mode: .long64)
     #expect(DoryX86Interpreter(profile: avx).step(state: &state, memory: memory, mode: .long64) == .retired(instruction))

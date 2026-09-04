@@ -21,7 +21,8 @@ import Testing
   ) throws -> DoryX86ArchitecturalState {
     var floatingPoint = try DoryX86FloatingPointState()
     try configuring(&floatingPoint)
-    return try DoryX86ArchitecturalState(rip: rip, floatingPoint: floatingPoint)
+    return try DoryX86ArchitecturalState(rip: rip,
+      control: .init(cr4: (1 << 9) | (1 << 18), xcr0: 7), floatingPoint: floatingPoint)
   }
 
   private func ymmBytes(_ index: Int, in state: DoryX86ArchitecturalState) -> [UInt8] {
@@ -79,7 +80,8 @@ import Testing
 
     var registers = DoryX86GeneralRegisters()
     registers.rbx = 0x2000
-    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
+    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000,
+      control: .init(cr4: (1 << 9) | (1 << 18), xcr0: 7))
     let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [0xC5, 0xF8, 0x10, 0x03] + .init(repeating: 0, count: 0x1100))
@@ -101,7 +103,8 @@ import Testing
 
     var registers = DoryX86GeneralRegisters()
     registers.rbx = 0x2000
-    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
+    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000,
+      control: .init(cr4: (1 << 9) | (1 << 18), xcr0: 7))
     let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [0xC5, 0xFC, 0x10, 0x03] + .init(repeating: 0, count: 0x1100))
@@ -229,7 +232,8 @@ import Testing
 
     var registers = DoryX86GeneralRegisters()
     registers.rax = 0x1122_3344_5566_7788
-    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
+    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000,
+      control: .init(cr4: (1 << 9) | (1 << 18), xcr0: 7))
     let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0xC4, 0xE1, 0xF9, 0x6E, 0xC0])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
@@ -339,7 +343,8 @@ import Testing
 
     var registers = DoryX86GeneralRegisters()
     registers.rbx = 0x2100  // aligned to 32
-    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
+    var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000,
+      control: .init(cr4: (1 << 9) | (1 << 18), xcr0: 7))
     current.floatingPoint.ymm[0] = try .init(
       bytes: bytes(0..<32), expectedByteCount: 32)
     // Backing must cover 0x1000..0x2120 (0x1120 bytes)
