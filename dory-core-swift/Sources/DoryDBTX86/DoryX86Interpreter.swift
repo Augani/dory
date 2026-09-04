@@ -766,13 +766,27 @@ public struct DoryX86Interpreter: Sendable {
         setX87Tag(first, secondTag, state: &state.floatingPoint)
         setX87Tag(second, firstTag, state: &state.floatingPoint)
       case .x87Binary(let operation, let destination, let source, let pop):
-        let lhs = readX87Register(destination, state: state.floatingPoint)
         let rhs = try readX87(
           source,
           instruction: instruction,
           state: state,
           memory: executionMemory
         )
+        if let fault = DoryX86X87Stack.binaryFault(
+          destination: destination, source: source, state: state.floatingPoint
+        ) {
+          // SDM Vol. 1 §8.5.1.1: a masked stack underflow writes real
+          // indefinite and completes a requested pop. An unmasked underflow
+          // changes status only, leaving the destination, tags and TOP intact.
+          guard DoryX86X87Stack.record(
+            fault, instruction: instruction, state: &state.floatingPoint
+          ) else { break }
+          writeX87Register(
+            destination, value: DoryX86X87Stack.indefinite, state: &state.floatingPoint)
+          if pop { popX87(state: &state.floatingPoint) }
+          break
+        }
+        let lhs = readX87Register(destination, state: state.floatingPoint)
         let rounding = x87Rounding(state.floatingPoint)
         let precision = x87Precision(state.floatingPoint)
         let result: DoryX86ExtendedFloat =
@@ -799,13 +813,27 @@ public struct DoryX86Interpreter: Sendable {
         writeX87Register(destination, value: result, state: &state.floatingPoint)
         if pop { popX87(state: &state.floatingPoint) }
       case .compareX87(let source, let popCount, let ordered, let setIntegerFlags):
-        let lhs = readX87Register(0, state: state.floatingPoint)
         let rhs = try readX87(
           source,
           instruction: instruction,
           state: state,
           memory: executionMemory
         )
+        if let fault = DoryX86X87Stack.binaryFault(
+          destination: 0, source: source, state: state.floatingPoint
+        ) {
+          // The masked response is unordered and completes FCOMP/FCOMPP's
+          // requested pops. The unmasked response preserves condition codes,
+          // integer flags, operands, tags and TOP.
+          guard DoryX86X87Stack.record(
+            fault, instruction: instruction, state: &state.floatingPoint
+          ) else { break }
+          setX87Comparison(
+            .unordered, integerFlags: setIntegerFlags, state: &state)
+          for _ in 0..<popCount { popX87(state: &state.floatingPoint) }
+          break
+        }
+        let lhs = readX87Register(0, state: state.floatingPoint)
         let relation = x87FloatingComparison(lhs, rhs)
         if lhs.isUnsupported || rhs.isUnsupported {
           // Unsupported operands raise #IA for FCOM and FUCOM families alike.
@@ -817,31 +845,7 @@ public struct DoryX86Interpreter: Sendable {
           // as invalid. Masked invalid produces the ordinary unordered result.
           guard recordX87Exceptions(1, state: &state.floatingPoint) else { break }
         }
-        if setIntegerFlags {
-          state.rflags.remove([.overflow, .sign, .zero, .auxiliaryCarry, .parity, .carry])
-          switch relation {
-          case .greater:
-            break
-          case .less:
-            state.rflags.insert(.carry)
-          case .equal:
-            state.rflags.insert(.zero)
-          case .unordered:
-            state.rflags.insert([.zero, .parity, .carry])
-          }
-        } else {
-          state.floatingPoint.x87StatusWord &= ~UInt16(0x4500)
-          switch relation {
-          case .greater:
-            break
-          case .less:
-            state.floatingPoint.x87StatusWord |= 0x0100
-          case .equal:
-            state.floatingPoint.x87StatusWord |= 0x4000
-          case .unordered:
-            state.floatingPoint.x87StatusWord |= 0x4500
-          }
-        }
+        setX87Comparison(relation, integerFlags: setIntegerFlags, state: &state)
         for _ in 0..<popCount { popX87(state: &state.floatingPoint) }
       case .x87Special(let operation):
         if DoryX86X87Stack.isConstantLoad(operation),
@@ -4400,6 +4404,31 @@ public struct DoryX86Interpreter: Sendable {
       state.x87StatusWord |= 0x4000
     case .unordered:
       state.x87StatusWord |= 0x4500
+    }
+  }
+
+  private func setX87Comparison(
+    _ relation: FloatingComparison,
+    integerFlags: Bool,
+    state: inout DoryX86ArchitecturalState
+  ) {
+    // FCOM/FUCOM and FCOMI/FUCOMI define C1 as zero after a completed
+    // comparison, including a masked invalid or stack response.
+    state.floatingPoint.x87StatusWord &= ~UInt16(0x0200)
+    if integerFlags {
+      state.rflags.remove([.overflow, .sign, .zero, .auxiliaryCarry, .parity, .carry])
+      switch relation {
+      case .greater:
+        break
+      case .less:
+        state.rflags.insert(.carry)
+      case .equal:
+        state.rflags.insert(.zero)
+      case .unordered:
+        state.rflags.insert([.zero, .parity, .carry])
+      }
+    } else {
+      setX87ComparisonStatus(relation, state: &state.floatingPoint)
     }
   }
 

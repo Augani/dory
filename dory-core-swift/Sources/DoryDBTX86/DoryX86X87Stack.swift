@@ -1,6 +1,7 @@
 // Intel SDM092 Vol. 1 §§4.8.3.7, 4.9.2, 8.5.1.1 and 8.7.1.
-// This helper covers transfer/constant-load stack faults. Arithmetic, compares,
-// conditional moves and transcendental stack responses are separate work.
+// This helper covers transfer/constant-load and binary arithmetic/comparison
+// stack faults. Conditional moves and transcendental stack responses remain
+// separate work.
 // Suppressed-store fault priority is a Dory compatibility choice correlated with
 // https://github.com/bochs-emu/Bochs/blob/master/bochs/cpu/fpu/fpu_load_store.cc
 // rather than a local physical-reference qualification.
@@ -21,6 +22,19 @@ enum DoryX86X87Stack {
     // SDM §4.9.2 explicitly gives source underflow priority over stack overflow.
     if let source, case .register(let register) = source, isEmpty(register, state: state) { return .underflow }
     return isEmpty(7, state: state) ? nil : .overflow
+  }
+
+  /// Binary arithmetic and comparisons consume their destination and any
+  /// register source. Memory-source accessibility is checked by the caller
+  /// before this tag decision so a data fault cannot acquire x87 side effects.
+  static func binaryFault(
+    destination: UInt8, source: DoryX87Operand, state: DoryX86FloatingPointState
+  ) -> Fault? {
+    if isEmpty(destination, state: state) { return .underflow }
+    if case .register(let register) = source, isEmpty(register, state: state) {
+      return .underflow
+    }
+    return nil
   }
 
   /// Records a generated stack exception and returns whether IM permits its
