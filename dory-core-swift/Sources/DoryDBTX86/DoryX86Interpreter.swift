@@ -1249,15 +1249,20 @@ public struct DoryX86Interpreter: Sendable {
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
       case .insertPackedWord(let destination, let source, let index, let mmx):
-        // PINSRW: insert a word from GPR/memory into XMM at selected word index.
         let value = try read(
           source, instruction: instruction, state: state, memory: executionMemory)
         let wordBytes = littleEndian(value, width: .word)
-        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
-        let offset = Int(index) * 2
+        var registerBytes = mmx
+          ? Array(state.floatingPoint.x87[Int(destination)].bytes.prefix(8))
+          : state.floatingPoint.ymm[Int(destination)].bytes
+        let offset = Int(index & (mmx ? 3 : 7)) * 2
         registerBytes.replaceSubrange(offset..<offset + 2, with: wordBytes)
-        state.floatingPoint.ymm[Int(destination)] = try .init(
-          bytes: registerBytes, expectedByteCount: 32)
+        if mmx {
+          writeMMXRegister(destination, bytes: registerBytes, state: &state.floatingPoint)
+        } else {
+          state.floatingPoint.ymm[Int(destination)] = try .init(
+            bytes: registerBytes, expectedByteCount: 32)
+        }
       case .unpackVector(let high, let doublePrecision, let destination, let source):
         let lhs = Array(state.floatingPoint.ymm[Int(destination)].bytes.prefix(16))
         let rhs = try readVectorBytes(

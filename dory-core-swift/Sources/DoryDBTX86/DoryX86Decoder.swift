@@ -1196,23 +1196,36 @@ public struct DoryX86Decoder: Sendable {
       case 0x17:
         // MOVHPS store (0F 17 /r mem): store high 64 bits of XMM to memory.
         // MOVHPD store (66 0F 17 /r mem): same with 66 prefix.
+        guard prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "MOVHPS/MOVHPD store rejects repeat prefixes")
+        }
         let operands = try decodeModRM(
           cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        guard case .memory = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "MOVHPS/MOVHPD store requires memory")
+        }
         operation = .moveVectorQwordHalf(
           destination: vectorOperand(operands.rm),
           source: vectorOperand(operands.reg),
           sourceHigh: true,
           destinationHigh: false)
       case 0xC4:
-        // PINSRW (66 0F C4 /r ib): insert word from GPR/memory into XMM at index.
+        // PINSRW: NP selects MMX (SSE), 66 selects XMM (SSE2). REX.W is ignored.
+        guard prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "PINSRW rejects repeat prefixes")
+        }
         let operands = try decodeModRM(
           cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
-        let index = try cursor.readByte() & 0x07
+        let mmx = !prefixes.operandSizeOverride
+        let index = try cursor.readByte() & (mmx ? 0x03 : 0x07)
         operation = .insertPackedWord(
-          destination: vectorRegister(operands.reg),
+          destination: mmx ? try mmxRegister(operands.reg, address: address) : vectorRegister(operands.reg),
           source: operands.rm,
           index: index,
-          mmx: false)
+          mmx: mmx)
       case 0xE6:
         guard (prefixes.operandSizeOverride && prefixes.repeatPrefix == nil)
           || (!prefixes.operandSizeOverride

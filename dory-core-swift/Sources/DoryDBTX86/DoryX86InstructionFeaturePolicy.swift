@@ -1,4 +1,4 @@
-/// Feature/encoding admission for the optional instructions currently decoded by Dory.
+/// Feature/encoding admission for the SIMD instructions currently decoded by Dory.
 /// This is not full ISA qualification or the CR0/CR4/XCR0 execution-state checks. In
 /// particular, synthetic test profiles opting into AVX do not qualify XSAVE or AVX state.
 /// Instruction requirements: Intel SDM Vol. 2, the named instruction's CPUID Feature Flag
@@ -30,9 +30,88 @@ enum DoryX86InstructionFeaturePolicy {
       return profile.supports(.sse)
     case .memoryFence(.load), .memoryFence(.full):
       return profile.supports(.sse2)
+    case .saveFloatingPointState, .restoreFloatingPointState:
+      return profile.supports(.fxsave)
+    case .cacheLineFlush:
+      return profile.supports(.clflush)
+    case .loadMXCSR, .storeMXCSR:
+      return profile.supports(.sse)
+    case .moveVector128:
+      // MOVUPS/MOVAPS are SSE; 66 selects MOVUPD/MOVAPD/MOVDQA/MOVNTDQ,
+      // and F3 selects MOVDQU. All those latter full-vector moves are SSE2.
+      return profile.supports(instruction.prefixes.operandSizeOverride
+        || instruction.prefixes.repeatPrefix == 0xF3 ? .sse2 : .sse)
+    case .moveVectorScalar(_, _, let byteCount, _):
+      // MOVSS versus MOVSD/MOVQ; F3 MOVQ still transfers eight bytes.
+      return profile.supports(byteCount == 4 ? .sse : .sse2)
+    case .moveVectorQwordHalf, .vectorBitwise:
+      return profile.supports(instruction.prefixes.operandSizeOverride ? .sse2 : .sse)
+    case .unpackVector(_, let doublePrecision, _, _):
+      return instruction.prefixes.repeatPrefix == nil
+        && profile.supports(doublePrecision ? .sse2 : .sse)
+    case .vectorFloatingBinary(_, let format, _, _), .scalarCompare(_, let format, _, _),
+      .scalarSquareRoot(let format, _, _), .vectorFloatingCompare(let format, _, _, _),
+      .convertIntegerToScalarFloat(let format, _, _), .convertScalarFloatToInteger(let format, _, _, _):
+      return profile.supports(floatingFeature(format))
+    case .scalarConvert, .convertPackedDoubleToDword, .convertPackedDwordToDouble,
+      .moveIntegerToVector, .moveVectorToInteger, .vectorIntegerBinary, .vectorIntegerShift,
+      .vectorByteShift, .vectorIntegerInterleave, .vectorIntegerPack:
+      return profile.supports(.sse2)
+    case .vectorShuffle(let format, _, _, _):
+      return profile.supports(format == .packedSingle ? .sse : .sse2)
+    case .insertPackedWord(_, _, _, let mmx), .extractPackedWord(_, _, _, let mmx):
+      // The MMX forms were introduced by SSE, the XMM forms by SSE2.
+      return profile.supports(mmx ? .sse : .sse2)
+    case .moveVectorMask(_, _, let laneWidth, let vectorByteCount):
+      // MOVMSKPS is SSE; MOVMSKPD and PMOVMSKB XMM are SSE2.
+      // PMOVMSKB MMX is an SSE extension using MMX state.
+      return profile.supports(vectorByteCount == 8 || laneWidth == .doubleword ? .sse : .sse2)
+    case .mmxIntegerBinary(let operation, let laneWidth, _, _):
+      switch (operation, laneWidth) {
+      case (.minimumUnsigned, .byte), (.maximumUnsigned, .byte),
+        (.minimumSigned, .word), (.maximumSigned, .word),
+        (.averageUnsigned, .byte), (.averageUnsigned, .word),
+        (.multiplyHighUnsigned, .word), (.sumAbsoluteDifferences, .byte):
+        return profile.supports(.sse)
+      case (.add, .quadword), (.subtract, .quadword), (.multiplyUnsignedDoubleword, .doubleword):
+        return profile.supports(.sse2)
+      default: return true // Original MMX operations do not acquire an SSE requirement.
+      }
+    case .move:
+      // MOVNTI shares the ordinary integer move operation, but requires SSE2.
+      // This changes feature admission only; MOVNTI does not use XMM enable state.
+      return !isNonTemporalIntegerStore(instruction) || profile.supports(.sse2)
     default:
       return true
     }
+  }
+
+  private static func floatingFeature(_ format: DoryX86VectorFloatingFormat) -> DoryX86Feature {
+    switch format {
+    case .packedSingle, .scalarSingle: .sse
+    case .packedDouble, .scalarDouble: .sse2
+    }
+  }
+
+  static func isNonTemporalIntegerStore(_ instruction: DoryX86DecodedInstruction) -> Bool {
+    guard instruction.prefixes.vex == nil, case .move = instruction.operation else { return false }
+    return legacyOpcode(instruction.bytes) == 0xC3
+  }
+
+  private static func legacyOpcode(_ bytes: [UInt8]) -> UInt8? {
+    // Only consume leading prefixes. An 0F C3 sequence inside a displacement
+    // or immediate must never turn an ordinary MOV into a MOVNTI feature check.
+    var index = 0
+    while index < bytes.count {
+      switch bytes[index] {
+      case 0x26, 0x2E, 0x36, 0x3E, 0x64, 0x65, 0x66, 0x67, 0xF0, 0xF2, 0xF3, 0x40...0x4F:
+        index += 1
+      default:
+        guard bytes[index] == 0x0F, index + 1 < bytes.count else { return nil }
+        return bytes[index + 1]
+      }
+    }
+    return nil
   }
 
   private static func permitsVEX(

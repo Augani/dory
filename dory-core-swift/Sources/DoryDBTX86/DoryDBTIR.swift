@@ -222,6 +222,11 @@ public struct DoryX86IRTranslator: Sendable {
       // represents that effect, retire it through the interpreter at its exact boundary.
       return fallback(instruction, reason: .interpreter)
     case .move(let destination, let source):
+      // MOVNTI shares .move with ordinary stores but requires SSE2. Native entry
+      // has no selected feature profile; preserve the precise interpreter gate.
+      if DoryX86InstructionFeaturePolicy.isNonTemporalIntegerStore(instruction) {
+        return fallback(instruction, reason: .interpreter)
+      }
       return (
         [
           .copy(
