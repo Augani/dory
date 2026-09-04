@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-04",
+    "P02-11",
+    "P02-12",
+    "P02-13",
+    "P02-26"
+  ],
+  "sourceCommit": "3db424a1a3127557b9790f6f2c5a1160a865c35f",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Bounded UART and system-instruction gates 25\u201326, plus the failed run-25 guest replay and one engineering host profile.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-26.json",
+      "sha256": "49dfd0bda93c5cd8dd3f7882b5c1c317271ef8f36316923636add20fd2772738"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-24.json",
+      "sha256": "02c40bfc835da9003ff1296007b3a14e0cac126659bd102840f2d70dbd68b3f4"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete. No accepted userspace receipt, physical x86 reference run, glibc/systemd boot, sustained stress, full ISA or release qualification is established.",
+    "One physical-reference test is disabled and one optional XCTest boot fixture is skipped in each source gate; reported Swift totals include the disabled case.",
+    "Probe 7 uses the copied run 25 executable. It fails before userspace output with a host-side truncated-decode error; the UART correction is reduced and tested but this probe cannot establish guest console success.",
+    "The five-second host sample covers only one part of boot and includes sampling overhead and possible concurrent bounded work. Idle worker wait samples are identified separately; these are engineering observations.",
+    "Ignored FFI inputs and the optimized runner are hash-bound without vendoring executable payloads. No capability bits are promoted."
+  ]
+}

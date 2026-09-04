@@ -1,0 +1,160 @@
+{
+  "kind": "p02-engineering-host-sample",
+  "schemaVersion": 1,
+  "command": [
+    "sample",
+    "65030",
+    "5",
+    "10",
+    "-file",
+    "/tmp/dory-p02-userspace-baseline-jit-probe-7.host-sample.txt"
+  ],
+  "exitCode": 0,
+  "sourceCommit": "cfdca5656",
+  "sourceManifest": "/tmp/dory-p02-correctness-manifest-25.json",
+  "runnerPath": "/tmp/dory-p02-runner-cfdca5656-release",
+  "runID": "72617670-e4fc-4bea-92aa-b51cc3ea1e7d",
+  "sampleSHA256": "49d51c920680ee86df7bbf55c445b69929c680eabf90a3596d419ccfdd568089",
+  "sampleDateTime": "2026-09-04 13:53:20.081 +0000",
+  "observedMainThreadSamples": 397,
+  "physicalFootprintMiB": 151.8,
+  "peakPhysicalFootprintMiB": 192.8,
+  "topOfStackCollapsed": [
+    {
+      "symbol": "__workq_kernreturn  (in libsystem_kernel.dylib)",
+      "samples": 397,
+      "classification": "idle worker wait"
+    },
+    {
+      "symbol": "swift_release  (in libswiftCore.dylib)",
+      "samples": 26,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "swift_beginAccess  (in libswiftCore.dylib)",
+      "samples": 21,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "_platform_memmove  (in libsystem_platform.dylib)",
+      "samples": 13,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "_xzm_free_main  (in libsystem_malloc.dylib)",
+      "samples": 12,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "swift_getObjectType  (in libswiftCore.dylib)",
+      "samples": 12,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "swift_retain  (in libswiftCore.dylib)",
+      "samples": 12,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "swift::ConcurrentReadableHashMap<(anonymous namespace)::ConformanceCacheEntry, swift::LazyMutex>::find<(anonymous namespace)::ConformanceCacheKey>((anonymous namespace)::ConformanceCacheKey const&, swift::ConcurrentReadableHashMap<(anonymous namespace)::ConformanceCacheEntry, swift::LazyMutex>::IndexStorage, unsigned long, (anonymous namespace)::ConformanceCacheEntry*)  (in libswiftCore.dylib)",
+      "samples": 9,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "swift_bridgeObjectRelease  (in libswiftCore.dylib)",
+      "samples": 9,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "DoryX86PagingUnit.translate(linearAddress:access:context:physicalMemory:)  (in dory-p02-runner-cfdca5656-release)",
+      "samples": 8,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "swift_conformsToProtocolMaybeInstantiateSuperclasses(swift::TargetMetadata<swift::InProcess> const*, swift::TargetProtocolDescriptor<swift::InProcess> const*, bool)  (in libswiftCore.dylib)",
+      "samples": 8,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "<deduplicated_symbol>  (in libswiftCore.dylib)",
+      "samples": 6,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib)",
+      "samples": 6,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "mach_absolute_time  (in libsystem_kernel.dylib)",
+      "samples": 6,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "objc_msgSend  (in libobjcMsgSend.dylib)",
+      "samples": 6,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "pthread_mutex_unlock  (in libsystem_pthread.dylib)",
+      "samples": 6,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "specialized __RawDictionaryStorage.find<A>(_:hashValue:)  (in dory-p02-runner-cfdca5656-release)",
+      "samples": 6,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "swift::RefCounts<swift::RefCountBitsT<(swift::RefCountInlinedness)1>>::doDecrementSlow<(swift::PerformDeinit)1>(swift::RefCountBitsT<(swift::RefCountInlinedness)1>, unsigned int)  (in libswiftCore.dylib)",
+      "samples": 6,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "swift_endAccess  (in libswiftCore.dylib)",
+      "samples": 6,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "Cursor.readByte()  (in dory-p02-runner-cfdca5656-release)",
+      "samples": 5,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "DYLD-STUB$$swift_beginAccess  (in dory-p02-runner-cfdca5656-release)",
+      "samples": 5,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "Hasher._combine(_:)  (in libswiftCore.dylib)",
+      "samples": 5,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "_dyld_find_protocol_conformance_on_disk  (in libdyld.dylib)",
+      "samples": 5,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "malloc_type_malloc  (in libsystem_malloc.dylib)",
+      "samples": 5,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "specialized static Hasher._hash(seed:_:)  (in libswiftCore.dylib)",
+      "samples": 5,
+      "classification": "sampled execution"
+    },
+    {
+      "symbol": "swift_allocObject  (in libswiftCore.dylib)",
+      "samples": 5,
+      "classification": "sampled execution"
+    }
+  ],
+  "limitations": [
+    "One five-second sample during boot, not a whole-boot profile or release benchmark.",
+    "Other bounded source and test work may overlap; sampling itself adds overhead.",
+    "Collapsed top-of-stack counts include an idle worker; its wait samples are not a CPU bottleneck.",
+    "Guest memory contents are not sampled; this artifact contains host call stacks and loaded image identities."
+  ]
+}

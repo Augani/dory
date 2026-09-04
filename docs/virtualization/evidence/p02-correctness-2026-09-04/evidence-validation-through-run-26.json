@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-evidence-retention-validation",
+  "reviewSHA256": "49dfd0bda93c5cd8dd3f7882b5c1c317271ef8f36316923636add20fd2772738",
+  "retainedFilesVerified": 19,
+  "previousReviewHashVerified": true,
+  "envelopesSchemaValidated": 2,
+  "schemaPath": "Config/DoryVirtualizationEvidence.schema.json",
+  "sourceBindingsHaveNoTrackedDifferences": true,
+  "qualification": "Artifact integrity and schema validation only; no additional guest execution."
+}

@@ -1,0 +1,309 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-correctness-review",
+  "status": "in-progress",
+  "phaseComplete": false,
+  "releaseQualified": false,
+  "sourceCommit": "3db424a1a3127557b9790f6f2c5a1160a865c35f",
+  "previousReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-24.json",
+    "sha256": "02c40bfc835da9003ff1296007b3a14e0cac126659bd102840f2d70dbd68b3f4"
+  },
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "runs": [
+    {
+      "run": 25,
+      "exitCode": 0,
+      "sourceBinding": {
+        "run": 25,
+        "comparisonCommit": "cfdca565685c9c55c91acb1eb3dd2f7e87a937ae",
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "totalInputs": 688,
+        "trackedInputs": 682,
+        "trackedDifferences": [],
+        "ignoredFFIInputs": [
+          {
+            "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+            "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+          },
+          {
+            "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+            "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+            "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+            "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+            "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+            "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+          }
+        ],
+        "overlayFiles": 78,
+        "baseAndOverlayReconstructionPassed": true
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-25-source-manifest.json.gz",
+        "sha256": "832d33c8f6d2275a78bc106201fb7a1170f43a2097042a9167cb7a462831c9d7"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-25-source-overlay.tar.gz",
+        "sha256": "b4ae45a451bd5babed048cd7952cf68b649108712e6c7deae55ab94af9067cc3"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-25.log.gz",
+        "sha256": "11c81375efd96dedee25c96100eb45bc92aade43c4d8e6d49989dca262b6975d"
+      },
+      "binding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-25-commit-binding.json",
+        "sha256": "d24c7ef56f25444c15f9c7704779628b9df39bbe3a7fbdf26fa14308334f4fe6"
+      },
+      "buildElapsedSeconds": 10.46,
+      "swiftTesting": {
+        "reported": 707,
+        "passed": 706,
+        "disabledPhysicalReference": 1,
+        "failed": 0,
+        "suites": 80,
+        "elapsedSeconds": 3.062
+      },
+      "xctest": {
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    },
+    {
+      "run": 26,
+      "exitCode": 0,
+      "sourceBinding": {
+        "run": 26,
+        "comparisonCommit": "3db424a1a3127557b9790f6f2c5a1160a865c35f",
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "totalInputs": 689,
+        "trackedInputs": 683,
+        "trackedDifferences": [],
+        "ignoredFFIInputs": [
+          {
+            "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+            "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+          },
+          {
+            "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+            "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+            "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+            "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+            "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+            "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+          }
+        ],
+        "overlayFiles": 79,
+        "baseAndOverlayReconstructionPassed": true
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-26-source-manifest.json.gz",
+        "sha256": "d85aadb374e02121d9eb47df704f979cc3c1b42da4480145b735a817148d70d6"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-26-source-overlay.tar.gz",
+        "sha256": "52e5d89e5dfaf7d70878dc4edf11d6cdb5008d55c1bb3e08b14445723d37cbe7"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-26.log.gz",
+        "sha256": "c2cc1ff4b42702ac079f4893600f85d17f6a84bee999ef584f98299c41a20010"
+      },
+      "binding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-26-commit-binding.json",
+        "sha256": "60f35c79607643601c08b0970f659b76bf9699d725c58b7257a1ecb9cf5b51b7"
+      },
+      "buildElapsedSeconds": 13.14,
+      "swiftTesting": {
+        "reported": 714,
+        "passed": 713,
+        "disabledPhysicalReference": 1,
+        "failed": 0,
+        "suites": 81,
+        "elapsedSeconds": 3.099
+      },
+      "xctest": {
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    }
+  ],
+  "componentChanges": [
+    {
+      "commit": "cfdca5656",
+      "scope": "UART transmit-empty interrupt acknowledgment, reassertion and receive priority. Seven methods include complete one-byte-per-interrupt transmission through the actual PIC/IOAPIC wiring. FIFO, modem and baud timing qualification remain separate."
+    },
+    {
+      "commit": "3db424a1a",
+      "scope": "Seven methods cover exact 0F AE register prefix handling and ignored r/m bits, SMSW UMIP, and effective translated-memory invalidation for INVLPG/LMSW."
+    }
+  ],
+  "releaseBuild": {
+    "run": 25,
+    "exitCode": 0,
+    "elapsedSeconds": 57.35,
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-25-release-runner-build.log.gz",
+      "sha256": "1a33378d8a13544041c150318421e0c7b5dc782c114734eb4106f7de1bfb6b21"
+    },
+    "runnerSHA256": "02fb469ec5fd95c3ad4c72d723f8826107a88976247280b392183dc63e2a9b66"
+  },
+  "guestProbe7": {
+    "artifacts": {
+      "json": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.json",
+        "sha256": "de4cbe3ce91a7776f23b15486bf4e8d19640c74be9bce6108a2af85ac2c75037"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.log.gz",
+        "sha256": "6ccbfd1d437cec2088f1a60b900dd85a2acce5948d4b77d94faa42da5e1f46bf"
+      },
+      "invocation.json": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.invocation.json",
+        "sha256": "8b73df7646dcfd1adbcdabc347bf80a7516bbb38cb50a7aa538847746dcfff4b"
+      },
+      "exit": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "host-sample.txt": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.host-sample.txt.gz",
+        "sha256": "665803a95c618ff7320210430c35a03c7d089050986dcc00fa5370a0775c336a"
+      },
+      "host-sample-command.log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.host-sample-command.log.gz",
+        "sha256": "8ef87de9f2dfc3683921816ef67fd5c8001df1f3a97bfe74090c8a5ce912231c"
+      },
+      "host-sample-review.json": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.host-sample-review.json",
+        "sha256": "83ae8330b82d6218c6a0ce5ecc7d86b9de5cd3b8a9826522f0515f8ace05a112"
+      }
+    },
+    "sourceCommit": "cfdca565685c9c55c91acb1eb3dd2f7e87a937ae",
+    "runID": "72617670-e4fc-4bea-92aa-b51cc3ea1e7d",
+    "outcome": {
+      "exitCode": 1,
+      "passed": false,
+      "reason": "fixture-or-runner-error"
+    },
+    "error": "x86 instruction at 0x7f54d2bfffff is truncated",
+    "retiredInstructions": 649378000,
+    "elapsedNanoseconds": 347892600000,
+    "executionStatistics": {
+      "baselineJITBlocks": 222035162,
+      "baselineJITInstructions": 596024491,
+      "interpreterInstructions": 53353509,
+      "optimizingJITBlocks": 0,
+      "optimizingJITInstructions": 0
+    },
+    "userspaceReceiptSeen": false,
+    "poweredOff": false,
+    "lastConsoleMilestone": "Run /init as init process",
+    "diagnosis": "The JIT compiler can throw DoryX86DecodeError when its speculative byte window ends inside an instruction. The error address ends at a page boundary. A reduced regression and fix are under development; no subsequent source gate or guest outcome is claimed here.",
+    "lastStateScope": "Last runner slice exits; guest-handled exceptions are not sampled. Timeout state is the last completed slice."
+  },
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-25-source-manifest.json.gz",
+      "sha256": "832d33c8f6d2275a78bc106201fb7a1170f43a2097042a9167cb7a462831c9d7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-25-source-overlay.tar.gz",
+      "sha256": "b4ae45a451bd5babed048cd7952cf68b649108712e6c7deae55ab94af9067cc3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-25.log.gz",
+      "sha256": "11c81375efd96dedee25c96100eb45bc92aade43c4d8e6d49989dca262b6975d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-25-commit-binding.json",
+      "sha256": "d24c7ef56f25444c15f9c7704779628b9df39bbe3a7fbdf26fa14308334f4fe6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-26-source-manifest.json.gz",
+      "sha256": "d85aadb374e02121d9eb47df704f979cc3c1b42da4480145b735a817148d70d6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-26-source-overlay.tar.gz",
+      "sha256": "52e5d89e5dfaf7d70878dc4edf11d6cdb5008d55c1bb3e08b14445723d37cbe7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-26.log.gz",
+      "sha256": "c2cc1ff4b42702ac079f4893600f85d17f6a84bee999ef584f98299c41a20010"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-26-commit-binding.json",
+      "sha256": "60f35c79607643601c08b0970f659b76bf9699d725c58b7257a1ecb9cf5b51b7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-25-release-runner-build.log.gz",
+      "sha256": "1a33378d8a13544041c150318421e0c7b5dc782c114734eb4106f7de1bfb6b21"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.json",
+      "sha256": "de4cbe3ce91a7776f23b15486bf4e8d19640c74be9bce6108a2af85ac2c75037"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.log.gz",
+      "sha256": "6ccbfd1d437cec2088f1a60b900dd85a2acce5948d4b77d94faa42da5e1f46bf"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.invocation.json",
+      "sha256": "8b73df7646dcfd1adbcdabc347bf80a7516bbb38cb50a7aa538847746dcfff4b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.host-sample.txt.gz",
+      "sha256": "665803a95c618ff7320210430c35a03c7d089050986dcc00fa5370a0775c336a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.host-sample-command.log.gz",
+      "sha256": "8ef87de9f2dfc3683921816ef67fd5c8001df1f3a97bfe74090c8a5ce912231c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-7.host-sample-review.json",
+      "sha256": "83ae8330b82d6218c6a0ce5ecc7d86b9de5cd3b8a9826522f0515f8ace05a112"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete. No accepted userspace receipt, physical x86 reference run, glibc/systemd boot, sustained stress, full ISA or release qualification is established.",
+    "One physical-reference test is disabled and one optional XCTest boot fixture is skipped in each source gate; reported Swift totals include the disabled case.",
+    "Probe 7 uses the copied run 25 executable. It fails before userspace output with a host-side truncated-decode error; the UART correction is reduced and tested but this probe cannot establish guest console success.",
+    "The five-second host sample covers only one part of boot and includes sampling overhead and possible concurrent bounded work. Idle worker wait samples are identified separately; these are engineering observations.",
+    "Ignored FFI inputs and the optimized runner are hash-bound without vendoring executable payloads. No capability bits are promoted."
+  ]
+}
