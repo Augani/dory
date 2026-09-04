@@ -2352,6 +2352,8 @@ public struct DoryX86Interpreter: Sendable {
         try write(
           value, to: operand, instruction: instruction, state: &state, memory: executionMemory)
       case .call(let relative):
+        let target = addRelative(nextRIP, relative)
+        try validateNearBranchTarget(target, mode: mode, instruction: instruction)
         let returnWidth: DoryX86OperandWidth =
           mode == .long64
           ? .quadword : (mode == .real16 || mode == .protected16 ? .word : .doubleword)
@@ -2363,10 +2365,11 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
-        nextRIP = addRelative(nextRIP, relative)
+        nextRIP = target
       case .callIndirect(let operand):
         let target = try read(
           operand, instruction: instruction, state: state, memory: executionMemory)
+        try validateNearBranchTarget(target, mode: mode, instruction: instruction)
         let width = stackWidth(mode)
         try pushStack(
           nextRIP,
@@ -2388,6 +2391,7 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
+        try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction)
       case .returnAndPop(let popBytes):
         let returnWidth: DoryX86OperandWidth =
           mode == .long64
@@ -2399,17 +2403,23 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
+        try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction)
         let adjustedStack =
           (stackPointerOffset(mode: mode, state: state) &+ UInt64(popBytes))
           & mask(stackPointerWidth(mode: mode, state: state))
         writeStackPointer(adjustedStack, mode: mode, state: &state)
       case .jump(let relative):
         nextRIP = addRelative(nextRIP, relative)
+        try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction)
       case .jumpIndirect(let operand):
         nextRIP = try read(
           operand, instruction: instruction, state: state, memory: executionMemory)
+        try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction)
       case .conditionalJump(let condition, let relative):
-        if evaluate(condition, flags: state.rflags) { nextRIP = addRelative(nextRIP, relative) }
+        if evaluate(condition, flags: state.rflags) {
+          nextRIP = addRelative(nextRIP, relative)
+          try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction)
+        }
       case .loop(let condition, let relative, let counterWidth):
         var count = stringRegister(.rcx, width: counterWidth, state: state)
         if condition != .countZero {
@@ -2428,7 +2438,10 @@ public struct DoryX86Interpreter: Sendable {
           case .countNonzeroAndNotZero: count != 0 && !state.rflags.contains(.zero)
           case .countZero: count == 0
           }
-        if branches { nextRIP = addRelative(nextRIP, relative) }
+        if branches {
+          nextRIP = addRelative(nextRIP, relative)
+          try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction)
+        }
       case .enter(let allocation, let nesting, let width):
         try executeEnter(
           allocation: allocation,
@@ -3103,6 +3116,17 @@ public struct DoryX86Interpreter: Sendable {
         commitsPartialProgress: true
       )
       return .exception(fault)
+    } catch let partial as DoryX86PartialException {
+      state.rip = originalRIP
+      return .exception(
+        .init(
+          kind: partial.exception.kind,
+          vector: partial.exception.vector,
+          errorCode: partial.exception.errorCode,
+          instructionPointer: originalRIP,
+          linearAddress: partial.exception.linearAddress,
+          commitsPartialProgress: true
+        ))
     } catch is DoryX86PartialGeneralProtection {
       state.rip = originalRIP
       return .exception(
@@ -4631,7 +4655,15 @@ public struct DoryX86Interpreter: Sendable {
     mode: DoryX86ExecutionMode,
     state: DoryX86ArchitecturalState
   ) throws {
-    guard mode != .long64 else { return }
+    if mode == .long64 {
+      guard byteCount > 0 else { throw stackProtection(at: instruction.address) }
+      let last = offset.addingReportingOverflow(UInt64(byteCount - 1))
+      guard !last.overflow,
+        DoryX86ArchitecturalState.isCanonical(offset),
+        DoryX86ArchitecturalState.isCanonical(last.partialValue)
+      else { throw stackProtection(at: instruction.address) }
+      return
+    }
     try validateSegmentBounds(
       state.ss,
       offset: offset,
@@ -4640,6 +4672,16 @@ public struct DoryX86Interpreter: Sendable {
       protectedMode: state.control.cr0 & 1 != 0,
       fault: stackProtection(at: instruction.address)
     )
+  }
+
+  private func validateNearBranchTarget(
+    _ target: UInt64,
+    mode: DoryX86ExecutionMode,
+    instruction: DoryX86DecodedInstruction
+  ) throws {
+    if mode == .long64, !DoryX86ArchitecturalState.isCanonical(target) {
+      throw segmentProtection(at: instruction.address)
+    }
   }
 
   private func read(
@@ -4900,6 +4942,7 @@ public struct DoryX86Interpreter: Sendable {
     memory: any DoryX86Memory,
     ioBus: (any DoryX86IOBus)?
   ) throws -> Bool {
+    let initialFlags = state.rflags
     let addressWidth = stringAddressWidth(mode: mode, instruction: instruction)
     let repeated = instruction.prefixes.repeatPrefix != nil
     var remaining = repeated ? stringRegister(.rcx, width: addressWidth, state: state) : 1
@@ -5173,9 +5216,21 @@ public struct DoryX86Interpreter: Sendable {
           try ioBus.write(port: port, value: value, width: width)
         }
       } catch let error as DoryX86MemoryError {
+        if repeated, operation == .compare || operation == .scan {
+          state.rflags = initialFlags
+        }
         if completed != 0 { throw DoryX86PartialMemoryFault(error: error) }
         throw error
+      } catch let exception as DoryX86Exception {
+        if repeated, operation == .compare || operation == .scan {
+          state.rflags = initialFlags
+        }
+        if completed != 0 { throw DoryX86PartialException(exception: exception) }
+        throw exception
       } catch {
+        if repeated, operation == .compare || operation == .scan {
+          state.rflags = initialFlags
+        }
         if completed != 0 { throw DoryX86PartialGeneralProtection() }
         throw error
       }
@@ -6253,3 +6308,7 @@ private struct DoryX86PartialMemoryFault: Error {
 }
 
 private struct DoryX86PartialGeneralProtection: Error {}
+
+private struct DoryX86PartialException: Error {
+  let exception: DoryX86Exception
+}
