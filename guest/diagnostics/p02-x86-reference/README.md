@@ -6,8 +6,9 @@ not complete P02-20.
 The harness links no Dory code. `cases.def` is the single source for instruction bytes,
 initial RAX/RBX/RCX/RDX/RFLAGS, expected values and output masks. The exact byte string
 also appears in the inline assembly, so an assembler cannot silently choose a different
-instruction form. `make vectors` generates the checked-in `vectors.json`; its origin is
-explicitly `specification-derived`, never a hardware observation.
+instruction form. `make vectors` atomically generates the checked-in `vectors.json`; its
+origin is explicitly `specification-derived`, never a hardware observation. `make verify-vectors`
+fails if the checked-in corpus differs byte-for-byte from current harness output.
 
 Only those four GPRs and RFLAGS are part of the physical comparison. Other registers,
 RIP, segments, exceptions, memory operands, SIMD and privileged state are outside this
@@ -36,6 +37,13 @@ make
 /tmp/dory-p02-x86-reference/p02-x86-reference --host-facts
 ```
 
+The release build flags are fixed in the Makefile and recorded in receipt schema version
+2. `make validate-source` additionally regenerates and compares the checked-in vectors,
+then compiles the actual x86-64 inline assembly to an object without linking or executing
+it. On a non-Darwin cross host, set `X86_64_CC` and `X86_64_ARCH_FLAGS` to a suitable
+x86-64 C compiler and target flags. Passing this target validates source construction;
+it is not physical instruction evidence.
+
 Execution requires `--attest-physical-host` and operator/machine labels. The operator
 attests that the process runs directly on a physical x86 machine with no emulator,
 hypervisor or translation layer. The program additionally requires complete supported
@@ -63,9 +71,10 @@ Exit 0 means all 12 physical cases matched their masks. Exit 1 means mismatch or
 failure; exit 2 means refused host, absent attestation, unavailable source identity or
 invalid arguments. Refusal JSON is unqualified. Never reinterpret a refusal or a missing
 receipt as a passing hardware gate. The source identity is SHA-256 of the byte
-concatenation `reference.c` then `cases.def`, computed at build time. Regenerate the
-receipt whenever either file changes. Retain the binary hash independently; the receipt
-is an engineering result, not a signed hardware attestation or whole-ISA proof.
+concatenation `reference.c`, `cases.def`, then `Makefile`, computed at build time.
+Regenerate the receipt whenever any of those files changes. Retain the binary hash
+independently; the receipt is an engineering result, not a signed hardware attestation or
+whole-ISA proof.
 
 Copy the successful JSON to the Dory validation host using the same source checkout.
 This command requires a real file and enables the otherwise disabled hardware test:
@@ -74,7 +83,8 @@ This command requires a real file and enables the otherwise disabled hardware te
 make compare-receipt RECEIPT=/absolute/new-physical-receipt.json
 ```
 
-The importer checks the source digest, host facts, attestation, complete ordered case set,
+The importer checks receipt schema version 2, fixed build flags, the source digest, host
+facts, attestation, operator and machine-label syntax, complete ordered case set,
 exact bytes/inputs/expected values/masks, actual initial flags and observed outputs. It
 then executes the same bytes in the Dory interpreter and compares only defined outputs.
 Without `DORY_P02_X86_REFERENCE_RECEIPT`, that test is disabled and physical qualification
@@ -83,5 +93,6 @@ are specification/parser checks only; their synthetic in-memory parser envelope 
 persisted or counted as physical evidence.
 
 On ARM, `make vectors` is safe metadata generation and `--host-facts`/`--run` refuse
-physical qualification. Cross-compiling an x86 object may validate assembly syntax;
-never execute that object through Rosetta and call it a physical reference.
+physical qualification. `make check-x86_64-object` validates the x86 assembly build path
+without running it; never execute that object through Rosetta and call it a physical
+reference.

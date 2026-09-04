@@ -23,6 +23,9 @@
 #ifndef DORY_SOURCE_SHA256
 #define DORY_SOURCE_SHA256 "unavailable"
 #endif
+#ifndef DORY_BUILD_FLAGS
+#define DORY_BUILD_FLAGS "unavailable"
+#endif
 #define HEX_(value) UINT64_C(0x##value)
 #define HEX(value) HEX_(value)
 #define CORPUS "p02-scalar12-v1"
@@ -238,7 +241,9 @@ int main(int argc, char **argv) {
   }
   struct host h = host_facts();
   if (argc == 2 && !strcmp(argv[1], "--host-facts")) {
-    printf("{\"schemaVersion\":1,\"qualified\":false,\"host\":"); host_json(&h); puts("}");
+    printf("{\"schemaVersion\":1,\"qualified\":%s,\"host\":",
+      !h.reason[0] && h.facts_complete ? "true" : "false");
+    host_json(&h); puts("}");
     return h.reason[0] || !h.facts_complete ? 2 : 0;
   }
   if (argc != 7 || strcmp(argv[1], "--run") || strcmp(argv[2], "--attest-physical-host") ||
@@ -259,10 +264,11 @@ int main(int argc, char **argv) {
     observations[i] = execute(i);
     passed = passed && observations[i].passed;
   }
-  printf("{\"schemaVersion\":1,\"corpus\":\"" CORPUS "\",\"status\":\"%s\","
+  printf("{\"schemaVersion\":2,\"corpus\":\"" CORPUS "\",\"status\":\"%s\","
          "\"execution\":\"physical-x86_64\",\"physicalAttestation\":true,\"sourceSHA256\":\""
          DORY_SOURCE_SHA256 "\",\"compiler\":", passed ? "passed" : "mismatch");
   string(__VERSION__);
+  printf(",\"buildFlags\":"); string(DORY_BUILD_FLAGS);
   printf(",\"operator\":"); string(argv[4]); printf(",\"machineID\":"); string(argv[6]);
   printf(",\"unixTime\":%jd,\"host\":", (intmax_t)time(NULL)); host_json(&h);
   printf(",\"cases\":[");

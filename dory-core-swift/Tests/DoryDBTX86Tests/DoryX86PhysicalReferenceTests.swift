@@ -7,10 +7,19 @@ import Testing
 @Suite struct DoryX86PhysicalReferenceTests {
   @Test func scalarCorpusMatchesSpecificationDerivedExpectations() throws {
     let corpus = try ReferenceCorpus.load()
+    let definitions = try ReferenceCorpus.caseDefinitions()
     #expect(corpus.origin == "specification-derived")
     #expect(corpus.cases.count == 12)
     #expect(Set(corpus.cases.map(\.id)).count == corpus.cases.count)
-    for vector in corpus.cases {
+    #expect(definitions.count == corpus.cases.count)
+    for (vector, definition) in zip(corpus.cases, definitions) {
+      #expect(vector.sameContract(as: definition))
+      let masks = try vector.masks.values()
+      let expected = try vector.expected.values()
+      let expectedMask = try expectedFlagMask(for: vector.id)
+      #expect(Array(masks.prefix(4)) == Array(repeating: UInt64.max, count: 4))
+      #expect(masks[4] == expectedMask)
+      #expect(expected[4] & ~masks[4] == 0)
       let actual = try execute(vector)
       try expectMasked(actual, equals: vector.expected, masks: vector.masks)
     }
@@ -27,9 +36,10 @@ import Testing
       return object
     }
     let valid: [String: Any] = [
-      "schemaVersion": 1, "corpus": corpus.corpus, "status": "passed", "execution": "physical-x86_64",
+      "schemaVersion": 2, "corpus": corpus.corpus, "status": "passed", "execution": "physical-x86_64",
       "physicalAttestation": true, "sourceSHA256": try ReferenceCorpus.sourceHash(),
-      "compiler": "synthetic parser test", "operator": "synthetic", "machineID": "synthetic",
+      "compiler": "synthetic parser test", "buildFlags": ReferenceReceipt.requiredBuildFlags,
+      "operator": "synthetic", "machineID": "synthetic",
       "unixTime": 1, "cases": cases,
       "host": ["machine": "x86_64", "os": "Linux", "release": "synthetic", "systemVendor": "synthetic",
         "model": "synthetic", "cpuVendor": "GenuineIntel", "cpuidLeaf1EAX": "00000001",
@@ -63,18 +73,52 @@ import Testing
     #expect(throws: ReferenceError.self) {
       try ReferenceReceipt.validated(JSONSerialization.data(withJSONObject: invalid), corpus: corpus)
     }
-    for field in ["bytes", "masks", "initial", "observedInitialRFLAGS"] {
+    for field in ["bytes", "masks", "initial", "expected", "observed", "observedInitialRFLAGS", "passed"] {
       invalid = valid
       var altered = cases
       switch field {
       case "bytes": altered[0][field] = [0x90]
       case "observedInitialRFLAGS": altered[0][field] = "0000000000000203"
+      case "passed": altered[0][field] = false
       default: altered[0][field] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(ReferenceRegisters.zero))
       }
       invalid["cases"] = altered
       #expect(throws: ReferenceError.self) {
         try ReferenceReceipt.validated(JSONSerialization.data(withJSONObject: invalid), corpus: corpus)
       }
+    }
+    for field in ["operator", "machineID"] {
+      invalid = valid
+      invalid[field] = "not\nprintable"
+      #expect(throws: ReferenceError.self) {
+        try ReferenceReceipt.validated(JSONSerialization.data(withJSONObject: invalid), corpus: corpus)
+      }
+      invalid[field] = String(repeating: "x", count: 81)
+      #expect(throws: ReferenceError.self) {
+        try ReferenceReceipt.validated(JSONSerialization.data(withJSONObject: invalid), corpus: corpus)
+      }
+    }
+    invalid = valid
+    invalid["buildFlags"] = "-O0"
+    #expect(throws: ReferenceError.self) {
+      try ReferenceReceipt.validated(JSONSerialization.data(withJSONObject: invalid), corpus: corpus)
+    }
+    invalid = valid
+    invalid["cases"] = Array(cases.reversed())
+    #expect(throws: ReferenceError.self) {
+      try ReferenceReceipt.validated(JSONSerialization.data(withJSONObject: invalid), corpus: corpus)
+    }
+  }
+
+  @Test func specificationCorpusRejectsHardwareResultFields() throws {
+    let url = ReferenceCorpus.directory.appendingPathComponent("vectors.json")
+    var object = try #require(
+      JSONSerialization.jsonObject(with: ReferenceCorpus.read(url)) as? [String: Any])
+    var cases = try #require(object["cases"] as? [[String: Any]])
+    cases[0]["passed"] = NSNull()
+    object["cases"] = cases
+    #expect(throws: ReferenceError.self) {
+      try ReferenceCorpus.validated(JSONSerialization.data(withJSONObject: object))
     }
   }
 
@@ -109,6 +153,22 @@ import Testing
     #expect(state.floatingPoint == before.floatingPoint)
     return .init(rax: hex(state.registers.rax), rbx: hex(state.registers.rbx), rcx: hex(state.registers.rcx),
       rdx: hex(state.registers.rdx), rflags: hex(state.rflags.rawValue))
+  }
+
+  private func expectedFlagMask(for id: String) throws -> UInt64 {
+    switch id {
+    case "add64_signed_overflow", "add32_zero_extends", "adc64_carry_out", "sub64_borrow",
+      "sbb64_signed_overflow", "shl64_cl_masked_zero":
+      0xAD7
+    case "shl64_one", "shr64_one", "sar64_one":
+      0xAC7
+    case "shr64_cl_63":
+      0x2C7
+    case "div64_wide_dividend", "idiv64_negative_dividend":
+      0x202
+    default:
+      throw ReferenceError.invalid("unknown defined-mask contract")
+    }
   }
 
   private func expectMasked(_ actual: ReferenceRegisters, equals expected: ReferenceRegisters,
@@ -158,25 +218,78 @@ private struct ReferenceCorpus: Decodable {
     return data
   }
   static func load() throws -> Self {
-    let corpus = try JSONDecoder().decode(Self.self, from: read(directory.appendingPathComponent("vectors.json")))
+    try validated(read(directory.appendingPathComponent("vectors.json")))
+  }
+  static func validated(_ data: Data) throws -> Self {
+    let resultFields: Set<String> = ["observedInitialRFLAGS", "observed", "passed"]
+    guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+      let rawCases = object["cases"] as? [[String: Any]],
+      rawCases.allSatisfy({ resultFields.isDisjoint(with: $0.keys) })
+    else { throw ReferenceError.invalid("specification corpus contains result fields") }
+    let corpus = try JSONDecoder().decode(Self.self, from: data)
     guard corpus.schemaVersion == 1, corpus.corpus == "p02-scalar12-v1", corpus.origin == "specification-derived",
       corpus.cases.count == 12, Set(corpus.cases.map(\.id)).count == 12
     else { throw ReferenceError.invalid("unknown corpus") }
     for vector in corpus.cases {
-      guard !vector.bytes.isEmpty, vector.bytes.count <= 15 else { throw ReferenceError.invalid("invalid instruction bytes") }
+      guard !vector.bytes.isEmpty, vector.bytes.count <= 15
+      else { throw ReferenceError.invalid("invalid specification-derived vector") }
       _ = try vector.initial.values(); _ = try vector.expected.values(); _ = try vector.masks.values()
     }
     return corpus
   }
+  static func caseDefinitions() throws -> [ReferenceVector] {
+    let data = try read(directory.appendingPathComponent("cases.def"))
+    guard let source = String(data: data, encoding: .utf8) else {
+      throw ReferenceError.invalid("cases.def is not UTF-8")
+    }
+    let hexCapture = "([0-9a-f]{16})"
+    let pattern = #"^CASE\(([a-z0-9_]+), "([^"]+)", "#
+      + Array(repeating: hexCapture, count: 9).joined(separator: ", ") + #"\)$"#
+    let expression = try NSRegularExpression(pattern: pattern, options: [.anchorsMatchLines])
+    let fullRange = NSRange(source.startIndex..<source.endIndex, in: source)
+    let matches = expression.matches(in: source, range: fullRange)
+    let declaredCount = source.split(separator: "\n").filter { $0.hasPrefix("CASE(") }.count
+    guard matches.count == declaredCount, !matches.isEmpty else {
+      throw ReferenceError.invalid("unparsed cases.def declaration")
+    }
+    return try matches.map { match in
+      func capture(_ index: Int) throws -> String {
+        guard let range = Range(match.range(at: index), in: source) else {
+          throw ReferenceError.invalid("missing cases.def field")
+        }
+        return String(source[range])
+      }
+      let id = try capture(1)
+      let bytes = try capture(2).split(separator: ",").map { token -> UInt8 in
+        guard token.hasPrefix("0x"), token.count == 4, let value = UInt8(token.dropFirst(2), radix: 16)
+        else { throw ReferenceError.invalid("invalid cases.def instruction byte") }
+        return value
+      }
+      guard !bytes.isEmpty, bytes.count <= 15 else {
+        throw ReferenceError.invalid("invalid cases.def instruction length")
+      }
+      let values = try (3...11).map(capture)
+      return ReferenceVector(
+        id: id, bytes: bytes,
+        initial: .init(rax: values[0], rbx: values[1], rcx: values[2], rdx: values[3], rflags: values[4]),
+        expected: .init(rax: values[5], rbx: values[1], rcx: values[2], rdx: values[6], rflags: values[8]),
+        masks: .init(rax: String(repeating: "f", count: 16), rbx: String(repeating: "f", count: 16),
+          rcx: String(repeating: "f", count: 16), rdx: String(repeating: "f", count: 16), rflags: values[7]),
+        observedInitialRFLAGS: nil, observed: nil, passed: nil)
+    }
+  }
   static func sourceHash() throws -> String {
     var hash = SHA256()
-    for name in ["reference.c", "cases.def"] { hash.update(data: try read(directory.appendingPathComponent(name))) }
+    for name in ["reference.c", "cases.def", "Makefile"] {
+      hash.update(data: try read(directory.appendingPathComponent(name)))
+    }
     return hash.finalize().map { String(format: "%02x", $0) }.joined()
   }
 }
 private struct ReferenceReceipt: Decodable {
+  static let requiredBuildFlags = "-O2 -std=c11 -Wall -Wextra -Werror"
   let schemaVersion: Int, corpus: String, status: String, execution: String, physicalAttestation: Bool
-  let sourceSHA256: String, compiler: String, `operator`: String, machineID: String, unixTime: Int64
+  let sourceSHA256: String, compiler: String, buildFlags: String, `operator`: String, machineID: String, unixTime: Int64
   let host: Host, cases: [ReferenceVector]
   struct Host: Decodable {
     let machine: String, os: String, release: String, systemVendor: String, model: String, cpuVendor: String
@@ -188,10 +301,11 @@ private struct ReferenceReceipt: Decodable {
     let hostNames = (receipt.host.systemVendor + " " + receipt.host.model).lowercased()
     let virtualNames = ["virtual", "vmware", "qemu", "kvm", "xen", "bochs", "hyper-v",
       "parallels", "bhyve", "openstack", "amazon ec2", "google compute", "nutanix"]
-    guard receipt.schemaVersion == 1, receipt.corpus == corpus.corpus, receipt.status == "passed",
+    guard receipt.schemaVersion == 2, receipt.corpus == corpus.corpus, receipt.status == "passed",
       receipt.execution == "physical-x86_64", receipt.physicalAttestation,
       receipt.sourceSHA256 == (try ReferenceCorpus.sourceHash()), !receipt.compiler.isEmpty,
-      !receipt.operator.isEmpty, !receipt.machineID.isEmpty, receipt.unixTime > 0,
+      receipt.buildFlags == requiredBuildFlags, validLabel(receipt.operator), validLabel(receipt.machineID),
+      receipt.unixTime > 0,
       receipt.host.machine == "x86_64", ["Darwin", "Linux"].contains(receipt.host.os),
       !receipt.host.release.isEmpty, !receipt.host.systemVendor.isEmpty, !receipt.host.model.isEmpty,
       !virtualNames.contains(where: { hostNames.contains($0) }),
@@ -211,5 +325,8 @@ private struct ReferenceReceipt: Decodable {
       }
     }
     return receipt
+  }
+  private static func validLabel(_ value: String) -> Bool {
+    !value.isEmpty && value.utf8.count <= 80 && value.utf8.allSatisfy { (32..<127).contains($0) }
   }
 }
