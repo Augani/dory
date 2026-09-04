@@ -150,7 +150,11 @@ public struct DoryX86DifferentialHarness: Sendable {
         at: 0, context: &context, memory: jitAccess,
         requiresRestartableReads: compiled.requiresRestartableMemoryReads)
       var jitState = initialState
-      try apply(context: context, to: &jitState)
+      if jitExit != .interpreter
+        || (!compiled.requiresMemoryCallbacks && !compiled.mayExitToInterpreter)
+      {
+        try apply(context: context, to: &jitState)
+      }
       let jitSnapshot = try jitMemory.differentialState()
       guard try interpreterMemory.differentialState() == interpreterSnapshot,
         try source.differentialState() == sourceState

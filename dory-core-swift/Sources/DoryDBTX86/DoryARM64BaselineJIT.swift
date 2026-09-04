@@ -29,6 +29,9 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
   public let exitCode: DoryJITExitCode
   public let requiresMemoryCallbacks: Bool
   public let requiresRestartableMemoryReads: Bool
+  /// A runtime address guard can return without retiring this block. Its temporary register
+  /// context must be discarded, and it cannot participate in unchecked native batch replay.
+  public let mayExitToInterpreter: Bool
 
   public init(
     guestStart: UInt64,
@@ -38,7 +41,8 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
     tier: DoryARM64CompilationTier,
     exitCode: DoryJITExitCode,
     requiresMemoryCallbacks: Bool = false,
-    requiresRestartableMemoryReads: Bool = false
+    requiresRestartableMemoryReads: Bool = false,
+    mayExitToInterpreter: Bool = false
   ) {
     self.guestStart = guestStart
     self.guestByteCount = guestByteCount
@@ -48,6 +52,7 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
     self.exitCode = exitCode
     self.requiresMemoryCallbacks = requiresMemoryCallbacks
     self.requiresRestartableMemoryReads = requiresRestartableMemoryReads
+    self.mayExitToInterpreter = mayExitToInterpreter
   }
 
   public var machineBytes: [UInt8] {
@@ -83,13 +88,27 @@ public struct DoryARM64BaselineEmitter: Sendable {
       block.statements.reduce(0) { $0 + self.memoryCallbackCount($1) }
       + memoryCallbackCount(block.terminator)
     let usesMemory = memoryCallbackCount > 0
+    let guardsTerminator = requiresRuntimeAddressGuard(block.terminator)
+    let guardsStack = block.statements.contains {
+      switch $0 { case .stackPush, .stackPop: true; default: false }
+    }
+    // Translated writes end a block. Also reject hand-crafted IR that would reach a new
+    // address guard after a successful write, since register checkpoints cannot undo RAM/I/O.
+    var wroteMemory = false
+    for statement in block.statements {
+      if wroteMemory {
+        switch statement { case .stackPush, .stackPop: return fallback(block); default: break }
+      }
+      wroteMemory = wroteMemory || writesMemory(statement)
+    }
+    if wroteMemory && guardsTerminator { return fallback(block) }
     if usesMemory { emitMemoryPrologue(into: &words) }
     for statement in block.statements {
       guard emit(statement, into: &words) else {
         return fallback(block)
       }
     }
-    guard let exit = emit(block.terminator, into: &words) else {
+    guard let exit = emit(block.terminator, usesMemory: usesMemory, into: &words) else {
       return fallback(block)
     }
     if usesMemory { emitMemoryEpilogue(into: &words) }
@@ -103,8 +122,28 @@ public struct DoryARM64BaselineEmitter: Sendable {
       tier: tier,
       exitCode: exit,
       requiresMemoryCallbacks: usesMemory,
-      requiresRestartableMemoryReads: memoryCallbackCount > 1
+      // RET and memory-indirect JMP can now decline after their read. Such reads must
+      // be proven ordinary RAM, just like a read followed by a potentially failing write.
+      requiresRestartableMemoryReads: memoryCallbackCount > 1 || (guardsTerminator && usesMemory),
+      mayExitToInterpreter: guardsTerminator || guardsStack
     )
+  }
+
+  private func requiresRuntimeAddressGuard(_ terminator: DoryIRTerminator) -> Bool {
+    switch terminator {
+    case .call, .indirectCall, .indirect, .returnFromCall: true
+    case .conditional(_, let taken, let notTaken):
+      !DoryX86ArchitecturalState.isCanonical(taken) || !DoryX86ArchitecturalState.isCanonical(notTaken)
+    default: false
+    }
+  }
+
+  private func writesMemory(_ statement: DoryIRStatement) -> Bool {
+    switch statement {
+    case .copy(.memory, _), .binary(_, .memory, _, true), .unary(_, .memory),
+      .shift(_, .memory, _), .stackPush: true
+    default: false
+    }
   }
 
   private func fallback(_ block: DoryIRBasicBlock) -> DoryARM64CompiledBlock {
@@ -207,6 +246,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
     emitImmediate(UInt64(bitPattern: -8), register: 11, into: &words)
     words.append(encodeAdd(is64Bit: true, left: 9, right: 11, destination: 12))
+    emitCanonicalStackSpanGuard(addressRegister: 12, into: &words)
     words.append(encodeStore64(register: 12, base: 0, byteOffset: Self.rspOffset))
     emitMemoryWrite(addressRegister: 12, valueRegister: 10, width: .i64, words: &words)
     return true
@@ -242,6 +282,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     else { return false }
 
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
+    emitCanonicalStackSpanGuard(addressRegister: 9, into: &words)
     emitMemoryRead(addressRegister: 9, width: .i64, resultRegister: 10, words: &words)
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
     emitImmediate(8, register: 11, into: &words)
@@ -1431,6 +1472,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private func emit(
     _ terminator: DoryIRTerminator,
+    usesMemory: Bool,
     into words: inout [UInt32]
   ) -> DoryJITExitCode? {
     let target: UInt64
@@ -1440,11 +1482,13 @@ public struct DoryARM64BaselineEmitter: Sendable {
       target = address
       exit = .dispatch
     case .call(let address, let returnAddress):
+      guard DoryX86ArchitecturalState.isCanonical(address) else { return nil }
       words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
       emitImmediate(UInt64(bitPattern: -8), register: 10, into: &words)
       words.append(
         encodeAdd(is64Bit: true, left: 9, right: 10, destination: 11)
       )
+      emitCanonicalStackSpanGuard(addressRegister: 11, into: &words)
       words.append(encodeStore64(register: 11, base: 0, byteOffset: Self.rspOffset))
       emitImmediate(returnAddress, register: 10, into: &words)
       emitMemoryWrite(addressRegister: 11, valueRegister: 10, width: .i64, words: &words)
@@ -1452,6 +1496,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       exit = .dispatch
     case .indirectCall(let operand, let returnAddress):
       guard load(operand, matching: .i64, into: 9, words: &words) else { return nil }
+      emitCanonicalAddressGuard(register: 9, usesMemory: usesMemory, into: &words)
       // Preserve the evaluated target in the restartable native context. A failed stack write
       // returns through the interpreter path without committing this temporary RIP.
       words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.ripOffset))
@@ -1460,17 +1505,21 @@ public struct DoryARM64BaselineEmitter: Sendable {
       words.append(
         encodeAdd(is64Bit: true, left: 9, right: 10, destination: 11)
       )
+      emitCanonicalStackSpanGuard(addressRegister: 11, into: &words)
       words.append(encodeStore64(register: 11, base: 0, byteOffset: Self.rspOffset))
       emitImmediate(returnAddress, register: 10, into: &words)
       emitMemoryWrite(addressRegister: 11, valueRegister: 10, width: .i64, words: &words)
       return .dispatch
     case .indirect(let operand):
       guard load(operand, matching: .i64, into: 9, words: &words) else { return nil }
+      emitCanonicalAddressGuard(register: 9, usesMemory: usesMemory, into: &words)
       words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.ripOffset))
       return .dispatch
     case .returnFromCall(let popBytes):
       words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
+      emitCanonicalStackSpanGuard(addressRegister: 9, into: &words)
       emitMemoryRead(addressRegister: 9, width: .i64, resultRegister: 10, words: &words)
+      emitCanonicalAddressGuard(register: 10, usesMemory: usesMemory, into: &words)
       words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
       emitImmediate(UInt64(8) &+ UInt64(popBytes), register: 11, into: &words)
       words.append(
@@ -1501,12 +1550,45 @@ public struct DoryARM64BaselineEmitter: Sendable {
           falseRegister: 12,
           condition: .notEqual
         ))
+      if requiresRuntimeAddressGuard(terminator) {
+        emitCanonicalAddressGuard(register: 9, usesMemory: usesMemory, into: &words)
+      }
       words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.ripOffset))
       return .dispatch
     }
+    guard DoryX86ArchitecturalState.isCanonical(target) else { return nil }
     emitImmediate(target, register: 9, into: &words)
     words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.ripOffset))
     return exit
+  }
+
+  /// Sign-extend bit 47 and compare all 64 bits. Checking only bits 63:48 would
+  /// incorrectly accept 0x0000800000000000. Scratch registers x13...x15 are temporary.
+  private func emitCanonicalAddressGuard(
+    register: UInt32, usesMemory: Bool, into words: inout [UInt32]
+  ) {
+    words.append(0x9340_0000 | (47 << 10) | (register << 5) | 15)  // sbfx x15,xN,#0,#48
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, register, 15, 31))
+    emitInterpreterUnless(condition: .equal, usesMemory: usesMemory, into: &words)
+  }
+
+  private func emitCanonicalStackSpanGuard(addressRegister: UInt32, into words: inout [UInt32]) {
+    emitCanonicalAddressGuard(register: addressRegister, usesMemory: true, into: &words)
+    emitImmediate(7, register: 14, into: &words)
+    words.append(encodeAddSubtractSetFlags(add: true, is64Bit: true, addressRegister, 14, 13))
+    emitInterpreterUnless(condition: .carryClear, usesMemory: true, into: &words)
+    emitCanonicalAddressGuard(register: 13, usesMemory: true, into: &words)
+  }
+
+  private func emitInterpreterUnless(
+    condition: ARM64Condition, usesMemory: Bool, into words: inout [UInt32]
+  ) {
+    let accepted = words.count
+    words.append(0)
+    if usesMemory { emitMemoryEpilogue(into: &words) }
+    words.append(encodeMoveWideZero32(register: 0, immediate: UInt16(DoryJITExitCode.interpreter.rawValue)))
+    words.append(0xD65F_03C0)
+    words[accepted] = encodeConditionalBranch(condition: condition, wordOffset: words.count - accepted)
   }
 
   private func emitX86Condition(
@@ -2737,7 +2819,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             }
 
             if recordsTrace {
-              if resident.block.requiresMemoryCallbacks {
+              if resident.block.requiresMemoryCallbacks || resident.block.mayExitToInterpreter {
                 publishNativeTrace(newTrace, for: traceKey, if: true)
                 recordsTrace = false
               } else {
@@ -2753,7 +2835,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               }
             }
 
-            let hasCheckpoint = resident.block.requiresMemoryCallbacks
+            let hasCheckpoint = resident.block.requiresMemoryCallbacks || resident.block.mayExitToInterpreter
             if hasCheckpoint {
               for index in context.indices { checkpoint[index] = context[index] }
             }
@@ -2969,7 +3051,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           memory: memory,
           requiresRestartableReads: resident.block.requiresRestartableMemoryReads
         )
-        if exit == .interpreter, resident.block.requiresMemoryCallbacks {
+        if exit == .interpreter,
+          resident.block.requiresMemoryCallbacks || resident.block.mayExitToInterpreter
+        {
           return ResidentExecution(resident: resident, exitCode: exit)
         }
         Self.apply(context: context, to: &state)

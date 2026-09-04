@@ -151,6 +151,21 @@ import Testing
       #expect(!replacing(exit: .halt).agrees)
     #endif
   }
+
+  @Test func guardedNativeFallbackDoesNotPublishScratchRegisterChanges() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x48, 0x83, 0xC3, 1, 0xFF, 0xE0]  // add rbx,1; jmp rax
+      let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+      var initial = try state()
+      initial.registers.rax = 0x0000_8000_0000_0000
+      let result = try DoryX86DifferentialHarness().compare(
+        bytes: bytes, initialState: initial, memory: memory, mode: .long64)
+      #expect(result.jitExit == .interpreter)
+      #expect(result.jitState == initial)
+      #expect(result.interpreterState.registers.rbx == initial.registers.rbx + 1)
+      #expect(!result.agrees)
+    #endif
+  }
 }
 
 /// A small explicitly clonable MMIO fixture. Its read counter represents device state that must
