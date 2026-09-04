@@ -5838,11 +5838,12 @@ public struct DoryX86Interpreter: Sendable {
       }
       return register == .cs ? nil : .init(selector: selector)
     }
-    let table =
-      selector & 4 == 0 ? state.gdtr : .init(limit: UInt16(state.ldtr.limit), base: state.ldtr.base)
+    let usesLDT = selector & 4 != 0
+    let tableBase = usesLDT ? state.ldtr.base : state.gdtr.base
+    let tableLimit = usesLDT ? UInt64(state.ldtr.limit) : UInt64(state.gdtr.limit)
     let offset = UInt64(selector >> 3) * 8
-    guard offset + 7 <= UInt64(table.limit) else { return nil }
-    let bytes = try memory.read(at: table.base &+ offset, byteCount: 8)
+    guard offset + 7 <= tableLimit else { return nil }
+    let bytes = try memory.read(at: tableBase &+ offset, byteCount: 8)
     let raw = bytes.enumerated().reduce(UInt64(0)) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)
     }
@@ -5879,15 +5880,12 @@ public struct DoryX86Interpreter: Sendable {
 
     let usesLDT = selector & 4 != 0
     if usesLDT, state.ldtr.selector & 0xfffc == 0 { return nil }
-    let table =
-      usesLDT
-      ? DoryX86DescriptorTableState(
-        limit: UInt16(truncatingIfNeeded: state.ldtr.limit), base: state.ldtr.base)
-      : state.gdtr
+    let tableBase = usesLDT ? state.ldtr.base : state.gdtr.base
+    let tableLimit = usesLDT ? UInt64(state.ldtr.limit) : UInt64(state.gdtr.limit)
     let offset = UInt64(selector >> 3) * 8
-    guard offset + 7 <= UInt64(table.limit) else { return nil }
+    guard offset + 7 <= tableLimit else { return nil }
 
-    let bytes = try memory.read(at: table.base &+ offset, byteCount: 8)
+    let bytes = try memory.read(at: tableBase &+ offset, byteCount: 8)
     let raw = bytes.enumerated().reduce(UInt64(0)) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)
     }
