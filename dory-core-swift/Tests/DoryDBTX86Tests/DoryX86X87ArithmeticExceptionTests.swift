@@ -73,6 +73,38 @@ import Testing
     #expect(unmasked.floatingPoint.x87StatusWord == 0x8084)
   }
 
+  @Test func finiteArithmeticPublishesPrecisionAndRoundingDirection() throws {
+    let code: [UInt8] = [0xDE, 0xF9]  // FDIVP ST(1), ST(0)
+    let three = binary80(significand: 0xC000_0000_0000_0000, exponent: 0x4000)
+    let roundedThird = binary80(significand: 0xAAAA_AB00_0000_0000, exponent: 0x3FFD)
+
+    // PC=24, round-to-nearest, all exceptions masked. 1/3 increments the
+    // retained significand, so #P is sticky and C1 records the increment.
+    var masked = try binaryState(first: three, second: one, controlWord: 0x007F)
+    try retire(&masked, code: code)
+    #expect(top(masked) == 1)
+    #expect(masked.floatingPoint.x87[1].bytes == roundedThird)
+    #expect(masked.floatingPoint.x87StatusWord & 0x0A20 == 0x0A20)
+
+    // Unmasking #P suppresses both the result and FDIVP's pop while retaining
+    // the exception summary and the same C1 rounding indication.
+    var unmasked = try binaryState(first: three, second: one, controlWord: 0x005F)
+    let originalRegisters = unmasked.floatingPoint.x87
+    let originalTags = unmasked.floatingPoint.x87TagWord
+    try retire(&unmasked, code: code)
+    #expect(top(unmasked) == 0)
+    #expect(unmasked.floatingPoint.x87 == originalRegisters)
+    #expect(unmasked.floatingPoint.x87TagWord == originalTags)
+    #expect(unmasked.floatingPoint.x87StatusWord == 0x82A0)
+
+    // Truncation is still inexact, but it does not increment the retained
+    // significand and therefore clears a previously set C1.
+    var truncated = try binaryState(
+      first: three, second: one, controlWord: 0x0C7F, statusWord: 0x0200)
+    try retire(&truncated, code: code)
+    #expect(truncated.floatingPoint.x87StatusWord & 0x0220 == 0x0020)
+  }
+
   @Test func orderedAndUnorderedComparisonsDistinguishQuietAndSignalingNaNs() throws {
     let initialFlags: DoryX86RFLAGS = [
       .reservedOne, .interruptEnable, .overflow, .sign, .auxiliaryCarry, .carry,
