@@ -1,6 +1,6 @@
 # P01 authority and launch call graph
 
-Reviewed against the working tree on 2026-09-04. This inventory supports P01-04/P01-13; it does not close either item or qualify physical guest execution. Function names below identify implementation boundaries without depending on changing source line numbers.
+Reviewed against the working tree on 2026-09-04. This inventory records the P01-04/P01-13 implementation boundaries. Frozen behavioral and Release evidence is retained in the P01 review receipt; this is not physical guest qualification. Function names below identify implementation boundaries without depending on changing source line numbers.
 
 ## Production ownership
 
@@ -33,8 +33,12 @@ DoryDaemonVirtualMachineProductionTrustFactory.activate
   → activateVerifiedTrustFloor
   → complete recovered compound operations under activated trust
 
-MachineManager.start
-  → current authority and admission checks
+MachineManager.start (app, CLI and XPC retain caller UUID)
+  → replay existing caller operation, or read-only source preflight
+  → beginProductionStartRoot (expected source and planned target runtime)
+  → refreshResolvedAdmissionForStartIfNeeded under that root
+      → borrow root for production planning/admission/publication
+      → retain exact plan checkpoint for recovery
   → startImplementation
       → startResolvedMachine
           → prepareResolvedMachineStart
@@ -47,7 +51,7 @@ MachineManager.start
                   → PlanStartValidator.revalidate
                   → BackendRegistry.plan (the exact selected adapter)
               → recheck manager-owned definition, paths, shares and plan
-          → one lifecycle operation / pending start reservation
+          → borrow active lifecycle operation / pending start reservation
           → BackendRegistry.start
               → manager-owned adapter operation
                   → spawnPreparedMachine
@@ -64,7 +68,7 @@ MachineManager.start
 
 The fresh evidence collector also now includes the plan's forwarded ports. Previously its manually constructed runtime evidence defaulted that field to an empty list, rejecting every valid nonempty forwarding plan. Tests using `DoryResolvedMachineRuntimeEvidence(plan:)` concealed this because that initializer already copied the ports. The field is now required when constructing fresh evidence, so omission fails compilation. The added regression invokes the actual collector and resolver for launch, running preflight and stopped preflight, verifies exact forwarding/digest, and consumes the purpose-bound token once.
 
-`DoryControlPlaneArchitectureTests` examines SwiftPM target dependencies, including transitive reachability. `DoryVMContracts`, `DoryExecutionContracts`, `DoryFirmware`, `DoryOperations` and `DoryCore` cannot reach daemon or runner composition. Daemon/CLI entrypoints cannot reach `DoryVMMKit`; the helper must consume it. This is a module dependency gate, not a source-wording check. The app Xcode dependency graph and entrypoint behavior require their own evidence.
+`DoryControlPlaneArchitectureTests` examines SwiftPM target dependencies, including transitive reachability. `DoryVMContracts`, `DoryExecutionContracts`, `DoryFirmware`, `DoryOperations` and `DoryCore` cannot reach daemon or runner composition. Daemon/CLI entrypoints cannot reach `DoryVMMKit`; the helper must consume it. This is a module dependency gate, not a source-wording check. The app Xcode product depends on DoryOperations; its DoryVMMKit dependency belongs to the helper target. Separate app transport tests exercise operation UUID and readiness projections.
 
 ## Checks retained intentionally
 
@@ -79,17 +83,23 @@ The fresh evidence collector also now includes the plan's forwarded ports. Previ
 | Single-use pre-spawn revalidation | The resolver's initial inventory does not freeze executables, artifact paths, host state or capacity until process creation. |
 | Runner envelope/resource validation | The helper is a separate process receiving encoded authority and inherited descriptors. |
 
-Public planning controller, transaction coordinator and standalone planning coordinator still independently call product/definition preflight. Some calls see the same immutable definition during one production invocation, but each API remains independently callable today. Removing those checks requires a validated, unforgeable internal request path while retaining validation at each public entrypoint; deleting calls alone would weaken standalone entrypoints. This remains a concrete P01-04 follow-up outside the request-copy cleanup.
+Public controller and coordinator entrypoints validate an untrusted request once, then carry `DoryDaemonValidatedPlanningTransaction` and `DoryDaemonValidatedPlanningRequest` through the concrete internal path. An independently called public API still validates its input. Injected protocol implementations remain a boundary that must validate independently; the concrete production composition reuses the validated value.
 
-## Compatibility paths and removal gates
+Creation and restore reuse `DoryMachineArtifactProof` only within one owned mutation context. It retains descriptors, exact artifact bindings and filesystem identity/change stamps minted during the first full hash. Snapshot publication carries its own private validated result. Fresh recovery hashes again; no journal checkpoint can recreate these in-memory proofs. Each artifact publication syncs its retained destination directory before the caller records durable progress. Mutable guest backing checks retain identity, ownership and length while permitting legitimate guest writes; immutable artifacts retain full content checks.
 
-| Retained path | Current authority restriction | Evidence required before removal |
-| --- | --- | --- |
-| `MachineManager.startLegacyMachine` and `.legacyCompatibility` preparation | Explicit compatibility launch policy plus `allowsLegacyCompatibilityLaunches`; current runtime identity must also be compatibility mode. Normal `.perWorkspaceAuthority` start rejects that identity until production planning succeeds. | Migrate direct manager/qualification callers and prove all three cells' upgraded-account create/start/restore/clone flows. Preserve source bytes on failed migration. |
-| Daemon startup fallback in `Sources/doryd/main.swift` | Normal fallback sets compatibility launch/create flags false. The explicit qualification-bootstrap environment option enables them and cannot acquire production support authority. | Replace the bootstrap/qualification composition with exact plan fixtures, then remove the alternate launch policy. Unavailable production trust must remain a visible failure. |
-| `resolvedLaunchCompatibilityOperations(for:)` | Production adapters use these manager callbacks to consume an already prepared exact plan. The name does not mean they may choose a legacy launch. | Refactor the callback interface together with adapters/pending-start ownership; do not remove the only path that binds adapter start back to the manager's pending plan. |
-| Native definition → `DoryMachineConfiguration` runtime projection | Still supplies existing helper/path APIs. The reservation compares the separate exact persisted source; projected environment/settings are not persisted as replacement authority. | Replace legacy helper inputs after all runner and app/CLI operations consume typed plan resources directly. Include software/accelerated settings and snapshot restoration parity. |
-| Clone/snapshot recovery construction | Clone creates a new machine/disk identity and requires production planning; source launch authority is history. Snapshot restore validates saved ABI/artifacts and replans as required. | Complete public migration/restore/clone campaigns; retain originals on rejection and reject unsafe in-place conversion. |
-| Compound operation callbacks | Restart and production installer work retain one parent operation through their subordinate planning/launch phases. Desktop update and remaining direct compatibility operations are being consolidated separately. | Verify one durable UUID, idempotent replay, cancellation and process-death recovery for each compound operation before deleting legacy transaction/recovery stores. |
+## Retained boundaries
 
-Passing this dependency test or the focused collector tests does not prove the compatibility removal gates. P01-04/P01-13 remain open until those owners and behavioral campaigns are complete.
+| Path | Current restriction and purpose |
+| --- | --- |
+| `startLegacyMachine`, diagnostic constructors and qualification bootstrap | Compiled only in DEBUG. Release exposes the strict production manager; unavailable trust cannot enable compatibility launch. Legacy records migrate before resolved planning, retaining source bytes on rejection. |
+| Historical `ProductionTrustFactory.resolve` | Retains trust/readiness and migration classification. Its alternate manager/adapters/resolver composition is isolated in DEBUG-only `resolveDiagnosticPlanningComposition`; production uses `activate`. |
+| `resolvedLaunchCompatibilityOperations(for:)` | Production adapter callbacks consume the manager's pending exact plan and operation. They bind the adapter back to process ownership and cannot select a legacy launch. |
+| Native definition → `DoryMachineConfiguration` projection | Supplies existing helper/path interfaces. Launch reservation compares the separate exact persisted source, so projected settings cannot replace workspace authority. |
+| Creation, clone, snapshot and restore | Typed durable roots bind caller UUID, source/target identities and private recovery payloads. Clone plans the new destination identity; restore keeps backups until exact target plan, power state and readiness are established. |
+| Restart, configuration, installer and desktop updates | Planning, quiescence, launch and compensation borrow one root operation. Cancellation closes before irreversible publication; rollback authenticates and observes the source helper before replacing its state. |
+
+Unchanged configuration requests validate caller identity and preserve the current runtime, admission and journal without replanning. Suspend, pause and resume retain the caller UUID through app/CLI/XPC; completed power-operation replay observes current state without mutating a newer runtime. Saved-state readmission reuses the exact persisted plan and binds a fresh admission transaction before execution. Native saved-memory continuation after guest writes still requires the P08 artifact-continuity and physical-guest qualification gates.
+
+Ordinary app start and maintenance no longer acquire or replace managed kernels through a separate refresh endpoint. Kernel changes use the explicit desktop-update operation. Backup verification receives a stopped planned clone, starts it under a distinct caller UUID, waits for owned readiness, and cleans up only that accepted clone.
+
+The module-dependency gate, public-operation campaigns and final Release symbol audit are complementary. None alone establishes physical guest or release qualification, which remains assigned to later phases in PLAN.md.

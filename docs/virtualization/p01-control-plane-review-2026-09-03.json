@@ -3,479 +3,31 @@
   "kind": "control-plane-engineering-review",
   "reviewDate": "2026-09-04",
   "phase": "P01",
-  "phaseComplete": false,
+  "phaseComplete": true,
   "completedContractItems": [
     "P01-01",
     "P01-02",
     "P01-03",
+    "P01-04",
     "P01-05",
     "P01-06",
     "P01-07",
+    "P01-08",
+    "P01-09",
     "P01-10",
-    "P01-11"
+    "P01-11",
+    "P01-12",
+    "P01-13"
   ],
   "source": {
     "baseCommit": "bdb49cf8fadcd60b90e906740abc5ab1d83b5db7",
     "workingTreeWasDirtyBeforeReview": true,
-    "snapshotMeaning": "Desktop source preflight and recovery fencing; native typed launch projection, graphics resource budget, and preservation of network/forwarding/camera intent. Full core/container and isolated app tests, original app build and signature verification bind these source bytes. Desktop compound journal composition remains open.",
-    "changedSourceFiles": [
-      {
-        "path": "Dory.xcodeproj/project.pbxproj",
-        "sha256": "1a7efbdf2f444b43772b1f379cfa00a36a0543a1250bdc15ca3d7b8893e45f4b"
-      },
-      {
-        "path": "Dory/Features/Machines/MachinesView.swift",
-        "sha256": "19274b41483ff362cd5ae6c882b8c26722b583eedbebc9388d7c0d46344a420d"
-      },
-      {
-        "path": "Dory/Models/AppStore.swift",
-        "sha256": "0531aaf14f0b02658d81338b306f77364aaaceb8e188a9ef5967068c87fc286b"
-      },
-      {
-        "path": "Dory/Models/Models.swift",
-        "sha256": "8543e42a9bff842ce11694d9fad31e59d61a550ab1918a97d2bc3ff2ca8589b8"
-      },
-      {
-        "path": "Dory/Runtime/Doryd/DorydClient.swift",
-        "sha256": "a5a387d6b6969cae8c3c8abbce55598b29dac7a3a713d7778fcc41f5b74dae9d"
-      },
-      {
-        "path": "DoryTests/DorydClientTests.swift",
-        "sha256": "d37e515bb0bd9e77e8c3b4df08c3633e463613f3851e930e62d351fe340098d9"
-      },
-      {
-        "path": "DoryTests/LSUIElementBuildSettingTests.swift",
-        "sha256": "89a90a3dba9c733a7ae29ec05ea86b0729db053e230787a173228b9af6cd3242"
-      },
-      {
-        "path": "DoryTests/MachineSnapshotTests.swift",
-        "sha256": "ae666927f3b85ac3ecca49374ed5a7ab7c83e309757e13e65193a33c1e463b85"
-      },
-      {
-        "path": "DoryTests/MachineStatsSyncTests.swift",
-        "sha256": "aeee80dda6749123b74bb81927ad3d5b0fc365088f43edbc9abeb0ec869cd4c8"
-      },
-      {
-        "path": "DoryTests/MachineTests.swift",
-        "sha256": "9e83d20b5db0ad8160d71cbf45299dcca142b77a2fc3490a2d0f29c486dfa07f"
-      },
-      {
-        "path": "DoryTests/MockData.swift",
-        "sha256": "e9888e4d5feae8c21d45b8b7816d97f82e5a83686e93c2fb77747cc6f042bcf1"
-      },
-      {
-        "path": "DoryTests/NetworkingTests.swift",
-        "sha256": "6472492f6cebc489291999f598876fff4f20d4acddff426977cd115afc0dc5eb"
-      },
-      {
-        "path": "DoryTests/SSHConfigWriterTests.swift",
-        "sha256": "bb550b9d4be7aca1f32234d5b509be951cb41c2220bd8ffa0f9cdb1e37831e23"
-      },
-      {
-        "path": "DoryTests/TerminalSessionTests.swift",
-        "sha256": "4f6322d069ef5e05418bab8c2693d2b9fb9a421dc2bde49b34b70a43fabb4a12"
-      },
-      {
-        "path": "Packages/ContainerizationEngine/Sources/DoryHV/GuestExecutionPauseCoordinator.swift",
-        "sha256": "267c8fdcef0a43b071ded9c37d329345e41628bab4a8a79a77cacfec3d66cfb2"
-      },
-      {
-        "path": "Packages/ContainerizationEngine/Sources/DoryHV/Machine.swift",
-        "sha256": "2d480643e24a68a4cc1f6d5f2d6b048c50f8f8e14e18d2b6cbc63fa05368e58c"
-      },
-      {
-        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
-        "sha256": "63a3adccd56c8a1649cbe7935167e9f8fc5b24ed49ce91c12319c381dd4903b5"
-      },
-      {
-        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
-        "sha256": "e995570aa4a988f81bdfa6c729830f5abf1fb5d89517b01edcfc1067805d9bda"
-      },
-      {
-        "path": "Packages/ContainerizationEngine/Sources/dory-hv/main.swift",
-        "sha256": "4fc51b7ccd4e059b302cdc2747cf528771117da506cfd2d330cf531dad431475"
-      },
-      {
-        "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GuestExecutionPauseCoordinatorTests.swift",
-        "sha256": "7316207a07d50de13c51720c049908e64c0cca6ab59a237337371c122f7b777f"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryDesktopRuntimeContract.swift",
-        "sha256": "b3804ee029d7ca16b8071d2c251ca0d6f94b8880bf7cb026defbdcefaa94ddb4"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryInstallerISO.swift",
-        "sha256": "853296b087767f0327b568c96589f2ab2f106db5a3070e8345e8a6ad062521a2"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryOperationJournal.swift",
-        "sha256": "2bb3217581da402652517eca88b270a9dceb31313e70489b2d2c7caa9d4347c7"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryOperationJournalModels.swift",
-        "sha256": "224dbda2f083783619d186ed14c1273ab7d6741384fa2c0f6d3281c1add7f5ae"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryPCRuntimeLaunchEnvelope.swift",
-        "sha256": "45110c5e6fdaaafa0ddc5e3a338c70064a3b8554caac90dec92afc4986b03db4"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryVMResourcePolicy.swift",
-        "sha256": "5474badb59b9bcfe8279a38e149edd907863ad5d9a86ab1c15f1843f5b58b24c"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineArtifactAuthority.swift",
-        "sha256": "0b064915e4e41723482c62c63b2f4736104da72936195414c7bafcfe3e67b7ce"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineBackendPlanner.swift",
-        "sha256": "4b9692b4ca33b680a86b83c9cac98459fb7dbf286cdf490e4287bf260c0d09e1"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineCapabilities.swift",
-        "sha256": "a708e82e29e599111fd50005c9965c832fb35393cfcb7accbee6ad9cce91148c"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineDefinition.swift",
-        "sha256": "8f85b14845274d8a2ab24cbb7e3995cfe98b62c4e5a369f4921b8fc9c749cd3b"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineQualificationManifest.swift",
-        "sha256": "17f7bed37d816f796b3300f2232ea61c03205a1cc0bf2771a73f4d484cc26d61"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineState.swift",
-        "sha256": "99394b3c935607819383f86a44cf3eaf556b08e6d23296679a71941e1e8efc3a"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualizationPlatform.swift",
-        "sha256": "40b97ed571566625246f560f9c99ab403209c3bf689f19e8e8c53c8a0deec6de"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/DoryWorkspaceLifecycleOperation.swift",
-        "sha256": "f62e449a3e8924cad0476333df748c68950397e79d83faf2a2acbc692b61b51e"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/EngineStateDirectoryLock.swift",
-        "sha256": "9eacc13867a9d32c6788e2b266394663ca1a2ab90b92ba2dfe0d940a249f1724"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryOperations/RuntimeLaunchEnvelope.swift",
-        "sha256": "8da078a4a6fa835daa7fc909138a23dbd71767778ea8f49cc909b2e5a8775c9b"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift",
-        "sha256": "4b140615b45918dafe1d5c4e72499e09b7c3ce7b03039b6df333216873937e67"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacAdapter.swift",
-        "sha256": "c0e17b23a8d883defc98221801fde9469b2d9db4e02bccad42be67b90376d7a0"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacDesktopApplication.swift",
-        "sha256": "6247510582b4c8433bed2ba56a900de091d62e5a5ef1e9a75c21f2fd8ee34515"
-      },
-      {
-        "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
-        "sha256": "d6531309242ce5b5e7fa5b5a3ef87637f6e81055cebf0b71ad1c66a28309332e"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineLaunchPlanResolver.swift",
-        "sha256": "729eea778d600f03b6adfb323006052326960ca7fb59c8f778848e9d91df0c6a"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachinePlanningTransactionCoordinator.swift",
-        "sha256": "3387bb5f425bfd742a8ef26e0b599d47aa3ec4ddb881bee279641a7c5cfc2a9b"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionActivation.swift",
-        "sha256": "e2e8bf4f8c1917bd508c4146bbfa3142cc1b3676d4e6ddc72c3fe499109dab5e"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionPlanningComposition.swift",
-        "sha256": "ca35a0a11f30fcd3abf1853d774650536d7cfb8c4b1229e2549008a48e0ea165"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionPlanningController.swift",
-        "sha256": "7a470a23431faaba9a28589ae5a4a9778fc304d9f04c11ea1af8ea048fa5ab9d"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionTrust.swift",
-        "sha256": "88bfc4d6cbe9ebb2d108721097d7a620631760e74203c6a838c5ae7713fa4932"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineRuntimePlanning.swift",
-        "sha256": "aaf20342244a901f556b40bc19b8264497ed68cbe5e9e896468766266cb841ab"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryMachineConfigurationMigration.swift",
-        "sha256": "bc5fa8270f563b9ae4176b09a1063a25d21b462c22ec97c560279e9596e3e38f"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryMachineConfigurationUpdate.swift",
-        "sha256": "7a3021d5629083a913440eee2b91d79c269fdbb3874837a516aa2313fa68bb25"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryMachineRuntimeIdentity.swift",
-        "sha256": "c084ae63ce3ac43147ce01ffeac404c89771b8a6c7b9c7db2b209b28121c8abc"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryMachineRuntimeIdentityStore.swift",
-        "sha256": "40bda59f65a9f0d33da47eb6baa020a81eec519b4e141e5911846d9ac08e1f4b"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryMachineSavedState.swift",
-        "sha256": "7bf53bf7a2b6a03cb74bc97b402937ea57220e11b373176893800223f5114dfa"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryMachineTypedWriteAuthority.swift",
-        "sha256": "dd53b6b5d014756386321d9c2c99929f6caad8f0621885baa0381cc0810c07e7"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryRendererCrashSuppression.swift",
-        "sha256": "21694e2bc8f8944f748be042ae53283b3a0cd9453c2f30b9db2d54df9d5a67c4"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryResolvedMachinePlan.swift",
-        "sha256": "1ef09da28428fc10b07e25fa6215181443d96b30a1883dc7308e9e239eeef8bc"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryResolvedMachinePlanRepository.swift",
-        "sha256": "395f889529895fce11b111fd9e0dc749eabfa559a8065f2f814715a83ac1a02a"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryRuntimeReconnect.swift",
-        "sha256": "50d2a33c438d4f2b1e549843813c6c0f3d238874249f97bfe852048bd901e442"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DoryVirtualMachineResourceAdmissionLedger.swift",
-        "sha256": "840cc4452d8b47457cb494cee94afe1fec8a303c5e4f5c729ed4f9eed74ed230"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DorydConfiguration.swift",
-        "sha256": "ff23423ad6800a299ff4c0c8fbdeeb4f80b034d08906496338f8e996ed4a5676"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DorydControl.swift",
-        "sha256": "333920164b704cdf01f76e36f9baffd1033f51a89a2deb38cbd01017a3291304"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/DorydService.swift",
-        "sha256": "98261c7e1da75cccc8b0aca5446ceefa980be802d41d078124c906230a3ab7e1"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/HelperProcessJanitor.swift",
-        "sha256": "c8b93b38c2b19c6a8c295b61bf3128875fe61782f9e9630689d0ba8b40517925"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/HvProcess.swift",
-        "sha256": "7467b3acd370a3f3c204d0b797f96b90aa790a26e63090e837b263da8c37e75b"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/LinuxMachineBackendAdapters.swift",
-        "sha256": "1070a4205762e0c0b09a5b372823c23e608c566858f9ba88d60a74c35a7fb081"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/MachineBackend.swift",
-        "sha256": "b7e1809af3c715e80d153c69c823a069e94971d5df66ec5e0d54b483c10c9f93"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
-        "sha256": "86d23361ac1d300f63350dfff3865e193a135b79e8121862162cea268b961ab2"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/VmmControl.swift",
-        "sha256": "2f7a601a1a5a56450db3556680460e4c6b30bba1d70a494bd845b36ad46e2254"
-      },
-      {
-        "path": "dory-core-swift/Sources/DorydKit/VmmHandoff.swift",
-        "sha256": "a48aef831584ac4dffa2394d5dd03390c3c7b4d31f2d126c192e8f12e29871c8"
-      },
-      {
-        "path": "dory-core-swift/Sources/dory-pc-uefi-smoke/main.swift",
-        "sha256": "0938bc78566a648346ae77b2192bd7bed8c614314cf39b5c4cef05526045d36a"
-      },
-      {
-        "path": "dory-core-swift/Sources/dory-vzmac-qualification/main.swift",
-        "sha256": "aa8e27c32df116f533da3b533a5cc70f60d34d22e8726860079c5b5666609994"
-      },
-      {
-        "path": "dory-core-swift/Sources/doryd/main.swift",
-        "sha256": "e5e0ac8f2b587fdb199f93a9a38c7504a4d5a7f14b86a2a74d861d9c00ab5e9a"
-      },
-      {
-        "path": "dory-core-swift/Sources/dorydctl/main.swift",
-        "sha256": "990d99370a936c92159b123941581c09b3d7b2bdb23f4ebe8629ed4519fcd095"
-      },
-      {
-        "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCLinuxBootTests.swift",
-        "sha256": "422bfb5f1e5be37106173c320216b6da712889177dc1bde2214e8704ade50dd6"
-      },
-      {
-        "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPVHBootTests.swift",
-        "sha256": "214524ce5a9d31f286c334338a40e91e3f2129cfabf6fd23929c444238cab750"
-      },
-      {
-        "path": "dory-core-swift/Tests/DoryOperationsTests/DoryInstallerISOTests.swift",
-        "sha256": "c515cc734dc6b5057a3c9ebe16f559b8c1d09eac2ea81408907a814408e1b408"
-      },
-      {
-        "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVMResourcePolicyTests.swift",
-        "sha256": "ff0e7d3d4bfaa393dadbdaa23231a5050818e521cc7bfaeb056909f8651ba735"
-      },
-      {
-        "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualMachineArtifactAuthorityTests.swift",
-        "sha256": "eb0aeba54b7d7a051af92a137a634c082569dc618d8d78ad2c69b3e8c97cc756"
-      },
-      {
-        "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualMachineBackendPlannerTests.swift",
-        "sha256": "71ce941c0c03ff42ea98061a3d85d654583f43ba2467cdbaa7a7126f897ca424"
-      },
-      {
-        "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualMachineCapabilitiesTests.swift",
-        "sha256": "0a121cbfa39a6ab7762c9e613b70b2b700c015934e280dba1711f782fa79afd5"
-      },
-      {
-        "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualizationPlatformResolverTests.swift",
-        "sha256": "deae005c2707e163ac67a1db90ca46049be7978ffde3a5f827a43c434744c812"
-      },
-      {
-        "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualizationProductPolicyTests.swift",
-        "sha256": "b8149b89f7562bdfe8434720d4ba2ff0a90e728cccebfd7c45896ac21a358efb"
-      },
-      {
-        "path": "dory-core-swift/Tests/DoryOperationsTests/DoryWorkspaceLifecycleOperationTests.swift",
-        "sha256": "cd39412c1b2fb1ccfb22d9f8d0b5baed67cdb8e9669d29245b03a7d170ec2b31"
-      },
-      {
-        "path": "dory-core-swift/Tests/DoryOperationsTests/EngineStateDirectoryLockTests.swift",
-        "sha256": "bf859995bc5386fff7e3d612da62c07a95eb49230137ba78feaef0ebff8fae53"
-      },
-      {
-        "path": "dory-core-swift/Tests/DoryOperationsTests/RuntimeLaunchEnvelopeTests.swift",
-        "sha256": "17c61aac7fce313eabc963813535535d0e09ded64f5e3efcbb0b79493eea6f4f"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryControlPlaneArchitectureTests.swift",
-        "sha256": "80244b805c9c785ac59ef4ef5a558510404220df728321738262b17fc7e239a1"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachinePlanningTransactionCoordinatorTests.swift",
-        "sha256": "c877bc25b9acb5d572ac38b4ea9bfd74da42dcecdef50cfbf1902c8b36e23e3d"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionPlanningCompositionTests.swift",
-        "sha256": "a1a935b294215e12aab648e6526b8eddefa39935281180ac394e33dee76b5d9f"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift",
-        "sha256": "4b78de7bee9e02d71b914a2d8ccb6e2412362956d64fff6ddab29c6ff3f92be1"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineRuntimePlanningTests.swift",
-        "sha256": "da1a95385e40f5e3c7a420bcedd543fa8dfb6f723fd3d0f0ce693b02576eccf1"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineRuntimeIdentityStoreTests.swift",
-        "sha256": "5ae1a57520b191f67e54d8735a5fb418f6c0c9c6571032fd648ddc5f5586e56d"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineSavedStateTests.swift",
-        "sha256": "5f309333157820dca5bcd3fa5bca19169449e2af3ed7436ba3f7a15d789eb71c"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineTypedWriteAuthorityTests.swift",
-        "sha256": "45a3fe8988eb8bab535b31664c84f3c2834effc92188a1c50cdaecbbc6901fb0"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryP01PreflightTests.swift",
-        "sha256": "607f08663d6db9f6400bf313c8faaca608faa45f79bb1e69a8b95bf95fac0506"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryResolvedMachineLaunchArtifactFixtures.swift",
-        "sha256": "1da481d67c219cb5ba56daf7c8b0dd768fc1f66f137faf5c618138b899bc4e33"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryResolvedMachinePlanTests.swift",
-        "sha256": "3ff9258880542f62930f2adaa79806aa95a587affaa6b649c223e8a1586c1c5b"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryRuntimeReconnectTests.swift",
-        "sha256": "00b2fe23b49e0c1be2d02ec99a16473e33306c2f3e779c047948883499f40d0d"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryVZMacDesktopArgumentsTests.swift",
-        "sha256": "f40d85424a9ad524d9cc90018792797cfdd049cfdbb54cb2b1511b253ae33ecc"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DoryVirtualMachineResourceAdmissionLedgerTests.swift",
-        "sha256": "b490b36527913b7cdbe823051c110fed4d40669f0ed7a8b5c0e580cf0c5cf22d"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DorydConfigurationTests.swift",
-        "sha256": "f120aa64f496d8409b873ba1b5a5ba7787986557ef21b1f24854f758398269a3"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/DorydServiceTests.swift",
-        "sha256": "7fa682a80c553c9f66e9720a32eadb61ebc795b5b5701f1cd671f986e3a26e43"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/HealthReporterTests.swift",
-        "sha256": "6ab7bd117fbdd17586a02489d7e5064259a65bb584f252afea2769ba93e70daf"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/HelperProcessJanitorTests.swift",
-        "sha256": "8f2c572d718fe9f6e4bbac87843b5119fc0b9d66a05acfc426da64b55b919c99"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerLifecycleJournalIntegrationTests.swift",
-        "sha256": "d11723c1ca2a25b55f019cc7b01c158847cf14caa4169788f5d235aa78ac8b8b"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerResolvedPlanIntegrationTests.swift",
-        "sha256": "40b669cc0553f5929d82ad28f5170237741f61cadf1e064d837c41d9f5bee9e3"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift",
-        "sha256": "0c7807adace6c9f36939a9888e8f84b7c6b720bb6108178d5cb9a5267d9c1e5d"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/RuntimeUEFIAuthorityIntegrationTests.swift",
-        "sha256": "fc842c0a33c3a895fe4f02e718ef8298b78507874bff524dc6e5b27475e80e0c"
-      },
-      {
-        "path": "dory-core-swift/Tests/DorydKitTests/VmmHandoffTests.swift",
-        "sha256": "64f6c4de2ceb6370ca5fa63c558963afaf5da68bdef33ea00bde6d4b7fa1caad"
-      },
-      {
-        "path": "dory-core/agent/src/fsevents.rs",
-        "sha256": "4ae58b4fa1e89618cf1dd55cdef3ee89a1124fb396cac04551643f0e7434e5d3"
-      },
-      {
-        "path": "dory-core/ffi/Cargo.toml",
-        "sha256": "c562dd9c97238b13ea2cbf073ff5bb2e84b956f4b7e90e47b72be57bae30eedc"
-      },
-      {
-        "path": "dory-core/ffi/src/uniffi_bindgen.rs",
-        "sha256": "f7a2dd11fb370e9595bdfa6c32fc41a9b67a60bbab06ec711cb7a03eb873ffa6"
-      },
-      {
-        "path": "scripts/build-dory-armvirt-firmware.py",
-        "sha256": "ca65df80d109766c8aa51e8e7a79b946532f2a47589195d24384438d8a076c60"
-      }
-    ],
-    "dependencyLocks": [
-      {
-        "path": "Dory.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
-        "sha256": "b43d0eeb680bcf3db0af6c2841add8d6ba7d006e64a302ebf323b61e25e521b3"
-      },
-      {
-        "path": "dory-core/Cargo.lock",
-        "sha256": "015646eeb635c76666cb0b725537945a1045ae993a8d80322cdec8faf38e8b5f"
-      }
-    ],
-    "submodules": [],
-    "snapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a"
+    "finalImplementationCommit": "cd88d9dc8fa2f32ced69de95ee7dab07d3dc4181",
+    "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-source-manifest.json",
+    "sourceManifestSHA256": "b2bcf9fc472c73027c2037a8d17959d4789ad2bab52949123f75c54b548519d0",
+    "compiledInputs": 674,
+    "allFinalCompiledInputsMatchLiveTree": true,
+    "snapshotMeaning": "Final core inputs after focused regression corrections. Broad regression predates only seven listed files; affected suites and Release were rebuilt from the final frozen source. App and container source equivalence is retained separately."
   },
   "host": {
     "architecture": "arm64",
@@ -491,184 +43,35 @@
   },
   "runs": [
     {
-      "name": "full-core",
-      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer DORY_TEST_INSTALLED_DISK=/tmp/noble-server-cloudimg-arm64.raw DORY_TEST_INSTALLED_ROOT_DEVICE=/dev/vda1 DORY_TEST_INSTALLER_ISO=/tmp/ubuntu-24.04.4-live-server-arm64.iso DORY_TEST_PORTABLE_INSTALLER_ISO=/tmp/ubuntu-24.04.4-live-server-arm64.iso DORY_TEST_X86_64_INSTALLER_ISO=/tmp/ubuntu-24.04.4-live-server-amd64.iso swift test --package-path dory-core-swift --scratch-path /tmp/dory-p01-full-core-final-build --jobs 6 --no-parallel",
-      "exitCode": 0,
-      "xctest": {
-        "reportedCases": 1096,
-        "passed": 1095,
-        "skipped": 1,
-        "failed": 0,
-        "wallSeconds": 92.485
-      },
-      "swiftTesting": {
-        "passed": 1085,
-        "suites": 135,
-        "failed": 0,
-        "wallSeconds": 269.753
-      },
-      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/full-core.log.gz",
-      "outputSHA256": "d5267b97cbcf5fe49b03b958a20101af1c3a070829caf689d8c6d9054cef927a",
-      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
-      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a",
-      "scope": "Full core suite. Eighteen production native-desktop preflight cases compare helper identity, power/readiness, exact runtime identity and authority files before artifact staging. Stopped preflight checks capacity without a lease grant or write and cannot authorize spawn. Native create/update/clone/restore preserves software or accelerated graphics budgets, network mode, forwards and camera intent. Existing launch mutation tests retain exact persisted-source and final authorization guards. Historical desktop journal tests cover malformed/unknown recovery fencing, source hash and committed kernel verification for schemas 2/3, and schema-1 cleanup compatibility. Guest architecture selection is tested across daemon-default changes. Controlled helpers and in-process restart recovery are not physical guest or new SIGKILL qualification; optional PVH fixture remains explicitly skipped."
+      "name": "Broad frozen final core regression",
+      "status": "failed; all findings corrected and affected suites rerun",
+      "receipt": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-tests-evidence.json"
     },
     {
-      "name": "container-package",
-      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=1 swift test --package-path Packages/ContainerizationEngine --scratch-path /tmp/dory-p01-container-reconnect-build --jobs 4 --no-parallel",
-      "exitCode": 0,
-      "swiftTesting": {
-        "passed": 1202,
-        "suites": 141,
-        "failed": 0,
-        "wallSeconds": 10.121
-      },
-      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/container-package.log.gz",
-      "outputSHA256": "6378c1047107f91675416c77a8881432822e3be37557a455046d6d813494d446",
-      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
-      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a",
-      "scope": "Full container package against this exact source snapshot, including shared DoryOperations and DorydKit dependencies."
+      "name": "Final affected core suites",
+      "status": "passed",
+      "receipt": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-tests-evidence.json"
     },
     {
-      "name": "rust",
-      "command": "scripts/test.sh rust",
-      "exitCode": 0,
-      "tests": {
-        "passed": 219,
-        "failed": 0,
-        "ignored": 0
-      },
-      "format": "passed",
-      "clippy": "passed",
-      "output": "docs/virtualization/evidence/p01-control-plane-2026-09-04/rust.log.gz",
-      "outputSHA256": "ae6add28dfa4928d48d766a8b74e8996e9dc554b6cd74ae37ff5d63d7ecab209",
-      "sanitization": "Workspace/home and scratch-build prefixes replaced; test outcomes retained.",
-      "sourceSnapshotID": "c0f3aa89f4452b3c1f84cffaf3f40c3353a5a7515247e72063ee593ef3e607e6",
-      "scope": "Carried forward from the preceding campaign; see sourceSnapshotID."
+      "name": "Final Release doryd build and diagnostic-symbol exclusion",
+      "status": "passed",
+      "receipt": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-release-evidence.json",
+      "symbols": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-release-symbol-evidence.json"
     },
     {
-      "name": "no-qemu",
-      "command": "python3 .github/scripts/test-no-qemu-production.py",
-      "exitCode": 0,
-      "tests": {
-        "passed": 4,
-        "failed": 0
-      },
-      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/no-qemu.log.gz",
-      "outputSHA256": "9027305c55b42e40c16dc03c897a704a5aced17543e56faec22dddef4f23fa44",
-      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
-      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a"
-    },
-    {
-      "name": "readiness-contract",
-      "command": "python3 .github/scripts/test-readiness-gate.py",
-      "exitCode": 0,
-      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/readiness-contract.log.gz",
-      "outputSHA256": "123e1855a09ef119337af173050fb348366b06193301444b8782c9adaf007591",
-      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
-      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a"
-    },
-    {
-      "name": "ci-contract",
-      "command": "python3 .github/scripts/test-ci-umbrella.py",
-      "exitCode": 0,
-      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/ci-contract.log.gz",
-      "outputSHA256": "fb3a5468e0460cb6db29337b7909bd23f945d44e7cdc9a9cd533bfdc55e6584a",
-      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
-      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a"
-    },
-    {
-      "name": "app-test-build",
-      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer xcodebuild build-for-testing -project Dory.xcodeproj -scheme Dory -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/dory-p01-app-build -jobs 4 CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=-",
-      "exitCode": 0,
-      "signingMode": "ad-hoc; engineering build",
-      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/app-test-build.log.gz",
-      "outputSHA256": "8902ed1e0f75991fd140dab6ad3936d4ed574716f1156d6ea9dc813fb4a99b9b",
-      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
-      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a",
-      "result": "Original Debug app and full DoryTests target build/sign successfully. Runtime tests use the separate isolated host below."
-    },
-    {
-      "name": "app-signature",
-      "command": "codesign --verify --deep --strict --verbose=2 /tmp/dory-p01-app-build/Build/Products/Debug/Dory.app",
-      "exitCode": 0,
-      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/app-signature.log.gz",
-      "outputSHA256": "02a298b6aeffb4964073b2160e5df969b8db1aa356889dc5dfb9ad16cbd620fa",
-      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
-      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a"
-    },
-    {
-      "name": "app-test-launch",
-      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer xcodebuild test -project Dory.xcodeproj -scheme Dory -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/dory-p01-app-build -parallel-testing-enabled NO -jobs 6 -only-testing:DoryTests/DorydClientTests -only-testing:DoryTests/MachineServiceHelperTests CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=-",
-      "exitCode": 65,
-      "result": "not-executed: LaunchServices Code 20; installed Dory application still running",
-      "output": "docs/virtualization/evidence/p01-control-plane-2026-09-04/app-test-launch.log.gz",
-      "outputSHA256": "090e419bf7dfd213d046c1c180122f8a183ca315d936c97e666816850000f7f8",
-      "sanitization": "Workspace/home and scratch-build prefixes replaced; test outcomes retained.",
-      "sourceSnapshotID": "c0f3aa89f4452b3c1f84cffaf3f40c3353a5a7515247e72063ee593ef3e607e6",
-      "scope": "Carried forward from the preceding campaign; see sourceSnapshotID."
-    },
-    {
-      "name": "required-pvh-fixture-rejection",
-      "command": "DORY_REQUIRE_X86_PVH_BOOT=1 DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path dory-core-swift --scratch-path /tmp/dory-p01-full-core-final-build --skip-build --no-parallel --filter DoryPCLinuxBootTests",
-      "exitCode": 1,
-      "expectedExitCode": 1,
-      "result": "expected rejection: all four required fixture identity inputs missing; zero boot qualification",
-      "output": "docs/virtualization/evidence/p01-control-plane-2026-09-04/required-pvh-fixture-rejection.log.gz",
-      "outputSHA256": "684db84fff66c863793377677309f10236dc5bc32f9fd33aec8b346ff2138d6f",
-      "sanitization": "Workspace/home and scratch-build prefixes replaced; test outcomes retained.",
-      "sourceSnapshotID": "c0f3aa89f4452b3c1f84cffaf3f40c3353a5a7515247e72063ee593ef3e607e6",
-      "scope": "Carried forward from the preceding campaign; see sourceSnapshotID."
-    },
-    {
-      "name": "initial-core-findings",
-      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer DORY_TEST_INSTALLED_DISK=/tmp/noble-server-cloudimg-arm64.raw DORY_TEST_INSTALLED_ROOT_DEVICE=/dev/vda1 DORY_TEST_INSTALLER_ISO=/tmp/ubuntu-24.04.4-live-server-arm64.iso DORY_TEST_PORTABLE_INSTALLER_ISO=/tmp/ubuntu-24.04.4-live-server-arm64.iso DORY_TEST_X86_64_INSTALLER_ISO=/tmp/ubuntu-24.04.4-live-server-amd64.iso swift test --package-path dory-core-swift --scratch-path /tmp/dory-p01-full-core-final-build --jobs 6 --no-parallel",
-      "exitCode": 1,
-      "result": "superseded by full-core; exposed Mac managed-argument fixture, restore result projection, missing PVH fixture and two stale memory-map assertions",
-      "output": "docs/virtualization/evidence/p01-control-plane-2026-09-04/initial-core-findings.log.gz",
-      "outputSHA256": "2b14b2bbbb292ec2345436168ceebfe0d6a7c9dc1e5b784795d167bdd3f48cb8",
-      "sanitization": "Workspace/home and scratch-build prefixes replaced; test outcomes retained.",
-      "sourceSnapshotID": "c0f3aa89f4452b3c1f84cffaf3f40c3353a5a7515247e72063ee593ef3e607e6",
-      "scope": "Carried forward from the preceding campaign; see sourceSnapshotID."
-    },
-    {
-      "name": "app-isolated-tests",
-      "exitCode": 0,
-      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a",
-      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer python3 /tmp/dory-p01-isolated-app-tests.py --products /tmp/dory-p01-app-build/Build/Products --manifest /tmp/dory-p01-app-desktop-recovery-manifest.json",
-      "swiftTesting": {
-        "passed": 958,
-        "suites": 110,
-        "failed": 0,
-        "wallSeconds": 50.004
-      },
-      "scope": "Full DoryTests bundle in a copied Debug app, with a separate test-host bundle identity, preserved entitlements and ad-hoc signing. DORY_UI_TEST=1 disables app instance management and startup side effects. This does not qualify the original bundle identity, app UI automation, physical guests or release signing.",
-      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/app-isolated-tests.log.gz",
-      "outputSHA256": "0bb79a80c5bb906234309a2051c60200a083bc19dae6bf14cbea3dcb2d45dca6",
-      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
-      "isolationManifest": {
-        "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/app-test-host.json.gz",
-        "outputSHA256": "08adff77c8586454a0ea7a986411be763fbd9b3bb18f0c71b9f314e9cacd0625",
-        "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained."
-      },
-      "reproductionScript": {
-        "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/isolate-app-tests.py.gz",
-        "outputSHA256": "4a87d26ef1e382ec402d6b2f375b5602e7818853577eeadd86b8b89728717f32",
-        "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained."
-      }
+      "name": "Final isolated app client and lifecycle transport",
+      "status": "passed",
+      "tests": 83,
+      "receipt": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-lifecycle-client-evidence.json"
     }
   ],
   "exclusions": [
     "Original-identity app launch and UI automation; full DoryTests passes in a copied isolated host",
     "Physical Linux/macOS guest boot, accelerated desktop and workload qualification",
-    "Final/public host matrix, notarization and release qualification"
+    "Final/public host matrix, notarization and release qualification",
+    "Native saved-memory execution and continuation after guest disk writes; P08-06 and P08-27 remain open."
   ],
-  "remainingGates": [
-    "Finish ordinary-start planning/admission under the caller root and exact-plan saved-state readmission.",
-    "Verify shared restore artifact handoffs and directory durability.",
-    "Finish compound cancellation and authenticated legacy fixture parity.",
-    "Run final combined integration regression and reconcile the P01 exit inventory."
-  ],
+  "remainingGates": [],
   "plan": "PLAN.md#phase-p01",
   "historicalRuns": [
     {
@@ -1672,6 +1075,173 @@
       "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/desktop-recovery-focused-regression.log.gz",
       "outputSHA256": "e1eaefe3b69a45bad4616449e30730878607fb81dbcd8bfdf5ea3a50fea57442",
       "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained."
+    },
+    {
+      "name": "full-core",
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer DORY_TEST_INSTALLED_DISK=/tmp/noble-server-cloudimg-arm64.raw DORY_TEST_INSTALLED_ROOT_DEVICE=/dev/vda1 DORY_TEST_INSTALLER_ISO=/tmp/ubuntu-24.04.4-live-server-arm64.iso DORY_TEST_PORTABLE_INSTALLER_ISO=/tmp/ubuntu-24.04.4-live-server-arm64.iso DORY_TEST_X86_64_INSTALLER_ISO=/tmp/ubuntu-24.04.4-live-server-amd64.iso swift test --package-path dory-core-swift --scratch-path /tmp/dory-p01-full-core-final-build --jobs 6 --no-parallel",
+      "exitCode": 0,
+      "xctest": {
+        "reportedCases": 1096,
+        "passed": 1095,
+        "skipped": 1,
+        "failed": 0,
+        "wallSeconds": 92.485
+      },
+      "swiftTesting": {
+        "passed": 1085,
+        "suites": 135,
+        "failed": 0,
+        "wallSeconds": 269.753
+      },
+      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/full-core.log.gz",
+      "outputSHA256": "d5267b97cbcf5fe49b03b958a20101af1c3a070829caf689d8c6d9054cef927a",
+      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
+      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a",
+      "scope": "Full core suite. Eighteen production native-desktop preflight cases compare helper identity, power/readiness, exact runtime identity and authority files before artifact staging. Stopped preflight checks capacity without a lease grant or write and cannot authorize spawn. Native create/update/clone/restore preserves software or accelerated graphics budgets, network mode, forwards and camera intent. Existing launch mutation tests retain exact persisted-source and final authorization guards. Historical desktop journal tests cover malformed/unknown recovery fencing, source hash and committed kernel verification for schemas 2/3, and schema-1 cleanup compatibility. Guest architecture selection is tested across daemon-default changes. Controlled helpers and in-process restart recovery are not physical guest or new SIGKILL qualification; optional PVH fixture remains explicitly skipped."
+    },
+    {
+      "name": "container-package",
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=1 swift test --package-path Packages/ContainerizationEngine --scratch-path /tmp/dory-p01-container-reconnect-build --jobs 4 --no-parallel",
+      "exitCode": 0,
+      "swiftTesting": {
+        "passed": 1202,
+        "suites": 141,
+        "failed": 0,
+        "wallSeconds": 10.121
+      },
+      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/container-package.log.gz",
+      "outputSHA256": "6378c1047107f91675416c77a8881432822e3be37557a455046d6d813494d446",
+      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
+      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a",
+      "scope": "Full container package against this exact source snapshot, including shared DoryOperations and DorydKit dependencies."
+    },
+    {
+      "name": "rust",
+      "command": "scripts/test.sh rust",
+      "exitCode": 0,
+      "tests": {
+        "passed": 219,
+        "failed": 0,
+        "ignored": 0
+      },
+      "format": "passed",
+      "clippy": "passed",
+      "output": "docs/virtualization/evidence/p01-control-plane-2026-09-04/rust.log.gz",
+      "outputSHA256": "ae6add28dfa4928d48d766a8b74e8996e9dc554b6cd74ae37ff5d63d7ecab209",
+      "sanitization": "Workspace/home and scratch-build prefixes replaced; test outcomes retained.",
+      "sourceSnapshotID": "c0f3aa89f4452b3c1f84cffaf3f40c3353a5a7515247e72063ee593ef3e607e6",
+      "scope": "Carried forward from the preceding campaign; see sourceSnapshotID."
+    },
+    {
+      "name": "no-qemu",
+      "command": "python3 .github/scripts/test-no-qemu-production.py",
+      "exitCode": 0,
+      "tests": {
+        "passed": 4,
+        "failed": 0
+      },
+      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/no-qemu.log.gz",
+      "outputSHA256": "9027305c55b42e40c16dc03c897a704a5aced17543e56faec22dddef4f23fa44",
+      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
+      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a"
+    },
+    {
+      "name": "readiness-contract",
+      "command": "python3 .github/scripts/test-readiness-gate.py",
+      "exitCode": 0,
+      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/readiness-contract.log.gz",
+      "outputSHA256": "123e1855a09ef119337af173050fb348366b06193301444b8782c9adaf007591",
+      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
+      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a"
+    },
+    {
+      "name": "ci-contract",
+      "command": "python3 .github/scripts/test-ci-umbrella.py",
+      "exitCode": 0,
+      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/ci-contract.log.gz",
+      "outputSHA256": "fb3a5468e0460cb6db29337b7909bd23f945d44e7cdc9a9cd533bfdc55e6584a",
+      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
+      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a"
+    },
+    {
+      "name": "app-test-build",
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer xcodebuild build-for-testing -project Dory.xcodeproj -scheme Dory -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/dory-p01-app-build -jobs 4 CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=-",
+      "exitCode": 0,
+      "signingMode": "ad-hoc; engineering build",
+      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/app-test-build.log.gz",
+      "outputSHA256": "8902ed1e0f75991fd140dab6ad3936d4ed574716f1156d6ea9dc813fb4a99b9b",
+      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
+      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a",
+      "result": "Original Debug app and full DoryTests target build/sign successfully. Runtime tests use the separate isolated host below."
+    },
+    {
+      "name": "app-signature",
+      "command": "codesign --verify --deep --strict --verbose=2 /tmp/dory-p01-app-build/Build/Products/Debug/Dory.app",
+      "exitCode": 0,
+      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/app-signature.log.gz",
+      "outputSHA256": "02a298b6aeffb4964073b2160e5df969b8db1aa356889dc5dfb9ad16cbd620fa",
+      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
+      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a"
+    },
+    {
+      "name": "app-test-launch",
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer xcodebuild test -project Dory.xcodeproj -scheme Dory -configuration Debug -destination 'platform=macOS' -derivedDataPath /tmp/dory-p01-app-build -parallel-testing-enabled NO -jobs 6 -only-testing:DoryTests/DorydClientTests -only-testing:DoryTests/MachineServiceHelperTests CODE_SIGNING_ALLOWED=YES CODE_SIGNING_REQUIRED=YES CODE_SIGN_IDENTITY=-",
+      "exitCode": 65,
+      "result": "not-executed: LaunchServices Code 20; installed Dory application still running",
+      "output": "docs/virtualization/evidence/p01-control-plane-2026-09-04/app-test-launch.log.gz",
+      "outputSHA256": "090e419bf7dfd213d046c1c180122f8a183ca315d936c97e666816850000f7f8",
+      "sanitization": "Workspace/home and scratch-build prefixes replaced; test outcomes retained.",
+      "sourceSnapshotID": "c0f3aa89f4452b3c1f84cffaf3f40c3353a5a7515247e72063ee593ef3e607e6",
+      "scope": "Carried forward from the preceding campaign; see sourceSnapshotID."
+    },
+    {
+      "name": "required-pvh-fixture-rejection",
+      "command": "DORY_REQUIRE_X86_PVH_BOOT=1 DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path dory-core-swift --scratch-path /tmp/dory-p01-full-core-final-build --skip-build --no-parallel --filter DoryPCLinuxBootTests",
+      "exitCode": 1,
+      "expectedExitCode": 1,
+      "result": "expected rejection: all four required fixture identity inputs missing; zero boot qualification",
+      "output": "docs/virtualization/evidence/p01-control-plane-2026-09-04/required-pvh-fixture-rejection.log.gz",
+      "outputSHA256": "684db84fff66c863793377677309f10236dc5bc32f9fd33aec8b346ff2138d6f",
+      "sanitization": "Workspace/home and scratch-build prefixes replaced; test outcomes retained.",
+      "sourceSnapshotID": "c0f3aa89f4452b3c1f84cffaf3f40c3353a5a7515247e72063ee593ef3e607e6",
+      "scope": "Carried forward from the preceding campaign; see sourceSnapshotID."
+    },
+    {
+      "name": "initial-core-findings",
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer DORY_TEST_INSTALLED_DISK=/tmp/noble-server-cloudimg-arm64.raw DORY_TEST_INSTALLED_ROOT_DEVICE=/dev/vda1 DORY_TEST_INSTALLER_ISO=/tmp/ubuntu-24.04.4-live-server-arm64.iso DORY_TEST_PORTABLE_INSTALLER_ISO=/tmp/ubuntu-24.04.4-live-server-arm64.iso DORY_TEST_X86_64_INSTALLER_ISO=/tmp/ubuntu-24.04.4-live-server-amd64.iso swift test --package-path dory-core-swift --scratch-path /tmp/dory-p01-full-core-final-build --jobs 6 --no-parallel",
+      "exitCode": 1,
+      "result": "superseded by full-core; exposed Mac managed-argument fixture, restore result projection, missing PVH fixture and two stale memory-map assertions",
+      "output": "docs/virtualization/evidence/p01-control-plane-2026-09-04/initial-core-findings.log.gz",
+      "outputSHA256": "2b14b2bbbb292ec2345436168ceebfe0d6a7c9dc1e5b784795d167bdd3f48cb8",
+      "sanitization": "Workspace/home and scratch-build prefixes replaced; test outcomes retained.",
+      "sourceSnapshotID": "c0f3aa89f4452b3c1f84cffaf3f40c3353a5a7515247e72063ee593ef3e607e6",
+      "scope": "Carried forward from the preceding campaign; see sourceSnapshotID."
+    },
+    {
+      "name": "app-isolated-tests",
+      "exitCode": 0,
+      "sourceSnapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a",
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer python3 /tmp/dory-p01-isolated-app-tests.py --products /tmp/dory-p01-app-build/Build/Products --manifest /tmp/dory-p01-app-desktop-recovery-manifest.json",
+      "swiftTesting": {
+        "passed": 958,
+        "suites": 110,
+        "failed": 0,
+        "wallSeconds": 50.004
+      },
+      "scope": "Full DoryTests bundle in a copied Debug app, with a separate test-host bundle identity, preserved entitlements and ad-hoc signing. DORY_UI_TEST=1 disables app instance management and startup side effects. This does not qualify the original bundle identity, app UI automation, physical guests or release signing.",
+      "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/app-isolated-tests.log.gz",
+      "outputSHA256": "0bb79a80c5bb906234309a2051c60200a083bc19dae6bf14cbea3dcb2d45dca6",
+      "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained.",
+      "isolationManifest": {
+        "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/app-test-host.json.gz",
+        "outputSHA256": "08adff77c8586454a0ea7a986411be763fbd9b3bb18f0c71b9f314e9cacd0625",
+        "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained."
+      },
+      "reproductionScript": {
+        "output": "docs/virtualization/evidence/p01-desktop-recovery-2026-09-04/isolate-app-tests.py.gz",
+        "outputSHA256": "4a87d26ef1e382ec402d6b2f375b5602e7818853577eeadd86b8b89728717f32",
+        "sanitization": "Workspace/home and scratch-build prefixes replaced; commands, test outcomes and test-host identities retained."
+      }
     }
   ],
   "additionalCompletedItems": [
@@ -6208,22 +5778,509 @@
         "newSIGKILLQualification": false,
         "fixtureNote": "Production journal, planning, admission and launch composition with controlled helpers. Injected interruption plus fresh factory activation exercises durable recovery after confirmed stop; live completion replay uses the same manager. App tests use a separately identified copied host with identical code/data, tests and dependencies. No physical guest, original-identity launch, UI automation, release signing or pressure qualification is claimed."
       }
+    },
+    {
+      "scope": "Previous review source and campaign, superseded by final P01 manifests",
+      "source": {
+        "baseCommit": "bdb49cf8fadcd60b90e906740abc5ab1d83b5db7",
+        "workingTreeWasDirtyBeforeReview": true,
+        "snapshotMeaning": "Desktop source preflight and recovery fencing; native typed launch projection, graphics resource budget, and preservation of network/forwarding/camera intent. Full core/container and isolated app tests, original app build and signature verification bind these source bytes. Desktop compound journal composition remains open.",
+        "changedSourceFiles": [
+          {
+            "path": "Dory.xcodeproj/project.pbxproj",
+            "sha256": "1a7efbdf2f444b43772b1f379cfa00a36a0543a1250bdc15ca3d7b8893e45f4b"
+          },
+          {
+            "path": "Dory/Features/Machines/MachinesView.swift",
+            "sha256": "19274b41483ff362cd5ae6c882b8c26722b583eedbebc9388d7c0d46344a420d"
+          },
+          {
+            "path": "Dory/Models/AppStore.swift",
+            "sha256": "0531aaf14f0b02658d81338b306f77364aaaceb8e188a9ef5967068c87fc286b"
+          },
+          {
+            "path": "Dory/Models/Models.swift",
+            "sha256": "8543e42a9bff842ce11694d9fad31e59d61a550ab1918a97d2bc3ff2ca8589b8"
+          },
+          {
+            "path": "Dory/Runtime/Doryd/DorydClient.swift",
+            "sha256": "a5a387d6b6969cae8c3c8abbce55598b29dac7a3a713d7778fcc41f5b74dae9d"
+          },
+          {
+            "path": "DoryTests/DorydClientTests.swift",
+            "sha256": "d37e515bb0bd9e77e8c3b4df08c3633e463613f3851e930e62d351fe340098d9"
+          },
+          {
+            "path": "DoryTests/LSUIElementBuildSettingTests.swift",
+            "sha256": "89a90a3dba9c733a7ae29ec05ea86b0729db053e230787a173228b9af6cd3242"
+          },
+          {
+            "path": "DoryTests/MachineSnapshotTests.swift",
+            "sha256": "ae666927f3b85ac3ecca49374ed5a7ab7c83e309757e13e65193a33c1e463b85"
+          },
+          {
+            "path": "DoryTests/MachineStatsSyncTests.swift",
+            "sha256": "aeee80dda6749123b74bb81927ad3d5b0fc365088f43edbc9abeb0ec869cd4c8"
+          },
+          {
+            "path": "DoryTests/MachineTests.swift",
+            "sha256": "9e83d20b5db0ad8160d71cbf45299dcca142b77a2fc3490a2d0f29c486dfa07f"
+          },
+          {
+            "path": "DoryTests/MockData.swift",
+            "sha256": "e9888e4d5feae8c21d45b8b7816d97f82e5a83686e93c2fb77747cc6f042bcf1"
+          },
+          {
+            "path": "DoryTests/NetworkingTests.swift",
+            "sha256": "6472492f6cebc489291999f598876fff4f20d4acddff426977cd115afc0dc5eb"
+          },
+          {
+            "path": "DoryTests/SSHConfigWriterTests.swift",
+            "sha256": "bb550b9d4be7aca1f32234d5b509be951cb41c2220bd8ffa0f9cdb1e37831e23"
+          },
+          {
+            "path": "DoryTests/TerminalSessionTests.swift",
+            "sha256": "4f6322d069ef5e05418bab8c2693d2b9fb9a421dc2bde49b34b70a43fabb4a12"
+          },
+          {
+            "path": "Packages/ContainerizationEngine/Sources/DoryHV/GuestExecutionPauseCoordinator.swift",
+            "sha256": "267c8fdcef0a43b071ded9c37d329345e41628bab4a8a79a77cacfec3d66cfb2"
+          },
+          {
+            "path": "Packages/ContainerizationEngine/Sources/DoryHV/Machine.swift",
+            "sha256": "2d480643e24a68a4cc1f6d5f2d6b048c50f8f8e14e18d2b6cbc63fa05368e58c"
+          },
+          {
+            "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+            "sha256": "63a3adccd56c8a1649cbe7935167e9f8fc5b24ed49ce91c12319c381dd4903b5"
+          },
+          {
+            "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+            "sha256": "e995570aa4a988f81bdfa6c729830f5abf1fb5d89517b01edcfc1067805d9bda"
+          },
+          {
+            "path": "Packages/ContainerizationEngine/Sources/dory-hv/main.swift",
+            "sha256": "4fc51b7ccd4e059b302cdc2747cf528771117da506cfd2d330cf531dad431475"
+          },
+          {
+            "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GuestExecutionPauseCoordinatorTests.swift",
+            "sha256": "7316207a07d50de13c51720c049908e64c0cca6ab59a237337371c122f7b777f"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryDesktopRuntimeContract.swift",
+            "sha256": "b3804ee029d7ca16b8071d2c251ca0d6f94b8880bf7cb026defbdcefaa94ddb4"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryInstallerISO.swift",
+            "sha256": "853296b087767f0327b568c96589f2ab2f106db5a3070e8345e8a6ad062521a2"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryOperationJournal.swift",
+            "sha256": "2bb3217581da402652517eca88b270a9dceb31313e70489b2d2c7caa9d4347c7"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryOperationJournalModels.swift",
+            "sha256": "224dbda2f083783619d186ed14c1273ab7d6741384fa2c0f6d3281c1add7f5ae"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryPCRuntimeLaunchEnvelope.swift",
+            "sha256": "45110c5e6fdaaafa0ddc5e3a338c70064a3b8554caac90dec92afc4986b03db4"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryVMResourcePolicy.swift",
+            "sha256": "5474badb59b9bcfe8279a38e149edd907863ad5d9a86ab1c15f1843f5b58b24c"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineArtifactAuthority.swift",
+            "sha256": "0b064915e4e41723482c62c63b2f4736104da72936195414c7bafcfe3e67b7ce"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineBackendPlanner.swift",
+            "sha256": "4b9692b4ca33b680a86b83c9cac98459fb7dbf286cdf490e4287bf260c0d09e1"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineCapabilities.swift",
+            "sha256": "a708e82e29e599111fd50005c9965c832fb35393cfcb7accbee6ad9cce91148c"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineDefinition.swift",
+            "sha256": "8f85b14845274d8a2ab24cbb7e3995cfe98b62c4e5a369f4921b8fc9c749cd3b"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineQualificationManifest.swift",
+            "sha256": "17f7bed37d816f796b3300f2232ea61c03205a1cc0bf2771a73f4d484cc26d61"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineState.swift",
+            "sha256": "99394b3c935607819383f86a44cf3eaf556b08e6d23296679a71941e1e8efc3a"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualizationPlatform.swift",
+            "sha256": "40b97ed571566625246f560f9c99ab403209c3bf689f19e8e8c53c8a0deec6de"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/DoryWorkspaceLifecycleOperation.swift",
+            "sha256": "f62e449a3e8924cad0476333df748c68950397e79d83faf2a2acbc692b61b51e"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/EngineStateDirectoryLock.swift",
+            "sha256": "9eacc13867a9d32c6788e2b266394663ca1a2ab90b92ba2dfe0d940a249f1724"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryOperations/RuntimeLaunchEnvelope.swift",
+            "sha256": "8da078a4a6fa835daa7fc909138a23dbd71767778ea8f49cc909b2e5a8775c9b"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift",
+            "sha256": "4b140615b45918dafe1d5c4e72499e09b7c3ce7b03039b6df333216873937e67"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacAdapter.swift",
+            "sha256": "c0e17b23a8d883defc98221801fde9469b2d9db4e02bccad42be67b90376d7a0"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacDesktopApplication.swift",
+            "sha256": "6247510582b4c8433bed2ba56a900de091d62e5a5ef1e9a75c21f2fd8ee34515"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+            "sha256": "d6531309242ce5b5e7fa5b5a3ef87637f6e81055cebf0b71ad1c66a28309332e"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineLaunchPlanResolver.swift",
+            "sha256": "729eea778d600f03b6adfb323006052326960ca7fb59c8f778848e9d91df0c6a"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachinePlanningTransactionCoordinator.swift",
+            "sha256": "3387bb5f425bfd742a8ef26e0b599d47aa3ec4ddb881bee279641a7c5cfc2a9b"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionActivation.swift",
+            "sha256": "e2e8bf4f8c1917bd508c4146bbfa3142cc1b3676d4e6ddc72c3fe499109dab5e"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionPlanningComposition.swift",
+            "sha256": "ca35a0a11f30fcd3abf1853d774650536d7cfb8c4b1229e2549008a48e0ea165"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionPlanningController.swift",
+            "sha256": "7a470a23431faaba9a28589ae5a4a9778fc304d9f04c11ea1af8ea048fa5ab9d"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionTrust.swift",
+            "sha256": "88bfc4d6cbe9ebb2d108721097d7a620631760e74203c6a838c5ae7713fa4932"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineRuntimePlanning.swift",
+            "sha256": "aaf20342244a901f556b40bc19b8264497ed68cbe5e9e896468766266cb841ab"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryMachineConfigurationMigration.swift",
+            "sha256": "bc5fa8270f563b9ae4176b09a1063a25d21b462c22ec97c560279e9596e3e38f"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryMachineConfigurationUpdate.swift",
+            "sha256": "7a3021d5629083a913440eee2b91d79c269fdbb3874837a516aa2313fa68bb25"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryMachineRuntimeIdentity.swift",
+            "sha256": "c084ae63ce3ac43147ce01ffeac404c89771b8a6c7b9c7db2b209b28121c8abc"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryMachineRuntimeIdentityStore.swift",
+            "sha256": "40bda59f65a9f0d33da47eb6baa020a81eec519b4e141e5911846d9ac08e1f4b"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryMachineSavedState.swift",
+            "sha256": "7bf53bf7a2b6a03cb74bc97b402937ea57220e11b373176893800223f5114dfa"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryMachineTypedWriteAuthority.swift",
+            "sha256": "dd53b6b5d014756386321d9c2c99929f6caad8f0621885baa0381cc0810c07e7"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryRendererCrashSuppression.swift",
+            "sha256": "21694e2bc8f8944f748be042ae53283b3a0cd9453c2f30b9db2d54df9d5a67c4"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryResolvedMachinePlan.swift",
+            "sha256": "1ef09da28428fc10b07e25fa6215181443d96b30a1883dc7308e9e239eeef8bc"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryResolvedMachinePlanRepository.swift",
+            "sha256": "395f889529895fce11b111fd9e0dc749eabfa559a8065f2f814715a83ac1a02a"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryRuntimeReconnect.swift",
+            "sha256": "50d2a33c438d4f2b1e549843813c6c0f3d238874249f97bfe852048bd901e442"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DoryVirtualMachineResourceAdmissionLedger.swift",
+            "sha256": "840cc4452d8b47457cb494cee94afe1fec8a303c5e4f5c729ed4f9eed74ed230"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DorydConfiguration.swift",
+            "sha256": "ff23423ad6800a299ff4c0c8fbdeeb4f80b034d08906496338f8e996ed4a5676"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DorydControl.swift",
+            "sha256": "333920164b704cdf01f76e36f9baffd1033f51a89a2deb38cbd01017a3291304"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/DorydService.swift",
+            "sha256": "98261c7e1da75cccc8b0aca5446ceefa980be802d41d078124c906230a3ab7e1"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/HelperProcessJanitor.swift",
+            "sha256": "c8b93b38c2b19c6a8c295b61bf3128875fe61782f9e9630689d0ba8b40517925"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/HvProcess.swift",
+            "sha256": "7467b3acd370a3f3c204d0b797f96b90aa790a26e63090e837b263da8c37e75b"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/LinuxMachineBackendAdapters.swift",
+            "sha256": "1070a4205762e0c0b09a5b372823c23e608c566858f9ba88d60a74c35a7fb081"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/MachineBackend.swift",
+            "sha256": "b7e1809af3c715e80d153c69c823a069e94971d5df66ec5e0d54b483c10c9f93"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+            "sha256": "86d23361ac1d300f63350dfff3865e193a135b79e8121862162cea268b961ab2"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/VmmControl.swift",
+            "sha256": "2f7a601a1a5a56450db3556680460e4c6b30bba1d70a494bd845b36ad46e2254"
+          },
+          {
+            "path": "dory-core-swift/Sources/DorydKit/VmmHandoff.swift",
+            "sha256": "a48aef831584ac4dffa2394d5dd03390c3c7b4d31f2d126c192e8f12e29871c8"
+          },
+          {
+            "path": "dory-core-swift/Sources/dory-pc-uefi-smoke/main.swift",
+            "sha256": "0938bc78566a648346ae77b2192bd7bed8c614314cf39b5c4cef05526045d36a"
+          },
+          {
+            "path": "dory-core-swift/Sources/dory-vzmac-qualification/main.swift",
+            "sha256": "aa8e27c32df116f533da3b533a5cc70f60d34d22e8726860079c5b5666609994"
+          },
+          {
+            "path": "dory-core-swift/Sources/doryd/main.swift",
+            "sha256": "e5e0ac8f2b587fdb199f93a9a38c7504a4d5a7f14b86a2a74d861d9c00ab5e9a"
+          },
+          {
+            "path": "dory-core-swift/Sources/dorydctl/main.swift",
+            "sha256": "990d99370a936c92159b123941581c09b3d7b2bdb23f4ebe8629ed4519fcd095"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCLinuxBootTests.swift",
+            "sha256": "422bfb5f1e5be37106173c320216b6da712889177dc1bde2214e8704ade50dd6"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPVHBootTests.swift",
+            "sha256": "214524ce5a9d31f286c334338a40e91e3f2129cfabf6fd23929c444238cab750"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryOperationsTests/DoryInstallerISOTests.swift",
+            "sha256": "c515cc734dc6b5057a3c9ebe16f559b8c1d09eac2ea81408907a814408e1b408"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVMResourcePolicyTests.swift",
+            "sha256": "ff0e7d3d4bfaa393dadbdaa23231a5050818e521cc7bfaeb056909f8651ba735"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualMachineArtifactAuthorityTests.swift",
+            "sha256": "eb0aeba54b7d7a051af92a137a634c082569dc618d8d78ad2c69b3e8c97cc756"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualMachineBackendPlannerTests.swift",
+            "sha256": "71ce941c0c03ff42ea98061a3d85d654583f43ba2467cdbaa7a7126f897ca424"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualMachineCapabilitiesTests.swift",
+            "sha256": "0a121cbfa39a6ab7762c9e613b70b2b700c015934e280dba1711f782fa79afd5"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualizationPlatformResolverTests.swift",
+            "sha256": "deae005c2707e163ac67a1db90ca46049be7978ffde3a5f827a43c434744c812"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualizationProductPolicyTests.swift",
+            "sha256": "b8149b89f7562bdfe8434720d4ba2ff0a90e728cccebfd7c45896ac21a358efb"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryOperationsTests/DoryWorkspaceLifecycleOperationTests.swift",
+            "sha256": "cd39412c1b2fb1ccfb22d9f8d0b5baed67cdb8e9669d29245b03a7d170ec2b31"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryOperationsTests/EngineStateDirectoryLockTests.swift",
+            "sha256": "bf859995bc5386fff7e3d612da62c07a95eb49230137ba78feaef0ebff8fae53"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryOperationsTests/RuntimeLaunchEnvelopeTests.swift",
+            "sha256": "17c61aac7fce313eabc963813535535d0e09ded64f5e3efcbb0b79493eea6f4f"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryControlPlaneArchitectureTests.swift",
+            "sha256": "80244b805c9c785ac59ef4ef5a558510404220df728321738262b17fc7e239a1"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachinePlanningTransactionCoordinatorTests.swift",
+            "sha256": "c877bc25b9acb5d572ac38b4ea9bfd74da42dcecdef50cfbf1902c8b36e23e3d"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionPlanningCompositionTests.swift",
+            "sha256": "a1a935b294215e12aab648e6526b8eddefa39935281180ac394e33dee76b5d9f"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift",
+            "sha256": "4b78de7bee9e02d71b914a2d8ccb6e2412362956d64fff6ddab29c6ff3f92be1"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineRuntimePlanningTests.swift",
+            "sha256": "da1a95385e40f5e3c7a420bcedd543fa8dfb6f723fd3d0f0ce693b02576eccf1"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineRuntimeIdentityStoreTests.swift",
+            "sha256": "5ae1a57520b191f67e54d8735a5fb418f6c0c9c6571032fd648ddc5f5586e56d"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineSavedStateTests.swift",
+            "sha256": "5f309333157820dca5bcd3fa5bca19169449e2af3ed7436ba3f7a15d789eb71c"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineTypedWriteAuthorityTests.swift",
+            "sha256": "45a3fe8988eb8bab535b31664c84f3c2834effc92188a1c50cdaecbbc6901fb0"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryP01PreflightTests.swift",
+            "sha256": "607f08663d6db9f6400bf313c8faaca608faa45f79bb1e69a8b95bf95fac0506"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryResolvedMachineLaunchArtifactFixtures.swift",
+            "sha256": "1da481d67c219cb5ba56daf7c8b0dd768fc1f66f137faf5c618138b899bc4e33"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryResolvedMachinePlanTests.swift",
+            "sha256": "3ff9258880542f62930f2adaa79806aa95a587affaa6b649c223e8a1586c1c5b"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryRuntimeReconnectTests.swift",
+            "sha256": "00b2fe23b49e0c1be2d02ec99a16473e33306c2f3e779c047948883499f40d0d"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryVZMacDesktopArgumentsTests.swift",
+            "sha256": "f40d85424a9ad524d9cc90018792797cfdd049cfdbb54cb2b1511b253ae33ecc"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DoryVirtualMachineResourceAdmissionLedgerTests.swift",
+            "sha256": "b490b36527913b7cdbe823051c110fed4d40669f0ed7a8b5c0e580cf0c5cf22d"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DorydConfigurationTests.swift",
+            "sha256": "f120aa64f496d8409b873ba1b5a5ba7787986557ef21b1f24854f758398269a3"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/DorydServiceTests.swift",
+            "sha256": "7fa682a80c553c9f66e9720a32eadb61ebc795b5b5701f1cd671f986e3a26e43"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/HealthReporterTests.swift",
+            "sha256": "6ab7bd117fbdd17586a02489d7e5064259a65bb584f252afea2769ba93e70daf"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/HelperProcessJanitorTests.swift",
+            "sha256": "8f2c572d718fe9f6e4bbac87843b5119fc0b9d66a05acfc426da64b55b919c99"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerLifecycleJournalIntegrationTests.swift",
+            "sha256": "d11723c1ca2a25b55f019cc7b01c158847cf14caa4169788f5d235aa78ac8b8b"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerResolvedPlanIntegrationTests.swift",
+            "sha256": "40b669cc0553f5929d82ad28f5170237741f61cadf1e064d837c41d9f5bee9e3"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift",
+            "sha256": "0c7807adace6c9f36939a9888e8f84b7c6b720bb6108178d5cb9a5267d9c1e5d"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/RuntimeUEFIAuthorityIntegrationTests.swift",
+            "sha256": "fc842c0a33c3a895fe4f02e718ef8298b78507874bff524dc6e5b27475e80e0c"
+          },
+          {
+            "path": "dory-core-swift/Tests/DorydKitTests/VmmHandoffTests.swift",
+            "sha256": "64f6c4de2ceb6370ca5fa63c558963afaf5da68bdef33ea00bde6d4b7fa1caad"
+          },
+          {
+            "path": "dory-core/agent/src/fsevents.rs",
+            "sha256": "4ae58b4fa1e89618cf1dd55cdef3ee89a1124fb396cac04551643f0e7434e5d3"
+          },
+          {
+            "path": "dory-core/ffi/Cargo.toml",
+            "sha256": "c562dd9c97238b13ea2cbf073ff5bb2e84b956f4b7e90e47b72be57bae30eedc"
+          },
+          {
+            "path": "dory-core/ffi/src/uniffi_bindgen.rs",
+            "sha256": "f7a2dd11fb370e9595bdfa6c32fc41a9b67a60bbab06ec711cb7a03eb873ffa6"
+          },
+          {
+            "path": "scripts/build-dory-armvirt-firmware.py",
+            "sha256": "ca65df80d109766c8aa51e8e7a79b946532f2a47589195d24384438d8a076c60"
+          }
+        ],
+        "dependencyLocks": [
+          {
+            "path": "Dory.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
+            "sha256": "b43d0eeb680bcf3db0af6c2841add8d6ba7d006e64a302ebf323b61e25e521b3"
+          },
+          {
+            "path": "dory-core/Cargo.lock",
+            "sha256": "015646eeb635c76666cb0b725537945a1045ae993a8d80322cdec8faf38e8b5f"
+          }
+        ],
+        "submodules": [],
+        "snapshotID": "6883a5879fb29e95a32887d3ff88af171f3e114a0886755eb54e91e224cd5d4a"
+      },
+      "campaign": {
+        "name": "desktop-recovery-and-native-typed-launch",
+        "packageSwiftTestsPassed": 3382,
+        "appSwiftTestsPassed": 958,
+        "swiftTestsPassed": 4340,
+        "explicitSkippedBootTests": 1,
+        "desktopSourcePreflightCases": 18,
+        "historicalSourceRecoveryCases": 4,
+        "committedKernelRecoveryCases": 4,
+        "nativeGraphicsRoundTripCases": 2,
+        "physicalGuestQualification": false,
+        "newSIGKILLQualification": false,
+        "desktopJournalCompositionComplete": false,
+        "fixtureNote": "Production planning, admission and launch with controlled helpers; historical desktop recovery uses fixture files and fresh in-process managers. App tests use a separately identified copied host with identical code/data, tests and dependencies. No physical guest, original-identity launch, UI automation, release signing or pressure qualification is claimed."
+      }
     }
   ],
   "latestCampaign": {
-    "name": "desktop-recovery-and-native-typed-launch",
-    "packageSwiftTestsPassed": 3382,
-    "appSwiftTestsPassed": 958,
-    "swiftTestsPassed": 4340,
-    "explicitSkippedBootTests": 1,
-    "desktopSourcePreflightCases": 18,
-    "historicalSourceRecoveryCases": 4,
-    "committedKernelRecoveryCases": 4,
-    "nativeGraphicsRoundTripCases": 2,
+    "name": "P01 control-plane completion",
+    "phaseComplete": true,
+    "sourceManifestSHA256": "b2bcf9fc472c73027c2037a8d17959d4789ad2bab52949123f75c54b548519d0",
+    "finalImplementationCommit": "cd88d9dc8fa2f32ced69de95ee7dab07d3dc4181",
+    "combinedRegressionDisposition": "All observed failures corrected; all four affected suites and VM helper gate pass on final source. Do not sum overlapping campaign counts.",
+    "campaign": "docs/virtualization/evidence/p01-compound-review-2026-09-04/campaign.json",
+    "campaignSHA256": "c4f42f3879435b2ee1a44112f7f65dd3129a2509f790896eae1fce7eb798cc5d",
+    "appClientTestsPassed": 83,
+    "remainingExplicitSkippedBootTests": 1,
     "physicalGuestQualification": false,
-    "newSIGKILLQualification": false,
-    "desktopJournalCompositionComplete": false,
-    "fixtureNote": "Production planning, admission and launch with controlled helpers; historical desktop recovery uses fixture files and fresh in-process managers. App tests use a separately identified copied host with identical code/data, tests and dependencies. No physical guest, original-identity launch, UI automation, release signing or pressure qualification is claimed."
+    "releaseQualification": false,
+    "nativeSavedMemoryExecutionQualified": false,
+    "nativeContinuationAfterGuestWrites": "Strict current artifact stamps preserve rejection; suspension-time continuation authority and real prepared IPSW/platform execution remain P08-06/P08-27.",
+    "finalFocusedResults": {
+      "xctest": 182,
+      "swiftTesting": 46,
+      "failures": 0,
+      "skips": 0
+    }
   },
   "numericAssertionReproducer": {
     "output": "docs/virtualization/evidence/p01-installer-preflight-2026-09-04/numeric-reproducer.swift.gz",
@@ -6409,6 +6466,12 @@
         "bdc5fd3ad",
         "3a7c18067"
       ]
+    },
+    {
+      "name": "P01 final integration and targeted regression corrections",
+      "phaseComplete": true,
+      "campaign": "docs/virtualization/evidence/p01-compound-review-2026-09-04/campaign.json",
+      "sha256": "c4f42f3879435b2ee1a44112f7f65dd3129a2509f790896eae1fce7eb798cc5d"
     }
   ]
 }
