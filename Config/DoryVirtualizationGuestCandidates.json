@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 1,
+  "kind": "virtualization-guest-candidates",
+  "selectionDate": "2026-09-04",
+  "scope": "Candidate inputs, not release support claims. Ubuntu and Fedora are two distinct general-purpose Linux families on each Linux architecture. Alpine is a separate small diagnostic input.",
+  "downloadPolicy": "Only explicit artifact IDs are downloaded; SHA-256 is mandatory and no floating substitution is permitted. Missing required input fails.",
+  "artifacts": [
+    {
+      "id": "ubuntu-server-24.04.4-arm64",
+      "family": "debian",
+      "role": "general-purpose",
+      "guest": "linux",
+      "architecture": "arm64",
+      "version": "24.04.4",
+      "url": "https://cdimage.ubuntu.com/releases/24.04.4/release/ubuntu-24.04.4-live-server-arm64.iso",
+      "filename": "ubuntu-24.04.4-live-server-arm64.iso",
+      "sha256": "9a6ce6d7e66c8abed24d24944570a495caca80b3b0007df02818e13829f27f32",
+      "kernel": "6.8.0-100-generic (6.8.0-100.100)",
+      "libc": "glibc 2.39-0ubuntu8.7",
+      "graphics": "No desktop graphics stack installed by server media; graphics qualification uses separately pinned P06 guest packages.",
+      "bootLayout": "Hybrid ISO; architecture-specific UEFI installer; installed disk must boot without original ISO.",
+      "metadataEvidence": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/ubuntu-24.04.4-arm64.manifest",
+      "qualification": "candidate; P01 media inspection only, no install/boot qualification"
+    },
+    {
+      "id": "ubuntu-server-24.04.4-x86_64",
+      "family": "debian",
+      "role": "general-purpose",
+      "guest": "linux",
+      "architecture": "x86_64",
+      "version": "24.04.4",
+      "url": "https://releases.ubuntu.com/24.04.4/ubuntu-24.04.4-live-server-amd64.iso",
+      "filename": "ubuntu-24.04.4-live-server-amd64.iso",
+      "sha256": "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433",
+      "kernel": "6.8.0-100-generic (6.8.0-100.100)",
+      "libc": "glibc 2.39-0ubuntu8.7",
+      "graphics": "No desktop graphics stack installed by server media; graphics qualification uses separately pinned P06 guest packages.",
+      "bootLayout": "Hybrid ISO; architecture-specific UEFI installer; installed disk must boot without original ISO.",
+      "metadataEvidence": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/ubuntu-24.04.4-amd64.manifest",
+      "qualification": "candidate; P01 media inspection only, no install/boot qualification"
+    },
+    {
+      "id": "fedora-server-44-arm64",
+      "family": "fedora",
+      "role": "general-purpose",
+      "guest": "linux",
+      "architecture": "arm64",
+      "version": "44-1.7",
+      "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Server/aarch64/iso/Fedora-Server-dvd-aarch64-44-1.7.iso",
+      "filename": "Fedora-Server-dvd-aarch64-44-1.7.iso",
+      "sha256": "ba8372682294d0d76f79427cae1273d36891b192ac9bf0f0f9de4e97a7cbe218",
+      "kernel": "6.19.10-300.fc44",
+      "libc": "glibc 2.43-2.fc44",
+      "graphics": "Server installation has no desktop session; release repository provides Mesa 26.0.3-4.fc44. No guest GPU capability is qualified.",
+      "bootLayout": "UEFI DVD installer, GPT installed disk; architecture-specific kernel/initrd and firmware paths from .treeinfo.",
+      "metadataEvidence": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-aarch64-packages.json",
+      "qualification": "candidate; official compose/checksum metadata, no image download or boot qualification"
+    },
+    {
+      "id": "alpine-virt-3.24.1-arm64",
+      "family": "alpine",
+      "role": "diagnostic",
+      "guest": "linux",
+      "architecture": "arm64",
+      "version": "3.24.1",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-virt-3.24.1-aarch64.iso",
+      "filename": "alpine-virt-3.24.1-aarch64.iso",
+      "sha256": "c81699152db11d2a6dbb7d75348d632fcf5811eff414d7e71876a8bb6d48bc02",
+      "kernel": "6.18.35-0-virt",
+      "libc": "musl 1.2.6-r2",
+      "graphics": "Headless BusyBox/musl diagnostic; no Mesa or desktop.",
+      "bootLayout": "UEFI zboot gzip payload unwraps to ARM64 Image. The stock initramfs expects its matching ISO/modloop; P02/P03 own the bounded userspace workload fixture and boot acceptance.",
+      "metadataEvidence": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/alpine-aarch64-inspection.json",
+      "qualification": "download and extracted kernel/initramfs hashes verified; no execution qualification",
+      "extractions": [
+        {
+          "member": "boot/initramfs-virt",
+          "filename": "aarch64-initramfs-virt",
+          "sha256": "fc1aad923040d23bea79f62bef4a8e2481162e89a5c42245903df1a85134a527",
+          "maximumBytes": 10148959
+        },
+        {
+          "member": "boot/vmlinuz-virt",
+          "filename": "aarch64-vmlinuz-virt",
+          "sha256": "47970e0ee0478fe5c60824a89f162d5a353fa29466e5d3bddb0f9c506f1ed756",
+          "maximumBytes": 10351104
+        },
+        {
+          "member": "boot/vmlinuz-virt",
+          "filename": "aarch64-Image",
+          "compression": "gzip",
+          "compressedOffset": 51832,
+          "sha256": "8b216f74e7f89def4604adf69e2345437363aff4819101bb1551c9e83cd35cdd",
+          "maximumBytes": 268435456
+        }
+      ]
+    },
+    {
+      "id": "fedora-server-44-x86_64",
+      "family": "fedora",
+      "role": "general-purpose",
+      "guest": "linux",
+      "architecture": "x86_64",
+      "version": "44-1.7",
+      "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Server/x86_64/iso/Fedora-Server-dvd-x86_64-44-1.7.iso",
+      "filename": "Fedora-Server-dvd-x86_64-44-1.7.iso",
+      "sha256": "85837793bfa36db6bc709b4cecd2ec116951b87d9c53c3d95eb2fac8dcf7cf1f",
+      "kernel": "6.19.10-300.fc44",
+      "libc": "glibc 2.43-2.fc44",
+      "graphics": "Server installation has no desktop session; release repository provides Mesa 26.0.3-4.fc44. No guest GPU capability is qualified.",
+      "bootLayout": "UEFI DVD installer, GPT installed disk; architecture-specific kernel/initrd and firmware paths from .treeinfo.",
+      "metadataEvidence": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-x86_64-packages.json",
+      "qualification": "candidate; official compose/checksum metadata, no image download or boot qualification"
+    },
+    {
+      "id": "alpine-virt-3.24.1-x86_64",
+      "family": "alpine",
+      "role": "diagnostic",
+      "guest": "linux",
+      "architecture": "x86_64",
+      "version": "3.24.1",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-virt-3.24.1-x86_64.iso",
+      "filename": "alpine-virt-3.24.1-x86_64.iso",
+      "sha256": "e73a6241bd5f3c5c2d4d38c02cc52c378c0415a7c888bd292066bf36e0f41a39",
+      "kernel": "6.18.35-0-virt",
+      "libc": "musl 1.2.6-r2",
+      "graphics": "Headless BusyBox/musl diagnostic; no Mesa or desktop.",
+      "bootLayout": "bzImage gzip payload unwraps to ELF64 x86-64 kernel; PVH admission is independently checked by P02. The stock initramfs expects its matching ISO/modloop; P02/P03 own the bounded userspace workload fixture and boot acceptance.",
+      "metadataEvidence": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/alpine-x86_64-inspection.json",
+      "qualification": "download and extracted kernel/initramfs hashes verified; no execution qualification",
+      "extractions": [
+        {
+          "member": "boot/initramfs-virt",
+          "filename": "x86_64-initramfs-virt",
+          "sha256": "4caf09640385525632f0a54dfeabd08b5bf5ceeb2b7d63e888fb858b7b3fa006",
+          "maximumBytes": 9828707
+        },
+        {
+          "member": "boot/vmlinuz-virt",
+          "filename": "x86_64-vmlinuz-virt",
+          "sha256": "1e6bf9027720c75c3ed0d79171f21b5791ee40ca9795d07c7c6e04dc5ea2ae90",
+          "maximumBytes": 12575744
+        },
+        {
+          "member": "boot/vmlinuz-virt",
+          "filename": "x86_64-vmlinux",
+          "compression": "gzip",
+          "compressedOffset": 17092,
+          "sha256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+          "maximumBytes": 268435456
+        }
+      ]
+    },
+    {
+      "id": "macos-26.6.2-25G83-arm64",
+      "family": "macos",
+      "role": "general-purpose",
+      "guest": "macos",
+      "architecture": "arm64",
+      "version": "26.6.2",
+      "build": "25G83",
+      "url": "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw",
+      "filename": "UniversalMac_26.6.2_25G83_Restore.ipsw",
+      "sha256": "885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95",
+      "bytes": 19772231540,
+      "kernel": "Darwin kernel delivered in signed macOS build25G83; exact guest uname is collected at P08 install/boot.",
+      "libc": "Apple libSystem in signed build25G83; no Linux libc.",
+      "graphics": "Apple paravirtualized Mac graphics/Metal from build25G83; application Metal inventory is a P08 gate.",
+      "bootLayout": "IPSW restore through VZMacOSInstaller with persisted hardware model, machine identifier and auxiliary storage.",
+      "metadataEvidence": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/apple-cdn-metadata.json",
+      "qualification": "compatible restore candidate discovered; no download, installation or guest Metal qualification"
+    }
+  ]
+}

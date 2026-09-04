@@ -157,12 +157,14 @@ docs/
 /docs/virtualization/*
 !/docs/virtualization/no-qemu-source-debt.json
 !/docs/virtualization/p01-control-plane-review-2026-09-03.json
+!/docs/virtualization/p00-baseline-2026-09-04.json
 !/docs/virtualization/evidence/
 /docs/virtualization/evidence/*
 !/docs/virtualization/evidence/p01-control-plane-2026-09-03/
 !/docs/virtualization/evidence/p01-control-plane-2026-09-04/
 !/docs/virtualization/evidence/p01-parallel-review-2026-09-04/
 !/docs/virtualization/evidence/p01-compound-review-2026-09-04/
+!/docs/virtualization/evidence/p00-baseline-2026-09-04/
 !/docs/architecture-gates/
 /docs/architecture-gates/*
 !/docs/architecture-gates/virtiofs-worker-xpc.json
@@ -180,6 +182,8 @@ docs/
 /scripts/renderer-build-tools/*
 !/scripts/renderer-build-tools/xcodebuild
 !/scripts/verify-virgl-resource-info-abi.c
+!/scripts/prepare-virtualization-fixtures.py
+!/scripts/test-prepare-virtualization-fixtures.py
 
 # Candidate-bound physical Linux developer smoke (fail-closed; never release qualification).
 !/scripts/linux-local-runtime-smoke.sh
