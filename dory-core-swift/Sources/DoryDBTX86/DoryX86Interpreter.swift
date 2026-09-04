@@ -2803,8 +2803,13 @@ public struct DoryX86Interpreter: Sendable {
             | (requested & 1)
           pagingUnit?.invalidateAll()
         } else {
+          // Intel SDM 092 Vol. 2B p. 4-658: in 64-bit mode SMSW r32/r64
+          // stores the corresponding CR0 width; every memory form remains m16.
+          let value: UInt64
+          if mode == .long64, case .register = operand { value = state.control.cr0 }
+          else { value = state.control.cr0 & 0xffff }
           try write(
-            state.control.cr0 & 0xffff,
+            value,
             to: operand,
             instruction: instruction,
             state: &state,
@@ -2821,6 +2826,9 @@ public struct DoryX86Interpreter: Sendable {
         }
         state.control.cr0 &= ~(1 << 3)
       case .storeSystemSegment(let task, let destination):
+        let virtual8086 = mode != .long64 && state.control.efer & (1 << 10) == 0
+          && state.rflags.contains(.virtual8086)
+        guard mode != .real16, !virtual8086 else { return invalidOpcode(at: originalRIP) }
         guard state.control.cr4 & (1 << 11) == 0 || currentPrivilegeLevel(state, mode: mode) == 0 else {
           return generalProtection(at: originalRIP)
         }
@@ -2832,6 +2840,9 @@ public struct DoryX86Interpreter: Sendable {
           memory: executionMemory
         )
       case .loadSystemSegment(let task, let source):
+        let virtual8086 = mode != .long64 && state.control.efer & (1 << 10) == 0
+          && state.rflags.contains(.virtual8086)
+        guard mode != .real16, !virtual8086 else { return invalidOpcode(at: originalRIP) }
         guard currentPrivilegeLevel(state, mode: mode) == 0 else {
           return generalProtection(at: originalRIP)
         }

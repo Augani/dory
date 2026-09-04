@@ -882,8 +882,13 @@ public struct DoryX86Decoder: Sendable {
           cursor: &cursor, width: .word, prefixes: prefixes, mode: mode)
         switch operands.group {
         case 0, 1:
+          // Intel SDM 092 Vol. 2B SLDT/STR: memory stores remain 16 bits,
+          // while register destinations use the operand size and zero-extend.
+          let destination: DoryX86Operand
+          if case .memory = operands.rm { destination = operands.rm }
+          else { destination = resizedOperand(operands.rm, to: width) }
           operation = .storeSystemSegment(
-            task: operands.group == 1, destination: operands.rm)
+            task: operands.group == 1, destination: destination)
         case 2, 3:
           operation = .loadSystemSegment(task: operands.group == 3, source: operands.rm)
         case 4, 5:
@@ -897,7 +902,7 @@ public struct DoryX86Decoder: Sendable {
             address: address, detail: "unsupported 0F 00 system instruction")
         }
       case 0x20, 0x22:
-        let operands = try decodeControlRegisterModRM(cursor: &cursor, prefixes: prefixes)
+        let operands = try decodeSystemRegisterModRM(cursor: &cursor, prefixes: prefixes, debug: false)
         operation =
           second == 0x20
           ? .readControlRegister(index: operands.control, destination: operands.general)
@@ -907,7 +912,7 @@ public struct DoryX86Decoder: Sendable {
       case 0x35:
         operation = .systemExit(return64Bit: prefixes.rex?.w == true)
       case 0x21, 0x23:
-        let operands = try decodeControlRegisterModRM(cursor: &cursor, prefixes: prefixes)
+        let operands = try decodeSystemRegisterModRM(cursor: &cursor, prefixes: prefixes, debug: true)
         operation =
           second == 0x21
           ? .readDebugRegister(index: operands.control, destination: operands.general)
@@ -2036,18 +2041,23 @@ public struct DoryX86Decoder: Sendable {
     return false
   }
 
-  private func decodeControlRegisterModRM(
+  private func decodeSystemRegisterModRM(
     cursor: inout Cursor,
-    prefixes: DoryX86InstructionPrefixes
+    prefixes: DoryX86InstructionPrefixes,
+    debug: Bool
   ) throws -> (control: UInt8, general: DoryX86GeneralRegister) {
     let byte = try cursor.readByte()
-    guard byte >> 6 == 3 else {
+    // MOV CR/DR ignores ModRM.MOD. Even apparent memory/SIB/displacement forms
+    // select a GPR and consume exactly this one byte (SDM 092 Vol. 2B pp. 4-32/35).
+    let control = ((byte >> 3) & 7) | (prefixes.rex?.r == true ? 8 : 0)
+    let valid = debug ? control < 8 : [0, 2, 3, 4, 8].contains(control)
+    guard valid else {
       throw DoryX86DecodeError.invalidEncoding(
         address: cursor.address,
-        detail: "control-register MOV requires a register operand"
+        detail: debug ? "MOV DR does not encode DR8 through DR15"
+          : "MOV CR requires CR0, CR2, CR3, CR4 or CR8"
       )
     }
-    let control = ((byte >> 3) & 7) | (prefixes.rex?.r == true ? 8 : 0)
     let general = register(Int(byte & 7), extensionBit: prefixes.rex?.b == true)
     return (control, general)
   }
@@ -2770,14 +2780,17 @@ public struct DoryX86Decoder: Sendable {
       if indexBits != 4 || prefixes.rex?.x == true {
         index = register(Int(indexBits), extensionBit: prefixes.rex?.x == true)
       }
-      if modeBits == 0, baseBits == 5, prefixes.rex?.b != true {
+      // MOD=00/SIB.base=101 has no base even with REX.B (SDM Vol. 2A Table 2-5).
+      if modeBits == 0, baseBits == 5 {
         displacement = Int64(try cursor.readSigned(byteCount: 4))
       } else {
         base = register(Int(baseBits), extensionBit: prefixes.rex?.b == true)
       }
-    } else if modeBits == 0, rmBits == 5, prefixes.rex?.b != true {
+    } else if modeBits == 0, rmBits == 5 {
       displacement = Int64(try cursor.readSigned(byteCount: 4))
-      ripRelative = mode == .long64 && !prefixes.addressSizeOverride
+      // REX.B does not select R13 here. In 64-bit mode 67 retains RIP-relative
+      // addressing; the common effective-offset path truncates the sum to 32 bits.
+      ripRelative = mode == .long64
     } else {
       base = register(Int(rmBits), extensionBit: prefixes.rex?.b == true)
     }
