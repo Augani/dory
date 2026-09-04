@@ -763,7 +763,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           // interpreter and JIT tiers. Product UEFI execution never uses this policy.
           advanceClocks(by: 1)
         }
-        if let stop = deliverPendingInterrupts(instructionCount: completed) { return stop }
+        if let stop = try deliverPendingInterrupts(instructionCount: completed) { return stop }
         guard let processor = nextRunnableProcessor() else {
           if waitForNextInterrupt() { continue }
           return .halted(instructionCount: completed)
@@ -838,7 +838,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
               pagingUnit: pagingUnits[processor],
               mode: executionMode(processorState.value)
             )
-          } catch {
+          } catch DoryX86InterruptDeliveryError.processorShutdown {
             return .tripleFault(
               source: .exception(evidence),
               instructionCount: completed - 1
@@ -1226,7 +1226,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
   }
 
-  private func deliverPendingInterrupts(instructionCount: UInt64) -> DoryPCMachineStop? {
+  private func deliverPendingInterrupts(instructionCount: UInt64) throws -> DoryPCMachineStop? {
     for index in loadedStates.indices {
       guard let processorState = loadedStates[index],
         processorLifecycles[index] == .running
@@ -1255,7 +1255,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       }
       guard let vector else { continue }
       do {
-        try DoryX86InterruptDelivery(profile: interpreter.profile).deliver(
+        try DoryX86InterruptDelivery(profile: interpreter.profile).deliverEvent(
           vector: vector,
           source: source,
           state: &processorState.value,
@@ -1264,7 +1264,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           mode: executionMode(processorState.value)
         )
         haltedProcessors[index] = false
-      } catch {
+      } catch DoryX86InterruptDeliveryError.processorShutdown {
         return .tripleFault(
           source: .interrupt(vector: vector, source: source, processor: index),
           instructionCount: instructionCount

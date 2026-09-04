@@ -10,11 +10,33 @@ public enum DoryX86InterruptSource: String, Codable, Sendable, Hashable {
 public enum DoryX86InterruptDeliveryError: Error, Sendable, Equatable {
   case invalidIDTLimit(vector: UInt8)
   case invalidGate(vector: UInt8)
+  case gateNotPresent(vector: UInt8)
   case privilegeViolation(vector: UInt8)
+  case generalProtectionZero
+  case generalProtectionExternal
   case invalidCodeSegment(selector: UInt16)
+  case codeSegmentNotPresent(selector: UInt16)
   case invalidTaskState
+  case invalidTaskStateSelector(UInt16)
+  case stackAddress
+  case stackSegment(UInt16)
   case invalidReturnFrame
+  @available(*, deprecated, renamed: "processorShutdown")
   case tripleFault
+  case processorShutdown
+}
+
+enum DoryX86ExceptionDeliveryClass: Sendable, Hashable {
+  case benign
+  case contributory
+  case pageFault
+  case doubleFault
+}
+
+enum DoryX86ExceptionDeliveryAction: Sendable, Hashable {
+  case serial
+  case doubleFault
+  case processorShutdown
 }
 
 public struct DoryX86InterruptDelivery: Sendable {
@@ -99,10 +121,11 @@ public struct DoryX86InterruptDelivery: Sendable {
       memory: systemMemory
     )
     let targetCPL = code.descriptorPrivilegeLevel
-    guard targetCPL <= currentCPL,
-      DoryX86ArchitecturalState.isCanonical(gate.offset)
-    else {
+    guard targetCPL <= currentCPL else {
       throw DoryX86InterruptDeliveryError.invalidCodeSegment(selector: gate.selector)
+    }
+    guard DoryX86ArchitecturalState.isCanonical(gate.offset) else {
+      throw DoryX86InterruptDeliveryError.generalProtectionExternal
     }
 
     let switchesPrivilege = targetCPL < currentCPL
@@ -124,7 +147,7 @@ public struct DoryX86InterruptDelivery: Sendable {
       targetStack = state.registers.rsp
     }
     guard DoryX86ArchitecturalState.isCanonical(targetStack) else {
-      throw DoryX86InterruptDeliveryError.invalidTaskState
+      throw DoryX86InterruptDeliveryError.stackAddress
     }
 
     var targetState = state
@@ -178,34 +201,239 @@ public struct DoryX86InterruptDelivery: Sendable {
     pagingUnit: DoryX86PagingUnit? = nil,
     mode: DoryX86ExecutionMode
   ) throws {
+    var pending = exception
+    if pending.kind == .pageFault, let address = pending.linearAddress {
+      state.control.cr2 = address
+    }
+    while true {
+      do {
+        try deliver(
+          vector: pending.vector,
+          source: .hardwareException,
+          errorCode: pending.errorCode,
+          returnInstructionPointer: pending.instructionPointer,
+          state: &state,
+          physicalMemory: physicalMemory,
+          pagingUnit: pagingUnit,
+          mode: mode
+        )
+        return
+      } catch {
+        guard let nested = architecturalException(
+          from: error,
+          source: .hardwareException,
+          instructionPointer: pending.instructionPointer,
+          state: state
+        ) else {
+          throw error
+        }
+        if nested.kind == .pageFault, let address = nested.linearAddress {
+          // Intel SDM Vol. 3A, Event 14: a page fault detected while
+          // delivering another event updates CR2 even if it becomes #DF or
+          // occurs while #DF itself is being delivered.
+          state.control.cr2 = address
+        }
+        switch Self.exceptionDeliveryAction(
+          firstVector: pending.vector,
+          secondVector: nested.vector
+        ) {
+        case .serial:
+          pending = nested
+        case .doubleFault:
+          // The saved CS:RIP for #DF are architecturally undefined. Keep the
+          // original restart address as a deterministic diagnostic choice;
+          // callers and tests must not treat it as resumable state.
+          pending = .init(
+            kind: .doubleFault,
+            vector: 8,
+            errorCode: 0,
+            instructionPointer: pending.instructionPointer
+          )
+        case .processorShutdown:
+          throw DoryX86InterruptDeliveryError.processorShutdown
+        }
+      }
+    }
+  }
+
+  /// Delivers an accepted interrupt/NMI and handles a fault encountered while
+  /// entering it as a serial nested exception. INTR and NMI are benign first
+  /// events in Intel SDM Vol. 3A Table 7-4, so the nested exception itself is
+  /// the first exception considered by the double-fault state machine.
+  public func deliverEvent(
+    vector: UInt8,
+    source: DoryX86InterruptSource,
+    state: inout DoryX86ArchitecturalState,
+    physicalMemory: any DoryX86Memory,
+    pagingUnit: DoryX86PagingUnit? = nil,
+    mode: DoryX86ExecutionMode
+  ) throws {
     do {
       try deliver(
-        vector: exception.vector,
-        source: .hardwareException,
-        errorCode: exception.errorCode,
-        returnInstructionPointer: exception.instructionPointer,
+        vector: vector,
+        source: source,
         state: &state,
         physicalMemory: physicalMemory,
         pagingUnit: pagingUnit,
         mode: mode
       )
     } catch {
-      guard exception.vector != 8 else { throw DoryX86InterruptDeliveryError.tripleFault }
-      do {
-        try deliver(
-          vector: 8,
-          source: .hardwareException,
-          errorCode: 0,
-          returnInstructionPointer: exception.instructionPointer,
-          state: &state,
-          physicalMemory: physicalMemory,
-          pagingUnit: pagingUnit,
-          mode: mode
-        )
-      } catch {
-        throw DoryX86InterruptDeliveryError.tripleFault
+      guard let nested = architecturalException(
+        from: error,
+        source: source,
+        instructionPointer: state.rip,
+        state: state
+      ) else {
+        throw error
       }
+      if nested.kind == .pageFault, let address = nested.linearAddress {
+        state.control.cr2 = address
+      }
+      try deliverException(
+        nested,
+        state: &state,
+        physicalMemory: physicalMemory,
+        pagingUnit: pagingUnit,
+        mode: mode
+      )
     }
+  }
+
+  static func exceptionDeliveryClass(for vector: UInt8) -> DoryX86ExceptionDeliveryClass {
+    return switch vector {
+    case 0, 10, 11, 12, 13, 21: .contributory
+    case 14, 20: .pageFault
+    case 8: .doubleFault
+    default: .benign
+    }
+  }
+
+  static func exceptionDeliveryAction(
+    firstVector: UInt8,
+    secondVector: UInt8
+  ) -> DoryX86ExceptionDeliveryAction {
+    let first = exceptionDeliveryClass(for: firstVector)
+    let second = exceptionDeliveryClass(for: secondVector)
+    return switch (first, second) {
+    case (.contributory, .contributory),
+      (.pageFault, .contributory),
+      (.pageFault, .pageFault):
+      .doubleFault
+    case (.doubleFault, .contributory), (.doubleFault, .pageFault):
+      .processorShutdown
+    default:
+      .serial
+    }
+  }
+
+  private func architecturalException(
+    from error: any Error,
+    source: DoryX86InterruptSource,
+    instructionPointer: UInt64,
+    state: DoryX86ArchitecturalState
+  ) -> DoryX86Exception? {
+    if let exception = error as? DoryX86Exception { return exception }
+    if let memory = error as? DoryX86MemoryError {
+      guard case .pageFault(let address, let errorCode) = memory else { return nil }
+      return .init(
+        kind: .pageFault,
+        vector: 14,
+        errorCode: errorCode,
+        instructionPointer: instructionPointer,
+        linearAddress: address
+      )
+    }
+    guard let delivery = error as? DoryX86InterruptDeliveryError else { return nil }
+    switch delivery {
+    case .invalidIDTLimit(let vector), .invalidGate(let vector),
+      .privilegeViolation(let vector):
+      return .init(
+        kind: .generalProtection,
+        vector: 13,
+        errorCode: idtErrorCode(vector: vector, source: source),
+        instructionPointer: instructionPointer
+      )
+    case .gateNotPresent(let vector):
+      return .init(
+        kind: .segmentNotPresent,
+        vector: 11,
+        errorCode: idtErrorCode(vector: vector, source: source),
+        instructionPointer: instructionPointer
+      )
+    case .generalProtectionZero:
+      return .init(
+        kind: .generalProtection,
+        vector: 13,
+        errorCode: 0,
+        instructionPointer: instructionPointer
+      )
+    case .generalProtectionExternal:
+      return .init(
+        kind: .generalProtection,
+        vector: 13,
+        errorCode: externalErrorCodeBit(source),
+        instructionPointer: instructionPointer
+      )
+    case .invalidCodeSegment(let selector):
+      return .init(
+        kind: .generalProtection,
+        vector: 13,
+        errorCode: selectorErrorCode(selector, source: source),
+        instructionPointer: instructionPointer
+      )
+    case .codeSegmentNotPresent(let selector):
+      return .init(
+        kind: .segmentNotPresent,
+        vector: 11,
+        errorCode: selectorErrorCode(selector, source: source),
+        instructionPointer: instructionPointer
+      )
+    case .invalidTaskState:
+      return .init(
+        kind: .invalidTaskState,
+        vector: 10,
+        errorCode: selectorErrorCode(state.tr.selector, source: source),
+        instructionPointer: instructionPointer
+      )
+    case .invalidTaskStateSelector(let selector):
+      return .init(
+        kind: .invalidTaskState,
+        vector: 10,
+        errorCode: selectorErrorCode(selector, source: source),
+        instructionPointer: instructionPointer
+      )
+    case .stackSegment(let selector):
+      return .init(
+        kind: .stackSegment,
+        vector: 12,
+        errorCode: selector == 0 ? 0 : selectorErrorCode(selector, source: source),
+        instructionPointer: instructionPointer
+      )
+    case .stackAddress:
+      return .init(
+        kind: .stackSegment,
+        vector: 12,
+        errorCode: externalErrorCodeBit(source),
+        instructionPointer: instructionPointer
+      )
+    case .invalidReturnFrame, .tripleFault, .processorShutdown:
+      return nil
+    }
+  }
+
+  private func idtErrorCode(vector: UInt8, source: DoryX86InterruptSource) -> UInt32 {
+    UInt32(vector) << 3 | 1 << 1 | externalErrorCodeBit(source)
+  }
+
+  private func selectorErrorCode(
+    _ selector: UInt16,
+    source: DoryX86InterruptSource
+  ) -> UInt32 {
+    UInt32(selector & 0xFFFC) | externalErrorCodeBit(source)
+  }
+
+  private func externalErrorCodeBit(_ source: DoryX86InterruptSource) -> UInt32 {
+    source == .software ? 0 : 1
   }
 
   public func interruptReturn(
@@ -317,7 +545,7 @@ public struct DoryX86InterruptDelivery: Sendable {
     let stackOffsets = [flagsStack, codeStack, instructionStack]
     for offset in stackOffsets {
       guard UInt32(offset) + 1 <= state.ss.limit else {
-        throw DoryX86InterruptDeliveryError.invalidTaskState
+        throw DoryX86InterruptDeliveryError.stackSegment(0)
       }
       try memory.validateWrite(at: state.ss.base &+ UInt64(offset), byteCount: 2)
     }
@@ -441,10 +669,12 @@ public struct DoryX86InterruptDelivery: Sendable {
     let conforming = code.type & 4 != 0
     let targetCPL = conforming ? currentCPL : code.descriptorPrivilegeLevel
     guard code.type & 8 != 0,
-      code.descriptorPrivilegeLevel <= currentCPL,
-      UInt64(gate.offset) <= UInt64(code.segment.limit)
+      code.descriptorPrivilegeLevel <= currentCPL
     else {
       throw DoryX86InterruptDeliveryError.invalidCodeSegment(selector: gate.selector)
+    }
+    guard UInt64(gate.offset) <= UInt64(code.segment.limit) else {
+      throw DoryX86InterruptDeliveryError.generalProtectionExternal
     }
 
     let switchesPrivilege = targetCPL < currentCPL
@@ -613,11 +843,13 @@ public struct DoryX86InterruptDelivery: Sendable {
     let raw = try read64(memory, state.idtr.base &+ UInt64(offset))
     let attributes = UInt8(truncatingIfNeeded: raw >> 40)
     let type = attributes & 0x0f
-    guard attributes & 0x80 != 0,
-      attributes & 0x10 == 0,
+    guard attributes & 0x10 == 0,
       type == 0x6 || type == 0x7 || type == 0xE || type == 0xF
     else {
       throw DoryX86InterruptDeliveryError.invalidGate(vector: vector)
+    }
+    guard attributes & 0x80 != 0 else {
+      throw DoryX86InterruptDeliveryError.gateNotPresent(vector: vector)
     }
     let target = UInt32(raw & 0xffff) | UInt32((raw >> 48) & 0xffff) << 16
     return .init(
@@ -640,17 +872,24 @@ public struct DoryX86InterruptDelivery: Sendable {
     guard taskType == 0x9 || taskType == 0xB,
       selectorOffset + 1 <= Int(state.tr.limit)
     else {
-      throw DoryX86InterruptDeliveryError.invalidTaskState
+      throw DoryX86InterruptDeliveryError.invalidTaskStateSelector(state.tr.selector)
     }
     let stack = try read32(memory, state.tr.base &+ UInt64(stackOffset))
     let selector = try read16(memory, state.tr.base &+ UInt64(selectorOffset))
-    let segment = try readLegacySegment(selector: selector, state: state, memory: memory)
+    let segment: LegacySegment
+    do {
+      segment = try readLegacySegment(selector: selector, state: state, memory: memory)
+    } catch DoryX86InterruptDeliveryError.codeSegmentNotPresent {
+      throw DoryX86InterruptDeliveryError.stackSegment(selector)
+    } catch DoryX86InterruptDeliveryError.invalidCodeSegment {
+      throw DoryX86InterruptDeliveryError.invalidTaskStateSelector(selector)
+    }
     guard selector & 3 == privilege,
       segment.descriptorPrivilegeLevel == privilege,
       segment.type & 8 == 0,
       segment.type & 2 != 0
     else {
-      throw DoryX86InterruptDeliveryError.invalidTaskState
+      throw DoryX86InterruptDeliveryError.invalidTaskStateSelector(selector)
     }
     var loaded = segment.segment
     loaded.selector = selector
@@ -676,8 +915,11 @@ public struct DoryX86InterruptDelivery: Sendable {
     let raw = try read64(memory, tableBase &+ offset)
     let access = UInt8(truncatingIfNeeded: raw >> 40)
     let flags = UInt8(truncatingIfNeeded: raw >> 52) & 0x0f
-    guard access & 0x80 != 0, access & 0x10 != 0 else {
+    guard access & 0x10 != 0 else {
       throw DoryX86InterruptDeliveryError.invalidCodeSegment(selector: selector)
+    }
+    guard access & 0x80 != 0 else {
+      throw DoryX86InterruptDeliveryError.codeSegmentNotPresent(selector: selector)
     }
     let base =
       ((raw >> 16) & 0xffff)
@@ -710,7 +952,7 @@ public struct DoryX86InterruptDelivery: Sendable {
     for _ in values {
       next = (next &- UInt64(width.byteCount)) & pointerMask
       guard next + UInt64(width.byteCount - 1) <= UInt64(segment.limit) else {
-        throw DoryX86InterruptDeliveryError.invalidTaskState
+        throw DoryX86InterruptDeliveryError.stackSegment(segment.selector)
       }
       offsets.append(next)
       try memory.validateWrite(at: segment.base &+ next, byteCount: width.byteCount)
@@ -750,11 +992,18 @@ public struct DoryX86InterruptDelivery: Sendable {
     let high = fromLittleEndian(Array(bytes[8..<16]))
     let attributes = UInt8(truncatingIfNeeded: low >> 40)
     let type = attributes & 0x0f
-    guard attributes & 0x80 != 0,
-      type == 0xE || type == 0xF,
+    guard type != 0x6, type != 0x7 else {
+      // Intel SDM Vol. 3A §7.14.1: legacy 16-bit gates in IA-32e mode
+      // generate #GP(0), rather than an IDT-selector error code.
+      throw DoryX86InterruptDeliveryError.generalProtectionZero
+    }
+    guard type == 0xE || type == 0xF,
       high >> 32 == 0
     else {
       throw DoryX86InterruptDeliveryError.invalidGate(vector: vector)
+    }
+    guard attributes & 0x80 != 0 else {
+      throw DoryX86InterruptDeliveryError.gateNotPresent(vector: vector)
     }
     let target =
       (low & 0xffff)
@@ -784,12 +1033,14 @@ public struct DoryX86InterruptDelivery: Sendable {
     let raw = try read64(memory, state.gdtr.base + UInt64(offset))
     let access = UInt8(truncatingIfNeeded: raw >> 40)
     let flags = UInt8(truncatingIfNeeded: raw >> 52) & 0x0f
-    guard access & 0x80 != 0,
-      access & 0x10 != 0,
+    guard access & 0x10 != 0,
       access & 0x08 != 0,
       flags & 0x2 != 0
     else {
       throw DoryX86InterruptDeliveryError.invalidCodeSegment(selector: selector)
+    }
+    guard access & 0x80 != 0 else {
+      throw DoryX86InterruptDeliveryError.codeSegmentNotPresent(selector: selector)
     }
     let dpl = (access >> 5) & 3
     let base =
@@ -815,7 +1066,7 @@ public struct DoryX86InterruptDelivery: Sendable {
     memory: any DoryX86Memory
   ) throws -> UInt64 {
     guard state.tr.base != 0, offset + 7 <= Int(state.tr.limit) else {
-      throw DoryX86InterruptDeliveryError.invalidTaskState
+      throw DoryX86InterruptDeliveryError.invalidTaskStateSelector(state.tr.selector)
     }
     return try read64(memory, state.tr.base + UInt64(offset))
   }

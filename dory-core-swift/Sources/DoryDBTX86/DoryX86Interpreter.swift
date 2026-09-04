@@ -12,6 +12,8 @@ public struct DoryX86Exception: Error, Codable, Sendable, Hashable {
     case pageFault
     case simdFloatingPoint
     case x87FloatingPoint
+    case invalidTaskState
+    case doubleFault
   }
 
   public let kind: Kind
