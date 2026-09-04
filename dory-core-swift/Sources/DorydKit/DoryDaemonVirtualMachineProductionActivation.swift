@@ -276,7 +276,7 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
         } catch {
             return unavailableActivation(
                 .installationRejected,
-                "Installer lifecycle recovery could not complete under the activated trust floor."
+                "Machine lifecycle recovery could not complete under the activated trust floor: \(error)"
             )
         }
 
