@@ -728,6 +728,10 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
   }
 
   public func write(at address: UInt64, bytes: [UInt8]) throws {
+    // A single architectural store may span multiple linear pages. Resolve and validate every
+    // backing range before the first byte becomes visible so a later-page fault cannot leave a
+    // partially committed store behind.
+    try validateWrite(at: address, byteCount: bytes.count)
     var remaining = bytes[...]
     var cursor = address
     while !remaining.isEmpty {
@@ -750,7 +754,6 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
       let bytes = (0..<byteCount).map {
         UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
       }
-      try validateWrite(at: address, byteCount: byteCount)
       try write(at: address, bytes: bytes)
       return
     }

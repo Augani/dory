@@ -433,6 +433,32 @@ import Testing
     #expect(physical.validatedDataRanges == [0x8FFC..<0x9000, 0x9000..<0x9004])
   }
 
+  @Test func rejectedSecondPhysicalPageLeavesCrossPageByteWriteUnchanged() throws {
+    let backing = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let linear: UInt64 = 0x0040_0000
+    try installFourLevelMapping(
+      linear: linear, physicalPage: 0x8000, flags: 0x7, memory: backing)
+    try installFourLevelMapping(
+      linear: linear + 0x1000, physicalPage: 0x9000, flags: 0x7, memory: backing)
+    let before: [UInt8] = [0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44]
+    try backing.write(at: 0x8FFC, bytes: before)
+    let physical = DoryX86PagingWriteValidationMemory(backing: backing, rejectsDeviceWrites: true)
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: physical, pagingUnit: .init(), context: longModeContext(cpl: 3))
+
+    #expect(throws: DoryX86PagingWriteValidationMemory.Failure.writeRejected(address: 0x9000, byteCount: 4)) {
+      try translated.write(
+        at: linear + 0xFFC,
+        bytes: [0x21, 0x43, 0x65, 0x87, 0x10, 0x32, 0x54, 0x76]
+      )
+    }
+
+    #expect(try backing.read(at: 0x8FFC, byteCount: before.count) == before)
+    #expect(physical.deviceReadCount == 0)
+    #expect(physical.dataWriteCount == 0)
+    #expect(physical.validatedDataRanges == [0x8FFC..<0x9000, 0x9000..<0x9004])
+  }
+
   @Test func walksPAELargePagesAndLegacyPageTables() throws {
     let paeMemory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     try write64(paeMemory, 0x1000, 0x2000 | 0x1)
