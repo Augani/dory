@@ -47,6 +47,7 @@ enum DoryPCMode {
         let gvproxyPath: String
         let shares: [DoryMachineShareConfiguration]
         let displayPresentation: DoryMachineDisplayPresentation
+        let reconnectIdentity: DoryRuntimeReconnectLaunchIdentity
     }
 
     @MainActor
@@ -107,6 +108,7 @@ enum DoryPCMode {
 
         private final class MachineState: @unchecked Sendable {
             private let lock = NSLock()
+            let executionPause = GuestExecutionPauseCoordinator()
             private var machine: DoryPCUEFIMachine
             private var dynamicDisplaySize: (width: UInt32, height: UInt32)?
             private var stopping = false
@@ -149,6 +151,7 @@ enum DoryPCMode {
             }
 
             func requestStop() {
+                executionPause.stop()
                 let current = lock.withLock { () -> DoryPCUEFIMachine? in
                     guard !stopping else { return nil }
                     stopping = true
@@ -169,6 +172,8 @@ enum DoryPCMode {
                     return machine
                 }
                 guard let current else { return }
+                // Graceful shutdown must be able to execute the guest's shutdown request.
+                try? executionPause.resume()
                 guard graceful else {
                     current.machine.powerController.request(.powerOff)
                     return
@@ -581,6 +586,12 @@ enum DoryPCMode {
                     if action == .prepareStop {
                         networkRuntime?.stop()
                     }
+                },
+                reconnectIdentity: configuration.reconnectIdentity,
+                executionStateProvider: { [machineState] in machineState.executionPause.state },
+                executionLifecycleHandler: { [machineState] action in
+                    if action == .preparePause { try machineState.executionPause.pause() }
+                    else { try machineState.executionPause.resume() }
                 }
             )
 
@@ -780,7 +791,8 @@ enum DoryPCMode {
                 &+ progressLogIntervalNanoseconds
             var publishedExecutionReadiness = false
             do {
-                while true {
+                while try machineState.executionPause.enter(participant: 0) {
+                    defer { machineState.executionPause.leave(participant: 0) }
                     let composed = machineState.current()
                     let stop = try composed.machine.run(
                         maximumInstructions: 250_000,
@@ -906,6 +918,7 @@ enum DoryPCMode {
                         )
                     }
                 }
+                finish(nil)
             } catch {
                 finish(error)
             }

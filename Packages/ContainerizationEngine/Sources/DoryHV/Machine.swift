@@ -1,6 +1,7 @@
 import Darwin
 import DoryFirmware
 import DoryMachineARMVirt
+import DoryOperations
 import Foundation
 import Hypervisor
 import Synchronization
@@ -639,6 +640,22 @@ enum VirtioMMIODeviceTree {
     private var registeredCPUs = 0
     private var finishedSecondaries = 0
     private var vcpusExited = false
+    private let executionPause = GuestExecutionPauseCoordinator()
+    private var pauseExitRequests: Set<hv_vcpu_t> = []
+
+    public var executionState: DoryVirtualMachineState { executionPause.state }
+
+    public func pauseGuestExecution() throws {
+      try executionPause.pause { [self] in
+        teamCondition.lock()
+        defer { teamCondition.unlock() }
+        var handles = teamHandles.compactMap { $0 }
+        pauseExitRequests.formUnion(handles)
+        if !handles.isEmpty { hv_vcpus_exit(&handles, UInt32(handles.count)) }
+      }
+    }
+
+    public func resumeGuestExecution() throws { try executionPause.resume() }
 
     /// Boots the guest with `configuration.cpuCount` vCPUs. Every vCPU gets a dedicated thread
     /// (Hypervisor.framework requires create/run/destroy on one thread); secondaries are created
@@ -702,6 +719,14 @@ enum VirtioMMIODeviceTree {
         let vcpu = try VCPU()
         try vcpu.writeSystem(HV_SYS_REG_MPIDR_EL1, 0x8000_0000 | UInt64(index))
         register(vcpu: vcpu, index: index)
+        defer {
+          // Pin the VCPU through removal of its handle. Exit requests hold the same lock, so
+          // neither pause nor stop can target a handle after its owning thread destroys it.
+          teamCondition.withLock {
+            teamHandles[index] = nil
+            pauseExitRequests.remove(vcpu.handle)
+          }
+        }
 
         if index == 0 {
           try vcpu.write(HV_REG_CPSR, initialPstate)
@@ -752,6 +777,7 @@ enum VirtioMMIODeviceTree {
     }
 
     private func stopAll(_ reason: GuestStopReason) {
+      executionPause.stop()
       teamCondition.lock()
       let publishesReason = stopReason == nil
       if publishesReason { stopReason = reason }
@@ -764,14 +790,14 @@ enum VirtioMMIODeviceTree {
         handles = teamHandles.compactMap { $0 }
       }
       teamCondition.broadcast()
+      if !handles.isEmpty {
+        hv_vcpus_exit(&handles, UInt32(handles.count))
+      }
       teamCondition.unlock()
       if publishesReason {
         FileHandle.standardError.write(
           Data("dory-hv: guest stop reason: \(reason)\n".utf8)
         )
-      }
-      if !handles.isEmpty {
-        hv_vcpus_exit(&handles, UInt32(handles.count))
       }
     }
 
@@ -793,9 +819,16 @@ enum VirtioMMIODeviceTree {
         if stopSignal.isRequested { return }
 
         do {
+          guard try executionPause.enter(participant: index) else { return }
+          defer { executionPause.leave(participant: index) }
+          if stopSignal.isRequested { return }
           let event = try vcpu.run()
           switch event {
           case .canceled:
+            let requestedForPause = teamCondition.withLock {
+              pauseExitRequests.remove(vcpu.handle) != nil
+            }
+            if requestedForPause, !stopSignal.isRequested { continue }
             if !stopSignal.isRequested {
               stopAll(
                 .crash(

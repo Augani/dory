@@ -368,6 +368,7 @@ case "camera-qualify":
 case "desktop":
     var machineID: String?
     var operationID: UUID?
+    var reconnectIdentity: DoryRuntimeReconnectLaunchIdentity?
     var stateDirectory: String?
     var kernel: String?
     var initrd: String?
@@ -404,6 +405,19 @@ case "desktop":
                 fail("desktop --operation-id requires a canonical lowercase UUID")
             }
             operationID = parsed
+        case DoryRuntimeReconnectContract.fileDescriptorArgument:
+            guard let value = iterator.next(),
+                  let descriptor = Int32(value),
+                  descriptor == DoryRuntimeReconnectContract.childFileDescriptor else {
+                fail("desktop runtime reconnect descriptor is invalid")
+            }
+            do {
+                reconnectIdentity = try DoryRuntimeReconnectLaunchIdentity.decode(
+                    fileDescriptor: descriptor
+                )
+            } catch {
+                fail("desktop runtime reconnect identity is invalid: \(error)")
+            }
         case "--state-dir": stateDirectory = iterator.next()
         case "--kernel": kernel = iterator.next()
         case "--initrd": initrd = iterator.next()
@@ -495,6 +509,10 @@ case "desktop":
     if let runtimeLaunchEnvelope {
         guard runtimeLaunchEnvelope.machineID == machineID,
               runtimeLaunchEnvelope.operationID == operationID,
+              reconnectIdentity?.machineID == machineID,
+              reconnectIdentity?.operationID == DoryOperationIdentity.canonical(operationID),
+              reconnectIdentity?.resolvedPlanSHA256 == runtimeLaunchEnvelope.resolvedPlanSHA256,
+              reconnectIdentity?.planRevision == runtimeLaunchEnvelope.planRevision,
               legacyGraphicsBackend == nil,
               !memoryWasSpecified,
               !cpusWereSpecified,
@@ -505,13 +523,19 @@ case "desktop":
     } else if let pcRuntimeLaunchEnvelope {
         guard pcRuntimeLaunchEnvelope.machineID == machineID,
               pcRuntimeLaunchEnvelope.operationID == operationID,
+              reconnectIdentity?.machineID == machineID,
+              reconnectIdentity?.operationID == DoryOperationIdentity.canonical(operationID),
+              reconnectIdentity?.resolvedPlanSHA256 == pcRuntimeLaunchEnvelope.resolvedPlanSHA256,
+              reconnectIdentity?.planRevision == pcRuntimeLaunchEnvelope.planRevision,
               legacyGraphicsBackend == nil,
               !memoryWasSpecified,
               !cpusWereSpecified else {
             fail("desktop invocation identity does not match the DoryPC runtime envelope")
         }
-    } else if legacyGraphicsBackend == nil {
-        fail("desktop legacy launch requires one typed --legacy-graphics selection")
+    } else {
+        guard legacyGraphicsBackend != nil, reconnectIdentity == nil else {
+            fail("desktop legacy launch requires one typed graphics selection and no resolved reconnect authority")
+        }
     }
     if let pcRuntimeLaunchEnvelope {
         guard kernel == nil,
@@ -558,7 +582,8 @@ case "desktop":
                 sshAgentSocketPath: sshAgentSocket,
                 gvproxyPath: gvproxy,
                 shares: shares,
-                displayPresentation: displayPresentation
+                displayPresentation: displayPresentation,
+                reconnectIdentity: reconnectIdentity!
             ))
         } catch {
             fail("DoryPC desktop failed: \(error)")
@@ -723,7 +748,8 @@ case "desktop":
             armVirtTopology:
                 runtimeLaunchEnvelope?.armVirtTopology,
             resolvedSystemDiskLogicalID: resolvedSystemDiskLogicalID,
-            displayPresentation: displayPresentation
+            displayPresentation: displayPresentation,
+            reconnectIdentity: reconnectIdentity!
         ))
     } catch {
         let status = desktopHelperExitStatus(for: error)

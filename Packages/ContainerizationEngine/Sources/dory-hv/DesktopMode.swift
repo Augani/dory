@@ -1053,6 +1053,7 @@ enum DesktopMode {
         var armVirtTopology: DoryARMVirtV1Topology?
         var resolvedSystemDiskLogicalID: DoryVirtualDeviceID? = nil
         var displayPresentation: DoryMachineDisplayPresentation = .windowed
+        var reconnectIdentity: DoryRuntimeReconnectLaunchIdentity
 
         /// Shares actually materialized by the resolved directory-sharing policy. Guest setup must
         /// consume this same inventory so it cannot try to mount a tag whose device was omitted.
@@ -1322,10 +1323,6 @@ enum DesktopMode {
                 operationID: configuration.operationID
             )
             self.deviceTelemetry = deviceTelemetry
-            self.lifecycleReceiptServer = VmmLifecycleReceiptServer(
-                socketPath: configuration.controlSocketPath,
-                deviceTelemetryProvider: { deviceTelemetry.snapshot() }
-            )
             try FileManager.default.createDirectory(
                 atPath: configuration.stateDirectory,
                 withIntermediateDirectories: true
@@ -1401,6 +1398,16 @@ enum DesktopMode {
             }
             let machine = try Machine(configuration: machineConfiguration)
             self.machine = machine
+            self.lifecycleReceiptServer = VmmLifecycleReceiptServer(
+                socketPath: configuration.controlSocketPath,
+                deviceTelemetryProvider: { deviceTelemetry.snapshot() },
+                reconnectIdentity: configuration.reconnectIdentity,
+                executionStateProvider: { machine.executionState },
+                executionLifecycleHandler: { action in
+                    if action == .preparePause { try machine.pauseGuestExecution() }
+                    else { try machine.resumeGuestExecution() }
+                }
+            )
             self.machineRunner = RawHVMachineRunner(
                 machine: machine,
                 threadName: "dory-hv.desktop.vcpu0"
@@ -2366,6 +2373,10 @@ enum DesktopMode {
                                             shellSocketPath: configuration.shellSocketPath,
                                             controlSocketPath: configuration.controlSocketPath,
                                             graphicsSelection: self?.graphicsSelection,
+                                            guestBooted: true,
+                                            toolsConnected: true,
+                                            desktopVisible: true,
+                                            workloadReady: true,
                                             detail: "raw-HV generic Linux running with \(graphicsDisplayName) graphics and Dory Tools protocol \(info.protocolVersion)\(shareState.detailSuffix)"
                                         )
                                     )
@@ -2386,6 +2397,9 @@ enum DesktopMode {
                                             agentBuild: "dory-hv/generic-linux",
                                             controlSocketPath: configuration.controlSocketPath,
                                             graphicsSelection: self?.graphicsSelection,
+                                            guestBooted: true,
+                                            desktopVisible: true,
+                                            workloadReady: true,
                                             detail: "raw-HV generic Linux running with \(graphicsDisplayName) graphics; guest tools are not installed\(shareState.detailSuffix)"
                                         )
                                     )
@@ -2440,6 +2454,10 @@ enum DesktopMode {
                                     shellSocketPath: configuration.shellSocketPath,
                                     controlSocketPath: configuration.controlSocketPath,
                                     graphicsSelection: self?.graphicsSelection,
+                                    guestBooted: true,
+                                    toolsConnected: true,
+                                    desktopVisible: true,
+                                    workloadReady: true,
                                     detail: "raw-HV desktop running with \(graphicsDisplayName) graphics; dory-agent answered protocol \(info.protocolVersion)"
                                 )
                             )
