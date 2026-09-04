@@ -1,0 +1,37 @@
+--- a/dory-core-swift/Tests/DoryMachinePCLinuxBootRunnerTests/PVHJITDiagnosticsTests.swift
++++ b/dory-core-swift/Tests/DoryMachinePCLinuxBootRunnerTests/PVHJITDiagnosticsTests.swift
+@@ -29,9 +29,10 @@
+         baseline: provider, optimizing: provider) == nil)
+     }
+     #expect(providerReads == 0)
+-    let first = try #require(sampler.sampleIfDue(
++    let firstSample = sampler.sampleIfDue(
+       retiredInstructions: 1_000_000, elapsedNanoseconds: 2_000_000, terminal: false,
+-      baseline: provider, optimizing: provider))
++      baseline: provider, optimizing: provider)
++    let first = try #require(firstSample)
+     #expect(first.sampleInstructionCount == 1_000_000)
+     #expect(first.sampleElapsedNanoseconds == 2_000_000)
+     #expect(first.sampleIntervalInstructions == 1_000_000)
+@@ -58,15 +59,17 @@
+     var sampler = PVHJITDiagnosticsSampler(enabled: true)
+     let baseline = snapshot(counter: 12)
+     let optimizing = snapshot(counter: 27)
+-    let first = try #require(sampler.sampleIfDue(
++    let firstSample = sampler.sampleIfDue(
+       retiredInstructions: 7, elapsedNanoseconds: 20, terminal: true,
+-      baseline: { baseline }, optimizing: { optimizing }))
++      baseline: { baseline }, optimizing: { optimizing })
++    let first = try #require(firstSample)
+     #expect(first.sampleInstructionCount == 7)
+     #expect(first.baseline?.cumulativeCounters["compiledBlocks"] == 12)
+     #expect(first.optimizing?.cumulativeCounters["compiledBlocks"] == 27)
+-    let next = try #require(sampler.sampleIfDue(
++    let nextSample = sampler.sampleIfDue(
+       retiredInstructions: 9, elapsedNanoseconds: 30, terminal: true,
+-      baseline: { snapshot(counter: 13) }, optimizing: { nil }))
++      baseline: { snapshot(counter: 13) }, optimizing: { nil })
++    let next = try #require(nextSample)
+     #expect(next.sampleInstructionCount == 9)
+     #expect(next.sampleElapsedNanoseconds == 30)
+     #expect(next.baseline?.cumulativeCounters["compiledBlocks"] == 13)

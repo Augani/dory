@@ -1,0 +1,182 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-systemd-fixture-preparation-review",
+  "status": "prepared-not-guest-executed",
+  "sourceCommit": "990229789ba934e415ecdae43874dd82438f0862",
+  "sourceFilesVerifiedAgainstCommit": [
+    {
+      "path": "scripts/prepare-virtualization-fixtures.py",
+      "bytes": 55305,
+      "sha256": "230f3ff66cc715857f56229ca85dc33bfeec5a19acc948242ed5400767944011"
+    },
+    {
+      "path": "scripts/test-prepare-virtualization-fixtures.py",
+      "bytes": 49276,
+      "sha256": "89ce61eb450385a63c36d4ccbde303e583867bcd8a6376cba4b039f076376a46"
+    },
+    {
+      "path": "guest/diagnostics/p02-systemd-userspace/README.md",
+      "bytes": 8570,
+      "sha256": "46182917235e42b10ebcf07251b13328c9de7a2e7ed0f3d24fab2afe0410b12d"
+    },
+    {
+      "path": "guest/diagnostics/p02-systemd-userspace/common",
+      "bytes": 1140,
+      "sha256": "ebeee43c6c9a4cc45ee681729474f4b1b039d96f93fd299be8e193e6aef60475"
+    },
+    {
+      "path": "guest/diagnostics/p02-systemd-userspace/dory-diagnostic.service",
+      "bytes": 471,
+      "sha256": "7828cad70eb4bf0604fd6cd3a13bd92ee0887cb5a2cbb8c4536ac266dd9b1cbc"
+    },
+    {
+      "path": "guest/diagnostics/p02-systemd-userspace/dory-diagnostic.target",
+      "bytes": 147,
+      "sha256": "3e6e14b397a481db2ba3091fe6c6a0a05d2d8d06e4621909fda5a9706702427f"
+    },
+    {
+      "path": "guest/diagnostics/p02-systemd-userspace/fixture.json",
+      "bytes": 19940,
+      "sha256": "57067dbcf9d7359977d75ad5378fa3698c1293cd4920e63d2067f1e8f67b960a"
+    },
+    {
+      "path": "guest/diagnostics/p02-systemd-userspace/group",
+      "bytes": 10,
+      "sha256": "7a696fcfba89a55a6d73fa1a03c7f071fad2141340027b17a25db249e26b9be8"
+    },
+    {
+      "path": "guest/diagnostics/p02-systemd-userspace/machine-id",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "guest/diagnostics/p02-systemd-userspace/manager.conf",
+      "bytes": 82,
+      "sha256": "dc20ca72630065cfd831063063bc2d4eba741e5f23e27e06c12cd39f49f95942"
+    },
+    {
+      "path": "guest/diagnostics/p02-systemd-userspace/passwd",
+      "bytes": 30,
+      "sha256": "79492b90d473e2387338ef1518dfbceb9e3392ae5740235a6696621e42218efa"
+    },
+    {
+      "path": "guest/diagnostics/p02-systemd-userspace/receipt",
+      "bytes": 1946,
+      "sha256": "c27f682729efe0915c23a040d7e4c4a5503b0cee4bc4ffd0e5f107fed669a9d4"
+    },
+    {
+      "path": "guest/diagnostics/p02-systemd-userspace/workload",
+      "bytes": 4533,
+      "sha256": "003b8fe1057eb93030bd34f8356451f397c6a02ce3f3cb10f553b39799f39373"
+    }
+  ],
+  "agentHandoff": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-agent-handoff.json",
+    "sha256": "5d094834bf2576dd40c343e5faa8cded39a004e593ae9b1fe0f3684f57658116"
+  },
+  "logs": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-preparer-tests-final.log.gz",
+      "sha256": "aa4ee2ff98aee67298c3ea3f9b360cbb5cbd63be64e22d85a42c4d07db299a17"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-shellcheck-final.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-reproduction-1.json",
+      "sha256": "5bf0e6a1fa2f0968d16ebb096a12f7e25f7b582e977a82421f32c503e1a3c49c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-reproduction-1.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-reproduction-1.json",
+      "sha256": "85dcecfd7cfba4fea5e5598dcbbbe2247ad4fd3b18ae103c43790500274cd792"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-reproduction-1.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-reproduction-handoff.json",
+      "sha256": "91af5c8140eee360583e15352caa11d638e95111cf23542b64e3fdf7cd15bccd"
+    }
+  ],
+  "extractionManifests": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-reproduction-manifest.json",
+      "sha256": "8263644f7d3e8d89fdf9fa50dad34e7317cb1ab6ded6a0ad7c2e2902df07a3c2"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-reproduction-manifest.json",
+      "sha256": "10aefccd6261c7ebbca4ca7687c598704825bc49c0506f22148e632c8d7ee4a3"
+    }
+  ],
+  "archiveIdentities": [
+    {
+      "originalPath": "/tmp/dory-p02-systemd-fixture-reproduction-1/x86_64-p02-systemd-userspace-v1.cpio",
+      "bytes": 19935232,
+      "sha256": "3365a741cf5dcecd8675eed4da01b2ed31395f56125d026f461c8f48948f196a",
+      "retention": "Verified immutable scratch output; binary archive not vendored. Reproduction uses the pinned Git recipe and retained extraction manifest."
+    },
+    {
+      "originalPath": "/tmp/dory-p02-glibc-fixture-reproduction-1/x86_64-p02-glibc-userspace-v1.cpio",
+      "bytes": 2788352,
+      "sha256": "813de160103ef6179de5d3b6d9271ed8f9883d8c3fa7671a49254f0ec7cb9d24",
+      "retention": "Verified immutable scratch output; binary archive not vendored. Reproduction uses the pinned Git recipe and retained extraction manifest."
+    }
+  ],
+  "offlineUnitTests": {
+    "testCases": 40,
+    "passed": 40,
+    "failed": 0,
+    "skipped": 0,
+    "elapsedSeconds": 0.269,
+    "exitCode": 0,
+    "observedAgentChunk": "9b043d",
+    "command": "python3 scripts/test-prepare-virtualization-fixtures.py > /tmp/dory-p02-systemd-preparer-tests-final.log 2>&1"
+  },
+  "independentParentRerun": {
+    "testCases": 40,
+    "passed": 40,
+    "failed": 0,
+    "elapsedSeconds": 0.3,
+    "exitCode": 0,
+    "observedParentChunk": "992b13",
+    "scope": "Parent tool completion observation; not added to the40 distinct-case count."
+  },
+  "preparation": {
+    "systemdElapsedNanoseconds": 4417629334,
+    "glibcReproductionElapsedNanoseconds": 3799467250,
+    "exitCodes": [
+      0,
+      0
+    ],
+    "sourceArtifactID": "ubuntu-server-24.04.4-x86_64",
+    "sourceArtifactSHA256": "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433",
+    "systemdVersion": "255.4-1ubuntu8.12",
+    "glibcVersion": "2.39-0ubuntu8.7",
+    "requestedWorkloadCount": 8,
+    "finalReceiptEmitter": "systemd ExecStartPost after successful oneshot workload completion; systemd.service_supervision is the eighth result"
+  },
+  "preservation": {
+    "glibcArchiveSHA256": "813de160103ef6179de5d3b6d9271ed8f9883d8c3fa7671a49254f0ec7cb9d24",
+    "glibcArchiveBytes": 2788352,
+    "glibcByteIdentityUnchanged": true,
+    "glibcManifestChange": "Builder hash/path provenance changed while the resulting glibc archive bytes remained identical."
+  },
+  "limitations": [
+    "Archive/ELF/dependency/recipe integrity and script tests only. No systemd guest execution is represented.",
+    "No full distribution, physical x86, sustained service, P02 completion or release qualification.",
+    "Version strings and dependency closure are extracted from the pinned ISO ELF inputs; the distro name does not change VMM policy."
+  ],
+  "shellValidation": {
+    "command": "git diff --check -- scripts/prepare-virtualization-fixtures.py scripts/test-prepare-virtualization-fixtures.py guest/diagnostics/p02-systemd-userspace && /bin/sh -n guest/diagnostics/p02-systemd-userspace/common && /bin/sh -n guest/diagnostics/p02-systemd-userspace/workload && /bin/sh -n guest/diagnostics/p02-systemd-userspace/receipt && shellcheck -x -s sh guest/diagnostics/p02-systemd-userspace/common guest/diagnostics/p02-systemd-userspace/workload guest/diagnostics/p02-systemd-userspace/receipt > /tmp/dory-p02-systemd-shellcheck-final.log 2>&1",
+    "exitCode": 0,
+    "observedAgentChunk": "2ec230",
+    "workingDirectory": "pinned source checkout root",
+    "scope": "Shell source and preparer source unchanged after this gate. A README-only kernel reproduction command clarification followed; final README hash is independently verified against source commit."
+  }
+}

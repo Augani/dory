@@ -1,0 +1,130 @@
+{
+  "kind": "p02-evidence-retention-transformations",
+  "artifacts": [
+    {
+      "originalPath": "/tmp/dory-p02-correctness-overlay-29.tar.gz",
+      "originalSHA256": "fc153a096f7834be870a542c5675a9091fff7a1fa03d390e41cb228d98f53c3d",
+      "originalBytes": 347249,
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-source-overlay.tar.gz",
+        "sha256": "6a462003ea975519439baa1ebb59ca757715c151d91f8ef2e0522c0a294a910b"
+      },
+      "transformation": "Tar uid/gid/mtime zero and uname/gname cleared; gzip mtime0. Exact member names, modes and file bytes retained.",
+      "memberCount": 92,
+      "allMemberBytesUnchanged": true
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-manifest-29.json",
+      "originalSHA256": "4d15eae527d8e72f71c516f4db6a722d97aedd171234361aef311ab340c6bbf5",
+      "originalBytes": 133390,
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-source-manifest.json.gz",
+        "sha256": "884e59bb15353b4bf1b6f861d9eee38b0465ac45c485622ceea0f37a627aef80"
+      },
+      "transformation": "gzip mtime0; decoded bytes unchanged"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-run-29.log",
+      "originalSHA256": "9d685d7517d3363d30b1a275ffa50533491b16e694b81843a68587fa7c34f320",
+      "originalBytes": 62398,
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29.log.gz",
+        "sha256": "ef98da9f64741b1545ca6023cb6a3160099b099dc0a19869563bc8cbe3307bac"
+      },
+      "transformation": "gzip mtime0; decoded bytes unchanged"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-overlay-30.tar.gz",
+      "originalSHA256": "f49cbde7e1e5e4c0eb64bf02863fff4784ea01d53467d54f27e5e09c4a73267d",
+      "originalBytes": 347268,
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30-source-overlay.tar.gz",
+        "sha256": "e67f0012252b028d444fca6770cf945fcdd21b3a0e7252807ea79cbdddbdc0a0"
+      },
+      "transformation": "Tar uid/gid/mtime zero and uname/gname cleared; gzip mtime0. Exact member names, modes and file bytes retained.",
+      "memberCount": 92,
+      "allMemberBytesUnchanged": true
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-manifest-30.json",
+      "originalSHA256": "6ac54da66d6e198b77c115ebc32045fd67366483ed0424bc4c4df2b1c2ad2f80",
+      "originalBytes": 133390,
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30-source-manifest.json.gz",
+        "sha256": "b13b69de63f3d5abcfa4d181586fbb299a5c90918097c0699a2bd0883c84b984"
+      },
+      "transformation": "gzip mtime0; decoded bytes unchanged"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-run-30.log",
+      "originalSHA256": "49691298ea13ad136b274b0511f6f49e472f76ca6dd7008bec633cf05b822583",
+      "originalBytes": 287874,
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30.log.gz",
+        "sha256": "ec34b4083ddcc6bf439265a88bd1b36b00aeeb4da5985ab19e03b57db1cb961a"
+      },
+      "transformation": "gzip mtime0; decoded bytes unchanged"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-clean-before-29.log",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalBytes": 0,
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-29.log.gz",
+        "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+      },
+      "transformation": "gzip mtime0; decoded bytes unchanged"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-userspace-glibc-kernel-b-probe-1.json",
+      "originalSHA256": "bec5229307af28ae86499e45c91aea39bd40591e5e1db406418986e14f8b6bac",
+      "originalBytes": 28927,
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1.json",
+        "sha256": "bec5229307af28ae86499e45c91aea39bd40591e5e1db406418986e14f8b6bac"
+      },
+      "transformation": "none"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-userspace-glibc-kernel-b-probe-1.log",
+      "originalSHA256": "2eafc02415647651cabaca55e5d9d50f6de33d6291c313229d84ef4961ca9791",
+      "originalBytes": 448,
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1.log.gz",
+        "sha256": "6c9b48d1ad0610b5328f72c035d108dfaa7458a44c228cd663d6fc114d8adba6"
+      },
+      "transformation": "gzip mtime0; decoded bytes unchanged"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-userspace-glibc-kernel-b-probe-1.invocation.json",
+      "originalSHA256": "82fcc33df6c05f1fc10c6a54a45dd611cddb08e239790b3b7317cdddac5d6e1c",
+      "originalBytes": 1761,
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1.invocation.json",
+        "sha256": "82fcc33df6c05f1fc10c6a54a45dd611cddb08e239790b3b7317cdddac5d6e1c"
+      },
+      "transformation": "none"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-userspace-glibc-kernel-b-probe-1.exit",
+      "originalSHA256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "originalBytes": 2,
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "transformation": "none"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-release-runner-build-30.log",
+      "originalSHA256": "fdfc192f4dab0c77e547e9bd1c22ecd7da63bc431d3b971274c50276b218c7f2",
+      "originalBytes": 11730,
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30-release-runner-build.log.gz",
+        "sha256": "3dd2de3a096fbe6318e00dd7a20a411934e8a89bc30faf1fc6f28b22417555d9"
+      },
+      "transformation": "gzip mtime0; decoded bytes unchanged"
+    }
+  ],
+  "scope": "Append-only retained copies. Previous receipts and original scratch files unchanged. Compression/tar metadata transformations preserve exact source member and log bytes."
+}

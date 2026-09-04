@@ -1,0 +1,447 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-correctness-review",
+  "status": "in-progress",
+  "phaseComplete": false,
+  "releaseQualified": false,
+  "sourceCommit": "61cd728a4938e6e7e44319e0bd71f6147b115205",
+  "previousReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-28.json",
+    "sha256": "83f67036efe4f03e6531c29b10db6063d52788ce29598dee4a5eea5071a1fc6b"
+  },
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "testCommand": {
+    "environment": {
+      "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+      "SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH": "1"
+    },
+    "arguments": [
+      "swift",
+      "test",
+      "--package-path",
+      "/tmp/dory-p02-correctness-source-1/dory-core-swift",
+      "--scratch-path",
+      "/tmp/dory-p02-correctness-build-1",
+      "--jobs",
+      "3",
+      "--no-parallel",
+      "--filter",
+      "DoryX86|DoryPC|DoryARM64|PVHBootRunnerTests|PVHJITDiagnosticsTests|ISAInventoryTests"
+    ]
+  },
+  "cleanBeforeRun29": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-29-command.json",
+    "sha256": "6ffe8e2f0e6857331c7d0798c58b0c43ae37a7d4809cf2f3572053a23cebe269"
+  },
+  "runs": [
+    {
+      "run": 29,
+      "exitCode": 1,
+      "stage": "compile-failed",
+      "testsExecuted": false,
+      "macroErrorCount": 3,
+      "sourceBinding": {
+        "run": 29,
+        "comparisonCommit": "61cd728a4938e6e7e44319e0bd71f6147b115205",
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "totalInputs": 694,
+        "trackedInputs": 688,
+        "trackedDifferences": [
+          {
+            "path": "dory-core-swift/Tests/DoryMachinePCLinuxBootRunnerTests/PVHJITDiagnosticsTests.swift",
+            "frozenSHA256": "68c4a28e02a66093e82d5bc0b9308bc94e84bb797e4cf1023e23356d071453e6",
+            "commitSHA256": "f35e0e854e6a361634dbf30b6db32c3705b3b9a0367c5d839ea42d68cb2a44b8"
+          }
+        ],
+        "ignoredFFIInputs": [
+          {
+            "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+            "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+          },
+          {
+            "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+            "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+            "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+            "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+            "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+            "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+          }
+        ],
+        "overlayFiles": 92,
+        "baseAndOverlayReconstructionPassed": true
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-source-manifest.json.gz",
+        "sha256": "884e59bb15353b4bf1b6f861d9eee38b0465ac45c485622ceea0f37a627aef80"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-source-overlay.tar.gz",
+        "sha256": "6a462003ea975519439baa1ebb59ca757715c151d91f8ef2e0522c0a294a910b"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29.log.gz",
+        "sha256": "ef98da9f64741b1545ca6023cb6a3160099b099dc0a19869563bc8cbe3307bac"
+      },
+      "binding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-commit-binding.json",
+        "sha256": "aaafceb0f682dc7572ae216bc1c4d059d45aa6a630eb2c4906cc48b00c21bb89"
+      }
+    },
+    {
+      "run": 30,
+      "exitCode": 0,
+      "observedToolSession": 6655,
+      "observedCompletionChunk": "1fe8c2",
+      "buildElapsedSeconds": 80.71,
+      "sourceBinding": {
+        "run": 30,
+        "comparisonCommit": "61cd728a4938e6e7e44319e0bd71f6147b115205",
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "totalInputs": 694,
+        "trackedInputs": 688,
+        "trackedDifferences": [],
+        "ignoredFFIInputs": [
+          {
+            "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+            "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+          },
+          {
+            "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+            "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+            "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+            "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+            "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+            "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+          }
+        ],
+        "overlayFiles": 92,
+        "baseAndOverlayReconstructionPassed": true
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30-source-manifest.json.gz",
+        "sha256": "b13b69de63f3d5abcfa4d181586fbb299a5c90918097c0699a2bd0883c84b984"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30-source-overlay.tar.gz",
+        "sha256": "e67f0012252b028d444fca6770cf945fcdd21b3a0e7252807ea79cbdddbdc0a0"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30.log.gz",
+        "sha256": "ec34b4083ddcc6bf439265a88bd1b36b00aeeb4da5985ab19e03b57db1cb961a"
+      },
+      "binding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30-commit-binding.json",
+        "sha256": "38f55c8fcf8ae3504c9456c009303ee7037d35d63c9642f3be31a7b6e1b0bc33"
+      },
+      "swiftTesting": {
+        "reported": 744,
+        "passed": 743,
+        "disabledPhysicalReference": 1,
+        "failed": 0,
+        "suites": 86,
+        "elapsedSeconds": 3.734
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    }
+  ],
+  "componentChanges": [
+    {
+      "commit": "6305707765cb7afef04a607c83e23392a2975f9a",
+      "scope": "Seven targeted regressions cover the architectural15-byte instruction-length boundary with typed faults and precise state behavior."
+    },
+    {
+      "commit": "61cd728a4938e6e7e44319e0bd71f6147b115205",
+      "scope": "Opt-in runner-local JIT diagnostics:19 cumulative counters, live-entry count and capped16 sites without guest bytes, sampled every1M instructions and at normal terminal stop; five injected-provider and serialization tests."
+    },
+    {
+      "commit": "990229789ba934e415ecdae43874dd82438f0862",
+      "scope": "Reproducible pinned systemd diagnostic fixture with explicit ELF/data closure and eight intended workload results;40 offline preparer tests and archive preparation only."
+    }
+  ],
+  "sourceVerification": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-30-source-verification.json",
+    "sha256": "536fc1cd8693079f60f8c43d0eac6f096ae737d2aaa86867daff4c69b1ed8dcd"
+  },
+  "countVerification": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-30-log-count-validation.json",
+    "sha256": "51360e713ba6ba69560976c17a7add4c13b428c685326b4c582902701e6f404a"
+  },
+  "retentionTransformations": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-30-retention-transformations.json",
+    "sha256": "038982b567328740e924564d7c225045e78ab94f14be64f334dee8d9c7caf191"
+  },
+  "systemdFixture": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-preparation-review.json",
+    "sha256": "ae90672910673fbaad9909f0660723130f9dc71b90e8500ee40807da0ca55803"
+  },
+  "systemdRetentionTransformations": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-retention-transformations.json",
+    "sha256": "99d0096aabeb18f2e0df8b184955015bde1f8b5e71f8ea9c6eef0d5057512ef7"
+  },
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-agent-handoff.json",
+      "sha256": "5d094834bf2576dd40c343e5faa8cded39a004e593ae9b1fe0f3684f57658116"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-preparer-tests-final.log.gz",
+      "sha256": "aa4ee2ff98aee67298c3ea3f9b360cbb5cbd63be64e22d85a42c4d07db299a17"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-shellcheck-final.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-reproduction-1.json",
+      "sha256": "5bf0e6a1fa2f0968d16ebb096a12f7e25f7b582e977a82421f32c503e1a3c49c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-reproduction-1.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-reproduction-1.json",
+      "sha256": "85dcecfd7cfba4fea5e5598dcbbbe2247ad4fd3b18ae103c43790500274cd792"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-reproduction-1.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-reproduction-handoff.json",
+      "sha256": "91af5c8140eee360583e15352caa11d638e95111cf23542b64e3fdf7cd15bccd"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-reproduction-manifest.json",
+      "sha256": "8263644f7d3e8d89fdf9fa50dad34e7317cb1ab6ded6a0ad7c2e2902df07a3c2"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-reproduction-manifest.json",
+      "sha256": "10aefccd6261c7ebbca4ca7687c598704825bc49c0506f22148e632c8d7ee4a3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-preparation-review.json",
+      "sha256": "ae90672910673fbaad9909f0660723130f9dc71b90e8500ee40807da0ca55803"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-retention-transformations.json",
+      "sha256": "99d0096aabeb18f2e0df8b184955015bde1f8b5e71f8ea9c6eef0d5057512ef7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-source-overlay.tar.gz",
+      "sha256": "6a462003ea975519439baa1ebb59ca757715c151d91f8ef2e0522c0a294a910b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-source-manifest.json.gz",
+      "sha256": "884e59bb15353b4bf1b6f861d9eee38b0465ac45c485622ceea0f37a627aef80"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29.log.gz",
+      "sha256": "ef98da9f64741b1545ca6023cb6a3160099b099dc0a19869563bc8cbe3307bac"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30-source-overlay.tar.gz",
+      "sha256": "e67f0012252b028d444fca6770cf945fcdd21b3a0e7252807ea79cbdddbdc0a0"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30-source-manifest.json.gz",
+      "sha256": "b13b69de63f3d5abcfa4d181586fbb299a5c90918097c0699a2bd0883c84b984"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30.log.gz",
+      "sha256": "ec34b4083ddcc6bf439265a88bd1b36b00aeeb4da5985ab19e03b57db1cb961a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-commit-binding.json",
+      "sha256": "aaafceb0f682dc7572ae216bc1c4d059d45aa6a630eb2c4906cc48b00c21bb89"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30-commit-binding.json",
+      "sha256": "38f55c8fcf8ae3504c9456c009303ee7037d35d63c9642f3be31a7b6e1b0bc33"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-30-source-verification.json",
+      "sha256": "536fc1cd8693079f60f8c43d0eac6f096ae737d2aaa86867daff4c69b1ed8dcd"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/jit-diagnostics-macro-correction.patch",
+      "sha256": "ba03fd546bca75c0bf93d7bb8b529e6ed153a402ebe9bb0bc958030e9c6d8059"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-29.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-29-command.json",
+      "sha256": "6ffe8e2f0e6857331c7d0798c58b0c43ae37a7d4809cf2f3572053a23cebe269"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-30-log-count-validation.json",
+      "sha256": "51360e713ba6ba69560976c17a7add4c13b428c685326b4c582902701e6f404a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1.json",
+      "sha256": "bec5229307af28ae86499e45c91aea39bd40591e5e1db406418986e14f8b6bac"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1.log.gz",
+      "sha256": "6c9b48d1ad0610b5328f72c035d108dfaa7458a44c228cd663d6fc114d8adba6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1.invocation.json",
+      "sha256": "82fcc33df6c05f1fc10c6a54a45dd611cddb08e239790b3b7317cdddac5d6e1c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-29-30-retention-transformations.json",
+      "sha256": "038982b567328740e924564d7c225045e78ab94f14be64f334dee8d9c7caf191"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30-release-runner-build.log.gz",
+      "sha256": "3dd2de3a096fbe6318e00dd7a20a411934e8a89bc30faf1fc6f28b22417555d9"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1-validation.json",
+      "sha256": "15308655fc285dda7d8408791b5aadd12671f9b315f7ce5552eac9c93fec356b"
+    }
+  ],
+  "limitations": [
+    "P02 remains in progress. These source gates and deterministic fixture-preparation checks do not establish full ISA, sustained stress, physical-reference or release qualification.",
+    "Run29 failed test-target compilation and executed no tests. Run30 reports744 Swift cases, comprising743 passing and1 disabled physical-reference case; XCTest reports11, comprising10 passing and1 optional pinned-boot fixture skip.",
+    "Run29 differs from the run30 Git source only in the telemetry macro test wrapper. Live conversion/fence work and other later changes are excluded by the exact manifest and overlay.",
+    "JIT diagnostics retain only one coarse sample. The19 executor counters are cumulative; negativeEntryCount and the capped16 site identities/hits are live-cache observations, not cumulative decline-reason totals. Timeout/error can retain an older completed sample with its own instruction count/time.",
+    "The systemd archive is prepared from pinned Ubuntu ISO ELF/data inputs and40 script tests pass. No systemd guest execution, successful service supervision or shutdown is claimed. The existing glibc archive byte hash remains unchanged.",
+    "Six generated FFI files per source gate are hash-bound without vendoring executable payloads. Fixture CPIO artifacts are likewise identity-bound and reproducible from pinned source recipes.",
+    "The completed glibc/second-kernel probe uses the copied source28 executable and ends in guest-reset with no receipt. The new source30 diagnostic sampling is absent from that run. No glibc or second-kernel boot success is claimed."
+  ],
+  "glibcSecondKernelProbe": {
+    "artifacts": {
+      ".json": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1.json",
+        "sha256": "bec5229307af28ae86499e45c91aea39bd40591e5e1db406418986e14f8b6bac"
+      },
+      ".log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1.log.gz",
+        "sha256": "6c9b48d1ad0610b5328f72c035d108dfaa7458a44c228cd663d6fc114d8adba6"
+      },
+      ".invocation.json": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1.invocation.json",
+        "sha256": "82fcc33df6c05f1fc10c6a54a45dd611cddb08e239790b3b7317cdddac5d6e1c"
+      },
+      ".exit": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1.exit",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      }
+    },
+    "sourceCommit": "ae471c9f8c8aec859545ab10b3e061c6109e4723",
+    "runnerSHA256": "c310b2740b57562e924ce7d7bcab1a4fb4f6123ce8ce39b8bec6b7502c692049",
+    "processExitCode": 1,
+    "outcome": {
+      "exitCode": 1,
+      "passed": false,
+      "reason": "guest-reset"
+    },
+    "error": null,
+    "retiredInstructions": 655442800,
+    "elapsedNanoseconds": 365170433250,
+    "guestReceipt": null,
+    "executionStatistics": {
+      "baselineJITBlocks": 224689857,
+      "baselineJITInstructions": 601713180,
+      "interpreterInstructions": 53729620,
+      "optimizingJITBlocks": 0,
+      "optimizingJITInstructions": 0
+    },
+    "lastStop": {
+      "elapsedNanoseconds": 365170430334,
+      "instructionCount": 800,
+      "nearestSymbol": {
+        "name": "acpi_os_write_port",
+        "offset": 14,
+        "symbolAddress": 18446744071588573872
+      },
+      "reason": "reset",
+      "rip": 18446744071588573886,
+      "totalInstructions": 655442800
+    },
+    "kernel": {
+      "byteCount": 39274336,
+      "elfBuildID": "d838eee071a9f7ddba323742d7dec05a314b6c78",
+      "path": "/tmp/dory-p02-guest-fixtures/alpine-3.23.5-x86_64-vmlinux",
+      "sha256": "ae0dcbf0d699293a29e8c55e4b319e8fe093aa07a18e1902beb41c3e0243c405"
+    },
+    "initrd": {
+      "byteCount": 2788352,
+      "path": "/tmp/dory-p02-glibc-final-fixtures/x86_64-p02-glibc-userspace-v1.cpio",
+      "sha256": "813de160103ef6179de5d3b6d9271ed8f9883d8c3fa7671a49254f0ec7cb9d24"
+    },
+    "observationScope": "Last runner slice exits; guest-handled exceptions are not sampled. Timeout state is the last completed slice.",
+    "qualification": "One experimental-host diagnostic run; not systemd, physical-reference, full-phase or release qualification.",
+    "validation": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-1-validation.json",
+      "sha256": "15308655fc285dda7d8408791b5aadd12671f9b315f7ce5552eac9c93fec356b"
+    },
+    "runID": "8a309b56-fda9-40b3-a9cc-61133f28c027",
+    "poweredOff": false,
+    "userspaceReceiptSeen": false,
+    "priorSourceReview": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-28.json",
+      "sha256": "83f67036efe4f03e6531c29b10db6063d52788ce29598dee4a5eea5071a1fc6b"
+    }
+  },
+  "releaseBuild": {
+    "run": 30,
+    "sourceCommit": "61cd728a4938e6e7e44319e0bd71f6147b115205",
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift build --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 --jobs 3 -c release --product dory-pc-linux-boot-runner",
+    "exitCode": 0,
+    "observedToolSession": 80476,
+    "observedCompletionChunk": "ae0fa9",
+    "elapsedSeconds": 58.42,
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30-release-runner-build.log.gz",
+      "sha256": "3dd2de3a096fbe6318e00dd7a20a411934e8a89bc30faf1fc6f28b22417555d9"
+    },
+    "runnerSHA256": "acef323788bece025087fa85dfefbcee7859365f944bd60db62ac59c361a2787",
+    "runnerBytes": 8972728,
+    "runnerRetention": "Hash-bound immutable scratch copy; executable payload not vendored."
+  }
+}

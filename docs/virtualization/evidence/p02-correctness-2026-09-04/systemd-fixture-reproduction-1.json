@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "kind": "virtualization-fixture-preparation",
+  "cacheDirectory": "/tmp/dory-p02-systemd-fixture-reproduction-1",
+  "qualification": "input integrity only; no guest boot or workload qualification",
+  "artifacts": [
+    {
+      "id": "ubuntu-server-24.04.4-x86_64",
+      "filename": "ubuntu-24.04.4-live-server-amd64.iso",
+      "sha256": "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433",
+      "bytes": 3405469696,
+      "action": "verified-cache",
+      "extractions": []
+    }
+  ],
+  "diagnosticInitramfs": {
+    "filename": "x86_64-p02-systemd-userspace-v1.cpio",
+    "sha256": "3365a741cf5dcecd8675eed4da01b2ed31395f56125d026f461c8f48948f196a",
+    "bytes": 19935232,
+    "manifestFilename": "x86_64-p02-systemd-userspace-v1.cpio.manifest.json",
+    "manifestSHA256": "8263644f7d3e8d89fdf9fa50dad34e7317cb1ab6ded6a0ad7c2e2902df07a3c2",
+    "qualification": "archive integrity and deterministic construction only; guest has not executed"
+  }
+}

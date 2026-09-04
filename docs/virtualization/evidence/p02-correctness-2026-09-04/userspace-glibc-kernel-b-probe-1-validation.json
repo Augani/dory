@@ -1,0 +1,19 @@
+{
+  "kind": "p02-failed-guest-probe-consistency-validation",
+  "sourceCommit": "ae471c9f8c8aec859545ab10b3e061c6109e4723",
+  "runID": "8a309b56-fda9-40b3-a9cc-61133f28c027",
+  "checks": {
+    "processExitMatches": true,
+    "failureReasonMatches": true,
+    "hostStopReset": true,
+    "noAcceptedReceipt": true,
+    "noSuccessClaim": true,
+    "runIDMatches": true,
+    "lastCompletedInstructionCountMatches": true,
+    "tierCountSumMatches": true,
+    "source28CopiedRunnerMatches": true,
+    "kernelAndInitrdPinsMatch": true
+  },
+  "scope": "Offline retained-record consistency only. The second Alpine kernel with the pinned glibc initrd resets after a userspace invalid-opcode report. No accepted workload receipt, clean poweroff, glibc qualification or causal diagnosis is claimed.",
+  "consoleObservation": "The console reports user instruction bytes beginning f3 48 0f 1e c8 near the fault. This evidence record does not attribute a root cause."
+}

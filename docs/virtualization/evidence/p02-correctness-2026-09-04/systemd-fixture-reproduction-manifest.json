@@ -1,0 +1,801 @@
+{
+  "allowedRUNPATH": "/usr/lib/x86_64-linux-gnu/systemd",
+  "architecture": "x86_64",
+  "builderSHA256": "230f3ff66cc715857f56229ca85dc33bfeec5a19acc948242ed5400767944011",
+  "entrypoints": [
+    "usr/lib/systemd/systemd",
+    "usr/lib/systemd/systemd-executor",
+    "usr/lib/systemd/systemd-shutdown",
+    "bin/busybox"
+  ],
+  "format": "newc; sorted names; uid/gid/mtime zero; sequential inodes; 512-byte padded; uncompressed",
+  "guestLinks": {
+    "bin/sh": "busybox",
+    "etc/os-release": "/usr/lib/os-release",
+    "etc/systemd/system/default.target": "dory-diagnostic.target",
+    "init": "usr/lib/systemd/systemd",
+    "lib": "usr/lib",
+    "lib64": "usr/lib/x86_64-linux-gnu",
+    "usr/lib/x86_64-linux-gnu/libsystemd-shared-255.so": "systemd/libsystemd-shared-255.so"
+  },
+  "kind": "p02-systemd-userspace-build",
+  "limitations": [
+    "Input fixture preparation only; no systemd guest has executed, and no distribution qualification is implied.",
+    "One root Type=oneshot service and normal manager poweroff only; no installed distribution boot, journald, udev, networking, PAM login or optional dlopen-feature qualification.",
+    "The exact pinned Ubuntu systemd 255.4-1ubuntu8.12, executor, shutdown and ELF interpreter/DT_NEEDED closure are inspected, never run on the host.",
+    "Seven bounded BusyBox/glibc shell checks plus one systemd supervision check; no complete syscall, allocator, signal or timer coverage.",
+    "8 MiB workload tmpfs and 64 KiB allocation/file checks only; no disk persistence or stress qualification.",
+    "Fresh UUID and eight matching workloads plus independently observed host ACPI S5 are mandatory; fixture construction or poweroff alone is not success.",
+    "Successful ExecStartPost proves manager-observed successful oneshot main-process completion, not a long-running Type=notify service readiness contract."
+  ],
+  "localFiles": {
+    "common": {
+      "bytes": 1140,
+      "sha256": "ebeee43c6c9a4cc45ee681729474f4b1b039d96f93fd299be8e193e6aef60475"
+    },
+    "dory-diagnostic.service": {
+      "bytes": 471,
+      "sha256": "7828cad70eb4bf0604fd6cd3a13bd92ee0887cb5a2cbb8c4536ac266dd9b1cbc"
+    },
+    "dory-diagnostic.target": {
+      "bytes": 147,
+      "sha256": "3e6e14b397a481db2ba3091fe6c6a0a05d2d8d06e4621909fda5a9706702427f"
+    },
+    "group": {
+      "bytes": 10,
+      "sha256": "7a696fcfba89a55a6d73fa1a03c7f071fad2141340027b17a25db249e26b9be8"
+    },
+    "machine-id": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "manager.conf": {
+      "bytes": 82,
+      "sha256": "dc20ca72630065cfd831063063bc2d4eba741e5f23e27e06c12cd39f49f95942"
+    },
+    "passwd": {
+      "bytes": 30,
+      "sha256": "79492b90d473e2387338ef1518dfbceb9e3392ae5740235a6696621e42218efa"
+    },
+    "receipt": {
+      "bytes": 1946,
+      "sha256": "c27f682729efe0915c23a040d7e4c4a5503b0cee4bc4ffd0e5f107fed669a9d4"
+    },
+    "workload": {
+      "bytes": 4533,
+      "sha256": "003b8fe1057eb93030bd34f8356451f397c6a02ce3f3cb10f553b39799f39373"
+    }
+  },
+  "members": {
+    "usr/lib/initramfs-tools/bin/busybox": {
+      "bytes": 330000,
+      "destination": "bin/busybox",
+      "elf": {
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": null
+      },
+      "mode": 493,
+      "sha256": "836e212c2f9cbcc71abaa15fb6d5f6db8cab23fe25b2f58051c80c6bdee35cd5"
+    },
+    "usr/lib/os-release": {
+      "bytes": 400,
+      "destination": "usr/lib/os-release",
+      "mode": 420,
+      "sha256": "01af466feb100306498c86aa6bad1815e33036019aa34d4362c20f374ea5c829"
+    },
+    "usr/lib/systemd/system/final.target": {
+      "bytes": 500,
+      "destination": "usr/lib/systemd/system/final.target",
+      "mode": 420,
+      "sha256": "ab0400ac256f098d637ad7220231da0bd805e49440781e77ba03c32bb75c5b38"
+    },
+    "usr/lib/systemd/system/poweroff.target": {
+      "bytes": 607,
+      "destination": "usr/lib/systemd/system/poweroff.target",
+      "mode": 420,
+      "sha256": "79ee7eac473582df352270dfba069904b9e202f8bb887304e672113aadf35843"
+    },
+    "usr/lib/systemd/system/shutdown.target": {
+      "bytes": 457,
+      "destination": "usr/lib/systemd/system/shutdown.target",
+      "mode": 420,
+      "sha256": "66be4f001c56d7a7b8d2dc636b951acd8627d92281ff5688a746586b34a48e72"
+    },
+    "usr/lib/systemd/system/systemd-poweroff.service": {
+      "bytes": 575,
+      "destination": "usr/lib/systemd/system/systemd-poweroff.service",
+      "mode": 420,
+      "sha256": "d9c09b6716cb56dc5a54c18babb66a0882d352525a4e242d69c3584bda7153a4"
+    },
+    "usr/lib/systemd/system/umount.target": {
+      "bytes": 465,
+      "destination": "usr/lib/systemd/system/umount.target",
+      "mode": 420,
+      "sha256": "13b6f2aa3150e1950ffc646a64ade207757b6544009ab776a7d2ab5ea134952e"
+    },
+    "usr/lib/systemd/systemd": {
+      "bytes": 100816,
+      "destination": "usr/lib/systemd/systemd",
+      "elf": {
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "needed": [
+          "libsystemd-core-255.so",
+          "libsystemd-shared-255.so",
+          "libc.so.6"
+        ],
+        "runpath": "/usr/lib/x86_64-linux-gnu/systemd",
+        "soname": null
+      },
+      "mode": 493,
+      "sha256": "c89fdaa2ec50472df1deeb4ff3b465631861c5c5a7c521c4c256c3783fcb6fb5"
+    },
+    "usr/lib/systemd/systemd-executor": {
+      "bytes": 137792,
+      "destination": "usr/lib/systemd/systemd-executor",
+      "elf": {
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "needed": [
+          "libsystemd-core-255.so",
+          "libsystemd-shared-255.so",
+          "libapparmor.so.1",
+          "libpam.so.0",
+          "libseccomp.so.2",
+          "libselinux.so.1",
+          "libc.so.6"
+        ],
+        "runpath": "/usr/lib/x86_64-linux-gnu/systemd",
+        "soname": null
+      },
+      "mode": 493,
+      "sha256": "3266f6a81aee703f95ad36e7f483b4d2cd579f88a9d6ad6de35cbf1d7f5c36b2"
+    },
+    "usr/lib/systemd/systemd-shutdown": {
+      "bytes": 55760,
+      "destination": "usr/lib/systemd/systemd-shutdown",
+      "elf": {
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "needed": [
+          "libsystemd-shared-255.so",
+          "libmount.so.1",
+          "libc.so.6"
+        ],
+        "runpath": "/usr/lib/x86_64-linux-gnu/systemd",
+        "soname": null
+      },
+      "mode": 493,
+      "sha256": "e4c5026f415e4bf8b34ed099d585a50e909aa6b4845b1137be68ddd7808c3b57"
+    },
+    "usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2": {
+      "bytes": 236616,
+      "destination": "usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+      "elf": {
+        "interpreter": null,
+        "needed": [],
+        "soname": "ld-linux-x86-64.so.2"
+      },
+      "mode": 493,
+      "sha256": "1cd555ac46b7887edeaf3c42aac5408c8135e52f6b37870da2cf82d5fe14e829"
+    },
+    "usr/lib/x86_64-linux-gnu/libacl.so.1.1.2302": {
+      "bytes": 38984,
+      "destination": "usr/lib/x86_64-linux-gnu/libacl.so.1",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": "libacl.so.1"
+      },
+      "mode": 493,
+      "sha256": "1f5247285409ec89990e9fe384d78dfb2ae6ec8e210a2657073babc8d6b7e54f"
+    },
+    "usr/lib/x86_64-linux-gnu/libapparmor.so.1.17.1": {
+      "bytes": 80768,
+      "destination": "usr/lib/x86_64-linux-gnu/libapparmor.so.1",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": "libapparmor.so.1"
+      },
+      "mode": 493,
+      "sha256": "6d3f5037a2361f6ec2430d33f1c58fdfe97990833d129e9a98d9a936da8bde3b"
+    },
+    "usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0": {
+      "bytes": 133200,
+      "destination": "usr/lib/x86_64-linux-gnu/libaudit.so.1",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libcap-ng.so.0",
+          "libc.so.6"
+        ],
+        "soname": "libaudit.so.1"
+      },
+      "mode": 493,
+      "sha256": "8a4ca5eda7607f2e65da7cb32a780cc0dcfbf202037482ef4261a3c1ec339083"
+    },
+    "usr/lib/x86_64-linux-gnu/libblkid.so.1.1.0": {
+      "bytes": 236592,
+      "destination": "usr/lib/x86_64-linux-gnu/libblkid.so.1",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": "libblkid.so.1"
+      },
+      "mode": 493,
+      "sha256": "9d1afba3f53f67d2a54b43e5c3867a242d139e5e83e4227acf95d4da04a305b5"
+    },
+    "usr/lib/x86_64-linux-gnu/libc.so.6": {
+      "bytes": 2125328,
+      "destination": "usr/lib/x86_64-linux-gnu/libc.so.6",
+      "elf": {
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "needed": [
+          "ld-linux-x86-64.so.2"
+        ],
+        "soname": "libc.so.6"
+      },
+      "mode": 493,
+      "sha256": "d8db8739a1633c972cec6a4fe0566bdcec6fd088f98723492ab0361f66238f75"
+    },
+    "usr/lib/x86_64-linux-gnu/libcap-ng.so.0.0.0": {
+      "bytes": 26848,
+      "destination": "usr/lib/x86_64-linux-gnu/libcap-ng.so.0",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ],
+        "soname": "libcap-ng.so.0"
+      },
+      "mode": 493,
+      "sha256": "25349c22956c7af94f46e728d7e4c1eba57d0e4a0517f72781fb495d541eeef3"
+    },
+    "usr/lib/x86_64-linux-gnu/libcap.so.2.66": {
+      "bytes": 51536,
+      "destination": "usr/lib/x86_64-linux-gnu/libcap.so.2",
+      "elf": {
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": "libcap.so.2"
+      },
+      "mode": 493,
+      "sha256": "0e62ac3921a103914968b82c8c8514f34a056f4c9ac3d1ab927ca35de383ae02"
+    },
+    "usr/lib/x86_64-linux-gnu/libcrypt.so.1.1.0": {
+      "bytes": 198664,
+      "destination": "usr/lib/x86_64-linux-gnu/libcrypt.so.1",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": "libcrypt.so.1"
+      },
+      "mode": 493,
+      "sha256": "1502636e3be8232c9cf801dfb533694aea985d449904f3e1295db26d7b348946"
+    },
+    "usr/lib/x86_64-linux-gnu/libcrypto.so.3": {
+      "bytes": 5309400,
+      "destination": "usr/lib/x86_64-linux-gnu/libcrypto.so.3",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": "libcrypto.so.3"
+      },
+      "mode": 493,
+      "sha256": "d6fc1bc9de29c55fc905f77edba1ccc7c7a50b32bd2bb9086b0d0b00104eafc4"
+    },
+    "usr/lib/x86_64-linux-gnu/libgcrypt.so.20.4.3": {
+      "bytes": 1340976,
+      "destination": "usr/lib/x86_64-linux-gnu/libgcrypt.so.20",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libgpg-error.so.0",
+          "libc.so.6"
+        ],
+        "soname": "libgcrypt.so.20"
+      },
+      "mode": 493,
+      "sha256": "f207cbaa2f5ad2acb0a0991f79c2329808493af500ca8cf25dfc386e6639bf1b"
+    },
+    "usr/lib/x86_64-linux-gnu/libgpg-error.so.0.34.0": {
+      "bytes": 149760,
+      "destination": "usr/lib/x86_64-linux-gnu/libgpg-error.so.0",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": "libgpg-error.so.0"
+      },
+      "mode": 493,
+      "sha256": "6cb18a007bfcb623029f4528a36b46578fea7dc34c2b505b8e6e0d99e6348cd1"
+    },
+    "usr/lib/x86_64-linux-gnu/libkmod.so.2.4.1": {
+      "bytes": 112792,
+      "destination": "usr/lib/x86_64-linux-gnu/libkmod.so.2",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libzstd.so.1",
+          "liblzma.so.5",
+          "libcrypto.so.3",
+          "libc.so.6"
+        ],
+        "soname": "libkmod.so.2"
+      },
+      "mode": 493,
+      "sha256": "a1869a5b9d78e067f047751eae7bb3f230228fc06cab8bcef5ad76466682247c"
+    },
+    "usr/lib/x86_64-linux-gnu/liblz4.so.1.9.4": {
+      "bytes": 137440,
+      "destination": "usr/lib/x86_64-linux-gnu/liblz4.so.1",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": "liblz4.so.1"
+      },
+      "mode": 493,
+      "sha256": "40bffd0a098387368b16b992abd5f7cf43c0fa2f05cabe5a6d483719554adfda"
+    },
+    "usr/lib/x86_64-linux-gnu/liblzma.so.5.4.5": {
+      "bytes": 202904,
+      "destination": "usr/lib/x86_64-linux-gnu/liblzma.so.5",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": "liblzma.so.5"
+      },
+      "mode": 493,
+      "sha256": "a9793942a8a5f6f4d0f523ef9e0a5be4f0033f2c6c28520cd2b4e706d53c6e17"
+    },
+    "usr/lib/x86_64-linux-gnu/libm.so.6": {
+      "bytes": 952616,
+      "destination": "usr/lib/x86_64-linux-gnu/libm.so.6",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ],
+        "soname": "libm.so.6"
+      },
+      "mode": 493,
+      "sha256": "1b87a1a50b496cfead2b0ad134c2ff536705c82608db240c7e8aa48d6c0e4217"
+    },
+    "usr/lib/x86_64-linux-gnu/libmount.so.1.1.0": {
+      "bytes": 309960,
+      "destination": "usr/lib/x86_64-linux-gnu/libmount.so.1",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libblkid.so.1",
+          "libselinux.so.1",
+          "libc.so.6"
+        ],
+        "soname": "libmount.so.1"
+      },
+      "mode": 493,
+      "sha256": "1f47b61c28edcde229bc0146ed00891289fc5fbad029d0499fc46d28e0e853da"
+    },
+    "usr/lib/x86_64-linux-gnu/libpam.so.0.85.1": {
+      "bytes": 67888,
+      "destination": "usr/lib/x86_64-linux-gnu/libpam.so.0",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libaudit.so.1",
+          "libc.so.6"
+        ],
+        "soname": "libpam.so.0"
+      },
+      "mode": 493,
+      "sha256": "094b919ba9273f973c5efc13ea14254a814c7a6eae643d53dc2e75a7ec44ab33"
+    },
+    "usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.11.2": {
+      "bytes": 625344,
+      "destination": "usr/lib/x86_64-linux-gnu/libpcre2-8.so.0",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": "libpcre2-8.so.0"
+      },
+      "mode": 493,
+      "sha256": "e00576d71d81d3ba0cfa4903c835a44a8723aac96f72f79ff75200b4cff9071b"
+    },
+    "usr/lib/x86_64-linux-gnu/libseccomp.so.2.5.5": {
+      "bytes": 125360,
+      "destination": "usr/lib/x86_64-linux-gnu/libseccomp.so.2",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": "libseccomp.so.2"
+      },
+      "mode": 493,
+      "sha256": "b4d9140a7797ccf3ac14f5d9d579b64f157111662940cb8330c632b11a8cea8e"
+    },
+    "usr/lib/x86_64-linux-gnu/libselinux.so.1": {
+      "bytes": 174472,
+      "destination": "usr/lib/x86_64-linux-gnu/libselinux.so.1",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libpcre2-8.so.0",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ],
+        "soname": "libselinux.so.1"
+      },
+      "mode": 493,
+      "sha256": "0ec0843463f90e227b0e138e1f379774f50b5514bd7f5dbd4c8a87aca0aa6670"
+    },
+    "usr/lib/x86_64-linux-gnu/libzstd.so.1.5.5": {
+      "bytes": 755864,
+      "destination": "usr/lib/x86_64-linux-gnu/libzstd.so.1",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": "libzstd.so.1"
+      },
+      "mode": 493,
+      "sha256": "0a2128bc10841fb29e76d08d945864dfb0b6a66da5df6df5d8299197439e54bb"
+    },
+    "usr/lib/x86_64-linux-gnu/systemd/libsystemd-core-255.so": {
+      "bytes": 2140744,
+      "destination": "usr/lib/x86_64-linux-gnu/systemd/libsystemd-core-255.so",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libsystemd-shared-255.so",
+          "libapparmor.so.1",
+          "libaudit.so.1",
+          "libkmod.so.2",
+          "libm.so.6",
+          "libmount.so.1",
+          "libseccomp.so.2",
+          "libselinux.so.1",
+          "libc.so.6"
+        ],
+        "soname": "libsystemd-core-255.so"
+      },
+      "mode": 493,
+      "sha256": "c16048bce69087be1fab24f577cecebafc1f47438282af1b65915000948e23e9"
+    },
+    "usr/lib/x86_64-linux-gnu/systemd/libsystemd-shared-255.so": {
+      "bytes": 3755032,
+      "destination": "usr/lib/x86_64-linux-gnu/systemd/libsystemd-shared-255.so",
+      "elf": {
+        "interpreter": null,
+        "needed": [
+          "libacl.so.1",
+          "libblkid.so.1",
+          "libcap.so.2",
+          "libcrypt.so.1",
+          "libgcrypt.so.20",
+          "libkmod.so.2",
+          "liblz4.so.1",
+          "libmount.so.1",
+          "libcrypto.so.3",
+          "libpam.so.0",
+          "libseccomp.so.2",
+          "libselinux.so.1",
+          "liblzma.so.5",
+          "libzstd.so.1",
+          "libm.so.6",
+          "libc.so.6",
+          "ld-linux-x86-64.so.2"
+        ],
+        "soname": "libsystemd-shared-255.so"
+      },
+      "mode": 493,
+      "sha256": "069501b543bd8017bbe5f6215c485f6f7a162cdc34ee304320e7f6a3c4564c62"
+    }
+  },
+  "observedELFDependencies": {
+    "usr/lib/initramfs-tools/bin/busybox": {
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "libc.so.6"
+      ],
+      "soname": null
+    },
+    "usr/lib/systemd/systemd": {
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "libsystemd-core-255.so",
+        "libsystemd-shared-255.so",
+        "libc.so.6"
+      ],
+      "runpath": "/usr/lib/x86_64-linux-gnu/systemd",
+      "soname": null
+    },
+    "usr/lib/systemd/systemd-executor": {
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "libsystemd-core-255.so",
+        "libsystemd-shared-255.so",
+        "libapparmor.so.1",
+        "libpam.so.0",
+        "libseccomp.so.2",
+        "libselinux.so.1",
+        "libc.so.6"
+      ],
+      "runpath": "/usr/lib/x86_64-linux-gnu/systemd",
+      "soname": null
+    },
+    "usr/lib/systemd/systemd-shutdown": {
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "libsystemd-shared-255.so",
+        "libmount.so.1",
+        "libc.so.6"
+      ],
+      "runpath": "/usr/lib/x86_64-linux-gnu/systemd",
+      "soname": null
+    },
+    "usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2": {
+      "interpreter": null,
+      "needed": [],
+      "soname": "ld-linux-x86-64.so.2"
+    },
+    "usr/lib/x86_64-linux-gnu/libacl.so.1.1.2302": {
+      "interpreter": null,
+      "needed": [
+        "libc.so.6"
+      ],
+      "soname": "libacl.so.1"
+    },
+    "usr/lib/x86_64-linux-gnu/libapparmor.so.1.17.1": {
+      "interpreter": null,
+      "needed": [
+        "libc.so.6"
+      ],
+      "soname": "libapparmor.so.1"
+    },
+    "usr/lib/x86_64-linux-gnu/libaudit.so.1.0.0": {
+      "interpreter": null,
+      "needed": [
+        "libcap-ng.so.0",
+        "libc.so.6"
+      ],
+      "soname": "libaudit.so.1"
+    },
+    "usr/lib/x86_64-linux-gnu/libblkid.so.1.1.0": {
+      "interpreter": null,
+      "needed": [
+        "libc.so.6"
+      ],
+      "soname": "libblkid.so.1"
+    },
+    "usr/lib/x86_64-linux-gnu/libc.so.6": {
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "ld-linux-x86-64.so.2"
+      ],
+      "soname": "libc.so.6"
+    },
+    "usr/lib/x86_64-linux-gnu/libcap-ng.so.0.0.0": {
+      "interpreter": null,
+      "needed": [
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "soname": "libcap-ng.so.0"
+    },
+    "usr/lib/x86_64-linux-gnu/libcap.so.2.66": {
+      "interpreter": "/lib64/ld-linux-x86-64.so.2",
+      "needed": [
+        "libc.so.6"
+      ],
+      "soname": "libcap.so.2"
+    },
+    "usr/lib/x86_64-linux-gnu/libcrypt.so.1.1.0": {
+      "interpreter": null,
+      "needed": [
+        "libc.so.6"
+      ],
+      "soname": "libcrypt.so.1"
+    },
+    "usr/lib/x86_64-linux-gnu/libcrypto.so.3": {
+      "interpreter": null,
+      "needed": [
+        "libc.so.6"
+      ],
+      "soname": "libcrypto.so.3"
+    },
+    "usr/lib/x86_64-linux-gnu/libgcrypt.so.20.4.3": {
+      "interpreter": null,
+      "needed": [
+        "libgpg-error.so.0",
+        "libc.so.6"
+      ],
+      "soname": "libgcrypt.so.20"
+    },
+    "usr/lib/x86_64-linux-gnu/libgpg-error.so.0.34.0": {
+      "interpreter": null,
+      "needed": [
+        "libc.so.6"
+      ],
+      "soname": "libgpg-error.so.0"
+    },
+    "usr/lib/x86_64-linux-gnu/libkmod.so.2.4.1": {
+      "interpreter": null,
+      "needed": [
+        "libzstd.so.1",
+        "liblzma.so.5",
+        "libcrypto.so.3",
+        "libc.so.6"
+      ],
+      "soname": "libkmod.so.2"
+    },
+    "usr/lib/x86_64-linux-gnu/liblz4.so.1.9.4": {
+      "interpreter": null,
+      "needed": [
+        "libc.so.6"
+      ],
+      "soname": "liblz4.so.1"
+    },
+    "usr/lib/x86_64-linux-gnu/liblzma.so.5.4.5": {
+      "interpreter": null,
+      "needed": [
+        "libc.so.6"
+      ],
+      "soname": "liblzma.so.5"
+    },
+    "usr/lib/x86_64-linux-gnu/libm.so.6": {
+      "interpreter": null,
+      "needed": [
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "soname": "libm.so.6"
+    },
+    "usr/lib/x86_64-linux-gnu/libmount.so.1.1.0": {
+      "interpreter": null,
+      "needed": [
+        "libblkid.so.1",
+        "libselinux.so.1",
+        "libc.so.6"
+      ],
+      "soname": "libmount.so.1"
+    },
+    "usr/lib/x86_64-linux-gnu/libpam.so.0.85.1": {
+      "interpreter": null,
+      "needed": [
+        "libaudit.so.1",
+        "libc.so.6"
+      ],
+      "soname": "libpam.so.0"
+    },
+    "usr/lib/x86_64-linux-gnu/libpcre2-8.so.0.11.2": {
+      "interpreter": null,
+      "needed": [
+        "libc.so.6"
+      ],
+      "soname": "libpcre2-8.so.0"
+    },
+    "usr/lib/x86_64-linux-gnu/libseccomp.so.2.5.5": {
+      "interpreter": null,
+      "needed": [
+        "libc.so.6"
+      ],
+      "soname": "libseccomp.so.2"
+    },
+    "usr/lib/x86_64-linux-gnu/libselinux.so.1": {
+      "interpreter": null,
+      "needed": [
+        "libpcre2-8.so.0",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "soname": "libselinux.so.1"
+    },
+    "usr/lib/x86_64-linux-gnu/libzstd.so.1.5.5": {
+      "interpreter": null,
+      "needed": [
+        "libc.so.6"
+      ],
+      "soname": "libzstd.so.1"
+    },
+    "usr/lib/x86_64-linux-gnu/systemd/libsystemd-core-255.so": {
+      "interpreter": null,
+      "needed": [
+        "libsystemd-shared-255.so",
+        "libapparmor.so.1",
+        "libaudit.so.1",
+        "libkmod.so.2",
+        "libm.so.6",
+        "libmount.so.1",
+        "libseccomp.so.2",
+        "libselinux.so.1",
+        "libc.so.6"
+      ],
+      "soname": "libsystemd-core-255.so"
+    },
+    "usr/lib/x86_64-linux-gnu/systemd/libsystemd-shared-255.so": {
+      "interpreter": null,
+      "needed": [
+        "libacl.so.1",
+        "libblkid.so.1",
+        "libcap.so.2",
+        "libcrypt.so.1",
+        "libgcrypt.so.20",
+        "libkmod.so.2",
+        "liblz4.so.1",
+        "libmount.so.1",
+        "libcrypto.so.3",
+        "libpam.so.0",
+        "libseccomp.so.2",
+        "libselinux.so.1",
+        "liblzma.so.5",
+        "libzstd.so.1",
+        "libm.so.6",
+        "libc.so.6",
+        "ld-linux-x86-64.so.2"
+      ],
+      "soname": "libsystemd-shared-255.so"
+    }
+  },
+  "outputBytes": 19935232,
+  "outputFilename": "x86_64-p02-systemd-userspace-v1.cpio",
+  "outputSHA256": "3365a741cf5dcecd8675eed4da01b2ed31395f56125d026f461c8f48948f196a",
+  "qualification": "archive integrity and deterministic construction only; guest has not executed",
+  "recipeSHA256": "57067dbcf9d7359977d75ad5378fa3698c1293cd4920e63d2067f1e8f67b960a",
+  "runnerProtocol": {
+    "commandLineUUIDKey": "dory.pvh_run_id",
+    "doryPVHBoot": "userspace-ready",
+    "hostCompletion": "independent ACPI S5 poweredOff exit required",
+    "receipt": "one unprefixed JSON line, emitted only by ExecStartPost",
+    "runID": "exact fresh command-line UUID",
+    "schemaVersion": 1,
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync",
+      "systemd.service_supervision"
+    ],
+    "workloadsPassed": "true only after seven checks, successful oneshot exit and the eighth supervision check"
+  },
+  "schemaVersion": 1,
+  "sourceArtifactID": "ubuntu-server-24.04.4-x86_64",
+  "sourceArtifactSHA256": "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433",
+  "squashfs": {
+    "bytes": 166309888,
+    "filename": "ubuntu-24.04.4-amd64-server-minimal.squashfs",
+    "member": "casper/ubuntu-server-minimal.squashfs",
+    "sha256": "cbb98254e0f38428994db0e1cf45fb4512af17d59ff98189acb1a6a104aa5681"
+  },
+  "upstreamIdentities": {
+    "usr/lib/initramfs-tools/bin/busybox": "BusyBox v1.36.1 (Ubuntu 1:1.36.1-6ubuntu3.1)",
+    "usr/lib/systemd/systemd": "systemd 255.4-1ubuntu8.12 running in %ssystem mode (%s)",
+    "usr/lib/x86_64-linux-gnu/libc.so.6": "GNU C Library (Ubuntu GLIBC 2.39-0ubuntu8.7) stable release version 2.39."
+  }
+}

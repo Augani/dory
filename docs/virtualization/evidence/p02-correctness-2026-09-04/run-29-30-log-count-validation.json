@@ -1,0 +1,36 @@
+{
+  "kind": "p02-strict-log-count-validation",
+  "run29": {
+    "testsExecuted": false,
+    "macroErrors": 3,
+    "sourceCallStartingLines": [
+      32,
+      61,
+      67
+    ],
+    "expandedCodeOrigins": [
+      "/private/tmp/dory-p02-correctness-source-1/dory-core-swift/Tests/DoryMachinePCLinuxBootRunnerTests/PVHJITDiagnosticsTests.swift:34:49",
+      "/private/tmp/dory-p02-correctness-source-1/dory-core-swift/Tests/DoryMachinePCLinuxBootRunnerTests/PVHJITDiagnosticsTests.swift:63:59",
+      "/private/tmp/dory-p02-correctness-source-1/dory-core-swift/Tests/DoryMachinePCLinuxBootRunnerTests/PVHJITDiagnosticsTests.swift:69:65"
+    ],
+    "diagnostic": "cannot use mutating member on immutable value: '$0' is immutable",
+    "correction": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/jit-diagnostics-macro-correction.patch",
+      "sha256": "ba03fd546bca75c0bf93d7bb8b529e6ed153a402ebe9bb0bc958030e9c6d8059"
+    }
+  },
+  "run30": {
+    "swiftReported": 744,
+    "swiftIndividualPassLines": 743,
+    "swiftDisabledLines": [
+      "\udbc1\ude5f  Test explicitlyImportedPhysicalReceiptMatchesInterpreter() skipped."
+    ],
+    "swiftPassingSuiteLines": 86,
+    "swiftElapsedSeconds": 3.734,
+    "xctestReported": 11,
+    "xctestActualPasses": 10,
+    "xctestOptionalSkip": 1,
+    "xctestFailures": 0,
+    "countRule": "Strict full-line Swift Test pass/skipped anchors; Suite and global lines excluded from case totals. XCTest final global summary counted once."
+  }
+}

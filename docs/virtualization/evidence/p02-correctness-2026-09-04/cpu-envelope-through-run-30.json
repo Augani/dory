@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-04",
+    "P02-26"
+  ],
+  "sourceCommit": "61cd728a4938e6e7e44319e0bd71f6147b115205",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Compile failure29 and bounded successful gate30 for instruction-length faults and opt-in JIT diagnostics; pinned systemd fixture preparation with no systemd guest execution.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-30.json",
+      "sha256": "f6d0bdff312b7ccf72722f83f174f97c54953443eac0a971f378322072508766"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-28.json",
+      "sha256": "83f67036efe4f03e6531c29b10db6063d52788ce29598dee4a5eea5071a1fc6b"
+    }
+  ],
+  "limitations": [
+    "P02 remains in progress. These source gates and deterministic fixture-preparation checks do not establish full ISA, sustained stress, physical-reference or release qualification.",
+    "Run29 failed test-target compilation and executed no tests. Run30 reports744 Swift cases, comprising743 passing and1 disabled physical-reference case; XCTest reports11, comprising10 passing and1 optional pinned-boot fixture skip.",
+    "Run29 differs from the run30 Git source only in the telemetry macro test wrapper. Live conversion/fence work and other later changes are excluded by the exact manifest and overlay.",
+    "JIT diagnostics retain only one coarse sample. The19 executor counters are cumulative; negativeEntryCount and the capped16 site identities/hits are live-cache observations, not cumulative decline-reason totals. Timeout/error can retain an older completed sample with its own instruction count/time.",
+    "The systemd archive is prepared from pinned Ubuntu ISO ELF/data inputs and40 script tests pass. No systemd guest execution, successful service supervision or shutdown is claimed. The existing glibc archive byte hash remains unchanged.",
+    "Six generated FFI files per source gate are hash-bound without vendoring executable payloads. Fixture CPIO artifacts are likewise identity-bound and reproducible from pinned source recipes.",
+    "The completed glibc/second-kernel probe uses the copied source28 executable and ends in guest-reset with no receipt. The new source30 diagnostic sampling is absent from that run. No glibc or second-kernel boot success is claimed."
+  ]
+}

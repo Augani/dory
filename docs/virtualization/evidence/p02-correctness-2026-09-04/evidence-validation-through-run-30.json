@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-evidence-retention-validation",
+  "reviewSHA256": "f6d0bdff312b7ccf72722f83f174f97c54953443eac0a971f378322072508766",
+  "newArtifactsBeforeThisValidation": 35,
+  "distinctRepositoryArtifactReferencesVerified": 34,
+  "previousReviewHashVerified": true,
+  "envelopesSchemaValidated": 2,
+  "schemaPath": "Config/DoryVirtualizationEvidence.schema.json",
+  "schemaSHA256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb",
+  "sourceBinding": "All 688 tracked inputs in each run independently reconstructed from base plus retained overlay. Run30 matches61cd728a4; run29 differs only in the pre-correction telemetry test. Live source31 and later edits excluded.",
+  "systemdSourceFilesVerifiedAgainstPinnedCommit": 13,
+  "systemdGuestExecutionClaimed": false,
+  "strictLogCountsVerified": true,
+  "glibcFailedProbeConsistencyChecksPassed": 10,
+  "noUserHomePathsInNewArtifactTextOrMembers": true,
+  "tarOwnerAndTimeNormalizationVerified": true,
+  "qualification": "Artifact/schema/source/failed-probe consistency validation only; no additional build or guest execution by evidence agent."
+}

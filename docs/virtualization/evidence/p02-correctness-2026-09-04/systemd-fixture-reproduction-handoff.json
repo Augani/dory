@@ -1,0 +1,40 @@
+[
+  {
+    "command": [
+      "python3",
+      "scripts/prepare-virtualization-fixtures.py",
+      "--id",
+      "ubuntu-server-24.04.4-x86_64",
+      "--cache-directory",
+      "/tmp/dory-p02-systemd-fixture-reproduction-1",
+      "--verify-only",
+      "--extract",
+      "--systemd-diagnostic-initramfs"
+    ],
+    "exitCode": 0,
+    "elapsedNanoseconds": 4417629334,
+    "stdout": "/tmp/dory-p02-systemd-fixture-reproduction-1.json",
+    "stderr": "/tmp/dory-p02-systemd-fixture-reproduction-1.log",
+    "builderSHA256": "230f3ff66cc715857f56229ca85dc33bfeec5a19acc948242ed5400767944011",
+    "qualification": "fixture preparation only; no guest programs executed"
+  },
+  {
+    "command": [
+      "python3",
+      "scripts/prepare-virtualization-fixtures.py",
+      "--id",
+      "ubuntu-server-24.04.4-x86_64",
+      "--cache-directory",
+      "/tmp/dory-p02-glibc-fixture-reproduction-1",
+      "--verify-only",
+      "--extract",
+      "--glibc-diagnostic-initramfs"
+    ],
+    "exitCode": 0,
+    "elapsedNanoseconds": 3799467250,
+    "stdout": "/tmp/dory-p02-glibc-fixture-reproduction-1.json",
+    "stderr": "/tmp/dory-p02-glibc-fixture-reproduction-1.log",
+    "builderSHA256": "230f3ff66cc715857f56229ca85dc33bfeec5a19acc948242ed5400767944011",
+    "qualification": "fixture preparation only; no guest programs executed"
+  }
+]
