@@ -280,10 +280,10 @@ public struct DoryX86Interpreter: Sendable {
           try execute(&state)
         }
       case .shift(let operation, let destination, let countSource):
-        let value = try read(
-          destination, instruction: instruction, state: state, memory: executionMemory)
         try preflightWrite(
           to: destination, instruction: instruction, state: state, memory: executionMemory)
+        let value = try read(
+          destination, instruction: instruction, state: state, memory: executionMemory)
         let count: UInt8 =
           switch countSource {
           case .immediate(let value): value
@@ -340,12 +340,12 @@ public struct DoryX86Interpreter: Sendable {
           memory: executionMemory
         )
       case .doubleShift(let operation, let destination, let source, let countSource):
+        try preflightWrite(
+          to: destination, instruction: instruction, state: state, memory: executionMemory)
         let destinationValue = try read(
           destination, instruction: instruction, state: state, memory: executionMemory)
         let sourceValue = try read(
           source, instruction: instruction, state: state, memory: executionMemory)
-        try preflightWrite(
-          to: destination, instruction: instruction, state: state, memory: executionMemory)
         let count: UInt8 =
           switch countSource {
           case .immediate(let value): value
