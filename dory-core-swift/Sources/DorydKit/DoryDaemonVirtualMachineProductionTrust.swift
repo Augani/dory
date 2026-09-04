@@ -1468,13 +1468,8 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
         case let .failure(reason):
             return .unavailable(reason)
         }
-        let authority = material.authority
-        let runtimes = material.runtimes
         let mayUseLegacyMigration = material.permitsLegacyCompatibilityMigration
 
-        let artifactAuthority = DoryVirtualMachineArtifactAuthority(
-            root: machineConfiguration.stateDirectory + "/.artifact-authority"
-        )
         let resourceLedger = DoryVirtualMachineResourceAdmissionLedger(
             root: machineConfiguration.stateDirectory + "/.resource-admissions"
         )
@@ -1485,13 +1480,37 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
                 "The durable VM resource-admission ledger is unavailable."
             )
         }
-        guard planningTransactionAvailable() else {
-            return .unavailable(DoryDaemonVirtualMachineProductionTrustUnavailable(
+        let planningUnavailable = DoryDaemonVirtualMachineProductionTrustReadiness.unavailable(
+            DoryDaemonVirtualMachineProductionTrustUnavailable(
                 code: .planningTransactionUnavailable,
                 message: "Resolved-plan reserve, bind, and publication are not yet installed in the production workspace workflow.",
                 permitsLegacyCompatibilityMigration: mayUseLegacyMigration
-            ))
-        }
+            )
+        )
+#if DEBUG
+        guard planningTransactionAvailable() else { return planningUnavailable }
+        return resolveDiagnosticPlanningComposition(material: material,
+            machineConfiguration: machineConfiguration, resourceLedger: resourceLedger)
+#else
+        // This historical API preserves account-readiness and migration classification. Only
+        // activate() composes a production manager with the daemon-owned planning transaction.
+        return planningUnavailable
+#endif
+    }
+
+#if DEBUG
+    /// Deterministic trust/inventory fixtures still exercise the pre-activation composition.
+    /// Its manager and adapter graph are absent from Release, just like legacy launch fixtures.
+    private func resolveDiagnosticPlanningComposition(
+        material: DoryDaemonVirtualMachineVerifiedTrustMaterial,
+        machineConfiguration: MachineManagerConfiguration,
+        resourceLedger: DoryVirtualMachineResourceAdmissionLedger
+    ) -> DoryDaemonVirtualMachineProductionTrustReadiness {
+        let authority = material.authority
+        let runtimes = material.runtimes
+        let artifactAuthority = DoryVirtualMachineArtifactAuthority(
+            root: machineConfiguration.stateDirectory + "/.artifact-authority"
+        )
         let inventory = DoryProductionDaemonVirtualMachineTrustInventory(
             qualificationAuthority: authority,
             artifactAuthority: artifactAuthority,
@@ -1580,8 +1599,9 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
             )
         }
     }
+#endif
 
-    /// Shared preparation boundary for the legacy composition bridge and the per-workspace
+    /// Shared preparation boundary for diagnostic trust fixtures and the per-workspace
     /// activation path. Verification is performed once and yields only opaque daemon authority;
     /// neither path may independently rebuild or reinterpret the catalog/runtime trust graph.
     func verifiedTrustMaterial(
