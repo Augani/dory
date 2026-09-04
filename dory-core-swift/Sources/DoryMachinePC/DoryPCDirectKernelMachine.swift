@@ -285,17 +285,6 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var jitHotness = [JITHotnessEntry](repeating: .init(), count: 1 << 16)
   private let translatedMemories: [DoryX86TranslatedMemory]
   private var interpreterInstructionCount: UInt64 = 0
-  // Temporary debug: trace key kernel function calls
-  private let traceRIPs: Set<UInt64> = [
-    0xffffffff816f9750,  // per_cpu_pages_init
-    0xffffffff84072c10,  // build_all_zonelists_init
-    0xffffffff8256b000,  // build_all_zonelists
-    0xffffffff81706120,  // __build_all_zonelists
-    0xffffffff8406fde0,  // mm_core_init
-    0xffffffff8404d920,  // mem_init
-    0xffffffff84072c90,  // setup_per_cpu_pageset
-  ]
-  private var traceLog: [(UInt64, UInt64, UInt64, UInt64, UInt64)] = []  // (rip, rdi, rsi, rax, rbx)
   private var baselineJITInstructionCount: UInt64 = 0
   private var baselineJITBlockCount: UInt64 = 0
   private var optimizingJITInstructionCount: UInt64 = 0
@@ -656,11 +645,6 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   public var state: DoryX86ArchitecturalState? { state(forProcessor: 0) }
 
-  /// Temporary debug: returns trace log of key kernel function calls.
-  public var functionTraceLog: [(rip: UInt64, rdi: UInt64, rsi: UInt64, rax: UInt64, rbx: UInt64)] {
-    lock.withLock { traceLog.map { (rip: $0.0, rdi: $0.1, rsi: $0.2, rax: $0.3, rbx: $0.4) } }
-  }
-
   public var executionStatistics: DoryPCExecutionStatistics {
     executionStatisticsLock.withLock { publishedExecutionStatistics }
   }
@@ -866,10 +850,6 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     jitInstructionBudget: Int?
   ) throws -> ProcessorExecution {
     let mode = executionMode(state)
-    // Temporary debug: trace key function entries
-    if traceRIPs.contains(state.rip) {
-      traceLog.append((state.rip, state.registers.rdi, state.registers.rsi, state.registers.rax, state.registers.rbx))
-    }
     if let jit = selectedJIT(for: state, mode: mode),
       mode == .long64 || (mode == .protected32 && state.cs.base == 0),
       !state.rflags.contains(.trap)
