@@ -765,13 +765,20 @@ public struct DoryX86Interpreter: Sendable {
           case .divide: lhs.divided(by: rhs, rounding: rounding, precision: precision)
           case .divideReverse: rhs.divided(by: lhs, rounding: rounding, precision: precision)
           }
-        updateX87ArithmeticStatus(
-          operation: operation,
-          lhs: lhs,
-          rhs: rhs,
-          result: result,
-          state: &state.floatingPoint
-        )
+        if lhs.isUnsupported || rhs.isUnsupported {
+          // Intel SDM Vol. 1 §8.5.1.1: consuming an unsupported binary80
+          // encoding raises #IA. A masked exception writes real indefinite;
+          // an unmasked exception suppresses the destination and any pop.
+          guard recordUnsupportedX87Operand(state: &state.floatingPoint) else { break }
+        } else {
+          updateX87ArithmeticStatus(
+            operation: operation,
+            lhs: lhs,
+            rhs: rhs,
+            result: result,
+            state: &state.floatingPoint
+          )
+        }
         writeX87Register(destination, value: result, state: &state.floatingPoint)
         if pop { popX87(state: &state.floatingPoint) }
       case .compareX87(let source, let popCount, let ordered, let setIntegerFlags):
@@ -783,7 +790,13 @@ public struct DoryX86Interpreter: Sendable {
           memory: executionMemory
         )
         let relation = x87FloatingComparison(lhs, rhs)
-        if relation == .unordered, ordered { state.floatingPoint.x87StatusWord |= 1 }
+        if lhs.isUnsupported || rhs.isUnsupported {
+          // Unsupported operands raise #IA for FCOM and FUCOM families alike.
+          // With #IA unmasked, neither condition codes/EFLAGS nor TOP change.
+          guard recordUnsupportedX87Operand(state: &state.floatingPoint) else { break }
+        } else if relation == .unordered, ordered {
+          state.floatingPoint.x87StatusWord |= 1
+        }
         if setIntegerFlags {
           state.rflags.remove([.overflow, .sign, .zero, .auxiliaryCarry, .parity, .carry])
           switch relation {
@@ -815,6 +828,15 @@ public struct DoryX86Interpreter: Sendable {
           let fault = DoryX86X87Stack.loadFault(source: nil, state: state.floatingPoint) {
           if DoryX86X87Stack.record(fault, instruction: instruction, state: &state.floatingPoint) {
             DoryX86X87Stack.commitPush(DoryX86X87Stack.indefinite, state: &state.floatingPoint)
+          }
+          break
+        }
+        if operation == .test,
+          readX87Register(0, state: state.floatingPoint).isUnsupported {
+          // FTST has FCOM's unsupported-operand behavior. Its masked response
+          // is unordered; its unmasked response leaves C0/C2/C3 unchanged.
+          if recordUnsupportedX87Operand(state: &state.floatingPoint) {
+            setX87ComparisonStatus(.unordered, state: &state.floatingPoint)
           }
           break
         }
@@ -4090,6 +4112,16 @@ public struct DoryX86Interpreter: Sendable {
     } else if result.isInfinite, numerator.isFinite, denominator.isFinite {
       state.x87StatusWord |= 1 << 3
     }
+  }
+
+  /// Records the invalid operation caused specifically by a consumed binary80
+  /// unsupported encoding. Returns whether IM permits the instruction's masked
+  /// response to commit. Publishing also clears C1 and keeps ES/B consistent.
+  private func recordUnsupportedX87Operand(
+    state: inout DoryX86FloatingPointState
+  ) -> Bool {
+    DoryX86X87Transfer.publish(flags: 1, roundedUp: false, state: &state)
+    return state.x87ControlWord & 1 != 0
   }
 
   private func executeX87Special(
