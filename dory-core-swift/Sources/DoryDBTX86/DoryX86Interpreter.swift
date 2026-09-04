@@ -3145,8 +3145,9 @@ public struct DoryX86Interpreter: Sendable {
         swap(&state.modelSpecific.gsBase, &state.modelSpecific.kernelGSBase)
         state.gs.base = state.modelSpecific.gsBase
       case .softwareInterrupt(let vector):
+        let delivery = DoryX86InterruptDelivery(profile: profile)
         do {
-          try DoryX86InterruptDelivery(profile: profile).deliver(
+          try delivery.deliver(
             vector: vector,
             source: .software,
             returnInstructionPointer: nextRIP,
@@ -3161,6 +3162,14 @@ public struct DoryX86Interpreter: Sendable {
         } catch let error as DoryX86MemoryError {
           throw error
         } catch {
+          if let exception = delivery.architecturalException(
+            from: error,
+            source: .software,
+            instructionPointer: originalRIP,
+            state: state
+          ) {
+            throw exception
+          }
           state.rip = originalRIP
           return generalProtection(at: originalRIP)
         }

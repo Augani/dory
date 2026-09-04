@@ -326,7 +326,10 @@ public struct DoryX86InterruptDelivery: Sendable {
     }
   }
 
-  private func architecturalException(
+  /// Converts a delivery failure into the architectural exception raised by the processor.
+  /// The interpreter uses the same mapping for a software INT instruction; event and nested
+  /// exception delivery use it to drive their escalation state machines.
+  func architecturalException(
     from error: any Error,
     source: DoryX86InterruptSource,
     instructionPointer: UInt64,

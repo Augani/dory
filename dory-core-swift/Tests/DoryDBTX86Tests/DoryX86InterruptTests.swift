@@ -204,7 +204,7 @@ import Testing
           .init(
             kind: .generalProtection,
             vector: 13,
-            errorCode: 0,
+            errorCode: 0x402,
             instructionPointer: 0x7000
           )))
     #expect(state.rip == 0x7000)
