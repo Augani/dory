@@ -4,10 +4,11 @@ import XCTest
 final class DoryVMMShimTests: XCTestCase {
     func testDoryVMMExecutableSendsReadyHandoffAndExits() throws {
         let operationID = UUID(uuidString: "01234567-89ab-4cde-8f01-23456789abcd")!
-        let helper = FileManager.default.currentDirectoryPath + "/.build/debug/dory-vmm"
-        guard FileManager.default.isExecutableFile(atPath: helper) else {
-            throw XCTSkip("dory-vmm helper not built at \(helper)")
-        }
+        // SwiftPM places the helper beside its test bundle even with a custom scratch path.
+        let helper = Bundle(for: Self.self).bundleURL.deletingLastPathComponent()
+            .appendingPathComponent("dory-vmm").path
+        _ = try XCTUnwrap(FileManager.default.isExecutableFile(atPath: helper) ? helper : nil,
+                          "dory-vmm helper missing from test products: \(helper)")
 
         let base = "/tmp/dory-vmm-shim-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
