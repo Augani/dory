@@ -1,0 +1,58 @@
+{
+  "sourceManifest": "/tmp/dory-p01-streaming-agent-source-manifest.json",
+  "sourceManifestSHA256": "cd7e544bdeb0b84ac46f057b011ee5ac45eb5e77283340ce0745569d89c7805d",
+  "sourceFileCount": 652,
+  "sourceFilesVerifiedAfterTests": true,
+  "ownedFilesMatchLive": {
+    "dory-core-swift/Sources/DorydKit/DorydConfiguration.swift": true,
+    "dory-core-swift/Sources/DoryOperations/DoryInstalledLinuxBootBundle.swift": true,
+    "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionTrust.swift": true,
+    "dory-core-swift/Sources/DorydKit/DoryDaemonRendererProductionAuthority.swift": true,
+    "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacMachineBundle.swift": true,
+    "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacSavedState.swift": true,
+    "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacPortableBundle.swift": true,
+    "dory-core-swift/Tests/DoryOperationsTests/DoryInstalledLinuxBootBundleStreamingTests.swift": true
+  },
+  "scope": "Seven production source streaming-loop fixes on frozen known-compiling core + 2 new memory regression tests. No MachineManager/planning/installed application mutation. Existing receipts unchanged. This is artifact memory verification, not physical guest qualification.",
+  "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path . --scratch-path /tmp/dory-p01-migration-agent-build --jobs 3 --no-parallel --filter 'DoryInstalledLinuxBootBundle|DorydConfigurationTests|DoryVZMacPortableBundleTests|DoryVZMacSavedStateTests|DoryDaemonVirtualMachineProductionTrustTests'",
+  "cwd": "/tmp/dory-p01-streaming-agent-snapshot/dory-core-swift",
+  "exitCode": 0,
+  "xctest": {
+    "executed": 54,
+    "failures": 0
+  },
+  "swiftTesting": {
+    "executed": 44,
+    "suites": 1,
+    "failures": 0
+  },
+  "retainedRSSGrowthBytes": {
+    "fixedMaterialization": 32768,
+    "fixedVerification": 49152,
+    "originalMaterialization": 161415168,
+    "originalVerificationInSeparateProcess": 214761472
+  },
+  "regressionThresholdBytes": 67108864,
+  "negativeControls": {
+    "description": "Minimal SwiftPM package uses exact pre-fix installed-boot production source, its exact extracted asset value struct and unchanged new tests. Original materialization fails in 2-test run; original verification fails alone to avoid resident allocation reuse masking growth.",
+    "manifest": "/tmp/dory-p01-streaming-red-source-manifest.json",
+    "materializationRunExitCode": 1,
+    "verificationOnlyRunExitCode": 1
+  },
+  "patch": "/tmp/dory-p01-streaming-agent-only.patch",
+  "logs": {
+    "fixed": {
+      "path": "/tmp/dory-p01-streaming-agent-tests.log",
+      "sha256": "569b463adacf58f1a4fed0713b3d6f2959d98c75de2d4a55a9d6a841a2642ad6"
+    },
+    "originalMaterialization": {
+      "path": "/tmp/dory-p01-streaming-red-tests.log",
+      "sha256": "9d67be55d518ee3edcd0ad60163fe7bfb6246bd0c28cd603d7aacc67a739d339"
+    },
+    "originalVerificationAlone": {
+      "path": "/tmp/dory-p01-streaming-red-verification-tests.log",
+      "sha256": "8614a3ef1053746370de7121fa28b517de30a721a9f4f5752fa2674aee8f2c51"
+    }
+  },
+  "recordedAtUTC": "2026-09-04T07:40:31.211165+00:00"
+}

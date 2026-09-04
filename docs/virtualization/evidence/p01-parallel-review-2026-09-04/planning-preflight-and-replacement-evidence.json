@@ -1,0 +1,51 @@
+{
+  "preflight": {
+    "sourceManifest": "/tmp/dory-p01-planning-preflight-agent-verified-source.json",
+    "sourceManifestSHA256": "6c07eabd53b0fa4257e3ae587fd3da35dfa783fe7c7be6d70d70a4fc9f5acb67",
+    "logs": [
+      "/tmp/dory-p01-planning-preflight-agent-tests-2.log",
+      "/tmp/dory-p01-planning-preflight-connected-tests.log"
+    ],
+    "passedTests": 49,
+    "suites": 6,
+    "parameterCases": "47 focused tests, plus actual activated create and configuration update with four source states"
+  },
+  "replacement": {
+    "sourceManifest": "/tmp/dory-p01-immutable-replacement-verified-source.json",
+    "sourceManifestSHA256": "76d5069725d70b91f4581f1888584ef9a38715c5fe7e2e1b3b8ca32b7740eb1b",
+    "log": "/tmp/dory-p01-immutable-replacement-tests-2.log",
+    "verifiedLiveFiles": [
+      {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineRuntimePlanning.swift",
+        "sha256": "e9c7352733e94546c74c4992f85e49a003b7a86a96aeea289a4e6e8c638581fc"
+      },
+      {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachinePlanningTransactionCoordinator.swift",
+        "sha256": "29ba5d5eccd1be842ab177856bbf7ff931303c2e87560a6db461c58584c83bbd"
+      },
+      {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionPlanningController.swift",
+        "sha256": "20bc61996121e03f2ec9d83740a93b8c712591ae445d387bcd4be47cc975780a"
+      },
+      {
+        "path": "dory-core-swift/Tests/DorydKitTests/DoryPlanningImmutablePreflightTests.swift",
+        "sha256": "b45830ccb4cfe887b6832fb4b47e3c2c733db692205c935b664e81cb1730861f"
+      },
+      {
+        "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineArtifactAuthority.swift",
+        "sha256": "10595702e48bb565706afaccbc46774f48875160b2a0851db6012fb8ef32294a"
+      },
+      {
+        "path": "dory-core-swift/Tests/DoryOperationsTests/DoryImmutableArtifactDigestPublicationTests.swift",
+        "sha256": "c11b3e739a23bcbd8679f8c0a7632755d6f7b946ab2f7e61f1d4f8338e938748"
+      }
+    ]
+  },
+  "agentOnlyPatch": "/tmp/dory-p01-planning-preflight-and-replacement-agent-only.patch",
+  "agentOnlyPatchSHA256": "6e84a462ec83af1cbeba3d67786827ec8cbe4fdc7e12ca9789ea3a760fd4d42e",
+  "notes": [
+    "No MachineManager or ProductionTrustTests edits in this batch.",
+    "No existing artifact authority history facility; authorized replacement advances current authority with CAS; this code does not change kernel payload or root snapshot.",
+    "Frozen source overlays known-compiling prior full regression snapshot. Actual desktop root integration success verified separately by UI agent snapshot8."
+  ]
+}

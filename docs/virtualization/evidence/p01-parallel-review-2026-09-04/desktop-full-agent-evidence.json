@@ -1,0 +1,56 @@
+{
+  "scope": "Frozen core source and retained real media inspection only; not physical guest or app/CLI 3-cell qualification. Later live edits are excluded.",
+  "sourceManifest": "/tmp/dory-p01-desktop-full-agent-source-manifest.json",
+  "sourceManifestSHA256": "455708245b28a523ad15eb642e396d8d36c75b5e1e4c42457a2d56cfe1bf5b4e",
+  "sourceFileCount": 651,
+  "sourceFilesVerifiedAfterTests": true,
+  "gitHEADAtCapture": "a544b06fe806ab0be848b15e69e763ad002b7378",
+  "developerDir": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+  "packagePath": "/tmp/dory-p01-desktop-full-agent-snapshot/dory-core-swift",
+  "scratchPath": "/tmp/dory-p01-migration-agent-build",
+  "command": "swift test --package-path . --scratch-path /tmp/dory-p01-migration-agent-build --jobs 3 --no-parallel",
+  "fullExitCode": 0,
+  "xctest": {
+    "executed": 1097,
+    "skipped": 5,
+    "failures": 0
+  },
+  "swiftTesting": {
+    "executed": 1105,
+    "suites": 137,
+    "failures": 0,
+    "durationSeconds": 291.789
+  },
+  "mediaSupplement": {
+    "executed": 4,
+    "skipped": 0,
+    "failures": 0,
+    "durationSeconds": 7.319,
+    "usesSameBuild": true,
+    "command": "swift test --package-path . --scratch-path /tmp/dory-p01-migration-agent-build --jobs 3 --no-parallel --skip-build --filter DoryInstallerISOTests/test(DiscoversRootPartitionFromOptInInstalledDisk|ExtractsBootAssetsFromOptInRealInstallerISO|InspectsOptInRealPortableEFIInstaller|RejectsOptInRealX86InstallerBeforeStaging)",
+    "env": {
+      "DORY_TEST_INSTALLED_DISK": "/tmp/noble-server-cloudimg-arm64.raw",
+      "DORY_TEST_INSTALLED_ROOT_DEVICE": "/dev/vda1",
+      "DORY_TEST_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-arm64.iso",
+      "DORY_TEST_PORTABLE_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-arm64.iso",
+      "DORY_TEST_PORTABLE_INSTALLER_ARCHITECTURE": "arm64",
+      "DORY_TEST_X86_64_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-amd64.iso",
+      "DORY_TEST_INSTALLER_ISO_SHA256": "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433"
+    },
+    "mediaManifest": "/tmp/dory-p01-desktop-full-agent-media.json",
+    "mediaSHA256VerifiedBeforeRun": true,
+    "mediaMetadataUnchangedAfterRun": true
+  },
+  "remainingUnavailableTest": "DoryPCLinuxBootTests.testPinnedLinuxReachesUserspaceAndPowersOff: opt-in PVH fixtures unavailable",
+  "logs": {
+    "full": {
+      "path": "/tmp/dory-p01-desktop-full-agent-tests.log",
+      "sha256": "7734b6142d83f41b94b526d6179c599ed49aa8b0c7b493a226c5425baded8b50"
+    },
+    "realMediaSupplement": {
+      "path": "/tmp/dory-p01-desktop-full-agent-real-media.log",
+      "sha256": "88564fbbbbbb0c8c351390dd652a218e93e2c6b18b09fa58a806c5dabf2ec747"
+    }
+  },
+  "recordedAtUTC": "2026-09-04T07:19:49.411449+00:00"
+}

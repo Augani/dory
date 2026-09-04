@@ -1,0 +1,6 @@
+{
+  "sourceManifestSHA256": "a31c914500bbafacce2dd316209573577182af40337231e923219612b7940cb6",
+  "manifestFilesUnchanged": 1967,
+  "ownedLiveSourceFilesMatchFrozen": true,
+  "scope": "Isolated app source with exact refresh-race AppStore and client-test bytes, composed with the authority agent frozen core; excludes parent unfinished desktop work. Not a combined-current-tree validation."
+}

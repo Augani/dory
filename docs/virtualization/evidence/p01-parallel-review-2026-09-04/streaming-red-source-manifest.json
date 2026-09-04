@@ -1,0 +1,22 @@
+{
+  "sourceRoot": "/tmp/dory-p01-streaming-red-reproduction",
+  "description": "Exact pre-fix production DoryInstalledLinuxBootBundle.swift, exact DoryLinuxInstallerBootAssets struct extracted from production, and unchanged new bounded-memory tests in minimal SwiftPM harness.",
+  "files": [
+    {
+      "path": "Package.swift",
+      "sha256": "b629adf0339fa53583f09f272efce3afda3b5c50eef91c2fc2b11030b48831b8"
+    },
+    {
+      "path": "Sources/DoryOperations/DoryInstalledLinuxBootBundle.swift",
+      "sha256": "9b002cc18d9428ed5f1216820dd5db5036590bbd6cf114df6127f2bf9f51e035"
+    },
+    {
+      "path": "Sources/DoryOperations/DoryLinuxInstallerBootAssets.swift",
+      "sha256": "2d0b6219a3e0ee6ef1a1eaf53463fd6e2032ad979183d1a52a3086325eb05940"
+    },
+    {
+      "path": "Tests/DoryOperationsTests/DoryInstalledLinuxBootBundleStreamingTests.swift",
+      "sha256": "7c2a465b4dd8623cba2f2b668bcf0a1f3e4fe953ec6ba1fa327ab313bd115321"
+    }
+  ]
+}

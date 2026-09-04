@@ -1,0 +1,37 @@
+[
+  {
+    "path": "dory-core-swift/Sources/DorydKit/DoryMachineConfigurationMigration.swift",
+    "baselineSHA256": "519038b55d3ec12ec4868befbc43d5012fbdfbf7350701aac599a36bd58f5e74",
+    "currentSHA256": "1e5175246aaf29e0e1884d469ed2a2c58e713de27671c4dd73e1721c8af530a3"
+  },
+  {
+    "path": "dory-core-swift/Sources/DorydKit/DoryMachineRuntimeIdentityStore.swift",
+    "baselineSHA256": "40bda59f65a9f0d33da47eb6baa020a81eec519b4e141e5911846d9ac08e1f4b",
+    "currentSHA256": "4b11ed98834df7fb23f03b21649ce8138cf6f63f4f7d6edd715f52627b71d211"
+  },
+  {
+    "path": "dory-core-swift/Sources/DorydKit/DoryMachineSavedState.swift",
+    "baselineSHA256": "7bf53bf7a2b6a03cb74bc97b402937ea57220e11b373176893800223f5114dfa",
+    "currentSHA256": "d995442a12d285b091fad812f96e985255442cc496351b510a0289edbdf49f4e"
+  },
+  {
+    "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineConfigurationMigrationTests.swift",
+    "baselineSHA256": "cad7a9f573e9634074f9e8c9a505b8966134821e9389978cc38167caaf7d0409",
+    "currentSHA256": "7409711ca0d37643a55bf10c96cde79985f21e63ce8efd635743d77c6a879fb0"
+  },
+  {
+    "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineRuntimeIdentityStoreTests.swift",
+    "baselineSHA256": "5ae1a57520b191f67e54d8735a5fb418f6c0c9c6571032fd648ddc5f5586e56d",
+    "currentSHA256": "1dd758fc4a9f4cd34e8055b87a4adf094c8326218589eaa22b174e27fa696576"
+  },
+  {
+    "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineSavedStateTests.swift",
+    "baselineSHA256": "5f309333157820dca5bcd3fa5bca19169449e2af3ed7436ba3f7a15d789eb71c",
+    "currentSHA256": "2e15fde9bde4dd212f7d0c48a4ebcf5b5bbfdb00bcbf48bbfba18079f722b69c"
+  },
+  {
+    "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerSavedStateIntegrationTests.swift",
+    "baselineSHA256": "e7c337af6d4216a68e967094a315396ad950dbbac64166527beef55b73d768d4",
+    "currentSHA256": "12e37c17f64341d0dd1c1e43821ea6e5218fb5d22d8aa8a0e99d882ce79996e8"
+  }
+]

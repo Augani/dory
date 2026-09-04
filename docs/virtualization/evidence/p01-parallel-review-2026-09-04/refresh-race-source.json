@@ -1,0 +1,12 @@
+[
+  {
+    "path": "Dory/Models/AppStore.swift",
+    "beforeSHA256": "0260b4833524f9f7dea47c10dbfe361f94c730b2fcd759bb601295a253097d2d",
+    "afterSHA256": "58f1ccaab7e0899488e6f017389e8ea5b5c9729de229bb57954c03dd45632792"
+  },
+  {
+    "path": "DoryTests/DorydClientTests.swift",
+    "beforeSHA256": "01f7f7d6897b333a0ce2504d6d819055cf2c98d83b3a14a51b46adf26ed78ee8",
+    "afterSHA256": "6308b1841a6f290384114acf0079be944392562edbe3f577094e6c148fd705f2"
+  }
+]
