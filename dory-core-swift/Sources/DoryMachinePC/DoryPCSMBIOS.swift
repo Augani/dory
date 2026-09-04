@@ -89,10 +89,13 @@ public enum DoryPCSMBIOSBuilder {
     guard (1...255).contains(processorCount) else {
       throw DoryPCSMBIOSError.invalidProcessorCount(processorCount)
     }
-    guard memoryBytes >= 1024 * 1024, memoryBytes % (1024 * 1024) == 0 else {
+    guard memoryBytes >= 1024 * 1024, memoryBytes % (1024 * 1024) == 0,
+      UInt64(memoryBytes) <= DoryPCV1ABI.maximumMemoryBytes
+    else {
       throw DoryPCSMBIOSError.invalidMemorySize(memoryBytes)
     }
     try validate(identity: identity)
+    try validate(field: cpuProfile.identifier)
 
     let mappedRanges = try DoryPCPVHBootBuilder.memoryMap(memoryBytes: UInt64(memoryBytes))
       .filter { $0.kind == .ram }
@@ -323,10 +326,14 @@ public enum DoryPCSMBIOSBuilder {
       identity.skuNumber,
       identity.family,
     ] {
-      let bytes = Array(field.utf8)
-      guard !bytes.isEmpty, bytes.count <= 64, bytes.allSatisfy({ (0x20...0x7E).contains($0) })
-      else { throw DoryPCSMBIOSError.invalidIdentityField(field) }
+      try validate(field: field)
     }
+  }
+
+  private static func validate(field: String) throws {
+    guard !field.isEmpty, field.utf8.count <= 64,
+      field.utf8.allSatisfy({ (0x20...0x7E).contains($0) })
+    else { throw DoryPCSMBIOSError.invalidIdentityField(field) }
   }
 
   private static func range(address: UInt64, count: Int) throws -> Range<UInt64> {

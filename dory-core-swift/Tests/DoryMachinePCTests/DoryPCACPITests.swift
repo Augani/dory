@@ -5,6 +5,47 @@ import Testing
 @testable import DoryMachinePC
 
 @Suite struct DoryPCACPITests {
+  @Test func invalidProcessorCountIsARecoverableBuilderError() throws {
+    #expect(throws: DoryPCACPIError.invalidProcessorCount(0)) {
+      try DoryPCACPIBuilder.build(processorCount: 0)
+    }
+  }
+
+  @Test func overflowingDerivedAddressesRemainInvalidUntilTypedRejection() throws {
+    let layouts: [DoryPCACPILayout] = [
+      .init(mcfg: .max),
+      .init(mcfg: .max - 0xFF),
+      .init(fadt: .max),
+      .init(fadt: .max - 0x100),
+      .init(fadt: .max - 0x180),
+    ]
+    for layout in layouts {
+      #expect([layout.fadt, layout.facs, layout.dsdt].contains(.max))
+      #expect(throws: DoryPCACPIError.tablesOutsideReservedRegion) {
+        try DoryPCACPIBuilder.build(layout: layout)
+      }
+      // Codable input bypasses the convenience initializer, so validation also belongs at build.
+      let decoded = try JSONDecoder().decode(
+        DoryPCACPILayout.self, from: JSONEncoder().encode(layout))
+      #expect(throws: DoryPCACPIError.tablesOutsideReservedRegion) {
+        try DoryPCACPIBuilder.build(layout: decoded)
+      }
+    }
+  }
+
+  @Test func everyExplicitNearMaximumTableAddressFailsWithoutWrapping() throws {
+    let layouts: [DoryPCACPILayout] = [
+      .init(rsdp: .max - 0x100), .init(xsdt: .max - 1),
+      .init(madt: .max - 1), .init(hpet: .max - 1), .init(mcfg: .max - 1),
+      .init(fadt: .max - 1), .init(facs: .max - 1), .init(dsdt: .max - 1),
+    ]
+    for layout in layouts {
+      #expect(throws: DoryPCACPIError.tablesOutsideReservedRegion) {
+        try DoryPCACPIBuilder.build(layout: layout)
+      }
+    }
+  }
+
   @Test func buildsChecksummedRSDPXSDTAndMADTTopology() throws {
     let tables = try DoryPCACPIBuilder.build()
 

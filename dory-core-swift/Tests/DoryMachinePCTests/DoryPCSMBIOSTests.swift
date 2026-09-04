@@ -4,6 +4,48 @@ import Foundation
 import Testing
 
 @Suite struct DoryPCSMBIOSTests {
+  @Test func memorySizeValidationPrecedesSMBIOSIntegerEncoding() throws {
+    let maximum = Int(DoryPCV1ABI.maximumMemoryBytes)
+    for count in [
+      -1, 0, 1024 * 1024 - 1, maximum + 1024 * 1024, 1 << 52,
+      Int.max - (1024 * 1024 - 1),
+    ] {
+      #expect(throws: DoryPCSMBIOSError.invalidMemorySize(count)) {
+        try DoryPCSMBIOSBuilder.build(memoryBytes: count)
+      }
+    }
+    let maximumTables = try DoryPCSMBIOSBuilder.build(memoryBytes: maximum)
+    let structures = try parseStructures(maximumTables.structureTable)
+    let device = try #require(structures.first { $0.type == 17 })
+    #expect(read16(device.formatted, at: 0x0C) == 0x7FFF)
+    #expect(read32(device.formatted, at: 0x1C) == UInt32(maximum / (1024 * 1024)))
+  }
+
+  @Test func overflowingLayoutEndpointsAreRejectedBeforePublication() throws {
+    for layout in [
+      DoryPCSMBIOSLayout(entryPoint: .max - 1),
+      DoryPCSMBIOSLayout(structureTable: .max - 1),
+    ] {
+      #expect(throws: DoryPCSMBIOSError.overlappingArtifacts) {
+        try DoryPCSMBIOSBuilder.build(layout: layout, memoryBytes: 1024 * 1024)
+      }
+    }
+  }
+
+  @Test func processorProfileStringsCannotTerminateOrExpandSMBIOSStructures() throws {
+    let baseline = DoryX86CPUProfile.compatibleV1
+    for identifier in ["bad\0profile", String(repeating: "x", count: 65)] {
+      let profile = DoryX86CPUProfile(
+        identifier: identifier, features: baseline.features,
+        physicalAddressBits: baseline.physicalAddressBits,
+        linearAddressBits: baseline.linearAddressBits,
+        virtualTSCFrequencyHz: baseline.virtualTSCFrequencyHz)
+      #expect(throws: DoryPCSMBIOSError.invalidIdentityField(identifier)) {
+        try DoryPCSMBIOSBuilder.build(memoryBytes: 1024 * 1024, cpuProfile: profile)
+      }
+    }
+  }
+
   @Test func publishesChecksummedPlatformTopologyAndMemoryIdentity() throws {
     let uuid: [UInt8] = [
       0x33, 0x22, 0x11, 0x00, 0x55, 0x44, 0x77, 0x66,

@@ -26,13 +26,22 @@ public struct DoryPCACPILayout: Codable, Sendable, Hashable {
     self.madt = madt
     self.hpet = hpet
     self.mcfg = mcfg
-    self.fadt = fadt ?? mcfg + 0x100
-    self.facs = facs ?? (fadt ?? mcfg + 0x100) + 0x140
-    self.dsdt = dsdt ?? (fadt ?? mcfg + 0x100) + 0x200
+    let resolvedFADT = fadt ?? Self.derivedAddress(mcfg, offset: 0x100)
+    self.fadt = resolvedFADT
+    self.facs = facs ?? Self.derivedAddress(resolvedFADT, offset: 0x140)
+    self.dsdt = dsdt ?? Self.derivedAddress(resolvedFADT, offset: 0x200)
+  }
+
+  private static func derivedAddress(_ base: UInt64, offset: UInt64) -> UInt64 {
+    let (address, overflow) = base.addingReportingOverflow(offset)
+    // Preserve the nonthrowing layout value API. UInt64.max cannot begin any nonempty table
+    // inside a nonoverflowing reserved region, so build() always rejects this sentinel.
+    return overflow ? .max : address
   }
 }
 
 public enum DoryPCACPIError: Error, Sendable, Equatable {
+  case invalidProcessorCount(Int)
   case overlappingTables
   case tablesOutsideReservedRegion
   case guestMemoryRejected(DoryX86MemoryError)
@@ -71,7 +80,15 @@ public enum DoryPCACPIBuilder {
     layout: DoryPCACPILayout = .init(),
     processorCount: UInt8 = 1
   ) throws -> DoryPCACPITables {
-    precondition(processorCount > 0)
+    guard processorCount > 0 else { throw DoryPCACPIError.invalidProcessorCount(0) }
+    let (reservedEnd, overflow) = layout.rsdp.addingReportingOverflow(DoryPCV1ABI.acpiBytes)
+    let addresses = [
+      layout.rsdp, layout.xsdt, layout.madt, layout.hpet,
+      layout.mcfg, layout.fadt, layout.facs, layout.dsdt,
+    ]
+    guard !overflow,
+      addresses.allSatisfy({ layout.rsdp <= $0 && $0 < reservedEnd })
+    else { throw DoryPCACPIError.tablesOutsideReservedRegion }
     let madt = makeMADT(processorCount: processorCount)
     let hpet = makeHPET()
     let mcfg = makeMCFG()
@@ -93,9 +110,7 @@ public enum DoryPCACPIBuilder {
     guard !zip(ranges, ranges.dropFirst()).contains(where: { $0.0.overlaps($0.1) }) else {
       throw DoryPCACPIError.overlappingTables
     }
-    let (reservedEnd, overflow) = layout.rsdp.addingReportingOverflow(DoryPCV1ABI.acpiBytes)
-    guard !overflow,
-      ranges.allSatisfy({ layout.rsdp <= $0.lowerBound && $0.upperBound <= reservedEnd })
+    guard ranges.allSatisfy({ layout.rsdp <= $0.lowerBound && $0.upperBound <= reservedEnd })
     else {
       throw DoryPCACPIError.tablesOutsideReservedRegion
     }
