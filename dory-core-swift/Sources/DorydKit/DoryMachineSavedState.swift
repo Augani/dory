@@ -4,12 +4,14 @@ import DoryOperations
 import Foundation
 
 public struct DoryMachineSavedStateManifest: Codable, Sendable, Equatable {
-    public static let currentSchemaVersion: UInt16 = 1
+    public static let oldestSupportedSchemaVersion: UInt16 = 1
+    public static let currentSchemaVersion: UInt16 = 2
     public static let stateFileName = "state.bin"
 
     public var schemaVersion: UInt16
     public var machineID: String
     public var backend: DoryVirtualizationBackendIdentity
+    public var snapshotFormat: DorySnapshotFormatIdentity
     public var stateFileName: String
     public var stateFileSHA256: String
     public var stateFileByteCount: UInt64
@@ -32,6 +34,7 @@ public struct DoryMachineSavedStateManifest: Codable, Sendable, Equatable {
         schemaVersion = Self.currentSchemaVersion
         self.machineID = machineID
         backend = .appleVirtualizationFramework
+        snapshotFormat = .appleVZMacV1
         stateFileName = Self.stateFileName
         self.stateFileSHA256 = stateFileSHA256.lowercased()
         self.stateFileByteCount = stateFileByteCount
@@ -43,14 +46,15 @@ public struct DoryMachineSavedStateManifest: Codable, Sendable, Equatable {
     }
 
     public var isStructurallyValid: Bool {
-        schemaVersion == Self.currentSchemaVersion
+        (Self.oldestSupportedSchemaVersion...Self.currentSchemaVersion).contains(schemaVersion)
             && Self.isMachineID(machineID)
             && backend == .appleVirtualizationFramework
+            && snapshotFormat == .appleVZMacV1
             && stateFileName == Self.stateFileName
             && Self.isSHA256(stateFileSHA256)
             && stateFileByteCount > 0
             && Self.isSHA256(authoritativeConfigurationSHA256)
-            && runtimeIdentity.validate().isEmpty
+            && Self.isCompatible(runtimeIdentity: runtimeIdentity, machineID: machineID)
             && Self.isBoundedHostValue(hostHardwareModel)
             && Self.isBoundedHostValue(hostOperatingSystemBuild)
             && createdAtUnixMilliseconds > 0
@@ -60,12 +64,106 @@ public struct DoryMachineSavedStateManifest: Codable, Sendable, Equatable {
         value.count == 64 && value.allSatisfy { $0.isHexDigit && !$0.isUppercase }
     }
 
+    fileprivate static func isCompatible(
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        machineID: String
+    ) -> Bool {
+        guard runtimeIdentity.validate().isEmpty else { return false }
+        switch runtimeIdentity.mode {
+        case .legacyCompatibility:
+            return true
+        case .requiresReplanning:
+            // Replanning cannot authorize resuming a payload made by an obsolete composition.
+            return false
+        case .resolvedPlan:
+            return runtimeIdentity.resolvedPlan?.machineID == machineID
+                && runtimeIdentity.backend == .appleVirtualizationFramework
+        }
+    }
+
     private static func isMachineID(_ value: String) -> Bool {
         value.wholeMatch(of: /[A-Za-z0-9][A-Za-z0-9_.-]{0,62}/) != nil
     }
 
     private static func isBoundedHostValue(_ value: String) -> Bool {
         !value.isEmpty && value.utf8.count <= 256 && !value.contains("\0")
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case schemaVersion, machineID, backend, snapshotFormat, stateFileName
+        case stateFileSHA256, stateFileByteCount, authoritativeConfigurationSHA256
+        case runtimeIdentity, hostHardwareModel, hostOperatingSystemBuild
+        case createdAtUnixMilliseconds
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let persistedSchema = try values.decode(UInt16.self, forKey: .schemaVersion)
+        guard (Self.oldestSupportedSchemaVersion...Self.currentSchemaVersion)
+            .contains(persistedSchema) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .schemaVersion,
+                in: values,
+                debugDescription: "unsupported saved-state manifest schema"
+            )
+        }
+        let backendName = try values.decode(String.self, forKey: .backend)
+        let migratedBackend: DoryVirtualizationBackendIdentity
+        switch backendName {
+        case DoryVirtualizationBackendIdentity.appleVirtualizationFramework.rawValue:
+            migratedBackend = .appleVirtualizationFramework
+        case "virtualization-framework", "vz", "vz-mac":
+            guard persistedSchema == Self.oldestSupportedSchemaVersion else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .backend,
+                    in: values,
+                    debugDescription: "current saved-state schema requires its canonical backend"
+                )
+            }
+            migratedBackend = .appleVirtualizationFramework
+        default:
+            throw DecodingError.dataCorruptedError(
+                forKey: .backend,
+                in: values,
+                debugDescription: "saved-state backend cannot be migrated safely"
+            )
+        }
+        schemaVersion = persistedSchema
+        machineID = try values.decode(String.self, forKey: .machineID)
+        backend = migratedBackend
+        if persistedSchema == Self.oldestSupportedSchemaVersion {
+            snapshotFormat = try values.decodeIfPresent(
+                DorySnapshotFormatIdentity.self,
+                forKey: .snapshotFormat
+            ) ?? .appleVZMacV1
+        } else {
+            // Schema 2 introduced explicit format authority. Missing it is corruption, not a
+            // historical default, and must never authorize an in-place payload conversion.
+            snapshotFormat = try values.decode(
+                DorySnapshotFormatIdentity.self,
+                forKey: .snapshotFormat
+            )
+        }
+        stateFileName = try values.decode(String.self, forKey: .stateFileName)
+        stateFileSHA256 = try values.decode(String.self, forKey: .stateFileSHA256)
+        stateFileByteCount = try values.decode(UInt64.self, forKey: .stateFileByteCount)
+        authoritativeConfigurationSHA256 = try values.decode(
+            String.self,
+            forKey: .authoritativeConfigurationSHA256
+        )
+        runtimeIdentity = try values.decode(
+            DoryMachineRuntimeIdentity.self,
+            forKey: .runtimeIdentity
+        )
+        hostHardwareModel = try values.decode(String.self, forKey: .hostHardwareModel)
+        hostOperatingSystemBuild = try values.decode(
+            String.self,
+            forKey: .hostOperatingSystemBuild
+        )
+        createdAtUnixMilliseconds = try values.decode(
+            Int64.self,
+            forKey: .createdAtUnixMilliseconds
+        )
     }
 }
 
@@ -129,6 +227,14 @@ public struct DoryMachineSavedStateStore: Sendable {
         runtimeIdentity: DoryMachineRuntimeIdentity,
         now: Date = Date()
     ) throws -> DoryMachineSavedStateManifest {
+        guard Self.isMachineID(machineID) else {
+            throw DoryMachineSavedStateError.invalidMachineID
+        }
+        guard DoryMachineSavedStateManifest.isCompatible(
+            runtimeIdentity: runtimeIdentity, machineID: machineID
+        ) else {
+            throw DoryMachineSavedStateError.invalidManifest
+        }
         let directory = try prepareDirectory(machineID: machineID)
         let canonicalTemporary = URL(fileURLWithPath: temporaryStatePath).standardizedFileURL.path
         guard (canonicalTemporary as NSString).deletingLastPathComponent == directory,
@@ -230,12 +336,17 @@ public struct DoryMachineSavedStateStore: Sendable {
     }
 
     public func remove(machineID: String) throws {
+        guard Self.isMachineID(machineID) else {
+            throw DoryMachineSavedStateError.invalidMachineID
+        }
         let directory = directoryPath(machineID: machineID)
         guard Self.pathExists(directory) else { return }
         guard Self.isPrivateDirectory(directory) else {
             throw DoryMachineSavedStateError.invalidDirectory
         }
         let entries = try FileManager.default.contentsOfDirectory(atPath: directory)
+        // Validate the whole directory before deleting any payload. Unknown future-schema
+        // artifacts must leave the original saved state intact when discard is rejected.
         for entry in entries {
             guard entry == Self.manifestFileName
                     || entry == DoryMachineSavedStateManifest.stateFileName
@@ -243,6 +354,12 @@ public struct DoryMachineSavedStateStore: Sendable {
                     || entry.hasPrefix(".manifest.tmp-") else {
                 throw DoryMachineSavedStateError.invalidDirectory
             }
+            let path = directory + "/" + entry
+            guard Self.isPrivateRegularFile(path) else {
+                throw DoryMachineSavedStateError.invalidDirectory
+            }
+        }
+        for entry in entries {
             let path = directory + "/" + entry
             guard unlink(path) == 0 || errno == ENOENT else {
                 throw DoryMachineSavedStateError.system("unlink", errno)

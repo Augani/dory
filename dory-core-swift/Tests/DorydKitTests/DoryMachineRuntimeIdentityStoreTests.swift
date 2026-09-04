@@ -4,6 +4,45 @@ import Testing
 
 @Suite("Per-workspace runtime identity store", .serialized)
 struct DoryMachineRuntimeIdentityStoreTests {
+    @Test("a terminal authority head rejects recovery without integer overflow or mutation")
+    func terminalAuthorityHeadFailsClosed() throws {
+        try withStore("terminal-head") { store, directory in
+            let configuration = Data("configuration".utf8)
+            try store.publish(
+                .legacyCompatibility(virtualHardwareABIVersion: 1),
+                machineID: "dev",
+                authoritativeLegacyData: configuration
+            )
+            let recordPath = directory + "/" + DoryMachineRuntimeIdentityStore.recordFileName
+            let headPath = directory + "/" + DoryMachineRuntimeIdentityStore.headFileName
+            let record = try Data(contentsOf: URL(fileURLWithPath: recordPath))
+            var head = try #require(JSONSerialization.jsonObject(
+                with: Data(contentsOf: URL(fileURLWithPath: headPath))
+            ) as? [String: Any])
+            head["authorityRevision"] = UInt64.max
+            let terminalHead = try JSONSerialization.data(withJSONObject: head, options: .sortedKeys)
+            try terminalHead.write(to: URL(fileURLWithPath: headPath))
+            for allowRecovery in [false, true] {
+                #expect(throws: DoryMachineRuntimeIdentityStoreError.invalidRecord) {
+                    try store.readIfPresent(
+                        machineID: "dev",
+                        authoritativeLegacyData: configuration,
+                        allowRecovery: allowRecovery
+                    )
+                }
+            }
+            #expect(throws: DoryMachineRuntimeIdentityStoreError.invalidRecord) {
+                try store.publish(
+                    .requiresReplanning(virtualHardwareABIVersion: 1, reason: .definitionChanged),
+                    machineID: "dev",
+                    authoritativeLegacyData: configuration
+                )
+            }
+            #expect(try Data(contentsOf: URL(fileURLWithPath: recordPath)) == record)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: headPath)) == terminalHead)
+        }
+    }
+
     @Test("identity authority is monotonic across A to B to A configuration history")
     func rejectsRolledBackIdentityRecord() throws {
         try withStore("rollback") { store, directory in
@@ -121,6 +160,14 @@ struct DoryMachineRuntimeIdentityStoreTests {
                 ofItemAtPath: headPath
             )
 
+            #expect(throws: DoryMachineRuntimeIdentityStoreError.invalidRecord) {
+                _ = try store.readIfPresent(machineID: "dev", authoritativeLegacyData: dataB, allowRecovery: false)
+            }
+            #expect(try Data(contentsOf: URL(fileURLWithPath: headPath)) == oldHead)
+            #expect(throws: DoryMachineRuntimeIdentityStoreError.authorityMismatch) {
+                _ = try store.readIfPresent(machineID: "dev", authoritativeLegacyData: dataA)
+            }
+            #expect(try Data(contentsOf: URL(fileURLWithPath: headPath)) == oldHead)
             #expect(try store.readIfPresent(
                 machineID: "dev",
                 authoritativeLegacyData: dataB

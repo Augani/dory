@@ -7,6 +7,97 @@ import Testing
 struct DoryMachineConfigurationMigrationTests {
     private let gibibyte: UInt64 = 1_073_741_824
 
+    @Test("legacy projection preserves camera edits and rejects an unrepresentable second display")
+    func completeDesktopTopologyProjection() throws {
+        let original = DoryMachineConfiguration(
+            id: "desktop-topology",
+            kernelPath: "/managed/desktop-topology/kernel",
+            rootfsPath: "/managed/desktop-topology/rootfs.ext4",
+            displayMode: .desktop,
+            environment: ["PRESERVE": "legacy-value"]
+        )
+        var migrated = try migrate(original, capacity: 64 * gibibyte)
+        let originalData = try migrated.authoritativeLegacyData()
+        migrated.definition.camera.enabled = true
+        let cameraEnabled = try migrated.legacyConfiguration()
+        #expect(cameraEnabled.environment["DORY_DESKTOP_CAMERA"] == "1")
+        #expect(cameraEnabled.environment["PRESERVE"] == "legacy-value")
+        #expect(try migrate(cameraEnabled, capacity: 64 * gibibyte).definition.camera.enabled)
+        migrated.definition.camera.enabled = false
+        #expect(try migrated.authoritativeLegacyData() == originalData)
+        var enabledMigration = try migrate(cameraEnabled, capacity: 64 * gibibyte)
+        enabledMigration.definition.camera.enabled = false
+        #expect(try enabledMigration.legacyConfiguration().environment["DORY_DESKTOP_CAMERA"] == "0")
+
+        var secondDisplay = migrated.definition.displays[0]
+        secondDisplay.id = "secondary"
+        migrated.definition.displays.append(secondDisplay)
+        #expect(migrated.definition.validate().isEmpty)
+        #expect(throws: DoryMachineConfigurationMigrationError.unsupportedDefinitionChange("displays")) {
+            try migrated.authoritativeLegacyData()
+        }
+    }
+
+    @Test("migration facts cannot reinterpret an explicitly persisted disk architecture",
+          arguments: [DoryGuestArchitecture.arm64, .x86_64])
+    func conflictingArchitecturePreservesOriginal(architecture: DoryGuestArchitecture) throws {
+        let original = DoryMachineConfiguration(
+            id: "architecture",
+            guestArchitecture: architecture,
+            kernelPath: "/managed/architecture/kernel",
+            rootfsPath: "/managed/architecture/rootfs.ext4"
+        )
+        let bytes = try DoryMachineConfigurationMigrationBridge.encodeLegacy(original)
+        var evidence = facts(capacity: 64 * gibibyte)
+        evidence.guestArchitecture = architecture == .arm64 ? .x86_64 : .arm64
+        #expect(throws: DoryMachineConfigurationMigrationError.invalidLegacyConfiguration(
+            "persisted guest architecture conflicts with migration evidence"
+        )) {
+            try DoryMachineConfigurationMigrationBridge.decodeAndMigrate(bytes, facts: evidence)
+        }
+        #expect(try DoryMachineConfigurationMigrationBridge.encodeLegacy(original) == bytes)
+        evidence.guestArchitecture = architecture
+        let accepted = try DoryMachineConfigurationMigrationBridge.decodeAndMigrate(
+            bytes, facts: evidence
+        )
+        #expect(accepted.definition.guest.architecture == architecture)
+        #expect(try accepted.authoritativeLegacyData() == bytes)
+    }
+
+    @Test("back projection rejects known non-disk bindings and changed disk provenance",
+          arguments: ["kernel", "installer", "provenance"])
+    func diskIdentityCannotBeSilentlyReplaced(change: String) throws {
+        let original = DoryMachineConfiguration(
+            id: "disk-identity",
+            kernelPath: "/managed/disk-identity/kernel",
+            rootfsPath: "/managed/disk-identity/rootfs.ext4",
+            bootMode: .efi,
+            installerISOPath: "/managed/disk-identity/installer.iso",
+            diskSizeBytes: 64 * gibibyte,
+            displayMode: .desktop
+        )
+        let bytes = try DoryMachineConfigurationMigrationBridge.encodeLegacy(original)
+        var migrated = try migrate(original, capacity: 64 * gibibyte)
+        let sourceDisk = migrated.definition.storage[0]
+        if change == "provenance" {
+            migrated.definition.storage[0].source = .bundledByDory
+        } else {
+            let role: DoryMachineConfigurationArtifactRole =
+                change == "kernel" ? .kernel : .installerISO
+            migrated.definition.storage[0].artifact = try #require(
+                migrated.artifactBindings.first { $0.role == role }
+            ).reference
+        }
+        #expect(migrated.definition.validate().isEmpty)
+        #expect(throws: DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
+            change == "provenance" ? "storage[0].source" : "storage[0].artifact"
+        )) {
+            try migrated.authoritativeLegacyData()
+        }
+        migrated.definition.storage[0] = sourceDisk
+        #expect(try migrated.authoritativeLegacyData() == bytes)
+    }
+
     @Test("managed desktop projects typed policy and round trips canonical legacy bytes")
     func managedDesktopRoundTrip() throws {
         let legacy = DoryMachineConfiguration(

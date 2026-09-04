@@ -99,7 +99,8 @@ final class DoryMachineRuntimeIdentityStore: @unchecked Sendable {
 
     func readIfPresent(
         machineID: String,
-        authoritativeLegacyData: Data
+        authoritativeLegacyData: Data,
+        allowRecovery: Bool = true
     ) throws -> DoryMachineRuntimeIdentity? {
         lock.lock()
         defer { lock.unlock() }
@@ -112,11 +113,11 @@ final class DoryMachineRuntimeIdentityStore: @unchecked Sendable {
             throw DoryMachineRuntimeIdentityStoreError.invalidRecord
         }
         let data = try Self.secureRead(path: path)
-        guard let record = try? JSONDecoder().decode(
-            DoryPersistedMachineRuntimeIdentity.self,
-            from: data
-        ), record.isValid, record.machineID == machineID else {
+        guard let record = Self.decodedRecord(data), record.machineID == machineID else {
             throw DoryMachineRuntimeIdentityStoreError.invalidRecord
+        }
+        guard record.legacyConfigurationSHA256 == Self.sha256(authoritativeLegacyData) else {
+            throw DoryMachineRuntimeIdentityStoreError.authorityMismatch
         }
         let head = try decodeHead(path: headPath, machineID: machineID)
         let recordSHA256 = Self.sha256(data)
@@ -124,7 +125,9 @@ final class DoryMachineRuntimeIdentityStore: @unchecked Sendable {
             || head.authorityRevision != record.authorityRevision {
             // Identity is published before its monotonic head. Complete that one permissible
             // crash ordering; every rollback/substitution shape fails closed.
-            guard record.authorityRevision == head.authorityRevision + 1,
+            guard allowRecovery,
+                  head.authorityRevision < UInt64.max,
+                  record.authorityRevision == head.authorityRevision + 1,
                   record.previousRecordSHA256 == head.recordSHA256 else {
                 throw DoryMachineRuntimeIdentityStoreError.invalidRecord
             }
@@ -136,9 +139,6 @@ final class DoryMachineRuntimeIdentityStore: @unchecked Sendable {
                 ),
                 path: headPath
             )
-        }
-        guard record.legacyConfigurationSHA256 == Self.sha256(authoritativeLegacyData) else {
-            throw DoryMachineRuntimeIdentityStoreError.authorityMismatch
         }
         return record.identity
     }
@@ -160,10 +160,8 @@ final class DoryMachineRuntimeIdentityStore: @unchecked Sendable {
             let oldData = try Self.secureRead(path: path)
             let oldHead = try decodeHead(path: headPath, machineID: machineID)
             guard oldHead.recordSHA256 == Self.sha256(oldData),
-                  let oldRecord = try? JSONDecoder().decode(
-                    DoryPersistedMachineRuntimeIdentity.self,
-                    from: oldData
-                  ), oldRecord.isValid,
+                  let oldRecord = Self.decodedRecord(oldData),
+                  oldRecord.machineID == machineID,
                   oldRecord.authorityRevision == oldHead.authorityRevision else {
                 throw DoryMachineRuntimeIdentityStoreError.invalidRecord
             }
@@ -240,6 +238,32 @@ final class DoryMachineRuntimeIdentityStore: @unchecked Sendable {
             ),
             path: headPath
         )
+    }
+
+    private static func decodedRecord(_ data: Data) -> DoryPersistedMachineRuntimeIdentity? {
+        guard var record = try? JSONDecoder().decode(DoryPersistedMachineRuntimeIdentity.self, from: data) else {
+            return nil
+        }
+        if record.isValid { return record }
+        guard record.identity.schemaVersion == DoryMachineRuntimeIdentity.currentSchemaVersion,
+              record.identity.mode == .resolvedPlan,
+              record.identity.invalidationReason == nil,
+              let expected = record.identity.resolvedPlanSHA256,
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let identity = object["identity"] as? [String: Any],
+              let planObject = identity["resolvedPlan"] as? [String: Any],
+              let plan = DoryResolvedMachinePlanRepository.authenticatedSchemaFivePlan(
+                  planObject, expectedSHA256: expected
+              ),
+              plan.machineID == record.machineID,
+              plan.virtualHardwareABIVersion == record.identity.virtualHardwareABIVersion else {
+            return nil
+        }
+        record.identity = .requiresReplanning(
+            virtualHardwareABIVersion: plan.virtualHardwareABIVersion,
+            reason: .planRecoveryFailed
+        )
+        return record.isValid ? record : nil
     }
 
     private func recordPath(machineID: String) throws -> String {

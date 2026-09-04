@@ -11,17 +11,21 @@ public struct DoryMachineConfigurationMigrationFacts: Sendable, Equatable {
     public var systemDiskCapacityBytes: UInt64?
     /// Required only for an installed EFI machine whose installer is no longer attached.
     public var installedEFIBoot: DoryMachineConfigurationInstalledEFIBoot?
+    /// Exact bytes retained while installer media is staged beside the durable machine disk.
+    public var installerStagingBytes: UInt64
     public var lifecycle: DoryVMLifecycleMetadata
 
     public init(
         guestArchitecture: DoryGuestArchitecture,
         systemDiskCapacityBytes: UInt64? = nil,
         installedEFIBoot: DoryMachineConfigurationInstalledEFIBoot? = nil,
+        installerStagingBytes: UInt64 = 0,
         lifecycle: DoryVMLifecycleMetadata
     ) {
         self.guestArchitecture = guestArchitecture
         self.systemDiskCapacityBytes = systemDiskCapacityBytes
         self.installedEFIBoot = installedEFIBoot
+        self.installerStagingBytes = installerStagingBytes
         self.lifecycle = lifecycle
     }
 }
@@ -206,6 +210,9 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
         guard definition.display == baselineDefinition.display else {
             throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange("display")
         }
+        guard definition.displays == baselineDefinition.displays else {
+            throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange("displays")
+        }
         guard definition.audio == baselineDefinition.audio else {
             throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange("audio")
         }
@@ -225,6 +232,19 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
                 throw DoryMachineConfigurationMigrationError.unresolvedArtifact(attachment.artifact)
             }
             throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange("storage")
+        }
+        // The compatibility record still owns the disk path. Accepting another known binding
+        // (for example the kernel or installer) here would silently project the old root disk
+        // while persisting a different typed disk identity.
+        guard definition.storage[0].artifact == baselineDefinition.storage[0].artifact else {
+            throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
+                "storage[0].artifact"
+            )
+        }
+        guard definition.storage[0].source == baselineDefinition.storage[0].source else {
+            throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
+                "storage[0].source"
+            )
         }
 
         guard definition.resources.virtualCPUCount <= UInt64(Int.max) else {
@@ -259,6 +279,10 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
         try applyGuestIdentityIntent(to: &environment)
         try applyClipboardPolicy(to: &environment)
         try applySandboxPolicy(to: &environment)
+        if definition.camera != baselineDefinition.camera {
+            environment[DoryVMCameraConfiguration.legacyEnabledEnvironmentKey]
+                = definition.camera.enabled ? "1" : "0"
+        }
 
         let shares = try definition.shares.map { share -> DoryMachineShareConfiguration in
             guard let binding = shareBinding(for: share.hostLocation) else {
@@ -516,6 +540,12 @@ public enum DoryMachineConfigurationMigrationBridge {
                 "native macOS uses the typed VZMac definition and has no legacy Linux projection"
             )
         }
+        if let persistedArchitecture = configuration.guestArchitecture,
+           persistedArchitecture != facts.guestArchitecture {
+            throw DoryMachineConfigurationMigrationError.invalidLegacyConfiguration(
+                "persisted guest architecture conflicts with migration evidence"
+            )
+        }
         guard configuration.cpuCount > 0 else {
             throw DoryMachineConfigurationMigrationError.invalidLegacyConfiguration(
                 "cpuCount must be positive"
@@ -713,12 +743,13 @@ public enum DoryMachineConfigurationMigrationBridge {
         } else if acceleratedBoot {
             graphics = typedGraphicsPolicy(graphicsPreference)
         } else {
-            // Generic EFI media is admitted only through the portable VZ software baseline.
-            // Advertising a currently unqualified display level first turns the proven software
-            // path into a fallback that requires an authorization the create workflow cannot
-            // truthfully supply.
+            // Generic EFI media is admitted only through the portable DoryARMVirt software
+            // baseline. Advertising a currently unqualified display level first turns the proven
+            // software path into a fallback that requires an authorization the create workflow
+            // cannot truthfully supply.
             graphics = DoryVMGraphicsPolicy(acceptableLevels: [.software])
         }
+        let displays = isDesktop ? [DoryVMDisplayConfiguration()] : []
 
         let definition = DoryVirtualMachineDefinition(
             identity: DoryVirtualMachineIdentity(id: configuration.id, name: configuration.id),
@@ -728,10 +759,15 @@ public enum DoryMachineConfigurationMigrationBridge {
             platform: platform,
             translationConsent: translationConsent,
             graphics: graphics,
-            resources: DoryVMResourceRequest(
+            resources: DoryVMProductionResourceBudget.make(
+                guest: guest,
+                graphics: graphics,
+                displays: displays,
+                shareCount: shares.count,
                 virtualCPUCount: UInt64(configuration.cpuCount),
                 memoryBytes: memoryBytes,
-                diskBytes: diskCapacity
+                diskBytes: diskCapacity,
+                stagingBytes: facts.installerStagingBytes
             ),
             storage: [DoryVMStorageAttachment(
                 id: "system",
@@ -740,7 +776,7 @@ public enum DoryMachineConfigurationMigrationBridge {
                 capacityBytes: diskCapacity
             )],
             networkMode: .sharedNAT,
-            display: isDesktop ? DoryVMDisplayConfiguration() : .disabled,
+            displays: displays,
             audio: isDesktop
                 ? DoryVMAudioConfiguration(inputEnabled: true, outputEnabled: true)
                 : DoryVMAudioConfiguration(inputEnabled: false, outputEnabled: false),

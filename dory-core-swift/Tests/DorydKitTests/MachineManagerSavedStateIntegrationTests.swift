@@ -4,6 +4,95 @@ import XCTest
 @testable import DorydKit
 
 final class MachineManagerSavedStateIntegrationTests: XCTestCase {
+    func testUpgradedSavedStateAccountsRetainOriginalsUntilValidatedResume() throws {
+        let cases: [(backend: String?, schema: Int, hasFormat: Bool, accepted: Bool)] = [
+            (nil, 1, false, true),
+            ("vz", 1, false, true),
+            ("vz-mac", 1, false, true),
+            ("virtualization-framework", 1, false, true),
+            ("qemu-hvf", 1, false, false),
+            ("vz", 2, true, false),
+            (nil, 2, false, false),
+            (nil, 3, true, false),
+        ]
+        for (index, migration) in cases.enumerated() {
+            let fixture = try SavedStateMachineFixture(name: #function + "-\(index)")
+            defer { fixture.remove() }
+            let controller = RecordingSavedStateController(exitMarker: fixture.exitMarker)
+            var initial: MachineManager? = fixture.manager(controller: controller)
+            _ = try startAndAcceptHandoff(try XCTUnwrap(initial), fixture: fixture)
+            _ = try XCTUnwrap(initial).suspend(id: fixture.machineID)
+            initial = nil
+
+            let manifestURL = URL(fileURLWithPath:
+                fixture.savedStateDirectory + "/" + DoryMachineSavedStateStore.manifestFileName
+            )
+            var manifest = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: Data(contentsOf: manifestURL)) as? [String: Any]
+            )
+            manifest["schemaVersion"] = migration.schema
+            if let backend = migration.backend { manifest["backend"] = backend }
+            if !migration.hasFormat { manifest.removeValue(forKey: "snapshotFormat") }
+            let originalManifest = try JSONSerialization.data(withJSONObject: manifest, options: .prettyPrinted)
+            try originalManifest.write(to: manifestURL)
+            let payloadURL = URL(fileURLWithPath: fixture.savedStatePath)
+            let originalPayload = try Data(contentsOf: payloadURL)
+            let machineDirectory = fixture.base + "/state/" + fixture.machineID
+            let machineURL = URL(fileURLWithPath: machineDirectory + "/machine.json")
+            let originalMachine = try Data(contentsOf: machineURL)
+            let configuration = try JSONDecoder().decode(DoryMachineConfiguration.self, from: originalMachine)
+            let diskURL = URL(fileURLWithPath: configuration.rootfsPath)
+            let originalDisk = try Data(contentsOf: diskURL)
+            let originalArguments = try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog))
+
+            let recovered = fixture.manager(controller: controller)
+            let status = try XCTUnwrap(recovered.status(id: fixture.machineID))
+            XCTAssertEqual(status.state, migration.accepted ? .suspended : .failed, "case \(index)")
+            XCTAssertNil(status.pid)
+            XCTAssertEqual(try Data(contentsOf: manifestURL), originalManifest, "case \(index)")
+            XCTAssertEqual(try Data(contentsOf: payloadURL), originalPayload, "case \(index)")
+            XCTAssertEqual(try Data(contentsOf: machineURL), originalMachine, "case \(index)")
+            XCTAssertEqual(try Data(contentsOf: diskURL), originalDisk, "case \(index)")
+
+            if migration.accepted {
+                try FileManager.default.removeItem(atPath: fixture.exitMarker)
+                let result = SavedStateLockedResult<DoryMachineStatus>()
+                DispatchQueue.global(qos: .userInitiated).async {
+                    result.store(Result { try recovered.resume(id: fixture.machineID) })
+                }
+                let restoring = try waitForStatus(recovered, id: fixture.machineID) {
+                    $0.state == .starting && $0.handoffSocketPath != nil
+                }
+                try sendVmmHandoff(
+                    path: try XCTUnwrap(restoring.handoffSocketPath),
+                    ready: VmmReadyMessage(
+                        machineID: fixture.machineID,
+                        operationID: try XCTUnwrap(restoring.activeOperationID),
+                        controlSocketPath: fixture.controlSocket
+                    ),
+                    fileDescriptors: []
+                )
+                XCTAssertEqual(try waitForResult(result).get().state, .running)
+                let arguments = try String(contentsOfFile: fixture.argumentsLog, encoding: .utf8)
+                    .split(separator: "\n").map(String.init)
+                let restoreIndex = try XCTUnwrap(arguments.firstIndex(of: "--restore-state"))
+                XCTAssertEqual(arguments[restoreIndex + 1], fixture.savedStatePath)
+                XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.savedStateDirectory))
+                _ = try recovered.stop(id: fixture.machineID)
+            } else {
+                XCTAssertEqual(status.failure?.code, .savedStateInvalid, "case \(index)")
+                XCTAssertThrowsError(try recovered.start(id: fixture.machineID))
+                XCTAssertThrowsError(try recovered.resume(id: fixture.machineID))
+                XCTAssertEqual(try Data(contentsOf: manifestURL), originalManifest, "case \(index)")
+                XCTAssertEqual(try Data(contentsOf: payloadURL), originalPayload, "case \(index)")
+                XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog)), originalArguments)
+            }
+            XCTAssertEqual(try Data(contentsOf: machineURL), originalMachine, "case \(index)")
+            XCTAssertEqual(try Data(contentsOf: diskURL), originalDisk, "case \(index)")
+            try recovered.delete(id: fixture.machineID)
+        }
+    }
+
     func testVZSavedStateSurvivesRestartAndRestoresExactlyOnce() throws {
         let fixture = try SavedStateMachineFixture(name: #function)
         defer { fixture.remove() }
