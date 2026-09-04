@@ -2327,7 +2327,6 @@ final class AppStore {
         var failures: [String] = []
         for machineID in machineIDs {
             do {
-                try await refreshManagedDesktopKernelBeforeStart(machineID)
                 _ = try await dorydClient.machineStart(machineID)
             } catch {
                 failures.append("\(machineID) (\(error.localizedDescription))")
@@ -2335,45 +2334,6 @@ final class AppStore {
         }
         loadMachines()
         return failures
-    }
-
-    /// Existing managed desktops retain their root disk across app/component upgrades. Refresh
-    /// only Dory's copied direct-boot kernel before launch so renderer qualification is bound to
-    /// the current verified runtime without touching the guest filesystem or user data.
-    private func refreshManagedDesktopKernelBeforeStart(_ machineID: String) async throws {
-        guard let status = try await dorydClient.machineList().first(where: {
-            $0.id == machineID
-        }) else {
-            throw DesktopMachineAssetError.filesystem(
-                "machine \(machineID) is unavailable"
-            )
-        }
-        guard status.bootMode == .linuxKernel,
-              status.displayMode == .desktop else {
-            return
-        }
-        let typedSettings = status.typedSettings ?? DorydMachineTypedSettings(
-            legacyEnvironment: status.environment,
-            displayMode: status.displayMode
-        )
-        let distro = DesktopMachineDistro.resolve(
-            typedSettings.guestIdentityIntent.desktop?.distributionIdentifier
-        )
-        let home = environment["HOME"] ?? NSHomeDirectory()
-        let assets = try await desktopMachineAssetPreparer(
-            home,
-            Self.desktopAssetEnvironment(processEnvironment: environment, distro: distro),
-            Bundle.main.resourcePath
-        )
-        let kernelPath = assets.kernelPath
-        let kernelSHA256 = try await Task.detached(priority: .userInitiated) {
-            try DesktopMachineAssetProvisioner.preparedKernelSHA256(at: kernelPath)
-        }.value
-        _ = try await dorydClient.machineRefreshManagedDesktopKernel(
-            machineID,
-            sourcePath: kernelPath,
-            sourceSHA256: kernelSHA256
-        )
     }
 
     private nonisolated static func workloadFailureSummary(_ failures: [String]) -> String {
@@ -6361,7 +6321,6 @@ final class AppStore {
                 case .suspended:
                     _ = try await dorydClient.machineResume(name)
                 case .created, .stopped, .failed:
-                    try await refreshManagedDesktopKernelBeforeStart(name)
                     _ = try await dorydClient.machineStart(name)
                 case .absent, .defined, .stopping, .recovering, .deleting:
                     return
