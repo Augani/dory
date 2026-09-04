@@ -1,0 +1,509 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-correctness-review",
+  "status": "in-progress",
+  "phaseComplete": false,
+  "releaseQualified": false,
+  "sourceCommit": "123b37c97cf05a6c555f36df8f30e56ac8cd3f40",
+  "previousReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-35.json",
+    "sha256": "6a9d4b78a05c62b242aa5d117137613ba5d191ee2d20688d7e63f6b06071edcf"
+  },
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "testCommand": {
+    "environment": {
+      "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+      "SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH": "1",
+      "DORY_ISA_EVIDENCE_ROOT": "/tmp/dory-p02-inventory-evidence"
+    },
+    "arguments": [
+      "swift",
+      "test",
+      "--package-path",
+      "/tmp/dory-p02-correctness-source-1/dory-core-swift",
+      "--scratch-path",
+      "/tmp/dory-p02-correctness-build-1",
+      "--jobs",
+      "3",
+      "--no-parallel",
+      "--filter",
+      "DoryX86|DoryPC|DoryARM64|PVHBootRunnerTests|PVHJITDiagnosticsTests|ISAInventoryTests"
+    ]
+  },
+  "cleanBeforeRun36": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-36-command.json",
+    "sha256": "e0cac77b8825428095548b06332615f4207e4904d6cfe12acb4e9a3eb8723a92"
+  },
+  "runs": [
+    {
+      "run": 36,
+      "comparisonCommit": "123b37c97cf05a6c555f36df8f30e56ac8cd3f40",
+      "observedToolSession": 60036,
+      "exitCode": 1,
+      "buildElapsedSeconds": 114.34,
+      "sourceBinding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-36-commit-binding.json",
+        "sha256": "689d46a4c960d7523553c12e4125224261e1fde8fa8332f55706b1176de44048"
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-36-source-manifest.json.gz",
+        "sha256": "b1b28d1e600d247b353e44456844e56bfad1f9bae7a3dc9c8a3743161e8c5fb0"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-36-source-overlay.tar.gz",
+        "sha256": "dc215bda5b23fb79e729bf28282a419a5f15dee591c4d1a3bf7f41fd3bd38ef8"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-36.log.gz",
+        "sha256": "21d4c7dbaa2028b3ad4a6973bc233190f55205ce33a2ce9aca9432e09bdd39df"
+      },
+      "swiftTesting": {
+        "reported": 790,
+        "passed": 788,
+        "failed": 1,
+        "disabledPhysicalReference": 1,
+        "suites": 92,
+        "elapsedSeconds": 5.338
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      },
+      "failure": "Escaping-symlink test referenced a nonexistent outside file and observed Foundation file-not-found instead of the expected containment error. Run 37 creates a real outside file; production validator is unchanged."
+    },
+    {
+      "run": 37,
+      "comparisonCommit": "123b37c97cf05a6c555f36df8f30e56ac8cd3f40",
+      "observedToolSession": 92088,
+      "exitCode": 0,
+      "buildElapsedSeconds": 5.41,
+      "sourceBinding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-37-commit-binding.json",
+        "sha256": "83286859ff4a79aff147ca0e0c74de5189fd40c22099fc5ef1266cfb26f53781"
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-37-source-manifest.json.gz",
+        "sha256": "2067b929a70e005117d752d94693f9f7c527d819793a6f2b970d5957c09579c2"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-37-source-overlay.tar.gz",
+        "sha256": "e662ef7f58ba0400307b7c4f33b316e3dc6ae6ef0c8a4b5f3e87acd37b218dae"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-37.log.gz",
+        "sha256": "c9615856c1f489064e4996aa2983868029ea85dea8fe500a6441cdea846300eb"
+      },
+      "swiftTesting": {
+        "reported": 790,
+        "passed": 789,
+        "failed": 0,
+        "disabledPhysicalReference": 1,
+        "suites": 92,
+        "elapsedSeconds": 5.302
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    }
+  ],
+  "inventory": {
+    "command": "/tmp/dory-p02-correctness-build-1/debug/dory-x86-decode-audit --inventory --evidence-root /tmp/dory-p02-inventory-evidence",
+    "exitCode": 0,
+    "completionChunk": "9aaa2c",
+    "sourceCommit": "123b37c97cf05a6c555f36df8f30e56ac8cd3f40",
+    "counts": {
+      "corpusVectorCount": 1158,
+      "staticDecodedFormCount": 1081,
+      "rejectedVectorCount": 77,
+      "mismatchedVectorCount": 0,
+      "executedFormCount": 3,
+      "faultAttemptFormCount": 1,
+      "currentInvocationExecutedFormCount": 0,
+      "physicalReferenceExecutedFormCount": 0
+    },
+    "report": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-37-isa-inventory.json.gz",
+      "sha256": "80a78dd742391513ea4505362971909261c9e88043ab6b30845cc92beea17871"
+    }
+  },
+  "componentChanges": [
+    {
+      "commit": "af904e49af18aa5e05c91df8a08e4e655d95726e",
+      "scope": "Legacy SSE and admitted VEX control-state validation before operand effects, #UD/#NM priority, nine new tests and explicitly enabled positive fixtures."
+    },
+    {
+      "commit": "123b37c97cf05a6c555f36df8f30e56ac8cd3f40",
+      "scope": "Digest-verified historical ISA support catalog, exact decoded form checks, seven new integrity tests; no new guest execution inferred from decoding."
+    }
+  ],
+  "completedProbes": [
+    {
+      "name": "userspace-interpreter-probe-3",
+      "sourceCommit": "061fbac10a1cd34cbf7c363744a1c8941149b0be",
+      "runnerSHA256": "1f345b24aa96ac99bf6d801f6d13fe9406d2810527f5453c135201cab0d64cec",
+      "observedToolSession": 48254,
+      "outcome": {
+        "exitCode": 0,
+        "passed": true,
+        "reason": "userspace-workloads-powered-off"
+      },
+      "configuration": {
+        "commandLine": "console=ttyS0 earlycon=uart,io,0x3f8,115200 panic=-1 rdinit=/init dory.pvh_run_id=e5009d18-d91a-42ea-8f74-946df76f107a",
+        "diagnostics": "/tmp/dory-p02-userspace-interpreter-probe-3.json",
+        "initrd": "/tmp/dory-p00-guest-fixtures/x86_64-p02-minimal-userspace-v2.cpio",
+        "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+        "kernel": "/tmp/dory-p00-guest-fixtures/x86_64-vmlinux",
+        "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+        "maximumInstructions": 2000000000,
+        "memoryMiB": 512,
+        "runID": "e5009d18-d91a-42ea-8f74-946df76f107a",
+        "symbols": "/tmp/dory-p00-guest-fixtures/x86_64-System.map-6.18.35",
+        "symbolsSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+        "tier": "interpreter",
+        "wallSeconds": 1800,
+        "workloads": [
+          "bootstrap.filesystems",
+          "filesystem.write_read_sync",
+          "memory.allocation_copy",
+          "process.creation_exec_wait",
+          "signal.handler_return",
+          "syscall.identity",
+          "timer.sleep_elapsed"
+        ]
+      },
+      "retiredInstructions": 750792741,
+      "elapsedNanoseconds": 1150549474208,
+      "executionStatistics": {
+        "baselineJITBlocks": 0,
+        "baselineJITInstructions": 0,
+        "interpreterInstructions": 750792741,
+        "optimizingJITBlocks": 0,
+        "optimizingJITInstructions": 0
+      },
+      "guestReceipt": {
+        "doryPVHBoot": "userspace-ready",
+        "runID": "e5009d18-d91a-42ea-8f74-946df76f107a",
+        "schemaVersion": 1,
+        "workloads": [
+          "bootstrap.filesystems",
+          "syscall.identity",
+          "process.creation_exec_wait",
+          "memory.allocation_copy",
+          "signal.handler_return",
+          "timer.sleep_elapsed",
+          "filesystem.write_read_sync"
+        ],
+        "workloadsPassed": true
+      },
+      "normalizedWorkloadResults": [
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "bootstrap.filesystems",
+          "status": "pass",
+          "detail": "proc, devtmpfs, sysfs and bounded tmpfs mounts"
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "syscall.identity",
+          "status": "pass",
+          "detail": "musl dynamic loader, uname and procfs PID 1 read"
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "process.creation_exec_wait",
+          "status": "pass",
+          "detail": "isolated subshell, exec of musl BusyBox, child PID and wait status"
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "memory.allocation_copy",
+          "status": "pass",
+          "detail": "65536-byte shell heap string allocated and copied"
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "signal.handler_return",
+          "status": "pass",
+          "detail": "USR1 handler delivered to PID 1 and returned to shell"
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "timer.sleep_elapsed",
+          "status": "pass",
+          "detail": "one-second sleep and monotonic procfs elapsed time"
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "filesystem.write_read_sync",
+          "status": "pass",
+          "detail": "tmpfs 65536-byte write, separate read/copy, content comparison and sync"
+        }
+      ],
+      "artifacts": {
+        ".json": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-3.json",
+          "sha256": "5dd9604833a20b5ca7f7160de0b9325bc637c0ac27fbb1657fcb6137b316afd7"
+        },
+        ".log": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-3.log.gz",
+          "sha256": "9f09750ec35a528ef9388e1340a08f438553a5986a3b01924a7a15cd03468685"
+        },
+        ".exit": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-3.exit",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+        },
+        ".invocation.json": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-3.invocation.json",
+          "sha256": "111b7a806485405dd2e3cbfa9046abf522a6c8857021639e5d941d944ac22480"
+        }
+      }
+    },
+    {
+      "name": "userspace-baseline-jit-probe-9",
+      "sourceCommit": "061fbac10a1cd34cbf7c363744a1c8941149b0be",
+      "runnerSHA256": "1f345b24aa96ac99bf6d801f6d13fe9406d2810527f5453c135201cab0d64cec",
+      "observedToolSession": 54039,
+      "outcome": {
+        "exitCode": 0,
+        "passed": true,
+        "reason": "userspace-workloads-powered-off"
+      },
+      "configuration": {
+        "commandLine": "console=ttyS0 earlycon=uart,io,0x3f8,115200 panic=-1 rdinit=/init dory.pvh_run_id=ca7fbc9e-4ebe-4e9e-b566-6fc54f0a11aa",
+        "diagnostics": "/tmp/dory-p02-userspace-baseline-jit-probe-9.json",
+        "initrd": "/tmp/dory-p00-guest-fixtures/x86_64-p02-minimal-userspace-v2.cpio",
+        "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+        "kernel": "/tmp/dory-p00-guest-fixtures/x86_64-vmlinux",
+        "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+        "maximumInstructions": 2000000000,
+        "memoryMiB": 512,
+        "runID": "ca7fbc9e-4ebe-4e9e-b566-6fc54f0a11aa",
+        "symbols": "/tmp/dory-p00-guest-fixtures/x86_64-System.map-6.18.35",
+        "symbolsSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+        "tier": "baselineJIT",
+        "wallSeconds": 1800,
+        "workloads": [
+          "bootstrap.filesystems",
+          "filesystem.write_read_sync",
+          "memory.allocation_copy",
+          "process.creation_exec_wait",
+          "signal.handler_return",
+          "syscall.identity",
+          "timer.sleep_elapsed"
+        ]
+      },
+      "retiredInstructions": 750370506,
+      "elapsedNanoseconds": 386565194667,
+      "executionStatistics": {
+        "baselineJITBlocks": 254101147,
+        "baselineJITInstructions": 692226935,
+        "interpreterInstructions": 58143571,
+        "optimizingJITBlocks": 0,
+        "optimizingJITInstructions": 0
+      },
+      "guestReceipt": {
+        "doryPVHBoot": "userspace-ready",
+        "runID": "ca7fbc9e-4ebe-4e9e-b566-6fc54f0a11aa",
+        "schemaVersion": 1,
+        "workloads": [
+          "bootstrap.filesystems",
+          "syscall.identity",
+          "process.creation_exec_wait",
+          "memory.allocation_copy",
+          "signal.handler_return",
+          "timer.sleep_elapsed",
+          "filesystem.write_read_sync"
+        ],
+        "workloadsPassed": true
+      },
+      "normalizedWorkloadResults": [
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "bootstrap.filesystems",
+          "status": "pass",
+          "detail": "proc, devtmpfs, sysfs and bounded tmpfs mounts"
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "syscall.identity",
+          "status": "pass",
+          "detail": "musl dynamic loader, uname and procfs PID 1 read"
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "process.creation_exec_wait",
+          "status": "pass",
+          "detail": "isolated subshell, exec of musl BusyBox, child PID and wait status"
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "memory.allocation_copy",
+          "status": "pass",
+          "detail": "65536-byte shell heap string allocated and copied"
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "signal.handler_return",
+          "status": "pass",
+          "detail": "USR1 handler delivered to PID 1 and returned to shell"
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "timer.sleep_elapsed",
+          "status": "pass",
+          "detail": "one-second sleep and monotonic procfs elapsed time"
+        },
+        {
+          "schemaVersion": 1,
+          "kind": "userspace-result",
+          "name": "filesystem.write_read_sync",
+          "status": "pass",
+          "detail": "tmpfs 65536-byte write, separate read/copy, content comparison and sync"
+        }
+      ],
+      "artifacts": {
+        ".json": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-9.json",
+          "sha256": "c28241fbe73fa6ac6aa27a944bed834d378a54231b3566a6b51c2151ee12f1ea"
+        },
+        ".log": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-9.log.gz",
+          "sha256": "f0c6242d14d8bf83a3a26d37a155e6156ed8f395fdbcf215614223ecf241dc7b"
+        },
+        ".exit": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-9.exit",
+          "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+        },
+        ".invocation.json": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-9.invocation.json",
+          "sha256": "dbbbd64c2ced942c1eba597fd4ca543daaf0a420150b86de27b1e2e96f36d3bb"
+        }
+      }
+    }
+  ],
+  "tierComparison": {
+    "sameRunnerAndGuestInputs": true,
+    "distinctFreshRunIDs": true,
+    "sevenNormalizedWorkloadResultsEqual": true,
+    "bothHostObservedACPIS5": true,
+    "scope": "Observable diagnostic-workload parity; not bit-identical final guest state or comprehensive device qualification."
+  },
+  "retentionTransformations": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-36-37-retention-transformations.json",
+    "sha256": "ea81b57da4ea0018392754b2fc901de7725ed24c53d36bde6045107c77c881a8"
+  },
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-36-source-overlay.tar.gz",
+      "sha256": "dc215bda5b23fb79e729bf28282a419a5f15dee591c4d1a3bf7f41fd3bd38ef8"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-36-commit-binding.json",
+      "sha256": "689d46a4c960d7523553c12e4125224261e1fde8fa8332f55706b1176de44048"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-36-source-manifest.json.gz",
+      "sha256": "b1b28d1e600d247b353e44456844e56bfad1f9bae7a3dc9c8a3743161e8c5fb0"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-36.log.gz",
+      "sha256": "21d4c7dbaa2028b3ad4a6973bc233190f55205ce33a2ce9aca9432e09bdd39df"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-37-source-overlay.tar.gz",
+      "sha256": "e662ef7f58ba0400307b7c4f33b316e3dc6ae6ef0c8a4b5f3e87acd37b218dae"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-37-commit-binding.json",
+      "sha256": "83286859ff4a79aff147ca0e0c74de5189fd40c22099fc5ef1266cfb26f53781"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-37-source-manifest.json.gz",
+      "sha256": "2067b929a70e005117d752d94693f9f7c527d819793a6f2b970d5957c09579c2"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-37.log.gz",
+      "sha256": "c9615856c1f489064e4996aa2983868029ea85dea8fe500a6441cdea846300eb"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-36.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-36-command.json",
+      "sha256": "e0cac77b8825428095548b06332615f4207e4904d6cfe12acb4e9a3eb8723a92"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-37-isa-inventory.json.gz",
+      "sha256": "80a78dd742391513ea4505362971909261c9e88043ab6b30845cc92beea17871"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-3.json",
+      "sha256": "5dd9604833a20b5ca7f7160de0b9325bc637c0ac27fbb1657fcb6137b316afd7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-3.log.gz",
+      "sha256": "9f09750ec35a528ef9388e1340a08f438553a5986a3b01924a7a15cd03468685"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-3.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-3.invocation.json",
+      "sha256": "111b7a806485405dd2e3cbfa9046abf522a6c8857021639e5d941d944ac22480"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-9.json",
+      "sha256": "c28241fbe73fa6ac6aa27a944bed834d378a54231b3566a6b51c2151ee12f1ea"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-9.log.gz",
+      "sha256": "f0c6242d14d8bf83a3a26d37a155e6156ed8f395fdbcf215614223ecf241dc7b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-9.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-9.invocation.json",
+      "sha256": "dbbbd64c2ced942c1eba597fd4ca543daaf0a420150b86de27b1e2e96f36d3bb"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-36-37-retention-transformations.json",
+      "sha256": "ea81b57da4ea0018392754b2fc901de7725ed24c53d36bde6045107c77c881a8"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete; physical x86 reference execution, full ISA, glibc/systemd acceptance, sustained disk/network stress and release qualification remain open.",
+    "Run 36 is a retained failing fixture and is not relabeled as passing. One disabled physical-reference test and one optional XCTest skip are excluded from pass counts.",
+    "The inventory records three historical retired forms and one fault attempt at run 30, not execution of all 1158 vectors or current-source/physical qualification.",
+    "The two successful musl boots use the same source-32 runner and inputs. Seven normalized workload results and ACPI S5 agree; nondeterministic addresses, timer scheduling, retired counts and final memory are not claimed bit-identical.",
+    "Host is experimental and concurrent work occurred; all timings are engineering measurements only."
+  ]
+}

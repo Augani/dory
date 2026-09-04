@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-08",
+    "P02-12",
+    "P02-16",
+    "P02-19",
+    "P02-24"
+  ],
+  "sourceCommit": "123b37c97cf05a6c555f36df8f30e56ac8cd3f40",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Bounded source-36/37 tests and matched source-32 interpreter/baseline musl workload probes.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-37.json",
+      "sha256": "8456ba3c7925467fb0c4a05449b486822f3d81d9ee07b74e45cf5aa379a8d73c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-35.json",
+      "sha256": "6a9d4b78a05c62b242aa5d117137613ba5d191ee2d20688d7e63f6b06071edcf"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete; physical x86 reference execution, full ISA, glibc/systemd acceptance, sustained disk/network stress and release qualification remain open.",
+    "Run 36 is a retained failing fixture and is not relabeled as passing. One disabled physical-reference test and one optional XCTest skip are excluded from pass counts.",
+    "The inventory records three historical retired forms and one fault attempt at run 30, not execution of all 1158 vectors or current-source/physical qualification.",
+    "The two successful musl boots use the same source-32 runner and inputs. Seven normalized workload results and ACPI S5 agree; nondeterministic addresses, timer scheduling, retired counts and final memory are not claimed bit-identical.",
+    "Host is experimental and concurrent work occurred; all timings are engineering measurements only."
+  ]
+}

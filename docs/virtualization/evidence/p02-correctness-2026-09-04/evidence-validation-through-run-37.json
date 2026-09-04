@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-evidence-retention-validation",
+  "reviewSHA256": "8456ba3c7925467fb0c4a05449b486822f3d81d9ee07b74e45cf5aa379a8d73c",
+  "newArtifactsBeforeThisValidation": 23,
+  "distinctRepositoryArtifactReferencesVerified": 26,
+  "previousReviewHashVerified": true,
+  "envelopesSchemaValidated": 2,
+  "schemaPath": "Config/DoryVirtualizationEvidence.schema.json",
+  "schemaSHA256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb",
+  "sourceBindings": [
+    {
+      "run": 36,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "123b37c97cf05a6c555f36df8f30e56ac8cd3f40",
+      "trackedInputs": 698,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 102,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": [
+        {
+          "path": "dory-core-swift/Tests/DoryX86DecodeAuditTests/ISAInventoryTests.swift",
+          "frozenSHA256": "f6c4828406e0b78ad7173e39331c9d978a2699fa915f3b315eb9a43a65c21410",
+          "commitSHA256": "40a440b64d5537e07737324c33383ab48120ddff416c249a37fb7e6f9f2a9e8f"
+        }
+      ]
+    },
+    {
+      "run": 37,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "123b37c97cf05a6c555f36df8f30e56ac8cd3f40",
+      "trackedInputs": 698,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 102,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    }
+  ],
+  "strictLogCountsVerified": true,
+  "logCounts": [
+    {
+      "run": 36,
+      "swiftPassed": 788,
+      "swiftFailed": 1,
+      "swiftDisabled": 1,
+      "swiftReported": 790,
+      "swiftSuites": 92,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": [
+        "\udbc2\udc84  Test evidenceRootRejectsTraversalAndSymlinkEscapeBeforeReading() failed after 0.005 seconds with 1 issue."
+      ]
+    },
+    {
+      "run": 37,
+      "swiftPassed": 789,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 790,
+      "swiftSuites": 92,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    }
+  ],
+  "inventory": {
+    "sourceCommit": "123b37c97cf05a6c555f36df8f30e56ac8cd3f40",
+    "counts": {
+      "corpusVectorCount": 1158,
+      "staticDecodedFormCount": 1081,
+      "rejectedVectorCount": 77,
+      "mismatchedVectorCount": 0,
+      "executedFormCount": 3,
+      "faultAttemptFormCount": 1,
+      "currentInvocationExecutedFormCount": 0,
+      "physicalReferenceExecutedFormCount": 0
+    },
+    "historicalCatalogSourceCommit": "61cd728a4938e6e7e44319e0bd71f6147b115205",
+    "historicalCatalogRun": 30,
+    "archivedTestAndPassedLineBindingsVerified": 3,
+    "reviewedExactFormBindingsVerified": 4,
+    "qualification": "Three exact forms retired in prior interpreter/baseline synthetic cases; one expected interpreter fault attempt. Static decoding, current invocation and physical reference do not contribute executions."
+  },
+  "probeConsistency": [
+    {
+      "name": "userspace-interpreter-probe-3",
+      "checks": {
+        "successExitAndHostPoweroff": true,
+        "source32RunnerIdentity": true,
+        "configurationBound": true,
+        "sevenNamedMatchingWorkloads": true,
+        "pinnedInputsAgree": true,
+        "retirementAndBudget": true,
+        "elapsedAndSummary": true,
+        "wholeConsoleReceiptAndResults": true,
+        "boundedDiagnostic": true,
+        "tierAccounting": true
+      }
+    },
+    {
+      "name": "userspace-baseline-jit-probe-9",
+      "checks": {
+        "successExitAndHostPoweroff": true,
+        "source32RunnerIdentity": true,
+        "configurationBound": true,
+        "sevenNamedMatchingWorkloads": true,
+        "pinnedInputsAgree": true,
+        "retirementAndBudget": true,
+        "elapsedAndSummary": true,
+        "wholeConsoleReceiptAndResults": true,
+        "boundedDiagnostic": true,
+        "tierAccounting": true
+      }
+    }
+  ],
+  "tierComparison": {
+    "sameSource32Runner": true,
+    "sameGuestPinsConfigurationAndBudgets": true,
+    "distinctFreshRunIDs": true,
+    "allSevenNormalizedWorkloadObjectsEqual": true,
+    "bothHostObservedPoweroff": true,
+    "differentRetiredCountsExplicit": true
+  },
+  "tierComparisonNormalization": "Remove only each workload object runUUID; compare every remaining field of all seven objects. Compare command/configuration after excluding tier, diagnostic path and unique run ID. No final guest memory, ASLR, exact timer schedule, retired count or per-instruction equality claim.",
+  "noUserHomePathsInNewArtifactTextOrMembers": true,
+  "tarOwnerAndTimeNormalizationVerified": true,
+  "normalizationByThisValidation": "None; retained artifacts read-only. New evidence references are repository-relative.",
+  "qualification": "Independent schema/artifact/source/count/inventory and observable workload-parity validation only. No new build or guest execution. P02 remains incomplete; physical reference, full floating point/ISA, glibc/systemd, sustained stress, hosted CI and release qualification remain open."
+}
