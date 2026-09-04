@@ -114,6 +114,7 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
     record.state = machine.state
     session.publish(record)
     var console = PVHConsoleCapture()
+    var jitSampler = PVHJITDiagnosticsSampler(enabled: configuration.diagnostics != nil)
     while record.retiredInstructions < configuration.maximumInstructions {
       if session.elapsedNanoseconds >= configuration.wallSeconds * 1_000_000_000 {
         session.finish(.wallBudget)
@@ -136,12 +137,22 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
       if record.lastExits.count > 16 { record.lastExits.removeFirst(record.lastExits.count - 16) }
       record.state = state
       record.executionStatistics = machine.executionStatistics
+      let outcome = PVHRunOutcome.terminal(stop: stop, receiptSeen: console.receipt != nil)
       if configuration.diagnostics != nil {
         record.timerInterruptState = try PVHTimerInterruptSnapshot(machine: machine)
+        if let sample = jitSampler.sampleIfDue(
+          retiredInstructions: record.retiredInstructions,
+          elapsedNanoseconds: session.elapsedNanoseconds,
+          terminal: outcome != nil || record.retiredInstructions >= configuration.maximumInstructions,
+          baseline: { machine.baselineJITDiagnostics.map(PVHJITCacheSnapshot.init) },
+          optimizing: { machine.optimizingJITDiagnostics.map(PVHJITCacheSnapshot.init) }
+        ) {
+          record.jitDiagnostics = sample
+        }
       }
       record.elapsedNanoseconds = session.elapsedNanoseconds
       session.publish(record)
-      if let outcome = PVHRunOutcome.terminal(stop: stop, receiptSeen: console.receipt != nil) {
+      if let outcome {
         session.finish(outcome)
       }
       guard retired > 0 else { throw PVHRunnerError("Machine made no progress within an instruction quantum") }

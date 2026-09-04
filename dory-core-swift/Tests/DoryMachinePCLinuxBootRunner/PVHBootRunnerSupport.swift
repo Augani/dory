@@ -36,7 +36,8 @@ struct PVHRunnerConfiguration: Codable, Sendable {
 
     Every input is explicit; no fixture search or download occurs. Limits: 2..524288 MiB,
     1..1000000000000 instructions, 1..3600 wall seconds. The wall budget includes file checks
-    and VM initialization. --diagnostics opts into a bounded state/exit/console-tail receipt.
+    and VM initialization. --diagnostics opts into a bounded state/exit/console-tail receipt,
+    with JIT cache counters sampled every 1,000,000 retired instructions and at normal termination.
     --symbols annotates sampled PCs only; it never changes guest execution or loads memory.
 
     The runner appends dory.pvh_run_id=UUID to the command line. The init process must emit
@@ -464,6 +465,116 @@ struct PVHTimerInterruptSnapshot: Codable, Sendable {
   }
 }
 
+/// These identities describe the hottest currently live negative entries. Their hit counts are
+/// discarded when the corresponding cache entry is replaced or invalidated.
+struct PVHJITNegativeCacheSite: Codable, Sendable {
+  let guestRIP: UInt64
+  let executionMode: String
+  let instructionBudget: Int
+  let addressSpaceID: UInt64
+  let privilegeLevel: UInt8
+  let pagingEnabled: Bool
+  let guestByteCount: Int
+  let declineReason: String
+  let hitCount: UInt64
+}
+
+extension PVHJITNegativeCacheSite {
+  init(_ source: DoryPCJITNegativeCacheHotSite) {
+    guestRIP = source.guestRIP
+    executionMode = source.executionMode.rawValue
+    instructionBudget = source.instructionBudget
+    addressSpaceID = source.addressSpaceID
+    privilegeLevel = source.privilegeLevel
+    pagingEnabled = source.pagingEnabled
+    guestByteCount = source.guestByteCount
+    declineReason = source.declineReason.rawValue
+    hitCount = source.hitCount
+  }
+}
+
+/// Runner-local serialization keeps process diagnostics out of the daemon wire contract.
+struct PVHJITCacheSnapshot: Codable, Sendable {
+  static let maximumLiveSites = 16
+  let cumulativeCounters: [String: UInt64]
+  let negativeEntryCount: UInt64
+  let negativeCacheHotSites: [PVHJITNegativeCacheSite]
+
+  init(
+    cumulativeCounters: [String: UInt64], negativeEntryCount: UInt64,
+    negativeCacheHotSites: [PVHJITNegativeCacheSite]
+  ) {
+    self.cumulativeCounters = cumulativeCounters
+    self.negativeEntryCount = negativeEntryCount
+    self.negativeCacheHotSites = Array(negativeCacheHotSites.prefix(Self.maximumLiveSites))
+  }
+
+  init(_ source: DoryPCJITCacheStatistics) {
+    self.init(
+      cumulativeCounters: [
+        "recentLookupHits": source.recentLookupHits,
+        "dictionaryLookupHits": source.dictionaryLookupHits,
+        "lookupMisses": source.lookupMisses,
+        "memoryGenerationHits": source.memoryGenerationHits,
+        "byteValidationHits": source.byteValidationHits,
+        "sharedCodeHits": source.sharedCodeHits,
+        "compiledBlocks": source.compiledBlocks,
+        "declinedCompilations": source.declinedCompilations,
+        "negativeCacheHits": source.negativeCacheHits,
+        "negativeCacheMisses": source.negativeCacheMisses,
+        "negativeGenerationMismatches": source.negativeGenerationMismatches,
+        "codeCacheWraps": source.codeCacheWraps,
+        "nativeTraceAttempts": source.nativeTraceAttempts,
+        "nativeTraceReplays": source.nativeTraceReplays,
+        "codeGenerationChecks": source.codeGenerationChecks,
+        "codeGenerationMismatches": source.codeGenerationMismatches,
+        "chainedExecutionCalls": source.chainedExecutionCalls,
+        "chainedRequestedInstructions": source.chainedRequestedInstructions,
+        "chainedRetiredInstructions": source.chainedRetiredInstructions,
+      ],
+      negativeEntryCount: source.negativeEntryCount,
+      negativeCacheHotSites: source.negativeCacheHotSites.prefix(Self.maximumLiveSites).map {
+        PVHJITNegativeCacheSite($0)
+      })
+  }
+}
+
+struct PVHJITDiagnosticSample: Codable, Sendable {
+  let sampleInstructionCount: UInt64
+  let sampleElapsedNanoseconds: UInt64
+  let sampleIntervalInstructions: UInt64
+  let observationScope = "Last completed coarse sample, or normal terminal slice. Timeout/error may retain an older sample. Counters are executor-lifetime totals; negativeEntryCount and the capped hot sites describe only live entries. Site reasons and hit counts are not cumulative reason totals."
+  let baseline: PVHJITCacheSnapshot?
+  let optimizing: PVHJITCacheSnapshot?
+}
+
+/// Providers can scan a bounded cache, so they must never run on every dispatch quantum or on
+/// the watchdog thread. Only the runner's completed-slice path invokes this sampler.
+struct PVHJITDiagnosticsSampler {
+  static let intervalInstructions: UInt64 = 1_000_000
+  let enabled: Bool
+  private var lastSampleInstructionCount: UInt64 = 0
+
+  init(enabled: Bool) { self.enabled = enabled }
+
+  mutating func sampleIfDue(
+    retiredInstructions: UInt64, elapsedNanoseconds: @autoclosure () -> UInt64,
+    terminal: Bool,
+    baseline: () -> PVHJITCacheSnapshot?, optimizing: () -> PVHJITCacheSnapshot?
+  ) -> PVHJITDiagnosticSample? {
+    guard enabled,
+      terminal || (retiredInstructions >= lastSampleInstructionCount
+        && retiredInstructions - lastSampleInstructionCount >= Self.intervalInstructions)
+    else { return nil }
+    lastSampleInstructionCount = retiredInstructions
+    return .init(
+      sampleInstructionCount: retiredInstructions,
+      sampleElapsedNanoseconds: elapsedNanoseconds(),
+      sampleIntervalInstructions: Self.intervalInstructions,
+      baseline: baseline(), optimizing: optimizing())
+  }
+}
+
 struct PVHDiagnosticRecord: Codable, Sendable {
   let schemaVersion = 1
   let kind = "dev.dory.pvh-boot-diagnostic"
@@ -481,6 +592,7 @@ struct PVHDiagnosticRecord: Codable, Sendable {
   var lastExits: [PVHStopSnapshot] = []
   var state: DoryX86ArchitecturalState?
   var executionStatistics: DoryPCExecutionStatistics?
+  var jitDiagnostics: PVHJITDiagnosticSample?
   var timerInterruptState: PVHTimerInterruptSnapshot?
   var consoleTail = ""
   var consoleBytes: UInt64 = 0
