@@ -583,24 +583,26 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
         access: access, context: context, protection: protection, reserved: reserved))
   }
 
-  fileprivate func unavailableInstructionBackingFault(
+  fileprivate func unavailableBackingFault(
     linearAddress: UInt64,
+    access: DoryX86MemoryAccessKind,
     context: DoryX86PagingContext
   ) -> DoryX86MemoryError {
-    pageFault(linearAddress, .instructionFetch, context, protection: false)
+    pageFault(linearAddress, access, context, protection: false)
   }
 
-  fileprivate func normalizeInstructionBackingFault(
+  fileprivate func normalizeBackingFault(
     _ error: DoryX86MemoryError,
     linearAddress: UInt64,
+    access: DoryX86MemoryAccessKind,
     context: DoryX86PagingContext
   ) -> DoryX86MemoryError {
     switch error {
     case .unmapped:
       // The backing bus reports a physical address, but #PF and CR2 describe
       // the linear access that reached it. Preserve the paging privilege and
-      // instruction/data classification in the synthesized non-present fault.
-      unavailableInstructionBackingFault(linearAddress: linearAddress, context: context)
+      // access classification in the synthesized non-present fault.
+      unavailableBackingFault(linearAddress: linearAddress, access: access, context: context)
     case .addressOverflow(_, let byteCount):
       .addressOverflow(address: linearAddress, byteCount: byteCount)
     case .pageFault(_, let errorCode):
@@ -737,7 +739,12 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
         physicalMemory: physicalMemory
       )
       let count = min(Int(4_096 - (cursor & 0xfff)), remaining)
-      try physicalMemory.validateRead(at: translation.physicalAddress, byteCount: count)
+      do {
+        try physicalMemory.validateRead(at: translation.physicalAddress, byteCount: count)
+      } catch let error as DoryX86MemoryError {
+        throw pagingUnit.normalizeBackingFault(
+          error, linearAddress: cursor, access: .read, context: context)
+      }
       cursor &+= UInt64(count)
       remaining -= count
     }
@@ -783,14 +790,19 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
       context: context,
       physicalMemory: physicalMemory
     )
-    if let scalarMemory = scalarPhysicalMemory {
-      return try scalarMemory.readScalar(
-        at: translation.physicalAddress, byteCount: byteCount)
-    }
-    return try physicalMemory.read(
-      at: translation.physicalAddress, byteCount: byteCount
-    ).enumerated().reduce(0) {
-      $0 | UInt64($1.element) << UInt64($1.offset * 8)
+    do {
+      if let scalarMemory = scalarPhysicalMemory {
+        return try scalarMemory.readScalar(
+          at: translation.physicalAddress, byteCount: byteCount)
+      }
+      return try physicalMemory.read(
+        at: translation.physicalAddress, byteCount: byteCount
+      ).enumerated().reduce(0) {
+        $0 | UInt64($1.element) << UInt64($1.offset * 8)
+      }
+    } catch let error as DoryX86MemoryError {
+      throw pagingUnit.normalizeBackingFault(
+        error, linearAddress: address, access: .read, context: context)
     }
   }
 
@@ -806,8 +818,13 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
         linearAddress: cursor, access: .write, context: context, physicalMemory: physicalMemory)
       let pageRemaining = Int(4_096 - (cursor & 0xfff))
       let count = min(pageRemaining, remaining.count)
-      try physicalMemory.write(
-        at: translation.physicalAddress, bytes: Array(remaining.prefix(count)))
+      do {
+        try physicalMemory.write(
+          at: translation.physicalAddress, bytes: Array(remaining.prefix(count)))
+      } catch let error as DoryX86MemoryError {
+        throw pagingUnit.normalizeBackingFault(
+          error, linearAddress: cursor, access: .write, context: context)
+      }
       remaining = remaining.dropFirst(count)
       cursor &+= UInt64(count)
     }
@@ -830,16 +847,21 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
       context: context,
       physicalMemory: physicalMemory
     )
-    if let scalarMemory = scalarPhysicalMemory {
-      try scalarMemory.writeScalar(
-        at: translation.physicalAddress, value: value, byteCount: byteCount)
-      return
+    do {
+      if let scalarMemory = scalarPhysicalMemory {
+        try scalarMemory.writeScalar(
+          at: translation.physicalAddress, value: value, byteCount: byteCount)
+        return
+      }
+      let bytes = (0..<byteCount).map {
+        UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
+      }
+      try physicalMemory.validateWrite(at: translation.physicalAddress, byteCount: byteCount)
+      try physicalMemory.write(at: translation.physicalAddress, bytes: bytes)
+    } catch let error as DoryX86MemoryError {
+      throw pagingUnit.normalizeBackingFault(
+        error, linearAddress: address, access: .write, context: context)
     }
-    let bytes = (0..<byteCount).map {
-      UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
-    }
-    try physicalMemory.validateWrite(at: translation.physicalAddress, byteCount: byteCount)
-    try physicalMemory.write(at: translation.physicalAddress, bytes: bytes)
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {
@@ -854,7 +876,12 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
         physicalMemory: physicalMemory
       )
       let count = min(Int(4_096 - (cursor & 0xfff)), remaining)
-      try physicalMemory.validateWrite(at: translation.physicalAddress, byteCount: count)
+      do {
+        try physicalMemory.validateWrite(at: translation.physicalAddress, byteCount: count)
+      } catch let error as DoryX86MemoryError {
+        throw pagingUnit.normalizeBackingFault(
+          error, linearAddress: cursor, access: .write, context: context)
+      }
       cursor &+= UInt64(count)
       remaining -= count
     }
@@ -889,18 +916,23 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
             let bytes = try physicalMemory.instructionBytes(
               at: translation.physicalAddress, maximumCount: count)
             guard !bytes.isEmpty else {
-              throw pagingUnit.unavailableInstructionBackingFault(
-                linearAddress: cursor, context: readContext)
+              throw pagingUnit.unavailableBackingFault(
+                linearAddress: cursor, access: access, context: readContext)
             }
             result += bytes
             cursor &+= UInt64(bytes.count)
           } catch let error as DoryX86MemoryError {
-            throw pagingUnit.normalizeInstructionBackingFault(
-              error, linearAddress: cursor, context: readContext)
+            throw pagingUnit.normalizeBackingFault(
+              error, linearAddress: cursor, access: access, context: readContext)
           }
         } else {
-          result += try physicalMemory.read(
-            at: translation.physicalAddress, byteCount: count)
+          do {
+            result += try physicalMemory.read(
+              at: translation.physicalAddress, byteCount: count)
+          } catch let error as DoryX86MemoryError {
+            throw pagingUnit.normalizeBackingFault(
+              error, linearAddress: cursor, access: access, context: readContext)
+          }
           cursor &+= UInt64(count)
         }
       } catch {
@@ -926,10 +958,15 @@ extension DoryX86TranslatedMemory: DoryX86RestartableScalarMemory {
       context: context,
       physicalMemory: physicalMemory
     )
-    return try restartableScalarPhysicalMemory.readRestartableScalar(
-      at: translation.physicalAddress,
-      byteCount: byteCount
-    )
+    do {
+      return try restartableScalarPhysicalMemory.readRestartableScalar(
+        at: translation.physicalAddress,
+        byteCount: byteCount
+      )
+    } catch let error as DoryX86MemoryError {
+      throw pagingUnit.normalizeBackingFault(
+        error, linearAddress: address, access: .read, context: context)
+    }
   }
 }
 
