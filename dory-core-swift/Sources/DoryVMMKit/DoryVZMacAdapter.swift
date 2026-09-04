@@ -1,4 +1,5 @@
 import DoryVZMacCore
+import DoryOperations
 import Foundation
 @preconcurrency import Virtualization
 
@@ -16,6 +17,21 @@ public enum DoryVZMacAdapterState: String, Sendable, Equatable {
     case restoring
     case stopping
     case failed
+
+    public var runtimeState: DoryVirtualMachineState {
+        switch self {
+        case .prepared: .created
+        case .installing: .installing
+        case .installFailed, .failed: .failed
+        case .stopped: .stopped
+        case .starting: .starting
+        case .running, .pausing: .running
+        case .paused: .paused
+        case .suspending, .stopping: .stopping
+        case .suspended: .suspended
+        case .restoring: .recovering
+        }
+    }
 }
 
 public struct DoryVZMacAdapterObservation: Sendable, Equatable {
@@ -111,11 +127,16 @@ public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelega
 
     public func install(
         from restoreImageURL: URL,
+        operationID: UUID,
         progress: @escaping @MainActor @Sendable (Double) -> Void = { _ in }
     ) async throws {
         try beginTransition(expected: [.prepared, .installFailed], next: .installing)
         do {
-            try await runtime.install(from: restoreImageURL, progress: progress)
+            try await runtime.install(
+                from: restoreImageURL,
+                operationID: operationID,
+                progress: progress
+            )
             endTransition(.stopped)
         } catch {
             endTransition(.failed, failure: error)

@@ -24,6 +24,7 @@ public enum DoryVMMDisplayDefaults {
 public struct DoryVMMArguments: Sendable, Equatable {
     public var machineID: String?
     public var operationID: UUID?
+    public var reconnectIdentity: DoryRuntimeReconnectLaunchIdentity?
     public var stateDirectory: String?
     public var dataDriveRoot: String?
     public var dockerDataDiskFileDescriptor: Int32?
@@ -164,6 +165,18 @@ public func parseDoryVMMArguments(_ raw: [String]) throws -> DoryVMMArguments {
                 throw DoryVMMArgumentError.invalidOperationID(rawValue)
             }
             parsed.operationID = operationID
+        case DoryRuntimeReconnectContract.fileDescriptorArgument:
+            guard parsed.reconnectIdentity == nil else {
+                throw DoryVMMArgumentError.duplicateArgument(argument)
+            }
+            let rawValue = try value(after: argument, from: raw, index: &index)
+            guard let descriptor = Int32(rawValue),
+                  descriptor == DoryRuntimeReconnectContract.childFileDescriptor else {
+                throw DoryVMMArgumentError.invalidInteger(argument, rawValue)
+            }
+            parsed.reconnectIdentity = try DoryRuntimeReconnectLaunchIdentity.decode(
+                fileDescriptor: descriptor
+            )
         case "--state-dir":
             parsed.stateDirectory = try value(after: argument, from: raw, index: &index)
         case "--data-drive":
@@ -1231,6 +1244,13 @@ public enum DoryVMMMain {
         guard let handoffSocketPath = arguments.handoffSocketPath else {
             throw DoryVMMArgumentError.missingHandoffSocket
         }
+        if let reconnectIdentity = arguments.reconnectIdentity {
+            guard reconnectIdentity.isValid,
+                  reconnectIdentity.machineID == machineID,
+                  reconnectIdentity.operationID == DoryOperationIdentity.canonical(operationID) else {
+                throw DoryRuntimeReconnectError.invalidIdentity
+            }
+        }
 
         var shutdownCoordinator: DoryVMMShutdownCoordinator?
         defer { shutdownCoordinator?.cancelSignalHandlers() }
@@ -1348,6 +1368,7 @@ public enum DoryVMMMain {
                 dataDriveRoot: arguments.dataDriveRoot,
                 dockerDataDiskFileDescriptor: arguments.dockerDataDiskFileDescriptor,
                 dockerDataDiskFilesystemUUID: arguments.dockerDataDiskFilesystemUUID,
+                reconnectIdentity: arguments.reconnectIdentity,
                 restoreStatePath: arguments.restoreStatePath,
                 onRuntimeCreated: { coordinator.attach($0) }
             )
@@ -1416,6 +1437,10 @@ public enum DoryVMMMain {
         dockerdSocketPath: String?,
         shellSocketPath: String?,
         controlSocketPath: String?,
+        guestBooted: Bool = false,
+        toolsConnected: Bool = false,
+        desktopVisible: Bool = false,
+        workloadReady: Bool = false,
         detail: String?
     ) throws {
         try VmmHandoffClient.send(
@@ -1430,6 +1455,10 @@ public enum DoryVMMMain {
                 dockerdSocketPath: dockerdSocketPath,
                 shellSocketPath: shellSocketPath,
                 controlSocketPath: controlSocketPath,
+                guestBooted: guestBooted,
+                toolsConnected: toolsConnected,
+                desktopVisible: desktopVisible,
+                workloadReady: workloadReady,
                 detail: detail
             )
         )
@@ -1465,6 +1494,7 @@ public enum DoryVMMMain {
         dataDriveRoot: String?,
         dockerDataDiskFileDescriptor: Int32?,
         dockerDataDiskFilesystemUUID: UUID?,
+        reconnectIdentity: DoryRuntimeReconnectLaunchIdentity?,
         restoreStatePath: String?,
         onRuntimeCreated: (DoryVMMRuntime) -> Void
     ) throws -> DoryVMMRuntime {
@@ -1638,6 +1668,7 @@ public enum DoryVMMMain {
             operationID: operationID,
             localSocketPath: controlSocketPath,
             stateDirectory: stateDirectory,
+            reconnectIdentity: reconnectIdentity,
             resolvedPortForwardHealthProvider: {
                 gvproxyNetwork?.resolvedPortForwardHealth
             }
@@ -1753,6 +1784,10 @@ public enum DoryVMMMain {
             dockerdSocketPath: machineID == "docker" ? dockerdSocketPath : nil,
             shellSocketPath: shellSocketPath,
             controlSocketPath: controlSocketPath,
+            guestBooted: true,
+            toolsConnected: true,
+            desktopVisible: displayMode == .desktop,
+            workloadReady: true,
             detail: machineID == "docker"
                 ? "VZ Docker VM running; dory-agent answered protocol \(agentInfo.protocolVersion)"
                 : "VZ machine running; dory-agent answered protocol \(agentInfo.protocolVersion)"
@@ -2250,6 +2285,20 @@ public final class DoryVZMachine: @unchecked Sendable {
         try box.wait()
     }
 
+    public var runtimeState: DoryVirtualMachineState {
+        queue.sync {
+            switch virtualMachine.state {
+            case .running, .pausing: .running
+            case .paused: .paused
+            case .starting, .resuming: .starting
+            case .stopping: .stopping
+            case .stopped: .stopped
+            case .error: .failed
+            default: .recovering
+            }
+        }
+    }
+
     public func pause() throws {
         let box = BlockingResultBox<Void>()
         queue.async { [self] in
@@ -2688,6 +2737,7 @@ private final class DoryVMMControlServer: @unchecked Sendable {
     private let operationID: String
     private let localSocketPath: String
     private let stateDirectory: String
+    private let reconnectIdentity: DoryRuntimeReconnectLaunchIdentity?
     private let resolvedPortForwardHealthProvider:
         @Sendable () -> ResolvedPortForwardHealthSnapshot?
     private let queue: DispatchQueue
@@ -2707,6 +2757,7 @@ private final class DoryVMMControlServer: @unchecked Sendable {
         operationID: UUID,
         localSocketPath: String,
         stateDirectory: String,
+        reconnectIdentity: DoryRuntimeReconnectLaunchIdentity? = nil,
         resolvedPortForwardHealthProvider:
             @escaping @Sendable () -> ResolvedPortForwardHealthSnapshot? = { nil }
     ) throws {
@@ -2715,6 +2766,7 @@ private final class DoryVMMControlServer: @unchecked Sendable {
         self.operationID = DoryOperationIdentity.canonical(operationID)
         self.localSocketPath = localSocketPath
         self.stateDirectory = URL(fileURLWithPath: stateDirectory).standardizedFileURL.path
+        self.reconnectIdentity = reconnectIdentity
         self.resolvedPortForwardHealthProvider = resolvedPortForwardHealthProvider
         self.queue = DispatchQueue(label: "dev.dory.dory-vmm.control")
     }
@@ -2831,12 +2883,35 @@ private final class DoryVMMControlServer: @unchecked Sendable {
 
     private func handle(request: VmmControlRequest) throws -> HandledControlResponse {
         switch request.command {
+        case "authenticateRuntime":
+            guard request.targetMB == nil,
+                  request.statePath == nil,
+                  request.lifecycleAction == nil,
+                  request.operationID == nil,
+                  request.directoryShares == nil,
+                  let challenge = request.reconnectChallenge,
+                  let reconnectIdentity else {
+                return HandledControlResponse(response: VmmControlResponse(
+                    ok: false,
+                    message: "invalid VMM runtime authentication request"
+                ))
+            }
+            return HandledControlResponse(response: VmmControlResponse(
+                ok: true,
+                reconnect: try DoryRuntimeReconnectResponse(
+                    launchIdentity: reconnectIdentity,
+                    challenge: challenge,
+                    processIdentity: DoryHostProcessIdentity.capture(),
+                    runtimeState: machine.runtimeState
+                )
+            ))
         case "deviceTelemetry":
             guard request.targetMB == nil,
                   request.statePath == nil,
                   request.lifecycleAction == nil,
                   request.operationID == nil,
-                  request.directoryShares == nil else {
+                  request.directoryShares == nil,
+                  request.reconnectChallenge == nil else {
                 return HandledControlResponse(response: VmmControlResponse(
                     ok: false,
                     message: "invalid VMM device telemetry request"
@@ -2853,7 +2928,8 @@ private final class DoryVMMControlServer: @unchecked Sendable {
                   request.statePath == nil,
                   request.lifecycleAction == nil,
                   request.operationID == nil,
-                  request.directoryShares == nil else {
+                  request.directoryShares == nil,
+                  request.reconnectChallenge == nil else {
                 return HandledControlResponse(
                     response: VmmControlResponse(ok: false, message: "missing positive targetMB")
                 )
@@ -2867,7 +2943,8 @@ private final class DoryVMMControlServer: @unchecked Sendable {
                   request.statePath == nil,
                   request.lifecycleAction == nil,
                   request.operationID == nil,
-                  let replacements = request.directoryShares else {
+                  let replacements = request.directoryShares,
+                  request.reconnectChallenge == nil else {
                 return HandledControlResponse(response: VmmControlResponse(
                     ok: false,
                     message: "invalid runtime directory-share request"
@@ -2878,7 +2955,8 @@ private final class DoryVMMControlServer: @unchecked Sendable {
         case "pauseMachine":
             guard request.targetMB == nil,
                   request.statePath == nil,
-                  request.directoryShares == nil else {
+                  request.directoryShares == nil,
+                  request.reconnectChallenge == nil else {
                 return HandledControlResponse(response: VmmControlResponse(
                     ok: false,
                     message: "invalid pause request"
@@ -2893,7 +2971,8 @@ private final class DoryVMMControlServer: @unchecked Sendable {
         case "resumeMachine":
             guard request.targetMB == nil,
                   request.statePath == nil,
-                  request.directoryShares == nil else {
+                  request.directoryShares == nil,
+                  request.reconnectChallenge == nil else {
                 return HandledControlResponse(response: VmmControlResponse(
                     ok: false,
                     message: "invalid resume request"
@@ -2906,7 +2985,8 @@ private final class DoryVMMControlServer: @unchecked Sendable {
             guard request.targetMB == nil,
                   request.statePath == nil,
                   request.directoryShares == nil,
-                  let action = request.lifecycleAction else {
+                  let action = request.lifecycleAction,
+                  request.reconnectChallenge == nil else {
                 return HandledControlResponse(response: VmmControlResponse(
                     ok: false,
                     message: "missing lifecycle action"
@@ -2921,6 +3001,7 @@ private final class DoryVMMControlServer: @unchecked Sendable {
                   request.lifecycleAction == nil,
                   request.operationID == nil,
                   request.directoryShares == nil,
+                  request.reconnectChallenge == nil,
                   let path = request.statePath,
                   let accepted = acceptedSavedStatePath(path) else {
                 return HandledControlResponse(

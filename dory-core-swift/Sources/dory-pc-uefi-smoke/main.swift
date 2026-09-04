@@ -503,7 +503,7 @@ private func runWithProgress(
 }
 
 private func pageTableTrace(
-  memory: DoryX86ByteArrayMemory,
+  memory: any DoryX86PhysicalRAM,
   cr3: UInt64,
   linearAddress: UInt64
 ) -> [String] {

@@ -254,7 +254,7 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
         case .install(let ipsw, let machine):
             let runtime = try makeRuntime(machine: machine)
             show(runtime: runtime, title: "Dory — Installing macOS")
-            try await runtime.install(from: ipsw) { [weak self] fraction in
+            try await runtime.install(from: ipsw, operationID: UUID()) { [weak self] fraction in
                 self?.window?.title = "Dory — Installing macOS \(Int(fraction * 100))%"
             }
             window?.title = "Dory — macOS installation complete"

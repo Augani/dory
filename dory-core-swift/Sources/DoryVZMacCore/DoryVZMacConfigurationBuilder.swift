@@ -250,6 +250,7 @@ public final class DoryVZMacRuntime {
 
     public func install(
         from restoreImageURL: URL,
+        operationID: UUID,
         progress: @escaping @MainActor @Sendable (Double) -> Void = { _ in }
     ) async throws {
         guard bundle.manifest.installationState == .prepared
@@ -260,7 +261,7 @@ public final class DoryVZMacRuntime {
         }
         let startedAt = ISO8601DateFormatter().string(from: Date())
         var journal = DoryVZMacInstallJournal(
-            operationID: UUID(),
+            operationID: operationID,
             startedAt: startedAt,
             updatedAt: startedAt,
             phase: .validatingRestore,

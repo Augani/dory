@@ -1,3 +1,5 @@
+import Darwin
+@testable import DorydKit
 import Foundation
 import XCTest
 @testable import DoryVMMKit
@@ -33,6 +35,30 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
     }
 
     func testParsesCompleteManagedLifecycleContract() throws {
+        let identity = DoryRuntimeReconnectLaunchIdentity(
+            machineID: "mac-work",
+            operationID: UUID(uuidString: "d1ec76d2-a4a0-42dc-a725-643167a06f52")!,
+            resolvedPlanSHA256: String(repeating: "a", count: 64),
+            planRevision: 1,
+            secret: String(repeating: "b", count: 64)
+        )
+        let authority = try makeRuntimeReconnectIdentityDescriptor(identity)
+        defer { authority.close() }
+        let target = DoryRuntimeReconnectContract.childFileDescriptor
+        let previousFlags = fcntl(target, F_GETFD)
+        let previous = dup(target)
+        defer {
+            if previous >= 0 {
+                _ = dup2(previous, target)
+                _ = fcntl(target, F_SETFD, previousFlags)
+                close(previous)
+            } else {
+                close(target)
+            }
+        }
+        try authority.withBorrowedDescriptor {
+            guard dup2($0, target) == target else { throw POSIXError(.EBADF) }
+        }
         let arguments = try parseDoryVZMacDesktopArguments([
             "run",
             "--machine", "/tmp/test.dorymac",
@@ -41,6 +67,7 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
             "--state-dir", "/tmp/machines/mac-work",
             "--control-sock", "/tmp/runtime/c.sock",
             "--handoff-sock", "/tmp/runtime/h.sock",
+            "--runtime-reconnect-fd", String(target),
         ])
 
         XCTAssertTrue(arguments.hasManagedLifecycleContract)
@@ -52,6 +79,7 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
         XCTAssertEqual(arguments.stateDirectoryURL?.path, "/tmp/machines/mac-work")
         XCTAssertEqual(arguments.controlSocketPath, "/tmp/runtime/c.sock")
         XCTAssertEqual(arguments.handoffSocketPath, "/tmp/runtime/h.sock")
+        XCTAssertEqual(arguments.reconnectIdentity, identity)
     }
 
     func testRejectsPartialManagedLifecycleContract() {

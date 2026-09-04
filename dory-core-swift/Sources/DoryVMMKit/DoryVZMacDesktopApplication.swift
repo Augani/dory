@@ -24,6 +24,7 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
     public var stateDirectoryURL: URL?
     public var controlSocketPath: String?
     public var handoffSocketPath: String?
+    public var reconnectIdentity: DoryRuntimeReconnectLaunchIdentity?
 
     public init(
         operation: DoryVZMacDesktopOperation,
@@ -36,7 +37,8 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
         operationID: UUID? = nil,
         stateDirectoryURL: URL? = nil,
         controlSocketPath: String? = nil,
-        handoffSocketPath: String? = nil
+        handoffSocketPath: String? = nil,
+        reconnectIdentity: DoryRuntimeReconnectLaunchIdentity? = nil
     ) {
         self.operation = operation
         self.machineBundleURL = machineBundleURL.standardizedFileURL
@@ -49,11 +51,13 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
         self.stateDirectoryURL = stateDirectoryURL?.standardizedFileURL
         self.controlSocketPath = controlSocketPath
         self.handoffSocketPath = handoffSocketPath
+        self.reconnectIdentity = reconnectIdentity
     }
 
     public var hasManagedLifecycleContract: Bool {
         machineID != nil && operationID != nil && stateDirectoryURL != nil
             && controlSocketPath != nil && handoffSocketPath != nil
+            && reconnectIdentity != nil
     }
 }
 
@@ -118,6 +122,7 @@ public func parseDoryVZMacDesktopArguments(
         guard [
             "--machine", "--ipsw", "--guest-tools", "--usb-disk", "--machine-id",
             "--operation-id", "--state-dir", "--control-sock", "--handoff-sock",
+            DoryRuntimeReconnectContract.fileDescriptorArgument,
         ].contains(flag) else {
             throw DoryVZMacDesktopArgumentError.unknownArgument(flag)
         }
@@ -180,16 +185,31 @@ public func parseDoryVZMacDesktopArguments(
     let handoffSocketPath = try values["--handoff-sock"].map {
         try absoluteFileURL($0, flag: "--handoff-sock", isDirectory: false).path
     }
+    let reconnectIdentity = try values[DoryRuntimeReconnectContract.fileDescriptorArgument].map {
+        guard let descriptor = Int32($0),
+              descriptor == DoryRuntimeReconnectContract.childFileDescriptor else {
+            throw DoryVZMacDesktopArgumentError.invalidOperationID
+        }
+        return try DoryRuntimeReconnectLaunchIdentity.decode(fileDescriptor: descriptor)
+    }
     let managedValuesPresent = [
         machineID != nil,
         operationID != nil,
         stateDirectoryURL != nil,
         controlSocketPath != nil,
         handoffSocketPath != nil,
+        reconnectIdentity != nil,
     ]
     guard managedValuesPresent.allSatisfy({ $0 })
             || managedValuesPresent.allSatisfy({ !$0 }) else {
         throw DoryVZMacDesktopArgumentError.incompleteManagedLifecycleContract
+    }
+    if let reconnectIdentity {
+        guard reconnectIdentity.machineID == machineID,
+              reconnectIdentity.operationID
+                == operationID.map(DoryOperationIdentity.canonical) else {
+            throw DoryVZMacDesktopArgumentError.incompleteManagedLifecycleContract
+        }
     }
     return DoryVZMacDesktopArguments(
         operation: operation,
@@ -202,7 +222,8 @@ public func parseDoryVZMacDesktopArguments(
         operationID: operationID,
         stateDirectoryURL: stateDirectoryURL,
         controlSocketPath: controlSocketPath,
-        handoffSocketPath: handoffSocketPath
+        handoffSocketPath: handoffSocketPath,
+        reconnectIdentity: reconnectIdentity
     )
 }
 
@@ -299,7 +320,13 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
                     guard let restoreImageURL = arguments.restoreImageURL else {
                         throw DoryVZMacDesktopArgumentError.restoreImageRequired
                     }
-                    try await adapter.install(from: restoreImageURL) { [weak self] fraction in
+                    guard let operationID = arguments.operationID else {
+                        throw DoryVZMacDesktopArgumentError.incompleteManagedLifecycleContract
+                    }
+                    try await adapter.install(
+                        from: restoreImageURL,
+                        operationID: operationID
+                    ) { [weak self] fraction in
                         self?.window.title = "\(self?.machineName ?? "macOS") — Installing macOS \(Int(fraction * 100))%"
                     }
                     // Apple's installer leaves the VM stopped after restore. Keep creation and
@@ -445,6 +472,27 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
         _ request: VmmControlRequest
     ) async -> VmmControlResponse {
         switch request.command {
+        case "authenticateRuntime":
+            guard request.targetMB == nil, request.statePath == nil,
+                  request.lifecycleAction == nil, request.operationID == nil,
+                  request.directoryShares == nil,
+                  let challenge = request.reconnectChallenge,
+                  let reconnectIdentity = arguments.reconnectIdentity else {
+                return VmmControlResponse(ok: false, message: "invalid VZMac runtime authentication request")
+            }
+            do {
+                return VmmControlResponse(
+                    ok: true,
+                    reconnect: try DoryRuntimeReconnectResponse(
+                        launchIdentity: reconnectIdentity,
+                        challenge: challenge,
+                        processIdentity: DoryHostProcessIdentity.capture(),
+                        runtimeState: adapter.observation.state.runtimeState
+                    )
+                )
+            } catch {
+                return VmmControlResponse(ok: false, message: "\(error)")
+            }
         case "pauseMachine":
             guard let receipt = lifecycleReceipt(request, expected: .preparePause) else {
                 return VmmControlResponse(ok: false, message: "invalid VZMac pause request")
@@ -477,7 +525,8 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
         case "deviceTelemetry":
             guard request.targetMB == nil, request.statePath == nil,
                   request.lifecycleAction == nil, request.operationID == nil,
-                  request.directoryShares == nil else {
+                  request.directoryShares == nil,
+                  request.reconnectChallenge == nil else {
                 return VmmControlResponse(
                     ok: false,
                     message: "invalid VZMac telemetry request"
@@ -492,6 +541,7 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
                   request.lifecycleAction == nil,
                   request.operationID == nil,
                   request.directoryShares == nil,
+                  request.reconnectChallenge == nil,
                   let statePath = request.statePath,
                   let acceptedStateURL = acceptedSavedStateURL(statePath) else {
                 return VmmControlResponse(
@@ -544,6 +594,7 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
     ) -> VmmControlResponse? {
         guard request.targetMB == nil, request.statePath == nil,
               request.directoryShares == nil,
+              request.reconnectChallenge == nil,
               request.lifecycleAction == action,
               let operationID = request.operationID,
               DoryOperationIdentity.parseCanonical(operationID) != nil else {
