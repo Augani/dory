@@ -88,6 +88,8 @@ public final class DoryPCPortIOBus: DoryX86IOBus, @unchecked Sendable {
 }
 
 public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
+  private typealias InterruptNotification = (sink: @Sendable (Bool) -> Void, level: Bool)
+
   public let basePort: UInt16
   public let portCount: UInt16 = 8
   public let queueCapacity: Int
@@ -102,6 +104,10 @@ public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
   private var divisorHigh: UInt8 = 0
   private var received: [UInt8] = []
   private var transmitted: [UInt8] = []
+  // Transmission completes synchronously into the bounded host capture queue.
+  // THRE is separately latched: an IIR acknowledgment must not retrigger merely
+  // because LSR still reports an empty transmitter.
+  private var transmitEmptyInterruptPending = true
   private var droppedReceivedByteCount = 0
   private var droppedTransmittedByteCount = 0
   private var interruptSink: (@Sendable (Bool) -> Void)?
@@ -161,10 +167,19 @@ public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
     width: DoryX86OperandWidth
   ) throws {
     guard width == .byte else { throw DoryPCPortIOError.unsupportedWidth(width) }
-    let notification = lock.withLock {
+    let (clearedNotification, notification) = lock.withLock {
+      var clearedNotification: InterruptNotification?
+      if portOffset == 0, !divisorLatchEnabled {
+        // Writing THR acknowledges its interrupt. Preserve this falling edge
+        // before immediate completion raises the next one, including for a
+        // driver that services THRE without first reading IIR.
+        transmitEmptyInterruptPending = false
+        clearedNotification = interruptNotificationLocked()
+      }
       writeByte(portOffset, UInt8(truncatingIfNeeded: value))
-      return interruptNotificationLocked()
+      return (clearedNotification, interruptNotificationLocked())
     }
+    notify(clearedNotification)
     notify(notification)
   }
 
@@ -177,7 +192,15 @@ public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
     case 0: return received.removeFirst()
     case 1 where divisorLatchEnabled: return divisorHigh
     case 1: return interruptEnable
-    case 2: return received.isEmpty || interruptEnable & 1 == 0 ? 0x01 : 0x04
+    case 2:
+      // TI TL16C550D Table 5: receive data has priority over THRE; reading IIR
+      // acknowledges THRE only when THRE is the reported interrupt source.
+      if interruptEnable & 1 != 0, !received.isEmpty { return 0x04 }
+      if interruptEnable & 2 != 0, transmitEmptyInterruptPending {
+        transmitEmptyInterruptPending = false
+        return 0x02
+      }
+      return 0x01
     case 3: return lineControl
     case 4: return modemControl
     case 5: return 0x60 | (received.isEmpty ? 0 : 0x01)
@@ -196,8 +219,13 @@ public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
       } else {
         droppedTransmittedByteCount += 1
       }
+      transmitEmptyInterruptPending = true
     case 1 where divisorLatchEnabled: divisorHigh = value
-    case 1: interruptEnable = value & 0x0F
+    case 1:
+      if value & 2 != 0, interruptEnable & 2 == 0 {
+        transmitEmptyInterruptPending = true
+      }
+      interruptEnable = value & 0x0F
     case 2: fifoControl = value
     case 3: lineControl = value
     case 4: modemControl = value
@@ -207,17 +235,18 @@ public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
   }
 
   private func interruptLevelLocked() -> Bool {
-    interruptEnable & 1 != 0 && !received.isEmpty
+    (interruptEnable & 1 != 0 && !received.isEmpty)
+      || (interruptEnable & 2 != 0 && transmitEmptyInterruptPending)
   }
 
-  private func interruptNotificationLocked() -> (sink: (@Sendable (Bool) -> Void), level: Bool)? {
+  private func interruptNotificationLocked() -> InterruptNotification? {
     let level = interruptLevelLocked()
     guard level != lastInterruptLevel else { return nil }
     lastInterruptLevel = level
     return interruptSink.map { ($0, level) }
   }
 
-  private func notify(_ notification: (sink: (@Sendable (Bool) -> Void), level: Bool)?) {
+  private func notify(_ notification: InterruptNotification?) {
     if let notification { notification.sink(notification.level) }
   }
 }
