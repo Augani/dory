@@ -327,7 +327,9 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       guard entry & 1 != 0 else {
         throw pageFault(linearAddress, access, context, protection: false)
       }
-      try validate64BitEntry(entry, linearAddress: linearAddress, access: access, context: context)
+      try validate64BitEntry(
+        entry, linearAddress: linearAddress, access: access, context: context,
+        paeDirectoryOrTable: level != 0)
       if level != 0 {
         // A legacy PAE PDPTE has no R/W, U/S, NX or accessed flag. Its
         // reserved bits must eventually be checked when the PDPTEs are loaded.
@@ -392,12 +394,18 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     }
     var user = directory & (1 << 2) != 0
     var writable = directory & (1 << 1) != 0
+    let largePage = context.control.cr4 & (1 << 4) != 0 && directory & (1 << 7) != 0
+    // PSE-36 is not modeled: bits 21:13 of a present 4 MiB PDE are reserved,
+    // rather than high physical-address bits that can be silently discarded.
+    if largePage, directory & 0x003f_e000 != 0 {
+      throw pageFault(linearAddress, access, context, protection: true, reserved: true)
+    }
     if directory & (1 << 5) == 0 {
       directory |= 1 << 5
       try writeUInt32(directory, at: directoryAddress, physicalMemory: physicalMemory)
     }
     // With PSE clear, bit 7 is ignored and the PDE still points to a page table.
-    if context.control.cr4 & (1 << 4) != 0, directory & (1 << 7) != 0 {
+    if largePage {
       let pageSize: UInt64 = 1 << 22
       let addressField = UInt64(directory) & 0xffc0_0000
       try enforcePermissions(
@@ -464,10 +472,15 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     _ entry: UInt64,
     linearAddress: UInt64,
     access: DoryX86MemoryAccessKind,
-    context: DoryX86PagingContext
+    context: DoryX86PagingContext,
+    paeDirectoryOrTable: Bool = false
   ) throws {
     let nxe = context.control.efer & (1 << 11) != 0
-    let addressBitsOutsideProfile = (entry & 0x000f_ffff_ffff_f000) & ~physicalAddressMask
+    // PAE PDEs/PTEs reserve bits 62:MAXPHYADDR. IA-32e ignores bits 58:52 and
+    // uses/ignores bits 62:59 according to protection-key controls, outside this mask.
+    let checkedAddressBits: UInt64 = paeDirectoryOrTable
+      ? 0x7fff_ffff_ffff_f000 : 0x000f_ffff_ffff_f000
+    let addressBitsOutsideProfile = (entry & checkedAddressBits) & ~physicalAddressMask
     if addressBitsOutsideProfile != 0 || (!nxe && entry & (1 << 63) != 0) {
       throw pageFault(linearAddress, access, context, protection: true, reserved: true)
     }
