@@ -5817,7 +5817,8 @@ public struct DoryX86Interpreter: Sendable {
       else { return false }
       state.modelSpecific.biosUpdateSignature = UInt32(truncatingIfNeeded: value >> 32)
     case 0x174:
-      state.modelSpecific.systemEnterCS = value & 0xffff
+      guard value >> 16 == 0 else { return false }
+      state.modelSpecific.systemEnterCS = value
     case 0x175:
       guard DoryX86ArchitecturalState.isCanonical(value) else { return false }
       state.modelSpecific.systemEnterStackPointer = value
