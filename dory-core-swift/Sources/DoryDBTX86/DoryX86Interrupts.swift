@@ -450,11 +450,36 @@ public struct DoryX86InterruptDelivery: Sendable {
     physicalMemory: any DoryX86Memory,
     pagingUnit: DoryX86PagingUnit? = nil,
     mode: DoryX86ExecutionMode,
-    operandSizeOverride: Bool = false
+    operandSizeOverride: Bool = false,
+    // Preserve the pre-width-aware direct API's long-mode IRETQ behavior.
+    // Decoded instructions always pass their effective REX.W value explicitly.
+    rexW: Bool = true
   ) throws {
     // Intel unblocks NMI on the attempted IRET boundary, including when frame
     // validation later faults. The interpreter preserves this one transition.
     state.nmiBlocked = false
+    // `mode == .long64` already implies LMA for every architecturally valid
+    // caller. Keep it authoritative for direct delivery APIs whose older
+    // fixtures did not materialize the redundant EFER.LMA latch.
+    if mode == .long64 || state.control.efer & (1 << 10) != 0 {
+      let width: DoryX86OperandWidth
+      if mode == .long64 {
+        width = rexW ? .quadword : (operandSizeOverride ? .word : .doubleword)
+      } else if mode == .protected16 || mode == .protected32 {
+        width = (mode == .protected16) != operandSizeOverride ? .word : .doubleword
+      } else {
+        throw DoryX86InterruptDeliveryError.invalidReturnFrame
+      }
+      try interruptReturnIA32e(
+        state: &state,
+        physicalMemory: physicalMemory,
+        pagingUnit: pagingUnit,
+        mode: mode,
+        width: width,
+        beganIn64BitMode: mode == .long64
+      )
+      return
+    }
     if mode == .real16 {
       try interruptReturnRealMode(state: &state, memory: physicalMemory,
         width: operandSizeOverride ? .doubleword : .word)
@@ -467,30 +492,28 @@ public struct DoryX86InterruptDelivery: Sendable {
         pagingUnit: pagingUnit, mode: mode, width: width)
       return
     }
-    guard mode == .long64 else { throw DoryX86InterruptDeliveryError.invalidReturnFrame }
+    throw DoryX86InterruptDeliveryError.invalidReturnFrame
+  }
+
+  private func interruptReturnIA32e(
+    state: inout DoryX86ArchitecturalState,
+    physicalMemory: any DoryX86Memory,
+    pagingUnit: DoryX86PagingUnit?,
+    mode: DoryX86ExecutionMode,
+    width: DoryX86OperandWidth,
+    beganIn64BitMode: Bool
+  ) throws {
+    guard !state.rflags.contains(.nestedTask) else {
+      throw generalProtectionException(errorCode: 0, instructionPointer: state.rip)
+    }
+    let currentCPL = UInt8(state.cs.selector & 3)
     let memory = translatedMemory(
       physicalMemory: physicalMemory,
       pagingUnit: pagingUnit,
       state: state,
       mode: mode,
-      cpl: UInt8(state.cs.selector & 3)
+      cpl: currentCPL
     )
-    let stack = state.registers.rsp
-    func readReturn64(_ address: UInt64) throws -> UInt64 {
-      try validateAlignmentCheck(
-        address: address, byteCount: 8, state: state, memory: memory)
-      return try read64(memory, address)
-    }
-    let instructionPointer = try readReturn64(stack)
-    let codeSelector = UInt16(truncatingIfNeeded: try readReturn64(stack + 8))
-    let flagsValue = try readReturn64(stack + 16)
-    let targetCPL = UInt8(codeSelector & 3)
-    let currentCPL = UInt8(state.cs.selector & 3)
-    guard targetCPL >= currentCPL,
-      DoryX86ArchitecturalState.isCanonical(instructionPointer)
-    else {
-      throw DoryX86InterruptDeliveryError.invalidReturnFrame
-    }
     let systemMemory = translatedMemory(
       physicalMemory: physicalMemory,
       pagingUnit: pagingUnit,
@@ -499,39 +522,122 @@ public struct DoryX86InterruptDelivery: Sendable {
       cpl: 0,
       isImplicitSupervisorAccess: true
     )
-    let code = try readCodeSegment(selector: codeSelector, state: state, memory: systemMemory)
-    guard code.descriptorPrivilegeLevel == targetCPL else {
-      throw DoryX86InterruptDeliveryError.invalidReturnFrame
-    }
-    let requestedFlags = DoryX86RFLAGS(
-      rawValue: (flagsValue & DoryX86RFLAGS.architecturallyWritableMask) | 2
-    )
-    guard let validatedFlags = try? requestedFlags.validated() else {
-      throw DoryX86InterruptDeliveryError.invalidReturnFrame
+    let pointerWidth = beganIn64BitMode ? 64 : (state.ss.attributes & 0x4000 != 0 ? 32 : 16)
+    let pointerMask: UInt64 =
+      switch pointerWidth {
+      case 16: 0xffff
+      case 32: 0xffff_ffff
+      default: .max
+      }
+    let initialStack = state.registers.rsp & pointerMask
+    let stackBase = beganIn64BitMode ? 0 : state.ss.base
+    let slotBytes = UInt64(width.byteCount)
+
+    func stackAddress(slot: Int) throws -> UInt64 {
+      let delta = UInt64(slot) * slotBytes
+      let (offset, offsetOverflow) = initialStack.addingReportingOverflow(delta)
+      guard !offsetOverflow, offset <= pointerMask else {
+        throw stackSegmentException(instructionPointer: state.rip)
+      }
+      if !beganIn64BitMode {
+        try validateProtectedReturnStack(
+          offset,
+          byteCount: width.byteCount,
+          segment: state.ss,
+          instructionPointer: state.rip
+        )
+      }
+      let (linear, linearOverflow) = stackBase.addingReportingOverflow(offset)
+      let (lastByte, rangeOverflow) = linear.addingReportingOverflow(UInt64(width.byteCount - 1))
+      guard !linearOverflow, !rangeOverflow,
+        DoryX86ArchitecturalState.isCanonical(linear),
+        DoryX86ArchitecturalState.isCanonical(lastByte)
+      else {
+        throw stackSegmentException(instructionPointer: state.rip)
+      }
+      return linear
     }
 
-    let restoredStack = try readReturn64(stack + 24)
-    let stackSelector = UInt16(truncatingIfNeeded: try readReturn64(stack + 32))
-    guard DoryX86ArchitecturalState.isCanonical(restoredStack) else {
-      throw DoryX86Exception(
-        kind: .generalProtection,
-        vector: 13,
-        errorCode: 0,
+    func readFrame(_ slot: Int) throws -> UInt64 {
+      let address = try stackAddress(slot: slot)
+      try validateAlignmentCheck(
+        address: address,
+        byteCount: width.byteCount,
+        state: state,
+        memory: memory
+      )
+      return fromLittleEndian(try memory.read(at: address, byteCount: width.byteCount))
+    }
+
+    let instructionPointer = try readFrame(0)
+    let codeSelector = UInt16(truncatingIfNeeded: try readFrame(1))
+    let flagsValue = try readFrame(2)
+    let targetCPL = UInt8(codeSelector & 3)
+    guard codeSelector & 0xfff8 != 0 else {
+      throw generalProtectionException(errorCode: 0, instructionPointer: state.rip)
+    }
+    guard targetCPL >= currentCPL else {
+      throw generalProtectionException(
+        errorCode: UInt32(codeSelector & 0xfffc),
         instructionPointer: state.rip
       )
     }
-    let restoredStackSegment = try readLongReturnStackSegment(
-      selector: stackSelector,
+    let code = try readIA32eReturnCodeSegment(
+      selector: codeSelector,
       targetCPL: targetCPL,
       state: state,
       memory: systemMemory
     )
-    state.registers.rsp = restoredStack
-    state.ss = restoredStackSegment
+    let targetIs64Bit = code.segment.attributes & 0x2000 != 0
+    guard targetIs64Bit
+      ? DoryX86ArchitecturalState.isCanonical(instructionPointer)
+      : instructionPointer <= UInt64(code.segment.limit)
+    else {
+      throw generalProtectionException(errorCode: 0, instructionPointer: state.rip)
+    }
+    let restoredFlags = try interruptReturnFlags(
+      flagsValue,
+      width: width,
+      currentCPL: currentCPL,
+      state: state
+    )
+
+    let popsStack = beganIn64BitMode || targetCPL > currentCPL
+    let restoredStack: UInt64?
+    let restoredStackSegment: DoryX86SegmentState?
+    if popsStack {
+      restoredStack = try readFrame(3)
+      let stackSelector = UInt16(truncatingIfNeeded: try readFrame(4))
+      restoredStackSegment = try readIA32eReturnStackSegment(
+        selector: stackSelector,
+        targetCPL: targetCPL,
+        targetIs64Bit: targetIs64Bit,
+        state: state,
+        memory: systemMemory
+      )
+    } else {
+      restoredStack = nil
+      restoredStackSegment = nil
+    }
+
     state.rip = instructionPointer
     state.cs = code.segment
     state.cs.selector = codeSelector
-    state.rflags = validatedFlags
+    state.rflags = restoredFlags
+    if let restoredStack, let restoredStackSegment {
+      let restoredStackMask: UInt64 =
+        switch width {
+        case .byte: 0xff
+        case .word: 0xffff
+        case .doubleword: 0xffff_ffff
+        case .quadword: .max
+        }
+      state.registers.rsp = restoredStack & restoredStackMask
+      state.ss = restoredStackSegment
+    } else {
+      let nextStack = (initialStack &+ 3 * slotBytes) & pointerMask
+      writeProtectedStackPointer(nextStack, pointerWidth: pointerWidth, state: &state)
+    }
   }
 
   private struct Gate {
@@ -661,6 +767,13 @@ public struct DoryX86InterruptDelivery: Sendable {
     let segment: DoryX86SegmentState
     let descriptorPrivilegeLevel: UInt8
     let type: UInt8
+  }
+
+  private struct IA32eReturnSegment {
+    let segment: DoryX86SegmentState
+    let descriptorPrivilegeLevel: UInt8
+    let type: UInt8
+    let present: Bool
   }
 
   private func deliverProtectedMode(
@@ -1113,65 +1226,112 @@ public struct DoryX86InterruptDelivery: Sendable {
     )
   }
 
-  /// Validates the SS image popped by an IRET that began in 64-bit mode.
-  /// Intel SDM 092 Vol. 2A IRETQ requires every non-null selector to name a
-  /// present writable data segment whose RPL and DPL equal the return CPL.
-  /// A non-present return stack is #SS(0); all other descriptor failures are
-  /// #GP(selector). A null SS is permitted only for a non-CPL3 64-bit return
-  /// when its RPL already equals the return CPL.
-  private func readLongReturnStackSegment(
+  private func readIA32eReturnCodeSegment(
     selector: UInt16,
     targetCPL: UInt8,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> IA32eReturnSegment {
+    let descriptor = try readIA32eReturnSegment(
+      selector: selector,
+      state: state,
+      memory: memory
+    )
+    let conforming = descriptor.type & 4 != 0
+    let long = descriptor.segment.attributes & 0x2000 != 0
+    let default32 = descriptor.segment.attributes & 0x4000 != 0
+    guard descriptor.type & 8 != 0,
+      !(long && default32),
+      conforming
+        ? descriptor.descriptorPrivilegeLevel <= targetCPL
+        : descriptor.descriptorPrivilegeLevel == targetCPL
+    else {
+      throw generalProtectionException(
+        errorCode: UInt32(selector & 0xfffc),
+        instructionPointer: state.rip
+      )
+    }
+    guard descriptor.present else {
+      throw DoryX86Exception(
+        kind: .segmentNotPresent,
+        vector: 11,
+        errorCode: UInt32(selector & 0xfffc),
+        instructionPointer: state.rip
+      )
+    }
+    return descriptor
+  }
+
+  private func readIA32eReturnStackSegment(
+    selector: UInt16,
+    targetCPL: UInt8,
+    targetIs64Bit: Bool,
     state: DoryX86ArchitecturalState,
     memory: any DoryX86Memory
   ) throws -> DoryX86SegmentState {
     let selectorRPL = UInt8(selector & 3)
     if selector & 0xfff8 == 0 {
-      guard targetCPL != 3, selectorRPL == targetCPL else {
-        throw DoryX86Exception(
-          kind: .generalProtection,
-          vector: 13,
-          errorCode: 0,
-          instructionPointer: state.rip
-        )
+      guard targetIs64Bit, targetCPL != 3, selectorRPL == targetCPL else {
+        throw generalProtectionException(errorCode: 0, instructionPointer: state.rip)
       }
       return .init(selector: selector)
     }
 
+    let descriptor = try readIA32eReturnSegment(
+      selector: selector,
+      state: state,
+      memory: memory
+    )
+    guard selectorRPL == targetCPL,
+      descriptor.descriptorPrivilegeLevel == targetCPL,
+      descriptor.type & 8 == 0,
+      descriptor.type & 2 != 0,
+      descriptor.segment.attributes & 0x2000 == 0
+    else {
+      throw generalProtectionException(
+        errorCode: UInt32(selector & 0xfffc),
+        instructionPointer: state.rip
+      )
+    }
+    guard descriptor.present else {
+      throw stackSegmentException(instructionPointer: state.rip)
+    }
+    return descriptor.segment
+  }
+
+  private func readIA32eReturnSegment(
+    selector: UInt16,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> IA32eReturnSegment {
     let tableBase = selector & 4 == 0 ? state.gdtr.base : state.ldtr.base
     let tableLimit = selector & 4 == 0 ? UInt64(state.gdtr.limit) : UInt64(state.ldtr.limit)
     let offset = UInt64(selector & 0xfff8)
+    let errorCode = UInt32(selector & 0xfffc)
     guard offset + 7 <= tableLimit else {
-      throw DoryX86Exception(
-        kind: .generalProtection,
-        vector: 13,
-        errorCode: UInt32(selector & 0xfffc),
+      throw generalProtectionException(
+        errorCode: errorCode,
         instructionPointer: state.rip
       )
     }
-    let raw = try read64(memory, tableBase &+ offset)
+    let (address, addressOverflow) = tableBase.addingReportingOverflow(offset)
+    let (lastByte, rangeOverflow) = address.addingReportingOverflow(7)
+    guard !addressOverflow, !rangeOverflow,
+      DoryX86ArchitecturalState.isCanonical(address),
+      DoryX86ArchitecturalState.isCanonical(lastByte)
+    else {
+      throw generalProtectionException(
+        errorCode: errorCode,
+        instructionPointer: state.rip
+      )
+    }
+
+    let raw = try read64(memory, address)
     let access = UInt8(truncatingIfNeeded: raw >> 40)
     let flags = UInt8(truncatingIfNeeded: raw >> 52) & 0x0f
-    let descriptorPrivilegeLevel = (access >> 5) & 3
-    let type = access & 0x0f
-    guard selectorRPL == targetCPL,
-      descriptorPrivilegeLevel == targetCPL,
-      access & 0x10 != 0,
-      type & 8 == 0,
-      type & 2 != 0
-    else {
-      throw DoryX86Exception(
-        kind: .generalProtection,
-        vector: 13,
-        errorCode: UInt32(selector & 0xfffc),
-        instructionPointer: state.rip
-      )
-    }
-    guard access & 0x80 != 0 else {
-      throw DoryX86Exception(
-        kind: .stackSegment,
-        vector: 12,
-        errorCode: 0,
+    guard access & 0x10 != 0 else {
+      throw generalProtectionException(
+        errorCode: errorCode,
         instructionPointer: state.rip
       )
     }
@@ -1182,10 +1342,59 @@ public struct DoryX86InterruptDelivery: Sendable {
     var limit = UInt32(raw & 0xffff) | UInt32((raw >> 48) & 0x0f) << 16
     if flags & 8 != 0 { limit = (limit << 12) | 0xfff }
     return .init(
-      selector: selector,
-      attributes: UInt16(access) | UInt16(flags) << 12,
-      limit: limit,
-      base: base
+      segment: .init(
+        selector: selector,
+        attributes: UInt16(access) | UInt16(flags) << 12,
+        limit: limit,
+        base: base
+      ),
+      descriptorPrivilegeLevel: (access >> 5) & 3,
+      type: access & 0x0f,
+      present: access & 0x80 != 0
+    )
+  }
+
+  private func interruptReturnFlags(
+    _ value: UInt64,
+    width: DoryX86OperandWidth,
+    currentCPL: UInt8,
+    state: DoryX86ArchitecturalState
+  ) throws -> DoryX86RFLAGS {
+    var mask: UInt64 = 0x4DD5
+    if width != .word { mask |= (1 << 16) | (1 << 18) | (1 << 21) }
+    let oldIOPL = UInt8((state.rflags.rawValue >> 12) & 3)
+    if currentCPL <= oldIOPL { mask |= 1 << 9 }
+    if currentCPL == 0 {
+      mask |= 3 << 12
+      if width != .word { mask |= (1 << 19) | (1 << 20) }
+    }
+    let requested = DoryX86RFLAGS(
+      rawValue: (state.rflags.rawValue & ~mask) | (value & mask) | 2
+    )
+    guard let validated = try? requested.validated() else {
+      throw generalProtectionException(errorCode: 0, instructionPointer: state.rip)
+    }
+    return validated
+  }
+
+  private func generalProtectionException(
+    errorCode: UInt32,
+    instructionPointer: UInt64
+  ) -> DoryX86Exception {
+    .init(
+      kind: .generalProtection,
+      vector: 13,
+      errorCode: errorCode,
+      instructionPointer: instructionPointer
+    )
+  }
+
+  private func stackSegmentException(instructionPointer: UInt64) -> DoryX86Exception {
+    .init(
+      kind: .stackSegment,
+      vector: 12,
+      errorCode: 0,
+      instructionPointer: instructionPointer
     )
   }
 

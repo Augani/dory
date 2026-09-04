@@ -3357,7 +3357,8 @@ public struct DoryX86Interpreter: Sendable {
             physicalMemory: memory,
             pagingUnit: pagingUnit ?? translatedMemory?.translationUnit,
             mode: mode,
-            operandSizeOverride: instruction.prefixes.operandSizeOverride
+            operandSizeOverride: instruction.prefixes.operandSizeOverride,
+            rexW: instruction.prefixes.rex?.w == true
           )
           return .retired(instruction)
         } catch let exception as DoryX86Exception {

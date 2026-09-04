@@ -2,11 +2,12 @@ import Testing
 
 @testable import DoryDBTX86
 
-// Intel SDM 089 Vol. 2B SYSENTER and SYSRET. SYSENTER clears VM, IF, and RF.
-// SYSRET restores RFLAGS with the exact mask 3C7FD7H, keeping RF and VM clear.
-// https://cdrdv2-public.intel.com/868137/325462-089-sdm-vol-1-2abcd-3abcd-4.pdf
+// Intel SDM 092 Vol. 2B SYSENTER and SYSRET. SYSENTER itself clears VM and IF;
+// the normal instruction boundary clears RF before execution. SYSRET restores
+// RFLAGS with the exact mask 3C7FD7H, keeping RF and VM clear.
+// https://cdrdv2-public.intel.com/922481/253667-092-sdm-vol-2b.pdf
 @Suite struct DoryX86FastSystemTransitionFlagTests {
-  @Test func sysenterClearsVMIFAndRFAcrossLegacyAndLongMode() throws {
+  @Test func sysenterClearsVMAndIFWhileTheInstructionBoundaryClearsRF() throws {
     let bytes: [UInt8] = [0x0F, 0x34]
     for mode: DoryX86ExecutionMode in [.protected32, .long64] {
       let memory = try codeMemory(bytes)
