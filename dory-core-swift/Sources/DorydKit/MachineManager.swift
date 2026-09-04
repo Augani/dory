@@ -19213,6 +19213,11 @@ public final class MachineManager: @unchecked Sendable {
                 // publish this receipt type, and their existing readiness contract remains unchanged.
                 return selection == nil
             }
+            if plan.graphics == .none {
+                // A headless runtime has no renderer to attest. Any graphics receipt would
+                // contradict its exact plan instead of supplying additional readiness.
+                return selection == nil
+            }
             guard let selection else { return false }
             return selection.matchesResolvedRawHVLaunch(
                 operationID: operationID,
