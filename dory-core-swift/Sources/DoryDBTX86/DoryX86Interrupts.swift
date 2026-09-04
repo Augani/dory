@@ -202,7 +202,8 @@ public struct DoryX86InterruptDelivery: Sendable {
     operandSizeOverride: Bool = false
   ) throws {
     if mode == .real16 {
-      try interruptReturnRealMode(state: &state, memory: physicalMemory)
+      try interruptReturnRealMode(state: &state, memory: physicalMemory,
+        width: operandSizeOverride ? .doubleword : .word)
       return
     }
     if mode == .protected16 || mode == .protected32 {
@@ -332,36 +333,52 @@ public struct DoryX86InterruptDelivery: Sendable {
 
   private func interruptReturnRealMode(
     state: inout DoryX86ArchitecturalState,
-    memory: any DoryX86Memory
+    memory: any DoryX86Memory,
+    width: DoryX86OperandWidth
   ) throws {
-    let stack = UInt16(truncatingIfNeeded: state.registers.rsp)
-    let codeStack = stack &+ 2
-    let flagsStack = codeStack &+ 2
-    for offset in [stack, codeStack, flagsStack] {
-      guard UInt32(offset) + 1 <= state.ss.limit else {
-        throw DoryX86InterruptDeliveryError.invalidReturnFrame
-      }
+    // The implicit stack address comes from SS.B, independently of the IRET
+    // operand width and the 67H prefix (Intel SDM Vol. 1 §6.2.3).
+    let pointerWidth = state.ss.attributes & 0x4000 != 0 ? 32 : 16
+    let pointerMask: UInt64 = pointerWidth == 32 ? 0xFFFF_FFFF : 0xFFFF
+    let stack = state.registers.rsp & pointerMask
+    let slotBytes = UInt64(width.byteCount)
+    let frameBytes = 3 * slotBytes
+    let frameEnd = stack &+ frameBytes &- 1
+    // Check the complete frame before reading any slot: the top 6 or 12 bytes
+    // must be within the stack, rather than wrapping individual slot addresses.
+    guard frameEnd >= stack, frameEnd <= pointerMask, frameEnd <= UInt64(state.ss.limit) else {
+      throw DoryX86Exception(kind: .stackSegment, vector: 12, errorCode: 0,
+        instructionPointer: state.rip)
     }
-    let instructionPointer = try read16(memory, state.ss.base &+ UInt64(stack))
-    let codeSelector = try read16(memory, state.ss.base &+ UInt64(codeStack))
-    let flags = try read16(memory, state.ss.base &+ UInt64(flagsStack))
-    let requestedFlags = DoryX86RFLAGS(
-      rawValue: (state.rflags.rawValue & ~UInt64(0xffff)) | UInt64(flags) | 2
-    )
-    guard let validatedFlags = try? requestedFlags.validated() else {
-      throw DoryX86InterruptDeliveryError.invalidReturnFrame
+    func readSlot(_ index: UInt64) throws -> UInt64 {
+      fromLittleEndian(try memory.read(at: state.ss.base &+ stack &+ index * slotBytes,
+        byteCount: width.byteCount))
     }
+    let instructionPointer = try readSlot(0)
+    let codeSelector = UInt16(truncatingIfNeeded: try readSlot(1))
+    let flags = try readSlot(2)
+    // Keep the existing ordinary real-mode CS reload contract. IRETD does not
+    // truncate an out-of-range EIP to IP; it faults before publishing the frame.
+    guard instructionPointer <= 0xFFFF else {
+      throw DoryX86Exception(kind: .generalProtection, vector: 13, errorCode: 0,
+        instructionPointer: state.rip)
+    }
+    // SDM Vol. 2A, IRET REAL-ADDRESS-MODE: VM/VIF/VIP survive IRETD;
+    // IRET16 preserves all upper EFLAGS bits. Reserved popped bits are ignored.
+    let restoredFlags: UInt64 = width == .doubleword
+      ? (flags & 0x257FD5) | (state.rflags.rawValue & 0x1A0000) | 2
+      : (flags & 0x7FD5) | (state.rflags.rawValue & ~UInt64(0xFFFF)) | 2
 
-    let nextStack = flagsStack &+ 2
-    state.registers.rsp = (state.registers.rsp & ~UInt64(0xffff)) | UInt64(nextStack)
-    state.rip = UInt64(instructionPointer)
+    writeProtectedStackPointer((stack &+ frameBytes) & pointerMask,
+      pointerWidth: pointerWidth, state: &state)
+    state.rip = instructionPointer
     state.cs = .init(
       selector: codeSelector,
       attributes: 0x009B,
       limit: 0xffff,
       base: UInt64(codeSelector) << 4
     )
-    state.rflags = validatedFlags
+    state.rflags = .init(rawValue: restoredFlags)
   }
 
   private struct CodeSegment {
