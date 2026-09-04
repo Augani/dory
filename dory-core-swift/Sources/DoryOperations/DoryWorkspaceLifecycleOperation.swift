@@ -1,21 +1,11 @@
 import Foundation
 
-public enum DoryWorkspaceLifecycleState: String, Codable, CaseIterable, Sendable {
-    case absent
-    case defined
-    case stopped
-    case running
-    case paused
-    case suspended
-    case failed
-    case deleting
-}
-
 public enum DoryWorkspaceMutationKind: String, Codable, CaseIterable, Sendable {
     case importing
     case provisioning
     case resolving
     case starting
+    case restarting
     case stopping
     case pausing
     case resuming
@@ -33,6 +23,7 @@ public enum DoryWorkspaceMutationKind: String, Codable, CaseIterable, Sendable {
         case .provisioning: .workspaceProvision
         case .resolving: .workspaceResolve
         case .starting: .workspaceStart
+        case .restarting: .workspaceRestart
         case .stopping: .workspaceStop
         case .pausing: .workspacePause
         case .resuming: .workspaceResume
@@ -206,6 +197,40 @@ public struct DoryWorkspaceSnapshotAuthority: Codable, Sendable, Equatable {
     }
 }
 
+/// A future postcondition, never launch authorization. Compound updates bind the requested
+/// configuration before quiescence and must later prove an exact resolved plan for these bytes.
+/// Ordinary start/restart operations cannot use this in place of a runtime binding.
+public struct DoryWorkspacePlannedRuntimeRequirement: Codable, Sendable, Equatable {
+    public var configurationSHA256: String
+    public var virtualHardwareABIVersion: UInt16
+
+    public init(configurationSHA256: String, virtualHardwareABIVersion: UInt16) {
+        self.configurationSHA256 = configurationSHA256
+        self.virtualHardwareABIVersion = virtualHardwareABIVersion
+    }
+
+    fileprivate var isValid: Bool {
+        DoryOperationJournalStore.isDigest(configurationSHA256) && virtualHardwareABIVersion > 0
+    }
+}
+
+/// The selected desktop component is known before guest mutation; its observed installation
+/// fingerprint and replacement plan are not. This postcondition binds the private update
+/// specification, never a launch authorization or a fabricated future configuration hash.
+public struct DoryWorkspaceDesktopUpdateRequirement: Codable, Sendable, Equatable {
+    public var authoritySHA256: String
+    public var virtualHardwareABIVersion: UInt16
+
+    public init(authoritySHA256: String, virtualHardwareABIVersion: UInt16) {
+        self.authoritySHA256 = authoritySHA256
+        self.virtualHardwareABIVersion = virtualHardwareABIVersion
+    }
+
+    fileprivate var isValid: Bool {
+        DoryOperationJournalStore.isDigest(authoritySHA256) && virtualHardwareABIVersion > 0
+    }
+}
+
 public struct DoryWorkspaceLifecycleCondition: Codable, Sendable, Equatable {
     private var persistenceSchemaVersion: UInt16
     public var workspaceID: String
@@ -213,6 +238,8 @@ public struct DoryWorkspaceLifecycleCondition: Codable, Sendable, Equatable {
     public var definitionRevision: UInt64?
     public var runtime: DoryWorkspaceRuntimeBinding?
     public var configurationAuthority: DoryWorkspaceConfigurationAuthority?
+    public var plannedRuntime: DoryWorkspacePlannedRuntimeRequirement?
+    public var desktopUpdate: DoryWorkspaceDesktopUpdateRequirement?
 
     /// Read-only source compatibility for schema-v1 inspection. New construction must provide an
     /// exact tagged runtime binding and cannot synthesize an identity digest from a plan digest.
@@ -223,7 +250,9 @@ public struct DoryWorkspaceLifecycleCondition: Codable, Sendable, Equatable {
         state: DoryWorkspaceLifecycleState,
         definitionRevision: UInt64? = nil,
         runtime: DoryWorkspaceRuntimeBinding? = nil,
-        configurationAuthority: DoryWorkspaceConfigurationAuthority? = nil
+        configurationAuthority: DoryWorkspaceConfigurationAuthority? = nil,
+        plannedRuntime: DoryWorkspacePlannedRuntimeRequirement? = nil,
+        desktopUpdate: DoryWorkspaceDesktopUpdateRequirement? = nil
     ) {
         persistenceSchemaVersion = DoryWorkspaceLifecycleOperation.schemaVersion
         self.workspaceID = workspaceID
@@ -231,19 +260,32 @@ public struct DoryWorkspaceLifecycleCondition: Codable, Sendable, Equatable {
         self.definitionRevision = definitionRevision
         self.runtime = runtime
         self.configurationAuthority = configurationAuthority
+        self.plannedRuntime = plannedRuntime
+        self.desktopUpdate = desktopUpdate
     }
 
     fileprivate var isValid: Bool {
         guard DoryOperationJournalStore.isToken(workspaceID) else { return false }
         if state == .absent {
             return definitionRevision == nil && runtime == nil && configurationAuthority == nil
+                && plannedRuntime == nil && desktopUpdate == nil
         }
+        let futureRuntimeIsValid = plannedRuntime.map {
+            $0.isValid && runtime == nil
+                && $0.configurationSHA256 == configurationAuthority?.legacyConfigurationSHA256
+        } ?? false
+        let desktopUpdateIsValid = desktopUpdate.map {
+            $0.isValid && runtime == nil && plannedRuntime == nil && configurationAuthority == nil
+        } ?? false
         return definitionRevision.map { $0 > 0 } == true
             && (runtime?.isValid ?? true)
+            && (plannedRuntime == nil || futureRuntimeIsValid)
+            && (desktopUpdate == nil || desktopUpdateIsValid)
             && (configurationAuthority?.isValid ?? true)
             && (!(state == .running || state == .paused || state == .suspended)
-                || (runtime != nil
-                    && runtime?.authorizationState != .requiresReplanning))
+                || futureRuntimeIsValid
+                || desktopUpdateIsValid
+                || (runtime != nil && runtime?.authorizationState != .requiresReplanning))
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -254,6 +296,8 @@ public struct DoryWorkspaceLifecycleCondition: Codable, Sendable, Equatable {
         case resolved
         case runtime
         case configurationAuthority
+        case plannedRuntime
+        case desktopUpdate
     }
 
     public init(from decoder: Decoder) throws {
@@ -282,8 +326,11 @@ public struct DoryWorkspaceLifecycleCondition: Codable, Sendable, Equatable {
                 DoryWorkspaceConfigurationAuthority.self,
                 forKey: .configurationAuthority
             )
+            plannedRuntime = try container.decodeIfPresent(DoryWorkspacePlannedRuntimeRequirement.self, forKey: .plannedRuntime)
+            desktopUpdate = try container.decodeIfPresent(DoryWorkspaceDesktopUpdateRequirement.self, forKey: .desktopUpdate)
         } else {
-            guard !container.contains(.runtime), !container.contains(.configurationAuthority) else {
+            guard !container.contains(.runtime), !container.contains(.configurationAuthority),
+                  !container.contains(.plannedRuntime), !container.contains(.desktopUpdate) else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .conditionSchemaVersion,
                     in: container,
@@ -292,6 +339,8 @@ public struct DoryWorkspaceLifecycleCondition: Codable, Sendable, Equatable {
             }
             persistenceSchemaVersion = DoryWorkspaceLifecycleOperation.oldestSupportedSchemaVersion
             configurationAuthority = nil
+            plannedRuntime = nil
+            desktopUpdate = nil
             if let legacyResolved = try container.decodeIfPresent(
                 DoryWorkspaceResolvedCondition.self,
                 forKey: .resolved
@@ -317,6 +366,8 @@ public struct DoryWorkspaceLifecycleCondition: Codable, Sendable, Equatable {
             try container.encode(persistenceSchemaVersion, forKey: .conditionSchemaVersion)
             try container.encodeIfPresent(runtime, forKey: .runtime)
             try container.encodeIfPresent(configurationAuthority, forKey: .configurationAuthority)
+            try container.encodeIfPresent(plannedRuntime, forKey: .plannedRuntime)
+            try container.encodeIfPresent(desktopUpdate, forKey: .desktopUpdate)
         }
     }
 
@@ -357,10 +408,16 @@ public struct DoryWorkspaceOperationStep: Codable, Sendable, Equatable {
 
 public enum DoryWorkspaceReadinessGateKind: String, Codable, CaseIterable, Sendable, Hashable {
     case backendRunning
+    case processAlive
+    case vmStarted
+    case guestBooted
+    case toolsConnected
+    case desktopVisible
     case firstDisplayFrame
     case guestAgent
     case network
     case storageFlush
+    case workloadReady
 }
 
 public struct DoryWorkspaceReadinessGate: Codable, Sendable, Equatable {
@@ -484,6 +541,15 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
     public var retryBudgets: [DoryWorkspaceRetryBudget]
     public var cancellationPolicy: DoryWorkspaceCancellationPolicy
     public var recovery: DoryWorkspaceRecoveryRecipe
+    public var idempotencyKey: String?
+    public var admissionLeaseID: String?
+    /// Authenticated launch operation of the helper being replaced. Resolved restart recovery
+    /// uses this to distinguish the retained source from a newly launched target generation.
+    public var sourceRuntimeOperationID: UUID?
+    /// Private configuration-update intent and recovery bytes. The lifecycle target describes
+    /// desired-state publication; this specification also binds any required subsequent plan.
+    public var configurationUpdateSpecificationDigest: String?
+    public var desktopUpdateSpecificationDigest: String?
 
     public init(
         operationID: UUID = UUID(),
@@ -499,7 +565,12 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         readinessGates: [DoryWorkspaceReadinessGate] = [],
         retryBudgets: [DoryWorkspaceRetryBudget] = [],
         cancellationPolicy: DoryWorkspaceCancellationPolicy,
-        recovery: DoryWorkspaceRecoveryRecipe
+        recovery: DoryWorkspaceRecoveryRecipe,
+        idempotencyKey: String? = nil,
+        admissionLeaseID: String? = nil,
+        sourceRuntimeOperationID: UUID? = nil,
+        configurationUpdateSpecificationDigest: String? = nil,
+        desktopUpdateSpecificationDigest: String? = nil
     ) {
         schemaVersion = Self.schemaVersion
         sourceSchemaVersion = Self.schemaVersion
@@ -517,6 +588,11 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         self.retryBudgets = retryBudgets
         self.cancellationPolicy = cancellationPolicy
         self.recovery = recovery
+        self.idempotencyKey = idempotencyKey
+        self.admissionLeaseID = admissionLeaseID
+        self.sourceRuntimeOperationID = sourceRuntimeOperationID
+        self.configurationUpdateSpecificationDigest = configurationUpdateSpecificationDigest
+        self.desktopUpdateSpecificationDigest = desktopUpdateSpecificationDigest
     }
 
     public func validate() -> [DoryWorkspaceOperationValidationIssue] {
@@ -532,6 +608,25 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
             add(.invalidSchemaVersion, "schemaVersion")
         }
         if operationID == UUID.zero { add(.invalidOperationID, "operationID") }
+        if let configurationUpdateSpecificationDigest,
+           kind != .updating || schemaVersion != Self.schemaVersion
+            || !DoryOperationJournalStore.isDigest(configurationUpdateSpecificationDigest) {
+            add(.invalidCondition, "configurationUpdateSpecificationDigest")
+        }
+        if let desktopUpdateSpecificationDigest,
+           kind != .updating || schemaVersion != Self.schemaVersion
+            || configurationUpdateSpecificationDigest != nil
+            || !DoryOperationJournalStore.isDigest(desktopUpdateSpecificationDigest) {
+            add(.invalidCondition, "desktopUpdateSpecificationDigest")
+        }
+        if kind == .restarting {
+            if sourceRuntimeOperationID == UUID.zero || sourceRuntimeOperationID == operationID
+                || (source.runtime?.policy == .requireResolvedPlan && sourceRuntimeOperationID == nil) {
+                add(.invalidOperationID, "sourceRuntimeOperationID")
+            }
+        } else if sourceRuntimeOperationID != nil {
+            add(.invalidCondition, "sourceRuntimeOperationID")
+        }
         if !source.isValid { add(.invalidCondition, "source") }
         if !target.isValid { add(.invalidCondition, "target") }
         if kind == .cloning {
@@ -544,7 +639,28 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         if Self.requiresRuntimeSource(kind), source.runtime == nil {
             add(.invalidCondition, "source")
         }
-        if Self.requiresRuntimeTarget(kind), target.runtime == nil {
+        let plansTargetRuntime = kind == .updating && configurationUpdateSpecificationDigest != nil
+            && target.plannedRuntime != nil && source.runtime?.policy == .requireResolvedPlan
+            && target.plannedRuntime?.virtualHardwareABIVersion == source.runtime?.virtualHardwareABIVersion
+            && target.state == .running
+        let updatesDesktop = kind == .updating && desktopUpdateSpecificationDigest != nil
+            && target.desktopUpdate?.isValid == true
+            && source.runtime?.policy == .requireResolvedPlan
+            && source.runtime?.authorizationState == .resolvedPlan
+            && target.desktopUpdate?.virtualHardwareABIVersion == source.runtime?.virtualHardwareABIVersion
+            && source.definitionRevision.map {
+                $0 <= UInt64.max - 2 && target.definitionRevision == $0 + 1
+            } == true
+            && [.created, .stopped, .running, .paused].contains(source.state)
+            && target.state == ([.running, .paused].contains(source.state) ? source.state : .stopped)
+        if source.desktopUpdate != nil || (target.desktopUpdate != nil && !updatesDesktop)
+            || (desktopUpdateSpecificationDigest != nil && !updatesDesktop) {
+            add(.invalidCondition, "desktopUpdate")
+        }
+        if source.plannedRuntime != nil || (target.plannedRuntime != nil && !plansTargetRuntime) {
+            add(.invalidCondition, "plannedRuntime")
+        }
+        if Self.requiresRuntimeTarget(kind), target.runtime == nil, !plansTargetRuntime, !updatesDesktop {
             add(.invalidCondition, "target")
         }
         if Self.requiresUnchangedRuntimePlan(kind),
@@ -570,7 +686,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
            target.runtime?.authorizationState != .requiresReplanning {
             add(.invalidCondition, "target.runtime.authorizationState")
         }
-        if source.runtime?.policy != target.runtime?.policy,
+        if source.runtime?.policy != target.runtime?.policy, !plansTargetRuntime, !updatesDesktop,
            kind != .importing, kind != .provisioning, kind != .resolving {
             add(.invalidCondition, "target.runtime.policy")
         }
@@ -582,11 +698,15 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
             if source.state != .absent, source.configurationAuthority == nil {
                 add(.invalidCondition, "source.configurationAuthority")
             }
-            if target.state != .absent, target.configurationAuthority == nil {
+            if target.state != .absent, target.configurationAuthority == nil, !updatesDesktop {
                 add(.invalidCondition, "target.configurationAuthority")
             }
         }
-        if !Self.allows(kind: kind, source: source.state, target: target.state) {
+        let transitionAllowed = updatesDesktop || (kind == .updating && configurationUpdateSpecificationDigest != nil
+            ? [.created, .stopped, .running, .paused].contains(source.state)
+                && (target.state == .stopped || plansTargetRuntime)
+            : Self.allows(kind: kind, source: source.state, target: target.state))
+        if !transitionAllowed {
             add(.invalidTransition, "target.state")
         }
         let validTargetWorkspace = targetWorkspaceID.map {
@@ -640,7 +760,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
                 $0.deadlineOffsetMilliseconds == 0
                     || !deadlineContains(offset: $0.deadlineOffsetMilliseconds)
             })
-            || (Self.requiresBackendReadiness(kind, targetState: target.state)
+            || ((Self.requiresBackendReadiness(kind, targetState: target.state) || plansTargetRuntime || updatesDesktop)
                 && !readinessGates.contains(where: { $0.kind == .backendRunning && $0.required })) {
             add(.invalidReadinessGates, "readinessGates")
         }
@@ -673,6 +793,11 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         case retryBudgets
         case cancellationPolicy
         case recovery
+        case idempotencyKey
+        case admissionLeaseID
+        case sourceRuntimeOperationID
+        case configurationUpdateSpecificationDigest
+        case desktopUpdateSpecificationDigest
     }
 
     public init(from decoder: Decoder) throws {
@@ -729,6 +854,11 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
             forKey: .cancellationPolicy
         )
         recovery = try container.decode(DoryWorkspaceRecoveryRecipe.self, forKey: .recovery)
+        idempotencyKey = try container.decodeIfPresent(String.self, forKey: .idempotencyKey)
+        admissionLeaseID = try container.decodeIfPresent(String.self, forKey: .admissionLeaseID)
+        sourceRuntimeOperationID = try container.decodeIfPresent(UUID.self, forKey: .sourceRuntimeOperationID)
+        configurationUpdateSpecificationDigest = try container.decodeIfPresent(String.self, forKey: .configurationUpdateSpecificationDigest)
+        desktopUpdateSpecificationDigest = try container.decodeIfPresent(String.self, forKey: .desktopUpdateSpecificationDigest)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -751,6 +881,11 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         try container.encode(retryBudgets, forKey: .retryBudgets)
         try container.encode(cancellationPolicy, forKey: .cancellationPolicy)
         try container.encode(recovery, forKey: .recovery)
+        try container.encodeIfPresent(idempotencyKey, forKey: .idempotencyKey)
+        try container.encodeIfPresent(admissionLeaseID, forKey: .admissionLeaseID)
+        try container.encodeIfPresent(sourceRuntimeOperationID, forKey: .sourceRuntimeOperationID)
+        try container.encodeIfPresent(configurationUpdateSpecificationDigest, forKey: .configurationUpdateSpecificationDigest)
+        try container.encodeIfPresent(desktopUpdateSpecificationDigest, forKey: .desktopUpdateSpecificationDigest)
     }
 
     public func journalSpecification() throws -> DoryOperationSpecification {
@@ -807,13 +942,13 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         _ kind: DoryWorkspaceMutationKind,
         targetState: DoryWorkspaceLifecycleState
     ) -> Bool {
-        kind == .starting || kind == .resuming
+        kind == .starting || kind == .restarting || kind == .resuming
             || (kind == .restoring && targetState == .running)
     }
 
     private static func requiresRuntimeSource(_ kind: DoryWorkspaceMutationKind) -> Bool {
         switch kind {
-        case .starting, .stopping, .pausing, .resuming, .suspending, .restoring,
+        case .starting, .restarting, .stopping, .pausing, .resuming, .suspending, .restoring,
              .snapshotting, .cloning, .updating:
             true
         case .importing, .provisioning, .resolving, .repairing, .deleting:
@@ -823,7 +958,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
 
     private static func requiresRuntimeTarget(_ kind: DoryWorkspaceMutationKind) -> Bool {
         switch kind {
-        case .provisioning, .resolving, .starting, .stopping, .pausing, .resuming,
+        case .provisioning, .resolving, .starting, .restarting, .stopping, .pausing, .resuming,
              .suspending, .restoring, .snapshotting, .cloning, .updating, .repairing:
             true
         case .importing, .deleting:
@@ -833,7 +968,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
 
     private static func requiresUnchangedRuntimePlan(_ kind: DoryWorkspaceMutationKind) -> Bool {
         switch kind {
-        case .stopping, .pausing, .resuming, .suspending, .snapshotting:
+        case .restarting, .stopping, .pausing, .resuming, .suspending, .snapshotting:
             true
         case .importing, .provisioning, .resolving, .starting, .restoring, .cloning, .updating,
              .repairing, .deleting:
@@ -875,23 +1010,28 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         case .provisioning: source == .defined && target == .stopped
         case .resolving:
             source != .absent && source != .deleting && target == source
-        case .starting: source == .stopped && target == .running
+        case .starting:
+            (source == .created || source == .stopped || source == .failed)
+                && target == .running
+        case .restarting:
+            (source == .running || source == .paused) && target == .running
         case .stopping:
-            (source == .running || source == .paused || source == .suspended)
+            (source == .starting || source == .installing || source == .running
+                || source == .paused || source == .suspended || source == .failed)
                 && target == .stopped
         case .pausing: source == .running && target == .paused
         case .resuming: source == .paused && target == .running
         case .suspending:
             (source == .running || source == .paused) && target == .suspended
         case .restoring:
-            (source == .stopped || source == .suspended || source == .failed
+            (source == .created || source == .stopped || source == .suspended || source == .failed
                 || source == .running || source == .paused)
                 && (target == .stopped || target == .running)
         case .snapshotting:
-            (source == .stopped || source == .running || source == .paused)
+            (source == .created || source == .stopped || source == .running || source == .paused)
                 && target == source
         case .cloning:
-            (source == .stopped || source == .suspended) && target == .stopped
+            (source == .created || source == .stopped || source == .suspended) && target == .stopped
         case .updating:
             (source == .stopped || source == .running) && target == source
         case .repairing: source == .failed && target == .stopped
@@ -905,6 +1045,8 @@ extension DoryOperationJournalStore {
     /// Atomically publishes a workspace lifecycle journal and its exact immutable contract.
     public func begin(
         _ binding: DoryWorkspaceLifecycleJournalBinding,
+        configurationUpdateSpecification: DoryOperationSpecification? = nil,
+        desktopUpdateSpecification: DoryOperationSpecification? = nil,
         fileManager: FileManager = .default
     ) throws -> DoryOperationLease {
         let operation: DoryWorkspaceLifecycleOperation
@@ -926,11 +1068,13 @@ extension DoryOperationJournalStore {
                 "workspace lifecycle journal binding mismatch"
             )
         }
+        try validateConfigurationUpdateSpecification(configurationUpdateSpecification, operation: operation)
+        try validateDesktopUpdateSpecification(desktopUpdateSpecification, operation: operation)
         let mutationScope = authenticatedMutationScope(for: binding.plan)
         return try begin(
             binding.plan,
             completenessPlanData: nil,
-            specifications: [binding.specification],
+            specifications: [binding.specification] + [configurationUpdateSpecification, desktopUpdateSpecification].compactMap { $0 },
             at: Date(
                 timeIntervalSince1970: Double(operation.createdAtUnixMilliseconds) / 1_000
             ),
@@ -945,6 +1089,8 @@ extension DoryOperationJournalStore {
     public func begin(
         _ binding: DoryWorkspaceLifecycleJournalBinding,
         holdingMutationLock: EngineStateDirectoryLock,
+        configurationUpdateSpecification: DoryOperationSpecification? = nil,
+        desktopUpdateSpecification: DoryOperationSpecification? = nil,
         fileManager: FileManager = .default
     ) throws -> DoryOperationLease {
         let operation: DoryWorkspaceLifecycleOperation
@@ -966,11 +1112,13 @@ extension DoryOperationJournalStore {
                 "workspace lifecycle journal binding mismatch"
             )
         }
+        try validateConfigurationUpdateSpecification(configurationUpdateSpecification, operation: operation)
+        try validateDesktopUpdateSpecification(desktopUpdateSpecification, operation: operation)
         let mutationScope = authenticatedMutationScope(for: binding.plan)
         return try begin(
             binding.plan,
             completenessPlanData: nil,
-            specifications: [binding.specification],
+            specifications: [binding.specification] + [configurationUpdateSpecification, desktopUpdateSpecification].compactMap { $0 },
             at: Date(
                 timeIntervalSince1970: Double(operation.createdAtUnixMilliseconds) / 1_000
             ),
@@ -978,6 +1126,24 @@ extension DoryOperationJournalStore {
             mutationScope: mutationScope,
             heldMutationLock: holdingMutationLock
         )
+    }
+
+    private func validateConfigurationUpdateSpecification(
+        _ specification: DoryOperationSpecification?, operation: DoryWorkspaceLifecycleOperation
+    ) throws {
+        guard specification?.digest == operation.configurationUpdateSpecificationDigest,
+              specification?.isValid != false else {
+            throw DoryOperationJournalError.invalidPlan("configuration update recovery specification mismatch")
+        }
+    }
+
+    private func validateDesktopUpdateSpecification(
+        _ specification: DoryOperationSpecification?, operation: DoryWorkspaceLifecycleOperation
+    ) throws {
+        guard specification?.digest == operation.desktopUpdateSpecificationDigest,
+              specification?.isValid != false else {
+            throw DoryOperationJournalError.invalidPlan("desktop update recovery specification mismatch")
+        }
     }
 }
 
@@ -996,6 +1162,12 @@ extension DoryOperationLease {
             dependencyClosureDigest: record.plan.dependencyClosureDigest
         ), expected.plan == record.plan, expected.specification.data == data else {
             throw DoryOperationJournalError.invalidRecord(operationDirectory)
+        }
+        if let digest = operation.configurationUpdateSpecificationDigest {
+            _ = try readSpecification(digest: digest)
+        }
+        if let digest = operation.desktopUpdateSpecificationDigest {
+            _ = try readSpecification(digest: digest)
         }
         return operation
     }
