@@ -415,6 +415,55 @@ struct PVHRunOutcome: Codable, Sendable {
   }
 }
 
+/// Bounded, read-only controller state from the same completed slice as the CPU snapshot.
+/// Pin 2 is the DoryPC-v1 PIT route, independent of the selected guest image.
+struct PVHTimerInterruptSnapshot: Codable, Sendable {
+  struct HPETTimer: Codable, Sendable {
+    let configuration: UInt64
+    let comparator: UInt64
+    let period: UInt64
+    let armed: Bool
+  }
+  let localAPIC: DoryPCLocalAPICSnapshot
+  let pitRoute: DoryPCIOAPICRoute
+  let pitMode: UInt8
+  let pitReload: UInt32
+  let pitCurrent: UInt32
+  let pitArmed: Bool
+  let pic: [String: UInt8]
+  let hpetEnabled: Bool
+  let hpetLegacyReplacement: Bool
+  let hpetMainCounter: UInt64
+  let hpetInterruptStatus: UInt64
+  let hpetTimers: [HPETTimer]
+
+  init(machine: DoryPCDirectKernelMachine) throws {
+    localAPIC = machine.localAPIC.snapshot()
+    pitRoute = try machine.ioAPIC.route(for: 2)
+    let pit = machine.legacyPIT.snapshot()
+    pitMode = pit.mode.rawValue
+    pitReload = pit.reload
+    pitCurrent = pit.current
+    pitArmed = pit.armed
+    let legacy = machine.legacyPIC.snapshot()
+    pic = [
+      "masterVectorOffset": legacy.masterVectorOffset, "slaveVectorOffset": legacy.slaveVectorOffset,
+      "masterMask": legacy.masterMask, "slaveMask": legacy.slaveMask,
+      "masterRequest": legacy.masterRequest, "slaveRequest": legacy.slaveRequest,
+      "masterInService": legacy.masterInService, "slaveInService": legacy.slaveInService,
+    ]
+    let hpet = machine.hpet.snapshot()
+    hpetEnabled = hpet.enabled
+    hpetLegacyReplacement = hpet.legacyReplacement
+    hpetMainCounter = hpet.mainCounter
+    hpetInterruptStatus = hpet.interruptStatus
+    hpetTimers = hpet.timers.prefix(32).map {
+      .init(configuration: $0.configuration, comparator: $0.comparator,
+        period: $0.period, armed: $0.armed)
+    }
+  }
+}
+
 struct PVHDiagnosticRecord: Codable, Sendable {
   let schemaVersion = 1
   let kind = "dev.dory.pvh-boot-diagnostic"
@@ -432,6 +481,7 @@ struct PVHDiagnosticRecord: Codable, Sendable {
   var lastExits: [PVHStopSnapshot] = []
   var state: DoryX86ArchitecturalState?
   var executionStatistics: DoryPCExecutionStatistics?
+  var timerInterruptState: PVHTimerInterruptSnapshot?
   var consoleTail = ""
   var consoleBytes: UInt64 = 0
   var guestReceipt: PVHGuestReceipt?

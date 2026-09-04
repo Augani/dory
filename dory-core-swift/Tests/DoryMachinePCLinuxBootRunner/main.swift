@@ -136,6 +136,9 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
       if record.lastExits.count > 16 { record.lastExits.removeFirst(record.lastExits.count - 16) }
       record.state = state
       record.executionStatistics = machine.executionStatistics
+      if configuration.diagnostics != nil {
+        record.timerInterruptState = try PVHTimerInterruptSnapshot(machine: machine)
+      }
       record.elapsedNanoseconds = session.elapsedNanoseconds
       session.publish(record)
       if let outcome = PVHRunOutcome.terminal(stop: stop, receiptSeen: console.receipt != nil) {
