@@ -6,17 +6,20 @@ public struct DoryX86PagingContext: Sendable, Hashable {
   public let currentPrivilegeLevel: UInt8
   public let mode: DoryX86ExecutionMode
   public let isImplicitSupervisorAccess: Bool
+  public let supportsOneGiBPages: Bool
 
   public init(
     control: DoryX86ControlState,
     rflags: DoryX86RFLAGS,
     currentPrivilegeLevel: UInt8,
     mode: DoryX86ExecutionMode,
-    isImplicitSupervisorAccess: Bool = false
+    isImplicitSupervisorAccess: Bool = false,
+    supportsOneGiBPages: Bool = true
   ) {
     self.control = control
     self.rflags = rflags
     self.isImplicitSupervisorAccess = isImplicitSupervisorAccess
+    self.supportsOneGiBPages = supportsOneGiBPages
     // Implicit system-data reads use supervisor paging privileges even in v8086 mode.
     // Ordinary CPL remains fixed in real/v8086 modes, independent of CS selector low bits.
     if isImplicitSupervisorAccess || mode == .real16 {
@@ -30,12 +33,17 @@ public struct DoryX86PagingContext: Sendable, Hashable {
     self.mode = mode
   }
 
-  public init(state: DoryX86ArchitecturalState, mode: DoryX86ExecutionMode) {
+  public init(
+    state: DoryX86ArchitecturalState,
+    mode: DoryX86ExecutionMode,
+    profile: DoryX86CPUProfile = .compatibleV1
+  ) {
     self.init(
       control: state.control,
       rflags: state.rflags,
       currentPrivilegeLevel: UInt8(state.cs.selector & 3),
-      mode: mode
+      mode: mode,
+      supportsOneGiBPages: profile.supports(.oneGiBPages)
     )
   }
 }
@@ -64,6 +72,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     let access: DoryX86MemoryAccessKind
     let alignmentCheck: Bool
     let isImplicitSupervisorAccess: Bool
+    let supportsOneGiBPages: Bool
     let generation: UInt64
   }
 
@@ -160,6 +169,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       access: access,
       alignmentCheck: context.rflags.contains(.alignmentCheck),
       isImplicitSupervisorAccess: context.isImplicitSupervisorAccess,
+      supportsOneGiBPages: context.supportsOneGiBPages,
       generation: generation
     )
     let recentIndex = recentEntryIndex(access)
@@ -264,7 +274,9 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       writable = writable && entry & (1 << 1) != 0
       executable = executable && entry & (1 << 63) == 0
       let bit7 = entry & (1 << 7) != 0
-      if bit7 && level == 0 {
+      // Intel SDM Vol. 3A §5.5.3/§5.5.5: PDPTE.PS is reserved when
+      // CPUID.80000001H:EDX.Page1GB is absent. Check before any leaf A/D writes.
+      if bit7 && (level == 0 || (level == 1 && !context.supportsOneGiBPages)) {
         throw pageFault(linearAddress, access, context, protection: true, reserved: true)
       }
       // Bit 7 is PS in a PDPTE/PDE, but PAT in a 4 KiB PTE.
@@ -633,7 +645,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
   func readImplicitSupervisor(at address: UInt64, byteCount: Int) throws -> [UInt8] {
     let supervisorContext = DoryX86PagingContext(
       control: context.control, rflags: context.rflags, currentPrivilegeLevel: 0,
-      mode: context.mode, isImplicitSupervisorAccess: true
+      mode: context.mode, isImplicitSupervisorAccess: true,
+      supportsOneGiBPages: context.supportsOneGiBPages
     )
     return try readLinear(
       at: address, byteCount: byteCount, access: .read, allowShortRead: false,
@@ -646,7 +659,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
   func implicitSupervisorMemory() -> DoryX86TranslatedMemory {
     .init(physicalMemory: physicalMemory, pagingUnit: pagingUnit,
       context: .init(control: context.control, rflags: context.rflags,
-        currentPrivilegeLevel: 0, mode: context.mode, isImplicitSupervisorAccess: true))
+        currentPrivilegeLevel: 0, mode: context.mode, isImplicitSupervisorAccess: true,
+        supportsOneGiBPages: context.supportsOneGiBPages))
   }
 
   public func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {

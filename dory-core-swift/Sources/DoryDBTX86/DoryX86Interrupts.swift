@@ -18,7 +18,11 @@ public enum DoryX86InterruptDeliveryError: Error, Sendable, Equatable {
 }
 
 public struct DoryX86InterruptDelivery: Sendable {
-  public init() {}
+  private let profile: DoryX86CPUProfile
+
+  public init(profile: DoryX86CPUProfile = .compatibleV1) {
+    self.profile = profile
+  }
 
   public func deliver(
     vector: UInt8,
@@ -751,7 +755,8 @@ public struct DoryX86InterruptDelivery: Sendable {
         control: state.control,
         rflags: state.rflags,
         currentPrivilegeLevel: cpl,
-        mode: mode
+        mode: mode,
+        supportsOneGiBPages: profile.supports(.oneGiBPages)
       )
     )
   }

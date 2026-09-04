@@ -118,14 +118,14 @@ public struct DoryX86Interpreter: Sendable {
     }
     let executionMemory: any DoryX86Memory
     if let translatedMemory {
-      translatedMemory.updateContext(.init(state: state, mode: mode))
+      translatedMemory.updateContext(.init(state: state, mode: mode, profile: profile))
       executionMemory = translatedMemory
     } else if let pagingUnit {
       executionMemory =
         DoryX86TranslatedMemory(
           physicalMemory: memory,
           pagingUnit: pagingUnit,
-          context: .init(state: state, mode: mode)
+          context: .init(state: state, mode: mode, profile: profile)
         )
     } else {
       executionMemory = memory
@@ -3005,13 +3005,13 @@ public struct DoryX86Interpreter: Sendable {
         state.gs.base = state.modelSpecific.gsBase
       case .softwareInterrupt(let vector):
         do {
-          try DoryX86InterruptDelivery().deliver(
+          try DoryX86InterruptDelivery(profile: profile).deliver(
             vector: vector,
             source: .software,
             returnInstructionPointer: nextRIP,
             state: &state,
             physicalMemory: memory,
-            pagingUnit: pagingUnit,
+            pagingUnit: pagingUnit ?? translatedMemory?.translationUnit,
             mode: mode
           )
           return .retired(instruction)
@@ -3021,10 +3021,10 @@ public struct DoryX86Interpreter: Sendable {
         }
       case .interruptReturn:
         do {
-          try DoryX86InterruptDelivery().interruptReturn(
+          try DoryX86InterruptDelivery(profile: profile).interruptReturn(
             state: &state,
             physicalMemory: memory,
-            pagingUnit: pagingUnit,
+            pagingUnit: pagingUnit ?? translatedMemory?.translationUnit,
             mode: mode
           )
           return .retired(instruction)

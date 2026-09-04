@@ -507,7 +507,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       DoryX86TranslatedMemory(
         physicalMemory: physicalMemory,
         pagingUnit: pagingUnit,
-        context: .init(state: .reset(), mode: .real16)
+        context: .init(state: .reset(), mode: .real16, profile: interpreter.profile)
       )
     }
     interpreters = (0..<processorCount).map {
@@ -707,7 +707,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         return nil
       }
       let translatedMemory = translatedMemories[index]
-      translatedMemory.updateContext(.init(state: state, mode: executionMode(state)))
+      translatedMemory.updateContext(
+        .init(state: state, mode: executionMode(state), profile: interpreter.profile))
       return try translatedMemory.instructionBytes(
         at: state.cs.base &+ state.rip,
         maximumCount: maximumCount
@@ -727,7 +728,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         return nil
       }
       let translatedMemory = translatedMemories[index]
-      translatedMemory.updateContext(.init(state: state, mode: executionMode(state)))
+      translatedMemory.updateContext(
+        .init(state: state, mode: executionMode(state), profile: interpreter.profile))
       return try translatedMemory.read(at: address, byteCount: maximumCount)
     }
   }
@@ -807,7 +809,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           }
           let faultMode = executionMode(processorState.value)
           translatedMemories[processor].updateContext(
-            .init(state: processorState.value, mode: faultMode)
+            .init(state: processorState.value, mode: faultMode, profile: interpreter.profile)
           )
           let faultLinearInstructionPointer =
             faultMode == .long64
@@ -826,7 +828,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
             instructionBytes: faultBytes
           )
           do {
-            try DoryX86InterruptDelivery().deliverException(
+            try DoryX86InterruptDelivery(profile: interpreter.profile).deliverException(
               exception,
               state: &processorState.value,
               physicalMemory: physicalMemories[processor],
@@ -883,7 +885,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     {
       let budget = jitInstructionBudget ?? 1
       let translatedMemory = translatedMemories[processor]
-      translatedMemory.updateContext(.init(state: state, mode: mode))
+      translatedMemory.updateContext(.init(state: state, mode: mode, profile: interpreter.profile))
       let guestRIP = state.rip
       if let execution = try jit.executeChainedSummary(
         byteProvider: { address, maximumCount in
@@ -1241,7 +1243,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       }
       guard let vector else { continue }
       do {
-        try DoryX86InterruptDelivery().deliver(
+        try DoryX86InterruptDelivery(profile: interpreter.profile).deliver(
           vector: vector,
           source: source,
           state: &processorState.value,
