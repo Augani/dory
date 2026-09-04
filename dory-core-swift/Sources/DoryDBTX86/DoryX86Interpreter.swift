@@ -855,15 +855,12 @@ public struct DoryX86Interpreter: Sendable {
           }
           break
         }
+        if handleX87SpecialStackFault(
+          operation, instruction: instruction, state: &state.floatingPoint
+        ) {
+          break
+        }
         if DoryX86X87Stack.isEmpty(0, state: state.floatingPoint) {
-          if operation == .test {
-            if DoryX86X87Stack.record(
-              .underflow, instruction: instruction, state: &state.floatingPoint
-            ) {
-              setX87ComparisonStatus(.unordered, state: &state.floatingPoint)
-            }
-            break
-          }
           if operation == .examine {
             let physical = physicalX87Register(0, state: state.floatingPoint)
             let negative = state.floatingPoint.x87[physical].bytes[9] & 0x80 != 0
@@ -4273,6 +4270,60 @@ public struct DoryX86Interpreter: Sendable {
   ) -> Bool {
     DoryX86X87Transfer.publish(flags: flags, roundedUp: false, state: &state)
     return flags & ~(state.x87ControlWord & 0x3F) == 0
+  }
+
+  private func handleX87SpecialStackFault(
+    _ operation: DoryX87SpecialOperation,
+    instruction: DoryX86DecodedInstruction,
+    state: inout DoryX86FloatingPointState
+  ) -> Bool {
+    let st0Empty = DoryX86X87Stack.isEmpty(0, state: state)
+    let st1Empty = DoryX86X87Stack.isEmpty(1, state: state)
+
+    switch operation {
+    case .loadOne, .loadLog2Ten, .loadLog2E, .loadPi, .loadLog10Two, .loadLnTwo,
+      .loadZero, .examine, .decrementTop, .incrementTop:
+      return false
+    case .test:
+      guard st0Empty else { return false }
+      if DoryX86X87Stack.record(.underflow, instruction: instruction, state: &state) {
+        setX87ComparisonStatus(.unordered, state: &state)
+      }
+      return true
+    case .tangent, .extract, .sineCosine:
+      if st0Empty {
+        if DoryX86X87Stack.record(.underflow, instruction: instruction, state: &state) {
+          writeX87Register(0, value: DoryX86X87Stack.indefinite, state: &state)
+          DoryX86X87Stack.commitPush(DoryX86X87Stack.indefinite, state: &state)
+        }
+        return true
+      }
+      guard !DoryX86X87Stack.isEmpty(7, state: state) else { return false }
+      if DoryX86X87Stack.record(.overflow, instruction: instruction, state: &state) {
+        DoryX86X87Stack.commitPush(DoryX86X87Stack.indefinite, state: &state)
+      }
+      return true
+    case .yLog2X, .arctangent, .yLog2XPlusOne:
+      guard st0Empty || st1Empty else { return false }
+      if DoryX86X87Stack.record(.underflow, instruction: instruction, state: &state) {
+        writeX87Register(1, value: DoryX86X87Stack.indefinite, state: &state)
+        popX87(state: &state)
+      }
+      return true
+    case .partialRemainderNearest, .partialRemainder, .scale:
+      guard st0Empty || st1Empty else { return false }
+      if DoryX86X87Stack.record(.underflow, instruction: instruction, state: &state) {
+        writeX87Register(0, value: DoryX86X87Stack.indefinite, state: &state)
+      }
+      return true
+    case .changeSign, .absolute, .twoToXMinusOne, .squareRoot, .roundToInteger,
+      .sine, .cosine:
+      guard st0Empty else { return false }
+      if DoryX86X87Stack.record(.underflow, instruction: instruction, state: &state) {
+        writeX87Register(0, value: DoryX86X87Stack.indefinite, state: &state)
+      }
+      return true
+    }
   }
 
   private func executeX87Special(

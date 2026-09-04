@@ -1,6 +1,7 @@
 // Intel SDM092 Vol. 1 §§4.8.3.7, 4.9.2, 8.5.1.1 and 8.7.1.
 // This helper covers transfer/constant-load and binary arithmetic/comparison
-// stack faults. Transcendental stack responses remain separate work.
+// stack faults, including the special instructions that produce or consume
+// multiple stack values.
 // Suppressed-store fault priority is a Dory compatibility choice correlated with
 // https://github.com/bochs-emu/Bochs/blob/master/bochs/cpu/fpu/fpu_load_store.cc
 // rather than a local physical-reference qualification.
