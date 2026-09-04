@@ -95,3 +95,34 @@ syscall or fault-injection suites. File writes use tmpfs and do not qualify a
 block device or durable filesystem. This fixture provides no glibc, systemd,
 general-purpose distribution or release qualification. Parser tests use clearly
 synthetic ELF headers and are separate from the pinned real guest archive.
+
+## Required CI boot checks
+
+The `Tests` workflow runs `P02 userspace boot (interpreter)` and
+`P02 userspace boot (baseline-jit)` on every configured push, pull request and manual
+run. Both are unconditional jobs, and one tier failing does not cancel the other.
+Repository branch protection must require both named checks; workflow source alone
+does not configure that repository setting.
+
+Each job uses the ARM64 `macos-26` hosted image, requires final Xcode 26.6 build
+17F113 with SDK 26.5, builds from the checked-out source, fetches the pinned Alpine
+3.24.1 input through the existing fixture preparer and independently re-verifies
+the generated archive. It gives the guest 512 MiB, at most one billion instructions
+and 900 seconds on the runner's monotonic clock. The fixture/download, build and
+boot steps also have outer CI timeouts. These limits are engineering bounds; they
+do not assert that the current implementation can finish within them.
+
+Acceptance requires runner exit 0, the fresh UUID, all seven exact workload names,
+the diagnostic's successful outcome and a final `powered-off` machine exit. Missing
+media, altered hashes, HLT, reset, exceptions, instruction/wall budget exhaustion,
+an absent marker or a marker without ACPI poweroff fail the job. No fixture skip or
+`continue-on-error` is used. Both jobs upload their source/host identity, input
+provenance, build logs, runner exit status, summary, console/fault diagnostic and
+stderr on success or failure, retaining artifacts for 14 days. An infrastructure
+termination can prevent the final artifact upload; the runner's 900-second watchdog
+normally finishes before the 17-minute CI boot-step limit.
+
+The hosted image and installed toolchain are documented by
+[GitHub's runner inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-26-arm64-Readme.md).
+This CI gate is userspace boot engineering evidence. It does not substitute for
+physical x86 instruction-reference results, minimum-host testing or release qualification.

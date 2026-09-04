@@ -8,6 +8,161 @@ on:
   workflow_dispatch:
 
 jobs:
+  p02-userspace-boot:
+    name: P02 userspace boot (${{ matrix.tier }})
+    # ARM64 hosted image; this is CPU/PC engineering acceptance, not physical release qualification.
+    runs-on: macos-26
+    timeout-minutes: 120
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        tier: [interpreter, baseline-jit]
+    env:
+      DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
+      DORY_P02_TIER: ${{ matrix.tier }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Record source and require the ARM64 build tuple
+        timeout-minutes: 5
+        run: |
+          set -euo pipefail
+          p02_directory="$RUNNER_TEMP/dory-p02-userspace"
+          mkdir -p "$p02_directory/evidence" "$p02_directory/fixtures"
+          echo "DORY_P02_DIRECTORY=$p02_directory" >> "$GITHUB_ENV"
+          cp Config/DoryVirtualizationGuestCandidates.json "$p02_directory/evidence/candidate-catalog.json"
+          cp guest/diagnostics/p02-minimal-userspace/fixture.json "$p02_directory/evidence/fixture-recipe.json"
+          {
+            git rev-parse HEAD
+            git status --porcelain
+            sw_vers
+            uname -a
+            printf 'ImageOS=%s\nImageVersion=%s\n' "${ImageOS:-unavailable}" "${ImageVersion:-unavailable}"
+            test "$(uname -m)" = arm64
+            test -x "$DEVELOPER_DIR/usr/bin/xcodebuild"
+            xcodebuild -version
+            test "$(xcodebuild -version)" = $'Xcode 26.6\nBuild version 17F113'
+            test "$(xcrun --sdk macosx --show-sdk-version)" = 26.5
+            swift --version
+            python3 --version
+            tar --version
+            shasum -a 256 Config/DoryVirtualizationGuestCandidates.json \
+              guest/diagnostics/p02-minimal-userspace/fixture.json \
+              guest/diagnostics/p02-minimal-userspace/init scripts/prepare-virtualization-fixtures.py
+          } 2>&1 | tee "$p02_directory/evidence/source-host.log"
+      - name: Install the repository Rust toolchain
+        uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30
+        with:
+          toolchain: '1.95.0' # rust-toolchain.toml
+      - name: Install Protocol Buffers compiler
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          brew install protobuf 2>&1 | tee "$DORY_P02_DIRECTORY/evidence/protobuf-install.log"
+          protoc --version | tee "$DORY_P02_DIRECTORY/evidence/protobuf-version.log"
+      - name: Prepare the clean-checkout Swift package dependency
+        timeout-minutes: 35
+        run: |
+          set -euo pipefail
+          scripts/build-dory-ffi-xcframework.sh --if-needed 2>&1 | tee "$DORY_P02_DIRECTORY/evidence/ffi-build.log"
+      - name: Build the bounded PVH runner
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          swift build --package-path dory-core-swift --scratch-path "$DORY_P02_DIRECTORY/build" \
+            --configuration release --jobs 3 --product dory-pc-linux-boot-runner \
+            2>&1 | tee "$DORY_P02_DIRECTORY/evidence/runner-build.log"
+          runner_directory="$(swift build --package-path dory-core-swift \
+            --scratch-path "$DORY_P02_DIRECTORY/build" --configuration release --show-bin-path)"
+          test -x "$runner_directory/dory-pc-linux-boot-runner"
+          echo "DORY_P02_RUNNER=$runner_directory/dory-pc-linux-boot-runner" >> "$GITHUB_ENV"
+          shasum -a 256 "$runner_directory/dory-pc-linux-boot-runner" \
+            > "$DORY_P02_DIRECTORY/evidence/runner-sha256.txt"
+      - name: Fetch and verify the pinned minimal diagnostic fixture
+        timeout-minutes: 10
+        run: |
+          set -euo pipefail
+          python3 scripts/prepare-virtualization-fixtures.py \
+            --id alpine-virt-3.24.1-x86_64 --cache-directory "$DORY_P02_DIRECTORY/fixtures" \
+            --extract --diagnostic-initramfs \
+            > "$DORY_P02_DIRECTORY/evidence/fixture-preparation.json" \
+            2> "$DORY_P02_DIRECTORY/evidence/fixture-preparation.stderr"
+          python3 scripts/prepare-virtualization-fixtures.py \
+            --id alpine-virt-3.24.1-x86_64 --cache-directory "$DORY_P02_DIRECTORY/fixtures" \
+            --verify-only --extract --diagnostic-initramfs \
+            > "$DORY_P02_DIRECTORY/evidence/fixture-verification.json" \
+            2> "$DORY_P02_DIRECTORY/evidence/fixture-verification.stderr"
+          cp "$DORY_P02_DIRECTORY/fixtures/x86_64-p02-minimal-userspace-v2.cpio.manifest.json" \
+            "$DORY_P02_DIRECTORY/evidence/initramfs-manifest.json"
+      - name: Require all userspace workloads and ACPI poweroff
+        timeout-minutes: 17
+        run: |
+          set -euo pipefail
+          run_id="$(uuidgen | tr '[:upper:]' '[:lower:]')"
+          printf '%s\n' "$run_id" > "$DORY_P02_DIRECTORY/evidence/run-id.txt"
+          set +e
+          "$DORY_P02_RUNNER" \
+            --kernel "$DORY_P02_DIRECTORY/fixtures/x86_64-vmlinux" \
+            --kernel-sha256 e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8 \
+            --initrd "$DORY_P02_DIRECTORY/fixtures/x86_64-p02-minimal-userspace-v2.cpio" \
+            --initrd-sha256 22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249 \
+            --symbols "$DORY_P02_DIRECTORY/fixtures/x86_64-System.map-6.18.35" \
+            --symbols-sha256 a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a \
+            --command-line 'console=ttyS0 rdinit=/init panic=-1' \
+            --tier "$DORY_P02_TIER" --memory-mib 512 \
+            --max-instructions 1000000000 --wall-seconds 900 --run-id "$run_id" \
+            --workload bootstrap.filesystems --workload syscall.identity \
+            --workload process.creation_exec_wait --workload memory.allocation_copy \
+            --workload signal.handler_return --workload timer.sleep_elapsed \
+            --workload filesystem.write_read_sync \
+            --diagnostics "$DORY_P02_DIRECTORY/evidence/boot-diagnostic.json" \
+            > "$DORY_P02_DIRECTORY/evidence/boot-summary.json" \
+            2> "$DORY_P02_DIRECTORY/evidence/boot.stderr"
+          runner_status=$?
+          set -e
+          printf '%s\n' "$runner_status" > "$DORY_P02_DIRECTORY/evidence/runner-exit-code.txt"
+          cat "$DORY_P02_DIRECTORY/evidence/boot-summary.json"
+          cat "$DORY_P02_DIRECTORY/evidence/boot.stderr" >&2
+          test "$runner_status" -eq 0
+          python3 -I - <<'PY'
+          import json, os, pathlib
+          evidence = pathlib.Path(os.environ['DORY_P02_DIRECTORY']) / 'evidence'
+          summary = json.loads((evidence / 'boot-summary.json').read_text())
+          diagnostic = json.loads((evidence / 'boot-diagnostic.json').read_text())
+          recipe = json.loads((evidence / 'fixture-recipe.json').read_text())
+          run_id = (evidence / 'run-id.txt').read_text().strip()
+          workloads = sorted(name for name in recipe['expectedResults'] if name != 'shutdown.request')
+          assert summary['kind'] == 'dev.dory.pvh-boot-result'
+          assert summary['runID'] == run_id and summary['passed'] is True
+          assert summary['exitCode'] == 0 and summary['guestReceiptSeen'] is True
+          assert summary['reason'] == 'userspace-workloads-powered-off'
+          assert summary['kernelSHA256'] == recipe['kernelSHA256']
+          assert summary['initrdSHA256'] == recipe['outputSHA256']
+          assert diagnostic['schemaVersion'] == 1 and diagnostic['stage'] == 'finished'
+          assert diagnostic['kind'] == 'dev.dory.pvh-boot-diagnostic'
+          assert diagnostic['configuration']['runID'] == run_id
+          assert diagnostic['outcome'] == {'passed': True, 'reason': 'userspace-workloads-powered-off', 'exitCode': 0}
+          assert diagnostic['guestReceipt'] == {'schemaVersion': 1, 'doryPVHBoot': 'userspace-ready',
+              'runID': run_id, 'workloadsPassed': True, 'workloads': diagnostic['guestReceipt']['workloads']}
+          assert sorted(diagnostic['guestReceipt']['workloads']) == workloads and len(workloads) == 7
+          assert diagnostic['lastExits'][-1]['reason'] == 'powered-off'
+          print('Accepted: exact run UUID, seven userspace workloads, and host-observed ACPI poweroff')
+          PY
+      - name: Preserve P02 boot evidence on every outcome
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: p02-userspace-${{ matrix.tier }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dory-p02-userspace/evidence
+          if-no-files-found: error
+          retention-days: 14
+
   rust:
     runs-on: ubuntu-latest
     timeout-minutes: 20
