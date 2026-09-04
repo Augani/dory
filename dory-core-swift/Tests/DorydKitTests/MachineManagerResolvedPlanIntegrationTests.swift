@@ -2248,7 +2248,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(changed.status(id: "legacy")?.runtimeIdentity.invalidationReason == .planRecoveryFailed)
     }
 
-    @Test("per-workspace policy requires every legacy identity to be planned before launch")
+    @Test("per-workspace launch requires production authority for legacy and persisted-plan identities")
     func perWorkspaceMixedAuthorityAndRestart() throws {
         let state = try makeState("per-workspace-mixed")
         defer { try? FileManager.default.removeItem(atPath: state) }
@@ -2291,10 +2291,20 @@ struct MachineManagerResolvedPlanIntegrationTests {
             _ = try restarted.start(id: "legacy")
         }
         #expect(starter.count == 0)
-        #expect(try restarted.start(id: "planned").state == .running)
-        #expect(resolver.callCount == 1)
-        #expect(starter.count == 1)
-        _ = try restarted.stop(id: "planned")
+        let identityPath = state + "/planned/" + DoryMachineRuntimeIdentityStore.recordFileName
+        let originalIdentityData = try Data(contentsOf: URL(fileURLWithPath: identityPath))
+        // A persisted plan and injected launch resolver cannot replace the production
+        // planning controller that owns the caller's start transaction and admission.
+        do {
+            _ = try restarted.start(id: "planned")
+            Issue.record("partial launch infrastructure authorized production start")
+        } catch let error as MachineManagerError {
+            #expect(String(describing: error).contains("production source authority"))
+        }
+        #expect(resolver.callCount == 0)
+        #expect(starter.count == 0)
+        #expect(restarted.status(id: "planned")?.runtimeIdentity == plannedIdentity)
+        #expect(try Data(contentsOf: URL(fileURLWithPath: identityPath)) == originalIdentityData)
 
         let secondRestart = makeManager(state: state, policy: .perWorkspaceAuthority)
         #expect(secondRestart.status(id: "legacy")?.runtimeIdentity.mode == .legacyCompatibility)
@@ -2461,7 +2471,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(resolvedStarter.count == 0)
     }
 
-    @Test("restoring historical legacy snapshot cannot revive compatibility after planning")
+    @Test("historical snapshot restore without production authority preserves the resolved workspace")
     func resolvedWorkspaceRestoreOfLegacySnapshotRequiresReplanning() throws {
         let state = try makeState("resolved-restore-legacy")
         defer { try? FileManager.default.removeItem(atPath: state) }
@@ -2492,15 +2502,27 @@ struct MachineManagerResolvedPlanIntegrationTests {
             plans: plans,
             expectedPlanRevision: { _ in 1 }
         )
-        #expect(resolved.status(id: "dev")?.runtimeIdentity.mode == .resolvedPlan)
+        let originalIdentity = try #require(resolved.status(id: "dev")?.runtimeIdentity)
+        #expect(originalIdentity.mode == .resolvedPlan)
+        let protectedPaths = [
+            "machine.json", DoryWorkspaceRepository.recordFileName,
+            DoryMachineRuntimeIdentityStore.recordFileName, "kernel", "rootfs.ext4",
+        ].map { state + "/dev/" + $0 }
+        let originalData = try protectedPaths.map { try Data(contentsOf: URL(fileURLWithPath: $0)) }
 
-        let restored = try resolved.restoreSnapshot(
-            machineID: "dev",
-            snapshotID: "historical"
-        )
-        #expect(restored.state == .stopped)
-        #expect(restored.runtimeIdentity.mode == .requiresReplanning)
-        #expect(restored.runtimeIdentity.invalidationReason == .restoredSnapshot)
+        // Historical snapshot compatibility must not bypass the production restore root.
+        // This fixture installs a launch resolver, but has no production planning controller.
+        do {
+            _ = try resolved.restoreSnapshot(machineID: "dev", snapshotID: "historical")
+            Issue.record("historical snapshot restored without production authority")
+        } catch let error as MachineManagerError {
+            #expect(String(describing: error).contains("production source authority"))
+        }
+        #expect(resolved.status(id: "dev")?.runtimeIdentity == originalIdentity)
+        for (path, expected) in zip(protectedPaths, originalData) {
+            #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == expected)
+        }
+        #expect(resolver.callCount == 0)
         #expect(throws: MachineManagerError.self) {
             _ = try resolved.start(id: "dev")
         }
@@ -2525,7 +2547,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             plans: plans,
             expectedPlanRevision: { _ in 1 }
         )
-        #expect(restarted.status(id: "dev")?.runtimeIdentity.mode == .requiresReplanning)
+        #expect(restarted.status(id: "dev")?.runtimeIdentity == originalIdentity)
         #expect(throws: MachineManagerError.self) {
             _ = try restarted.start(id: "dev")
         }
