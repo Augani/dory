@@ -11,6 +11,7 @@ public struct DoryX86Exception: Error, Codable, Sendable, Hashable {
     case generalProtection
     case pageFault
     case simdFloatingPoint
+    case x87FloatingPoint
   }
 
   public let kind: Kind
@@ -620,6 +621,7 @@ public struct DoryX86Interpreter: Sendable {
           truncatingIfNeeded: try read(
             source, instruction: instruction, state: state, memory: executionMemory)
         )
+        DoryX86LegacyFloatingPointPolicy.updateExceptionSummary(state: &state.floatingPoint)
       case .storeX87ControlWord(let destination):
         try write(
           UInt64(state.floatingPoint.x87ControlWord),
@@ -742,6 +744,7 @@ public struct DoryX86Interpreter: Sendable {
         state.floatingPoint.x87ControlWord = UInt16(fromLittleEndian(Array(bytes[0..<2])))
         state.floatingPoint.x87StatusWord = UInt16(fromLittleEndian(Array(bytes[2..<4])))
         state.floatingPoint.x87TagWord = UInt16(fromLittleEndian(Array(bytes[4..<6])))
+        DoryX86LegacyFloatingPointPolicy.updateExceptionSummary(state: &state.floatingPoint)
       case .storeX87Environment(let destination):
         let byteCount = mode == .real16 || mode == .protected16 ? 14 : 28
         var bytes = [UInt8](repeating: 0, count: byteCount)
@@ -756,6 +759,7 @@ public struct DoryX86Interpreter: Sendable {
           memory: executionMemory
         )
         state.floatingPoint.x87ControlWord |= 0x003F
+        DoryX86LegacyFloatingPointPolicy.updateExceptionSummary(state: &state.floatingPoint)
       case .loadX87PackedBCD(let source):
         try validateSegmentAccess(
           source,

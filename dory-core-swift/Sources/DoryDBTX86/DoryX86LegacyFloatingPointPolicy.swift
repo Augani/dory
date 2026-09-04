@@ -3,8 +3,8 @@
 /// FCOMI, FNOP, FXSAVE/FXRSTOR; Vol. 2D WAIT/FWAIT:
 /// https://cdrdv2-public.intel.com/922487/253668-092-sdm-vol-3a.pdf
 /// https://cdrdv2-public.intel.com/922480/253666-092-sdm-vol-2a.pdf
-/// Pending numeric exceptions, arithmetic precision/status and NE/FERR reporting
-/// remain separate; this policy does not claim to implement those effects.
+/// Existing pending summary status is reported at waiting boundaries when NE=1.
+/// Arithmetic exception generation and legacy NE=0 FERR/IGNNE remain separate.
 enum DoryX86LegacyFloatingPointPolicy {
   private enum StateUse { case x87, mmx, wait, fxState }
 
@@ -56,8 +56,38 @@ enum DoryX86LegacyFloatingPointPolicy {
     case nil:
       return nil
     }
-    return unavailable
-      ? .init(kind: .deviceNotAvailable, vector: 7, instructionPointer: instruction.address) : nil
+    if unavailable {
+      return .init(kind: .deviceNotAvailable, vector: 7, instructionPointer: instruction.address)
+    }
+    // SDM Vol. 1 §8.6 checks ES at the waiting boundary. Instructions that
+    // change control/environment state maintain this summary separately;
+    // reinterpreting the mask bits here would hide an already-pending ES.
+    guard state.control.cr0 & (1 << 5) != 0,
+      state.floatingPoint.x87StatusWord & 0x80 != 0
+    else { return nil }
+    switch stateUse(instruction) {
+    case .x87:
+      switch instruction.operation {
+      case .initializeFloatingPoint, .clearX87Exceptions, .storeX87ControlWord,
+        .storeX87StatusWord, .storeX87Environment:
+        return nil // Represented FN forms do not wait for pending exceptions.
+      default: break // FNOP, despite its spelling, is a waiting instruction.
+      }
+    case .mmx, .wait:
+      break
+    case .fxState, nil:
+      return nil
+    }
+    return .init(kind: .x87FloatingPoint, vector: 16, instructionPointer: instruction.address)
+  }
+
+  /// FLDCW/FLDENV can unmask existing sticky flags; FNSTENV masks them after
+  /// saving. SDM Vol. 1 §8.1.3.3 defines ES as their summary and B as its copy.
+  /// Do not apply this to arbitrary restored FX images: inconsistent image
+  /// normalization is not qualified by this bounded pending-exception policy.
+  static func updateExceptionSummary(state: inout DoryX86FloatingPointState) {
+    let pending = state.x87StatusWord & ~state.x87ControlWord & 0x3F != 0
+    state.x87StatusWord = (state.x87StatusWord & ~UInt16(0x8080)) | (pending ? 0x8080 : 0)
   }
 
   /// Apply only after all operands complete successfully. Intel SDM 092 Vol. 3A
