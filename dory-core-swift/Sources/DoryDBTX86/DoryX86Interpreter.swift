@@ -4596,10 +4596,15 @@ public struct DoryX86Interpreter: Sendable {
       }
     if invalid { return (0xFFC0_0000, exceptions | 1) }
     if operation == .divide, rhsZero, !lhsZero, !lhsInfinite { exceptions |= 1 << 2 }
-    return (
-      floatingResult(operation, lhs: Float(bitPattern: lhs), rhs: Float(bitPattern: rhs)).bitPattern,
-      exceptions
-    )
+    if operation != .minimum, operation != .maximum,
+      !lhsInfinite, !rhsInfinite, !(operation == .divide && rhsZero)
+    {
+      let computed = simdFiniteArithmetic32(operation, lhs: lhs, rhs: rhs, mxcsr: mxcsr)
+      return (computed.value, exceptions | computed.exceptions)
+    }
+    return (floatingResult(
+      operation, lhs: Float(bitPattern: lhs), rhs: Float(bitPattern: rhs)
+    ).bitPattern, exceptions)
   }
 
   private func simdFloatingBinary64(
@@ -4649,10 +4654,97 @@ public struct DoryX86Interpreter: Sendable {
       }
     if invalid { return (0xFFF8_0000_0000_0000, exceptions | 1) }
     if operation == .divide, rhsZero, !lhsZero, !lhsInfinite { exceptions |= 1 << 2 }
-    return (
-      floatingResult(operation, lhs: Double(bitPattern: lhs), rhs: Double(bitPattern: rhs)).bitPattern,
-      exceptions
+    if operation != .minimum, operation != .maximum,
+      !lhsInfinite, !rhsInfinite, !(operation == .divide && rhsZero)
+    {
+      let computed = simdFiniteArithmetic64(operation, lhs: lhs, rhs: rhs, mxcsr: mxcsr)
+      return (computed.value, exceptions | computed.exceptions)
+    }
+    return (floatingResult(
+      operation, lhs: Double(bitPattern: lhs), rhs: Double(bitPattern: rhs)
+    ).bitPattern, exceptions)
+  }
+
+  private func simdFiniteArithmetic32(
+    _ operation: DoryX86VectorFloatingOperation,
+    lhs: UInt32,
+    rhs: UInt32,
+    mxcsr: UInt32
+  ) -> (value: UInt32, exceptions: UInt32) {
+    let left = DoryX86ExtendedFloat(Double(Float(bitPattern: lhs)))
+    let right = DoryX86ExtendedFloat(Double(Float(bitPattern: rhs)))
+    let rounding = simdRounding(mxcsr)
+    let result = simdFiniteArithmetic(
+      operation, lhs: left, rhs: right, rounding: rounding, precision: 24)
+    let converted = result.value.float32Conversion(rounding: rounding)
+    let completed = simdArithmeticCompletion(
+      bits: converted.bits,
+      signMask: 0x8000_0000,
+      operationInexact: result.inexact,
+      conversion: converted,
+      mxcsr: mxcsr
     )
+    return (UInt32(truncatingIfNeeded: completed.bits), completed.exceptions)
+  }
+
+  private func simdFiniteArithmetic64(
+    _ operation: DoryX86VectorFloatingOperation,
+    lhs: UInt64,
+    rhs: UInt64,
+    mxcsr: UInt32
+  ) -> (value: UInt64, exceptions: UInt32) {
+    let left = DoryX86ExtendedFloat(Double(bitPattern: lhs))
+    let right = DoryX86ExtendedFloat(Double(bitPattern: rhs))
+    let rounding = simdRounding(mxcsr)
+    let result = simdFiniteArithmetic(
+      operation, lhs: left, rhs: right, rounding: rounding, precision: 53)
+    let converted = result.value.float64Conversion(rounding: rounding)
+    let completed = simdArithmeticCompletion(
+      bits: converted.bits,
+      signMask: 0x8000_0000_0000_0000,
+      operationInexact: result.inexact,
+      conversion: converted,
+      mxcsr: mxcsr
+    )
+    return (completed.bits, completed.exceptions)
+  }
+
+  private func simdFiniteArithmetic(
+    _ operation: DoryX86VectorFloatingOperation,
+    lhs: DoryX86ExtendedFloat,
+    rhs: DoryX86ExtendedFloat,
+    rounding: DoryX86FloatingRounding,
+    precision: Int
+  ) -> (value: DoryX86ExtendedFloat, inexact: Bool) {
+    switch operation {
+    case .add:
+      lhs.addingWithStatus(rhs, rounding: rounding, precision: precision)
+    case .multiply:
+      lhs.multipliedWithStatus(by: rhs, rounding: rounding, precision: precision)
+    case .subtract:
+      lhs.subtractingWithStatus(rhs, rounding: rounding, precision: precision)
+    case .divide:
+      lhs.dividedWithStatus(by: rhs, rounding: rounding, precision: precision)
+    case .minimum, .maximum:
+      preconditionFailure("minimum and maximum do not use arithmetic completion")
+    }
+  }
+
+  private func simdArithmeticCompletion(
+    bits: UInt64,
+    signMask: UInt64,
+    operationInexact: Bool,
+    conversion: DoryX86BinaryFloatConversion,
+    mxcsr: UInt32
+  ) -> (bits: UInt64, exceptions: UInt32) {
+    let inexact = operationInexact || conversion.inexact
+    var exceptions: UInt32 = 0
+    if conversion.overflow { exceptions |= (1 << 3) | (1 << 5) }
+    if inexact { exceptions |= 1 << 5 }
+    let underflow = conversion.tiny && inexact
+    if underflow { exceptions |= 1 << 4 }
+    let completedBits = underflow && mxcsr & (1 << 15) != 0 ? bits & signMask : bits
+    return (completedBits, exceptions)
   }
 
   private func executeVectorIntegerBinary(

@@ -120,6 +120,100 @@ import Testing
     #expect(state.floatingPoint.mxcsr == before.floatingPoint.mxcsr | (1 << 2))
   }
 
+  @Test func scalarAdditionObeysEveryMXCSRRoundingModeAndReportsPrecision() throws {
+    let code: [UInt8] = [0xF3, 0x0F, 0x58, 0xC1] // ADDSS xmm0,xmm1
+    let halfway = Float(0x1p-24).bitPattern
+    let expected: [UInt32] = [
+      Float(1).bitPattern,
+      Float(1).bitPattern,
+      Float(1).nextUp.bitPattern,
+      Float(1).bitPattern,
+    ]
+
+    for rounding: UInt32 in 0..<4 {
+      var state = try makeState(
+        lhs: [Float(1).bitPattern], rhs: [halfway],
+        mxcsr: 0x1F80 | (rounding << 13))
+      expectRetired(step(code, state: &state))
+      #expect(lane32(0, register: 0, state: state) == expected[Int(rounding)])
+      #expect(state.floatingPoint.mxcsr == 0x1FA0 | (rounding << 13))
+    }
+  }
+
+  @Test func scalarMultiplicationPublishesOverflowAndGuestDirectedResult() throws {
+    let code: [UInt8] = [0xF3, 0x0F, 0x59, 0xC1] // MULSS xmm0,xmm1
+    let expected: [UInt32] = [
+      Float.infinity.bitPattern,
+      Float.greatestFiniteMagnitude.bitPattern,
+      Float.infinity.bitPattern,
+      Float.greatestFiniteMagnitude.bitPattern,
+    ]
+
+    for rounding: UInt32 in 0..<4 {
+      var state = try makeState(
+        lhs: [Float.greatestFiniteMagnitude.bitPattern], rhs: [Float(2).bitPattern],
+        mxcsr: 0x1F80 | (rounding << 13))
+      expectRetired(step(code, state: &state))
+      #expect(lane32(0, register: 0, state: state) == expected[Int(rounding)])
+      #expect(state.floatingPoint.mxcsr == 0x1FA8 | (rounding << 13))
+    }
+  }
+
+  @Test func flushToZeroAppliesOnlyToAnInexactTinyResult() throws {
+    let code: [UInt8] = [0xF3, 0x0F, 0x59, 0xC1] // MULSS xmm0,xmm1
+    let tinyProduct = Float.leastNormalMagnitude * Float(0.1)
+
+    var gradual = try makeState(
+      lhs: [Float.leastNormalMagnitude.bitPattern], rhs: [Float(0.1).bitPattern],
+      mxcsr: 0x1F80)
+    expectRetired(step(code, state: &gradual))
+    #expect(lane32(0, register: 0, state: gradual) == tinyProduct.bitPattern)
+    #expect(gradual.floatingPoint.mxcsr == 0x1FB0)
+
+    var flushed = try makeState(
+      lhs: [Float.leastNormalMagnitude.bitPattern], rhs: [Float(0.1).bitPattern],
+      mxcsr: 0x1F80 | (1 << 15))
+    expectRetired(step(code, state: &flushed))
+    #expect(lane32(0, register: 0, state: flushed) == 0)
+    #expect(flushed.floatingPoint.mxcsr == 0x9FB0)
+
+    var exact = try makeState(
+      lhs: [Float.leastNormalMagnitude.bitPattern], rhs: [Float(0.5).bitPattern],
+      mxcsr: 0x1F80 | (1 << 15))
+    expectRetired(step(code, state: &exact))
+    #expect(lane32(0, register: 0, state: exact) == 0x0040_0000)
+    #expect(exact.floatingPoint.mxcsr == 0x9F80)
+  }
+
+  @Test func unmaskedUnderflowSuppressesTheDestinationAfterPublishingStatus() throws {
+    let code: [UInt8] = [0xF3, 0x0F, 0x59, 0xC1] // MULSS xmm0,xmm1
+    var state = try makeState(
+      lhs: [Float.leastNormalMagnitude.bitPattern], rhs: [Float(0.1).bitPattern],
+      mxcsr: 0x1F80 & ~(1 << 11))
+    let before = state
+
+    #expect(step(code, state: &state)
+      == .exception(.init(kind: .simdFloatingPoint, vector: 19,
+        instructionPointer: 0x1000)))
+    #expect(state.floatingPoint.ymm == before.floatingPoint.ymm)
+    #expect(state.floatingPoint.mxcsr == before.floatingPoint.mxcsr | 0x10)
+  }
+
+  @Test func scalarDoubleDivisionUsesMXCSRInsteadOfHostRounding() throws {
+    let code: [UInt8] = [0xF2, 0x0F, 0x5E, 0xC1] // DIVSD xmm0,xmm1
+    let nearest = Double(0.1).bitPattern
+    let expected = [nearest, nearest - 1, nearest, nearest - 1]
+
+    for rounding: UInt32 in 0..<4 {
+      var state = try makeDoubleState(
+        lhs: Double(1).bitPattern, rhs: Double(10).bitPattern,
+        mxcsr: 0x1F80 | (rounding << 13))
+      expectRetired(step(code, state: &state))
+      #expect(lane64(0, register: 0, state: state) == expected[Int(rounding)])
+      #expect(state.floatingPoint.mxcsr == 0x1FA0 | (rounding << 13))
+    }
+  }
+
   private func makeState(
     lhs: [UInt32], rhs: [UInt32], mxcsr: UInt32,
     osxmmexcpt: Bool = true, avx: Bool = false
@@ -146,6 +240,19 @@ import Testing
       rip: 0x1000, control: control, floatingPoint: floatingPoint)
   }
 
+  private func makeDoubleState(
+    lhs: UInt64, rhs: UInt64, mxcsr: UInt32
+  ) throws -> DoryX86ArchitecturalState {
+    var state = try makeState(lhs: [], rhs: [], mxcsr: mxcsr)
+    var lhsBytes = state.floatingPoint.ymm[0].bytes
+    var rhsBytes = state.floatingPoint.ymm[1].bytes
+    lhsBytes.replaceSubrange(0..<8, with: littleEndian(lhs))
+    rhsBytes.replaceSubrange(0..<8, with: littleEndian(rhs))
+    state.floatingPoint.ymm[0] = try .init(bytes: lhsBytes, expectedByteCount: 32)
+    state.floatingPoint.ymm[1] = try .init(bytes: rhsBytes, expectedByteCount: 32)
+    return state
+  }
+
   private func step(
     _ code: [UInt8], state: inout DoryX86ArchitecturalState, avx: Bool = false
   ) -> DoryX86InterpreterResult {
@@ -168,6 +275,14 @@ import Testing
     let bytes = state.floatingPoint.ymm[register].bytes
     return UInt32(bytes[offset]) | UInt32(bytes[offset + 1]) << 8
       | UInt32(bytes[offset + 2]) << 16 | UInt32(bytes[offset + 3]) << 24
+  }
+
+  private func lane64(
+    _ lane: Int, register: Int, state: DoryX86ArchitecturalState
+  ) -> UInt64 {
+    let offset = lane * 8
+    return state.floatingPoint.ymm[register].bytes[offset..<offset + 8]
+      .enumerated().reduce(0) { $0 | UInt64($1.element) << UInt64($1.offset * 8) }
   }
 
   private func expectRetired(_ result: DoryX86InterpreterResult) {
