@@ -51,10 +51,19 @@ enum DoryX86X87Stack {
   /// Commit after all operand accesses and stack-fault decisions. Preserve C1
   /// so a masked underflow cannot accidentally become overflow on the push.
   static func commitPush(_ value: DoryX86ExtendedFloat, state: inout DoryX86FloatingPointState) {
+    let bytes = value.bytes()
+    commitPush(bytes: bytes, tag: DoryX86X87Transfer.binary80Class(bytes).tag, state: &state)
+  }
+
+  /// The x87 register file stores the architectural binary80 payload. Transfer
+  /// instructions must not canonicalize unsupported or pseudo-denormal forms.
+  static func commitPush(
+    bytes: [UInt8], tag: UInt16, state: inout DoryX86FloatingPointState
+  ) {
+    precondition(bytes.count == 10 && tag < 3)
     let top = (Int(state.x87StatusWord >> 11) - 1) & 7
     state.x87StatusWord = (state.x87StatusWord & ~UInt16(0x3800)) | UInt16(top << 11)
-    state.x87[top] = try! .init(bytes: value.bytes(), expectedByteCount: 10)
-    let tag: UInt16 = value.isZero ? 1 : value.isFinite ? 0 : 2
+    state.x87[top] = try! .init(bytes: bytes, expectedByteCount: 10)
     let shift = UInt16(top * 2)
     state.x87TagWord = (state.x87TagWord & ~(UInt16(3) << shift)) | tag << shift
   }

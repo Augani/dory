@@ -90,6 +90,14 @@ enum DoryX86FloatingRounding: Sendable {
   case nearestEven, down, up, towardZero
 }
 
+struct DoryX86BinaryFloatConversion: Sendable, Equatable {
+  let bits: UInt64
+  let inexact: Bool
+  let tiny: Bool
+  let overflow: Bool
+  let roundedUp: Bool
+}
+
 /// Software representation of the x87 80-bit double-extended format.
 ///
 /// Finite nonzero values are kept normalized as `significand * 2^(exponent - 63)`.
@@ -473,14 +481,44 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     return raw & ((UInt64(1) << UInt64(bitCount)) - 1)
   }
 
+  func signedIntegerConversion(
+    bitCount: Int,
+    rounding: DoryX86FloatingRounding
+  ) -> (bits: UInt64, inexact: Bool, roundedUp: Bool)? {
+    guard let bits = signedIntegerBits(bitCount: bitCount, rounding: rounding) else { return nil }
+    guard kind == .finite, significand != 0, exponent < 63 else {
+      return (bits, false, false)
+    }
+    let shift = 63 - exponent
+    let inexact: Bool
+    if shift >= 64 {
+      inexact = true
+    } else {
+      inexact = significand & ((UInt64(1) << UInt64(shift)) - 1) != 0
+    }
+    guard inexact else { return (bits, false, false) }
+    let truncated = signedIntegerBits(bitCount: bitCount, rounding: .towardZero)
+    return (bits, true, truncated != bits)
+  }
+
   func float32Bits(rounding: DoryX86FloatingRounding = .nearestEven) -> UInt32 {
-    UInt32(
-      truncatingIfNeeded: binaryFormatBits(
-        exponentBits: 8, fractionBits: 23, bias: 127, rounding: rounding))
+    UInt32(truncatingIfNeeded: float32Conversion(rounding: rounding).bits)
   }
 
   func float64Bits(rounding: DoryX86FloatingRounding = .nearestEven) -> UInt64 {
-    binaryFormatBits(exponentBits: 11, fractionBits: 52, bias: 1_023, rounding: rounding)
+    float64Conversion(rounding: rounding).bits
+  }
+
+  func float32Conversion(
+    rounding: DoryX86FloatingRounding = .nearestEven
+  ) -> DoryX86BinaryFloatConversion {
+    binaryFormatConversion(exponentBits: 8, fractionBits: 23, bias: 127, rounding: rounding)
+  }
+
+  func float64Conversion(
+    rounding: DoryX86FloatingRounding = .nearestEven
+  ) -> DoryX86BinaryFloatConversion {
+    binaryFormatConversion(exponentBits: 11, fractionBits: 52, bias: 1_023, rounding: rounding)
   }
 
   func compared(to rhs: Self) -> ComparisonResult? {
@@ -508,60 +546,72 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     Double(bitPattern: float64Bits())
   }
 
-  private func binaryFormatBits(
+  private func binaryFormatConversion(
     exponentBits: Int,
     fractionBits: Int,
     bias: Int,
     rounding: DoryX86FloatingRounding
-  ) -> UInt64 {
+  ) -> DoryX86BinaryFloatConversion {
     let sign = isNegative ? UInt64(1) << UInt64(exponentBits + fractionBits) : 0
     let maximumExponentField = (UInt64(1) << UInt64(exponentBits)) - 1
     switch kind {
     case .infinity:
-      return sign | maximumExponentField << UInt64(fractionBits)
+      return .init(bits: sign | maximumExponentField << UInt64(fractionBits),
+        inexact: false, tiny: false, overflow: false, roundedUp: false)
     case .nan:
-      return sign | maximumExponentField << UInt64(fractionBits)
-        | UInt64(1) << UInt64(fractionBits - 1)
+      return .init(bits: sign | maximumExponentField << UInt64(fractionBits)
+        | UInt64(1) << UInt64(fractionBits - 1),
+        inexact: false, tiny: false, overflow: false, roundedUp: false)
     case .finite where significand == 0:
-      return sign
+      return .init(bits: sign, inexact: false, tiny: false, overflow: false, roundedUp: false)
     case .finite:
       break
     }
 
     let maximumExponent = Int(maximumExponentField - 1) - bias
     if exponent > maximumExponent {
-      return overflowBits(
+      let bits = overflowBits(
         sign: sign,
         maximumExponentField: maximumExponentField,
         fractionBits: fractionBits,
         rounding: rounding
       )
+      return .init(bits: bits, inexact: true, tiny: false, overflow: true,
+        roundedUp: bits & (maximumExponentField << UInt64(fractionBits))
+          == maximumExponentField << UInt64(fractionBits))
     }
     let minimumNormalExponent = 1 - bias
     let precision = fractionBits + 1
     if exponent >= minimumNormalExponent {
+      let shift = 64 - precision
+      let discardedMask = (UInt64(1) << UInt64(shift)) - 1
+      let discarded = significand & discardedMask
       var rounded = Self.roundedShiftRight(
         DoryX86WideUnsigned(significand),
-        by: 64 - precision,
+        by: shift,
         negative: isNegative,
         rounding: rounding
       )
+      let roundedUp = discarded != 0 && rounded.low != significand >> UInt64(shift)
       var resultExponent = exponent
       if rounded >= DoryX86WideUnsigned(1) << precision {
         rounded >>= 1
         resultExponent += 1
       }
       if resultExponent > maximumExponent {
-        return overflowBits(
+        let bits = overflowBits(
           sign: sign,
           maximumExponentField: maximumExponentField,
           fractionBits: fractionBits,
           rounding: rounding
         )
+        return .init(bits: bits, inexact: true, tiny: false, overflow: true,
+          roundedUp: roundedUp)
       }
       let exponentField = UInt64(resultExponent + bias)
       let fractionMask = (UInt64(1) << UInt64(fractionBits)) - 1
-      return sign | exponentField << UInt64(fractionBits) | rounded.low & fractionMask
+      return .init(bits: sign | exponentField << UInt64(fractionBits) | rounded.low & fractionMask,
+        inexact: discarded != 0, tiny: false, overflow: false, roundedUp: roundedUp)
     }
 
     let shift = 63 + minimumNormalExponent - fractionBits - exponent
@@ -571,10 +621,23 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       negative: isNegative,
       rounding: rounding
     )
-    if rounded >= DoryX86WideUnsigned(1) << fractionBits {
-      return sign | UInt64(1) << UInt64(fractionBits)
+    let inexact: Bool
+    let truncated: UInt64
+    if shift >= 64 {
+      inexact = significand != 0
+      truncated = 0
+    } else {
+      let discardedMask = (UInt64(1) << UInt64(shift)) - 1
+      inexact = significand & discardedMask != 0
+      truncated = significand >> UInt64(shift)
     }
-    return sign | rounded.low
+    let roundedUp = inexact && rounded.low != truncated
+    if rounded >= DoryX86WideUnsigned(1) << fractionBits {
+      return .init(bits: sign | UInt64(1) << UInt64(fractionBits),
+        inexact: inexact, tiny: true, overflow: false, roundedUp: roundedUp)
+    }
+    return .init(bits: sign | rounded.low, inexact: inexact, tiny: true,
+      overflow: false, roundedUp: roundedUp)
   }
 
   private func overflowBits(
