@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-evidence-retention-validation",
+  "reviewSHA256": "7242341da82e36fa4b4144a59356fa1fc0d422a91afa0246f6b0f6e948a770c1",
+  "newArtifactsBeforeThisValidation": 7,
+  "distinctRepositoryArtifactReferencesVerified": 9,
+  "previousReviewHashVerified": true,
+  "envelopesSchemaValidated": 1,
+  "schemaPath": "Config/DoryVirtualizationEvidence.schema.json",
+  "schemaSHA256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb",
+  "sourceBindings": [
+    {
+      "run": 51,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "c34e979ff30fdeb23ea528edfd609e664c2e2906",
+      "trackedInputs": 723,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 134,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    }
+  ],
+  "strictLogCountsVerified": true,
+  "logCounts": [
+    {
+      "run": 51,
+      "swiftPassed": 960,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 961,
+      "swiftSuites": 124,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    }
+  ],
+  "componentRegressionSourcesAndPassedLines": [
+    {
+      "commit": "c34e979ff30fdeb23ea528edfd609e664c2e2906",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PendingFloatingPointTests.swift",
+          "sha256": "bffd64d169b438ae2c2246c155a0e4bb77744c10c2dcd33cb34a4d39ba17aa08",
+          "run": 51,
+          "passedMethods": 8
+        }
+      ]
+    }
+  ],
+  "newRegressionMethods": 8,
+  "unchangedFilterVerified": true,
+  "noUserHomePathsInNewArtifactTextOrMembers": true,
+  "tarOwnerAndTimeNormalizationVerified": true,
+  "pathNormalizedArtifacts": [],
+  "normalizationByThisValidation": "None; all retained inputs read-only.",
+  "qualification": "Source51 incremental test gate only. No new optimized runner, clean, guest execution, physical reference or checkpoint closure. Arithmetic exception generation, NE=0 signaling and contradictory FXRSTOR state remain outside this gate."
+}

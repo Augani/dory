@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-12",
+    "P02-15"
+  ],
+  "sourceCommit": "c34e979ff30fdeb23ea528edfd609e664c2e2906",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Source51 pending numeric exception waiting-boundary regressions. No new guest acceptance claim.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-51.json",
+      "sha256": "7242341da82e36fa4b4144a59356fa1fc0d422a91afa0246f6b0f6e948a770c1"
+    }
+  ],
+  "limitations": [
+    "No checkpoint is newly closed. P02 remains incomplete.",
+    "Eight waiting-boundary regression methods do not qualify arithmetic exception generation, CR0.NE=0 legacy external numeric signaling, or contradictory FXRSTOR control/status images.",
+    "One disabled physical-reference method and one optional XCTest boot-fixture skip remain excluded from pass counts; overlapping runs are not summed.",
+    "No new optimized runner, clean command, guest execution or physical reference is part of this incremental source gate.",
+    "The existing source43 IO failure remains unresolved by a completed replay in this record; source50 available-event candidate reduction remains separately bound.",
+    "Experimental host with concurrent work; durations are engineering observations, not P14 qualification."
+  ]
+}
