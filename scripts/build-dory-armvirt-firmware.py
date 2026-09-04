@@ -496,8 +496,20 @@ def verify_toolchain(toolchain: Dict[str, Any]) -> Dict[str, str]:
         raise BuildFailure("Xcode version does not match the firmware toolchain lock")
 
     environment = os.environ.copy()
+    # Xcode exports `arch=undefined_arch` for aggregate shell phases. EDK2's BaseTools makefiles
+    # prefer that inherited value over uname, so bind both spellings to the verified toolchain
+    # host instead of allowing an unrelated Xcode build variable to select host tools.
+    environment.pop("ARCH", None)
+    edk2_host_architectures = {"arm64": "AARCH64", "x86_64": "X64"}
+    edk2_host_architecture = edk2_host_architectures.get(
+        toolchain["host"]["architecture"]
+    )
+    if edk2_host_architecture is None:
+        raise BuildFailure("firmware toolchain host is unsupported by EDK2 BaseTools")
     environment.update(
         {
+            "arch": edk2_host_architecture,
+            "HOST_ARCH": edk2_host_architecture,
             "CC": toolchain["compiler"]["executable"],
             "DEVELOPER_DIR": str(developer_directory),
             "LC_ALL": "C",
