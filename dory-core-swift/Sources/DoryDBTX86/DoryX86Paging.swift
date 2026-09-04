@@ -583,6 +583,31 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
         access: access, context: context, protection: protection, reserved: reserved))
   }
 
+  fileprivate func unavailableInstructionBackingFault(
+    linearAddress: UInt64,
+    context: DoryX86PagingContext
+  ) -> DoryX86MemoryError {
+    pageFault(linearAddress, .instructionFetch, context, protection: false)
+  }
+
+  fileprivate func normalizeInstructionBackingFault(
+    _ error: DoryX86MemoryError,
+    linearAddress: UInt64,
+    context: DoryX86PagingContext
+  ) -> DoryX86MemoryError {
+    switch error {
+    case .unmapped:
+      // The backing bus reports a physical address, but #PF and CR2 describe
+      // the linear access that reached it. Preserve the paging privilege and
+      // instruction/data classification in the synthesized non-present fault.
+      unavailableInstructionBackingFault(linearAddress: linearAddress, context: context)
+    case .addressOverflow(_, let byteCount):
+      .addressOverflow(address: linearAddress, byteCount: byteCount)
+    case .pageFault(_, let errorCode):
+      .pageFault(address: linearAddress, errorCode: errorCode)
+    }
+  }
+
   private func faultCode(
     access: DoryX86MemoryAccessKind,
     context: DoryX86PagingContext,
@@ -856,8 +881,28 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
         let translation = try pagingUnit.translate(
           linearAddress: cursor, access: access, context: readContext, physicalMemory: physicalMemory)
         let count = min(Int(4_096 - (cursor & 0xfff)), byteCount - result.count)
-        result += try physicalMemory.read(at: translation.physicalAddress, byteCount: count)
-        cursor &+= UInt64(count)
+        if access == .instructionFetch {
+          do {
+            // Preserve the physical bus's execute permission. A translated fetch
+            // must not become an ordinary data read merely because paging resolved
+            // its linear address.
+            let bytes = try physicalMemory.instructionBytes(
+              at: translation.physicalAddress, maximumCount: count)
+            guard !bytes.isEmpty else {
+              throw pagingUnit.unavailableInstructionBackingFault(
+                linearAddress: cursor, context: readContext)
+            }
+            result += bytes
+            cursor &+= UInt64(bytes.count)
+          } catch let error as DoryX86MemoryError {
+            throw pagingUnit.normalizeInstructionBackingFault(
+              error, linearAddress: cursor, context: readContext)
+          }
+        } else {
+          result += try physicalMemory.read(
+            at: translation.physicalAddress, byteCount: count)
+          cursor &+= UInt64(count)
+        }
       } catch {
         if allowShortRead, !result.isEmpty { return result }
         throw error
