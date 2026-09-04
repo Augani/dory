@@ -303,15 +303,27 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
           throw pageFault(linearAddress, access, context, protection: true, reserved: true)
         }
         let addressField = rawAddressField & ~(pageSize - 1)
-        try enforcePermissions(
-          linearAddress: linearAddress,
-          access: access,
-          context: context,
-          user: user,
-          writable: writable,
-          executable: executable
-        )
-        var changed = false
+        // Intel SDM Vol. 3A §5.8 and the #PF architectural-state note require
+        // an accessed large-page paging-structure leaf to acquire A even when
+        // permission checks fault. A final 4 KiB PTE remains model-specific.
+        let accessedBeforePermissionFault = huge && entry & (1 << 5) == 0
+        if accessedBeforePermissionFault { entry |= 1 << 5 }
+        do {
+          try enforcePermissions(
+            linearAddress: linearAddress,
+            access: access,
+            context: context,
+            user: user,
+            writable: writable,
+            executable: executable
+          )
+        } catch {
+          if accessedBeforePermissionFault {
+            try writeUInt64(entry, at: entryAddress, physicalMemory: physicalMemory)
+          }
+          throw error
+        }
+        var changed = accessedBeforePermissionFault
         if entry & (1 << 5) == 0 {
           entry |= 1 << 5
           changed = true
@@ -386,10 +398,22 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
           throw pageFault(linearAddress, access, context, protection: true, reserved: true)
         }
         let addressField = rawAddressField & ~(pageSize - 1)
-        try enforcePermissions(
-          linearAddress: linearAddress, access: access, context: context, user: user,
-          writable: writable, executable: executable)
-        var changed = false
+        // Intel SDM Vol. 3A §5.8 and the #PF architectural-state note require
+        // an accessed large-page paging-structure leaf to acquire A even when
+        // permission checks fault. A final 4 KiB PTE remains model-specific.
+        let accessedBeforePermissionFault = huge && entry & (1 << 5) == 0
+        if accessedBeforePermissionFault { entry |= 1 << 5 }
+        do {
+          try enforcePermissions(
+            linearAddress: linearAddress, access: access, context: context, user: user,
+            writable: writable, executable: executable)
+        } catch {
+          if accessedBeforePermissionFault {
+            try writeUInt64(entry, at: entryAddress, physicalMemory: physicalMemory)
+          }
+          throw error
+        }
+        var changed = accessedBeforePermissionFault
         if entry & (1 << 5) == 0 {
           entry |= 1 << 5
           changed = true
