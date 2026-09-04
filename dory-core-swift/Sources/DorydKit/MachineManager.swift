@@ -7898,6 +7898,7 @@ public final class MachineManager: @unchecked Sendable {
         operationID: UUID = UUID(),
         productionPlanningController: (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil
     ) throws -> DoryMachineStatus {
+        let operationID = try Self.lifecycleOperationID(operationID, action: "update")
         let mutationLease = mutationCoordinator.acquire(workspaceID: id)
         defer { mutationLease.release() }
         try requireNoActivePlanningMutation(id: id)
@@ -7953,9 +7954,8 @@ public final class MachineManager: @unchecked Sendable {
         }
         let nativeDefinition = preparation.nativeDefinition
         guard preparation.changesDefinition else {
-            if journalsConfiguration, let productionPlanningController {
-                return try resolveAndPublishProductionPlan(id: id, operationID: operationID, controller: productionPlanningController)
-            }
+            // An unchanged request has no publication to own. In particular it must not
+            // replace the admission or launch plan of a running/paused machine.
             return status(id: id) ?? DoryMachineStatus(id: id, state: .stopped)
         }
         if launchPolicy == .perWorkspaceAuthority {
