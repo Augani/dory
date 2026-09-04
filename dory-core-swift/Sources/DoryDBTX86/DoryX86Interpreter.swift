@@ -14,6 +14,8 @@ public struct DoryX86Exception: Error, Codable, Sendable, Hashable {
     case x87FloatingPoint
     case invalidTaskState
     case doubleFault
+    // Append new exception kinds so incremental clients retain prior discriminators.
+    case alignmentCheck
   }
 
   public let kind: Kind
@@ -824,6 +826,15 @@ public struct DoryX86Interpreter: Sendable {
           state: state
         )
         let address = effectiveAddress(source, instruction: instruction, state: state)
+        try validateAlignmentCheck(
+          address: address,
+          byteCount: byteCount,
+          alignment: byteCount == 14 ? 2 : 4,
+          write: false,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
         let bytes = try executionMemory.read(at: address, byteCount: byteCount)
         DoryX86FloatingPointEnvironment.load(bytes,
           realFormat: DoryX86FloatingPointEnvironment.usesRealFormat(
@@ -2796,6 +2807,15 @@ public struct DoryX86Interpreter: Sendable {
             instruction: instruction, state: state
           )
         }
+        try validateAlignmentCheck(
+          address: linearAddress,
+          byteCount: byteCount,
+          alignment: 4,
+          write: !load,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
         if load {
           let bytes = try executionMemory.read(at: linearAddress, byteCount: byteCount)
           let limit = UInt16(bytes[0]) | UInt16(bytes[1]) << 8
@@ -2929,11 +2949,25 @@ public struct DoryX86Interpreter: Sendable {
         state.cs = loaded
         nextRIP = offset
       case .farJumpIndirect(let address, let width):
-        let pointerAddress = effectiveAddress(address, instruction: instruction, state: state)
-        let pointer = try executionMemory.read(
-          at: pointerAddress,
-          byteCount: width.byteCount + MemoryLayout<UInt16>.size
+        let pointerByteCount = width.byteCount + MemoryLayout<UInt16>.size
+        try validateSegmentAccess(
+          address,
+          byteCount: pointerByteCount,
+          write: false,
+          instruction: instruction,
+          state: state
         )
+        let pointerAddress = effectiveAddress(address, instruction: instruction, state: state)
+        try validateAlignmentCheck(
+          address: pointerAddress,
+          byteCount: pointerByteCount,
+          alignment: width == .word ? 2 : 4,
+          write: false,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        let pointer = try executionMemory.read(at: pointerAddress, byteCount: pointerByteCount)
         let offset = fromLittleEndian(Array(pointer.prefix(width.byteCount))) & mask(width)
         let selector = UInt16(
           truncatingIfNeeded: fromLittleEndian(Array(pointer.suffix(MemoryLayout<UInt16>.size)))
@@ -2964,6 +2998,19 @@ public struct DoryX86Interpreter: Sendable {
         let returnStack = selectorStack &- UInt64(width.byteCount) & mask(width)
         let selectorAddress = stackAddress(selectorStack, mode: mode, state: state)
         let returnAddress = stackAddress(returnStack, mode: mode, state: state)
+        try validateStackAccess(
+          offset: selectorStack, byteCount: width.byteCount, write: true,
+          instruction: instruction, mode: mode, state: state)
+        try validateStackAccess(
+          offset: returnStack, byteCount: width.byteCount, write: true,
+          instruction: instruction, mode: mode, state: state)
+        try validateAlignmentCheck(
+          address: selectorAddress, byteCount: width.byteCount, alignment: 2,
+          write: true, instruction: instruction, state: state, memory: executionMemory)
+        try validateAlignmentCheck(
+          address: returnAddress, byteCount: width.byteCount,
+          alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+          write: true, instruction: instruction, state: state, memory: executionMemory)
         try executionMemory.validateWrite(at: selectorAddress, byteCount: width.byteCount)
         try executionMemory.validateWrite(at: returnAddress, byteCount: width.byteCount)
         try executionMemory.write(
@@ -2978,11 +3025,25 @@ public struct DoryX86Interpreter: Sendable {
         state.cs = loaded
         nextRIP = offset & mask(width)
       case .farCallIndirect(let address, let width):
-        let pointerAddress = effectiveAddress(address, instruction: instruction, state: state)
-        let pointer = try executionMemory.read(
-          at: pointerAddress,
-          byteCount: width.byteCount + MemoryLayout<UInt16>.size
+        let pointerByteCount = width.byteCount + MemoryLayout<UInt16>.size
+        try validateSegmentAccess(
+          address,
+          byteCount: pointerByteCount,
+          write: false,
+          instruction: instruction,
+          state: state
         )
+        let pointerAddress = effectiveAddress(address, instruction: instruction, state: state)
+        try validateAlignmentCheck(
+          address: pointerAddress,
+          byteCount: pointerByteCount,
+          alignment: width == .word ? 2 : 4,
+          write: false,
+          instruction: instruction,
+          state: state,
+          memory: executionMemory
+        )
+        let pointer = try executionMemory.read(at: pointerAddress, byteCount: pointerByteCount)
         let offset = fromLittleEndian(Array(pointer.prefix(width.byteCount))) & mask(width)
         let selector = UInt16(
           truncatingIfNeeded: fromLittleEndian(Array(pointer.suffix(MemoryLayout<UInt16>.size)))
@@ -3001,6 +3062,19 @@ public struct DoryX86Interpreter: Sendable {
         let returnStack = selectorStack &- UInt64(width.byteCount) & mask(width)
         let selectorAddress = stackAddress(selectorStack, mode: mode, state: state)
         let returnAddress = stackAddress(returnStack, mode: mode, state: state)
+        try validateStackAccess(
+          offset: selectorStack, byteCount: width.byteCount, write: true,
+          instruction: instruction, mode: mode, state: state)
+        try validateStackAccess(
+          offset: returnStack, byteCount: width.byteCount, write: true,
+          instruction: instruction, mode: mode, state: state)
+        try validateAlignmentCheck(
+          address: selectorAddress, byteCount: width.byteCount, alignment: 2,
+          write: true, instruction: instruction, state: state, memory: executionMemory)
+        try validateAlignmentCheck(
+          address: returnAddress, byteCount: width.byteCount,
+          alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+          write: true, instruction: instruction, state: state, memory: executionMemory)
         try executionMemory.validateWrite(at: selectorAddress, byteCount: width.byteCount)
         try executionMemory.validateWrite(at: returnAddress, byteCount: width.byteCount)
         try executionMemory.write(
@@ -3019,6 +3093,19 @@ public struct DoryX86Interpreter: Sendable {
         let returnAddress = stackAddress(stack, mode: mode, state: state)
         let selectorStack = stack &+ UInt64(width.byteCount) & mask(width)
         let selectorAddress = stackAddress(selectorStack, mode: mode, state: state)
+        try validateStackAccess(
+          offset: stack, byteCount: width.byteCount, write: false,
+          instruction: instruction, mode: mode, state: state)
+        try validateStackAccess(
+          offset: selectorStack, byteCount: width.byteCount, write: false,
+          instruction: instruction, mode: mode, state: state)
+        try validateAlignmentCheck(
+          address: returnAddress, byteCount: width.byteCount,
+          alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+          write: false, instruction: instruction, state: state, memory: executionMemory)
+        try validateAlignmentCheck(
+          address: selectorAddress, byteCount: width.byteCount, alignment: 2,
+          write: false, instruction: instruction, state: state, memory: executionMemory)
         let target = fromLittleEndian(
           try executionMemory.read(at: returnAddress, byteCount: width.byteCount))
         let selector = UInt16(
@@ -3082,6 +3169,25 @@ public struct DoryX86Interpreter: Sendable {
         guard mode != .real16, !virtual8086 else { return invalidOpcode(at: originalRIP) }
         guard state.control.cr4 & (1 << 11) == 0 || currentPrivilegeLevel(state, mode: mode) == 0 else {
           return generalProtection(at: originalRIP)
+        }
+        if case .memory(let memoryOperand) = destination {
+          try validateSegmentAccess(
+            memoryOperand,
+            byteCount: MemoryLayout<UInt16>.size,
+            write: true,
+            instruction: instruction,
+            state: state
+          )
+          try validateAlignmentCheck(
+            address: effectiveAddress(
+              memoryOperand, instruction: instruction, state: state),
+            byteCount: MemoryLayout<UInt16>.size,
+            alignment: 4,
+            write: true,
+            instruction: instruction,
+            state: state,
+            memory: executionMemory
+          )
         }
         try write(
           UInt64(task ? state.tr.selector : state.ldtr.selector),
@@ -3664,10 +3770,17 @@ public struct DoryX86Interpreter: Sendable {
         instruction: instruction,
         state: state
       )
-      return try memory.read(
-        at: effectiveAddress(memoryOperand, instruction: instruction, state: state),
-        byteCount: byteCount
+      let address = effectiveAddress(memoryOperand, instruction: instruction, state: state)
+      try validateAlignmentCheck(
+        address: address,
+        byteCount: byteCount,
+        alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: byteCount),
+        write: false,
+        instruction: instruction,
+        state: state,
+        memory: memory
       )
+      return try memory.read(at: address, byteCount: byteCount)
     }
   }
 
@@ -3718,10 +3831,17 @@ public struct DoryX86Interpreter: Sendable {
         instruction: instruction,
         state: state
       )
-      return try memory.read(
-        at: effectiveAddress(memoryOperand, instruction: instruction, state: state),
-        byteCount: byteCount
+      let address = effectiveAddress(memoryOperand, instruction: instruction, state: state)
+      try validateAlignmentCheck(
+        address: address,
+        byteCount: byteCount,
+        alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: byteCount),
+        write: false,
+        instruction: instruction,
+        state: state,
+        memory: memory
       )
+      return try memory.read(at: address, byteCount: byteCount)
     }
   }
 
@@ -3776,10 +3896,17 @@ public struct DoryX86Interpreter: Sendable {
         instruction: instruction,
         state: state
       )
-      let bytes = try memory.read(
-        at: effectiveAddress(memoryOperand, instruction: instruction, state: state),
-        byteCount: format.byteCount
+      let address = effectiveAddress(memoryOperand, instruction: instruction, state: state)
+      try validateAlignmentCheck(
+        address: address,
+        byteCount: format.byteCount,
+        alignment: x87Alignment(format),
+        write: false,
+        instruction: instruction,
+        state: state,
+        memory: memory
       )
+      let bytes = try memory.read(at: address, byteCount: format.byteCount)
       switch format {
       case .float32:
         return DoryX86ExtendedFloat(
@@ -3818,10 +3945,17 @@ public struct DoryX86Interpreter: Sendable {
         instruction: instruction,
         state: state
       )
-      let bytes = try memory.read(
-        at: effectiveAddress(memoryOperand, instruction: instruction, state: state),
-        byteCount: format.byteCount
+      let address = effectiveAddress(memoryOperand, instruction: instruction, state: state)
+      try validateAlignmentCheck(
+        address: address,
+        byteCount: format.byteCount,
+        alignment: x87Alignment(format),
+        write: false,
+        instruction: instruction,
+        state: state,
+        memory: memory
       )
+      let bytes = try memory.read(at: address, byteCount: format.byteCount)
       return DoryX86X87Transfer.load(bytes: bytes, format: format)
     }
   }
@@ -3841,8 +3975,41 @@ public struct DoryX86Interpreter: Sendable {
       state: state
     )
     let address = effectiveAddress(memoryOperand, instruction: instruction, state: state)
+    try validateAlignmentCheck(
+      address: address,
+      byteCount: bytes.count,
+      alignment: x87StoreAlignment(instruction: instruction, byteCount: bytes.count),
+      write: true,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
     try memory.validateWrite(at: address, byteCount: bytes.count)
     try memory.write(at: address, bytes: bytes)
+  }
+
+  private func x87Alignment(_ format: DoryX87MemoryFormat) -> Int? {
+    switch format {
+    case .signedInteger16: 2
+    case .float32, .signedInteger32: 4
+    case .float64, .signedInteger64, .extended80: 8
+    }
+  }
+
+  private func x87StoreAlignment(
+    instruction: DoryX86DecodedInstruction,
+    byteCount: Int
+  ) -> Int? {
+    if case .storeX87(_, let format, _, _) = instruction.operation {
+      return x87Alignment(format)
+    }
+    if case .storeX87Environment = instruction.operation {
+      return byteCount == 14 ? 2 : 4
+    }
+    // MMX stores use the x87 register file but retain their ordinary qword
+    // data-operand alignment. Packed-BCD stores lack a distinct Table 7-7
+    // entry and intentionally remain outside this path.
+    return DoryX86AlignmentPolicy.naturalAlignment(byteCount: byteCount)
   }
 
   private func x87Top(_ state: DoryX86FloatingPointState) -> Int {
@@ -4168,6 +4335,15 @@ public struct DoryX86Interpreter: Sendable {
       state: state
     )
     let address = effectiveAddress(memoryOperand, instruction: instruction, state: state)
+    try validateAlignmentCheck(
+      address: address,
+      byteCount: bytes.count,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: bytes.count),
+      write: true,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
     try memory.validateWrite(at: address, byteCount: bytes.count)
     try memory.write(at: address, bytes: bytes)
   }
@@ -5004,6 +5180,38 @@ public struct DoryX86Interpreter: Sendable {
     )
   }
 
+  private func alignmentCheck(at instructionPointer: UInt64) -> DoryX86Exception {
+    .init(
+      kind: .alignmentCheck,
+      vector: 17,
+      errorCode: 0,
+      instructionPointer: instructionPointer
+    )
+  }
+
+  /// Permission/translation checks precede #AC. This helper performs a preflight
+  /// only when the access would otherwise fault for alignment, leaving aligned
+  /// and disabled accesses on their existing single-read/write path.
+  private func validateAlignmentCheck(
+    address: UInt64,
+    byteCount: Int,
+    alignment: Int?,
+    write: Bool,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    guard DoryX86AlignmentPolicy.faults(
+      address: address, alignment: alignment, state: state)
+    else { return }
+    if write {
+      try memory.validateWrite(at: address, byteCount: byteCount)
+    } else {
+      try memory.validateRead(at: address, byteCount: byteCount)
+    }
+    throw alignmentCheck(at: instruction.address)
+  }
+
   private func invalidOpcode(at instructionPointer: UInt64) -> DoryX86InterpreterResult {
     .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: instructionPointer))
   }
@@ -5452,6 +5660,15 @@ public struct DoryX86Interpreter: Sendable {
       state: state
     )
     let address = stackAddress(nextOffset, mode: mode, state: state)
+    try validateAlignmentCheck(
+      address: address,
+      byteCount: width.byteCount,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+      write: true,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
     try memory.validateWrite(at: address, byteCount: width.byteCount)
     try memory.write(at: address, bytes: littleEndian(value, width: width))
     writeStackPointer(nextOffset, mode: mode, state: &state)
@@ -5487,10 +5704,20 @@ public struct DoryX86Interpreter: Sendable {
             mode: mode,
             state: state
           )
+          let sourceAddress = stackAddress(sourceOffset, mode: mode, state: state)
+          try validateAlignmentCheck(
+            address: sourceAddress,
+            byteCount: width.byteCount,
+            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+            write: false,
+            instruction: instruction,
+            state: state,
+            memory: memory
+          )
           values.append(
             fromLittleEndian(
               try memory.read(
-                at: stackAddress(sourceOffset, mode: mode, state: state),
+                at: sourceAddress,
                 byteCount: width.byteCount
               )))
         }
@@ -5511,8 +5738,18 @@ public struct DoryX86Interpreter: Sendable {
         mode: mode,
         state: state
       )
+      let address = stackAddress(offset, mode: mode, state: state)
+      try validateAlignmentCheck(
+        address: address,
+        byteCount: width.byteCount,
+        alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+        write: true,
+        instruction: instruction,
+        state: state,
+        memory: memory
+      )
       try memory.validateWrite(
-        at: stackAddress(offset, mode: mode, state: state),
+        at: address,
         byteCount: width.byteCount
       )
       writeOffsets.append(offset)
@@ -5556,9 +5793,19 @@ public struct DoryX86Interpreter: Sendable {
       mode: mode,
       state: state
     )
+    let address = stackAddress(offset, mode: mode, state: state)
+    try validateAlignmentCheck(
+      address: address,
+      byteCount: width.byteCount,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+      write: false,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
     let value = fromLittleEndian(
       try memory.read(
-        at: stackAddress(offset, mode: mode, state: state),
+        at: address,
         byteCount: width.byteCount
       ))
     let nextOffset =
@@ -5657,9 +5904,19 @@ public struct DoryX86Interpreter: Sendable {
         instruction: instruction,
         state: state
       )
+      let address = effectiveAddress(operand, instruction: instruction, state: state)
+      try validateAlignmentCheck(
+        address: address,
+        byteCount: operand.width.byteCount,
+        alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: operand.width.byteCount),
+        write: alignmentAccessWritesOperand(operand, instruction: instruction),
+        instruction: instruction,
+        state: state,
+        memory: memory
+      )
       return fromLittleEndian(
         try memory.read(
-          at: effectiveAddress(operand, instruction: instruction, state: state),
+          at: address,
           byteCount: operand.width.byteCount
         ))
     case .immediate(let value, let width):
@@ -5699,8 +5956,18 @@ public struct DoryX86Interpreter: Sendable {
         instruction: instruction,
         state: state
       )
+      let address = effectiveAddress(target, instruction: instruction, state: state)
+      try validateAlignmentCheck(
+        address: address,
+        byteCount: target.width.byteCount,
+        alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: target.width.byteCount),
+        write: true,
+        instruction: instruction,
+        state: state,
+        memory: memory
+      )
       try memory.write(
-        at: effectiveAddress(target, instruction: instruction, state: state),
+        at: address,
         bytes: littleEndian(value, width: target.width)
       )
     case .immediate, .relative:
@@ -5723,10 +5990,43 @@ public struct DoryX86Interpreter: Sendable {
       instruction: instruction,
       state: state
     )
+    let address = effectiveAddress(target, instruction: instruction, state: state)
+    try validateAlignmentCheck(
+      address: address,
+      byteCount: target.width.byteCount,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: target.width.byteCount),
+      write: true,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
     try memory.validateWrite(
-      at: effectiveAddress(target, instruction: instruction, state: state),
+      at: address,
       byteCount: target.width.byteCount
     )
+  }
+
+  private func alignmentAccessWritesOperand(
+    _ memoryOperand: DoryX86MemoryOperand,
+    instruction: DoryX86DecodedInstruction
+  ) -> Bool {
+    let matches: (DoryX86Operand) -> Bool = { operand in
+      guard case .memory(let candidate) = operand else { return false }
+      return candidate == memoryOperand
+    }
+    switch instruction.operation {
+    case .alu(let operation, let destination, _):
+      return operation != .compare && operation != .test && matches(destination)
+    case .unary(_, let destination), .shift(_, let destination, _),
+      .doubleShift(_, let destination, _, _), .exchangeAdd(let destination, _):
+      return matches(destination)
+    case .exchange(let lhs, let rhs):
+      return matches(lhs) || matches(rhs)
+    case .compareExchange(let destination, _):
+      return matches(destination)
+    default:
+      return false
+    }
   }
 
   private func validateSegmentAccess(
@@ -5845,6 +6145,13 @@ public struct DoryX86Interpreter: Sendable {
     }
 
     if case .memory(let memoryOperand) = base {
+      try validateSegmentAccess(
+        memoryOperand,
+        byteCount: width.byteCount,
+        write: operation != .test,
+        instruction: instruction,
+        state: state
+      )
       var elementOffset = bitIndex / bitCount
       var bitOffset = bitIndex % bitCount
       if bitOffset < 0 {
@@ -5854,6 +6161,15 @@ public struct DoryX86Interpreter: Sendable {
       let baseAddress = effectiveAddress(
         memoryOperand, instruction: instruction, state: state)
       let address = baseAddress &+ UInt64(bitPattern: elementOffset * Int64(width.byteCount))
+      try validateAlignmentCheck(
+        address: address,
+        byteCount: width.byteCount,
+        alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+        write: operation != .test,
+        instruction: instruction,
+        state: state,
+        memory: memory
+      )
       let value = fromLittleEndian(try memory.read(at: address, byteCount: width.byteCount))
       let bit = UInt64(1) << UInt64(bitOffset)
       setFlag(.carry, value & bit != 0, in: &state.rflags)
@@ -5981,6 +6297,7 @@ public struct DoryX86Interpreter: Sendable {
       repeated,
       addressWidth == .quadword,
       mode == .long64,
+      width == .byte || !DoryX86AlignmentPolicy.isEnabled(state: state),
       !state.rflags.contains(.direction),
       let bulkMemory = memory as? any DoryX86BulkMemory
     {
@@ -6068,7 +6385,25 @@ public struct DoryX86Interpreter: Sendable {
             instruction: instruction,
             state: state
           )
+          try validateAlignmentCheck(
+            address: sourceAddress,
+            byteCount: width.byteCount,
+            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+            write: false,
+            instruction: instruction,
+            state: state,
+            memory: memory
+          )
           let bytes = try memory.read(at: sourceAddress, byteCount: width.byteCount)
+          try validateAlignmentCheck(
+            address: destinationAddress,
+            byteCount: width.byteCount,
+            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+            write: true,
+            instruction: instruction,
+            state: state,
+            memory: memory
+          )
           try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
           try memory.write(at: destinationAddress, bytes: bytes)
         case .compare:
@@ -6086,8 +6421,26 @@ public struct DoryX86Interpreter: Sendable {
             instruction: instruction,
             state: state
           )
+          try validateAlignmentCheck(
+            address: sourceAddress,
+            byteCount: width.byteCount,
+            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+            write: false,
+            instruction: instruction,
+            state: state,
+            memory: memory
+          )
           let source = fromLittleEndian(
             try memory.read(at: sourceAddress, byteCount: width.byteCount))
+          try validateAlignmentCheck(
+            address: destinationAddress,
+            byteCount: width.byteCount,
+            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+            write: false,
+            instruction: instruction,
+            state: state,
+            memory: memory
+          )
           let destination = fromLittleEndian(
             try memory.read(at: destinationAddress, byteCount: width.byteCount))
           _ = executeALU(
@@ -6105,6 +6458,15 @@ public struct DoryX86Interpreter: Sendable {
             instruction: instruction,
             state: state
           )
+          try validateAlignmentCheck(
+            address: destinationAddress,
+            byteCount: width.byteCount,
+            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+            write: true,
+            instruction: instruction,
+            state: state,
+            memory: memory
+          )
           try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
           try memory.write(
             at: destinationAddress,
@@ -6118,6 +6480,15 @@ public struct DoryX86Interpreter: Sendable {
             instruction: instruction,
             state: state
           )
+          try validateAlignmentCheck(
+            address: sourceAddress,
+            byteCount: width.byteCount,
+            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+            write: false,
+            instruction: instruction,
+            state: state,
+            memory: memory
+          )
           let value = fromLittleEndian(
             try memory.read(at: sourceAddress, byteCount: width.byteCount))
           writeStringRegister(.rax, value: value, width: width, state: &state)
@@ -6128,6 +6499,15 @@ public struct DoryX86Interpreter: Sendable {
             write: false,
             instruction: instruction,
             state: state
+          )
+          try validateAlignmentCheck(
+            address: destinationAddress,
+            byteCount: width.byteCount,
+            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+            write: false,
+            instruction: instruction,
+            state: state,
+            memory: memory
           )
           let destination = fromLittleEndian(
             try memory.read(at: destinationAddress, byteCount: width.byteCount))
@@ -6146,6 +6526,15 @@ public struct DoryX86Interpreter: Sendable {
             instruction: instruction,
             state: state
           )
+          try validateAlignmentCheck(
+            address: destinationAddress,
+            byteCount: width.byteCount,
+            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+            write: true,
+            instruction: instruction,
+            state: state,
+            memory: memory
+          )
           try memory.validateWrite(at: destinationAddress, byteCount: width.byteCount)
           guard let ioBus else {
             throw DoryX86IOBusError.unmappedPort(port, width: width)
@@ -6159,6 +6548,15 @@ public struct DoryX86Interpreter: Sendable {
             write: false,
             instruction: instruction,
             state: state
+          )
+          try validateAlignmentCheck(
+            address: sourceAddress,
+            byteCount: width.byteCount,
+            alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: width.byteCount),
+            write: false,
+            instruction: instruction,
+            state: state,
+            memory: memory
           )
           let value = UInt32(
             truncatingIfNeeded: fromLittleEndian(
@@ -6385,6 +6783,17 @@ public struct DoryX86Interpreter: Sendable {
         errorCode: 0,
         instructionPointer: state.rip,
         linearAddress: address
+      )
+    }
+    if !doubleQuadword {
+      try validateAlignmentCheck(
+        address: address,
+        byteCount: byteCount,
+        alignment: 8,
+        write: true,
+        instruction: instruction,
+        state: state,
+        memory: memory
       )
     }
     try memory.validateWrite(at: address, byteCount: byteCount)

@@ -476,9 +476,14 @@ public struct DoryX86InterruptDelivery: Sendable {
       cpl: UInt8(state.cs.selector & 3)
     )
     let stack = state.registers.rsp
-    let instructionPointer = try read64(memory, stack)
-    let codeSelector = UInt16(truncatingIfNeeded: try read64(memory, stack + 8))
-    let flagsValue = try read64(memory, stack + 16)
+    func readReturn64(_ address: UInt64) throws -> UInt64 {
+      try validateAlignmentCheck(
+        address: address, byteCount: 8, state: state, memory: memory)
+      return try read64(memory, address)
+    }
+    let instructionPointer = try readReturn64(stack)
+    let codeSelector = UInt16(truncatingIfNeeded: try readReturn64(stack + 8))
+    let flagsValue = try readReturn64(stack + 16)
     let targetCPL = UInt8(codeSelector & 3)
     let currentCPL = UInt8(state.cs.selector & 3)
     guard targetCPL >= currentCPL,
@@ -505,8 +510,8 @@ public struct DoryX86InterruptDelivery: Sendable {
       throw DoryX86InterruptDeliveryError.invalidReturnFrame
     }
 
-    let restoredStack = try read64(memory, stack + 24)
-    let stackSelector = UInt16(truncatingIfNeeded: try read64(memory, stack + 32))
+    let restoredStack = try readReturn64(stack + 24)
+    let stackSelector = UInt16(truncatingIfNeeded: try readReturn64(stack + 32))
     guard DoryX86ArchitecturalState.isCanonical(restoredStack),
       (stackSelector == 0 && targetCPL == 0) || stackSelector & 3 == targetCPL
     else {
@@ -754,7 +759,10 @@ public struct DoryX86InterruptDelivery: Sendable {
       segment: state.ss, instructionPointer: state.rip)
     let stackBase = state.ss.base
     func readFrameValue(_ offset: UInt64) throws -> UInt64 {
-      fromLittleEndian(try memory.read(at: stackBase &+ offset, byteCount: width.byteCount))
+      let address = stackBase &+ offset
+      try validateAlignmentCheck(
+        address: address, byteCount: width.byteCount, state: state, memory: memory)
+      return fromLittleEndian(try memory.read(at: address, byteCount: width.byteCount))
     }
     let instructionPointer = try readFrameValue(stack)
     let codeSelector = UInt16(truncatingIfNeeded: try readFrameValue((stack &+ frameBytes) & pointerMask))
@@ -839,6 +847,29 @@ public struct DoryX86InterruptDelivery: Sendable {
       throw DoryX86Exception(kind: .stackSegment, vector: 12, errorCode: 0,
         instructionPointer: instructionPointer)
     }
+  }
+
+  private func validateAlignmentCheck(
+    address: UInt64,
+    byteCount: Int,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    guard DoryX86AlignmentPolicy.faults(
+      address: address,
+      alignment: DoryX86AlignmentPolicy.naturalAlignment(byteCount: byteCount),
+      state: state
+    ) else { return }
+    // IRET reads the current stack as an ordinary operand. Translation and
+    // read permission take priority; IDT/GDT/TSS and interrupt-frame writes
+    // remain implicit system accesses and never enter this helper.
+    try memory.validateRead(at: address, byteCount: byteCount)
+    throw DoryX86Exception(
+      kind: .alignmentCheck,
+      vector: 17,
+      errorCode: 0,
+      instructionPointer: state.rip
+    )
   }
 
   private func readProtectedGate(

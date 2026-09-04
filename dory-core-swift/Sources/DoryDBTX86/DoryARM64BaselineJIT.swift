@@ -2731,6 +2731,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   ) throws -> DoryARM64ExecutionSummary? {
     guard maximumInstructions > 0, state.interruptShadow == nil,
       !state.rflags.contains(.virtual8086),
+      !DoryX86AlignmentPolicy.isEnabled(state: state),
       mode == .long64 || (mode == .protected32 && state.cs.base == 0 && state.cs.limit == .max)
     else { return nil }
     // Fall back before fetch, optimized copies or native state publication. The interpreter
@@ -3046,6 +3047,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   ) throws -> ResidentExecution? {
     guard maximumInstructions > 0, state.interruptShadow == nil,
       !state.rflags.contains(.virtual8086),
+      !DoryX86AlignmentPolicy.isEnabled(state: state),
       mode == .long64 || (mode == .protected32 && state.cs.base == 0 && state.cs.limit == .max)
     else { return nil }
     do { try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits) }

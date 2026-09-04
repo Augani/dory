@@ -676,6 +676,24 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
     try readLinear(at: address, byteCount: byteCount, access: .read, allowShortRead: false)
   }
 
+  public func validateRead(at address: UInt64, byteCount: Int) throws {
+    guard byteCount > 0 else { return }
+    var cursor = address
+    var remaining = byteCount
+    while remaining > 0 {
+      let translation = try pagingUnit.translate(
+        linearAddress: cursor,
+        access: .read,
+        context: context,
+        physicalMemory: physicalMemory
+      )
+      let count = min(Int(4_096 - (cursor & 0xfff)), remaining)
+      try physicalMemory.validateRead(at: translation.physicalAddress, byteCount: count)
+      cursor &+= UInt64(count)
+      remaining -= count
+    }
+  }
+
   /// Intel SDM Vol. 3A §5.6.1: implicit system-data accesses use supervisor paging
   /// privileges, and SMAP applies even with AC set. Do not change the operand context.
   func readImplicitSupervisor(at address: UInt64, byteCount: Int) throws -> [UInt8] {
