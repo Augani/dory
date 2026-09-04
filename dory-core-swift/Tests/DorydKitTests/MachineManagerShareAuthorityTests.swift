@@ -25,7 +25,7 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
             ),
             processStarter: { _ in starter.increment() }
         )
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -79,7 +79,7 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -110,7 +110,7 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state
         ))
-        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+        XCTAssertThrowsError(try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -152,7 +152,7 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
         )
         do {
             let creator = MachineManager(diagnosticConfiguration: configuration)
-            _ = try creator.create(DoryMachineConfiguration(
+            _ = try creator.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: "dev",
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath,
@@ -202,7 +202,7 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
             ),
             processStarter: { _ in starter.increment() }
         )
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -243,7 +243,7 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
             processStarter: { _ in starter.increment() }
         )
 
-        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+        XCTAssertThrowsError(try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,

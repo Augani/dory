@@ -17,7 +17,7 @@ struct MachineManagerWorkspaceProjectionTests {
                 withIntermediateDirectories: false
             )
             let manager = makeManager(state: state)
-            _ = try manager.create(DoryMachineConfiguration(
+            _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: "dev",
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath,
@@ -130,7 +130,7 @@ struct MachineManagerWorkspaceProjectionTests {
     func staleProjectionRepair() throws {
         try withStateRoot("stale") { _, state in
             let manager = makeManager(state: state)
-            _ = try manager.create(DoryMachineConfiguration(
+            _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: "dev",
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath,
@@ -161,7 +161,7 @@ struct MachineManagerWorkspaceProjectionTests {
     func inspectionFactsAreAuthority() throws {
         try withStateRoot("facts") { _, state in
             let manager = makeManager(state: state)
-            _ = try manager.create(DoryMachineConfiguration(
+            _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: "installed",
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath,
@@ -202,7 +202,7 @@ struct MachineManagerWorkspaceProjectionTests {
     func projectionFailureAfterLegacyCommitIsNonfatal() throws {
         try withStateRoot("projection-failure") { _, state in
             let manager = makeManager(state: state)
-            _ = try manager.create(DoryMachineConfiguration(
+            _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: "dev",
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath,
@@ -239,7 +239,7 @@ struct MachineManagerWorkspaceProjectionTests {
         try withStateRoot("unsupported") { _, state in
             let manager = makeManager(state: state, architecture: "mips64")
             #expect(throws: (any Error).self) {
-                _ = try manager.create(DoryMachineConfiguration(
+                _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                     id: "unsupported",
                     kernelPath: doryTestKernelPath,
                     rootfsPath: doryTestRootfsPath
@@ -262,7 +262,7 @@ struct MachineManagerWorkspaceProjectionTests {
     func snapshotRestoreProjection() throws {
         try withStateRoot("restore") { _, state in
             let manager = makeManager(state: state)
-            _ = try manager.create(DoryMachineConfiguration(
+            _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: "dev",
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath,

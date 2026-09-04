@@ -1924,6 +1924,7 @@ public final class MachineManager: @unchecked Sendable {
         do {
             try recoverInterruptedInstallerMediaOperations()
             try recoverInterruptedResolvedDesktopUpdates()
+            try recoverInterruptedCreationOperations()
         }
         catch {
             managerStateLock.withLock { resolvedLaunchInfrastructureReady = false }
@@ -1987,16 +1988,49 @@ public final class MachineManager: @unchecked Sendable {
     public func create(
         _ machine: DoryMachineConfiguration,
         typedSettings: DoryMachineTypedSettingsPatch? = nil,
+        sandboxPolicy: DoryVMSandboxPolicy? = nil,
+        operationID: UUID? = nil,
+        productionPlanningController: (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil
+    ) throws -> DoryMachineStatus {
+        let operationID = try Self.lifecycleOperationID(operationID, action: "create")
+        try Self.validateProductCell(machine)
+        guard machine.guestFamily == .linux else {
+            throw MachineManagerError.persistence("native macOS creation requires asynchronous daemon-owned platform preparation")
+        }
+        guard sandboxPolicy == nil || machine.displayMode == .headless else {
+            throw MachineManagerError.persistence("sandbox policy is supported only for headless Linux machines")
+        }
+        let controller = try creationPlanningController(productionPlanningController)
+        let request = DoryMachineCreationRequest(configuration: machine, typedSettings: typedSettings,
+            sandboxPolicy: sandboxPolicy, sourceMachineID: nil, sourceSnapshotID: nil)
+        let mutationLease = mutationCoordinator.acquire(workspaceID: machine.id)
+        defer { mutationLease.release() }
+        if let replay = try replayCreation(request: request, operationID: operationID, controller: controller) { return replay }
+        do {
+            _ = try createMachine(machine, typedSettings: typedSettings, sandboxPolicy: sandboxPolicy,
+                cloneAuthority: nil, acquiresMutationLease: false,
+                creationRequest: request, creationOperationID: operationID)
+            return try finishCreation(id: machine.id, operationID: operationID, controller: controller)
+        } catch {
+            try creationFailed(id: machine.id, operationID: operationID, error: error)
+            throw error
+        }
+    }
+
+#if DEBUG
+    /// Internal setup seam for migration/bootstrap fixtures which intentionally publish an
+    /// unplanned workspace before installing the production controller. Product callers use create.
+    @discardableResult
+    func stageMachineForBootstrap(
+        _ machine: DoryMachineConfiguration,
+        typedSettings: DoryMachineTypedSettingsPatch? = nil,
         sandboxPolicy: DoryVMSandboxPolicy? = nil
     ) throws -> DoryMachineStatus {
-        try createMachine(
-            machine,
-            typedSettings: typedSettings,
-            sandboxPolicy: sandboxPolicy,
-            cloneAuthority: nil,
-            acquiresMutationLease: true
-        )
+        try createMachine(machine, typedSettings: typedSettings, sandboxPolicy: sandboxPolicy,
+            cloneAuthority: nil, acquiresMutationLease: true)
     }
+
+#endif
 
     /// Creates a native Apple-silicon macOS machine as one daemon-owned transaction. The IPSW is
     /// inspected by Virtualization.framework before any discoverable workspace is published, and
@@ -2005,7 +2039,41 @@ public final class MachineManager: @unchecked Sendable {
     @discardableResult
     public func createNativeMacOS(
         _ requestedMachine: DoryMachineConfiguration,
-        typedSettings: DoryMachineTypedSettingsPatch? = nil
+        typedSettings: DoryMachineTypedSettingsPatch? = nil,
+        operationID: UUID? = nil,
+        productionPlanningController: (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil
+    ) async throws -> DoryMachineStatus {
+        let operationID = try Self.lifecycleOperationID(operationID, action: "create")
+        try Self.validateProductCell(requestedMachine)
+        let controller = try creationPlanningController(productionPlanningController)
+        let request = DoryMachineCreationRequest(configuration: requestedMachine, typedSettings: typedSettings,
+            sandboxPolicy: nil, sourceMachineID: nil, sourceSnapshotID: nil)
+        if let replay = try replayCreation(request: request, operationID: operationID, controller: controller) { return replay }
+        do {
+            _ = try await prepareNativeMacOSCreation(requestedMachine, typedSettings: typedSettings,
+                creationRequest: request, creationOperationID: operationID)
+            return try finishCreation(id: requestedMachine.id, operationID: operationID, controller: controller)
+        } catch {
+            try creationFailed(id: requestedMachine.id, operationID: operationID, error: error)
+            throw error
+        }
+    }
+
+#if DEBUG
+    @discardableResult
+    func stageNativeMacOSMachineForBootstrap(
+        _ machine: DoryMachineConfiguration, typedSettings: DoryMachineTypedSettingsPatch? = nil
+    ) async throws -> DoryMachineStatus {
+        try await prepareNativeMacOSCreation(machine, typedSettings: typedSettings)
+    }
+
+#endif
+
+    private func prepareNativeMacOSCreation(
+        _ requestedMachine: DoryMachineConfiguration,
+        typedSettings: DoryMachineTypedSettingsPatch?,
+        creationRequest: DoryMachineCreationRequest? = nil,
+        creationOperationID: UUID? = nil
     ) async throws -> DoryMachineStatus {
         try Self.validateProductCell(requestedMachine)
         guard requestedMachine.guestFamily == .macOS,
@@ -2042,6 +2110,18 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.duplicateMachine(requestedMachine.id)
         }
 
+        var normalized = requestedMachine
+        normalized.guestArchitecture = .arm64
+        normalized.address = try Self.normalizedAddress(normalized.address)
+        normalized.cloneReceipt = nil
+        guard launchPolicy != .perWorkspaceAuthority || normalized.environment.isEmpty else {
+            throw MachineManagerError.persistence("native workspace creation does not accept persisted environment values")
+        }
+        let creationContext = try creationRequest.map {
+            guard let creationOperationID else { throw MachineManagerError.persistence("creation caller identity is missing") }
+            return try beginCreation(request: $0, normalized: normalized, operationID: creationOperationID, snapshot: nil)
+        }
+
         let fileManager = FileManager.default
         try fileManager.createDirectory(
             atPath: configuration.stateDirectory,
@@ -2049,7 +2129,9 @@ public final class MachineManager: @unchecked Sendable {
             attributes: [.posixPermissions: 0o700]
         )
         Self.restrictWorkspaceProjectionRootIfOwned(configuration.stateDirectory)
-        let stagingURL = URL(fileURLWithPath: configuration.stateDirectory, isDirectory: true)
+        let stagingURL = try creationContext.map {
+            URL(fileURLWithPath: try DoryMachineCreationJournal.read(from: $0.lease).stagingDirectory, isDirectory: true)
+        } ?? URL(fileURLWithPath: configuration.stateDirectory, isDirectory: true)
             .appendingPathComponent(
                 ".dory-vzmac-create-\(UUID().uuidString.lowercased())",
                 isDirectory: true
@@ -2059,7 +2141,20 @@ public final class MachineManager: @unchecked Sendable {
             withIntermediateDirectories: false,
             attributes: [.posixPermissions: 0o700]
         )
-        defer { try? fileManager.removeItem(at: stagingURL) }
+        if let creationContext {
+            try recordCreationOwnership(creationContext, path: stagingURL.path, checkpoint: .stagingOwnership)
+        }
+        defer {
+            if let creationContext {
+                if let creation = try? DoryMachineCreationJournal.read(from: creationContext.lease),
+                   (try? Self.validateCreationOwnership(creation, lease: creationContext.lease,
+                        path: stagingURL.path, checkpoint: .stagingOwnership)) != nil {
+                    try? fileManager.removeItem(at: stagingURL)
+                }
+            } else {
+                try? fileManager.removeItem(at: stagingURL)
+            }
+        }
 
         let memoryBytes = requestedMachine.memoryMB.multipliedReportingOverflow(by: 1_048_576)
         guard !memoryBytes.overflow else {
@@ -2092,18 +2187,23 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
 
-        var machine = requestedMachine
+        var machine = normalized
         machine.guestArchitecture = .arm64
         machine.cpuCount = bundle.manifest.resources.cpuCount
         machine.memoryMB = bundle.manifest.resources.memoryBytes / 1_048_576
         machine.diskSizeBytes = bundle.manifest.resources.diskBytes
         machine.macOSMachineBundlePath = stagedBundleURL.path
+        if let creationContext {
+            try creationContext.lease.publishCreationCheckpoint(
+                DoryMachineCreationNativePreparation(manifest: bundle.manifest, configuration: machine), at: .nativePreparation)
+        }
         return try createMachine(
             machine,
             typedSettings: typedSettings,
             sandboxPolicy: nil,
             cloneAuthority: nil,
-            acquiresMutationLease: false
+            acquiresMutationLease: false,
+            creationContext: creationContext
         )
     }
 
@@ -2112,7 +2212,11 @@ public final class MachineManager: @unchecked Sendable {
         typedSettings: DoryMachineTypedSettingsPatch?,
         sandboxPolicy: DoryVMSandboxPolicy?,
         cloneAuthority: DoryMachineCloneCreationAuthority?,
-        acquiresMutationLease: Bool = true
+        acquiresMutationLease: Bool = true,
+        creationRequest: DoryMachineCreationRequest? = nil,
+        creationOperationID: UUID? = nil,
+        creationSnapshot: DoryMachineSnapshot? = nil,
+        creationContext inheritedCreationContext: MachineLifecycleJournalContext? = nil
     ) throws -> DoryMachineStatus {
         try Self.validateProductCell(requestedMachine)
         let mutationLease = acquiresMutationLease
@@ -2246,6 +2350,10 @@ public final class MachineManager: @unchecked Sendable {
             }
             _ = try DoryARMVirtFirmwareBundle(directory: path).loadVerified(expectedPlatform: .armVirtV1)
         }
+        let creationContext = try inheritedCreationContext ?? creationRequest.map {
+            guard let creationOperationID else { throw MachineManagerError.persistence("creation caller identity is missing") }
+            return try beginCreation(request: $0, normalized: machine, operationID: creationOperationID, snapshot: creationSnapshot)
+        }
         let fileManager = FileManager.default
         do {
             try fileManager.createDirectory(atPath: configuration.stateDirectory, withIntermediateDirectories: true)
@@ -2270,9 +2378,15 @@ public final class MachineManager: @unchecked Sendable {
                 "could not create state for \(machine.id): \(String(cString: strerror(errno)))"
             )
         }
+        if let creationContext {
+            try recordCreationOwnership(creationContext, path: statePath, checkpoint: .targetOwnership)
+#if DEBUG
+            try injectLifecycleFault(.creationAfterTargetOwnership)
+#endif
+        }
         var committed = false
         defer {
-            if !committed {
+            if !committed && creationContext == nil {
                 try? fileManager.removeItem(atPath: statePath)
             }
         }
@@ -2285,17 +2399,20 @@ public final class MachineManager: @unchecked Sendable {
         )
         try Self.syncDirectory(path: statePath)
 
+        try creationContext?.checkCancellation()
         var preparedMachine = try prepareMachineArtifacts(
             machine,
             cloneAuthority: cloneAuthority
         )
+        try creationContext?.checkCancellation()
         if let cloneAuthority {
             let receipt = DoryMachineCloneReceipt(
                 sourceMachineID: cloneAuthority.sourceMachineID,
                 sourceSnapshotID: cloneAuthority.sourceSnapshotID,
                 sourceRootfsSHA256: cloneAuthority.rootfsSHA256,
                 sourceRootfsByteCount: cloneAuthority.rootfsByteCount,
-                createdAtUnixMilliseconds: Int64(Date().timeIntervalSince1970 * 1_000)
+                createdAtUnixMilliseconds: creationContext?.operation.createdAtUnixMilliseconds
+                    ?? Int64(Date().timeIntervalSince1970 * 1_000)
             )
             guard receipt.isValid else {
                 throw MachineManagerError.persistence("could not mint clone receipt")
@@ -2303,6 +2420,10 @@ public final class MachineManager: @unchecked Sendable {
             preparedMachine.cloneReceipt = receipt
         }
         try validateManagedMachineArtifacts(preparedMachine)
+#if DEBUG
+        if creationContext != nil { try injectLifecycleFault(.creationBeforePublication) }
+#endif
+        try creationContext?.closeCancellationWindow()
         let initialRuntimeIdentity = runtimeIdentityForUnplannedMachine()
         let authoritativeLegacyData = try DoryMachineConfigurationMigrationBridge
             .encodeLegacy(preparedMachine)
@@ -2402,6 +2523,403 @@ public final class MachineManager: @unchecked Sendable {
                 preparedMachine.effectiveInstalledDesktopPayloadReceipt,
             cloneReceipt: preparedMachine.cloneReceipt
         )
+    }
+
+    private func creationPlanningController(
+        _ explicit: (any DoryDaemonVirtualMachineProductionPlanningControlling)?
+    ) throws -> any DoryDaemonVirtualMachineProductionPlanningControlling {
+        guard launchPolicy == .perWorkspaceAuthority,
+              let controller = explicit ?? managerStateLock.withLock({ productionPlanningController }) else {
+            throw MachineManagerError.persistence("workspace creation requires production planning authority")
+        }
+        return controller
+    }
+
+#if DEBUG
+    func creationCancellationRequestedForTesting(id: String, operationID: UUID) -> Bool {
+        guard let context = activeLifecycleOperation(machineID: id),
+              context.operation.operationID == operationID,
+              context.operation.creationSpecificationDigest != nil else { return false }
+        return context.cancellationRequested
+    }
+#endif
+
+    private func beginCreation(
+        request: DoryMachineCreationRequest, normalized: DoryMachineConfiguration,
+        operationID: UUID, snapshot: DoryMachineSnapshot?
+    ) throws -> MachineLifecycleJournalContext {
+        guard let store = lifecycleJournalStore else {
+            throw MachineManagerError.persistence("workspace creation journal is unavailable")
+        }
+        let id = normalized.id
+        guard activeLifecycleOperation(machineID: id) == nil else {
+            throw MachineManagerError.persistence("workspace creation is already executing")
+        }
+        try store.prepare()
+        let workspaceLock = try acquireDirectWorkspaceMutationLock(id: id)
+        var sourceLocks: [EngineStateDirectoryLock] = []
+        var sourceConfigurationData: Data?
+        var sourceWorkspaceData: Data?
+        var sourceIdentity: DoryMachineRuntimeIdentity?
+        var source = DoryWorkspaceLifecycleCondition(workspaceID: id, state: .absent)
+        if let snapshot {
+            sourceLocks.append(try acquireDirectWorkspaceMutationLock(id: snapshot.machineID))
+            if let entry = lock.withLock({ machines[snapshot.machineID] }) {
+                guard let data = Self.readPrivateMetadata(path: machineConfigPath(id: snapshot.machineID)),
+                      let workspaceData = Self.readPrivateMetadata(path: machineStateDirectory(id: snapshot.machineID)
+                        + "/" + DoryWorkspaceRepository.recordFileName),
+                      try JSONDecoder().decode(DoryMachineConfiguration.self, from: data) == entry.configuration else {
+                    throw MachineManagerError.persistence("clone source workspace authority is unavailable")
+                }
+                source = try lifecycleCondition(machine: entry.configuration, state: entry.state,
+                    runtimeIdentity: entry.runtimeIdentity)
+                sourceConfigurationData = data
+                sourceWorkspaceData = workspaceData
+                sourceIdentity = entry.runtimeIdentity
+            } else {
+                // Imported snapshots own a detached, immutable namespace. No live workload or
+                // launch plan is invented for that namespace.
+                source = DoryWorkspaceLifecycleCondition(workspaceID: snapshot.machineID, state: .absent)
+            }
+        }
+        let created = Int64(max(0, (Date().timeIntervalSince1970 * 1_000).rounded()))
+        let journal = DoryMachineCreationJournal(operationID: operationID, request: request,
+            normalizedConfigurationData: try DoryMachineConfigurationMigrationBridge.encodeLegacy(normalized),
+            machineDirectory: machineStateDirectory(id: id), runtimePolicy: .requireResolvedPlan,
+            usesNativeWorkspaceAuthority: true,
+            virtualHardwareABIVersion: runtimeIdentityForUnplannedMachine().virtualHardwareABIVersion,
+            createdAtUnixMilliseconds: created, snapshot: snapshot,
+            sourceConfigurationData: sourceConfigurationData, sourceWorkspaceData: sourceWorkspaceData,
+            sourceRuntimeIdentity: sourceIdentity)
+        let specification = try DoryOperationSpecification(canonical: journal)
+        let operation = DoryWorkspaceLifecycleOperation(operationID: operationID,
+            kind: snapshot == nil ? .provisioning : .cloning, source: source,
+            target: .init(workspaceID: id, state: .created, definitionRevision: 1,
+                creation: .init(requestSHA256: try request.digest(),
+                    virtualHardwareABIVersion: journal.virtualHardwareABIVersion, runtimePolicy: .requireResolvedPlan)),
+            targetWorkspaceID: snapshot == nil ? nil : id,
+            targetResourceID: snapshot?.id,
+            targetSnapshotAuthority: try snapshot.map(Self.lifecycleSnapshotAuthority),
+            createdAtUnixMilliseconds: created, deadlineUnixMilliseconds: created + 90 * 60 * 1_000,
+            steps: [
+                .init(id: "stage", stage: .prepare, deadlineOffsetMilliseconds: 4_200_000),
+                .init(id: "publish", stage: .publish, deadlineOffsetMilliseconds: 4_500_000),
+                .init(id: "plan", stage: .cleanup, deadlineOffsetMilliseconds: 5_300_000)
+            ], readinessGates: [], retryBudgets: [], cancellationPolicy: .beforePublish,
+            recovery: .init(disposition: .retry, stepIDs: ["stage", "publish", "plan"]),
+            idempotencyKey: operationID.uuidString.lowercased(), creationSpecificationDigest: specification.digest)
+        try journal.validate(operation: operation)
+        let binding = try operation.journalBinding(dependencyClosureDigest: specification.digest)
+        let lease = try snapshot == nil
+            ? store.begin(binding, holdingMutationLock: workspaceLock, creationSpecification: specification)
+            : store.begin(binding, creationSpecification: specification)
+        let context = MachineLifecycleJournalContext(operation: operation, lease: lease,
+            workspaceLock: workspaceLock, additionalWorkspaceLocks: sourceLocks)
+        managerStateLock.withLock { activeLifecycleOperations[id] = context }
+        return context
+    }
+
+    private static let creationOwnerMarker = ".dory-creation-owner.json"
+
+    private func recordCreationOwnership(
+        _ context: MachineLifecycleJournalContext, path: String,
+        checkpoint: DoryMachineCreationCheckpoint
+    ) throws {
+        try context.checkCancellation()
+        let creation = try DoryMachineCreationJournal.read(from: context.lease)
+        guard (checkpoint == .targetOwnership && path == creation.machineDirectory)
+                || (checkpoint == .stagingOwnership && path == creation.stagingDirectory),
+              Self.isPrivateDirectory(path: path) else {
+            throw MachineManagerError.persistence("creation staging path has no exact ownership")
+        }
+        var info = stat()
+        guard lstat(path, &info) == 0 else { throw MachineManagerError.persistence("creation directory vanished") }
+        let ownership = DoryMachineCreationDirectoryOwnership(operationID: creation.operationID,
+            machineID: creation.machineID, device: UInt64(info.st_dev), inode: UInt64(info.st_ino))
+        try Self.writeDurablePrivateData(try DoryMachineDesktopUpdateJournal.canonicalData(ownership),
+            toPath: path + "/" + Self.creationOwnerMarker)
+        try Self.syncDirectory(path: path)
+        try context.lease.publishCreationCheckpoint(ownership, at: checkpoint)
+    }
+
+    private static func validateCreationOwnership(
+        _ creation: DoryMachineCreationJournal, lease: DoryOperationLease,
+        path: String, checkpoint: DoryMachineCreationCheckpoint
+    ) throws {
+        guard let expected: DoryMachineCreationDirectoryOwnership = try lease.creationCheckpoint(checkpoint),
+              expected.operationID == creation.operationID, expected.machineID == creation.machineID,
+              let data = readPrivateMetadata(path: path + "/" + creationOwnerMarker),
+              try JSONDecoder().decode(DoryMachineCreationDirectoryOwnership.self, from: data) == expected,
+              isPrivateDirectory(path: path) else {
+            throw MachineManagerError.persistence("creation cleanup refuses an unowned directory")
+        }
+        var info = stat()
+        guard lstat(path, &info) == 0, UInt64(info.st_dev) == expected.device,
+              UInt64(info.st_ino) == expected.inode else {
+            throw MachineManagerError.persistence("creation directory identity changed")
+        }
+    }
+
+    private static func creationPublication(
+        _ creation: DoryMachineCreationJournal, lease: DoryOperationLease,
+        configuration: MachineManagerConfiguration
+    ) throws -> DoryMachineCreationPublication {
+        guard creation.machineDirectory == configuration.stateDirectory + "/" + creation.machineID else {
+            throw MachineManagerError.persistence("creation journal belongs to another managed root")
+        }
+        try validateCreationOwnership(creation, lease: lease, path: creation.machineDirectory, checkpoint: .targetOwnership)
+        guard let configurationData = readPrivateMetadata(path: creation.machineDirectory + "/machine.json"),
+              let workspaceData = readPrivateMetadata(path: creation.machineDirectory + "/" + DoryWorkspaceRepository.recordFileName) else {
+            throw MachineManagerError.persistence("creation publication is incomplete")
+        }
+        let identity = try DoryMachineRuntimeIdentityStore(root: configuration.stateDirectory)
+            .readIfPresent(machineID: creation.machineID, authoritativeLegacyData: configurationData,
+                allowRecovery: false)
+        let previous: DoryMachineCreationPublication? = try lease.creationCheckpoint(.publication)
+        guard let initialIdentity = previous?.runtimeIdentity ?? identity else {
+            throw MachineManagerError.persistence("creation has no persisted runtime authority")
+        }
+        let candidate = DoryMachineCreationPublication(configurationData: configurationData,
+            workspaceData: workspaceData, runtimeIdentity: initialIdentity)
+        try candidate.validate(creation: creation, native: lease.creationCheckpoint(.nativePreparation))
+        if let expected: DoryMachineCreationPublication = try lease.creationCheckpoint(.publication), expected != candidate {
+            throw MachineManagerError.persistence("creation publication was replaced")
+        }
+        return candidate
+    }
+
+    private func validateCreationPublication(_ context: MachineLifecycleJournalContext) throws -> DoryMachineCreationPublication {
+        let creation = try DoryMachineCreationJournal.read(from: context.lease)
+        let publication = try Self.creationPublication(creation, lease: context.lease, configuration: configuration)
+        guard let entry = lock.withLock({ machines[creation.machineID] }),
+              entry.configuration == (try publication.configuration), entry.process == nil,
+              entry.handoffServer == nil,
+              [.created, .stopped, .recovering].contains(entry.state) else {
+            throw MachineManagerError.persistence("creation target is no longer an unlaunched workspace")
+        }
+        try validateManagedMachineArtifacts(entry.configuration)
+        if let snapshot = creation.snapshot, let expected = snapshot.artifactEvidence {
+            if let proof = context.creationArtifactProof {
+                try proof.validate(configuration: entry.configuration, evidence: expected)
+            } else {
+                context.creationArtifactProof = try DoryMachineCreationArtifactProof(
+                    configuration: entry.configuration, evidence: expected, hash: Self.sha256(descriptor:))
+            }
+        }
+        return publication
+    }
+
+    private func validatedCreationPlanningContext(id: String, operationID: UUID) throws -> MachineLifecycleJournalContext? {
+        guard let context = activeLifecycleOperation(machineID: id),
+              context.operation.creationSpecificationDigest != nil else { return nil }
+        guard context.operation.operationID == operationID else {
+            throw MachineManagerError.persistence("creation planning requires the original caller operation")
+        }
+        _ = try validateCreationPublication(context)
+        guard let _: DoryMachineCreationPublication = try context.lease.creationCheckpoint(.publication) else {
+            throw MachineManagerError.persistence("creation planning precedes publication")
+        }
+        return context
+    }
+
+    private func validateCreationPlan(_ context: MachineLifecycleJournalContext) throws {
+        let publication = try validateCreationPublication(context)
+        let id = context.machineID
+        let workspace = try publication.workspace
+        guard let entry = lock.withLock({ machines[id] }), entry.runtimeIdentity.validate().isEmpty,
+              let plan = entry.runtimeIdentity.resolvedPlan,
+              plan.machineID == id, plan.definitionRevision == workspace.definition.lifecycle.revision,
+              plan.definitionSHA256 == (try DoryMachineDesktopUpdateJournal.digest(workspace.definition)) else {
+            throw MachineManagerError.persistence("creation has no exact resolved plan")
+        }
+        let plans: any DoryResolvedMachinePlanStoring = managerStateLock.withLock { resolvedLaunchPlanStore }
+            ?? DoryResolvedMachinePlanRepository(root: configuration.stateDirectory)
+        guard plan == (try plans.read(id: id)) else {
+            throw MachineManagerError.persistence("creation plan differs from durable authority")
+        }
+        try context.lease.publishCreationCheckpoint(plan, at: .plan)
+    }
+
+    private func finishCreation(id: String, operationID: UUID,
+        controller: any DoryDaemonVirtualMachineProductionPlanningControlling) throws -> DoryMachineStatus {
+        guard let context = activeLifecycleOperation(machineID: id), context.operation.operationID == operationID else {
+            throw MachineManagerError.persistence("creation caller root is unavailable")
+        }
+        let creation = try DoryMachineCreationJournal.read(from: context.lease)
+        // A clone's firmware copy is part of the root and may be retried from the immutable source
+        // after machine.json became durable but before the publication checkpoint.
+        if let snapshot = creation.snapshot,
+           try context.lease.creationCheckpoint(.publication, as: DoryMachineCreationPublication.self) == nil {
+            try restoreCreationFirmware(snapshot, destinationID: id)
+        }
+        let publication = try validateCreationPublication(context)
+        try context.lease.publishCreationCheckpoint(publication, at: .publication)
+        try context.closeCancellationWindow()
+        try advanceLifecycle(context)
+        if (try? validateCreationPlan(context)) == nil {
+            lock.withLock { if machines[id]?.state == .recovering { machines[id]?.state = .created } }
+            _ = try resolveAndPublishProductionPlan(id: id, operationID: operationID, controller: controller)
+        }
+        try validateCreationPlan(context)
+        try context.lease.publishCreationCheckpoint(operationID, at: .ready)
+        guard completeCommittedLifecycle(context, diagnostic: "creation completion requires recovery") else {
+            throw MachineLifecycleJournalCompletionPending()
+        }
+        guard let result = status(id: id) else { throw MachineManagerError.unknownMachine(id) }
+        return result
+    }
+
+    private func creationContext(operationID: UUID) throws -> MachineLifecycleJournalContext {
+        guard let store = lifecycleJournalStore else { throw MachineManagerError.persistence("creation journal is unavailable") }
+        let record = try store.read(operationID)
+        let id = record.plan.target.id
+        let workspaceLock = try EngineStateDirectoryLock(stateDirectory: store.root,
+            lockFileName: ".mutation.\(id).lock", readOnly: true)
+        var sourceLocks: [EngineStateDirectoryLock] = []
+        if record.plan.source.id != id {
+            sourceLocks.append(try EngineStateDirectoryLock(stateDirectory: store.root,
+                lockFileName: ".mutation.\(record.plan.source.id).lock", readOnly: true))
+        }
+        let lease = try record.plan.source.id == id
+            ? store.acquire(operationID, holdingMutationLock: workspaceLock) : store.acquire(operationID)
+        _ = try DoryMachineCreationJournal.read(from: lease)
+        return MachineLifecycleJournalContext(operation: try lease.readWorkspaceLifecycleOperation(),
+            lease: lease, workspaceLock: workspaceLock, additionalWorkspaceLocks: sourceLocks)
+    }
+
+    private func replayCreation(request: DoryMachineCreationRequest, operationID: UUID,
+        controller: any DoryDaemonVirtualMachineProductionPlanningControlling) throws -> DoryMachineStatus? {
+        guard let store = lifecycleJournalStore else { throw MachineManagerError.persistence("creation journal is unavailable") }
+        let record: DoryOperationRecord
+        do { record = try store.read(operationID) }
+        catch DoryOperationJournalError.operationNotFound { return nil }
+        guard activeLifecycleOperation(machineID: request.configuration.id) == nil else {
+            throw MachineManagerError.persistence("creation is already executing")
+        }
+        let context = try creationContext(operationID: operationID)
+        let creation = try DoryMachineCreationJournal.read(from: context.lease)
+        guard creation.request == request else { throw MachineManagerError.persistence("creation UUID belongs to a different request") }
+        guard record.state.status != .failed else { throw MachineManagerError.persistence("creation operation failed; use a new caller operation") }
+        if record.state.status == .completed {
+            guard let ready: UUID = try context.lease.creationCheckpoint(.ready), ready == operationID else {
+                throw MachineManagerError.persistence("creation has no durable completion observation")
+            }
+            try validateCreationPlan(context)
+            guard let status = status(id: creation.machineID) else { throw MachineManagerError.unknownMachine(creation.machineID) }
+            return status
+        }
+        managerStateLock.withLock { activeLifecycleOperations[creation.machineID] = context }
+        do { return try finishCreation(id: creation.machineID, operationID: operationID, controller: controller) }
+        catch { try creationFailed(id: creation.machineID, operationID: operationID, error: error); throw error }
+    }
+
+    private func creationFailed(id: String, operationID: UUID, error: Error) throws {
+        guard let context = activeLifecycleOperation(machineID: id), context.operation.operationID == operationID,
+              context.lease != nil else { return }
+        let creation = try DoryMachineCreationJournal.read(from: context.lease)
+        if Self.readPrivateMetadata(path: creation.machineDirectory + "/machine.json") != nil {
+            // Publication may already be complete even if its checkpoint or planning failed.
+            // Keep this operation recoverable; never replace it with a delete operation.
+            removeActiveLifecycleOperation(context)
+            clearActiveOperation(machineID: id, operationID: operationID)
+            context.releaseLease()
+            return
+        }
+        if context.cancellationRequested {
+            try context.lease.publishCreationCheckpoint(operationID, at: .cancellationRequested)
+        }
+        try Self.removeUnpublishedCreation(creation, lease: context.lease)
+        if context.cancellationRequested {
+            let current = try context.lease.read().state
+            let rollback = try context.lease.transition(to: current.phase, status: .rollingBack,
+                expectedRevision: current.revision, stepID: "creation.compensated", recoveryAction: "rollback")
+            _ = try context.lease.cancelAfterRollback(expectedRevision: rollback.revision, stepID: "creation.cancelled")
+            removeActiveLifecycleOperation(context)
+            clearActiveOperation(machineID: id, operationID: operationID)
+            context.releaseLease()
+        } else {
+            failLifecycle(context, stepID: "creation.failed", rolledBack: true)
+        }
+    }
+
+    private static func removeUnpublishedCreation(_ creation: DoryMachineCreationJournal, lease: DoryOperationLease) throws {
+        guard readPrivateMetadata(path: creation.machineDirectory + "/machine.json") == nil,
+              try lease.creationCheckpoint(.publication, as: DoryMachineCreationPublication.self) == nil else {
+            throw MachineManagerError.persistence("creation cleanup refuses a published target")
+        }
+        for (path, checkpoint) in [(creation.machineDirectory, DoryMachineCreationCheckpoint.targetOwnership),
+                                   (creation.stagingDirectory, .stagingOwnership)] where pathEntryExists(path) {
+            try validateCreationOwnership(creation, lease: lease, path: path, checkpoint: checkpoint)
+            try FileManager.default.removeItem(atPath: path)
+        }
+        let parent = URL(fileURLWithPath: creation.machineDirectory).deletingLastPathComponent().path
+        if pathEntryExists(parent) { try syncDirectory(path: parent) }
+    }
+
+    private static func recoverCreationPublication(operation: DoryWorkspaceLifecycleOperation,
+        lease: DoryOperationLease, configuration: MachineManagerConfiguration) throws -> String {
+        let creation = try DoryMachineCreationJournal.read(from: lease)
+        guard creation.machineDirectory == configuration.stateDirectory + "/" + creation.machineID else {
+            throw MachineManagerError.persistence("creation recovery belongs to a different managed root")
+        }
+        if readPrivateMetadata(path: creation.machineDirectory + "/machine.json") != nil {
+            _ = try creationPublication(creation, lease: lease, configuration: configuration)
+            return "Created workspace retained for exact production planning recovery."
+        }
+        try removeUnpublishedCreation(creation, lease: lease)
+        let state = try lease.read().state
+        if let cancellation: UUID = try lease.creationCheckpoint(.cancellationRequested), cancellation == operation.operationID {
+            let rollback = try lease.transition(to: state.phase, status: .rollingBack, expectedRevision: state.revision,
+                stepID: "creation.recovered-compensation", recoveryAction: "rollback")
+            _ = try lease.cancelAfterRollback(expectedRevision: rollback.revision, stepID: "creation.recovered-cancellation")
+        } else {
+            _ = try lease.transition(to: state.phase, status: .failed, expectedRevision: state.revision,
+                stepID: "creation.recovered-rollback", recoveryAction: "rollback")
+        }
+        return "Unpublished creation staging was compensated without changing its source."
+    }
+
+    private func recoverInterruptedCreationOperations() throws {
+        guard let store = lifecycleJournalStore,
+              let controller = managerStateLock.withLock({ productionPlanningController }) else { return }
+        for record in try store.list() where [.workspaceProvision, .workspaceClone].contains(record.plan.kind)
+            && record.state.status != .completed && record.state.status != .failed {
+            let mutation = mutationCoordinator.acquire(workspaceIDs: [record.plan.source.id, record.plan.target.id])
+            defer { mutation.release() }
+            let context = try creationContext(operationID: record.plan.id)
+            let creation = try DoryMachineCreationJournal.read(from: context.lease)
+            managerStateLock.withLock { activeLifecycleOperations[creation.machineID] = context }
+            do { _ = try finishCreation(id: creation.machineID, operationID: record.plan.id, controller: controller) }
+            catch { try creationFailed(id: creation.machineID, operationID: record.plan.id, error: error); throw error }
+        }
+    }
+
+    private func restoreCreationFirmware(_ snapshot: DoryMachineSnapshot, destinationID: String) throws {
+        guard snapshot.bootMode == .efi else { return }
+        guard let path = snapshot.nvramPath else { throw MachineManagerError.persistence("EFI snapshot is missing NVRAM") }
+        try Self.validateSnapshotArtifactEvidence(snapshot)
+        if Self.isDoryPCSnapshot(snapshot) {
+            let cold = try DoryUEFIVariableStoreFile.decodeColdSnapshot(Data(contentsOf: URL(fileURLWithPath: path)))
+            guard cold.platform == .pcV1 else { throw MachineManagerError.persistence("clone firmware platform differs") }
+            let store = try DoryUEFIVariableStoreFile(directory: machineDoryPCFirmwareVariableDirectoryPath(id: destinationID))
+            if Self.pathEntryExists(store.primaryPath) {
+                let current = try store.load()
+                guard current.source == .primary, current.snapshot == cold else {
+                    throw MachineManagerError.persistence("clone firmware recovery refuses changed destination state")
+                }
+            } else {
+                try store.initializeFromColdSnapshot(cold)
+            }
+        } else {
+            let destination = machineFirmwareNVRAMPath(id: destinationID)
+            if Self.pathEntryExists(destination) {
+                guard try Self.snapshotArtifact(path: destination) == snapshot.artifactEvidence?.nvram else {
+                    throw MachineManagerError.persistence("clone firmware recovery refuses changed destination bytes")
+                }
+            } else {
+                try Self.cloneOrCopyFile(source: path, destination: destination)
+            }
+        }
     }
 
     /// Resolves and publishes the exact current compatibility projection through the production
@@ -5348,7 +5866,8 @@ public final class MachineManager: @unchecked Sendable {
         // Signal its own control token before waiting for that fence. The owner must observe
         // helper termination before compensation; cancellation never supplies a guest receipt.
         if let active = activeLifecycleOperation(machineID: id),
-           active.operation.desktopUpdateSpecificationDigest != nil {
+           active.operation.desktopUpdateSpecificationDigest != nil
+            || active.operation.creationSpecificationDigest != nil {
             _ = active.requestCancellation()
         }
         let mutationLease = mutationCoordinator.acquire(workspaceID: id)
@@ -6776,10 +7295,10 @@ public final class MachineManager: @unchecked Sendable {
     private func retainConfigurationUpdateForRecovery(_ context: MachineLifecycleJournalContext) {
         guard context.lease != nil else { return }
         removeActiveLifecycleOperation(context)
-        clearActiveOperation(machineID: context.operation.source.workspaceID, operationID: context.operation.operationID)
+        clearActiveOperation(machineID: context.machineID, operationID: context.operation.operationID)
         context.releaseLease()
         lock.lock()
-        if var entry = machines[context.operation.source.workspaceID] {
+        if var entry = machines[context.machineID] {
             setFailure(
                 on: &entry, code: .lifecycleRecoveryRequired,
                 message: "Configuration update awaits durable publication and planning recovery.",
@@ -9632,6 +10151,72 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     public func cloneSnapshot(machineID: String, snapshotID: String, newID: String) throws -> DoryMachineStatus {
+        try cloneSnapshot(machineID: machineID, snapshotID: snapshotID, newID: newID, operationID: UUID())
+    }
+
+    public func cloneSnapshot(machineID: String, snapshotID: String, newID: String,
+        operationID: UUID,
+        productionPlanningController: (any DoryDaemonVirtualMachineProductionPlanningControlling)? = nil
+    ) throws -> DoryMachineStatus {
+        let operationID = try Self.lifecycleOperationID(operationID, action: "clone snapshot")
+        guard Self.isValidID(machineID), Self.isValidID(newID), machineID != newID else {
+            throw MachineManagerError.persistence("clone requires distinct valid source and destination identifiers")
+        }
+        let controller = try creationPlanningController(productionPlanningController)
+        let mutation = mutationCoordinator.acquire(workspaceIDs: [machineID, newID])
+        defer { mutation.release() }
+        if let store = lifecycleJournalStore, let record = try? store.read(operationID) {
+            guard record.plan.kind == .workspaceClone, record.plan.source.id == machineID,
+                  record.plan.target.id == newID else {
+                throw MachineManagerError.persistence("clone UUID belongs to another request")
+            }
+            let existing: DoryMachineCreationRequest = try {
+                let context = try creationContext(operationID: operationID)
+                let creation = try DoryMachineCreationJournal.read(from: context.lease)
+                guard creation.request.sourceMachineID == machineID, creation.request.sourceSnapshotID == snapshotID else {
+                    throw MachineManagerError.persistence("clone UUID belongs to another snapshot")
+                }
+                return creation.request
+            }()
+            if let replay = try replayCreation(request: existing, operationID: operationID, controller: controller) { return replay }
+        }
+        var snapshot = try loadSnapshot(machineID: machineID, snapshotID: snapshotID)
+        try validateSnapshotRuntimeCompatibility(snapshot, machine: nil, cloning: true)
+        if snapshot.artifactEvidence == nil {
+            // Retain the historical descriptor unchanged; this root seals measured evidence in
+            // its private source snapshot before any destination side effect.
+            snapshot.artifactEvidence = try Self.snapshotArtifactEvidence(rootfsPath: snapshot.rootfsPath,
+                kernelPath: snapshot.kernelPath, machineIdentifierPath: snapshot.machineIdentifierPath,
+                nvramPath: snapshot.nvramPath)
+        }
+        guard let evidence = snapshot.artifactEvidence, evidence.isValid else {
+            throw MachineManagerError.persistence("clone requires immutable snapshot artifact evidence")
+        }
+        let machine = DoryMachineConfiguration(id: newID,
+            guestArchitecture: DoryGuestArchitecture(rawValue: snapshot.architecture),
+            kernelPath: snapshot.kernelPath, rootfsPath: snapshot.rootfsPath, bootMode: snapshot.bootMode,
+            memoryMB: snapshot.memoryMB, cpuCount: snapshot.cpuCount, address: nil,
+            displayMode: snapshot.displayMode, shares: snapshot.shares, environment: [:],
+            installedDesktopPayloadReceipt: Self.configurationReceipt(restoring: snapshot))
+        let typed = snapshot.typedSettings ?? DoryMachineTypedSettingsSnapshot(
+            legacyEnvironment: snapshot.environment, displayMode: snapshot.displayMode)
+        let request = DoryMachineCreationRequest(configuration: machine, typedSettings: typed.replacementPatch,
+            sandboxPolicy: snapshot.sandboxPolicy, sourceMachineID: machineID, sourceSnapshotID: snapshotID)
+        do {
+            _ = try createMachine(machine, typedSettings: typed.replacementPatch, sandboxPolicy: snapshot.sandboxPolicy,
+                cloneAuthority: .init(sourceMachineID: machineID, sourceSnapshotID: snapshotID,
+                    rootfsSHA256: evidence.rootfs.sha256, rootfsByteCount: evidence.rootfs.byteCount),
+                acquiresMutationLease: false, creationRequest: request, creationOperationID: operationID,
+                creationSnapshot: snapshot)
+            return try finishCreation(id: newID, operationID: operationID, controller: controller)
+        } catch {
+            try creationFailed(id: newID, operationID: operationID, error: error)
+            throw error
+        }
+    }
+
+#if DEBUG
+    func stageCloneSnapshotForBootstrap(machineID: String, snapshotID: String, newID: String) throws -> DoryMachineStatus {
         let mutationLease = mutationCoordinator.acquire(
             workspaceIDs: [machineID, newID]
         )
@@ -9715,6 +10300,8 @@ public final class MachineManager: @unchecked Sendable {
             throw error
         }
     }
+
+#endif
 
     public func restoreSnapshot(machineID: String, snapshotID: String) throws -> DoryMachineStatus {
         let mutationLease = mutationCoordinator.acquire(workspaceID: machineID)
@@ -18646,7 +19233,8 @@ public final class MachineManager: @unchecked Sendable {
             if let active = activeLifecycleOperations[machine.id],
                active.operation.operationID != operationID
                 || (active.operation.configurationUpdateSpecificationDigest == nil
-                    && active.operation.desktopUpdateSpecificationDigest == nil) {
+                    && active.operation.desktopUpdateSpecificationDigest == nil
+                    && active.operation.creationSpecificationDigest == nil) {
                 activePlanningMutationIDs.remove(machine.id)
                 return "machine \(machine.id) already has an active lifecycle mutation"
             }
@@ -18720,7 +19308,8 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         if let unfinished = try unfinishedPersistedLifecycleOperation(machineID: machine.id) {
-            guard unfinished.plan.id == operationID, unfinished.plan.kind == .workspaceUpdate else {
+            guard unfinished.plan.id == operationID,
+                  [.workspaceUpdate, .workspaceProvision, .workspaceClone].contains(unfinished.plan.kind) else {
                 throw MachineManagerError.persistence("machine lifecycle operation requires recovery before planning")
             }
             if updateParent == nil {
@@ -18730,6 +19319,12 @@ public final class MachineManager: @unchecked Sendable {
                     workspaceLock: workspaceLock
                 )
                 if parent.operation.desktopUpdateSpecificationDigest != nil {
+                    desktopAuthority = try validateDesktopPublication(parent)
+                } else if parent.operation.creationSpecificationDigest != nil {
+                    _ = try validateCreationPublication(parent)
+                } else if parent.operation.snapshotRestoreSpecificationDigest != nil {
+                    try validateSnapshotRestorePublication(DoryMachineSnapshotRestoreJournal.read(from: parent.lease))
+                } else if parent.operation.desktopUpdateSpecificationDigest != nil {
                     desktopAuthority = try validateDesktopPublication(parent)
                 } else {
                     let update = try DoryMachineConfigurationUpdateJournal.read(from: lease)
@@ -18750,6 +19345,14 @@ public final class MachineManager: @unchecked Sendable {
         }
         if let updateParent {
             if updateParent.operation.desktopUpdateSpecificationDigest != nil {
+                if desktopAuthority == nil {
+                    desktopAuthority = try validateDesktopPublication(updateParent)
+                }
+            } else if updateParent.operation.creationSpecificationDigest != nil {
+                _ = try validatedCreationPlanningContext(id: machine.id, operationID: operationID)
+            } else if updateParent.operation.snapshotRestoreSpecificationDigest != nil {
+                try validateSnapshotRestorePublication(DoryMachineSnapshotRestoreJournal.read(from: updateParent.lease))
+            } else if updateParent.operation.desktopUpdateSpecificationDigest != nil {
                 if desktopAuthority == nil {
                     desktopAuthority = try validateDesktopPublication(updateParent)
                 }
@@ -18872,6 +19475,8 @@ public final class MachineManager: @unchecked Sendable {
                         }
                         // Planning publishes one checkpoint of the compound desktop operation.
                         // Guest qualification or durable rollback still owns parent completion.
+                    } else if parent.operation.creationSpecificationDigest != nil {
+                        try self.validateCreationPlan(parent)
                     } else {
                         let update = try DoryMachineConfigurationUpdateJournal.read(from: parent.lease)
                         try self.validateConfigurationUpdatePlan(update, rollback: try parent.lease.read().state.status == .rollingBack)
@@ -19014,7 +19619,7 @@ public final class MachineManager: @unchecked Sendable {
     private func removeActiveLifecycleOperation(
         _ context: MachineLifecycleJournalContext
     ) {
-        let machineID = context.operation.source.workspaceID
+        let machineID = context.machineID
         managerStateLock.withLock {
             guard activeLifecycleOperations[machineID] === context else { return }
             activeLifecycleOperations.removeValue(forKey: machineID)
@@ -19576,7 +20181,7 @@ public final class MachineManager: @unchecked Sendable {
                 stepID: "lifecycle.\(phase.rawValue)"
             )
             appendFlightEvent(
-                machineID: context.operation.source.workspaceID,
+                machineID: context.machineID,
                 kind: .operationPhase,
                 phase: phase,
                 deadlineUnixMilliseconds:
@@ -19595,7 +20200,7 @@ public final class MachineManager: @unchecked Sendable {
                 stepID: "lifecycle.validated"
             )
             appendFlightEvent(
-                machineID: context.operation.source.workspaceID,
+                machineID: context.machineID,
                 kind: .operationPhase,
                 phase: .validating,
                 deadlineUnixMilliseconds:
@@ -19617,14 +20222,14 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         appendFlightEvent(
-            machineID: context.operation.source.workspaceID,
+            machineID: context.machineID,
             kind: .operationCompleted,
             phase: .completed,
             durationMilliseconds: lifecycleDurationMilliseconds(context.operation)
         )
         removeActiveLifecycleOperation(context)
         clearActiveOperation(
-            machineID: context.operation.source.workspaceID,
+            machineID: context.machineID,
             operationID: context.operation.operationID
         )
         context.releaseLease()
@@ -19645,7 +20250,7 @@ public final class MachineManager: @unchecked Sendable {
             removeActiveLifecycleOperation(context)
             context.releaseLease()
             lock.lock()
-            if var entry = machines[context.operation.source.workspaceID] {
+            if var entry = machines[context.machineID] {
                 if entry.process?.isRunningOrRestarting != true {
                     entry.state = .recovering
                 }
@@ -19662,11 +20267,11 @@ public final class MachineManager: @unchecked Sendable {
                     failure: entry.failure,
                     durationMilliseconds: lifecycleDurationMilliseconds(context.operation)
                 )
-                machines[context.operation.source.workspaceID] = entry
+                machines[context.machineID] = entry
             }
             lock.unlock()
             clearActiveOperation(
-                machineID: context.operation.source.workspaceID,
+                machineID: context.machineID,
                 operationID: context.operation.operationID
             )
             return false
@@ -19681,7 +20286,7 @@ public final class MachineManager: @unchecked Sendable {
         defer {
             removeActiveLifecycleOperation(context)
             clearActiveOperation(
-                machineID: context.operation.source.workspaceID,
+                machineID: context.machineID,
                 operationID: context.operation.operationID
             )
             context.releaseLease()
@@ -19706,7 +20311,7 @@ public final class MachineManager: @unchecked Sendable {
             recoveryAction: rolledBack ? "rollback" : nil
         )
         lock.lock()
-        let machineID = context.operation.source.workspaceID
+        let machineID = context.machineID
         if var entry = machines[machineID] {
             if entry.failure == nil {
                 setFailure(
@@ -19778,7 +20383,7 @@ public final class MachineManager: @unchecked Sendable {
         guard current.status != .completed, current.status != .failed else {
             removeActiveLifecycleOperation(context)
             clearActiveOperation(
-                machineID: context.operation.source.workspaceID,
+                machineID: context.machineID,
                 operationID: context.operation.operationID
             )
             context.releaseLease()
@@ -19799,7 +20404,7 @@ public final class MachineManager: @unchecked Sendable {
         )
         removeActiveLifecycleOperation(context)
         clearActiveOperation(
-            machineID: context.operation.source.workspaceID,
+            machineID: context.machineID,
             operationID: context.operation.operationID
         )
         context.releaseLease()
@@ -19983,7 +20588,8 @@ public final class MachineManager: @unchecked Sendable {
                 lease = try store.acquire(record.plan.id)
                 guard let lease else { continue }
                 let operation = try lease.readWorkspaceLifecycleOperation()
-                guard operation.source.workspaceID == record.plan.source.id,
+                if operation.creationSpecificationDigest != nil {
+                    guard operation.source.workspaceID == record.plan.source.id,
                       operation.target.workspaceID == record.plan.source.id else {
                     throw MachineManagerError.persistence(
                         "lifecycle journal mutation scope changed during recovery"
@@ -21324,27 +21930,36 @@ private struct MachineManagerResolvedLaunchInfrastructure {
 
 private final class MachineLifecycleJournalContext: @unchecked Sendable {
     let operation: DoryWorkspaceLifecycleOperation
+    var creationArtifactProof: DoryMachineCreationArtifactProof?
     private(set) var lease: DoryOperationLease!
     private(set) var workspaceLock: EngineStateDirectoryLock?
+    private(set) var additionalWorkspaceLocks: [EngineStateDirectoryLock]
     private let cancellationLock = NSLock()
     private var wasCancellationRequested = false
     private var cancellationWindowOpen = true
     private var execControl: DoryExecControl?
     private var pushControl: DoryPushControl?
     var cancellationRequested: Bool { cancellationLock.withLock { wasCancellationRequested } }
+    var machineID: String {
+        operation.kind == .cloning ? operation.target.workspaceID : operation.source.workspaceID
+    }
 
     init(
         operation: DoryWorkspaceLifecycleOperation, lease: DoryOperationLease,
-        workspaceLock: EngineStateDirectoryLock? = nil
+        workspaceLock: EngineStateDirectoryLock? = nil,
+        additionalWorkspaceLocks: [EngineStateDirectoryLock] = []
     ) {
         self.operation = operation
         self.lease = lease
         self.workspaceLock = workspaceLock
+        self.additionalWorkspaceLocks = additionalWorkspaceLocks
     }
 
     func releaseLease() {
+        creationArtifactProof = nil
         lease = nil
         workspaceLock = nil
+        additionalWorkspaceLocks = []
     }
 
     @discardableResult
@@ -21496,6 +22111,8 @@ private extension DoryOperationPhase {
 
 #if DEBUG
 enum MachineLifecycleFaultPoint: Sendable, Equatable {
+    case creationAfterTargetOwnership
+    case creationBeforePublication
     case desktopBeforeStop
     case desktopAfterSnapshot
     case desktopAfterGuestApply

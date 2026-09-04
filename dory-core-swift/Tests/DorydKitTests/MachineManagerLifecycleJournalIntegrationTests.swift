@@ -896,7 +896,7 @@ private final class LifecycleFixture {
         _ manager: MachineManager,
         id: String? = nil
     ) throws -> DoryMachineStatus {
-        try manager.create(DoryMachineConfiguration(
+        try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: id ?? machineID,
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath

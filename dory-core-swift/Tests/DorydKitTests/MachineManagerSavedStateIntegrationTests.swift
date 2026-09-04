@@ -195,7 +195,7 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
             controller: controller,
             acceleratedDesktopExecutablePath: fixture.executable
         )
-        try manager.create(DoryMachineConfiguration(
+        try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: fixture.machineID,
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -323,7 +323,7 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
         create: Bool = true
     ) throws -> DoryMachineStatus {
         if create {
-            try manager.create(DoryMachineConfiguration(
+            try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: fixture.machineID,
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath

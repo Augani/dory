@@ -1207,7 +1207,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             _ = try? manager.stop(id: "installed")
             _ = try? manager.delete(id: "installed")
         }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "installed",
             kernelPath: sourceBundle,
             rootfsPath: sourceDisk,
@@ -1896,7 +1896,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         let state = try makeState("native-typed-settings")
         defer { try? FileManager.default.removeItem(atPath: state) }
         let manager = makeManager(state: state, policy: .perWorkspaceAuthority)
-        let created = try manager.create(
+        let created = try manager.stageMachineForBootstrap(
             DoryMachineConfiguration(
                 id: "typed",
                 kernelPath: doryTestKernelPath,
@@ -1992,7 +1992,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         _ = try manager.update(id: "typed")
         #expect(try repository.readPersistedRecord(id: "typed").definition.lifecycle.revision == 2)
 
-        let clone = try manager.cloneSnapshot(
+        let clone = try manager.stageCloneSnapshotForBootstrap(
             machineID: "typed",
             snapshotID: snapshot.id,
             newID: "typed-clone"
@@ -2548,7 +2548,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         )
 
         let manager = makeManager(state: state, policy: .perWorkspaceAuthority)
-        let clone = try manager.cloneSnapshot(
+        let clone = try manager.stageCloneSnapshotForBootstrap(
             machineID: "source",
             snapshotID: "base",
             newID: "clone"
@@ -2601,7 +2601,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
 
     @discardableResult
     private func createMachine(id: String, manager: MachineManager) throws -> DoryMachineStatus {
-        try manager.create(DoryMachineConfiguration(
+        try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: id,
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -2735,7 +2735,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         } else {
             rootfsPath = doryTestRootfsPath
         }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: rootfsPath,

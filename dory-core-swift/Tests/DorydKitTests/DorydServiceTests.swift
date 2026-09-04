@@ -1662,7 +1662,7 @@ final class DorydServiceTests: XCTestCase {
             try? manager.delete(id: "dev")
             try? FileManager.default.removeItem(atPath: base)
         }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -1773,7 +1773,7 @@ final class DorydServiceTests: XCTestCase {
             try? manager.delete(id: "dev")
             try? FileManager.default.removeItem(atPath: base)
         }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -2048,7 +2048,7 @@ final class DorydServiceTests: XCTestCase {
             try? manager.delete(id: "dev")
             try? FileManager.default.removeItem(atPath: base)
         }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -2159,7 +2159,7 @@ final class DorydServiceTests: XCTestCase {
             try? manager.delete(id: "dev")
             try? FileManager.default.removeItem(atPath: base)
         }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -2303,7 +2303,7 @@ final class DorydServiceTests: XCTestCase {
             try? manager.delete(id: "dev")
             try? FileManager.default.removeItem(atPath: base)
         }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -2417,7 +2417,7 @@ final class DorydServiceTests: XCTestCase {
             try? manager.delete(id: "dev")
             try? FileManager.default.removeItem(atPath: base)
         }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -2492,7 +2492,7 @@ final class DorydServiceTests: XCTestCase {
 
         let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
         let create = expectation(description: "machineCreate reply")
-        proxy.machineCreate([
+        service.stageMachineForBootstrap([
             "id": "dev",
             "kernelPath": doryTestKernelPath,
             "rootfsPath": doryTestRootfsPath,
@@ -2836,7 +2836,7 @@ final class DorydServiceTests: XCTestCase {
             kernelAssetIdentifier: "dory-desktop-kernel-arm64.lzfse",
             kernelSHA256: kernelSHA256
         )
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -2901,13 +2901,13 @@ final class DorydServiceTests: XCTestCase {
             try? manager.delete(id: "clone")
             try? FileManager.default.removeItem(atPath: base)
         }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "source",
             kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
         ))
         _ = try manager.snapshot(id: "source", snapshotID: "base")
-        _ = try manager.cloneSnapshot(
+        _ = try manager.stageCloneSnapshotForBootstrap(
             machineID: "source",
             snapshotID: "base",
             newID: "clone"
@@ -3071,7 +3071,7 @@ final class DorydServiceTests: XCTestCase {
             try? manager.delete(id: "typed")
             try? FileManager.default.removeItem(atPath: base)
         }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "legacy",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -3109,7 +3109,7 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertNil(manager.status(id: "typed"))
 
         let typedCreate = expectation(description: "typed intent create accepted")
-        proxy.machineCreate([
+        service.stageMachineForBootstrap([
             "id": "typed",
             "kernelPath": doryTestKernelPath,
             "rootfsPath": doryTestRootfsPath,
@@ -3215,7 +3215,7 @@ final class DorydServiceTests: XCTestCase {
         ]
 
         let created = expectation(description: "typed sandbox created")
-        service.machineCreate([
+        service.stageMachineForBootstrap([
             "id": "sandbox",
             "kernelPath": doryTestKernelPath,
             "rootfsPath": doryTestRootfsPath,
@@ -3268,7 +3268,7 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertNil(manager.status(id: "desktop-sandbox"))
     }
 
-    func testMachineCreateRejectsNonPortableEFIImageBeforeWorkspaceImport() throws {
+    func testMachineCreateRequiresProductionPlannerBeforeEFIImport() throws {
         let base = "/tmp/doryd-service-efi-preflight-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
@@ -3304,7 +3304,7 @@ final class DorydServiceTests: XCTestCase {
             "displayMode": "desktop",
         ]) { ok, _, message in
             XCTAssertFalse(ok)
-            XCTAssertTrue(message.contains("not a portable EFI Linux ISO"), message)
+            XCTAssertTrue(message.contains("production planning authority"), message)
             reply.fulfill()
         }
         wait(for: [reply], timeout: 5)
@@ -3341,7 +3341,7 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertNil(manager.status(id: "unknown-arch"))
     }
 
-    func testPerWorkspaceCreatePlanningFailureRollsBackBeforeNameCanCollide() throws {
+    func testPerWorkspaceCreatePlanningFailureRetainsCallerOwnedTarget() throws {
         let base = "/tmp/doryd-service-production-plan-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(
             configuration: MachineManagerConfiguration(
@@ -3359,7 +3359,7 @@ final class DorydServiceTests: XCTestCase {
             machineManager: manager,
             productionPlanningController: controller
         )
-        defer { try? FileManager.default.removeItem(atPath: base) }
+        defer { manager.stopAll(); try? FileManager.default.removeItem(atPath: base) }
 
         let reply = expectation(description: "production planning rejection")
         service.machineCreate([
@@ -3400,28 +3400,28 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertEqual(captured.request.workspacePublication, .retainExistingExact)
         XCTAssertEqual(captured.artifacts.count, 2)
         XCTAssertTrue(captured.artifacts.allSatisfy { $0.path.hasPrefix(base + "/planned/") })
-        XCTAssertNil(manager.status(id: "planned"))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: base + "/planned"))
+        XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: base + "/planned"))
         let listReply = expectation(description: "native typed status projection")
         service.machineList { rows, message in
             XCTAssertEqual(message, "")
             let row = (rows as? [NSDictionary])?.first { $0["id"] as? String == "planned" }
-            XCTAssertNil(row)
+            XCTAssertNotNil(row)
             listReply.fulfill()
         }
         wait(for: [listReply], timeout: 5)
 
-        // A planning rejection must not reserve the name. Recreating it directly also supplies a
-        // workspace for the update/restore planning-failure coverage below.
-        let recreated = try manager.create(DoryMachineConfiguration(
-            id: "planned",
+        // The caller root retains its exact new workspace after planning fails. A separate
+        // explicitly staged workspace exercises update failure without replacing that recovery input.
+        let recreated = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
+            id: "updatable",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
         ))
         XCTAssertEqual(recreated.runtimeIdentity.mode, .requiresReplanning)
 
         let updateReply = expectation(description: "production update planning rejection")
-        service.machineUpdate("planned", config: [
+        service.machineUpdate("updatable", config: [
             "memoryMB": UInt64(4_096),
             "networkMode": "shared-nat",
         ]) {
@@ -3440,68 +3440,23 @@ final class DorydServiceTests: XCTestCase {
             controller.captures.last?.request.planning.definition.networkMode,
             .sharedNAT
         )
-        XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
+        XCTAssertEqual(manager.status(id: "updatable")?.runtimeIdentity.mode, .requiresReplanning)
 
         // A controller that reports neither commit nor durable abort leaves this update pending.
         // It must block further mutations of this workspace until recovery resolves its outcome.
-        XCTAssertThrowsError(try manager.snapshot(id: "planned", snapshotID: "pending-update"))
-        _ = try manager.create(DoryMachineConfiguration(
-            id: "restorable", kernelPath: doryTestKernelPath, rootfsPath: doryTestRootfsPath
-        ))
-        let managedRootfs = base + "/restorable/rootfs.ext4"
-        let snapshotBytes = try Data(contentsOf: URL(fileURLWithPath: managedRootfs))
-        XCTAssertFalse(snapshotBytes.isEmpty)
-        _ = try manager.snapshot(id: "restorable", snapshotID: "before-restore")
-        var mutatedBytes = snapshotBytes
-        mutatedBytes[mutatedBytes.startIndex] ^= 0xff
-        try mutatedBytes.write(to: URL(fileURLWithPath: managedRootfs))
-
-        let restoreReply = expectation(description: "production restore planning rejection")
-        service.machineRestoreSnapshot("restorable", snapshotID: "before-restore") {
-            ok, _, message in
-            XCTAssertFalse(ok)
-            XCTAssertTrue(message.contains("production planning failed closed"), message)
-            restoreReply.fulfill()
-        }
-        wait(for: [restoreReply], timeout: 5)
-        XCTAssertEqual(controller.captures.count, 3)
-        XCTAssertEqual(
-            controller.captures.last?.request.planning.definition.identity.id,
-            "restorable"
-        )
-        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: managedRootfs)), snapshotBytes)
-        XCTAssertEqual(manager.status(id: "restorable")?.state, .created)
-        XCTAssertEqual(manager.status(id: "restorable")?.runtimeIdentity.mode, .requiresReplanning)
-        XCTAssertEqual(
-            manager.status(id: "restorable")?.runtimeIdentity.invalidationReason,
-            .restoredSnapshot
-        )
-
+        XCTAssertThrowsError(try manager.snapshot(id: "updatable", snapshotID: "pending-update"))
+        // Start must also retain the caller-owned target when fresh planning is rejected.
         let startReply = expectation(description: "production start planning rejection")
-        service.machineStart("restorable") { ok, _, message in
+        service.machineStart("planned") { ok, _, message in
             XCTAssertFalse(ok)
-            XCTAssertTrue(message.contains("production planning failed closed"), message)
+            XCTAssertFalse(message.isEmpty)
             startReply.fulfill()
         }
         wait(for: [startReply], timeout: 5)
-        XCTAssertEqual(controller.captures.count, 4)
-        XCTAssertEqual(manager.status(id: "restorable")?.state, .created)
-
-        let cloneReply = expectation(description: "production clone planning rejection")
-        service.machineCloneSnapshot(
-            "restorable",
-            snapshotID: "before-restore",
-            newID: "planned-clone"
-        ) { ok, _, message in
-            XCTAssertFalse(ok)
-            XCTAssertTrue(message.contains("production planning failed closed"), message)
-            cloneReply.fulfill()
-        }
-        wait(for: [cloneReply], timeout: 5)
-        XCTAssertEqual(controller.captures.count, 5)
-        XCTAssertEqual(controller.captures.last?.request.planning.machine.id, "planned-clone")
-        XCTAssertNil(manager.status(id: "planned-clone"))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: base + "/planned-clone"))
+        XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: base + "/planned/machine.json"))
+        XCTAssertEqual(controller.captures.count, 3)
+        XCTAssertEqual(controller.captures.last?.request.planning.machine.id, "planned")
     }
 
     func testMachineExecOverXPCUsesMachineAgent() throws {
@@ -3532,7 +3487,7 @@ final class DorydServiceTests: XCTestCase {
 
         let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
         let create = expectation(description: "machineCreate reply")
-        proxy.machineCreate([
+        service.stageMachineForBootstrap([
             "id": "dev",
             "kernelPath": doryTestKernelPath,
             "rootfsPath": doryTestRootfsPath,
@@ -3632,7 +3587,7 @@ final class DorydServiceTests: XCTestCase {
         let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
 
         let create = expectation(description: "machineCreate reply")
-        proxy.machineCreate([
+        service.stageMachineForBootstrap([
             "id": "dev",
             "kernelPath": doryTestKernelPath,
             "rootfsPath": doryTestRootfsPath,
@@ -4010,7 +3965,7 @@ final class DorydServiceTests: XCTestCase {
 
         let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
         let create = expectation(description: "machineCreate reply")
-        proxy.machineCreate([
+        service.stageMachineForBootstrap([
             "id": "dev",
             "kernelPath": doryTestKernelPath,
             "rootfsPath": doryTestRootfsPath,
@@ -4084,7 +4039,7 @@ final class DorydServiceTests: XCTestCase {
         let proxy = try XCTUnwrap(connection.remoteObjectProxy as? DorydControl)
 
         let create = expectation(description: "machineCreate reply")
-        proxy.machineCreate([
+        service.stageMachineForBootstrap([
             "id": "dev",
             "kernelPath": doryTestKernelPath,
             "rootfsPath": rootfs,
@@ -4134,12 +4089,14 @@ final class DorydServiceTests: XCTestCase {
 
         let cloneReply = expectation(description: "machineCloneSnapshot reply")
         proxy.machineCloneSnapshot("dev", snapshotID: "s1", newID: "dev-copy") { ok, body, message in
-            XCTAssertTrue(ok, message)
-            XCTAssertEqual(body["id"] as? String, "dev-copy")
-            XCTAssertEqual(body["state"] as? String, "running")
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("production planning authority"), message)
             cloneReply.fulfill()
         }
         wait(for: [cloneReply], timeout: 5)
+        XCTAssertNil(manager.status(id: "dev-copy"))
+        _ = try manager.stageCloneSnapshotForBootstrap(machineID: "dev", snapshotID: "s1", newID: "dev-copy")
 
         try Data("rootfs-mutated".utf8).write(to: URL(fileURLWithPath: "\(base)/machines/dev/rootfs.ext4"))
         let restoreReply = expectation(description: "machineRestoreSnapshot reply")

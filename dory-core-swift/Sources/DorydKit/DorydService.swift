@@ -621,129 +621,72 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
-    public func machineCreate(
-        _ config: NSDictionary,
+#if DEBUG
+    /// Test/bootstrap setup uses the production dictionary decoder while explicitly publishing
+    /// unplanned state. This seam is absent from XPC and from release builds.
+    func stageMachineForBootstrap(_ config: NSDictionary,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
+        do {
+            guard let machineManager else { throw MachineManagerError.persistence("machine manager is unavailable") }
+            let typed = try DoryMachineTypedSettingsPatch(xpcDictionary: config, allowsClears: false)
+            let sandbox = try DoryMachineSandboxPolicyWriteAuthority.decodeXPC(config)
+            let machine = try DoryMachineConfiguration(xpcDictionary: config)
+            let status = try machineManager.stageMachineForBootstrap(machine,
+                typedSettings: typed.isEmpty ? nil : typed, sandboxPolicy: sandbox)
+            reply(true, status.xpcDictionary, "")
+        } catch { reply(false, [:], "\(error)") }
+    }
+#endif
+
+    public func machineCreate(_ config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        machineCreate(config, operationID: DoryOperationIdentity.canonical(UUID()), reply: reply)
+    }
+
+    public func machineCreate(_ config: NSDictionary, operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let identity = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "machine creation requires a canonical operation ID")
+            return
+        }
         guard let machineManager else {
             reply(false, [:], "machine manager is not configured")
             return
         }
-        var createdMachineID: String?
         do {
-            let typedSettings = try DoryMachineTypedSettingsPatch(
-                xpcDictionary: config,
-                allowsClears: false
-            )
-            let sandboxPolicy = try DoryMachineSandboxPolicyWriteAuthority.decodeXPC(
-                config
-            )
+            let typedSettings = try DoryMachineTypedSettingsPatch(xpcDictionary: config, allowsClears: false)
+            let sandboxPolicy = try DoryMachineSandboxPolicyWriteAuthority.decodeXPC(config)
             let machine = try DoryMachineConfiguration(xpcDictionary: config)
             if machine.guestFamily == .macOS {
                 guard sandboxPolicy == nil else {
-                    throw MachineManagerError.persistence(
-                        "sandbox policy is supported only for headless Linux machines"
-                    )
+                    throw MachineManagerError.persistence("sandbox policy is supported only for headless Linux machines")
                 }
                 let replyBox = StatusReply(reply)
-                let productionPlanningController = productionPlanningController
-                let incidentWriter = incidentWriter
+                let controller = productionPlanningController
+                let incidents = incidentWriter
                 Task.detached {
-                    var created = false
                     do {
-                        var status = try await machineManager.createNativeMacOS(
-                            machine,
-                            typedSettings: typedSettings.isEmpty ? nil : typedSettings
-                        )
-                        created = true
-                        if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
-                            guard let productionPlanningController else {
-                                throw MachineManagerError.persistence(
-                                    "production planning controller is not configured"
-                                )
-                            }
-                            status = try machineManager.resolveAndPublishProductionPlan(
-                                id: machine.id,
-                                controller: productionPlanningController
-                            )
-                        }
-                        incidentWriter?.record(type: "machine.create", detail: machine.id)
+                        let status = try await machineManager.createNativeMacOS(machine,
+                            typedSettings: typedSettings.isEmpty ? nil : typedSettings,
+                            operationID: identity, productionPlanningController: controller)
+                        incidents?.record(type: "machine.create", detail: machine.id)
                         replyBox.reply(true, status.xpcDictionary, "")
                     } catch {
-                        var message = "\(error)"
-                        if created {
-                            do {
-                                try machineManager.delete(id: machine.id)
-                                incidentWriter?.record(
-                                    type: "machine.create_rolled_back",
-                                    detail: machine.id
-                                )
-                            } catch let rollbackError {
-                                message += "; failed to remove the incomplete machine: \(rollbackError)"
-                                incidentWriter?.record(
-                                    type: "machine.create_rollback_failed",
-                                    detail: "\(machine.id): \(rollbackError)"
-                                )
-                            }
-                        }
-                        incidentWriter?.record(
-                            type: "machine.create_failed",
-                            detail: message
-                        )
-                        replyBox.reply(false, [:], message)
+                        incidents?.record(type: "machine.create_failed", detail: "\(error)")
+                        replyBox.reply(false, [:], "\(error)")
                     }
                 }
                 return
             }
-            if machine.bootMode == .efi, let installerISOPath = machine.installerISOPath {
-                do {
-                    _ = try DoryInstallerISOInspector
-                        .portableEFIMediaIdentity(atPath: installerISOPath)
-                } catch {
-                    throw MachineManagerError.persistence(
-                        "The selected installer is not a portable EFI Linux ISO. Choose media "
-                            + "with a standard EFI/BOOT/BOOTAA64.EFI or BOOTX64.EFI loader."
-                    )
-                }
-            }
-            var status = try machineManager.create(
-                machine,
-                typedSettings: typedSettings.isEmpty ? nil : typedSettings,
-                sandboxPolicy: sandboxPolicy
-            )
-            createdMachineID = machine.id
-            if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
-                guard let productionPlanningController else {
-                    throw MachineManagerError.persistence(
-                        "production planning controller is not configured"
-                    )
-                }
-                status = try machineManager.resolveAndPublishProductionPlan(
-                    id: machine.id,
-                    controller: productionPlanningController
-                )
-            }
+            let status = try machineManager.create(machine,
+                typedSettings: typedSettings.isEmpty ? nil : typedSettings, sandboxPolicy: sandboxPolicy,
+                operationID: identity, productionPlanningController: productionPlanningController)
             incidentWriter?.record(type: "machine.create", detail: machine.id)
             reply(true, status.xpcDictionary, "")
         } catch {
-            var message = "\(error)"
-            if let createdMachineID {
-                do {
-                    try machineManager.delete(id: createdMachineID)
-                    incidentWriter?.record(
-                        type: "machine.create_rolled_back",
-                        detail: createdMachineID
-                    )
-                } catch let rollbackError {
-                    message += "; failed to remove the incomplete machine: \(rollbackError)"
-                    incidentWriter?.record(
-                        type: "machine.create_rollback_failed",
-                        detail: "\(createdMachineID): \(rollbackError)"
-                    )
-                }
-            }
-            incidentWriter?.record(type: "machine.create_failed", detail: message)
-            reply(false, [:], message)
+            incidentWriter?.record(type: "machine.create_failed", detail: "\(error)")
+            reply(false, [:], "\(error)")
         }
     }
 
@@ -1619,46 +1562,23 @@ public final class DorydService: NSObject, DorydControl {
         }
     }
 
-    public func machineCloneSnapshot(
-        _ machineID: String,
-        snapshotID: String,
-        newID: String,
+    public func machineCloneSnapshot(_ machineID: String, snapshotID: String, newID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
+        machineCloneSnapshot(machineID, snapshotID: snapshotID, newID: newID,
+            operationID: DoryOperationIdentity.canonical(UUID()), reply: reply)
+    }
+
+    public func machineCloneSnapshot(_ machineID: String, snapshotID: String, newID: String,
+        operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let identity = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "snapshot clone requires a canonical operation ID")
+            return
+        }
         machineControl("\(machineID)/\(snapshotID)", action: "clone_snapshot", reply: reply) { manager, _ in
-            var cloned = false
-            do {
-                var status = try manager.cloneSnapshot(
-                    machineID: machineID,
-                    snapshotID: snapshotID,
-                    newID: newID
-                )
-                cloned = true
-                if manager.configuredLaunchPolicy == .perWorkspaceAuthority {
-                    guard let productionPlanningController else {
-                        throw MachineManagerError.persistence(
-                            "production planning controller is not configured"
-                        )
-                    }
-                    status = try manager.resolveAndPublishProductionPlan(
-                        id: newID,
-                        controller: productionPlanningController
-                    )
-                }
-                return status
-            } catch {
-                let original = error
-                if cloned {
-                    do {
-                        try manager.delete(id: newID)
-                    } catch {
-                        throw MachineManagerError.persistence(
-                            "\(original); failed to remove incomplete clone \(newID): \(error)"
-                        )
-                    }
-                }
-                throw original
-            }
+            try manager.cloneSnapshot(machineID: machineID, snapshotID: snapshotID, newID: newID,
+                operationID: identity, productionPlanningController: productionPlanningController)
         }
     }
 

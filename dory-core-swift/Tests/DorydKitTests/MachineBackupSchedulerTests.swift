@@ -20,7 +20,7 @@ final class MachineBackupSchedulerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "dev") }
-        let created = try manager.create(DoryMachineConfiguration(
+        let created = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: kernel,
             rootfsPath: rootfs,
@@ -93,7 +93,7 @@ final class MachineBackupSchedulerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: kernel,
             rootfsPath: rootfs

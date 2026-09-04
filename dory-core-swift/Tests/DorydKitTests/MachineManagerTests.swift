@@ -40,7 +40,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         )
         let manager = MachineManager(diagnosticConfiguration: configuration)
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "linux",
             kernelPath: "",
             rootfsPath: disk,
@@ -191,7 +191,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        let created = try manager.create(DoryMachineConfiguration(
+        let created = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -236,7 +236,7 @@ final class MachineManagerTests: XCTestCase {
             try? manager.delete(id: "desktop")
             try? FileManager.default.removeItem(atPath: base)
         }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "desktop",
             kernelPath: doryTestKernelPath,
             rootfsPath: rootfs,
@@ -321,7 +321,7 @@ final class MachineManagerTests: XCTestCase {
         )
         defer { try? FileManager.default.removeItem(atPath: base) }
 
-        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+        XCTAssertThrowsError(try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "blocked",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -356,7 +356,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -425,7 +425,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -511,7 +511,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -563,7 +563,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -620,7 +620,7 @@ final class MachineManagerTests: XCTestCase {
         }
 
         for id in ["automatic", "stopped", "manual"] {
-            _ = try manager.create(DoryMachineConfiguration(
+            _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: id,
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath,
@@ -668,7 +668,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -722,7 +722,7 @@ final class MachineManagerTests: XCTestCase {
             kernelPath: candidateKernel
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: kernel,
             rootfsPath: rootfs,
@@ -836,7 +836,7 @@ final class MachineManagerTests: XCTestCase {
             kernelPath: candidateKernel
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: kernel,
             rootfsPath: rootfs,
@@ -919,7 +919,7 @@ final class MachineManagerTests: XCTestCase {
             bundlePath: bundle,
             kernelPath: candidateKernel
         ))
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: kernel,
             rootfsPath: rootfs,
@@ -971,7 +971,7 @@ final class MachineManagerTests: XCTestCase {
                     passMachineArguments: false,
                     requiresReadyHandoff: false
                 ))
-                _ = try manager.create(DoryMachineConfiguration(
+                _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                     id: "dev",
                     kernelPath: doryTestKernelPath,
                     rootfsPath: doryTestRootfsPath,
@@ -1022,7 +1022,7 @@ final class MachineManagerTests: XCTestCase {
                 passMachineArguments: false,
                 requiresReadyHandoff: false
             ))
-            _ = try manager.create(DoryMachineConfiguration(
+            _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: "dev",
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath,
@@ -1080,7 +1080,7 @@ final class MachineManagerTests: XCTestCase {
                 passMachineArguments: false,
                 requiresReadyHandoff: false
             ))
-            _ = try manager.create(DoryMachineConfiguration(
+            _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: "dev",
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath,
@@ -1136,7 +1136,7 @@ final class MachineManagerTests: XCTestCase {
                 let kernel = try Data(contentsOf: URL(fileURLWithPath: doryTestKernelPath))
                 receipt.kernelSHA256 = SHA256.hash(data: kernel).map { String(format: "%02x", $0) }.joined()
                 let manager = MachineManager(diagnosticConfiguration: configuration)
-                _ = try manager.create(DoryMachineConfiguration(
+                _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                     id: "dev", kernelPath: doryTestKernelPath, rootfsPath: doryTestRootfsPath,
                     displayMode: .desktop, installedDesktopPayloadReceipt: receipt
                 ))
@@ -1187,7 +1187,7 @@ final class MachineManagerTests: XCTestCase {
                     baseArguments: ["30"], passMachineArguments: false, requiresReadyHandoff: false
                 )
                 let manager = MachineManager(diagnosticConfiguration: configuration)
-                _ = try manager.create(DoryMachineConfiguration(
+                _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                     id: "dev", guestArchitecture: .arm64,
                     kernelPath: doryTestKernelPath, rootfsPath: doryTestRootfsPath,
                     displayMode: .desktop, environment: ["DORY_DESKTOP_DISTRO": "ubuntu", "PRESERVE": "yes"]
@@ -1250,7 +1250,7 @@ final class MachineManagerTests: XCTestCase {
                 passMachineArguments: false,
                 requiresReadyHandoff: false
             ))
-            _ = try manager.create(DoryMachineConfiguration(
+            _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: "dev",
                 kernelPath: kernel,
                 rootfsPath: rootfs,
@@ -1392,7 +1392,7 @@ final class MachineManagerTests: XCTestCase {
             passMachineArguments: false,
             requiresReadyHandoff: false
         ))
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -1463,7 +1463,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         let receipt = testVerifiedDesktopReceipt()
-        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+        XCTAssertThrowsError(try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "conflict",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -1476,7 +1476,7 @@ final class MachineManagerTests: XCTestCase {
             installedDesktopPayloadReceipt: receipt
         )))
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -1518,7 +1518,7 @@ final class MachineManagerTests: XCTestCase {
         var receipt = testVerifiedDesktopReceipt()
         receipt.kernelSHA256 = SHA256.hash(data: sourceKernel)
             .map { String(format: "%02x", $0) }.joined()
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -1569,7 +1569,7 @@ final class MachineManagerTests: XCTestCase {
             baseArguments: ["30"], passMachineArguments: false, requiresReadyHandoff: false,
             guestArchitecture: "arm64"
         ))
-        _ = try creator.create(DoryMachineConfiguration(
+        _ = try creator.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev", guestArchitecture: .arm64,
             kernelPath: doryTestKernelPath, rootfsPath: doryTestRootfsPath,
             displayMode: .desktop, environment: ["DORY_DESKTOP_DISTRO": "ubuntu"]
@@ -1619,7 +1619,7 @@ final class MachineManagerTests: XCTestCase {
                 kernelAssetIdentifier: "dory-desktop-kernel-arm64.lzfse",
                 kernelSHA256: String(repeating: "e", count: 64)
             )
-            _ = try manager.create(DoryMachineConfiguration(
+            _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: distro,
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath,
@@ -1665,7 +1665,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         defer { try? manager.delete(id: "dev") }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -1716,7 +1716,7 @@ final class MachineManagerTests: XCTestCase {
         ]
 
         for (id, kernel, rootfs) in invalidArtifacts {
-            XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+            XCTAssertThrowsError(try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: id,
                 kernelPath: kernel,
                 rootfsPath: rootfs
@@ -1741,7 +1741,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         defer { try? manager.delete(id: "dev") }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
@@ -1777,7 +1777,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -1813,7 +1813,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -1847,7 +1847,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -1874,7 +1874,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         )
         let manager = MachineManager(diagnosticConfiguration: configuration)
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -1940,7 +1940,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
 
         let manager = MachineManager(diagnosticConfiguration: configuration)
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -1990,7 +1990,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -2072,7 +2072,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
 
-        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+        XCTAssertThrowsError(try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "bad/id",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -2080,12 +2080,12 @@ final class MachineManagerTests: XCTestCase {
             XCTAssertEqual(error as? MachineManagerError, .invalidID("bad/id"))
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
         ))
-        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+        XCTAssertThrowsError(try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -2109,7 +2109,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
 
-        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+        XCTAssertThrowsError(try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -2135,7 +2135,7 @@ final class MachineManagerTests: XCTestCase {
         ))
 
         for id in [".", "..", "..."] {
-            XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+            XCTAssertThrowsError(try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: id,
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath
@@ -2403,7 +2403,7 @@ final class MachineManagerTests: XCTestCase {
             passMachineArguments: false,
             requiresReadyHandoff: false
         ))
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
@@ -2491,7 +2491,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         defer { try? manager.delete(id: "dev") }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
@@ -2532,7 +2532,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: kernel,
             rootfsPath: rootfs
@@ -2572,7 +2572,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         defer { try? manager.delete(id: "dev") }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
@@ -2609,7 +2609,7 @@ final class MachineManagerTests: XCTestCase {
             passMachineArguments: false,
             requiresReadyHandoff: false
         ))
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -2657,7 +2657,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         defer { try? manager.delete(id: "dev") }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
@@ -2701,7 +2701,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         defer { try? manager.delete(id: "dev") }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
@@ -2773,7 +2773,7 @@ final class MachineManagerTests: XCTestCase {
         )
 
         let manager = MachineManager(diagnosticConfiguration: config)
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -2831,7 +2831,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         defer { try? manager.delete(id: "dev") }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -2911,7 +2911,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         let verify: (String, [String: String], Bool) throws -> Void = { id, environment, expected in
             try? FileManager.default.removeItem(atPath: argsPath)
-            _ = try manager.create(DoryMachineConfiguration(
+            _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: id,
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath,
@@ -2940,7 +2940,7 @@ final class MachineManagerTests: XCTestCase {
         )
 
         try? FileManager.default.removeItem(atPath: argsPath)
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "sandbox-malformed",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -2971,7 +2971,7 @@ final class MachineManagerTests: XCTestCase {
             configuration: configuration,
             launchPolicy: .perWorkspaceAuthority
         )
-        let created = try XCTUnwrap(manager).create(
+        let created = try XCTUnwrap(manager).stageMachineForBootstrap(
             DoryMachineConfiguration(
                 id: "sandbox",
                 kernelPath: doryTestKernelPath,
@@ -3154,7 +3154,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         defer { try? manager.delete(id: "dev") }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -3215,7 +3215,7 @@ final class MachineManagerTests: XCTestCase {
         )
         defer { try? manager.delete(id: "dev") }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -3258,7 +3258,7 @@ final class MachineManagerTests: XCTestCase {
             processStarter: { process in try starter.start(process) }
         )
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -3301,7 +3301,7 @@ final class MachineManagerTests: XCTestCase {
             passMachineArguments: false,
             requiresReadyHandoff: true
         ))
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -3418,7 +3418,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -3452,7 +3452,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
 
-        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+        XCTAssertThrowsError(try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -3487,10 +3487,10 @@ final class MachineManagerTests: XCTestCase {
                 cpuCount: cpus
             )
             XCTAssertEqual(configuration.cpuCount, cpus)
-            XCTAssertThrowsError(try manager.create(configuration))
+            XCTAssertThrowsError(try manager.stageMachineForBootstrap(configuration))
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -3522,7 +3522,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
@@ -3557,7 +3557,7 @@ final class MachineManagerTests: XCTestCase {
         )
         let manager = MachineManager(diagnosticConfiguration: configuration)
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "ubuntu",
             kernelPath: "",
             rootfsPath: "",
@@ -3644,7 +3644,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         defer { try? manager.delete(id: "generic-linux") }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "generic-linux",
             kernelPath: "",
             rootfsPath: disk,
@@ -3738,7 +3738,7 @@ final class MachineManagerTests: XCTestCase {
         )
         defer { try? manager.delete(id: "linux") }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "linux",
             kernelPath: "",
             rootfsPath: disk,
@@ -3801,7 +3801,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "linux") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "linux",
             kernelPath: "",
             rootfsPath: disk,
@@ -3850,7 +3850,7 @@ final class MachineManagerTests: XCTestCase {
             ),
             allowsQualificationBootstrapLaunches: true
         )
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "linux",
             kernelPath: "",
             rootfsPath: disk,
@@ -3951,7 +3951,7 @@ final class MachineManagerTests: XCTestCase {
             machineStateBroker: broker
         )
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "linux",
             guestArchitecture: .x86_64,
             kernelPath: "",
@@ -4070,7 +4070,7 @@ final class MachineManagerTests: XCTestCase {
             try? manager.delete(id: "linux")
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "linux",
             guestArchitecture: .x86_64,
             kernelPath: "",
@@ -4127,7 +4127,7 @@ final class MachineManagerTests: XCTestCase {
         )
         XCTAssertEqual(try variableStore.load().snapshot, saved)
 
-        let clone = try manager.cloneSnapshot(
+        let clone = try manager.stageCloneSnapshotForBootstrap(
             machineID: "linux",
             snapshotID: snapshot.id,
             newID: "linux-copy"
@@ -4179,7 +4179,7 @@ final class MachineManagerTests: XCTestCase {
             allowsQualificationBootstrapLaunches: true,
             processStarter: { process in try starter.start(process) }
         )
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "linux",
             kernelPath: "",
             rootfsPath: disk,
@@ -4229,7 +4229,7 @@ final class MachineManagerTests: XCTestCase {
             ),
             allowsQualificationBootstrapLaunches: true
         )
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "linux",
             kernelPath: "",
             rootfsPath: disk,
@@ -4311,7 +4311,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         )
         let manager = MachineManager(diagnosticConfiguration: configuration)
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "linux",
             kernelPath: "",
             rootfsPath: disk,
@@ -4478,7 +4478,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         defer { try? manager.delete(id: "linux") }
 
-        let created = try manager.create(DoryMachineConfiguration(
+        let created = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "linux",
             kernelPath: "",
             rootfsPath: disk,
@@ -4568,7 +4568,7 @@ final class MachineManagerTests: XCTestCase {
             guestArchitecture: "arm64"
         ))
 
-        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+        XCTAssertThrowsError(try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "omarchy",
             kernelPath: "",
             rootfsPath: "",
@@ -4608,7 +4608,7 @@ final class MachineManagerTests: XCTestCase {
             try? manager.delete(id: "ubuntu-copy")
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "ubuntu",
             kernelPath: "",
             rootfsPath: disk,
@@ -4650,7 +4650,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(try String(contentsOfFile: try XCTUnwrap(imported.machineIdentifierPath), encoding: .utf8), "identifier-v1")
         XCTAssertEqual(try String(contentsOfFile: try XCTUnwrap(imported.nvramPath), encoding: .utf8), "nvram-v1")
 
-        let clone = try manager.cloneSnapshot(machineID: "ubuntu", snapshotID: imported.id, newID: "ubuntu-copy")
+        let clone = try manager.stageCloneSnapshotForBootstrap(machineID: "ubuntu", snapshotID: imported.id, newID: "ubuntu-copy")
         XCTAssertEqual(clone.bootMode, .efi)
         XCTAssertEqual(try String(contentsOfFile: "\(state)/ubuntu-copy/NVRAM", encoding: .utf8), "nvram-v1")
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(state)/ubuntu-copy/MachineIdentifier"))
@@ -4681,7 +4681,7 @@ final class MachineManagerTests: XCTestCase {
             try? manager.delete(id: "dev-portable")
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: sourceKernel,
             rootfsPath: sourceRootfs,
@@ -4756,7 +4756,7 @@ final class MachineManagerTests: XCTestCase {
         )
         try Data("snapshot-v2".utf8).write(to: URL(fileURLWithPath: devRootfs))
         try Data("kernel-v2".utf8).write(to: URL(fileURLWithPath: devKernel))
-        let clone = try manager.cloneSnapshot(machineID: "dev", snapshotID: "s1", newID: "dev-copy")
+        let clone = try manager.stageCloneSnapshotForBootstrap(machineID: "dev", snapshotID: "s1", newID: "dev-copy")
         XCTAssertEqual(clone.state, .running)
         XCTAssertEqual(clone.memoryMB, 4096)
         XCTAssertEqual(clone.cpuCount, 4)
@@ -4824,7 +4824,7 @@ final class MachineManagerTests: XCTestCase {
             snapshot.installedDesktopPayloadReceipt?.portableSnapshotReceipt
         )
 
-        let portable = try manager.cloneSnapshot(machineID: "dev", snapshotID: "s1", newID: "dev-portable")
+        let portable = try manager.stageCloneSnapshotForBootstrap(machineID: "dev", snapshotID: "s1", newID: "dev-portable")
         XCTAssertEqual(portable.state, .running)
         XCTAssertNil(portable.address)
         XCTAssertTrue(portable.shares.isEmpty)
@@ -4853,7 +4853,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
@@ -4893,7 +4893,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
@@ -4941,14 +4941,14 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs
         ))
         _ = try manager.snapshot(id: "dev", snapshotID: "s1")
 
-        XCTAssertThrowsError(try manager.cloneSnapshot(machineID: "dev", snapshotID: "s1", newID: "dev-copy"))
+        XCTAssertThrowsError(try manager.stageCloneSnapshotForBootstrap(machineID: "dev", snapshotID: "s1", newID: "dev-copy"))
         XCTAssertEqual(manager.list().map(\.id), ["dev"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev-copy"))
 
@@ -4977,7 +4977,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: sourceKernel,
             rootfsPath: sourceRootfs
@@ -5017,7 +5017,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         )
         var manager: MachineManager? = MachineManager(diagnosticConfiguration: configuration)
-        _ = try manager?.create(DoryMachineConfiguration(
+        _ = try manager?.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "source",
             kernelPath: doryTestKernelPath,
             rootfsPath: sourceRootfs,
@@ -5034,7 +5034,7 @@ final class MachineManagerTests: XCTestCase {
             id: "source",
             snapshotID: "base"
         ))
-        let clone = try XCTUnwrap(manager?.cloneSnapshot(
+        let clone = try XCTUnwrap(manager?.stageCloneSnapshotForBootstrap(
             machineID: "source",
             snapshotID: "base",
             newID: "clone"
@@ -5077,7 +5077,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -5132,7 +5132,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -5170,7 +5170,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "desktop",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -5218,7 +5218,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -5269,7 +5269,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -5323,7 +5323,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -5393,7 +5393,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: runtime)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: id,
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -5425,7 +5425,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let id = String(repeating: "m", count: 64)
 
-        XCTAssertThrowsError(try manager.create(DoryMachineConfiguration(
+        XCTAssertThrowsError(try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: id,
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -5459,7 +5459,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -5555,7 +5555,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "desktop",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -5596,7 +5596,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertLessThan(usbControlPath.utf8.count, 104)
         _ = try manager.stop(id: "desktop")
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "compatible",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -5617,7 +5617,7 @@ final class MachineManagerTests: XCTestCase {
         _ = try manager.stop(id: "compatible")
         try FileManager.default.removeItem(atPath: fallbackCapture)
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "automatic",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -5636,7 +5636,7 @@ final class MachineManagerTests: XCTestCase {
         _ = try manager.stop(id: "automatic")
         try FileManager.default.removeItem(atPath: fallbackCapture)
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "headless",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -5707,7 +5707,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         defer { try? manager.delete(id: "ubuntu") }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "ubuntu",
             kernelPath: sourceBundle,
             rootfsPath: sourceDisk,
@@ -5760,7 +5760,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -5809,7 +5809,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -5891,7 +5891,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -5962,7 +5962,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -6021,7 +6021,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -6089,7 +6089,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -6138,7 +6138,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -6229,7 +6229,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -6285,7 +6285,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -6322,7 +6322,7 @@ final class MachineManagerTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: base)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath

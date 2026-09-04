@@ -34,7 +34,7 @@ final class MachineDirectoryShareRuntimeTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: root)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -143,7 +143,7 @@ final class MachineDirectoryShareRuntimeTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: root)
         }
 
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,

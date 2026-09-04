@@ -544,7 +544,7 @@ final class HealthReporterTests: XCTestCase {
             requiresReadyHandoff: false
         ))
         defer { try? manager.delete(id: "dev") }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -1203,7 +1203,8 @@ private func healthResolvedPlan() -> DoryResolvedMachinePlan {
             virtualHardwareABIVersion: 1,
             qualifierIdentifier: "dory-host-qualifier",
             qualifierVersion: 1
-        )
+        ),
+        persistence: resolvedPersistenceTestBinding(machineID: "qualified")
     )
 }
 

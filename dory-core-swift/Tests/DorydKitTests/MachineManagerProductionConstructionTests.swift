@@ -15,7 +15,7 @@ struct MachineManagerProductionConstructionTests {
             passMachineArguments: false, requiresReadyHandoff: false
         )
         let diagnostic = MachineManager(diagnosticConfiguration: configuration)
-        _ = try diagnostic.create(.init(
+        _ = try diagnostic.stageMachineForBootstrap(.init(
             id: "historical", kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath, displayMode: .headless
         ))

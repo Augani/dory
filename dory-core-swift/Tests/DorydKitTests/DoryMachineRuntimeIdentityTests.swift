@@ -61,7 +61,7 @@ struct DoryMachineRuntimeIdentityTests {
             requiresReadyHandoff: false
         ))
         defer { try? FileManager.default.removeItem(atPath: root) }
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
@@ -96,7 +96,7 @@ struct DoryMachineRuntimeIdentityTests {
             launchPolicy: .requireResolvedPlan
         )
         defer { try? FileManager.default.removeItem(atPath: root) }
-        let created = try manager.create(DoryMachineConfiguration(
+        let created = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath

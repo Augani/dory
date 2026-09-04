@@ -98,7 +98,7 @@ final class MachineManagerSerialConsoleIntegrationTests: XCTestCase {
                 passMachineArguments: false,
                 requiresReadyHandoff: false
             ))
-            _ = try manager.create(DoryMachineConfiguration(
+            _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
                 id: machineID,
                 kernelPath: doryTestKernelPath,
                 rootfsPath: doryTestRootfsPath,

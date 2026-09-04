@@ -285,7 +285,7 @@ private final class PlanningMutationFixture: @unchecked Sendable {
 
     @discardableResult
     func createMachine(_ manager: MachineManager) throws -> DoryMachineStatus {
-        try manager.create(DoryMachineConfiguration(
+        try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: machineID,
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,

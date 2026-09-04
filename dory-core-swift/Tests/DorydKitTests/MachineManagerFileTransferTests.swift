@@ -525,7 +525,7 @@ final class MachineManagerFileTransferTests: XCTestCase {
             ),
             agentConnector: agent.connect(socketPath:)
         )
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "desktop",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,

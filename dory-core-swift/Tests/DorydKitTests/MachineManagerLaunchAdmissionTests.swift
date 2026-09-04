@@ -28,7 +28,7 @@ final class MachineManagerLaunchAdmissionTests: XCTestCase {
         let otherMutationResult = LaunchAdmissionLockedBox<Result<Void, Error>>()
         DispatchQueue.global(qos: .userInitiated).async {
             do {
-                _ = try fixture.manager.create(DoryMachineConfiguration(
+                _ = try fixture.manager.stageMachineForBootstrap(DoryMachineConfiguration(
                     id: "third",
                     kernelPath: doryTestKernelPath,
                     rootfsPath: doryTestRootfsPath
@@ -266,7 +266,7 @@ final class MachineManagerLaunchAdmissionTests: XCTestCase {
             ),
             processStarter: { process in try starter.start(process) }
         )
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath,
@@ -276,7 +276,7 @@ final class MachineManagerLaunchAdmissionTests: XCTestCase {
                 guestPath: "/workspace"
             )]
         ))
-        _ = try manager.create(DoryMachineConfiguration(
+        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
             id: "other",
             kernelPath: doryTestKernelPath,
             rootfsPath: doryTestRootfsPath
