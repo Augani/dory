@@ -10,6 +10,7 @@ crate-type = ["lib", "staticlib", "cdylib"]
 
 [[bin]]
 name = "uniffi-bindgen"
+path = "src/uniffi_bindgen.rs"
 required-features = ["bindgen"]
 
 [dependencies]
