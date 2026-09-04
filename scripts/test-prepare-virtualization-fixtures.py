@@ -1046,5 +1046,90 @@ mock_busybox() {
                     self.assertEqual(reply.stdout, content)
 
 
+class IOStressDiagnosticTests(unittest.TestCase):
+    elf = staticmethod(StressDiagnosticTests.elf)
+    save_build = StressDiagnosticTests.save_build
+    save_recipe = StressDiagnosticTests.save_recipe
+
+    def setUp(self):
+        StressDiagnosticTests.setUp(self)
+        self.recipe.update(kind="p02-userspace-io-stress", requiredWorkloads=fixture.IO_STRESS_WORKLOADS,
+                           outputFilename="io-stress.cpio")
+        self.build["kind"] = "p02-userspace-io-stress-cross-build"
+        for name in fixture.IO_STRESS_MODULES:
+            data = bytearray(self.elf("3" * 64))
+            struct.pack_into("<H", data, 16, 1)
+            data.extend(b"vermagic=6.18.35-0-virt SMP preempt mod_unload modversions \0")
+            data.extend(b"~Module signature appended~\n")
+            self.members[name] = bytes(data)
+        self.install_inputs()
+
+    def install_inputs(self):
+        archive = gzip.compress(DiagnosticInitramfsTests.cpio(list(self.members.items())))
+        (self.cache_path / "input.gz").write_bytes(archive)
+        self.artifact["extractions"][0].update(sha256=digest(archive), maximumBytes=len(archive))
+        self.recipe["source"]["sha256"] = digest(archive)
+        self.recipe["members"] = {name: digest(data) for name, data in self.members.items()}
+        if set(fixture.IO_STRESS_MODULES) <= self.members.keys():
+            output = fixture.stress_diagnostic_cpio(self.sources["init"], self.binary, self.members, io=True)
+            self.recipe.update(outputBytes=len(output), outputSHA256=digest(output))
+        self.save_build()
+
+    def prepare(self, *, io_mode=True):
+        with fixture.Cache(self.cache_path) as cache, \
+             mock.patch.object(fixture.subprocess, "Popen", side_effect=AssertionError("guest execution")), \
+             mock.patch.object(fixture, "download_chunks", side_effect=AssertionError("network")):
+            return fixture.prepare_stress_diagnostic(self.artifact, cache, self.binary_path,
+                                                     self.build_path, self.directory, io=io_mode)
+
+    def test_fixed_module_closure_and_separate_binary_are_reproduced(self):
+        result = self.prepare()
+        self.assertEqual(self.prepare(), result)
+        raw = (self.cache_path / result["filename"]).read_bytes()
+        selected = {name.removeprefix("usr/") for name in fixture.IO_STRESS_MODULES}
+        selected.add("bin/p02-userspace-io-stress")
+        members = fixture.diagnostic_members(raw, selected)
+        for name in fixture.IO_STRESS_MODULES:
+            self.assertEqual(members[name.removeprefix("usr/")], self.members[name])
+        self.assertEqual(members["bin/p02-userspace-io-stress"], self.binary)
+        manifest = json.loads((self.cache_path / result["manifestFilename"]).read_text())
+        self.assertEqual(manifest["kind"], "p02-userspace-io-stress-build")
+        self.assertEqual(manifest["requiredWorkloads"], fixture.IO_STRESS_WORKLOADS)
+        self.assertIn("host reopened block bytes and actual flush", manifest["acceptance"])
+        self.assertIn("reconciled ioNetwork counters", manifest["acceptance"])
+
+    def test_missing_transitive_module_rejects_without_publishing(self):
+        del self.members[fixture.IO_STRESS_MODULES[1]]  # failover is required by net_failover.
+        self.install_inputs()
+        with self.assertRaisesRegex(fixture.FixtureError, "member set differs"):
+            self.prepare()
+        self.assertFalse((self.cache_path / "io-stress.cpio").exists())
+
+    def test_rehashed_wrong_release_type_or_signature_still_rejects(self):
+        name = fixture.IO_STRESS_MODULES[-1]
+        valid = self.members[name]
+        variants = [valid.replace(b"6.18.35-0-virt", b"6.18.34-0-virt"),
+                    valid[:16] + struct.pack("<H", 2) + valid[18:], valid[:-1]]
+        for variant in variants:
+            self.members[name] = variant
+            self.install_inputs()
+            with self.subTest(sha=digest(variant)), self.assertRaisesRegex(fixture.FixtureError, "module shape"):
+                self.prepare()
+            self.assertFalse((self.cache_path / "io-stress.cpio").exists())
+
+    def test_io_and_seven_workload_recipes_cannot_be_substituted(self):
+        with self.assertRaisesRegex(fixture.FixtureError, "unsupported stress diagnostic recipe"):
+            self.prepare(io_mode=False)
+        self.recipe["requiredWorkloads"] = fixture.STRESS_WORKLOADS
+        self.save_recipe()
+        with self.assertRaisesRegex(fixture.FixtureError, "workload set differs"):
+            self.prepare()
+        args = ["--id", "alpine-virt-3.24.1-x86_64", "--cache-directory", str(self.root / "unused"),
+                "--extract", "--stress-binary", str(self.binary_path), "--stress-build-metadata", str(self.build_path)]
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(fixture.main(args + ["--stress-diagnostic-initramfs", "--io-stress-diagnostic-initramfs"]), 1)
+        self.assertFalse((self.root / "unused").exists())
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

@@ -24,6 +24,7 @@ DIAGNOSTIC_DIRECTORY = Path(__file__).resolve().parent.parent / "guest/diagnosti
 GLIBC_DIAGNOSTIC_DIRECTORY = DIAGNOSTIC_DIRECTORY.with_name("p02-glibc-userspace")
 SYSTEMD_DIAGNOSTIC_DIRECTORY = DIAGNOSTIC_DIRECTORY.with_name("p02-systemd-userspace")
 STRESS_DIAGNOSTIC_DIRECTORY = DIAGNOSTIC_DIRECTORY.with_name("p02-userspace-stress")
+IO_STRESS_DIAGNOSTIC_DIRECTORY = DIAGNOSTIC_DIRECTORY.with_name("p02-userspace-io-stress")
 CHUNK_BYTES = 64 * 1024
 MAX_DOWNLOAD_BYTES = 32 * 1024**3
 MAX_MEMBER_BYTES = 512 * 1024**2
@@ -936,6 +937,13 @@ STRESS_WORKLOADS = ["stress.allocation_free", "stress.mmap_protection", "stress.
                    "stress.filesystem_roundtrip", "stress.compression_checksum",
                    "stress.package_unpack", "stress.monotonic_clock"]
 STRESS_SOURCE_FILES = ("stress.c", "Makefile", "init")
+IO_STRESS_WORKLOADS = ["io.block_flush_reopen", "io.ethernet_frame_roundtrip"]
+IO_STRESS_MODULES = (
+    "usr/lib/modules/6.18.35-0-virt/kernel/drivers/block/virtio_blk.ko",
+    "usr/lib/modules/6.18.35-0-virt/kernel/net/core/failover.ko",
+    "usr/lib/modules/6.18.35-0-virt/kernel/drivers/net/net_failover.ko",
+    "usr/lib/modules/6.18.35-0-virt/kernel/drivers/net/virtio_net.ko",
+    "usr/lib/modules/6.18.35-0-virt/kernel/net/packet/af_packet.ko")
 
 
 def stress_static_elf(data, source_digest):
@@ -973,10 +981,11 @@ def stress_static_elf(data, source_digest):
             "embeddedSourceSHA256": source_digest}
 
 
-def stress_diagnostic_cpio(init, executable, members):
+def stress_diagnostic_cpio(init, executable, members, *, io=False):
+    executable_name = "bin/p02-userspace-io-stress" if io else "bin/p02-userspace-stress"
     entries = {
         "init": (stat.S_IFREG | 0o755, init, 0, 0),
-        "bin/p02-userspace-stress": (stat.S_IFREG | 0o755, executable, 0, 0),
+        executable_name: (stat.S_IFREG | 0o755, executable, 0, 0),
         "bin/busybox": (stat.S_IFREG | 0o755, members["usr/bin/busybox"], 0, 0),
         "bin/sh": (stat.S_IFLNK | 0o777, b"busybox", 0, 0),
         "lib/ld-musl-x86_64.so.1": (stat.S_IFREG | 0o755, members["usr/lib/ld-musl-x86_64.so.1"], 0, 0),
@@ -984,17 +993,22 @@ def stress_diagnostic_cpio(init, executable, members):
         "dev/console": (stat.S_IFCHR | 0o600, b"", 5, 1),
         "dev/null": (stat.S_IFCHR | 0o666, b"", 1, 3),
         "dev/zero": (stat.S_IFCHR | 0o666, b"", 1, 5)}
+    if io:
+        for member in IO_STRESS_MODULES:
+            entries[member.removeprefix("usr/")] = (stat.S_IFREG | 0o644, members[member], 0, 0)
     return newc_archive(entries, {"bin", "dev", "lib", "proc", "run", "sys", "tmp"})
 
 
-def prepare_stress_diagnostic(artifact, cache, binary_path, build_path, directory=STRESS_DIAGNOSTIC_DIRECTORY):
+def prepare_stress_diagnostic(artifact, cache, binary_path, build_path, directory=STRESS_DIAGNOSTIC_DIRECTORY, *, io=False):
+    kind = "p02-userspace-io-stress" if io else "p02-userspace-stress"
+    workloads = IO_STRESS_WORKLOADS if io else STRESS_WORKLOADS
     recipe_bytes = read_diagnostic_source(directory / "fixture.json", 64 * 1024)
     recipe = json.loads(recipe_bytes, object_pairs_hook=unique_object)
     require(isinstance(recipe, dict) and type(recipe.get("schemaVersion")) is int
-            and recipe["schemaVersion"] == 1 and recipe.get("kind") == "p02-userspace-stress"
+            and recipe["schemaVersion"] == 1 and recipe.get("kind") == kind
             and recipe.get("architecture") == "x86_64", "unsupported stress diagnostic recipe")
     require(recipe.get("artifactID") == artifact["id"], "stress diagnostic artifact differs")
-    require(recipe.get("requiredWorkloads") == STRESS_WORKLOADS, "stress workload set differs")
+    require(recipe.get("requiredWorkloads") == workloads, "stress workload set differs")
     source_specs = recipe.get("localFiles")
     require(isinstance(source_specs, dict) and set(source_specs) == set(STRESS_SOURCE_FILES),
             "stress local source set differs")
@@ -1013,7 +1027,7 @@ def prepare_stress_diagnostic(artifact, cache, binary_path, build_path, director
             "stress build metadata SHA differs")
     build = json.loads(build_bytes, object_pairs_hook=unique_object)
     require(isinstance(build, dict) and type(build.get("schemaVersion")) is int
-            and build["schemaVersion"] == 1 and build.get("kind") == "p02-userspace-stress-cross-build"
+            and build["schemaVersion"] == 1 and build.get("kind") == kind + "-cross-build"
             and build.get("sourceSHA256") == source_digest, "stress build source identity differs")
     require(build.get("compiler") == {"name": "zig", "version": "0.15.2"}
             and build.get("target") == "x86_64-linux-musl" and build.get("cpu") == "baseline"
@@ -1040,8 +1054,10 @@ def prepare_stress_diagnostic(artifact, cache, binary_path, build_path, director
     require(kernel is not None, "required stress kernel is missing; use --extract")
     os.close(kernel)
     member_specs = recipe.get("members")
-    require(isinstance(member_specs, dict) and set(member_specs) == {
-        "usr/bin/busybox", "usr/lib/ld-musl-x86_64.so.1"}, "stress member set differs")
+    required_members = {"usr/bin/busybox", "usr/lib/ld-musl-x86_64.so.1"}
+    if io:
+        required_members.update(IO_STRESS_MODULES)
+    require(isinstance(member_specs, dict) and set(member_specs) == required_members, "stress member set differs")
     maximum = bounded_integer(recipe.get("maximumExpandedBytes"), 64 * 1024**2, "stress expanded bytes")
     archive = cache.open_verified(inputs["source"]["filename"], inputs["source"]["sha256"],
                                   inputs["source"]["maximumBytes"])
@@ -1054,13 +1070,17 @@ def prepare_stress_diagnostic(artifact, cache, binary_path, build_path, director
         require(hashlib.sha256(data).hexdigest() == member_specs[name], "stress member SHA differs: " + name)
         require(len(data) >= 64 and data[:7] == b"\x7fELF\x02\x01\x01"
                 and int.from_bytes(data[18:20], "little") == 62, "stress member is not x86-64 ELF")
-    output = stress_diagnostic_cpio(local_files["init"], binary, members)
+        if name in IO_STRESS_MODULES:
+            require(int.from_bytes(data[16:18], "little") == 1
+                    and b"vermagic=6.18.35-0-virt SMP preempt mod_unload modversions \0" in data
+                    and data.endswith(b"~Module signature appended~\n"), "IO module shape or kernel release differs")
+    output = stress_diagnostic_cpio(local_files["init"], binary, members, io=io)
     output_digest = hashlib.sha256(output).hexdigest()
     expected_bytes = bounded_integer(recipe.get("outputBytes"), 12 * 1024**2, "stress output bytes")
     require(len(output) == expected_bytes and output_digest == recipe.get("outputSHA256"),
             "stress output size or SHA differs")
     filename = safe_name(recipe.get("outputFilename"))
-    manifest = {"schemaVersion": 1, "kind": "p02-userspace-stress-build", "architecture": "x86_64",
+    manifest = {"schemaVersion": 1, "kind": kind + "-build", "architecture": "x86_64",
         "qualification": "archive integrity and deterministic construction only; guest has not executed",
         "sourceArtifactID": artifact["id"], "sourceArtifactSHA256": artifact["sha256"],
         "source": recipe["source"], "kernel": recipe["kernel"], "members": member_specs,
@@ -1070,10 +1090,14 @@ def prepare_stress_diagnostic(artifact, cache, binary_path, build_path, director
         "recipeSHA256": hashlib.sha256(recipe_bytes).hexdigest(),
         "builderSHA256": hashlib.sha256(read_diagnostic_source(Path(__file__), 1024**2)).hexdigest(),
         "outputFilename": filename, "outputSHA256": output_digest, "outputBytes": len(output),
-        "requiredWorkloads": STRESS_WORKLOADS,
-        "acceptance": "Fresh matching UUID, all seven workloads, child exit 0, and independent host ACPI S5 poweroff",
-        "limitations": ["No guest execution by preparer", "Tmpfs does not qualify persistent block storage",
-                        "No sustained device-backed network qualification"],
+        "requiredWorkloads": workloads,
+        "acceptance": ("Fresh matching UUID, both IO workloads, child exit 0, reconciled ioNetwork counters, "
+                       "host reopened block bytes and actual flush, and independent host ACPI S5 poweroff") if io else
+                      "Fresh matching UUID, all seven workloads, child exit 0, and independent host ACPI S5 poweroff",
+        "limitations": (["No guest execution by preparer", "Raw block/backend verification is not physical-media durability",
+                         "Isolated Ethernet frames do not qualify TCP/IP, external networks or physical NICs"] if io else
+                        ["No guest execution by preparer", "Tmpfs does not qualify persistent block storage",
+                         "No sustained device-backed network qualification"]),
         "format": "newc; sorted names; uid/gid/mtime zero; sequential inodes; 512-byte padded; uncompressed"}
     manifest_bytes = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
     manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
@@ -1111,6 +1135,8 @@ def main(argv=None):
                         help="derive pinned P02 x86-64 systemd PID 1 and supervised workloads (requires --extract)")
     parser.add_argument("--stress-diagnostic-initramfs", action="store_true",
                         help="derive pinned P02 stress workload from explicitly supplied verified static ELF")
+    parser.add_argument("--io-stress-diagnostic-initramfs", action="store_true",
+                        help="derive separate pinned raw block/Ethernet workload and fixed driver closure")
     parser.add_argument("--stress-binary", type=Path, help="prebuilt static stress ELF; never compiled or executed here")
     parser.add_argument("--stress-build-metadata", type=Path, help="pinned stress cross-build JSON record")
     arguments = parser.parse_args(argv)
@@ -1118,6 +1144,7 @@ def main(argv=None):
         if (arguments.id or arguments.cache_directory or arguments.verify_only or arguments.extract
                 or arguments.diagnostic_initramfs or arguments.glibc_diagnostic_initramfs
                 or arguments.systemd_diagnostic_initramfs or arguments.stress_diagnostic_initramfs
+                or arguments.io_stress_diagnostic_initramfs
                 or arguments.stress_binary or arguments.stress_build_metadata):
             parser.error("--list cannot be combined with preparation options")
     elif not arguments.id or arguments.cache_directory is None:
@@ -1131,12 +1158,13 @@ def main(argv=None):
         require(len(set(arguments.id)) == len(arguments.id), "duplicate requested artifact ID")
         require(all(identity in by_id for identity in arguments.id), "unknown requested artifact ID")
         require(sum((arguments.diagnostic_initramfs, arguments.glibc_diagnostic_initramfs,
-                     arguments.systemd_diagnostic_initramfs, arguments.stress_diagnostic_initramfs)) <= 1,
+                     arguments.systemd_diagnostic_initramfs, arguments.stress_diagnostic_initramfs,
+                     arguments.io_stress_diagnostic_initramfs)) <= 1,
                 "select only one diagnostic initramfs")
-        require(arguments.stress_diagnostic_initramfs or
+        require(arguments.stress_diagnostic_initramfs or arguments.io_stress_diagnostic_initramfs or
                 (arguments.stress_binary is None and arguments.stress_build_metadata is None),
-                "stress binary and metadata require --stress-diagnostic-initramfs")
-        if arguments.stress_diagnostic_initramfs:
+                "stress binary and metadata require a stress diagnostic option")
+        if arguments.stress_diagnostic_initramfs or arguments.io_stress_diagnostic_initramfs:
             require(arguments.extract and arguments.id == ["alpine-virt-3.24.1-x86_64"]
                     and arguments.stress_binary is not None and arguments.stress_build_metadata is not None,
                     "stress diagnostic requires --extract, sole Alpine x86-64 ID, --stress-binary and --stress-build-metadata")
@@ -1164,6 +1192,9 @@ def main(argv=None):
             if arguments.stress_diagnostic_initramfs:
                 diagnostic = prepare_stress_diagnostic(by_id[arguments.id[0]], cache,
                     arguments.stress_binary, arguments.stress_build_metadata)
+            if arguments.io_stress_diagnostic_initramfs:
+                diagnostic = prepare_stress_diagnostic(by_id[arguments.id[0]], cache,
+                    arguments.stress_binary, arguments.stress_build_metadata, IO_STRESS_DIAGNOSTIC_DIRECTORY, io=True)
         print(json.dumps({"schemaVersion": 1, "kind": "virtualization-fixture-preparation",
                           "cacheDirectory": str(arguments.cache_directory.absolute()),
                           "qualification": "input integrity only; no guest boot or workload qualification",

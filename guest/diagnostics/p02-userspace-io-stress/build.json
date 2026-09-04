@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-userspace-io-stress-cross-build",
+  "sourceSHA256": "420f9bb6b699dc8043d76568f8076254fd799e39ee85a181f9a771c81e711dcc",
+  "sourceDigestDefinition": "SHA-256 of stress.c bytes followed immediately by Makefile bytes",
+  "compiler": {
+    "name": "zig",
+    "version": "0.15.2"
+  },
+  "target": "x86_64-linux-musl",
+  "cpu": "baseline",
+  "stripped": true,
+  "executedGuestCode": false,
+  "commandTemplate": [
+    "zig",
+    "cc",
+    "-target",
+    "x86_64-linux-musl",
+    "-mcpu=baseline",
+    "-static",
+    "-std=c11",
+    "-O2",
+    "-Wall",
+    "-Wextra",
+    "-Werror",
+    "-s",
+    "-ffile-prefix-map=<source-directory>=/dory/p02-userspace-io-stress",
+    "-DDORY_STRESS_SOURCE_SHA256=\"420f9bb6b699dc8043d76568f8076254fd799e39ee85a181f9a771c81e711dcc\"",
+    "stress.c",
+    "-o",
+    "<build-directory>/p02-userspace-io-stress"
+  ],
+  "commandTemplateVariables": "Only source-directory and build-directory vary; flags and embedded source digest are literal",
+  "binary": {
+    "bytes": 40712,
+    "sha256": "72eee711647f609d8f7dac5b87429038d7f2fdb97d7ba6d1240532add7a5f9b5"
+  },
+  "observedELF": {
+    "format": "ELF64 little-endian ET_EXEC x86-64",
+    "entry": 16787808,
+    "loadSegmentCount": 3,
+    "staticNoInterpreterOrDynamicTable": true,
+    "embeddedSourceSHA256": "420f9bb6b699dc8043d76568f8076254fd799e39ee85a181f9a771c81e711dcc"
+  },
+  "reproducibility": {
+    "verifiedDistinctLocalSourceDirectories": 2,
+    "identicalELFBytes": true,
+    "scope": "Two source paths on the same macOS ARM64 host with Zig 0.15.2; cross-host and compiler-distribution reproducibility not established"
+  },
+  "qualification": "Cross-compilation and static inspection only; no guest execution or workload qualification"
+}
