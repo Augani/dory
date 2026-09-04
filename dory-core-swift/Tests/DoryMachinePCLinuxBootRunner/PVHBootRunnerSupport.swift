@@ -9,6 +9,18 @@ struct PVHRunnerError: Error, CustomStringConvertible {
   init(_ description: String) { self.description = description }
 }
 
+enum PVHRunnerCPUProfile: String, Codable, CaseIterable, Sendable {
+  case compatibleV1 = "dory.x86_64.compat-v1"
+  case intelCompatibleV1 = "dory.x86_64.intel-compatible-v1"
+
+  var profile: DoryX86CPUProfile {
+    switch self {
+    case .compatibleV1: .compatibleV1
+    case .intelCompatibleV1: .intelCompatibleV1
+    }
+  }
+}
+
 struct PVHRunnerConfiguration: Codable, Sendable {
   let kernel: String
   let kernelSHA256: String
@@ -24,6 +36,11 @@ struct PVHRunnerConfiguration: Codable, Sendable {
   let diagnostics: String?
   let symbols: String?
   let symbolsSHA256: String?
+  // Older diagnostic records predate explicit profile selection. Missing means
+  // the historical profile; every new command-line configuration records its choice.
+  let cpuProfile: PVHRunnerCPUProfile?
+
+  var effectiveCPUProfile: DoryX86CPUProfile { (cpuProfile ?? .compatibleV1).profile }
 
   static let usage = """
     Usage: dory-pc-linux-boot-runner \
@@ -32,13 +49,17 @@ struct PVHRunnerConfiguration: Codable, Sendable {
       --command-line 'console=ttyS0 rdinit=/init panic=-1' \
       --tier interpreter|baseline-jit|optimizing-jit --memory-mib N \
       --max-instructions N --wall-seconds N --run-id UUID --workload NAME [--workload NAME ...] \
-      [--diagnostics /absolute/result.json] [--symbols /absolute/System.map --symbols-sha256 HEX]
+      [--diagnostics /absolute/result.json] [--symbols /absolute/System.map --symbols-sha256 HEX] \
+      [--cpu-profile dory.x86_64.compat-v1|dory.x86_64.intel-compatible-v1]
 
     Every input is explicit; no fixture search or download occurs. Limits: 2..524288 MiB,
     1..1000000000000 instructions, 1..3600 wall seconds. The wall budget includes file checks
     and VM initialization. --diagnostics opts into a bounded state/exit/console-tail receipt,
     with JIT cache counters sampled every 1,000,000 retired instructions and at normal termination.
     --symbols annotates sampled PCs only; it never changes guest execution or loads memory.
+    --cpu-profile defaults to dory.x86_64.compat-v1. The Intel-compatible identity is a
+    separate engineering candidate; selecting it neither enables extra ISA features nor
+    establishes hardware, hypervisor, Linux-baseline or release qualification.
 
     The runner appends dory.pvh_run_id=UUID to the command line. The init process must emit
     one complete JSON line with schemaVersion=1, doryPVHBoot="userspace-ready", runID=UUID,
@@ -52,7 +73,7 @@ struct PVHRunnerConfiguration: Codable, Sendable {
     let names: Set<String> = [
       "kernel", "kernel-sha256", "initrd", "initrd-sha256", "command-line", "tier",
       "memory-mib", "max-instructions", "wall-seconds", "run-id", "workload", "diagnostics",
-      "symbols", "symbols-sha256",
+      "symbols", "symbols-sha256", "cpu-profile",
     ]
     var values: [String: String] = [:]
     var requestedWorkloads: [String] = []
@@ -97,6 +118,10 @@ struct PVHRunnerConfiguration: Codable, Sendable {
     kernelSHA256 = try digest("kernel-sha256")
     initrd = try absolutePath("initrd")
     initrdSHA256 = try digest("initrd-sha256")
+    guard let selectedProfile = PVHRunnerCPUProfile(
+      rawValue: values["cpu-profile"] ?? PVHRunnerCPUProfile.compatibleV1.rawValue)
+    else { throw PVHRunnerError("Unsupported --cpu-profile") }
+    cpuProfile = selectedProfile
     switch try required("tier") {
     case "interpreter": tier = .interpreter
     case "baseline-jit": tier = .baselineJIT

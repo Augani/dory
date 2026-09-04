@@ -48,6 +48,50 @@ import Testing
     }
   }
 
+  @Test func CPUProfileChoiceIsExplicitAndIndependentOfExecutionTier() throws {
+    let legacy = try PVHRunnerConfiguration(arguments: arguments())
+    #expect(legacy.cpuProfile == .compatibleV1)
+    #expect(legacy.effectiveCPUProfile == PVHRunnerCPUProfile.compatibleV1.profile)
+    for tier in ["interpreter", "baseline-jit", "optimizing-jit"] {
+      for choice in PVHRunnerCPUProfile.allCases {
+        let configuration = try PVHRunnerConfiguration(arguments:
+          arguments(replacing: "--tier", with: tier) + ["--cpu-profile", choice.rawValue])
+        #expect(configuration.effectiveCPUProfile == choice.profile)
+        let data = try JSONEncoder().encode(configuration)
+        let decoded = try JSONDecoder().decode(PVHRunnerConfiguration.self, from: data)
+        #expect(decoded.cpuProfile == choice)
+        #expect(decoded.effectiveCPUProfile == configuration.effectiveCPUProfile)
+      }
+    }
+    for invalid in ["", "host", "intel", "dory.x86_64.unknown", "dory.x86_64.compat-v1 "] {
+      #expect(throws: PVHRunnerError.self) {
+        _ = try PVHRunnerConfiguration(arguments: arguments() + ["--cpu-profile", invalid])
+      }
+    }
+    #expect(throws: PVHRunnerError.self) {
+      _ = try PVHRunnerConfiguration(arguments: arguments() + [
+        "--cpu-profile", PVHRunnerCPUProfile.compatibleV1.rawValue,
+        "--cpu-profile", PVHRunnerCPUProfile.intelCompatibleV1.rawValue,
+      ])
+    }
+  }
+
+  @Test func historicalConfigurationKeepsLegacyCPUIdentityAndUnknownIDsReject() throws {
+    let legacy = try PVHRunnerConfiguration(arguments: arguments())
+    let data = try JSONEncoder().encode(legacy)
+    var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    object.removeValue(forKey: "cpuProfile")
+    let historical = try JSONDecoder().decode(PVHRunnerConfiguration.self,
+      from: JSONSerialization.data(withJSONObject: object))
+    #expect(historical.cpuProfile == nil)
+    #expect(historical.effectiveCPUProfile == legacy.effectiveCPUProfile)
+    object["cpuProfile"] = "host"
+    #expect(throws: DecodingError.self) {
+      _ = try JSONDecoder().decode(PVHRunnerConfiguration.self,
+        from: JSONSerialization.data(withJSONObject: object))
+    }
+  }
+
   @Test func pinnedFilesFailClosedOnMissingChangedOversizedAndSpecialFiles() throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

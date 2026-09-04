@@ -1,5 +1,6 @@
 import Darwin
 import Dispatch
+import DoryDBTX86
 import DoryMachinePC
 import Foundation
 
@@ -107,7 +108,8 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
     session.publish(record)
     let machine = try DoryPCDirectKernelMachine(
       memoryBytes: configuration.memoryMiB * 1024 * 1024,
-      initialRTCDate: Date(timeIntervalSince1970: 0), executionTier: configuration.tier,
+      initialRTCDate: Date(timeIntervalSince1970: 0),
+      interpreter: .init(profile: configuration.effectiveCPUProfile), executionTier: configuration.tier,
       clockSource: .deterministic)
     try machine.load(kernel: kernel.data, initrd: Array(initrd.data), commandLine: configuration.commandLine)
     record.stage = "running"
