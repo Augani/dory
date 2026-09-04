@@ -14,6 +14,7 @@ private struct AuditResult {
 }
 
 private struct AuditOptions {
+  let inventory: Bool
   let mode: DoryX86ExecutionMode
   let inputArguments: [String]
   let startAddress: UInt64?
@@ -29,7 +30,8 @@ private enum AuditError: Error, CustomStringConvertible {
   var description: String {
     switch self {
     case .usage:
-      "usage: dory-x86-decode-audit [--mode real16|protected16|protected32|long64] "
+      "usage: dory-x86-decode-audit --inventory (bounded corpus JSON; no execution)\n"
+        + "   or: dory-x86-decode-audit [--mode real16|protected16|protected32|long64] "
         + "[--start-address <integer>] [--stop-address <integer>] [--skip-unknown-mnemonics] "
         + "<module-or-directory> [...]"
     case .noInputs(let path):
@@ -40,10 +42,16 @@ private enum AuditError: Error, CustomStringConvertible {
   }
 }
 
-@main
 private enum DoryX86DecodeAudit {
   static func main() throws {
     let options = try arguments(Array(CommandLine.arguments.dropFirst()))
+    if options.inventory {
+      let report = try ISAInventory.report(data: ISAInventory.bundledCorpusData())
+      FileHandle.standardOutput.write(try ISAInventory.json(report))
+      FileHandle.standardOutput.write(Data([0x0A]))
+      if report.mismatchedVectorCount != 0 { Foundation.exit(EXIT_FAILURE) }
+      return
+    }
     let inputs = try options.inputArguments.flatMap(resolveModules)
     guard !inputs.isEmpty else {
       throw AuditError.noInputs(options.inputArguments.joined(separator: ", "))
@@ -64,7 +72,9 @@ private enum DoryX86DecodeAudit {
 
     print("mode: \(options.mode.rawValue)")
     print("modules: \(inputs.count)")
-    print("decoded: \(result.decoded)/\(result.total)")
+    print("static binary decoded: \(result.decoded)/\(result.total)")
+    print("executed forms: 0 (not measured; decoder-only audit)")
+    print("interpreter/JIT/flags/fault qualification: unmeasured")
     print("unique failures: \(result.failures.count)")
 
     for (failure, count) in result.failures.sorted(by: failureOrder) {
@@ -80,19 +90,25 @@ private enum DoryX86DecodeAudit {
     _ values: [String]
   ) throws -> AuditOptions {
     var mode = DoryX86ExecutionMode.long64
+    var inventory = false
+    var modeSpecified = false
     var inputs: [String] = []
     var startAddress: UInt64?
     var stopAddress: UInt64?
     var skipUnknownMnemonics = false
     var index = 0
     while index < values.count {
-      if values[index] == "--mode" {
+      if values[index] == "--inventory" {
+        inventory = true
+        index += 1
+      } else if values[index] == "--mode" {
         guard index + 1 < values.count,
           let requestedMode = DoryX86ExecutionMode(rawValue: values[index + 1])
         else {
           throw AuditError.usage
         }
         mode = requestedMode
+        modeSpecified = true
         index += 2
       } else if values[index] == "--start-address" || values[index] == "--stop-address" {
         guard index + 1 < values.count, let address = integer(values[index + 1]) else {
@@ -114,11 +130,18 @@ private enum DoryX86DecodeAudit {
         index += 1
       }
     }
-    guard !inputs.isEmpty else { throw AuditError.usage }
+    if inventory {
+      guard inputs.isEmpty, !modeSpecified, startAddress == nil, stopAddress == nil,
+        !skipUnknownMnemonics
+      else { throw AuditError.usage }
+    } else {
+      guard !inputs.isEmpty else { throw AuditError.usage }
+    }
     if let startAddress, let stopAddress, startAddress >= stopAddress {
       throw AuditError.usage
     }
     return AuditOptions(
+      inventory: inventory,
       mode: mode,
       inputArguments: inputs,
       startAddress: startAddress,
@@ -328,3 +351,5 @@ private enum DoryX86DecodeAudit {
     return lhs.key.bytes < rhs.key.bytes
   }
 }
+
+try DoryX86DecodeAudit.main()

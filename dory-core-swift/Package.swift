@@ -403,7 +403,12 @@ let package = Package(
     // modules against Dory's decoder so bring-up can close common ISA gaps in batches.
     .executableTarget(
       name: "dory-x86-decode-audit",
-      dependencies: ["DoryDBTX86"]
+      dependencies: ["DoryDBTX86"],
+      resources: [.copy("Vectors")]
+    ),
+    .testTarget(
+      name: "DoryX86DecodeAuditTests",
+      dependencies: ["dory-x86-decode-audit"]
     ),
     .executableTarget(
       name: "dory-pc-linux-boot-runner",
