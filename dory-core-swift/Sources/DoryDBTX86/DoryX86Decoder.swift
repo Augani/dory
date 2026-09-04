@@ -849,17 +849,20 @@ public struct DoryX86Decoder: Sendable {
         // correctly, but deliberately avoid an architectural guest-memory access.
         operation = .noOperation
       case 0x1E:
-        let endBranchEncoding = try cursor.readByte()
+        let encoding = try cursor.readByte()
+        let isEndBranch = encoding == 0xFA || encoding == 0xFB
+        let isReadShadowStackPointer = encoding & 0xF8 == 0xC8
         guard prefixes.repeatPrefix == 0xF3,
-          endBranchEncoding == 0xFA || endBranchEncoding == 0xFB
+          isEndBranch || isReadShadowStackPointer
         else {
           throw DoryX86DecodeError.invalidEncoding(
             address: address,
-            detail: "ENDBR requires the F3 0F 1E FA or F3 0F 1E FB encoding"
+            detail: "0F 1E requires an F3 ENDBR or register RDSSP encoding"
           )
         }
-        // Dory deliberately does not expose CET indirect-branch tracking. Intel specifies both
-        // ENDBR encodings as no-ops when CET IBT is unavailable or disabled.
+        // No Dory profile exposes CET. Intel specifies ENDBR and RDSSPD/RDSSPQ as
+        // no-ops without the corresponding CET facility (SDM Vol. 2B, RDSSP).
+        // RDSSPD must preserve the entire destination, including its upper half.
         operation = .noOperation
       case 0x1F:
         let operands = try decodeModRM(
