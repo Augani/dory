@@ -766,7 +766,7 @@ public struct DoryX86Interpreter: Sendable {
         setX87Tag(first, secondTag, state: &state.floatingPoint)
         setX87Tag(second, firstTag, state: &state.floatingPoint)
       case .x87Binary(let operation, let destination, let source, let pop):
-        let rhs = try readX87(
+        let rhsOperand = try readX87(
           source,
           instruction: instruction,
           state: state,
@@ -786,7 +786,12 @@ public struct DoryX86Interpreter: Sendable {
           if pop { popX87(state: &state.floatingPoint) }
           break
         }
+        let rhs = rhsOperand.value
         let lhs = readX87Register(destination, state: state.floatingPoint)
+        let lhsPhysical = physicalX87Register(destination, state: state.floatingPoint)
+        let operandExceptions =
+          consumedX87OperandExceptions(state.floatingPoint.x87[lhsPhysical].bytes)
+          | rhsOperand.exceptions
         let rounding = x87Rounding(state.floatingPoint)
         let precision = x87Precision(state.floatingPoint)
         let arithmetic: DoryX86ExtendedArithmeticResult =
@@ -804,13 +809,30 @@ public struct DoryX86Interpreter: Sendable {
           }
         var exceptions = x87ArithmeticExceptions(
           operation: operation, lhs: lhs, rhs: rhs, result: arithmetic.value)
-        if arithmetic.inexact { exceptions |= 1 << 5 }
-        if lhs.isUnsupported || rhs.isUnsupported {
+        if lhs.isUnsupported || rhs.isUnsupported || operandExceptions & 1 != 0
+          || exceptions & 1 != 0
+        {
           // Intel SDM Vol. 1 §8.5.1.1: consuming an unsupported binary80
-          // encoding raises #IA. A masked exception writes real indefinite;
-          // an unmasked exception suppresses the destination and any pop.
+          // encoding or SNaN raises #IA. A masked exception writes the
+          // instruction's quiet response; an unmasked exception suppresses
+          // the destination and any pop.
           guard recordX87Exceptions(1, state: &state.floatingPoint) else { break }
+        } else if lhs.isNaN || rhs.isNaN {
+          // A quiet NaN takes priority over every lower exception class.
+          _ = recordX87Exceptions(0, state: &state.floatingPoint)
+        } else if exceptions & (1 << 2) != 0 {
+          // Divide-by-zero is a pre-operation exception with priority over #D.
+          guard recordX87Exceptions(1 << 2, state: &state.floatingPoint) else { break }
         } else {
+          let denormalExceptions = operandExceptions & 2
+          if denormalExceptions != 0, state.floatingPoint.x87ControlWord & 2 == 0 {
+            // An unmasked pre-operation #D suppresses the arithmetic, its
+            // rounded result, and lower-priority post-operation exceptions.
+            _ = recordX87Exceptions(denormalExceptions, state: &state.floatingPoint)
+            break
+          }
+          exceptions |= denormalExceptions
+          if arithmetic.inexact { exceptions |= 1 << 5 }
           // Numeric exceptions are reported before committing the result. An
           // unmasked exception suppresses both the destination and any pop.
           guard recordX87Exceptions(
@@ -820,7 +842,7 @@ public struct DoryX86Interpreter: Sendable {
         writeX87Register(destination, value: arithmetic.value, state: &state.floatingPoint)
         if pop { popX87(state: &state.floatingPoint) }
       case .compareX87(let source, let popCount, let ordered, let setIntegerFlags):
-        let rhs = try readX87(
+        let rhsOperand = try readX87(
           source,
           instruction: instruction,
           state: state,
@@ -840,9 +862,14 @@ public struct DoryX86Interpreter: Sendable {
           for _ in 0..<popCount { popX87(state: &state.floatingPoint) }
           break
         }
+        let rhs = rhsOperand.value
         let lhs = readX87Register(0, state: state.floatingPoint)
+        let lhsPhysical = physicalX87Register(0, state: state.floatingPoint)
+        let operandExceptions =
+          consumedX87OperandExceptions(state.floatingPoint.x87[lhsPhysical].bytes)
+          | rhsOperand.exceptions
         let relation = x87FloatingComparison(lhs, rhs)
-        if lhs.isUnsupported || rhs.isUnsupported {
+        if lhs.isUnsupported || rhs.isUnsupported || operandExceptions & 1 != 0 {
           // Unsupported operands raise #IA for FCOM and FUCOM families alike.
           // With #IA unmasked, neither condition codes/EFLAGS nor TOP change.
           guard recordX87Exceptions(1, state: &state.floatingPoint) else { break }
@@ -851,6 +878,10 @@ public struct DoryX86Interpreter: Sendable {
           // FCOM treats every NaN as invalid; FUCOM treats only signaling NaNs
           // as invalid. Masked invalid produces the ordinary unordered result.
           guard recordX87Exceptions(1, state: &state.floatingPoint) else { break }
+        } else if !lhs.isNaN, !rhs.isNaN, operandExceptions & 2 != 0 {
+          // #D is pre-operation: unmasked comparison leaves condition codes,
+          // integer flags, operands, tags, and requested pops untouched.
+          guard recordX87Exceptions(2, state: &state.floatingPoint) else { break }
         }
         setX87Comparison(relation, integerFlags: setIntegerFlags, state: &state)
         for _ in 0..<popCount { popX87(state: &state.floatingPoint) }
@@ -4067,15 +4098,33 @@ public struct DoryX86Interpreter: Sendable {
     state.x87[Int(register)] = try! .init(bytes: payload, expectedByteCount: 10)
   }
 
+  private struct X87OperandValue {
+    let value: DoryX86ExtendedFloat
+    let exceptions: UInt16
+  }
+
+  private func consumedX87OperandExceptions(_ bytes: [UInt8]) -> UInt16 {
+    switch DoryX86X87Transfer.binary80Class(bytes) {
+    case .unsupported, .signalingNaN: 1
+    case .denormal, .pseudoDenormal: 2
+    default: 0
+    }
+  }
+
   private func readX87(
     _ operand: DoryX87Operand,
     instruction: DoryX86DecodedInstruction,
     state: DoryX86ArchitecturalState,
     memory: any DoryX86Memory
-  ) throws -> DoryX86ExtendedFloat {
+  ) throws -> X87OperandValue {
     switch operand {
     case .register(let register):
-      return readX87Register(register, state: state.floatingPoint)
+      let physical = physicalX87Register(register, state: state.floatingPoint)
+      let bytes = state.floatingPoint.x87[physical].bytes
+      return .init(
+        value: DoryX86ExtendedFloat(bytes: bytes),
+        exceptions: consumedX87OperandExceptions(bytes)
+      )
     case .memory(let memoryOperand, let format):
       try validateFloatingPointTransfer(
         memoryOperand,
@@ -4095,23 +4144,11 @@ public struct DoryX86Interpreter: Sendable {
         memory: memory
       )
       let bytes = try memory.read(at: address, byteCount: format.byteCount)
-      switch format {
-      case .float32:
-        return DoryX86ExtendedFloat(
-          Double(Float(bitPattern: UInt32(fromLittleEndian(bytes)))))
-      case .float64:
-        return DoryX86ExtendedFloat(Double(bitPattern: fromLittleEndian(bytes)))
-      case .extended80:
-        return DoryX86ExtendedFloat(bytes: bytes)
-      case .signedInteger16:
-        return DoryX86ExtendedFloat(
-          Int64(Int16(bitPattern: UInt16(fromLittleEndian(bytes)))))
-      case .signedInteger32:
-        return DoryX86ExtendedFloat(
-          Int64(Int32(bitPattern: UInt32(fromLittleEndian(bytes)))))
-      case .signedInteger64:
-        return DoryX86ExtendedFloat(Int64(bitPattern: fromLittleEndian(bytes)))
-      }
+      let loaded = DoryX86X87Transfer.load(bytes: bytes, format: format)
+      return .init(
+        value: DoryX86ExtendedFloat(bytes: loaded.bytes),
+        exceptions: loaded.flags | consumedX87OperandExceptions(loaded.bytes)
+      )
     }
   }
 
@@ -4242,9 +4279,9 @@ public struct DoryX86Interpreter: Sendable {
     state: inout DoryX86FloatingPointState
   ) {
     let physical = physicalX87Register(logical, state: state)
-    state.x87[physical] = try! .init(bytes: value.bytes(), expectedByteCount: 10)
-    let tag: UInt16 = value.isZero ? 1 : (value.isFinite ? 0 : 2)
-    setX87Tag(physical, tag, state: &state)
+    let bytes = value.bytes()
+    state.x87[physical] = try! .init(bytes: bytes, expectedByteCount: 10)
+    setX87Tag(physical, DoryX86X87Transfer.binary80Class(bytes).tag, state: &state)
   }
 
   private func writeX87Register(
