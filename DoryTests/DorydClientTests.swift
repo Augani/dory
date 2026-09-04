@@ -1265,6 +1265,90 @@ struct DorydClientTests {
     }
 
     @MainActor
+    @Test(arguments: ["older-success-last", "older-error-last", "newer-still-pending"])
+    func appStoreOrdersMachineRefreshResponsesWithoutStarvingSlowReplies(replyOrder: String) async throws {
+        let base = "/tmp/dory-refresh-race-\(UUID().uuidString.lowercased())"
+        let socketPath = base + "/doryd.sock"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let shim = DockerShim(runtime: MockRuntime())
+        let dockerServer = ShimHTTPServer(socketPath: socketPath) { request in
+            await shim.handle(request)
+        }
+        try dockerServer.start()
+        defer { dockerServer.stop() }
+
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: socketPath)
+        service.setMachineEventBatch([
+            "schemaVersion": UInt16(1), "headSequence": UInt64(1),
+            "snapshotRequired": true, "events": [] as [NSDictionary],
+        ])
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+
+        let store = AppStore(
+            dorydClient: DorydClient(endpoint: listener.endpoint), useDorydEngine: true
+        )
+        store.routeDockerCLI = false
+        await store.connectBackend()
+        store.stopAutoRefresh()
+        try await waitUntil { store.machines.contains { $0.name == "dev" } }
+        let baseline = try #require(store.loadMachines())
+        await baseline.value
+        #expect(store.machines.first { $0.name == "dev" }?.status == .running)
+
+        service.setMachineState("dev", "paused")
+        service.deferNextMachineListReply()
+        defer {
+            while service.deferredMachineListReplyCount > 0 {
+                service.releaseDeferredMachineListReply()
+            }
+        }
+        let older = try #require(store.loadMachines())
+        try await waitUntil { service.deferredMachineListReplyCount == 1 }
+
+        service.setMachineState("dev", "recovering")
+        service.setMachineReadiness("dev", [
+            "processAlive": true, "vmStarted": false, "guestBooted": false,
+            "toolsConnected": false, "desktopVisible": false, "workloadReady": false,
+        ])
+        let operationID = UUID().uuidString.lowercased()
+        service.setMachineFailure("dev", nil, activeOperation: [
+            "operationID": operationID, "kind": "repairing", "phase": "verifying",
+        ] as NSDictionary)
+        if replyOrder == "newer-still-pending" {
+            service.deferNextMachineListReply()
+        }
+        let newer = try #require(store.loadMachines())
+        if replyOrder == "newer-still-pending" {
+            try await waitUntil { service.deferredMachineListReplyCount == 2 }
+            service.releaseDeferredMachineListReply()
+            await older.value
+            #expect(store.machines.first { $0.name == "dev" }?.status == .paused)
+            service.releaseDeferredMachineListReply()
+        }
+        await newer.value
+        let accepted = store.machines
+        let acceptedMachine = try #require(accepted.first { $0.name == "dev" })
+        #expect(acceptedMachine.status == .recovering)
+        #expect(acceptedMachine.activeOperation?.operationID == operationID)
+        #expect(acceptedMachine.readiness.processAlive)
+        #expect(!acceptedMachine.readiness.vmStarted)
+        let acceptedError = store.actionError
+
+        if replyOrder != "newer-still-pending" {
+            service.releaseDeferredMachineListReply(
+                error: replyOrder == "older-error-last" ? "superseded query failed" : ""
+            )
+            await older.value
+        }
+        #expect(store.machines == accepted)
+        #expect(store.actionError == acceptedError)
+    }
+
+    @MainActor
     @Test func machineFlightRecorderRequiresExactPathFreeCursorEvidence() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -5093,6 +5177,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _latestMachineSerialConsoleInput: Data?
     private var _machineEventQueryCount = 0
     private var _machineListCount = 0
+    private var _deferNextMachineListReply = false
+    private var _deferredMachineListReplies: [(rows: NSArray, reply: (NSArray, String) -> Void)] = []
     private var _machineGuestExportCancelCount = 0
     private var _machineGuestExportDiscardCount = 0
     private var runtimeIdentityOverride: NSDictionary?
@@ -5212,6 +5298,26 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var machineListCount: Int {
         lock.lock(); defer { lock.unlock() }
         return _machineListCount
+    }
+
+    func deferNextMachineListReply() {
+        lock.lock(); defer { lock.unlock() }
+        _deferNextMachineListReply = true
+    }
+
+    var deferredMachineListReplyCount: Int {
+        lock.lock(); defer { lock.unlock() }
+        return _deferredMachineListReplies.count
+    }
+
+    func releaseDeferredMachineListReply(error: String = "") {
+        lock.lock()
+        let pending = _deferredMachineListReplies.isEmpty
+            ? nil : _deferredMachineListReplies.removeFirst()
+        lock.unlock()
+        if let pending {
+            pending.reply(pending.rows, error)
+        }
     }
 
     func machineGuestExportOperationResponse(
@@ -6111,6 +6217,12 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         lock.lock()
         _machineListCount += 1
         let rows = machines.keys.sorted().compactMap { machines[$0] }
+        if _deferNextMachineListReply {
+            _deferNextMachineListReply = false
+            _deferredMachineListReplies.append((rows as NSArray, reply))
+            lock.unlock()
+            return
+        }
         lock.unlock()
         reply(rows as NSArray, "")
     }

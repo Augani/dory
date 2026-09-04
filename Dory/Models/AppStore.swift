@@ -5343,6 +5343,8 @@ final class AppStore {
 
     private(set) var busyMachines: Set<String> = []
     @ObservationIgnored private var machineEventSequence: UInt64 = 0
+    @ObservationIgnored private var machineRefreshGeneration: UInt64 = 0
+    @ObservationIgnored private var machinePublishedRefreshGeneration: UInt64 = 0
     private(set) var machineFileTransfers: [String: DorydMachineFileTransferOperation] = [:]
     private(set) var machineGuestFileExports: [String: DorydMachineGuestFileExportOperation] = [:]
     private var recoveringMachineFileTransfers: Set<String> = []
@@ -5365,18 +5367,24 @@ final class AppStore {
     var machineCreationError: String?
     var machineCreated: Machine?
 
-    func loadMachines() {
+    @discardableResult
+    func loadMachines() -> Task<Void, Never>? {
         guard runtimeOwnedByDoryd else {
+            machineRefreshGeneration &+= 1
+            machinePublishedRefreshGeneration = machineRefreshGeneration
             machineEventSequence = 0
             machines = []
-            return
+            return nil
         }
-        Task { await refreshMachines(useEventCursor: true) }
+        return Task { _ = await refreshMachines(useEventCursor: true) }
     }
 
     @discardableResult
     private func refreshMachines(useEventCursor: Bool = false) async -> [Machine] {
+        machineRefreshGeneration &+= 1
+        let generation = machineRefreshGeneration
         guard runtimeOwnedByDoryd else {
+            machinePublishedRefreshGeneration = generation
             machineEventSequence = 0
             machines = []
             dns.replaceHostIPs([:])
@@ -5389,10 +5397,14 @@ final class AppStore {
             eventBatch = try? await dorydClient.machineEvents(
                 afterSequence: requestedEventSequence
             )
+            guard runtimeOwnedByDoryd, generation >= machinePublishedRefreshGeneration else {
+                return machines
+            }
             if let eventBatch {
                 requiresMachineSnapshot = eventBatch.snapshotRequired
                     || !eventBatch.events.isEmpty
                 if !requiresMachineSnapshot {
+                    machinePublishedRefreshGeneration = generation
                     advanceMachineEventSequence(
                         eventBatch.headSequence,
                         requestedSequence: requestedEventSequence
@@ -5402,7 +5414,15 @@ final class AppStore {
         }
         do {
             if requiresMachineSnapshot {
-                machines = try await dorydClient.machineList().map {
+                let statuses = try await dorydClient.machineList()
+                // A delayed response must not replace newer accepted observations. A newer
+                // pending request alone does not invalidate this result: slow polling must
+                // still make progress.
+                guard runtimeOwnedByDoryd, generation >= machinePublishedRefreshGeneration else {
+                    return machines
+                }
+                machinePublishedRefreshGeneration = generation
+                machines = statuses.map {
                     Self.machine(fromDoryd: $0, domainSuffix: domainSuffix)
                 }
                 if actionError?.hasPrefix("doryd machine list failed:") == true {
@@ -5429,6 +5449,10 @@ final class AppStore {
             }
             return machines
         } catch {
+            guard runtimeOwnedByDoryd, generation >= machinePublishedRefreshGeneration else {
+                return machines
+            }
+            machinePublishedRefreshGeneration = generation
             actionError = "doryd machine list failed: \(error)"
             machines = []
             return []
