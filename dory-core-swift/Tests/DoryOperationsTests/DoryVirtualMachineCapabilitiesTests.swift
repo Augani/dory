@@ -387,9 +387,9 @@ struct VirtualMachineCapabilitiesTests {
         #expect(!descriptor.availability.isUsable)
     }
 
-    @Test("Windows ARM64 is explicitly experimental and never promises 3D")
+    @Test("historical Windows configurations remain unavailable at every graphics level")
     func windowsSupportBoundaries() {
-        let experimental = evaluate(
+        let display = evaluate(
             family: .windows,
             media: .installerISO,
             source: .userProvided,
@@ -404,17 +404,17 @@ struct VirtualMachineCapabilitiesTests {
             graphics: .hardwareAccelerated3D
         )
 
-        #expect(experimental.availability.supportTier == .experimental)
-        #expect(experimental.availability.state == .available)
-        #expect(experimental.availability.reason?.code == .windowsSupportIsExperimental)
-        #expect(experimental.availability.isUsable)
+        #expect(display.availability.supportTier == .unsupported)
+        #expect(display.availability.state == .unavailable)
+        #expect(display.availability.reason?.code == .backendDoesNotSupportGuest)
+        #expect(!display.availability.isUsable)
         #expect(threeD.availability.supportTier == .unsupported)
-        #expect(threeD.availability.reason?.code == .windows3DAccelerationUnsupported)
+        #expect(threeD.availability.reason?.code == .backendDoesNotSupportGuest)
         #expect(!threeD.availability.isUsable)
     }
 
     @Test("Windows support does not leak onto backends that cannot boot it")
-    func windowsRequiresQEMUBackend() {
+    func windowsIsUnavailableOnAppleBackend() {
         let descriptor = evaluate(
             family: .windows,
             media: .installerISO,
@@ -461,7 +461,7 @@ struct VirtualMachineCapabilitiesTests {
         )
 
         #expect(descriptor.availability.supportTier == .unsupported)
-        #expect(descriptor.availability.reason?.code == .guestMediaRedistributionUnavailable)
+        #expect(descriptor.availability.reason?.code == .backendDoesNotSupportGuest)
     }
 
     @Test("guest-specific boot formats are rejected before host probing")
@@ -481,7 +481,7 @@ struct VirtualMachineCapabilitiesTests {
             graphics: .software
         )
 
-        #expect(windowsKernel.availability.reason?.code == .bootMediaDoesNotSupportGuest)
+        #expect(windowsKernel.availability.reason?.code == .backendDoesNotSupportGuest)
         #expect(linuxRestore.availability.reason?.code == .bootMediaDoesNotSupportGuest)
     }
 
@@ -540,24 +540,26 @@ struct VirtualMachineCapabilitiesTests {
     @Test("host facts distinguish product support from local component availability")
     func backendComponentAvailability() {
         var host = Self.provisionedHost
-        host.qemuHypervisorFrameworkAvailable = false
+        host.doryHypervisorAvailable = false
 
         let descriptor = evaluate(
-            family: .windows,
-            media: .installerISO,
+            family: .linux,
+            media: .installedLinuxBootBundle,
             source: .userProvided,
-            backend: .qemuHypervisorFramework,
+            backend: .doryHypervisor,
             graphics: .software,
-            host: host
+            host: host,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            trustedGuestImageGraphicsQualification: Self.qualifiedLinuxGraphics
         )
 
-        #expect(descriptor.availability.supportTier == .experimental)
+        #expect(descriptor.availability.supportTier == .supported)
         #expect(descriptor.availability.state == .unavailable)
         #expect(descriptor.availability.reason?.code == .backendComponentUnavailable)
     }
 
-    @Test("Windows requires a complete qualified boot and driver stack")
-    func windowsRequiresCompleteRuntime() {
+    @Test("historical firmware and driver facts never authorize a Windows runtime")
+    func windowsCannotBeEnabledByHistoricalHostFacts() {
         var noFirmware = Self.provisionedHost
         noFirmware.windowsUEFIFirmwareAvailable = false
         var noDeviceModel = Self.provisionedHost
@@ -575,14 +577,13 @@ struct VirtualMachineCapabilitiesTests {
         var noInput = Self.provisionedHost
         noInput.windowsGuestDrivers.inputAvailable = false
 
-        #expect(windows(host: noFirmware).availability.reason?.code == .windowsUEFIFirmwareUnavailable)
-        #expect(windows(host: noSecureBoot).availability.reason?.code == .windowsSecureBootUnavailable)
-        #expect(windows(host: noDeviceModel).availability.reason?.code == .windowsSBSADeviceModelUnavailable)
-        #expect(windows(host: noTPM).availability.reason?.code == .virtualTPM20Unavailable)
-        #expect(windows(host: noStorage).availability.reason?.code == .windowsStorageDriverUnavailable)
-        #expect(windows(host: noNetwork).availability.reason?.code == .windowsNetworkDriverUnavailable)
-        #expect(windows(host: noDisplay).availability.reason?.code == .windowsDisplayDriverUnavailable)
-        #expect(windows(host: noInput).availability.reason?.code == .windowsInputDriverUnavailable)
+        for host in [Self.provisionedHost, noFirmware, noSecureBoot, noDeviceModel,
+                     noTPM, noStorage, noNetwork, noDisplay, noInput] {
+            let descriptor = windows(host: host)
+            #expect(descriptor.availability.supportTier == .unsupported)
+            #expect(descriptor.availability.reason?.code == .backendDoesNotSupportGuest)
+            #expect(descriptor.resolvedDevices == nil)
+        }
     }
 
     @Test("macOS availability requires host-qualified VZMac and restore-image support")

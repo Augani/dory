@@ -55,16 +55,21 @@ struct DoryVirtualMachineBackendPlannerTests {
         )
     )
 
-    @Test("default backend order reflects currently runnable boot paths")
+    @Test("default backend order is the three-cell product table")
     func truthfulDefaults() {
         let linux = DoryGuestPlatform(family: .linux, architecture: .arm64)
+        let linuxX86 = DoryGuestPlatform(family: .linux, architecture: .x86_64)
         let macOS = DoryGuestPlatform(family: .macOS, architecture: .arm64)
         let windows = DoryGuestPlatform(family: .windows, architecture: .arm64)
 
         #expect(DoryAppleSiliconVirtualMachineBackendPlanner.defaultBackends(
             for: linux,
             bootMedia: .installerISO
-        ) == [.appleVirtualizationFramework])
+        ) == [.doryHypervisor])
+        #expect(DoryAppleSiliconVirtualMachineBackendPlanner.defaultBackends(
+            for: linux,
+            bootMedia: .virtualDisk
+        ) == [.doryHypervisor])
         #expect(DoryAppleSiliconVirtualMachineBackendPlanner.defaultBackends(
             for: linux,
             bootMedia: .installedLinuxBootBundle
@@ -74,16 +79,20 @@ struct DoryVirtualMachineBackendPlannerTests {
             bootMedia: .linuxKernel
         ) == [.doryHypervisor])
         #expect(DoryAppleSiliconVirtualMachineBackendPlanner.defaultBackends(
+            for: linuxX86,
+            bootMedia: .installerISO
+        ) == [.doryHypervisor])
+        #expect(DoryAppleSiliconVirtualMachineBackendPlanner.defaultBackends(
             for: macOS,
             bootMedia: .macOSRestoreImage
         ) == [.appleVirtualizationFramework])
         #expect(DoryAppleSiliconVirtualMachineBackendPlanner.defaultBackends(
             for: windows,
             bootMedia: .installerISO
-        ) == [.qemuHypervisorFramework])
+        ).isEmpty)
     }
 
-    @Test("Linux ISO evaluates only the implemented Virtualization.framework backend")
+    @Test("Linux ISO evaluates the DoryARMVirt product backend")
     func linuxInstallerSelection() throws {
         let result = plan(
             family: .linux,
@@ -93,12 +102,12 @@ struct DoryVirtualMachineBackendPlannerTests {
         let selected = try #require(result.selectedDescriptor)
 
         #expect(result.isSuccess)
-        #expect(selected.request.backend == .appleVirtualizationFramework)
+        #expect(selected.request.backend == .doryHypervisor)
         #expect(selected.availability.supportTier == .supported)
         #expect(selected.bootMediaInspectionEvidence?.artifactSHA256
             == Self.linuxISOArtifactSHA256)
         #expect(result.evaluatedDescriptors.map(\.request.backend)
-            == [.appleVirtualizationFramework])
+            == [.doryHypervisor])
     }
 
     @Test("structurally bootable ARM64 EFI ISO selects the portable VZ baseline")
@@ -112,7 +121,7 @@ struct DoryVirtualMachineBackendPlannerTests {
         let selected = try #require(result.selectedDescriptor)
 
         #expect(result.isSuccess)
-        #expect(selected.request.backend == .appleVirtualizationFramework)
+        #expect(selected.request.backend == .doryHypervisor)
         #expect(selected.availability.supportTier == .supported)
         #expect(selected.availability.reason?.code
             == .runtimeQualificationUnavailable)
@@ -154,11 +163,11 @@ struct DoryVirtualMachineBackendPlannerTests {
         #expect(result.evaluatedDescriptors.count == 2)
     }
 
-    @Test("a missing production renderer falls back to explicit RawHV software graphics")
+    @Test("a missing production renderer does not silently select listed software")
     func installedLinuxRendererFailureUsesSoftwareFallback() throws {
         var host = Self.host
         host.doryAcceleratedRendererAvailable = false
-        let result = plan(
+        let automatic = plan(
             family: .linux,
             media: .installedLinuxBootBundle,
             graphics: [.hardwareAccelerated3D, .software],
@@ -166,12 +175,22 @@ struct DoryVirtualMachineBackendPlannerTests {
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             trustedGuestImageGraphicsQualification: Self.qualifiedLinuxGraphics
         )
-        let selected = try #require(result.selectedDescriptor)
+        let recovered = plan(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            graphics: [.hardwareAccelerated3D, .software],
+            host: host,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            trustedGuestImageGraphicsQualification: Self.qualifiedLinuxGraphics,
+            graphicsRecovery: true
+        )
+        let selected = try #require(recovered.selectedDescriptor)
 
+        #expect(automatic.failure?.code == .noCandidate)
+        #expect(automatic.evaluatedDescriptors.first?.availability.reason?.code
+            == .acceleratedRendererUnavailable)
         #expect(selected.request.backend == .doryHypervisor)
         #expect(selected.request.graphics == .software)
-        #expect(result.evaluatedDescriptors.first?.availability.reason?.code
-            == .acceleratedRendererUnavailable)
     }
 
     @Test("planner defaults cannot authorize Linux 3D without image qualification")
@@ -188,11 +207,19 @@ struct DoryVirtualMachineBackendPlannerTests {
             graphics: [.hardwareAccelerated3D, .none],
             mediaArtifactSHA256: Self.guestArtifactSHA256
         )
-        let selected = try #require(explicitHeadlessFallback.selectedDescriptor)
+        let recovered = plan(
+            family: .linux,
+            media: .installedLinuxBootBundle,
+            graphics: [.hardwareAccelerated3D, .none],
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            graphicsRecovery: true
+        )
+        let selected = try #require(recovered.selectedDescriptor)
 
         #expect(noFallback.failure?.code == .noCandidate)
         #expect(noFallback.evaluatedDescriptors.first?.availability.reason?.code
             == .trustedGuestImageGraphicsQualificationUnavailable)
+        #expect(explicitHeadlessFallback.failure?.code == .noCandidate)
         #expect(selected.request.graphics == .none)
         #expect(selected.request.bootMedia.artifactSHA256 == Self.guestArtifactSHA256)
     }
@@ -208,10 +235,11 @@ struct DoryVirtualMachineBackendPlannerTests {
         )
         let selected = try #require(result.selectedDescriptor)
 
-        #expect(selected.request.backend == .appleVirtualizationFramework)
+        #expect(selected.request.backend == .doryHypervisor)
         #expect(result.evaluatedDescriptors.map(\.request.backend) == [
             .qemuHypervisorFramework,
             .appleVirtualizationFramework,
+            .doryHypervisor,
         ])
         #expect(result.evaluatedDescriptors.first?.availability.supportTier == .unsupported)
         #expect(result.evaluatedDescriptors.first?.availability.reason?.code
@@ -238,10 +266,10 @@ struct DoryVirtualMachineBackendPlannerTests {
         )
 
         #expect(try #require(preferred.selectedDescriptor).request.backend
-            == .appleVirtualizationFramework)
+            == .doryHypervisor)
         #expect(preferred.evaluatedDescriptors.map(\.request.backend) == [
             .qemuHypervisorFramework,
-            .appleVirtualizationFramework,
+            .doryHypervisor,
         ])
         #expect(required.failure?.code == .noCandidate)
         #expect(required.evaluatedDescriptors.map(\.request.backend)
@@ -259,21 +287,28 @@ struct DoryVirtualMachineBackendPlannerTests {
             media: .installerISO,
             graphics: [.hardwareAccelerated3D]
         )
-        let withFallback = plan(
+        let listed = plan(
             family: .linux,
             media: .installerISO,
             graphics: [.hardwareAccelerated3D, .software]
         )
-        let selected = try #require(withFallback.selectedDescriptor)
+        let recovered = plan(
+            family: .linux,
+            media: .installerISO,
+            graphics: [.hardwareAccelerated3D, .software],
+            graphicsRecovery: true
+        )
+        let selected = try #require(recovered.selectedDescriptor)
 
         #expect(!noFallback.isSuccess)
         #expect(noFallback.failure?.code == .noCandidate)
         #expect(noFallback.evaluatedDescriptors.count == 1)
+        #expect(listed.failure?.code == .noCandidate)
         #expect(selected.request.graphics == .software)
-        #expect(withFallback.evaluatedDescriptors.count == 2)
+        #expect(recovered.evaluatedDescriptors.count == 2)
     }
 
-    @Test("Windows remains unavailable unless experimental backends are explicitly allowed")
+    @Test("Windows is rejected as outside the three-cell product")
     func windowsRequiresExperimentalOptIn() throws {
         let denied = plan(
             family: .windows,
@@ -286,14 +321,25 @@ struct DoryVirtualMachineBackendPlannerTests {
             graphics: [.hardwareAccelerated3D, .software],
             allowsExperimental: true
         )
-        let selected = try #require(allowed.selectedDescriptor)
 
-        #expect(denied.failure?.code == .noCandidate)
-        #expect(denied.evaluatedDescriptors.first?.availability.isUsable == true)
-        #expect(selected.availability.supportTier == .experimental)
-        #expect(selected.request.graphics == .software)
-        #expect(allowed.evaluatedDescriptors.first?.availability.reason?.code
-            == .windows3DAccelerationUnsupported)
+        #expect(denied.failure?.code == .unsupportedProductCell)
+        #expect(denied.evaluatedDescriptors.isEmpty)
+        #expect(allowed.failure?.code == .unsupportedProductCell)
+        #expect(allowed.evaluatedDescriptors.isEmpty)
+    }
+
+    @Test("Intel hosts are rejected before capability evaluation")
+    func rejectsIntelHostBeforeCapabilityEvaluation() {
+        var host = Self.host
+        host.hostArchitecture = .x86_64
+        let result = plan(
+            family: .linux,
+            media: .installerISO,
+            graphics: [.software],
+            host: host
+        )
+        #expect(result.failure?.code == .unsupportedProductCell)
+        #expect(result.evaluatedDescriptors.isEmpty)
     }
 
     @Test("macOS default is VZ and retains external Apple media provenance")
@@ -407,7 +453,8 @@ struct DoryVirtualMachineBackendPlannerTests {
             bootMedia: media,
             acceptableGraphics: [.software, .hardwareAccelerated3D],
             backendPreferences: [.doryHypervisor],
-            backendPreferencePolicy: .required
+            backendPreferencePolicy: .required,
+            graphicsRecovery: true
         )
         let runtimeByGraphics = Dictionary(uniqueKeysWithValues:
             makeRuntimeQualifications(request: request, host: Self.host).filter {
@@ -466,20 +513,20 @@ struct DoryVirtualMachineBackendPlannerTests {
         let exact = runtimeQualification(
             media: .installerISO,
             immutableArtifactSHA256: Self.linuxISOArtifactSHA256,
-            backend: .appleVirtualizationFramework,
-            runtimeBuildID: "dory-vz-2026.8"
+            backend: .doryHypervisor,
+            runtimeBuildID: "dory-hv-2026.8"
         )
         let staleDigest = runtimeQualification(
             media: .installerISO,
             immutableArtifactSHA256: String(repeating: "7", count: 64),
-            backend: .appleVirtualizationFramework,
-            runtimeBuildID: "dory-vz-2026.8"
+            backend: .doryHypervisor,
+            runtimeBuildID: "dory-hv-2026.8"
         )
         let staleRuntime = runtimeQualification(
             media: .installerISO,
             immutableArtifactSHA256: Self.linuxISOArtifactSHA256,
-            backend: .appleVirtualizationFramework,
-            runtimeBuildID: "dory-vz-2026.7"
+            backend: .doryHypervisor,
+            runtimeBuildID: "dory-hv-2026.7"
         )
 
         for inventory in [
@@ -497,7 +544,7 @@ struct DoryVirtualMachineBackendPlannerTests {
             #expect(selected.runtimeQualificationEvidence?.immutableArtifactSHA256
                 == Self.linuxISOArtifactSHA256)
             #expect(selected.runtimeQualificationEvidence?.backendRuntimeBuildID
-                == "dory-vz-2026.8")
+                == "dory-hv-2026.8")
         }
     }
 
@@ -516,20 +563,20 @@ struct DoryVirtualMachineBackendPlannerTests {
         let exact = runtimeQualification(
             media: .virtualDisk,
             mutableProvenance: exactProvenance,
-            backend: .appleVirtualizationFramework,
-            runtimeBuildID: "dory-vz-2026.8"
+            backend: .doryHypervisor,
+            runtimeBuildID: "dory-hv-2026.8"
         )
         let staleRevision = runtimeQualification(
             media: .virtualDisk,
             mutableProvenance: staleProvenance,
-            backend: .appleVirtualizationFramework,
-            runtimeBuildID: "dory-vz-2026.8"
+            backend: .doryHypervisor,
+            runtimeBuildID: "dory-hv-2026.8"
         )
         let staleRuntime = runtimeQualification(
             media: .virtualDisk,
             mutableProvenance: exactProvenance,
-            backend: .appleVirtualizationFramework,
-            runtimeBuildID: "dory-vz-2026.7"
+            backend: .doryHypervisor,
+            runtimeBuildID: "dory-hv-2026.7"
         )
 
         for inventory in [
@@ -546,7 +593,7 @@ struct DoryVirtualMachineBackendPlannerTests {
             #expect(selected.availability.supportTier == .supported)
             #expect(selected.runtimeQualificationEvidence?.mutableProvenance?.revision == 7)
             #expect(selected.runtimeQualificationEvidence?.backendRuntimeBuildID
-                == "dory-vz-2026.8")
+                == "dory-hv-2026.8")
         }
     }
 
@@ -606,7 +653,8 @@ struct DoryVirtualMachineBackendPlannerTests {
         trustedBootMediaInspection: DoryTrustedBootMediaInspection? = nil,
         automaticallyResolveMutableProvenance: Bool = true,
         automaticallyQualifyRuntime: Bool = true,
-        trustedRuntimeQualifications: [DoryTrustedVirtualMachineRuntimeQualification]? = nil
+        trustedRuntimeQualifications: [DoryTrustedVirtualMachineRuntimeQualification]? = nil,
+        graphicsRecovery: Bool = false
     ) -> DoryVirtualMachineBackendPlanResult {
         let resolvedArtifactSHA256 = mediaArtifactSHA256
             ?? defaultArtifactSHA256(family: family, media: media)
@@ -638,7 +686,8 @@ struct DoryVirtualMachineBackendPlannerTests {
             devices: devices,
             backendPreferences: backends,
             backendPreferencePolicy: backendPolicy,
-            allowsExperimentalBackends: allowsExperimental
+            allowsExperimentalBackends: allowsExperimental,
+            graphicsRecovery: graphicsRecovery
         )
         let resolvedRuntimeQualifications = trustedRuntimeQualifications
             ?? (automaticallyQualifyRuntime
@@ -685,7 +734,9 @@ struct DoryVirtualMachineBackendPlannerTests {
                 artifactSHA256: artifactSHA256,
                 inspectionReportSHA256: Self.inspectionReportSHA256,
                 inspectorID: "dory-media-inspector",
-                inspectorVersion: 1
+                inspectorVersion: 1,
+                detectedArchitecture: .arm64,
+                detectedKind: media
             ),
             detectedKind: media,
             detectedGuestFamily: family,

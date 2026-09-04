@@ -87,12 +87,25 @@ public struct DoryVMBootConfiguration: Codable, Sendable, Equatable {
 }
 
 /// Ordered graphics contracts acceptable to the user, from most to least preferred.
-/// Runtime capability negotiation must select one exact entry or reject the definition.
+/// The first entry is the launch requirement. Later entries are recovery modes and are
+/// selected only by an explicit recovery operation, never by silent fallback.
 public struct DoryVMGraphicsPolicy: Codable, Sendable, Equatable {
     public var acceptableLevels: [DoryGraphicsAccelerationLevel]
 
     public init(acceptableLevels: [DoryGraphicsAccelerationLevel]) {
         self.acceptableLevels = acceptableLevels
+    }
+
+    public static func required(_ level: DoryGraphicsAccelerationLevel) -> Self {
+        Self(acceptableLevels: [level])
+    }
+
+    public var requiredLevel: DoryGraphicsAccelerationLevel? {
+        acceptableLevels.first
+    }
+
+    public var recoveryLevels: [DoryGraphicsAccelerationLevel] {
+        Array(acceptableLevels.dropFirst())
     }
 }
 

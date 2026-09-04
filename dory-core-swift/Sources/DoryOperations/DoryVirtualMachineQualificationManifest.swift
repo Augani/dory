@@ -770,7 +770,9 @@ public enum DoryQualifiedBootMediaInspector {
                 signingKeyID: qualification.signingKeyID,
                 manifestFormatVersion:
                     DoryVirtualMachineQualificationManifest.schemaVersion
-            )
+            ),
+            detectedArchitecture: architecture,
+            detectedKind: .installerISO
         )
         return (
             DoryBootMedia(
@@ -789,8 +791,8 @@ public enum DoryQualifiedBootMediaInspector {
     }
 
     /// Produces a digest-bound structural receipt for the one unqualified installer contract Dory
-    /// can safely expose: user-provided ARM64 EFI Linux media on the portable VZ software path.
-    /// This receipt deliberately carries no catalog evidence and therefore cannot authorize a
+    /// can safely expose: user-provided ARM64 EFI Linux media on the portable DoryARMVirt software
+    /// path. This receipt deliberately carries no catalog evidence and therefore cannot authorize a
     /// managed image, accelerated graphics, or a different backend.
     public static func inspectPortableLinuxARM64InstallerISO(
         atPath path: String
@@ -824,7 +826,9 @@ public enum DoryQualifiedBootMediaInspector {
             artifactSHA256: identity.sha256,
             inspectionReportSHA256: digest(canonicalData(report)),
             inspectorID: inspectorID,
-            inspectorVersion: inspectorVersion
+            inspectorVersion: inspectorVersion,
+            detectedArchitecture: .arm64,
+            detectedKind: .installerISO
         )
         return (
             DoryBootMedia(
@@ -880,7 +884,9 @@ public enum DoryQualifiedBootMediaInspector {
             artifactSHA256: digestValue,
             inspectionReportSHA256: digest(canonicalData(report)),
             inspectorID: nativeInspectorID,
-            inspectorVersion: 1
+            inspectorVersion: 1,
+            detectedArchitecture: .arm64,
+            detectedKind: .macOSRestoreImage
         )
         return (
             DoryBootMedia(

@@ -1907,6 +1907,11 @@ public enum DoryInstallerISOStager {
         hostRuntime requestedHostRuntime: DoryInstallerHostRuntime? = nil,
         allowsTranslatedX86_64OnARM64: Bool = false
     ) throws -> DoryStagedInstallerISO {
+        guard DoryHostArchitecture.current == .arm64 else {
+            throw DoryInstallerISOStagingError.unsupportedHost(
+                DoryHostArchitecture.current.rawValue
+            )
+        }
         let sourceDescriptor = open(
             sourcePath,
             O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
@@ -2042,6 +2047,7 @@ public enum DoryInstallerISOStager {
 }
 
 public enum DoryInstallerISOStagingError: Error, LocalizedError, CustomStringConvertible {
+    case unsupportedHost(String)
     case openSource(String, Int32)
     case invalidSource(String)
     case incompatible(String)
@@ -2056,6 +2062,8 @@ public enum DoryInstallerISOStagingError: Error, LocalizedError, CustomStringCon
 
     public var errorDescription: String? {
         switch self {
+        case let .unsupportedHost(architecture):
+            "Dory virtual machines require an Apple Silicon host; found \(architecture)."
         case let .openSource(path, code):
             "Could not open installer ISO \(path): \(String(cString: strerror(code)))"
         case let .invalidSource(path):

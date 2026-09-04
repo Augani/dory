@@ -1,10 +1,145 @@
 import Foundation
 
-/// The physical host ISA admitted by the four-cell virtualization product.
+/// The physical host ISA admitted by the three-cell virtualization product.
 public enum DoryHostArchitecture: String, Codable, Sendable, CaseIterable, Hashable {
     case arm64
     case x86_64
     case unsupported
+
+    /// ISA of the running Dory process. Apple Silicon product binaries are ARM64; an Intel
+    /// host is rejected before inventory, download, or disk mutation.
+    public static var current: DoryHostArchitecture {
+#if arch(arm64)
+        .arm64
+#elseif arch(x86_64)
+        .x86_64
+#else
+        .unsupported
+#endif
+    }
+}
+
+/// The three product cells this programme implements. Any other host/guest pair is rejected.
+public enum DoryProductCell: String, Codable, Sendable, CaseIterable, Hashable {
+    case linuxARM64Native = "linux-arm64-native"
+    case linuxX86_64Translated = "linux-x86_64-translated"
+    case macOSARM64VZMac = "macos-arm64-vzmac"
+
+    public var platform: DoryVirtualizationPlatformComposition {
+        switch self {
+        case .linuxARM64Native: .arm64LinuxV1
+        case .linuxX86_64Translated: .x86_64LinuxV1
+        case .macOSARM64VZMac: .arm64MacOSV1
+        }
+    }
+
+    public var executionClass: DoryExecutionClass {
+        switch self {
+        case .linuxARM64Native, .macOSARM64VZMac: .native
+        case .linuxX86_64Translated: .translated
+        }
+    }
+
+    /// Production backend identity for this cell. Linux ARM and Linux x86 share the Dory
+    /// hypervisor helper; the cell/platform composition distinguishes ARMVirt from DoryPC.
+    public var backendIdentity: DoryVirtualizationBackendIdentity {
+        switch self {
+        case .linuxARM64Native, .linuxX86_64Translated: .doryHypervisor
+        case .macOSARM64VZMac: .appleVirtualizationFramework
+        }
+    }
+
+    public var requiredComponents: [DoryVirtualizationComponentIdentity] {
+        switch self {
+        case .linuxARM64Native: [.nativeARM64Engine, .armVirtFirmware]
+        case .linuxX86_64Translated: [.x86ToARM64Translator, .pcFirmware]
+        case .macOSARM64VZMac: []
+        }
+    }
+}
+
+/// Requested guest ISA, inspected media ISA, host ISA, and the pinned execution composition.
+/// A template label or filename is not a substitute for these fields.
+public struct DoryVirtualMachineArchitectureFacts: Codable, Sendable, Equatable, Hashable {
+    public var hostArchitecture: DoryHostArchitecture
+    public var requestedGuestArchitecture: DoryGuestArchitecture
+    public var detectedMediaArchitecture: DoryGuestArchitecture?
+    public var cpuProfile: DoryCPUProfileIdentity
+    public var machineABI: DoryMachineModelIdentity
+    public var executionTier: DoryExecutionClass
+    public var productCell: DoryProductCell
+
+    public init(
+        hostArchitecture: DoryHostArchitecture,
+        requestedGuestArchitecture: DoryGuestArchitecture,
+        detectedMediaArchitecture: DoryGuestArchitecture?,
+        cpuProfile: DoryCPUProfileIdentity,
+        machineABI: DoryMachineModelIdentity,
+        executionTier: DoryExecutionClass,
+        productCell: DoryProductCell
+    ) {
+        self.hostArchitecture = hostArchitecture
+        self.requestedGuestArchitecture = requestedGuestArchitecture
+        self.detectedMediaArchitecture = detectedMediaArchitecture
+        self.cpuProfile = cpuProfile
+        self.machineABI = machineABI
+        self.executionTier = executionTier
+        self.productCell = productCell
+    }
+
+    public static func resolving(
+        hostArchitecture: DoryHostArchitecture,
+        guest: DoryGuestPlatform,
+        detectedMediaArchitecture: DoryGuestArchitecture?,
+        cell: DoryProductCell
+    ) -> Self {
+        let platform = cell.platform
+        return Self(
+            hostArchitecture: hostArchitecture,
+            requestedGuestArchitecture: guest.architecture,
+            detectedMediaArchitecture: detectedMediaArchitecture,
+            cpuProfile: platform.cpuProfile,
+            machineABI: platform.machineModel,
+            executionTier: cell.executionClass,
+            productCell: cell
+        )
+    }
+}
+
+/// Single executable three-cell table. Call this before component download or disk mutation.
+public enum DoryVirtualizationProductPolicy {
+    public static func cell(
+        hostArchitecture: DoryHostArchitecture,
+        guest: DoryGuestPlatform
+    ) -> Result<DoryProductCell, DoryVirtualizationResolutionError> {
+        guard hostArchitecture == .arm64 else {
+            return .failure(.unsupportedHostArchitecture(hostArchitecture))
+        }
+        switch (guest.family, guest.architecture) {
+        case (.linux, .arm64):
+            return .success(.linuxARM64Native)
+        case (.linux, .x86_64):
+            return .success(.linuxX86_64Translated)
+        case (.macOS, .arm64):
+            return .success(.macOSARM64VZMac)
+        case (.macOS, .x86_64):
+            return .failure(.unsupportedGuestArchitecture(.x86_64))
+        case (.windows, _):
+            return .failure(.unsupportedGuestFamily(.windows))
+        }
+    }
+
+    public static func defaultBackends(
+        hostArchitecture: DoryHostArchitecture,
+        guest: DoryGuestPlatform
+    ) -> [DoryVirtualizationBackendIdentity] {
+        switch cell(hostArchitecture: hostArchitecture, guest: guest) {
+        case let .success(cell):
+            [cell.backendIdentity]
+        case .failure:
+            []
+        }
+    }
 }
 
 /// CPU execution is deliberately independent from the guest-visible machine model.
@@ -178,6 +313,7 @@ public struct DoryVirtualizationResolution: Codable, Sendable, Equatable, Hashab
 public enum DoryVirtualizationResolutionError: Error, Codable, Sendable, Equatable, Hashable {
     case unsupportedHostArchitecture(DoryHostArchitecture)
     case unsupportedGuestFamily(DoryGuestFamily)
+    case unsupportedGuestArchitecture(DoryGuestArchitecture)
     case translationConsentRequired(DoryGuestArchitecture)
 
     public var reasonCode: DoryCapabilityReasonCode {
@@ -186,73 +322,42 @@ public enum DoryVirtualizationResolutionError: Error, Codable, Sendable, Equatab
             .unsupportedHostArchitecture
         case .unsupportedGuestFamily:
             .backendDoesNotSupportGuest
+        case .unsupportedGuestArchitecture:
+            .unsupportedGuestArchitecture
         case .translationConsentRequired:
             .translationConsentRequired
         }
     }
 }
 
-/// Pure, deterministic four-cell resolver. It performs no downloads, allocation, conversion,
+/// Pure, deterministic three-cell resolver. It performs no downloads, allocation, conversion,
 /// persistence, or runner launch, so the host boundary is enforced before all mutation.
 public enum DoryVirtualizationPlatformResolver {
     public static func resolve(
         _ request: DoryVirtualizationResolutionRequest
     ) -> Result<DoryVirtualizationResolution, DoryVirtualizationResolutionError> {
-        guard request.hostArchitecture == .arm64 else {
-            return .failure(.unsupportedHostArchitecture(request.hostArchitecture))
-        }
-        guard request.guest.family == .linux || request.guest.family == .macOS else {
-            return .failure(.unsupportedGuestFamily(request.guest.family))
-        }
-        if request.guest.architecture == .x86_64,
-           request.translationConsent != .explicit {
-            return .failure(.translationConsentRequired(.x86_64))
-        }
-
-        let route = route(for: request.guest)
-        let missing = route.requiredComponents.filter {
-            !request.readyComponents.contains($0)
-        }
-        return .success(DoryVirtualizationResolution(
-            guest: request.guest,
-            platform: route.platform,
-            executionClass: request.guest.architecture == .arm64 ? .native : .translated,
-            // All four new platform ABIs remain research until their phase gates pass.
-            supportState: .research,
-            requiredComponents: route.requiredComponents,
-            missingComponents: missing
-        ))
-    }
-
-    private static func route(
-        for guest: DoryGuestPlatform
-    ) -> (
-        platform: DoryVirtualizationPlatformComposition,
-        requiredComponents: [DoryVirtualizationComponentIdentity]
-    ) {
-        switch (guest.family, guest.architecture) {
-        case (.linux, .arm64):
-            return (
-                .arm64LinuxV1,
-                [.nativeARM64Engine, .armVirtFirmware]
-            )
-        case (.linux, .x86_64):
-            return (
-                .x86_64LinuxV1,
-                [.x86ToARM64Translator, .pcFirmware]
-            )
-        case (.macOS, .arm64):
-            return (
-                .arm64MacOSV1,
-                []
-            )
-        case (.macOS, .x86_64):
-            return (
-                .x86_64MacOSV1,
-                [.x86ToARM64Translator, .intelMacFirmware]
-            )
-        case (.windows, _):
-            preconditionFailure("Unsupported families are rejected before route selection.")
+        switch DoryVirtualizationProductPolicy.cell(
+            hostArchitecture: request.hostArchitecture,
+            guest: request.guest
+        ) {
+        case let .failure(error):
+            return .failure(error)
+        case let .success(cell):
+            if request.guest.architecture == .x86_64,
+               request.translationConsent != .explicit {
+                return .failure(.translationConsentRequired(.x86_64))
+            }
+            let missing = cell.requiredComponents.filter {
+                !request.readyComponents.contains($0)
+            }
+            return .success(DoryVirtualizationResolution(
+                guest: request.guest,
+                platform: cell.platform,
+                executionClass: cell.executionClass,
+                supportState: .research,
+                requiredComponents: cell.requiredComponents,
+                missingComponents: missing
+            ))
         }
     }
 }

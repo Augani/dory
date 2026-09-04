@@ -39,7 +39,8 @@ import Testing
     let map = DoryPCPVHBootBuilder.memoryMap(memoryBytes: 512 * 1024 * 1024)
 
     #expect(map[0] == .init(address: 0, size: 0x90000, kind: .ram))
-    #expect(map[1] == .init(address: 0x90000, size: 0x10000, kind: .reserved))
+    #expect(map[1] == .init(address: 0x90000, size: 0x70000, kind: .reserved))
+    #expect(map.count == 3)
     #expect(map[2].address == 0x10_0000)
     #expect(map[2].size == 511 * 1024 * 1024)
   }
@@ -55,6 +56,15 @@ import Testing
     )
     #expect(
       map[3]
+        == .init(
+          address: DoryPCV1ABI.mmioHoleStart,
+          size: DoryPCV1ABI.above4GRAMStart - DoryPCV1ABI.mmioHoleStart,
+          kind: .reserved
+        )
+    )
+    #expect(map.count == 5)
+    #expect(
+      map[4]
         == .init(
           address: DoryPCV1ABI.above4GRAMStart,
           size: memoryBytes - DoryPCV1ABI.mmioHoleStart,

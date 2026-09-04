@@ -4,7 +4,7 @@ import Testing
 
 @Suite("Compositional virtualization platform resolver")
 struct DoryVirtualizationPlatformResolverTests {
-    @Test("all four product cells have one exact composition", arguments: [
+    @Test("the three product cells have one exact composition", arguments: [
         (
             DoryGuestPlatform(family: .linux, architecture: .arm64),
             DoryTranslationConsent.notRequired,
@@ -25,13 +25,6 @@ struct DoryVirtualizationPlatformResolverTests {
             DoryExecutionEngineIdentity.vzMac,
             DoryMachineModelIdentity.appleVZMacV1,
             DoryFirmwareABIIdentity.appleVZMacV1
-        ),
-        (
-            DoryGuestPlatform(family: .macOS, architecture: .x86_64),
-            DoryTranslationConsent.explicit,
-            DoryExecutionEngineIdentity.x86ToARM64,
-            DoryMachineModelIdentity.intelMacV1,
-            DoryFirmwareABIIdentity.intelMacV1
         ),
     ])
     func resolvesProductCell(
@@ -54,6 +47,19 @@ struct DoryVirtualizationPlatformResolverTests {
         #expect(resolution.platform.firmwareABI == firmware)
         #expect(resolution.supportState == .research)
         #expect(resolution.executionClass == (guest.architecture == .arm64 ? .native : .translated))
+    }
+
+    @Test("macOS x86_64 is rejected at the resolver boundary")
+    func rejectsMacOSx86_64BeforeRouteSelection() {
+        let result = DoryVirtualizationPlatformResolver.resolve(
+            DoryVirtualizationResolutionRequest(
+                hostArchitecture: .arm64,
+                guest: DoryGuestPlatform(family: .macOS, architecture: .x86_64),
+                translationConsent: .explicit
+            )
+        )
+        #expect(result == .failure(.unsupportedGuestArchitecture(.x86_64)))
+        #expect(result.failure?.reasonCode == .unsupportedGuestArchitecture)
     }
 
     @Test("Intel hosts fail at the resolver boundary")

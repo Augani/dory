@@ -73,13 +73,14 @@ final class DoryInstallerISOTests: XCTestCase {
     }
 
     func testDiscoversRootPartitionFromOptInInstalledDisk() throws {
-        guard let path = ProcessInfo.processInfo.environment["DORY_TEST_INSTALLED_DISK"],
+        let environment = ProcessInfo.processInfo.environment
+        guard let path = environment["DORY_TEST_INSTALLED_DISK"],
               !path.isEmpty else {
             throw XCTSkip("set DORY_TEST_INSTALLED_DISK for the real-disk GPT smoke test")
         }
         XCTAssertEqual(
             try DoryLinuxInstalledDiskInspector.rootDevice(atPath: path),
-            "/dev/vda2"
+            environment["DORY_TEST_INSTALLED_ROOT_DEVICE"] ?? "/dev/vda2"
         )
     }
 

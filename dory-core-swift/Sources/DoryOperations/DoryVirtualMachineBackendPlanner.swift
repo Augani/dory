@@ -8,8 +8,8 @@ public enum DoryVirtualMachineBackendPreferencePolicy: String, Codable, Sendable
 public struct DoryVirtualMachineBackendPlanRequest: Codable, Sendable, Equatable, Hashable {
     public var guest: DoryGuestPlatform
     public var bootMedia: DoryBootMedia
-    /// Ordered graphics contracts the caller is willing to accept. A lower level is only a
-    /// fallback when the caller includes it here explicitly.
+    /// The first level is required. Later levels are candidates for a separately authorized
+    /// recovery operation and are evaluated only when `graphicsRecovery` is true.
     public var acceptableGraphics: [DoryGraphicsAccelerationLevel]
     public var devices: DoryVirtualMachineDeviceCapabilityRequest
     public var virtualHardwareABIVersion: UInt16
@@ -17,6 +17,9 @@ public struct DoryVirtualMachineBackendPlanRequest: Codable, Sendable, Equatable
     public var backendPreferences: [DoryVirtualizationBackendIdentity]?
     public var backendPreferencePolicy: DoryVirtualMachineBackendPreferencePolicy
     public var allowsExperimentalBackends: Bool
+    /// When false, only the first acceptable graphics level is a requirement. Later listed
+    /// levels are recovery modes and are selected only when this flag is true.
+    public var graphicsRecovery: Bool
 
     public init(
         guest: DoryGuestPlatform,
@@ -26,7 +29,8 @@ public struct DoryVirtualMachineBackendPlanRequest: Codable, Sendable, Equatable
         virtualHardwareABIVersion: UInt16 = 1,
         backendPreferences: [DoryVirtualizationBackendIdentity]? = nil,
         backendPreferencePolicy: DoryVirtualMachineBackendPreferencePolicy = .preferred,
-        allowsExperimentalBackends: Bool = false
+        allowsExperimentalBackends: Bool = false,
+        graphicsRecovery: Bool = false
     ) {
         self.guest = guest
         self.bootMedia = bootMedia
@@ -36,6 +40,7 @@ public struct DoryVirtualMachineBackendPlanRequest: Codable, Sendable, Equatable
         self.backendPreferences = backendPreferences
         self.backendPreferencePolicy = backendPreferencePolicy
         self.allowsExperimentalBackends = allowsExperimentalBackends
+        self.graphicsRecovery = graphicsRecovery
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -47,6 +52,7 @@ public struct DoryVirtualMachineBackendPlanRequest: Codable, Sendable, Equatable
         case backendPreferences
         case backendPreferencePolicy
         case allowsExperimentalBackends
+        case graphicsRecovery
     }
 
     public init(from decoder: Decoder) throws {
@@ -77,6 +83,10 @@ public struct DoryVirtualMachineBackendPlanRequest: Codable, Sendable, Equatable
             Bool.self,
             forKey: .allowsExperimentalBackends
         ) ?? false
+        graphicsRecovery = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .graphicsRecovery
+        ) ?? false
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -89,12 +99,14 @@ public struct DoryVirtualMachineBackendPlanRequest: Codable, Sendable, Equatable
         try container.encodeIfPresent(backendPreferences, forKey: .backendPreferences)
         try container.encode(backendPreferencePolicy, forKey: .backendPreferencePolicy)
         try container.encode(allowsExperimentalBackends, forKey: .allowsExperimentalBackends)
+        try container.encode(graphicsRecovery, forKey: .graphicsRecovery)
     }
 }
 
 public enum DoryVirtualMachineBackendPlanningFailureCode: String, Codable, Sendable, Hashable {
     case invalidPreference = "invalid-preference"
     case noCandidate = "no-candidate"
+    case unsupportedProductCell = "unsupported-product-cell"
 }
 
 public enum DoryVirtualMachineBackendPreferenceField: String, Codable, Sendable, Hashable {
@@ -162,6 +174,24 @@ public enum DoryAppleSiliconVirtualMachineBackendPlanner {
         trustedCapabilityQualifications:
             [DoryTrustedVirtualMachineCapabilityQualification] = []
     ) -> DoryVirtualMachineBackendPlanResult {
+        let productCell: DoryProductCell
+        switch DoryVirtualizationProductPolicy.cell(
+            hostArchitecture: host.hostArchitecture,
+            guest: request.guest
+        ) {
+        case let .failure(error):
+            return DoryVirtualMachineBackendPlanResult(
+                selectedDescriptor: nil,
+                evaluatedDescriptors: [],
+                failure: DoryVirtualMachineBackendPlanningFailure(
+                    code: .unsupportedProductCell,
+                    message: productCellFailureMessage(error)
+                )
+            )
+        case let .success(cell):
+            productCell = cell
+        }
+
         if request.acceptableGraphics.isEmpty {
             return invalidPreference(
                 field: .graphics,
@@ -199,7 +229,11 @@ public enum DoryAppleSiliconVirtualMachineBackendPlanner {
             )
         }
 
-        let defaults = defaultBackends(for: request.guest, bootMedia: request.bootMedia.kind)
+        let defaults = defaultBackends(
+            for: request.guest,
+            bootMedia: request.bootMedia.kind,
+            hostArchitecture: host.hostArchitecture
+        )
         let backends: [DoryVirtualizationBackendIdentity]
         if let preferences = request.backendPreferences {
             switch request.backendPreferencePolicy {
@@ -249,7 +283,17 @@ public enum DoryAppleSiliconVirtualMachineBackendPlanner {
             }
         }
 
+        let requiredGraphics: Set<DoryGraphicsAccelerationLevel>
+        if request.graphicsRecovery {
+            requiredGraphics = Set(request.acceptableGraphics)
+        } else if let primary = request.acceptableGraphics.first {
+            requiredGraphics = [primary]
+        } else {
+            requiredGraphics = []
+        }
         let selected = evaluated.first { descriptor in
+            guard descriptor.request.backend == productCell.backendIdentity else { return false }
+            guard requiredGraphics.contains(descriptor.request.graphics) else { return false }
             guard descriptor.availability.isUsable else { return false }
             return descriptor.availability.supportTier == .supported
                 || (request.allowsExperimentalBackends
@@ -278,21 +322,14 @@ public enum DoryAppleSiliconVirtualMachineBackendPlanner {
 
     public static func defaultBackends(
         for guest: DoryGuestPlatform,
-        bootMedia: DoryBootMediaKind
+        bootMedia: DoryBootMediaKind,
+        hostArchitecture: DoryHostArchitecture = .arm64
     ) -> [DoryVirtualizationBackendIdentity] {
-        if guest.family == .linux, guest.architecture == .x86_64 {
-            return [.doryHypervisor]
-        }
-        switch (guest.family, bootMedia) {
-        case (.linux, .linuxKernel), (.linux, .installedLinuxBootBundle):
-            return [.doryHypervisor]
-        case (.linux, _):
-            return [.appleVirtualizationFramework]
-        case (.macOS, _):
-            return [.appleVirtualizationFramework]
-        case (.windows, _):
-            return [.qemuHypervisorFramework]
-        }
+        _ = bootMedia
+        return DoryVirtualizationProductPolicy.defaultBackends(
+            hostArchitecture: hostArchitecture,
+            guest: guest
+        )
     }
 
     private static func hasDuplicates<Value: Hashable>(_ values: [Value]) -> Bool {
@@ -350,6 +387,21 @@ public enum DoryAppleSiliconVirtualMachineBackendPlanner {
                     == hostContext.virtualHardwareABIVersion
         }
         return matches.count == 1 ? matches[0] : nil
+    }
+
+    private static func productCellFailureMessage(
+        _ error: DoryVirtualizationResolutionError
+    ) -> String {
+        switch error {
+        case let .unsupportedHostArchitecture(architecture):
+            "Host architecture \(architecture.rawValue) is outside the Apple Silicon product."
+        case let .unsupportedGuestFamily(family):
+            "Guest family \(family.rawValue) is outside the three-cell product."
+        case let .unsupportedGuestArchitecture(architecture):
+            "Guest architecture \(architecture.rawValue) is not a product cell."
+        case let .translationConsentRequired(architecture):
+            "Translated \(architecture.rawValue) guests require explicit translation consent."
+        }
     }
 
     private static func invalidPreference(

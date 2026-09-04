@@ -461,6 +461,7 @@ public enum DoryCapabilityAvailabilityState: String, Codable, Sendable, CaseIter
 
 public enum DoryCapabilityReasonCode: String, Codable, Sendable, CaseIterable, Hashable {
     case unsupportedHostArchitecture = "unsupported-host-architecture"
+    case unsupportedGuestArchitecture = "unsupported-guest-architecture"
     case translationConsentRequired = "translation-consent-required"
     case hostOperatingSystemUnsupported = "host-os-unsupported"
     case guestArchitectureRequiresEmulation = "guest-architecture-requires-emulation"
@@ -620,6 +621,8 @@ public struct DoryBootMediaInspectionAuditEvidence: Codable, Sendable, Equatable
     public var inspectorID: String
     public var inspectorVersion: UInt16
     public var catalogManifestEvidence: DorySignedArtifactQualificationEvidence?
+    public var detectedArchitecture: DoryGuestArchitecture?
+    public var detectedKind: DoryBootMediaKind?
 
     public init(
         inspectionIdentity: String,
@@ -627,7 +630,9 @@ public struct DoryBootMediaInspectionAuditEvidence: Codable, Sendable, Equatable
         inspectionReportSHA256: String,
         inspectorID: String,
         inspectorVersion: UInt16,
-        catalogManifestEvidence: DorySignedArtifactQualificationEvidence? = nil
+        catalogManifestEvidence: DorySignedArtifactQualificationEvidence? = nil,
+        detectedArchitecture: DoryGuestArchitecture? = nil,
+        detectedKind: DoryBootMediaKind? = nil
     ) {
         self.inspectionIdentity = inspectionIdentity
         self.artifactSHA256 = artifactSHA256
@@ -635,6 +640,8 @@ public struct DoryBootMediaInspectionAuditEvidence: Codable, Sendable, Equatable
         self.inspectorID = inspectorID
         self.inspectorVersion = inspectorVersion
         self.catalogManifestEvidence = catalogManifestEvidence
+        self.detectedArchitecture = detectedArchitecture
+        self.detectedKind = detectedKind
     }
 }
 
@@ -1098,6 +1105,7 @@ public struct DoryAppleSiliconHostFacts: Codable, Sendable, Equatable, Hashable 
     /// therefore not sufficient to authorize application translation.
     public var linuxIntelApplicationTranslationAvailable: Bool?
     public var runtimeQualificationContext: DoryVirtualMachineRuntimeQualificationHostContext?
+    public var hostArchitecture: DoryHostArchitecture
 
     public init(
         macOSMajorVersion: Int,
@@ -1117,7 +1125,8 @@ public struct DoryAppleSiliconHostFacts: Codable, Sendable, Equatable, Hashable 
         metalAvailable: Bool,
         doryAcceleratedRendererAvailable: Bool,
         linuxIntelApplicationTranslationAvailable: Bool? = nil,
-        runtimeQualificationContext: DoryVirtualMachineRuntimeQualificationHostContext? = nil
+        runtimeQualificationContext: DoryVirtualMachineRuntimeQualificationHostContext? = nil,
+        hostArchitecture: DoryHostArchitecture = .arm64
     ) {
         self.macOSMajorVersion = macOSMajorVersion
         self.virtualizationFrameworkAvailable = virtualizationFrameworkAvailable
@@ -1138,7 +1147,100 @@ public struct DoryAppleSiliconHostFacts: Codable, Sendable, Equatable, Hashable 
         self.linuxIntelApplicationTranslationAvailable =
             linuxIntelApplicationTranslationAvailable
         self.runtimeQualificationContext = runtimeQualificationContext
+        self.hostArchitecture = hostArchitecture
     }
+
+    private enum CodingKeys: String, CodingKey {
+        case macOSMajorVersion
+        case virtualizationFrameworkAvailable
+        case hypervisorFrameworkAvailable
+        case doryHypervisorAvailable
+        case qemuHypervisorFrameworkAvailable
+        case windowsUEFIFirmwareAvailable
+        case windowsSecureBootAvailable
+        case windowsSBSADeviceModelAvailable
+        case virtualTPM20Available
+        case windowsGuestDrivers
+        case macOSGuestVirtualizationSupported
+        case macOSRestoreImageInstallationSupported
+        case doryMacOSBackendAvailable
+        case doryMacOSBackendQualified
+        case metalAvailable
+        case doryAcceleratedRendererAvailable
+        case linuxIntelApplicationTranslationAvailable
+        case runtimeQualificationContext
+        case hostArchitecture
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        macOSMajorVersion = try container.decode(Int.self, forKey: .macOSMajorVersion)
+        virtualizationFrameworkAvailable = try container.decode(
+            Bool.self,
+            forKey: .virtualizationFrameworkAvailable
+        )
+        hypervisorFrameworkAvailable = try container.decode(
+            Bool.self,
+            forKey: .hypervisorFrameworkAvailable
+        )
+        doryHypervisorAvailable = try container.decode(Bool.self, forKey: .doryHypervisorAvailable)
+        qemuHypervisorFrameworkAvailable = try container.decode(
+            Bool.self,
+            forKey: .qemuHypervisorFrameworkAvailable
+        )
+        windowsUEFIFirmwareAvailable = try container.decode(
+            Bool.self,
+            forKey: .windowsUEFIFirmwareAvailable
+        )
+        windowsSecureBootAvailable = try container.decode(
+            Bool.self,
+            forKey: .windowsSecureBootAvailable
+        )
+        windowsSBSADeviceModelAvailable = try container.decode(
+            Bool.self,
+            forKey: .windowsSBSADeviceModelAvailable
+        )
+        virtualTPM20Available = try container.decode(Bool.self, forKey: .virtualTPM20Available)
+        windowsGuestDrivers = try container.decode(
+            DoryWindowsGuestDriverFacts.self,
+            forKey: .windowsGuestDrivers
+        )
+        macOSGuestVirtualizationSupported = try container.decode(
+            Bool.self,
+            forKey: .macOSGuestVirtualizationSupported
+        )
+        macOSRestoreImageInstallationSupported = try container.decode(
+            Bool.self,
+            forKey: .macOSRestoreImageInstallationSupported
+        )
+        doryMacOSBackendAvailable = try container.decode(
+            Bool.self,
+            forKey: .doryMacOSBackendAvailable
+        )
+        doryMacOSBackendQualified = try container.decode(
+            Bool.self,
+            forKey: .doryMacOSBackendQualified
+        )
+        metalAvailable = try container.decode(Bool.self, forKey: .metalAvailable)
+        doryAcceleratedRendererAvailable = try container.decode(
+            Bool.self,
+            forKey: .doryAcceleratedRendererAvailable
+        )
+        linuxIntelApplicationTranslationAvailable = try container.decodeIfPresent(
+            Bool.self,
+            forKey: .linuxIntelApplicationTranslationAvailable
+        )
+        runtimeQualificationContext = try container.decodeIfPresent(
+            DoryVirtualMachineRuntimeQualificationHostContext.self,
+            forKey: .runtimeQualificationContext
+        )
+        hostArchitecture = try container.decodeIfPresent(
+            DoryHostArchitecture.self,
+            forKey: .hostArchitecture
+        ) ?? .arm64
+    }
+
+
 }
 
 /// Conservative Apple Silicon capability policy. It only reports a configuration as usable after
@@ -1324,16 +1426,6 @@ public enum DoryAppleSiliconCapabilityEvaluator {
             return runtimeDecision
         }
 
-        if supportTier == .experimental, request.guest.family == .windows {
-            return DoryCapabilityAvailability(
-                supportTier: .experimental,
-                state: .available,
-                reason: DoryCapabilityReason(
-                    code: .windowsSupportIsExperimental,
-                    message: "Windows virtualization is experimental and does not include 3D acceleration."
-                )
-            )
-        }
         if supportTier == .experimental {
             return DoryCapabilityAvailability(
                 supportTier: .experimental,
@@ -1355,8 +1447,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         case (.linux, .doryHypervisor),
              (.linux, .appleVirtualizationFramework):
             return .supported
-        case (.macOS, .appleVirtualizationFramework),
-             (.windows, .qemuHypervisorFramework):
+        case (.macOS, .appleVirtualizationFramework):
             return .experimental
         default:
             return nil
@@ -1392,8 +1483,6 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                 || request.bootMedia.kind == .installerISO
                 || request.bootMedia.kind == .virtualDisk
                 || request.bootMedia.kind == .installedLinuxBootBundle
-        case (.windows, .qemuHypervisorFramework):
-            return request.bootMedia.kind == .installerISO || request.bootMedia.kind == .virtualDisk
         case (.macOS, .appleVirtualizationFramework):
             return request.bootMedia.kind == .macOSRestoreImage || request.bootMedia.kind == .virtualDisk
         default:
@@ -1410,11 +1499,19 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         case .hostAcceleratedDisplay:
             // RawHV currently exposes only software scanout or the authenticated renderer-worker
             // 3D contract; advertising this intermediate level made the planner select a mode
-            // DesktopMode always rejects. Keep the existing VZ and experimental QEMU contracts.
-            return request.backend != .doryHypervisor
+            // DesktopMode always rejects. Apple graphics owns the intermediate display mode.
+            return request.backend == .appleVirtualizationFramework
         case .hardwareAccelerated3D:
-            return (request.guest.family == .linux && request.backend == .doryHypervisor)
-                || (request.guest.family == .macOS && request.backend == .appleVirtualizationFramework)
+            // DoryARMVirt UEFI installer/disk launch currently implements software scanout.
+            // Hardware 3D is the installed-bundle/direct-kernel contract.
+            let linuxRawHVInstalled =
+                request.guest.family == .linux
+                && request.backend == .doryHypervisor
+                && (request.bootMedia.kind == .linuxKernel
+                    || request.bootMedia.kind == .installedLinuxBootBundle)
+            return linuxRawHVInstalled
+                || (request.guest.family == .macOS
+                    && request.backend == .appleVirtualizationFramework)
         }
     }
 
@@ -1493,60 +1590,10 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                 }
             }
         case .qemuHypervisorFramework:
-            guard host.macOSMajorVersion >= 14 else {
-                return unavailable(
-                    tier: tier,
-                    code: .hostOperatingSystemUnsupported,
-                    message: "This Dory runtime requires macOS 14 or newer."
-                )
-            }
-            guard host.hypervisorFrameworkAvailable else {
-                return unavailable(
-                    tier: tier,
-                    code: .hypervisorFrameworkUnavailable,
-                    message: "Hypervisor.framework is unavailable on this host."
-                )
-            }
-            guard host.qemuHypervisorFrameworkAvailable else {
-                return unavailable(
-                    tier: tier,
-                    code: .backendComponentUnavailable,
-                    message: "The QEMU Hypervisor.framework component is not installed or failed validation."
-                )
-            }
-            if request.guest.family == .windows {
-                guard host.windowsUEFIFirmwareAvailable else {
-                    return unavailable(
-                        tier: tier,
-                        code: .windowsUEFIFirmwareUnavailable,
-                        message: "Qualified ARM64 UEFI firmware is required to boot this Windows guest."
-                    )
-                }
-                guard host.windowsSecureBootAvailable else {
-                    return unavailable(
-                        tier: tier,
-                        code: .windowsSecureBootUnavailable,
-                        message: "A qualified Secure Boot implementation is required for this Windows guest."
-                    )
-                }
-                guard host.windowsSBSADeviceModelAvailable else {
-                    return unavailable(
-                        tier: tier,
-                        code: .windowsSBSADeviceModelUnavailable,
-                        message: "A qualified SBSA virtual device model is required for this Windows guest."
-                    )
-                }
-                guard host.virtualTPM20Available else {
-                    return unavailable(
-                        tier: tier,
-                        code: .virtualTPM20Unavailable,
-                        message: "A compatible virtual TPM 2.0 device is required for this Windows guest."
-                    )
-                }
-                if let driverFailure = windowsDriverAvailabilityFailure(host.windowsGuestDrivers, tier: tier) {
-                    return driverFailure
-                }
-            }
+            return unsupported(
+                .backendDoesNotSupportGuest,
+                "This historical backend identity is retained for migration only."
+            )
         }
         return nil
     }
@@ -1710,7 +1757,8 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         _ request: DoryVirtualMachineCapabilityRequest
     ) -> Bool {
         guard request.guest == DoryGuestPlatform(family: .linux, architecture: .arm64),
-              request.backend == .appleVirtualizationFramework,
+              request.backend == .doryHypervisor
+                || request.backend == .appleVirtualizationFramework,
               (request.bootMedia.kind == .installerISO
                 || request.bootMedia.kind == .virtualDisk),
               request.bootMedia.source == .userProvided else {
@@ -1723,7 +1771,8 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         _ request: DoryVirtualMachineCapabilityRequest
     ) -> Bool {
         request.guest == DoryGuestPlatform(family: .linux, architecture: .arm64)
-            && request.backend == .appleVirtualizationFramework
+            && (request.backend == .doryHypervisor
+                || request.backend == .appleVirtualizationFramework)
             && (request.bootMedia.kind == .installerISO
                 || request.bootMedia.kind == .virtualDisk)
             && (request.bootMedia.source != .userProvided
@@ -1923,8 +1972,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                     || request.backend == .appleVirtualizationFramework))
                 || (request.guest.family == .macOS
                     && request.backend == .appleVirtualizationFramework)
-                || (request.guest.family == .windows
-                    && request.backend == .qemuHypervisorFramework)
+
         )
         if devices.keyboard, !hasImplementedInput {
             return unavailable(
@@ -2029,6 +2077,9 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         guard request.guest.family == .linux,
               request.backend == .doryHypervisor,
               request.graphics != .none else {
+            return nil
+        }
+        if portableLinuxEFIBaseline(request) {
             return nil
         }
         guard let selectedArtifactSHA256 = request.bootMedia.artifactSHA256 else {
@@ -2185,41 +2236,6 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         value.utf8.count == 64 && value.utf8.allSatisfy { byte in
             (48...57).contains(byte) || (65...70).contains(byte) || (97...102).contains(byte)
         }
-    }
-
-    private static func windowsDriverAvailabilityFailure(
-        _ drivers: DoryWindowsGuestDriverFacts,
-        tier: DoryCapabilitySupportTier
-    ) -> DoryCapabilityAvailability? {
-        guard drivers.storageAvailable else {
-            return unavailable(
-                tier: tier,
-                code: .windowsStorageDriverUnavailable,
-                message: "A qualified Windows ARM64 storage driver is required."
-            )
-        }
-        guard drivers.networkAvailable else {
-            return unavailable(
-                tier: tier,
-                code: .windowsNetworkDriverUnavailable,
-                message: "A qualified Windows ARM64 network driver is required."
-            )
-        }
-        guard drivers.displayAvailable else {
-            return unavailable(
-                tier: tier,
-                code: .windowsDisplayDriverUnavailable,
-                message: "A qualified Windows ARM64 display driver is required."
-            )
-        }
-        guard drivers.inputAvailable else {
-            return unavailable(
-                tier: tier,
-                code: .windowsInputDriverUnavailable,
-                message: "Qualified Windows ARM64 input drivers are required."
-            )
-        }
-        return nil
     }
 
     private static func unsupported(
