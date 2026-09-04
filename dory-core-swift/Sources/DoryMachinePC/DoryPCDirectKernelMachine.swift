@@ -299,14 +299,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var pitClockRemainder: UInt64 = 0
   private var rtcClockRemainder: UInt64 = 0
   private var localAPICClockRemainder: UInt64 = 0
+  private var pmTimerClockRemainder: UInt64 = 0
   private let clockSource: DoryPCClockSource
   private var lastHostClockNanoseconds: UInt64?
   private var hostClockNanosecondRemainder: UInt64 = 0
   private var hostClockDiscontinuityGeneration: UInt32?
 
   // HPET exposes a 100 ns period, so one deterministic machine-clock tick is 100 ns. Keeping the
-  // execution tiers on this shared timebase makes the 1 GHz invariant TSC advance by 100 cycles
-  // per tick while the PIT and RTC receive their independently advertised oscillator rates.
+  // execution tiers on this shared timebase makes the 1 GHz TSC advance by 100 cycles per tick
+  // while the PIT, RTC, and ACPI PM timer receive their independent oscillator rates.
   private static let machineClockFrequencyHz: UInt64 = 10_000_000
   private static let tscTicksPerMachineClock: UInt64 = 100
   private static let localAPICClockFrequencyHz: UInt64 = 1_000_000_000
@@ -1009,9 +1010,12 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     legacyPIT.advance(by: pitTicks)
     rtc.advance(by: rtcTicks)
     hpet.advance(by: ticks)
-    // ACPI PM timer ticks at the same rate as the machine clock (HPET base clock).
-    // The 32-bit counter wraps every ~3.58 seconds at 100ns granularity.
-    powerController.advancePMTimer(by: ticks)
+    let pmTimerTicks = scaledDeviceTicks(
+      machineTicks: ticks,
+      frequencyHz: DoryPCPowerController.pmTimerFrequencyHz,
+      remainder: &pmTimerClockRemainder
+    )
+    powerController.advancePMTimer(by: pmTimerTicks)
   }
 
   private func advanceTSCs(byMachineTicks ticks: UInt64) {

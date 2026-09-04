@@ -15,6 +15,9 @@ public final class DoryPCPowerController: @unchecked Sendable {
   public static let pm1EventPort: UInt16 = 0x600
   public static let pm1ControlPort: UInt16 = 0x604
   public static let pmTimerPort: UInt16 = 0x608
+  public static let pmTimerFrequencyHz: UInt64 = 3_579_545
+  // DoryPC's FADT leaves TMR_VAL_EXT clear: 24 counter bits in a 32-bit read.
+  public static let pmTimerCounterMask: UInt32 = 0x00FF_FFFF
   public static let resetPort: UInt16 = 0xCF9
   public static let resetValue: UInt8 = 0x06
   public static let softOffSleepType: UInt16 = 5
@@ -73,9 +76,12 @@ public final class DoryPCPowerController: @unchecked Sendable {
     lock.withLock { pmTimerCounter }
   }
 
+  /// Advances PM-timer oscillator ticks, not HPET ticks or instruction counts.
+  /// ACPI 6.5 §4.8.3.3 specifies a free-running 3.579545 MHz counter.
   public func advancePMTimer(by ticks: UInt64) {
     lock.withLock {
-      pmTimerCounter &+= UInt32(truncatingIfNeeded: ticks)
+      pmTimerCounter = (pmTimerCounter &+ UInt32(truncatingIfNeeded: ticks))
+        & Self.pmTimerCounterMask
     }
   }
 
