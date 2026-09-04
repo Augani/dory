@@ -142,7 +142,8 @@ import Testing
               : mode != .long64 && virtual && !ia32e ? 3 : UInt8(selector)
             let derived = DoryX86PagingContext(state: state, mode: mode)
             let explicit = DoryX86PagingContext(control: state.control, rflags: state.rflags,
-              currentPrivilegeLevel: UInt8(selector), mode: mode)
+              currentPrivilegeLevel: UInt8(selector), mode: mode,
+              supportsPAT: derived.supportsPAT)
             #expect(derived.currentPrivilegeLevel == expected)
             #expect(explicit == derived)
           }

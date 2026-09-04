@@ -50,14 +50,25 @@ import Testing
       let state = try state()
       let context = DoryX86PagingContext(state: state, mode: .long64, profile: profile)
       #expect(context.supportsOneGiBPages)
-      #expect(DoryX86PagingContext(state: state, mode: .long64).supportsOneGiBPages)
-      #expect(self.context(cpl: 3).supportsOneGiBPages)
-      let result = try DoryX86PagingUnit().translate(linearAddress: 0x8123,
-        access: .write, context: context, physicalMemory: memory)
-      #expect(result.physicalAddress == 0x4000_8123)
-      #expect(result.pageSize == 1 << 30)
-      #expect(try memory.readScalar(at: 0x2000, byteCount: 8) == 0x4000_10E7)
+      #expect(!context.supportsPAT)
+      let before = memory.snapshot()
+      #expect(throws: DoryX86MemoryError.pageFault(address: 0x8123, errorCode: 15)) {
+        try DoryX86PagingUnit().translate(linearAddress: 0x8123,
+          access: .write, context: context, physicalMemory: memory)
+      }
+      #expect(memory.snapshot() == before)
     }
+    // Direct profileless contexts are retained as engineering mechanism tests.
+    // They do not imply the selected guest-visible profiles advertise PAT.
+    let memory = try memory()
+    try memory.writeScalar(at: 0x2000, value: 0x4000_1087, byteCount: 8)
+    let context = self.context(cpl: 3)
+    #expect(context.supportsOneGiBPages && context.supportsPAT)
+    let result = try DoryX86PagingUnit().translate(linearAddress: 0x8123,
+      access: .write, context: context, physicalMemory: memory)
+    #expect(result.physicalAddress == 0x4000_8123)
+    #expect(result.pageSize == 1 << 30)
+    #expect(try memory.readScalar(at: 0x2000, byteCount: 8) == 0x4000_10E7)
   }
 
   @Test func maskingOneGiBDoesNotDisableTwoMiBPagesOrFourKiBPAT() throws {

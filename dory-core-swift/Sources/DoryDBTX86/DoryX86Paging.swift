@@ -7,6 +7,7 @@ public struct DoryX86PagingContext: Sendable, Hashable {
   public let mode: DoryX86ExecutionMode
   public let isImplicitSupervisorAccess: Bool
   public let supportsOneGiBPages: Bool
+  public let supportsPAT: Bool
 
   public init(
     control: DoryX86ControlState,
@@ -14,12 +15,16 @@ public struct DoryX86PagingContext: Sendable, Hashable {
     currentPrivilegeLevel: UInt8,
     mode: DoryX86ExecutionMode,
     isImplicitSupervisorAccess: Bool = false,
-    supportsOneGiBPages: Bool = true
+    supportsOneGiBPages: Bool = true,
+    supportsPAT: Bool = true
   ) {
     self.control = control
     self.rflags = rflags
     self.isImplicitSupervisorAccess = isImplicitSupervisorAccess
     self.supportsOneGiBPages = supportsOneGiBPages
+    // Direct contexts retain the existing PAT mechanism by default. Product
+    // contexts below instead use the selected profile's advertised capability.
+    self.supportsPAT = supportsPAT
     // Implicit system-data reads use supervisor paging privileges even in v8086 mode.
     // Ordinary CPL remains fixed in real/v8086 modes, independent of CS selector low bits.
     if isImplicitSupervisorAccess || mode == .real16 {
@@ -43,7 +48,8 @@ public struct DoryX86PagingContext: Sendable, Hashable {
       rflags: state.rflags,
       currentPrivilegeLevel: UInt8(state.cs.selector & 3),
       mode: mode,
-      supportsOneGiBPages: profile.supports(.oneGiBPages)
+      supportsOneGiBPages: profile.supports(.oneGiBPages),
+      supportsPAT: profile.cpuid(leaf: 1).edx & (1 << 16) != 0
     )
   }
 }
@@ -73,6 +79,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     let alignmentCheck: Bool
     let isImplicitSupervisorAccess: Bool
     let supportsOneGiBPages: Bool
+    let supportsPAT: Bool
     let generation: UInt64
   }
 
@@ -170,6 +177,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       alignmentCheck: context.rflags.contains(.alignmentCheck),
       isImplicitSupervisorAccess: context.isImplicitSupervisorAccess,
       supportsOneGiBPages: context.supportsOneGiBPages,
+      supportsPAT: context.supportsPAT,
       generation: generation
     )
     let recentIndex = recentEntryIndex(access)
@@ -284,6 +292,11 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       let isLeaf = level == 3 || huge
       let pageSize: UInt64 = huge ? (level == 1 ? 1 << 30 : 1 << 21) : 1 << 12
       if isLeaf {
+        // Intel's physical 4-level implementations all support PAT (§5.9.2).
+        // An IA32e/PAT-absent virtual profile is therefore not a qualified Intel
+        // hardware combination; conservatively reject its unsupported PAT index.
+        try validatePATEntry(entry, large: huge, linearAddress: linearAddress,
+          access: access, context: context)
         let rawAddressField = entry & physicalAddressMask & ~0xfff
         let permittedPATBit: UInt64 = huge ? 1 << 12 : 0
         guard rawAddressField & (pageSize - 1) & ~permittedPATBit == 0 else {
@@ -365,6 +378,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       let isLeaf = level == 1 || huge
       let pageSize: UInt64 = huge ? 1 << 21 : 1 << 12
       if isLeaf {
+        try validatePATEntry(entry, large: huge, linearAddress: linearAddress,
+          access: access, context: context)
         let rawAddressField = entry & physicalAddressMask & ~0xfff
         let permittedPATBit: UInt64 = huge ? 1 << 12 : 0
         guard rawAddressField & (pageSize - 1) & ~permittedPATBit == 0 else {
@@ -424,6 +439,10 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     if largePage, directory & 0x003f_e000 != 0 {
       throw pageFault(linearAddress, access, context, protection: true, reserved: true)
     }
+    if largePage {
+      try validatePATEntry(UInt64(directory), large: true, linearAddress: linearAddress,
+        access: access, context: context)
+    }
     if directory & (1 << 5) == 0 {
       directory |= 1 << 5
       try writeUInt32(directory, at: directoryAddress, physicalMemory: physicalMemory)
@@ -450,6 +469,11 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       at: entryAddress, physicalMemory: physicalMemory, linearAddress: linearAddress,
       access: access, context: context)
     guard entry & 1 != 0 else { throw pageFault(linearAddress, access, context, protection: false) }
+    // SDM §5.3: with CR4.PSE=0 no bits are reserved in 32-bit paging.
+    if context.control.cr4 & (1 << 4) != 0 {
+      try validatePATEntry(UInt64(entry), large: false, linearAddress: linearAddress,
+        access: access, context: context)
+    }
     user = user && entry & (1 << 2) != 0
     writable = writable && entry & (1 << 1) != 0
     try enforcePermissions(
@@ -469,6 +493,18 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       linearAddress: linearAddress,
       physicalAddress: UInt64(entry & 0xffff_f000) | (linearAddress & 0xfff), pageSize: 1 << 12,
       userAccessible: user, writable: writable, executable: true)
+  }
+
+  private func validatePATEntry(
+    _ entry: UInt64, large: Bool, linearAddress: UInt64,
+    access: DoryX86MemoryAccessKind, context: DoryX86PagingContext
+  ) throws {
+    // SDM 092 Vol. 3A §§5.3/5.4.2: unsupported PAT is reserved in a
+    // present leaf: bit 7 for 4KiB, bit 12 for a large page. Nonleaf bit 7
+    // is PS, and nonleaf bit 12 is a physical address bit, not a PAT index.
+    if !context.supportsPAT, entry & (large ? 1 << 12 : 1 << 7) != 0 {
+      throw pageFault(linearAddress, access, context, protection: true, reserved: true)
+    }
   }
 
   private func enforcePermissions(
@@ -646,7 +682,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
     let supervisorContext = DoryX86PagingContext(
       control: context.control, rflags: context.rflags, currentPrivilegeLevel: 0,
       mode: context.mode, isImplicitSupervisorAccess: true,
-      supportsOneGiBPages: context.supportsOneGiBPages
+      supportsOneGiBPages: context.supportsOneGiBPages,
+      supportsPAT: context.supportsPAT
     )
     return try readLinear(
       at: address, byteCount: byteCount, access: .read, allowShortRead: false,
@@ -660,7 +697,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
     .init(physicalMemory: physicalMemory, pagingUnit: pagingUnit,
       context: .init(control: context.control, rflags: context.rflags,
         currentPrivilegeLevel: 0, mode: context.mode, isImplicitSupervisorAccess: true,
-        supportsOneGiBPages: context.supportsOneGiBPages))
+        supportsOneGiBPages: context.supportsOneGiBPages,
+        supportsPAT: context.supportsPAT))
   }
 
   public func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
