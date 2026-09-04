@@ -711,18 +711,6 @@ public final class DorydService: NSObject, DorydControl {
             return
         }
         machineControl(machineID, action: "start", reply: reply) { manager, id in
-            if manager.configuredLaunchPolicy == .perWorkspaceAuthority,
-               manager.status(id: id)?.runtimeIdentity.mode != .resolvedPlan {
-                guard let productionPlanningController else {
-                    throw MachineManagerError.persistence(
-                        "production planning controller is not configured"
-                    )
-                }
-                _ = try manager.resolveAndPublishProductionPlan(
-                    id: id,
-                    controller: productionPlanningController
-                )
-            }
             return try manager.start(id: id, operationID: parsedOperationID)
         }
     }

@@ -1928,6 +1928,7 @@ public final class MachineManager: @unchecked Sendable {
             try recoverInterruptedSnapshotRestores()
             try recoverInterruptedSnapshotCreations()
             try recoverInterruptedCreationOperations()
+            try recoverInterruptedProductionStarts()
         }
         catch {
             managerStateLock.withLock { resolvedLaunchInfrastructureReady = false }
@@ -3125,6 +3126,8 @@ public final class MachineManager: @unchecked Sendable {
             operationID,
             action: "start"
         )
+        if launchPolicy == .perWorkspaceAuthority,
+           let replay = try productionStartReplay(id: id, operationID: durableOperationID) { return replay }
         try requireNoActivePlanningMutation(id: id)
         lock.lock()
         guard let startEntry = machines[id] else {
@@ -3173,14 +3176,204 @@ public final class MachineManager: @unchecked Sendable {
                 requestedOperationID: durableOperationID
             )
         }
-        try refreshResolvedAdmissionForStartIfNeeded(id: id)
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
         defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
+        if launchPolicy == .perWorkspaceAuthority {
+            return try resumeProductionStartRoot(beginProductionStartRoot(id: id, operationID: durableOperationID))
+        }
         return try startImplementation(
             id: id,
             journalLifecycle: true,
             requestedOperationID: durableOperationID
         )
+    }
+
+    private func beginProductionStartRoot(id: String, operationID: UUID) throws -> MachineLifecycleJournalContext {
+        guard let entry = lock.withLock({ machines[id] }),
+              [.created, .stopped, .failed].contains(entry.state),
+              productionAdmissionComponentsSnapshot().controller != nil else {
+            throw MachineManagerError.persistence("start requires stopped production source authority")
+        }
+        try validateProductionStartPreflight(entry)
+        let source = try lifecycleCondition(machine: entry.configuration, state: entry.state,
+                                            runtimeIdentity: entry.runtimeIdentity)
+        guard let configurationDigest = source.configurationAuthority?.legacyConfigurationSHA256,
+              source.runtime?.policy == .requireResolvedPlan else {
+            throw MachineManagerError.persistence("start requires resolved-policy workspace migration")
+        }
+        return try beginLifecycleOperation(operationID: operationID, kind: .starting, source: source,
+            target: .init(workspaceID: id, state: .running, definitionRevision: source.definitionRevision,
+                configurationAuthority: source.configurationAuthority,
+                plannedRuntime: .init(configurationSHA256: configurationDigest,
+                    virtualHardwareABIVersion: entry.runtimeIdentity.virtualHardwareABIVersion)),
+            targetResourceID: nil, readiness: true)
+    }
+
+    private func validateProductionStartPreflight(_ entry: MachineEntry) throws {
+        let id = entry.configuration.id
+        let prepared = try prepareMachineStart(id: id, authority: .resolvedPlan)
+        guard let definition = prepared.definition,
+              let definitionData = prepared.canonicalDefinitionData else {
+            throw MachineManagerError.persistence("start source has no exact definition")
+        }
+        try DoryDaemonVirtualMachinePlanningCoordinator.validateProductDefinition(definition)
+        if let plan = entry.runtimeIdentity.resolvedPlan {
+            guard let sourceData = prepared.authoritativeLegacyData,
+                  plan.validate().isEmpty,
+                  plan.definitionRevision == definition.lifecycle.revision,
+                  plan.definitionSHA256 == Self.sha256(data: definitionData),
+                  plan.persistence == (try DoryResolvedMachinePersistence(
+                    stateDirectory: configuration.stateDirectory, machineID: id)) else {
+                throw MachineManagerError.persistence("start source plan is stale or belongs to another workspace")
+            }
+            // A stopped guest may have written its own mutable disk. Source ownership remains
+            // exact; fresh launch-grade content evidence belongs to the subsequent replan.
+            try validateSnapshotRestoreSourceOwnership(entry, sourceData: sourceData)
+        }
+    }
+
+    private func productionStartContext(id: String, operationID: UUID) throws -> MachineLifecycleJournalContext {
+        if let current = activeLifecycleOperation(machineID: id) {
+            guard current.operation.operationID == operationID else {
+                throw MachineManagerError.persistence("start is blocked by another lifecycle operation")
+            }
+            return current
+        }
+        guard let store = lifecycleJournalStore else { throw MachineManagerError.persistence("start journal is unavailable") }
+        let workspaceLock = try EngineStateDirectoryLock(stateDirectory: store.root,
+                                                        lockFileName: ".mutation.\(id).lock")
+        let lease = try store.acquire(operationID, holdingMutationLock: workspaceLock)
+        let operation = try lease.readWorkspaceLifecycleOperation()
+        guard operation.kind == .starting, operation.target.plannedRuntime != nil,
+              operation.source.workspaceID == id, operation.target.workspaceID == id else {
+            throw MachineManagerError.persistence("start UUID belongs to another operation")
+        }
+        let context = MachineLifecycleJournalContext(operation: operation, lease: lease, workspaceLock: workspaceLock)
+        managerStateLock.withLock { activeLifecycleOperations[id] = context }
+        lock.withLock {
+            machines[id]?.activeOperationID = operationID
+            machines[id]?.activeOperationKind = .starting
+            machines[id]?.activeOperationPhase = .planned
+        }
+        return context
+    }
+
+    private func productionStartReplay(id: String, operationID: UUID) throws -> DoryMachineStatus? {
+        guard let store = lifecycleJournalStore else { throw MachineManagerError.persistence("start journal is unavailable") }
+        let record: DoryOperationRecord
+        do { record = try store.read(operationID) }
+        catch DoryOperationJournalError.operationNotFound { return nil }
+        let savedStateStart: Bool = try {
+            guard record.plan.kind == .workspaceRestore else { return false }
+            let lease = try store.acquire(operationID)
+            return try lease.readWorkspaceLifecycleOperation().targetResourceID
+                == DoryWorkspaceLifecycleOperation.savedStateResourceID
+        }()
+        guard (record.plan.kind == .workspaceStart || savedStateStart),
+              record.plan.source.id == id, record.plan.target.id == id else {
+            throw MachineManagerError.persistence("start UUID belongs to another request")
+        }
+        guard record.state.status != .failed else {
+            throw MachineManagerError.persistence("start operation failed; use a new caller operation")
+        }
+        if record.state.status == .completed {
+            guard let current = status(id: id) else { throw MachineManagerError.unknownMachine(id) }
+            return current
+        }
+        if let current = activeLifecycleOperation(machineID: id), current.operation.operationID == operationID,
+           lock.withLock({ machines[id]?.process?.isRunning == true }) {
+            return status(id: id)
+        }
+        return try resumeProductionStartRoot(productionStartContext(id: id, operationID: operationID))
+    }
+
+    private func validateProductionStartSource(_ context: MachineLifecycleJournalContext) throws {
+        let operation = context.operation
+        let id = operation.source.workspaceID
+        guard operation.kind == .starting, operation.target.plannedRuntime != nil,
+              let entry = lock.withLock({ machines[id] }) else {
+            throw MachineManagerError.persistence("start planning has no caller root")
+        }
+        let current = try lifecycleCondition(machine: entry.configuration, state: operation.source.state,
+                                            runtimeIdentity: entry.runtimeIdentity)
+        guard current.configurationAuthority == operation.source.configurationAuthority,
+              current.definitionRevision == operation.source.definitionRevision,
+              current.runtime?.policy == .requireResolvedPlan,
+              entry.runtimeIdentity.virtualHardwareABIVersion == operation.target.plannedRuntime?.virtualHardwareABIVersion else {
+            throw MachineManagerError.persistence("start source definition changed after the request")
+        }
+    }
+
+    private func validateProductionStartPlan(_ context: MachineLifecycleJournalContext) throws -> DoryResolvedMachinePlan {
+        try validateProductionStartSource(context)
+        let id = context.machineID
+        guard let plan = try currentDurableRuntimeIdentity(id: id).resolvedPlan,
+              let store = managerStateLock.withLock({ resolvedLaunchPlanStore }),
+              try store.read(id: id) == plan else {
+            throw MachineManagerError.persistence("start plan has no exact durable runtime identity")
+        }
+        try context.lease.publishStartPlanCheckpoint(plan)
+        return plan
+    }
+
+    private func resumeProductionStartRoot(_ context: MachineLifecycleJournalContext) throws -> DoryMachineStatus {
+        let id = context.machineID
+        do {
+            try validateProductionStartSource(context)
+            if let entry = lock.withLock({ machines[id] }), entry.process?.isRunning == true {
+                guard entry.state == .running,
+                      entry.handoff?.ready.operationID == context.operation.operationID.uuidString.lowercased(),
+                      try context.lease.startPlanCheckpoint() == entry.runtimeIdentity.resolvedPlan else {
+                    throw MachineManagerError.persistence("start recovery found a different helper generation")
+                }
+                try validateLiveMachineBeforeQuiescence(entry)
+                guard completeCommittedLifecycle(context, diagnostic: "start readiness journal requires recovery") else {
+                    throw MachineLifecycleJournalCompletionPending()
+                }
+                return status(id: id)!
+            }
+            guard try !liveResolvedHelperExists(machineID: id) else {
+                throw MachineManagerError.persistence("start has an unauthenticated helper; its admission remains reserved")
+            }
+            lock.withLock {
+                if let state = machines[id]?.state, state == .recovering || state == .failed {
+                    machines[id]?.state = context.operation.source.state == .created ? .created : .stopped
+                }
+                machines[id]?.activeOperationID = context.operation.operationID
+                machines[id]?.activeOperationKind = .starting
+            }
+            try advanceLifecycle(context, through: .staging)
+#if DEBUG
+            try injectLifecycleFault(.startBeforePlanning)
+#endif
+            try refreshResolvedAdmissionForStartIfNeeded(id: id, operationID: context.operation.operationID)
+            _ = try validateProductionStartPlan(context)
+#if DEBUG
+            try injectLifecycleFault(.startAfterPlanning)
+#endif
+            try advanceLifecycle(context)
+            return try startImplementation(id: id, journalLifecycle: false,
+                                           requestedOperationID: context.operation.operationID)
+        } catch {
+            if activeLifecycleOperation(machineID: id) === context {
+                retainConfigurationUpdateForRecovery(context)
+            }
+            throw error
+        }
+    }
+
+    private func recoverInterruptedProductionStarts() throws {
+        guard let store = lifecycleJournalStore else { return }
+        for record in try store.list() where record.plan.kind == .workspaceStart
+            && record.state.status != .completed && record.state.status != .failed {
+            let operation: DoryWorkspaceLifecycleOperation = try {
+                let lease = try store.acquire(record.plan.id)
+                return try lease.readWorkspaceLifecycleOperation()
+            }()
+            guard operation.target.plannedRuntime != nil else { continue }
+            let id = operation.source.workspaceID
+            _ = try resumeProductionStartRoot(productionStartContext(id: id, operationID: operation.operationID))
+        }
     }
 
     private static func lifecycleOperationID(
@@ -3787,13 +3980,18 @@ public final class MachineManager: @unchecked Sendable {
         return lease
     }
 
-    private func refreshResolvedAdmissionForStartIfNeeded(id: String) throws {
+    private func refreshResolvedAdmissionForStartIfNeeded(id: String, operationID: UUID) throws {
         let components = productionAdmissionComponentsSnapshot()
         guard launchPolicy == .perWorkspaceAuthority,
               let controller = components.controller,
-              let ledger = components.ledger else { return }
+              let ledger = components.ledger else {
+            throw MachineManagerError.persistence("start planning authority is unavailable")
+        }
         let identity = try currentDurableRuntimeIdentity(id: id)
-        guard identity.mode == .resolvedPlan, let plan = identity.resolvedPlan else { return }
+        guard identity.mode == .resolvedPlan, let plan = identity.resolvedPlan else {
+            _ = try resolveAndPublishProductionPlan(id: id, operationID: operationID, controller: controller)
+            return
+        }
         var lease = try exactResourceAdmissionLease(for: plan, ledger: ledger)
         if lease.state != .stopped, status(id: id)?.state != .running,
            try liveResolvedHelperExists(machineID: id) {
@@ -3841,7 +4039,7 @@ public final class MachineManager: @unchecked Sendable {
                 "resource admission did not settle to stopped before replanning"
             )
         }
-        _ = try resolveAndPublishProductionPlan(id: id, controller: controller)
+        _ = try resolveAndPublishProductionPlan(id: id, operationID: operationID, controller: controller)
     }
 
     private func reconcileResourceAdmissionsAfterDaemonRestart() throws {
@@ -6301,7 +6499,7 @@ public final class MachineManager: @unchecked Sendable {
         )
         do {
             try advanceLifecycle(lifecycle)
-            try refreshResolvedAdmissionForStartIfNeeded(id: id)
+            try refreshResolvedAdmissionForStartIfNeeded(id: id, operationID: lifecycle.operation.operationID)
             lock.lock()
             guard var current = machines[id],
                   current.configuration == machine,
@@ -20361,7 +20559,8 @@ public final class MachineManager: @unchecked Sendable {
                     && active.operation.desktopUpdateSpecificationDigest == nil
                     && active.operation.snapshotRestoreSpecificationDigest == nil
                     && active.operation.snapshotSpecificationDigest == nil
-                    && active.operation.creationSpecificationDigest == nil) {
+                    && active.operation.creationSpecificationDigest == nil
+                    && !(active.operation.kind == .starting && active.operation.target.plannedRuntime != nil)) {
                 activePlanningMutationIDs.remove(machine.id)
                 return "machine \(machine.id) already has an active lifecycle mutation"
             }
@@ -20436,7 +20635,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         if let unfinished = try unfinishedPersistedLifecycleOperation(machineID: machine.id) {
             guard unfinished.plan.id == operationID,
-                  [.workspaceUpdate, .workspaceRestore, .workspaceSnapshot, .workspaceProvision, .workspaceClone].contains(unfinished.plan.kind) else {
+                  [.workspaceUpdate, .workspaceRestore, .workspaceSnapshot, .workspaceProvision, .workspaceClone, .workspaceStart].contains(unfinished.plan.kind) else {
                 throw MachineManagerError.persistence("machine lifecycle operation requires recovery before planning")
             }
             if updateParent == nil {
@@ -20445,7 +20644,9 @@ public final class MachineManager: @unchecked Sendable {
                     operation: try lease.readWorkspaceLifecycleOperation(), lease: lease,
                     workspaceLock: workspaceLock
                 )
-                if parent.operation.snapshotSpecificationDigest != nil {
+                if parent.operation.kind == .starting, parent.operation.target.plannedRuntime != nil {
+                    try validateProductionStartSource(parent)
+                } else if parent.operation.snapshotSpecificationDigest != nil {
                     try validateSnapshotCreationSource(DoryMachineSnapshotCreationJournal.read(from: parent.lease))
                 } else if parent.operation.creationSpecificationDigest != nil {
                     _ = try validateCreationPublication(parent)
@@ -20471,7 +20672,9 @@ public final class MachineManager: @unchecked Sendable {
             }
         }
         if let updateParent {
-            if updateParent.operation.snapshotSpecificationDigest != nil {
+            if updateParent.operation.kind == .starting, updateParent.operation.target.plannedRuntime != nil {
+                try validateProductionStartSource(updateParent)
+            } else if updateParent.operation.snapshotSpecificationDigest != nil {
                 try validateSnapshotCreationSource(DoryMachineSnapshotCreationJournal.read(from: updateParent.lease))
             } else if updateParent.operation.creationSpecificationDigest != nil {
                 _ = try validatedCreationPlanningContext(id: machine.id, operationID: operationID)
@@ -20584,7 +20787,9 @@ public final class MachineManager: @unchecked Sendable {
                     try self.completePlanningRuntimeIdentity(machineID: machine.id)
                 }
                 if let parent {
-                    if parent.operation.snapshotSpecificationDigest != nil {
+                    if parent.operation.kind == .starting, parent.operation.target.plannedRuntime != nil {
+                        _ = try self.validateProductionStartPlan(parent)
+                    } else if parent.operation.snapshotSpecificationDigest != nil {
                         let request = try DoryMachineSnapshotCreationJournal.read(from: parent.lease)
                         let plan = try self.validateSnapshotCreationPlan(parent, request: request)
                         try parent.lease.publishSnapshotCreationCheckpoint(plan, at: .plan)
@@ -21506,6 +21711,20 @@ public final class MachineManager: @unchecked Sendable {
               context.operation.kind == .starting || context.operation.kind == .restarting else {
             return
         }
+        if context.operation.target.plannedRuntime != nil {
+            do {
+                guard let entry = lock.withLock({ machines[id] }),
+                      entry.state == .running || (entry.state == .starting && entry.readinessAcceptedPendingPublication),
+                      entry.process?.isRunning == true,
+                      entry.handoff?.ready.operationID == context.operation.operationID.uuidString.lowercased(),
+                      try context.lease.startPlanCheckpoint() == entry.activeResolvedPlan else {
+                    throw MachineManagerError.persistence("start readiness differs from its exact plan checkpoint")
+                }
+            } catch {
+                retainConfigurationUpdateForRecovery(context)
+                return
+            }
+        }
         _ = completeCommittedLifecycle(
             context,
             diagnostic: "running machine has an unfinished readiness journal"
@@ -21781,6 +22000,10 @@ public final class MachineManager: @unchecked Sendable {
                             "interrupted start preparation authority changed; recovery failed closed"
                     }
                 case .starting:
+                    if operation.target.plannedRuntime != nil {
+                        diagnostics[id] = "interrupted start awaits authenticated runtime and planning recovery"
+                        continue
+                    }
                     try failRecoveredLifecycle(lease, rolledBack: true)
                     diagnostics[id] = "interrupted start was recovered as stopped"
                 case .restarting:
@@ -23326,6 +23549,8 @@ enum MachineLifecycleFaultPoint: Sendable, Equatable {
     case desktopAfterQualification
     case desktopAfterRollbackPublication
     case startAfterPreparation
+    case startBeforePlanning
+    case startAfterPlanning
     case restartBeforeStop
     case configurationUpdateBeforeStop
     case configurationUpdateAfterMetadata

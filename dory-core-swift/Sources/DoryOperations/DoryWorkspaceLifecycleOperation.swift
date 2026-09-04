@@ -707,6 +707,13 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         if Self.requiresRuntimeSource(kind), source.runtime == nil, !detachedSnapshotClone {
             add(.invalidCondition, "source")
         }
+        let startsWorkspace = kind == .starting && target.plannedRuntime?.isValid == true
+            && target.runtime == nil && source.runtime?.policy == .requireResolvedPlan
+            && target.plannedRuntime?.configurationSHA256 == source.configurationAuthority?.legacyConfigurationSHA256
+            && target.plannedRuntime?.virtualHardwareABIVersion == source.runtime?.virtualHardwareABIVersion
+            && target.configurationAuthority == source.configurationAuthority
+            && target.definitionRevision == source.definitionRevision
+            && [.created, .stopped, .failed].contains(source.state) && target.state == .running
         let plansTargetRuntime = kind == .updating && configurationUpdateSpecificationDigest != nil
             && target.plannedRuntime != nil && source.runtime?.policy == .requireResolvedPlan
             && target.plannedRuntime?.virtualHardwareABIVersion == source.runtime?.virtualHardwareABIVersion
@@ -766,18 +773,18 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
             || (desktopUpdateSpecificationDigest != nil && !updatesDesktop) {
             add(.invalidCondition, "desktopUpdate")
         }
-        if source.plannedRuntime != nil || (target.plannedRuntime != nil && !plansTargetRuntime && !restoresSnapshot && !snapshotsWorkspace) {
+        if source.plannedRuntime != nil || (target.plannedRuntime != nil && !plansTargetRuntime && !restoresSnapshot && !snapshotsWorkspace && !startsWorkspace) {
             add(.invalidCondition, "plannedRuntime")
         }
         if Self.requiresRuntimeTarget(kind), target.runtime == nil, !plansTargetRuntime, !updatesDesktop,
-           !restoresSnapshot, !createsWorkspace, !snapshotsWorkspace {
+           !restoresSnapshot, !createsWorkspace, !snapshotsWorkspace, !startsWorkspace {
             add(.invalidCondition, "target")
         }
-        if Self.requiresUnchangedRuntimePlan(kind), !snapshotsWorkspace,
+        if Self.requiresUnchangedRuntimePlan(kind), !snapshotsWorkspace, !startsWorkspace,
            !Self.hasSameRuntimePlan(source.runtime, target.runtime) {
             add(.invalidCondition, "target.runtime")
         }
-        if kind == .starting {
+        if kind == .starting, !startsWorkspace {
             if target.runtime?.authorizationState != .resolvedPlan
                 && target.runtime?.authorizationState != .legacyCompatibility {
                 add(.invalidCondition, "target.runtime.authorizationState")
@@ -798,7 +805,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
             add(.invalidCondition, "target.runtime.authorizationState")
         }
         if source.runtime?.policy != target.runtime?.policy, !plansTargetRuntime, !updatesDesktop,
-           !restoresSnapshot, !createsWorkspace, !snapshotsWorkspace,
+           !restoresSnapshot, !createsWorkspace, !snapshotsWorkspace, !startsWorkspace,
            kind != .importing, kind != .provisioning, kind != .resolving {
             add(.invalidCondition, "target.runtime.policy")
         }

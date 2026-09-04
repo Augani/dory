@@ -4,6 +4,36 @@ import Testing
 
 @Suite("Workspace lifecycle operation contract")
 struct DoryWorkspaceLifecycleOperationTests {
+    @Test("future start runtime binds the unchanged definition before admission is renewed")
+    func plannedStartRequiresExactUnchangedDefinition() throws {
+        var operation = makeOperation()
+        operation.target.runtime = nil
+        operation.target.plannedRuntime = .init(
+            configurationSHA256: try #require(operation.source.configurationAuthority?.legacyConfigurationSHA256),
+            virtualHardwareABIVersion: 1)
+        #expect(operation.validate().isEmpty)
+        #expect(try JSONDecoder().decode(DoryWorkspaceLifecycleOperation.self,
+            from: JSONEncoder().encode(operation)) == operation)
+        var invalid = operation
+        invalid.target.definitionRevision = 4
+        #expect(!invalid.validate().isEmpty)
+        invalid = operation
+        invalid.target.configurationAuthority?.canonicalDefinitionSHA256 = String(repeating: "f", count: 64)
+        #expect(!invalid.validate().isEmpty)
+        invalid = operation
+        invalid.target.plannedRuntime?.virtualHardwareABIVersion = 2
+        #expect(!invalid.validate().isEmpty)
+        invalid = operation
+        invalid.source.state = .running
+        #expect(!invalid.validate().isEmpty)
+        invalid = operation
+        invalid.target.runtime = operation.source.runtime
+        #expect(!invalid.validate().isEmpty)
+        invalid = operation
+        invalid.readinessGates = []
+        #expect(!invalid.validate().isEmpty)
+    }
+
     @Test("a compound target requirement cannot authorize start or replace source runtime authority")
     func plannedRuntimeIsOnlyACompoundPostcondition() throws {
         var operation = makeOperation()
