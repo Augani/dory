@@ -605,7 +605,9 @@ public struct DoryX86Interpreter: Sendable {
       case .waitForCoprocessor:
         break
       case .initializeFloatingPoint:
-        state.floatingPoint.x87 = .init(repeating: .x87Zero(), count: 8)
+        // Intel SDM Vol. 2A FINIT/FNINIT preserves the physical data registers
+        // (including their MMX aliases) while marking every tag empty. The x87
+        // instruction/data pointers and last opcode are not yet modeled here.
         state.floatingPoint.x87ControlWord = 0x037F
         state.floatingPoint.x87StatusWord = 0
         state.floatingPoint.x87TagWord = 0xFFFF
@@ -799,6 +801,8 @@ public struct DoryX86Interpreter: Sendable {
           )
         }
       case .clearX87Exceptions:
+        // FNCLEX clears exception flags, SF, ES and B. TOP remains unchanged;
+        // condition codes are architecturally undefined and are retained here.
         state.floatingPoint.x87StatusWord &= 0x7F00
       case .storeX87StatusWord(let destination):
         try write(
