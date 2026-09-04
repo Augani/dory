@@ -1,0 +1,171 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-source-verification",
+  "policy": "SHA256 every manifest entry; tracked bytes reconstructed from baseCommit plus exact retained overlays. Passing-run tracked sources independently match their stated commits. Generated FFI inputs verified separately, not misrepresented as committed source.",
+  "runs": [
+    {
+      "run": 8,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "manifestFiles": 657,
+      "overlayFiles": 35,
+      "matchingBasePlusOverlayTrackedInputs": 651,
+      "ignoredGeneratedInputs": [
+        {
+          "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+          "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab",
+          "bytes": 122168
+        },
+        {
+          "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+          "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f",
+          "bytes": 65
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+          "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a",
+          "bytes": 788
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+          "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8",
+          "bytes": 44979
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+          "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553",
+          "bytes": 132
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+          "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0",
+          "bytes": 139230072
+        }
+      ],
+      "note": "These six generated/ignored FFI inputs are absent from Git and source overlays. Their exact hashes match the still-present verification checkout; their bytes are not retained in this evidence batch. Rebuild the FFI artifact through the repository workflow before reproducing the package gate."
+    },
+    {
+      "run": 9,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "manifestFiles": 657,
+      "overlayFiles": 35,
+      "candidateSourceCommit": "2efa54ad42122f33092d0102d2775de42c7eb8ce",
+      "matchingBasePlusOverlayTrackedInputs": 651,
+      "ignoredGeneratedInputs": [
+        {
+          "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+          "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab",
+          "bytes": 122168
+        },
+        {
+          "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+          "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f",
+          "bytes": 65
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+          "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a",
+          "bytes": 788
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+          "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8",
+          "bytes": 44979
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+          "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553",
+          "bytes": 132
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+          "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0",
+          "bytes": 139230072
+        }
+      ],
+      "note": "These six generated/ignored FFI inputs are absent from Git and source overlays. Their exact hashes match the still-present verification checkout; their bytes are not retained in this evidence batch. Rebuild the FFI artifact through the repository workflow before reproducing the package gate.",
+      "matchingCommittedTrackedInputs": 651
+    },
+    {
+      "run": 10,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "manifestFiles": 660,
+      "overlayFiles": 39,
+      "matchingBasePlusOverlayTrackedInputs": 654,
+      "ignoredGeneratedInputs": [
+        {
+          "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+          "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab",
+          "bytes": 122168
+        },
+        {
+          "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+          "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f",
+          "bytes": 65
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+          "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a",
+          "bytes": 788
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+          "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8",
+          "bytes": 44979
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+          "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553",
+          "bytes": 132
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+          "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0",
+          "bytes": 139230072
+        }
+      ],
+      "note": "These six generated/ignored FFI inputs are absent from Git and source overlays. Their exact hashes match the still-present verification checkout; their bytes are not retained in this evidence batch. Rebuild the FFI artifact through the repository workflow before reproducing the package gate."
+    },
+    {
+      "run": 11,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "manifestFiles": 660,
+      "overlayFiles": 39,
+      "candidateSourceCommit": "9ad4913eb6606e313d512194474ce1c56fc7f2ca",
+      "matchingBasePlusOverlayTrackedInputs": 654,
+      "ignoredGeneratedInputs": [
+        {
+          "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+          "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab",
+          "bytes": 122168
+        },
+        {
+          "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+          "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f",
+          "bytes": 65
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+          "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a",
+          "bytes": 788
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+          "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8",
+          "bytes": 44979
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+          "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553",
+          "bytes": 132
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+          "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0",
+          "bytes": 139230072
+        }
+      ],
+      "note": "These six generated/ignored FFI inputs are absent from Git and source overlays. Their exact hashes match the still-present verification checkout; their bytes are not retained in this evidence batch. Rebuild the FFI artifact through the repository workflow before reproducing the package gate.",
+      "matchingCommittedTrackedInputs": 654
+    }
+  ]
+}

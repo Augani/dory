@@ -1,0 +1,24 @@
+{
+  "architecture": "x86_64",
+  "builderSHA256": "a375735a0a7c68f84223f07516c6539a2c445d51e1e4a70e5ac93b02939935cc",
+  "format": "newc; sorted names; uid/gid/mtime zero; sequential inodes; 512-byte padded; uncompressed",
+  "initSHA256": "2fff09875bd5de4d30622d582aaac09eb23e2eef90b1c9591b163cbfcadf7f5d",
+  "kernelFilename": "x86_64-vmlinux",
+  "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+  "kind": "p02-minimal-userspace-build",
+  "members": {
+    "usr/bin/busybox": "01a989eb4d1d04b0d146c790ac536abd88f374ec74a2e110c58910b840d42045",
+    "usr/lib/ld-musl-x86_64.so.1": "38d022ce7425ff105ccfb53598f606e6e5f5f0a34bfbc793d65e6f34c9d72806"
+  },
+  "outputBytes": 1482752,
+  "outputFilename": "x86_64-p02-minimal-userspace-v2.cpio",
+  "outputSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+  "qualification": "archive integrity and deterministic construction only; guest has not executed",
+  "recipeSHA256": "52b01dc00c935064e09bc006955aa27e5a8895a8a660fc16dbe4376fa289bbb6",
+  "runUUIDSource": "exactly one canonical lowercase dory.pvh_run_id= value in /proc/cmdline",
+  "schemaVersion": 1,
+  "sourceArtifactID": "alpine-virt-3.24.1-x86_64",
+  "sourceArtifactSHA256": "e73a6241bd5f3c5c2d4d38c02cc52c378c0415a7c888bd292066bf36e0f41a39",
+  "sourceFilename": "x86_64-initramfs-virt",
+  "sourceSHA256": "4caf09640385525632f0a54dfeabd08b5bf5ceeb2b7d63e888fb858b7b3fa006"
+}

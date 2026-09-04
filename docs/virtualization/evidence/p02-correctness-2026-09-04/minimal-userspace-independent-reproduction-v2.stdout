@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "virtualization-fixture-preparation",
+  "cacheDirectory": "/tmp/dory-p02-minimal-userspace-reproduction-v2",
+  "qualification": "input integrity only; no guest boot or workload qualification",
+  "artifacts": [
+    {
+      "id": "alpine-virt-3.24.1-x86_64",
+      "filename": "alpine-virt-3.24.1-x86_64.iso",
+      "sha256": "e73a6241bd5f3c5c2d4d38c02cc52c378c0415a7c888bd292066bf36e0f41a39",
+      "bytes": 69206016,
+      "action": "verified-cache",
+      "extractions": [
+        {
+          "filename": "x86_64-initramfs-virt",
+          "sha256": "4caf09640385525632f0a54dfeabd08b5bf5ceeb2b7d63e888fb858b7b3fa006",
+          "bytes": 9828707,
+          "action": "verified-cache"
+        },
+        {
+          "filename": "x86_64-vmlinuz-virt",
+          "sha256": "1e6bf9027720c75c3ed0d79171f21b5791ee40ca9795d07c7c6e04dc5ea2ae90",
+          "bytes": 12575744,
+          "action": "verified-cache"
+        },
+        {
+          "filename": "x86_64-vmlinux",
+          "sha256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+          "bytes": 39274268,
+          "action": "verified-cache"
+        }
+      ]
+    }
+  ],
+  "diagnosticInitramfs": {
+    "filename": "x86_64-p02-minimal-userspace-v2.cpio",
+    "sha256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "bytes": 1482752,
+    "manifestFilename": "x86_64-p02-minimal-userspace-v2.cpio.manifest.json",
+    "manifestSHA256": "40ac2213c954c43249ac1dc200182ea5546720f35c05614170874eceab6e7b79",
+    "qualification": "archive integrity and deterministic construction only; guest has not executed"
+  }
+}

@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "virtualization-fixture-preparation",
+  "cacheDirectory": "/tmp/dory-p02-guest-fixtures",
+  "qualification": "input integrity only; no guest boot or workload qualification",
+  "artifacts": [
+    {
+      "id": "alpine-virt-3.23.5-x86_64",
+      "filename": "alpine-virt-3.23.5-x86_64.iso",
+      "sha256": "06df31436dc9ada6330a3d2ee561a70143569e9d1896627c2138c0c9fb4c9a76",
+      "bytes": 71303168,
+      "action": "verified-cache",
+      "extractions": [
+        {
+          "filename": "alpine-3.23.5-x86_64-vmlinuz",
+          "sha256": "a49cf19ae5fa6470b215da782c47aed10c6d395414386b687df772946095241f",
+          "bytes": 12571648,
+          "action": "verified-cache"
+        },
+        {
+          "filename": "alpine-3.23.5-x86_64-vmlinux",
+          "sha256": "ae0dcbf0d699293a29e8c55e4b319e8fe093aa07a18e1902beb41c3e0243c405",
+          "bytes": 39274336,
+          "action": "verified-cache"
+        },
+        {
+          "filename": "alpine-3.23.5-x86_64-initramfs",
+          "sha256": "91fe673fa5e630af6dd94ebeebafabdcfa58b55ffcfd87b86b4f34b886e23624",
+          "bytes": 9562856,
+          "action": "verified-cache"
+        },
+        {
+          "filename": "x86_64-System.map-6.18.36",
+          "sha256": "757089956b5ff578a61933a71ba400952ac883853caa2f6d6f8e406328926df5",
+          "bytes": 6392230,
+          "action": "verified-cache"
+        }
+      ]
+    }
+  ]
+}

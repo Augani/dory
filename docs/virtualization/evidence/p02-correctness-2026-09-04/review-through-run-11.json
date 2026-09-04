@@ -1,0 +1,796 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-correctness-review",
+  "status": "in-progress",
+  "phaseComplete": false,
+  "releaseQualified": false,
+  "sourceCommit": "9ad4913eb6606e313d512194474ce1c56fc7f2ca",
+  "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+  "coverage": "Append-only continuation through run 11; pre-FS/GS-fix source and boot probes. Runs 12 and later are outside this record.",
+  "previousReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-7.json",
+    "sha256": "bac92960ce91dbf9363085a3ffeee6fc999d9b24a610f1f99790172abf51599e"
+  },
+  "verificationCommand": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=1 swift test --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 --jobs 3 --no-parallel --filter 'DoryX86|DoryPC|DoryARM64|PVHBootRunnerTests|ISAInventoryTests'",
+  "commandProvenance": "Exact run-9/run-11 test invocation and run-9 release-build invocation confirmed by the parent runner; failing runs retain raw compiler output and exact source manifests.",
+  "sourcePolicy": "Frozen source/build pair; per-run SHA256 manifests and changed-source overlays relative to baseCommit. Six generated ignored FFI inputs are hash-bound separately and not included in the source overlays.",
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "runs": [
+    {
+      "run": 8,
+      "exitCode": 1,
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-8.log.gz",
+        "sha256": "cda358bc462e9c3fc089beb0975eec015ff32495d505800b231b541db62cc515"
+      },
+      "sourceManifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-8-source-manifest.json.gz",
+        "sha256": "535f11e435921b68e4b0d39f98606f09f12b064f47719da8669920c897d5347c"
+      },
+      "sourceOverlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-8-source-overlay.tar.gz",
+        "sha256": "fd9a05c8618ac57638e24ed146a26cfaa314769030564f02e689ceddce273773"
+      },
+      "testExecution": "not reached; compiler failure",
+      "result": "Canonical-fault test passed a throwing call inside #require without inner try; corrected in run 9."
+    },
+    {
+      "run": 9,
+      "exitCode": 0,
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-9.log.gz",
+        "sha256": "d103e94822947c9631138668dfec15b1f19e260f2acf516ad74f8a502dc89bab"
+      },
+      "sourceManifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-9-source-manifest.json.gz",
+        "sha256": "5e25197e6c1a417ebe83cac4473ad8c7cf261c3c75bf2cfb3df01444a81e05a9"
+      },
+      "sourceOverlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-9-source-overlay.tar.gz",
+        "sha256": "5b38b105c8b474ee8e8bf77b32952a0b99697268928fd6c1c15b611ba34ace65"
+      },
+      "sourceCommit": "2efa54ad42122f33092d0102d2775de42c7eb8ce",
+      "xctest": {
+        "reportedCases": 11,
+        "passed": 10,
+        "skipped": 1,
+        "failures": 0
+      },
+      "swiftTesting": {
+        "passed": 565,
+        "suites": 56,
+        "failures": 0,
+        "elapsedSeconds": 1.574
+      },
+      "buildElapsedSeconds": 9.03,
+      "optionalSkip": "DoryPCLinuxBootTests.testPinnedLinuxReachesUserspaceAndPowersOff: optional DORY_TEST_X86_PVH_KERNEL/INITRD and SHA256 environment inputs absent."
+    },
+    {
+      "run": 10,
+      "exitCode": 1,
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-10.log.gz",
+        "sha256": "52e5dfb9623dc45257c6322eaf685a4685c54cd71f24c2eb0b4977cffdcdc5f4"
+      },
+      "sourceManifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-10-source-manifest.json.gz",
+        "sha256": "e6429f925cc763df3ac321a84d915bf1a92c2785f91f54a02231cd485e069728"
+      },
+      "sourceOverlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-10-source-overlay.tar.gz",
+        "sha256": "da71c474e7b75fe5be1fa4682456aeb3cb0ec2dc0d14638b8235a9b2941fd3be"
+      },
+      "testExecution": "not reached; compiler failure",
+      "result": "Adding vector resources generated top-level resource accessor code, conflicting with @main in main.swift; corrected in run 11."
+    },
+    {
+      "run": 11,
+      "exitCode": 0,
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-11.log.gz",
+        "sha256": "058c2e2fa62b6cc4d2268de314d8ff1314ac3df1882af89bb9beb9a6da7d81c4"
+      },
+      "sourceManifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-11-source-manifest.json.gz",
+        "sha256": "bd077346a89ec29f2c8160fb1189960be961be26f700872bdcff41eb3da02fa5"
+      },
+      "sourceOverlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-11-source-overlay.tar.gz",
+        "sha256": "f3510644f979221a9effcc68645ce7e80ea92cb647cc368d6a029055be67106b"
+      },
+      "sourceCommit": "9ad4913eb6606e313d512194474ce1c56fc7f2ca",
+      "xctest": {
+        "reportedCases": 11,
+        "passed": 10,
+        "skipped": 1,
+        "failures": 0
+      },
+      "swiftTesting": {
+        "passed": 572,
+        "suites": 57,
+        "failures": 0,
+        "elapsedSeconds": 2.175
+      },
+      "buildElapsedSeconds": 5.81,
+      "optionalSkip": "DoryPCLinuxBootTests.testPinnedLinuxReachesUserspaceAndPowersOff: optional DORY_TEST_X86_PVH_KERNEL/INITRD and SHA256 environment inputs absent."
+    }
+  ],
+  "sourceVerification": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-8-11-source-verification.json",
+    "sha256": "065620291ab7bfc814ec014ad5153a4c479f45120b88265e280cdb9f29434327"
+  },
+  "optimizedRunnerBuild": {
+    "sourceRun": 9,
+    "sourceCommit": "2efa54ad42122f33092d0102d2775de42c7eb8ce",
+    "configuration": "release",
+    "exitCode": 0,
+    "buildElapsedSeconds": 56.34,
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift build --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 --jobs 3 -c release --product dory-pc-linux-boot-runner",
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-9-release-runner-build.log.gz",
+      "sha256": "8acf46e0126599a76140c53200cbb9c20c30b9de37d1f03d5d4b9839517cfddf"
+    },
+    "runnerIdentity": {
+      "filename": "dory-p02-runner-2efa54ad4-release",
+      "sha256": "6f69db911783300b7e3deb69718bf302ed811f99fef2db3b14fab5aa8e3cd77b",
+      "bytes": 8796552,
+      "retention": "Generated executable remains checkout-local; source manifest, source overlay and build log are retained here. It is not a release artifact."
+    }
+  },
+  "staticISAInventory": {
+    "corpusID": "dory.p02.isa-corpus.v1",
+    "corpusSHA256": "2729a5d1fa5ef4621541989eb89ecd647877522cec654d1e44ad90367123deec",
+    "corpusVectorCount": 1158,
+    "staticDecodedFormCount": 1081,
+    "rejectedVectorCount": 77,
+    "mismatchedVectorCount": 0,
+    "executedFormCount": 0,
+    "staticBinaryInstructionCount": 0,
+    "qualification": "unmeasured; static decoding does not qualify interpreter, JIT, flags or faults",
+    "sourceRun": 11,
+    "sourceCommit": "9ad4913eb6606e313d512194474ce1c56fc7f2ca",
+    "receipt": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-11-isa-inventory.json.gz",
+      "sha256": "d3827b04f6858e32ed65e2edb3e7d3f0fc5d359684fe58d8efeff915413a5b9d"
+    },
+    "command": "dory-x86-decode-audit --inventory",
+    "commandEvidence": "Executable option verified in the preserved run-11 source; no separate invocation log or elapsed time was captured."
+  },
+  "minimalUserspaceFixture": {
+    "sourceCommit": "b4223debfd0f050e99208ebd0f5e8ecc40f86c85",
+    "sourceFiles": [
+      {
+        "path": "scripts/prepare-virtualization-fixtures.py",
+        "sha256": "a375735a0a7c68f84223f07516c6539a2c445d51e1e4a70e5ac93b02939935cc"
+      },
+      {
+        "path": "scripts/test-prepare-virtualization-fixtures.py",
+        "sha256": "e7fe431877cca3720c2c976d45990e2bc8ca91f1839426fdbc4abe4863fd8661"
+      },
+      {
+        "path": "guest/diagnostics/p02-minimal-userspace/init",
+        "sha256": "2fff09875bd5de4d30622d582aaac09eb23e2eef90b1c9591b163cbfcadf7f5d"
+      },
+      {
+        "path": "guest/diagnostics/p02-minimal-userspace/fixture.json",
+        "sha256": "52b01dc00c935064e09bc006955aa27e5a8895a8a660fc16dbe4376fa289bbb6"
+      },
+      {
+        "path": "guest/diagnostics/p02-minimal-userspace/README.md",
+        "sha256": "4b3e6e7084b6dc9a2749fe12a8839a57590bd4ff9b3fd69378695a72882f1dfd"
+      }
+    ],
+    "catalogCommit": "c98022fbcba14cbeb162932944abf4629d6bc095",
+    "catalogSHA256": "be7e5f9a171f6b487334886eb089fa121aa0f7959cba805381572f1766285ad1",
+    "qualification": "Input integrity, deterministic construction and offline parser/receipt-function tests only. The real VM probes below did not reach an accepted userspace receipt.",
+    "parentTests": {
+      "command": "python3 scripts/test-prepare-virtualization-fixtures.py",
+      "exitCode": 0,
+      "passed": 22,
+      "failures": 0,
+      "skipped": 0,
+      "elapsedSeconds": 0.112,
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-fixture-parent-tests.log.gz",
+        "sha256": "be012962c1651973d92dc9aabcbe48ccb71a40aed8bf5dd6cf40b31adbcce4ba"
+      }
+    },
+    "parentPreparation": {
+      "command": "python3 scripts/prepare-virtualization-fixtures.py --id alpine-virt-3.24.1-x86_64 --cache-directory /tmp/dory-p00-guest-fixtures --verify-only --extract --diagnostic-initramfs",
+      "exitCode": 0,
+      "receipt": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-fixture-parent-preparation.json",
+        "sha256": "cc79e7232a056152bcddcd70f28583dd60e4001f9c7d8fe76ee24fc87304d0f6"
+      }
+    },
+    "buildManifest": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-v2-build-manifest.json",
+      "sha256": "40ac2213c954c43249ac1dc200182ea5546720f35c05614170874eceab6e7b79"
+    },
+    "independentConstruction": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-construction-handoff.json",
+      "sha256": "55a1ecb1e1209776e05e2d6e9059d4526c6a009593699ba67c100753f18cb019"
+    },
+    "independentConstructionRetention": "Original build stdout/stderr and all four recorded reproduction/test command stdout/stderr files are retained in the artifact table under their original filenames. The construction handoff records original cache paths; generated cpio bytes remain reproducible from the pinned recipe rather than being vendored here."
+  },
+  "secondKernelPreparation": {
+    "catalogCommit": "c98022fbcba14cbeb162932944abf4629d6bc095",
+    "catalogSHA256": "be7e5f9a171f6b487334886eb089fa121aa0f7959cba805381572f1766285ad1",
+    "command": "python3 scripts/prepare-virtualization-fixtures.py --id alpine-virt-3.23.5-x86_64 --cache-directory /tmp/dory-p02-guest-fixtures --verify-only --extract",
+    "exitCode": 0,
+    "receipt": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-3.23.5-preparation.json",
+      "sha256": "eba119729097665c0e734beea96f48b31c30c1eceedda2642e8ccb55f4f23416"
+    },
+    "upstreamInputs": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-3.23.5-inputs.json",
+      "sha256": "2cbe61ae0bc4d0018e25279beec30ae68e9862df138bbd638bc2521eb32b3741"
+    },
+    "qualification": "Official archive/extraction SHA256 integrity only; stock initramfs is not the named minimal workload."
+  },
+  "actualKernelProbes": [
+    {
+      "name": "alpine-3.23.5-release-probe-1",
+      "sourceRun": 9,
+      "sourceCommit": "2efa54ad42122f33092d0102d2775de42c7eb8ce",
+      "runnerSHA256": "6f69db911783300b7e3deb69718bf302ed811f99fef2db3b14fab5aa8e3cd77b",
+      "configuration": {
+        "commandLine": "console=ttyS0 earlycon=uart,io,0x3f8,115200 panic=-1 rdinit=/init dory.pvh_run_id=21423f3e-164e-4c97-a2dc-ae33e72f0cee",
+        "diagnostics": "/tmp/dory-p02-alpine-3.23.5-release-probe-1.json",
+        "initrd": "/tmp/dory-p02-guest-fixtures/alpine-3.23.5-x86_64-initramfs",
+        "initrdSHA256": "91fe673fa5e630af6dd94ebeebafabdcfa58b55ffcfd87b86b4f34b886e23624",
+        "kernel": "/tmp/dory-p02-guest-fixtures/alpine-3.23.5-x86_64-vmlinux",
+        "kernelSHA256": "ae0dcbf0d699293a29e8c55e4b319e8fe093aa07a18e1902beb41c3e0243c405",
+        "maximumInstructions": 100000000,
+        "memoryMiB": 512,
+        "runID": "21423f3e-164e-4c97-a2dc-ae33e72f0cee",
+        "tier": "baselineJIT",
+        "wallSeconds": 60,
+        "workloads": [
+          "diagnostic-probe"
+        ]
+      },
+      "exitCode": 1,
+      "result": "guest-reset",
+      "guestReceiptSeen": false,
+      "passed": false,
+      "retiredInstructions": 69333060,
+      "elapsedNanoseconds": 22297862792,
+      "receipt": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-3.23.5-release-probe-1.json",
+        "sha256": "0b0a2e84e310a9aa50cb99d23100095146f8a764ee4e76b616976d1e3a0a27b0"
+      },
+      "summary": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-3.23.5-release-probe-1-summary.json",
+        "sha256": "3e7affef6059f3bf7e80fa0a5de1afe43d3f6d8e9888eb3d5fdf28807fcb5bfa"
+      },
+      "observation": "Kernel NULL-list panic at __list_del_entry_valid_or_report during __rmqueue_pcplist -> mem_init, then guest reset. No named userspace receipt or ACPI poweroff."
+    },
+    {
+      "name": "userspace-baseline-jit-probe-1",
+      "sourceRun": 9,
+      "sourceCommit": "2efa54ad42122f33092d0102d2775de42c7eb8ce",
+      "runnerSHA256": "6f69db911783300b7e3deb69718bf302ed811f99fef2db3b14fab5aa8e3cd77b",
+      "configuration": {
+        "commandLine": "console=ttyS0 earlycon=uart,io,0x3f8,115200 panic=-1 rdinit=/init dory.pvh_run_id=3cb3d468-97cd-4bf4-972f-7cb59eb6e440",
+        "diagnostics": "/tmp/dory-p02-userspace-baseline-jit-probe-1.json",
+        "initrd": "/tmp/dory-p00-guest-fixtures/x86_64-p02-minimal-userspace-v2.cpio",
+        "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+        "kernel": "/tmp/dory-p00-guest-fixtures/x86_64-vmlinux",
+        "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+        "maximumInstructions": 150000000,
+        "memoryMiB": 512,
+        "runID": "3cb3d468-97cd-4bf4-972f-7cb59eb6e440",
+        "tier": "baselineJIT",
+        "wallSeconds": 180,
+        "workloads": [
+          "bootstrap.filesystems",
+          "filesystem.write_read_sync",
+          "memory.allocation_copy",
+          "process.creation_exec_wait",
+          "signal.handler_return",
+          "syscall.identity",
+          "timer.sleep_elapsed"
+        ]
+      },
+      "exitCode": 1,
+      "result": "guest-reset",
+      "guestReceiptSeen": false,
+      "passed": false,
+      "retiredInstructions": 69381804,
+      "elapsedNanoseconds": 20734393375,
+      "receipt": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-1.json",
+        "sha256": "fe74144b8fbc355aab57af33e8fb774eaa0e9cb52a6fc1c370303173d728ea94"
+      },
+      "summary": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-1-summary.json",
+        "sha256": "3a7e208968eb87d54fe925755fedac2e5be69994b10354a405c6d9a107f65fb9"
+      },
+      "observation": "Kernel NULL-list panic at __list_del_entry_valid_or_report during __rmqueue_pcplist -> mem_init, then guest reset. No named userspace receipt or ACPI poweroff."
+    },
+    {
+      "name": "userspace-interpreter-probe-1",
+      "sourceRun": 9,
+      "sourceCommit": "2efa54ad42122f33092d0102d2775de42c7eb8ce",
+      "runnerSHA256": "6f69db911783300b7e3deb69718bf302ed811f99fef2db3b14fab5aa8e3cd77b",
+      "configuration": {
+        "commandLine": "console=ttyS0 earlycon=uart,io,0x3f8,115200 panic=-1 rdinit=/init dory.pvh_run_id=4d5f3332-197f-4351-83f7-ed7fbc6c9ef0",
+        "diagnostics": "/tmp/dory-p02-userspace-interpreter-probe-1.json",
+        "initrd": "/tmp/dory-p00-guest-fixtures/x86_64-p02-minimal-userspace-v2.cpio",
+        "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+        "kernel": "/tmp/dory-p00-guest-fixtures/x86_64-vmlinux",
+        "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+        "maximumInstructions": 150000000,
+        "memoryMiB": 512,
+        "runID": "4d5f3332-197f-4351-83f7-ed7fbc6c9ef0",
+        "tier": "interpreter",
+        "wallSeconds": 180,
+        "workloads": [
+          "bootstrap.filesystems",
+          "filesystem.write_read_sync",
+          "memory.allocation_copy",
+          "process.creation_exec_wait",
+          "signal.handler_return",
+          "syscall.identity",
+          "timer.sleep_elapsed"
+        ]
+      },
+      "exitCode": 124,
+      "result": "wall-budget",
+      "guestReceiptSeen": false,
+      "passed": false,
+      "retiredInstructions": 124749000,
+      "elapsedNanoseconds": 180000149500,
+      "receipt": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-1.json",
+        "sha256": "4ff161b89632e72a26ea7573f5bb7448d6838cee15e7548d4e19d9fd8301864a"
+      },
+      "summary": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-1-summary.json",
+        "sha256": "afce18dba2cd6372edeb36f240106ecd5535f70774a8aff6f93fc2e6078329ef"
+      },
+      "observation": "Wall budget expired at the last completed instruction slice. No named userspace receipt or clean ACPI poweroff; timeout does not establish the baseline-JIT panic also occurs in interpreter mode."
+    }
+  ],
+  "normalizationPolicy": "Only the new construction-handoff copy contains replaced private repository/home prefixes. Each retained artifact records original SHA256, content SHA256, gzip status and exact normalization count. Raw test logs, source manifests, overlays, inventory and probe receipts required no private-path replacement. Existing evidence is untouched.",
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-8.log.gz",
+      "sha256": "cda358bc462e9c3fc089beb0975eec015ff32495d505800b231b541db62cc515",
+      "originalFilename": "dory-p02-correctness-run-8.log",
+      "originalSHA256": "bf5a6dab9de7adca1e4b8bb46ff4d6c091af8b2afb5d76a245d62ebff37ecc09",
+      "originalBytes": 5054,
+      "retainedBytes": 1026,
+      "contentSHA256": "bf5a6dab9de7adca1e4b8bb46ff4d6c091af8b2afb5d76a245d62ebff37ecc09",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "gzip"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-8-source-manifest.json.gz",
+      "sha256": "535f11e435921b68e4b0d39f98606f09f12b064f47719da8669920c897d5347c",
+      "originalFilename": "dory-p02-correctness-manifest-8.json",
+      "originalSHA256": "358518add13a9e3aa0ca26d96b559291e2e93d2b21c42887560a86975035e9b2",
+      "originalBytes": 122299,
+      "retainedBytes": 34696,
+      "contentSHA256": "358518add13a9e3aa0ca26d96b559291e2e93d2b21c42887560a86975035e9b2",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "gzip"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-8-source-overlay.tar.gz",
+      "sha256": "fd9a05c8618ac57638e24ed146a26cfaa314769030564f02e689ceddce273773",
+      "originalFilename": "dory-p02-correctness-overlay-8.tar.gz",
+      "originalSHA256": "fd9a05c8618ac57638e24ed146a26cfaa314769030564f02e689ceddce273773",
+      "originalBytes": 195063,
+      "retainedBytes": 195063,
+      "contentSHA256": "fd9a05c8618ac57638e24ed146a26cfaa314769030564f02e689ceddce273773",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "upstream tar.gz; unchanged"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-9.log.gz",
+      "sha256": "d103e94822947c9631138668dfec15b1f19e260f2acf516ad74f8a502dc89bab",
+      "originalFilename": "dory-p02-correctness-run-9.log",
+      "originalSHA256": "1b29e808bd47bb9fc297796c76ab3ec7471c49536d7f0faa547c6f6be9bebfad",
+      "originalBytes": 114875,
+      "retainedBytes": 17828,
+      "contentSHA256": "1b29e808bd47bb9fc297796c76ab3ec7471c49536d7f0faa547c6f6be9bebfad",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "gzip"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-9-source-manifest.json.gz",
+      "sha256": "5e25197e6c1a417ebe83cac4473ad8c7cf261c3c75bf2cfb3df01444a81e05a9",
+      "originalFilename": "dory-p02-correctness-manifest-9.json",
+      "originalSHA256": "e88f8066b7b203dee1db89d7283f33df8d99b7606e690a9ac294719eda131ff8",
+      "originalBytes": 122299,
+      "retainedBytes": 34693,
+      "contentSHA256": "e88f8066b7b203dee1db89d7283f33df8d99b7606e690a9ac294719eda131ff8",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "gzip"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-9-source-overlay.tar.gz",
+      "sha256": "5b38b105c8b474ee8e8bf77b32952a0b99697268928fd6c1c15b611ba34ace65",
+      "originalFilename": "dory-p02-correctness-overlay-9.tar.gz",
+      "originalSHA256": "5b38b105c8b474ee8e8bf77b32952a0b99697268928fd6c1c15b611ba34ace65",
+      "originalBytes": 195063,
+      "retainedBytes": 195063,
+      "contentSHA256": "5b38b105c8b474ee8e8bf77b32952a0b99697268928fd6c1c15b611ba34ace65",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "upstream tar.gz; unchanged"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-10.log.gz",
+      "sha256": "52e5dfb9623dc45257c6322eaf685a4685c54cd71f24c2eb0b4977cffdcdc5f4",
+      "originalFilename": "dory-p02-correctness-run-10.log",
+      "originalSHA256": "74fc04920b507ee2d1e1b7d9bd8d84d416e26f973e7a6bc7f01978d3b5447a4b",
+      "originalBytes": 1625,
+      "retainedBytes": 568,
+      "contentSHA256": "74fc04920b507ee2d1e1b7d9bd8d84d416e26f973e7a6bc7f01978d3b5447a4b",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "gzip"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-10-source-manifest.json.gz",
+      "sha256": "e6429f925cc763df3ac321a84d915bf1a92c2785f91f54a02231cd485e069728",
+      "originalFilename": "dory-p02-correctness-manifest-10.json",
+      "originalSHA256": "98858344e651b1b83c90296bbe7f67b7281577e60f57b43b8d4de2f1a5661e63",
+      "originalBytes": 123133,
+      "retainedBytes": 34928,
+      "contentSHA256": "98858344e651b1b83c90296bbe7f67b7281577e60f57b43b8d4de2f1a5661e63",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "gzip"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-10-source-overlay.tar.gz",
+      "sha256": "da71c474e7b75fe5be1fa4682456aeb3cb0ec2dc0d14638b8235a9b2941fd3be",
+      "originalFilename": "dory-p02-correctness-overlay-10.tar.gz",
+      "originalSHA256": "da71c474e7b75fe5be1fa4682456aeb3cb0ec2dc0d14638b8235a9b2941fd3be",
+      "originalBytes": 219571,
+      "retainedBytes": 219571,
+      "contentSHA256": "da71c474e7b75fe5be1fa4682456aeb3cb0ec2dc0d14638b8235a9b2941fd3be",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "upstream tar.gz; unchanged"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-11.log.gz",
+      "sha256": "058c2e2fa62b6cc4d2268de314d8ff1314ac3df1882af89bb9beb9a6da7d81c4",
+      "originalFilename": "dory-p02-correctness-run-11.log",
+      "originalSHA256": "c52f315102ccd8e13e6c6d14bfc1b0a5d40b5131a25183b37b2da278f0cbfd08",
+      "originalBytes": 115673,
+      "retainedBytes": 17992,
+      "contentSHA256": "c52f315102ccd8e13e6c6d14bfc1b0a5d40b5131a25183b37b2da278f0cbfd08",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "gzip"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-11-source-manifest.json.gz",
+      "sha256": "bd077346a89ec29f2c8160fb1189960be961be26f700872bdcff41eb3da02fa5",
+      "originalFilename": "dory-p02-correctness-manifest-11.json",
+      "originalSHA256": "d3fe7cfb3e9c1c918fc676502a57912bf0bb57364b038cc71a3876a1f050c739",
+      "originalBytes": 123133,
+      "retainedBytes": 34931,
+      "contentSHA256": "d3fe7cfb3e9c1c918fc676502a57912bf0bb57364b038cc71a3876a1f050c739",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "gzip"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-11-source-overlay.tar.gz",
+      "sha256": "f3510644f979221a9effcc68645ce7e80ea92cb647cc368d6a029055be67106b",
+      "originalFilename": "dory-p02-correctness-overlay-11.tar.gz",
+      "originalSHA256": "f3510644f979221a9effcc68645ce7e80ea92cb647cc368d6a029055be67106b",
+      "originalBytes": 219579,
+      "retainedBytes": 219579,
+      "contentSHA256": "f3510644f979221a9effcc68645ce7e80ea92cb647cc368d6a029055be67106b",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "upstream tar.gz; unchanged"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-9-release-runner-build.log.gz",
+      "sha256": "8acf46e0126599a76140c53200cbb9c20c30b9de37d1f03d5d4b9839517cfddf",
+      "originalFilename": "dory-p02-release-runner-build-9.log",
+      "originalSHA256": "48f5116e1be48f30e9a3517b1967894d72a8c725c7ca4b877ac020e1a9239a8a",
+      "originalBytes": 10622,
+      "retainedBytes": 2054,
+      "contentSHA256": "48f5116e1be48f30e9a3517b1967894d72a8c725c7ca4b877ac020e1a9239a8a",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "gzip"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-11-isa-inventory.json.gz",
+      "sha256": "d3827b04f6858e32ed65e2edb3e7d3f0fc5d359684fe58d8efeff915413a5b9d",
+      "originalFilename": "dory-p02-isa-inventory-run-11.json",
+      "originalSHA256": "5632d852a72dc8dddaf077d7c7577e4c4f69be78f4d9adf7a6b893bf542e9279",
+      "originalBytes": 2521731,
+      "retainedBytes": 33290,
+      "contentSHA256": "5632d852a72dc8dddaf077d7c7577e4c4f69be78f4d9adf7a6b893bf542e9279",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "gzip"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-fixture-parent-tests.log.gz",
+      "sha256": "be012962c1651973d92dc9aabcbe48ccb71a40aed8bf5dd6cf40b31adbcce4ba",
+      "originalFilename": "dory-p02-fixture-tests-parent.log",
+      "originalSHA256": "617401226265422695f6887ffff2d2f9501200af7fb2be3bb642a3c9045ba35f",
+      "originalBytes": 2266,
+      "retainedBytes": 672,
+      "contentSHA256": "617401226265422695f6887ffff2d2f9501200af7fb2be3bb642a3c9045ba35f",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "gzip"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-fixture-parent-preparation.json",
+      "sha256": "cc79e7232a056152bcddcd70f28583dd60e4001f9c7d8fe76ee24fc87304d0f6",
+      "originalFilename": "dory-p02-fixture-preparation-parent.json",
+      "originalSHA256": "cc79e7232a056152bcddcd70f28583dd60e4001f9c7d8fe76ee24fc87304d0f6",
+      "originalBytes": 1850,
+      "retainedBytes": 1850,
+      "contentSHA256": "cc79e7232a056152bcddcd70f28583dd60e4001f9c7d8fe76ee24fc87304d0f6",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-v2-build-manifest.json",
+      "sha256": "40ac2213c954c43249ac1dc200182ea5546720f35c05614170874eceab6e7b79",
+      "originalFilename": "x86_64-p02-minimal-userspace-v2.cpio.manifest.json",
+      "originalSHA256": "40ac2213c954c43249ac1dc200182ea5546720f35c05614170874eceab6e7b79",
+      "originalBytes": 1434,
+      "retainedBytes": 1434,
+      "contentSHA256": "40ac2213c954c43249ac1dc200182ea5546720f35c05614170874eceab6e7b79",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-construction-handoff.json",
+      "sha256": "55a1ecb1e1209776e05e2d6e9059d4526c6a009593699ba67c100753f18cb019",
+      "originalFilename": "dory-p02-minimal-userspace-handoff.json",
+      "originalSHA256": "a1640766ce035483164803c0f577f445e0425e654619aaab005b60e2d31f99e7",
+      "originalBytes": 10363,
+      "retainedBytes": 10183,
+      "contentSHA256": "55a1ecb1e1209776e05e2d6e9059d4526c6a009593699ba67c100753f18cb019",
+      "normalization": "Private repository/home path prefixes replaced with <repository>/<user-home>; all other content preserved.",
+      "normalizedPathOccurrences": 9,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-independent-reproduction-v2.stdout",
+      "sha256": "a4b21721f0df5367c7365230be8b136bb01546ec10ddecb7eeb7a4aa977dcac0",
+      "originalFilename": "dory-p02-minimal-userspace-independent-reproduction-v2.stdout",
+      "originalSHA256": "a4b21721f0df5367c7365230be8b136bb01546ec10ddecb7eeb7a4aa977dcac0",
+      "originalBytes": 1644,
+      "retainedBytes": 1644,
+      "contentSHA256": "a4b21721f0df5367c7365230be8b136bb01546ec10ddecb7eeb7a4aa977dcac0",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-independent-reproduction-v2.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalFilename": "dory-p02-minimal-userspace-independent-reproduction-v2.stderr",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalBytes": 0,
+      "retainedBytes": 0,
+      "contentSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-verified-reuse-v2.stdout",
+      "sha256": "a4b21721f0df5367c7365230be8b136bb01546ec10ddecb7eeb7a4aa977dcac0",
+      "originalFilename": "dory-p02-minimal-userspace-verified-reuse-v2.stdout",
+      "originalSHA256": "a4b21721f0df5367c7365230be8b136bb01546ec10ddecb7eeb7a4aa977dcac0",
+      "originalBytes": 1644,
+      "retainedBytes": 1644,
+      "contentSHA256": "a4b21721f0df5367c7365230be8b136bb01546ec10ddecb7eeb7a4aa977dcac0",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-verified-reuse-v2.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalFilename": "dory-p02-minimal-userspace-verified-reuse-v2.stderr",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalBytes": 0,
+      "retainedBytes": 0,
+      "contentSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-script-tests-v2.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalFilename": "dory-p02-minimal-userspace-script-tests-v2.stdout",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalBytes": 0,
+      "retainedBytes": 0,
+      "contentSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-script-tests-v2.stderr",
+      "sha256": "4ac789a85cec5499edfb39608b7decd9a70bd9c48621ab384aa44d370fa2c6a0",
+      "originalFilename": "dory-p02-minimal-userspace-script-tests-v2.stderr",
+      "originalSHA256": "4ac789a85cec5499edfb39608b7decd9a70bd9c48621ab384aa44d370fa2c6a0",
+      "originalBytes": 2266,
+      "retainedBytes": 2266,
+      "contentSHA256": "4ac789a85cec5499edfb39608b7decd9a70bd9c48621ab384aa44d370fa2c6a0",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-shell-syntax-v2.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalFilename": "dory-p02-minimal-userspace-shell-syntax-v2.stdout",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalBytes": 0,
+      "retainedBytes": 0,
+      "contentSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-shell-syntax-v2.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalFilename": "dory-p02-minimal-userspace-shell-syntax-v2.stderr",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalBytes": 0,
+      "retainedBytes": 0,
+      "contentSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-3.23.5-preparation.json",
+      "sha256": "eba119729097665c0e734beea96f48b31c30c1eceedda2642e8ccb55f4f23416",
+      "originalFilename": "dory-p02-second-kernel-preparation.json",
+      "originalSHA256": "eba119729097665c0e734beea96f48b31c30c1eceedda2642e8ccb55f4f23416",
+      "originalBytes": 1421,
+      "retainedBytes": 1421,
+      "contentSHA256": "eba119729097665c0e734beea96f48b31c30c1eceedda2642e8ccb55f4f23416",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-3.23.5-release-probe-1.json",
+      "sha256": "0b0a2e84e310a9aa50cb99d23100095146f8a764ee4e76b616976d1e3a0a27b0",
+      "originalFilename": "dory-p02-alpine-3.23.5-release-probe-1.json",
+      "originalSHA256": "0b0a2e84e310a9aa50cb99d23100095146f8a764ee4e76b616976d1e3a0a27b0",
+      "originalBytes": 16492,
+      "retainedBytes": 16492,
+      "contentSHA256": "0b0a2e84e310a9aa50cb99d23100095146f8a764ee4e76b616976d1e3a0a27b0",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-3.23.5-release-probe-1-summary.json",
+      "sha256": "3e7affef6059f3bf7e80fa0a5de1afe43d3f6d8e9888eb3d5fdf28807fcb5bfa",
+      "originalFilename": "dory-p02-alpine-3.23.5-release-probe-1.log",
+      "originalSHA256": "3e7affef6059f3bf7e80fa0a5de1afe43d3f6d8e9888eb3d5fdf28807fcb5bfa",
+      "originalBytes": 446,
+      "retainedBytes": 446,
+      "contentSHA256": "3e7affef6059f3bf7e80fa0a5de1afe43d3f6d8e9888eb3d5fdf28807fcb5bfa",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-1.json",
+      "sha256": "fe74144b8fbc355aab57af33e8fb774eaa0e9cb52a6fc1c370303173d728ea94",
+      "originalFilename": "dory-p02-userspace-baseline-jit-probe-1.json",
+      "originalSHA256": "fe74144b8fbc355aab57af33e8fb774eaa0e9cb52a6fc1c370303173d728ea94",
+      "originalBytes": 16632,
+      "retainedBytes": 16632,
+      "contentSHA256": "fe74144b8fbc355aab57af33e8fb774eaa0e9cb52a6fc1c370303173d728ea94",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-1-summary.json",
+      "sha256": "3a7e208968eb87d54fe925755fedac2e5be69994b10354a405c6d9a107f65fb9",
+      "originalFilename": "dory-p02-userspace-baseline-jit-probe-1.log",
+      "originalSHA256": "3a7e208968eb87d54fe925755fedac2e5be69994b10354a405c6d9a107f65fb9",
+      "originalBytes": 446,
+      "retainedBytes": 446,
+      "contentSHA256": "3a7e208968eb87d54fe925755fedac2e5be69994b10354a405c6d9a107f65fb9",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-1.json",
+      "sha256": "4ff161b89632e72a26ea7573f5bb7448d6838cee15e7548d4e19d9fd8301864a",
+      "originalFilename": "dory-p02-userspace-interpreter-probe-1.json",
+      "originalSHA256": "4ff161b89632e72a26ea7573f5bb7448d6838cee15e7548d4e19d9fd8301864a",
+      "originalBytes": 13989,
+      "retainedBytes": 13989,
+      "contentSHA256": "4ff161b89632e72a26ea7573f5bb7448d6838cee15e7548d4e19d9fd8301864a",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-1-summary.json",
+      "sha256": "afce18dba2cd6372edeb36f240106ecd5535f70774a8aff6f93fc2e6078329ef",
+      "originalFilename": "dory-p02-userspace-interpreter-probe-1.log",
+      "originalSHA256": "afce18dba2cd6372edeb36f240106ecd5535f70774a8aff6f93fc2e6078329ef",
+      "originalBytes": 450,
+      "retainedBytes": 450,
+      "contentSHA256": "afce18dba2cd6372edeb36f240106ecd5535f70774a8aff6f93fc2e6078329ef",
+      "normalization": "none; exact bytes after optional gzip decompression",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-original-build-v2.json",
+      "sha256": "5392cc1b25a915b8d9e28607b11bed9ab609634acb4f115b41df0258c4b78a14",
+      "originalFilename": "dory-p02-minimal-userspace-build-v2.json",
+      "originalSHA256": "5392cc1b25a915b8d9e28607b11bed9ab609634acb4f115b41df0258c4b78a14",
+      "originalBytes": 1625,
+      "retainedBytes": 1625,
+      "contentSHA256": "5392cc1b25a915b8d9e28607b11bed9ab609634acb4f115b41df0258c4b78a14",
+      "normalization": "none; exact bytes",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/minimal-userspace-original-build-v2.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalFilename": "dory-p02-minimal-userspace-build-v2.stderr",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalBytes": 0,
+      "retainedBytes": 0,
+      "contentSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalization": "none; exact bytes",
+      "normalizedPathOccurrences": 0,
+      "compression": "none"
+    }
+  ],
+  "limitations": [
+    "This is a partial P02 correctness record, not completion, physical x86 reference, Linux userspace success or product release qualification.",
+    "Both passing unit gates explicitly skipped the optional PVH boot fixture; their case counts cannot be treated as real Linux boot evidence.",
+    "The static inventory has 1158 authored vectors, 1081 decoded forms, 77 expected rejections, zero mismatches and zero executed forms. It is not an ISA denominator or execution-coverage claim.",
+    "The optimized runner build is a diagnostic executable built with Release compiler settings, not a release qualification result.",
+    "Both baseline-JIT real-kernel probes reset before userspace. The minimal interpreter probe exhausted the 180-second wall budget with no accepted workload receipt.",
+    "The minimal fixture uses BusyBox/musl, bounded shell checks and tmpfs; it does not qualify glibc, systemd, durable disk I/O, allocation stress or exhaustive syscall behavior.",
+    "Ignored generated FFI inputs and generated runner binaries are recorded by SHA256 but not vendored into this evidence batch; reproducing package builds requires the repository FFI build workflow and matching toolchain.",
+    "FS/GS lowering corrections and all runs 12+ are deliberately excluded from this historical record."
+  ]
+}
