@@ -9,7 +9,11 @@ import Testing
 /// VBROADCAST family.
 @Suite struct DoryX86VEXTests {
   private let decoder = DoryX86Decoder()
-  private let interpreter = DoryX86Interpreter()
+  // Explicit semantic-test opt-in; this neither changes compatibleV1 nor qualifies XSAVE/AVX.
+  private let interpreter = DoryX86Interpreter(profile: .init(
+    identifier: "test-only.avx-avx2-semantics",
+    features: DoryX86CPUProfile.compatibleV1.features.union([.xsave, .avx, .avx2]),
+    physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000))
 
   private func state(
     rip: UInt64 = 0x1000,
@@ -294,25 +298,29 @@ import Testing
     #expect(ymmBytes(0, in: current) == expected)
   }
 
-  @Test func vbroadcasti128Broadcasts128BitsToBothHalves() throws {
-    // C4 E2 7D 5A C0: VBROADCASTI128 ymm0, xmm0  (map=0F38, pp=66, L=1, vvvv=0)
+  @Test func vbroadcasti128BroadcastsMemory128BitsToBothHalves() throws {
+    // VBROADCASTI128 ymm0, m128 requires a memory source; the register alias is #UD.
+    let encoded: [UInt8] = [0xC4, 0xE2, 0x7D, 0x5A, 0x03]
     let instruction = try decoder.decode(
-      [0xC4, 0xE2, 0x7D, 0x5A, 0xC0], at: 0x1000, mode: .long64)
+      encoded, at: 0x1000, mode: .long64)
     #expect(
       instruction.operation
         == .vexBroadcast(
-          destination: 0, source: .register(0), mode: .packed128, length: .ymm256))
+          destination: 0, source: .memory(.init(base: .rbx, width: .quadword)),
+          mode: .packed128, length: .ymm256))
 
     var current = try state { floatingPoint in
       floatingPoint.ymm[0] = try .init(
         bytes: bytes(0..<16) + Array(repeating: 0xFF, count: 16),
         expectedByteCount: 32)
     }
-    let memory = try DoryX86ByteArrayMemory(
-      baseAddress: 0x1000, bytes: [0xC4, 0xE2, 0x7D, 0x5A, 0xC0])
+    current.registers.rbx = 0x2000
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x3000)
+    try memory.write(at: 0x1000, bytes: encoded)
+    try memory.write(at: 0x2000, bytes: bytes(0..<16))
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
-    // Both halves should be the low 128 bits of the source
+    // Both halves contain the complete 128-bit memory source.
     #expect(fullYmm(0, in: current) == bytes(0..<16) + bytes(0..<16))
   }
 
@@ -344,9 +352,9 @@ import Testing
     #expect(stored == bytes(0..<32))
   }
 
-  // MARK: - BMI1 SHRX (VEX 0F38 F7 with F2 pp)
+  // MARK: - BMI2 encodings remain unsupported even in a synthetic AVX profile.
 
-  @Test func shrx64ShiftsRightWithoutModifyingFlags() throws {
+  @Test func shrx64IsRecognizedButRejectsWithoutChangingState() throws {
     // C4 E2 F3 F7 C0: SHRX rax, rax, rcx
     // C4 E2: R=1,X=1,B=1, map=00010(0F38)
     // F3: W=1, vvvv=~1110=0001=1(rcx), L=0, pp=11(F2) -> SHRX
@@ -368,24 +376,15 @@ import Testing
     var state = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
     // Set some flags to verify they're preserved.
     state.rflags.insert(.carry)
+    let initial = state
     let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0xC4, 0xE2, 0xF3, 0xF7, 0xC0])
     let result = interpreter.step(state: &state, memory: memory, mode: .long64)
-    expectRetired(result)
-    #expect(state.registers.rax == 0x0800_0000_0000_0000)
-    // Flags must be preserved (carry still set).
-    #expect(state.rflags.contains(.carry))
+    #expect(result == .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: 0x1000)))
+    #expect(state == initial)
   }
 
-  @Test func shlx64ShiftsLeftWithoutModifyingFlags() throws {
-    // C4 E2 E1 F7 C0: SHLX rax, rax, rcx
-    // C4 E2: R=1,X=1,B=1, map=00010(0F38)
-    // E1: W=1, vvvv=~1100=0011=1... wait
-    // E1 = 1110 0001: W=1, vvvv=~1100=0011=3... no
-    // E1 = 1110 0001: W=1, vvvv=~1100=0011=3, L=0, pp=01(66) -> SHLX
-    // vvvv=3 means rcx? No, vvvv=3 -> register 3 = rbx
-    // Let me use vvvv=1 (rcx): byte2 = W=1, vvvv=~0001=1110, L=0, pp=01
-    // = 1111 0001 = F1
+  @Test func shlx64IsRecognizedButRejectsWithoutChangingState() throws {
     // C4 E2 F1 F7 C0: SHLX rax, rax, rcx
     let instruction = try decoder.decode(
       [0xC4, 0xE2, 0xF1, 0xF7, 0xC0], at: 0x1000, mode: .long64)
@@ -402,18 +401,15 @@ import Testing
     registers.rax = 0x0000_0000_0000_000F
     registers.rcx = 4
     var state = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
+    let initial = state
     let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0xC4, 0xE2, 0xF1, 0xF7, 0xC0])
     let result = interpreter.step(state: &state, memory: memory, mode: .long64)
-    expectRetired(result)
-    #expect(state.registers.rax == 0x0000_0000_0000_00F0)
+    #expect(result == .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: 0x1000)))
+    #expect(state == initial)
   }
 
-  @Test func sarx64ArithmeticShiftsRightWithoutModifyingFlags() throws {
-    // C4 E2 F3 F7 C2: SARX rax, rdx, rcx
-    // F3: W=1, vvvv=~1110=0001=1(rcx), L=0, pp=11(F2) -> SARX? No, F2=pp=3 -> SHRX
-    // SARX uses pp=2 (F3): byte2 = W=1, vvvv=~0001=1110, L=0, pp=10
-    // = 1111 0010 = F2
+  @Test func sarx64IsRecognizedButRejectsWithoutChangingState() throws {
     // C4 E2 F2 F7 C2: SARX rax, rdx, rcx
     let instruction = try decoder.decode(
       [0xC4, 0xE2, 0xF2, 0xF7, 0xC2], at: 0x1000, mode: .long64)
@@ -430,11 +426,11 @@ import Testing
     registers.rdx = 0x8000_0000_0000_0000
     registers.rcx = 4
     var state = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
+    let initial = state
     let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0xC4, 0xE2, 0xF2, 0xF7, 0xC2])
     let result = interpreter.step(state: &state, memory: memory, mode: .long64)
-    expectRetired(result)
-    // Arithmetic right shift of sign bit -> fills with 1s
-    #expect(state.registers.rax == 0xF800_0000_0000_0000)
+    #expect(result == .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: 0x1000)))
+    #expect(state == initial)
   }
 }

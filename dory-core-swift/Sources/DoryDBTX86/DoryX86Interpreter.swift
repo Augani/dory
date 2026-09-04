@@ -158,6 +158,10 @@ public struct DoryX86Interpreter: Sendable {
       return .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: originalRIP))
     }
 
+    guard DoryX86InstructionFeaturePolicy.permits(instruction, profile: profile) else {
+      return invalidOpcode(at: originalRIP)
+    }
+
     do {
       var nextRIP = instruction.nextInstructionAddress & instructionPointerMask(mode)
       switch instruction.operation {

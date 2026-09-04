@@ -1,0 +1,131 @@
+/// Feature/encoding admission for the optional instructions currently decoded by Dory.
+/// This is not full ISA qualification or the CR0/CR4/XCR0 execution-state checks. In
+/// particular, synthetic test profiles opting into AVX do not qualify XSAVE or AVX state.
+/// Instruction requirements: Intel SDM Vol. 2, the named instruction's CPUID Feature Flag
+/// and VEX encoding tables: https://cdrdv2-public.intel.com/774492/325383-sdm-vol-2abcd.pdf
+enum DoryX86InstructionFeaturePolicy {
+  static func permits(_ instruction: DoryX86DecodedInstruction, profile: DoryX86CPUProfile) -> Bool {
+    switch instruction.operation {
+    case .flaglessShift, .vexMaskMove:
+      // SHLX/SHRX/SARX are BMI2, not AVX. No BMI2 feature or AVX-512 mask state is
+      // modeled; decoding an encoding must not invent support or alias K registers to XMM.
+      return false
+    default: break
+    }
+    if let vex = instruction.prefixes.vex {
+      guard profile.supports(.avx) else { return false }
+      return permitsVEX(instruction, vex: vex, profile: profile)
+    }
+    switch instruction.operation {
+    case .duplicateVectorScalar:
+      return profile.supports(.sse3)
+    case .shufflePackedBytes, .alignPackedBytes:
+      return profile.supports(.ssse3)
+    case .testPackedBits, .extendPackedDwordToQword, .extendPackedByteToQword,
+      .comparePackedQwords, .insertPackedQword:
+      return profile.supports(.sse41)
+    case .packedCompareStringIndex:
+      return profile.supports(.sse42)
+    case .memoryFence(.store):
+      return profile.supports(.sse)
+    case .memoryFence(.load), .memoryFence(.full):
+      return profile.supports(.sse2)
+    default:
+      return true
+    }
+  }
+
+  private static func permitsVEX(
+    _ instruction: DoryX86DecodedInstruction, vex: DoryX86VEXPrefix, profile: DoryX86CPUProfile
+  ) -> Bool {
+    // The decoder currently accepts VEX only at byte zero. Read only the opcode and ModRM
+    // positions established by that prefix, never search immediates/displacements for an opcode.
+    let opcodeIndex: Int
+    switch instruction.bytes.first {
+    case 0xC5: opcodeIndex = 2
+    case 0xC4: opcodeIndex = 3
+    default: return false
+    }
+    guard instruction.bytes.indices.contains(opcodeIndex) else { return false }
+    let opcode = instruction.bytes[opcodeIndex]
+    let modRM = instruction.bytes.indices.contains(opcodeIndex + 1) ? instruction.bytes[opcodeIndex + 1] : nil
+    let registerOnly = modRM.map { $0 & 0xC0 == 0xC0 } ?? false
+    let integerWidthPermitted = !vex.largeVector || profile.supports(.avx2)
+
+    switch instruction.operation {
+    case .vexZeroUpper:
+      // VZEROALL (L=1) is currently misdecoded as VZEROUPPER; do not retire that alias.
+      return vex.map == 1 && opcode == 0x77 && vex.pp == 0 && !vex.largeVector && vex.vvvv == 0
+    case .vexMoveVector:
+      guard vex.map == 1 && vex.vvvv == 0 else { return false }
+      switch opcode {
+      case 0x10, 0x11:
+        // Only VMOVUPS is represented faithfully here: scalar forms and VMOVUPD
+        // currently alias a full vector move or acquire the wrong alignment requirement.
+        return vex.pp == 0
+      case 0x28, 0x29: return vex.pp == 0 || vex.pp == 1 // VMOVAPS/VMOVAPD
+      case 0x6F, 0x7F: return vex.pp == 1 // VMOVDQA, including YMM, requires AVX only.
+      default: return false
+      }
+    case .vexVectorBinary:
+      guard vex.map == 1 else { return false }
+      switch opcode {
+      case 0x54...0x57:
+        return vex.pp == 0 || vex.pp == 1 // VAND*/VOR*/VXOR*: AVX at both widths.
+      case 0xDB, 0xDF, 0xEB, 0xEF:
+        return vex.pp == 1 && integerWidthPermitted // VPAND*/VPOR/VPXOR: AVX2 for YMM.
+      default: return false
+      }
+    case .vexComparePackedIntegers, .vexComparePackedBytes:
+      return vex.map == 1 && [0x64, 0x65, 0x66, 0x74, 0x76].contains(opcode)
+        && vex.pp == 1 && integerWidthPermitted
+    case .vexAddPackedIntegers:
+      return vex.map == 1 && [0xFC, 0xFD, 0xFE].contains(opcode)
+        && vex.pp == 1 && integerWidthPermitted
+    case .vexPackedMinMax:
+      return vex.map == 1 && [0xDA, 0xEA].contains(opcode) && vex.pp == 1 && integerWidthPermitted
+    case .vexSubPackedIntegers:
+      // The D8/D9 saturating forms have the represented byte/word widths. FA/FB
+      // currently misdecode the dword/qword forms as byte/word, so remain rejected.
+      return vex.map == 1 && [0xD8, 0xD9].contains(opcode) && vex.pp == 1 && integerWidthPermitted
+    case .vexVectorFloatingBinary:
+      return vex.map == 1 && [0x58, 0x59, 0x5C, 0x5D, 0x5E, 0x5F].contains(opcode)
+        && (vex.pp <= 1 || !vex.largeVector)
+    case .vexCompareScalar:
+      return vex.map == 1 && [0x2E, 0x2F].contains(opcode) && vex.pp <= 1
+        && !vex.largeVector && vex.vvvv == 0
+    case .vexScalarConvert:
+      return vex.map == 1 && opcode == 0x5A && (vex.pp == 2 || vex.pp == 3) && !vex.largeVector
+    case .vexUnpackLow, .vexUnpackHigh:
+      return vex.map == 1 && [0x14, 0x15].contains(opcode) && vex.pp <= 1
+    case .vexStoreMXCSR:
+      return vex.map == 1 && opcode == 0xAE && vex.pp == 0 && !vex.largeVector
+        && vex.vvvv == 0 && modRM != nil && !registerOnly
+    case .vexMoveIntegerToVector, .vexMoveVectorToInteger:
+      return vex.map == 1 && [0x6E, 0x7E].contains(opcode) && vex.pp == 1
+        && !vex.largeVector && vex.vvvv == 0
+    case .vexMoveMaskToInteger:
+      return vex.map == 1 && opcode == 0xD7 && vex.pp == 1 && vex.vvvv == 0
+        && registerOnly && integerWidthPermitted
+    case .vexShufflePackedBytes:
+      return vex.map == 2 && opcode == 0x00 && vex.pp == 1 && integerWidthPermitted
+    case .vexBroadcast(_, let source, _, _):
+      guard vex.map == 2 && vex.pp == 1 && !vex.w && vex.vvvv == 0 else { return false }
+      let memorySource: Bool
+      switch source { case .memory: memorySource = true; case .register: memorySource = false }
+      switch opcode {
+      case 0x18: return memorySource || profile.supports(.avx2) // VBROADCASTSS
+      case 0x19: return vex.largeVector && (memorySource || profile.supports(.avx2)) // VBROADCASTSD
+      case 0x1A: return vex.largeVector && memorySource // VBROADCASTF128: AVX
+      case 0x5A: return vex.largeVector && memorySource && profile.supports(.avx2) // VBROADCASTI128
+      default: return false // VPBROADCASTB currently aliases a dword broadcast.
+      }
+    case .vexLoadMXCSR, .vexConvertScalarToInteger, .vexVariableShift, .vexVectorShiftImmediate:
+      // Reserved MXCSR values, reversed scalar-conversion/shift operands, and the wrong
+      // opcode map for per-lane variable shifts have not been corrected or qualified.
+      return false
+    default:
+      return false // Every additional VEX operation needs an explicit admission decision.
+    }
+  }
+}
