@@ -33,6 +33,23 @@ public enum DoryX86MemoryError: Error, Codable, Sendable, Hashable, CustomString
   }
 }
 
+/// Invalid configuration and recoverable host mapping failures are distinct from guest faults.
+public enum DoryX86MemoryAllocationError: Error, Sendable, Equatable {
+  case invalidByteCount(Int)
+  case addressOverflow(baseAddress: UInt64, byteCount: Int)
+  case mappingFailed(byteCount: Int, errorNumber: Int32)
+}
+
+func validateDoryX86RAMAllocation(baseAddress: UInt64, byteCount: Int) throws {
+  guard byteCount > 0 else {
+    throw DoryX86MemoryAllocationError.invalidByteCount(byteCount)
+  }
+  guard !baseAddress.addingReportingOverflow(UInt64(byteCount)).overflow else {
+    throw DoryX86MemoryAllocationError.addressOverflow(
+      baseAddress: baseAddress, byteCount: byteCount)
+  }
+}
+
 public protocol DoryX86Memory: AnyObject, Sendable {
   /// Returns up to `maximumCount` bytes without faulting merely because a shorter instruction ends
   /// at the mapping boundary. The decoder decides whether the returned instruction is truncated.
@@ -175,28 +192,45 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, @unchecked Sendab
   public let byteCount: Int
   private let lock = NSLock()
   private var storage: [UInt8]
-  private var codePageGenerations: [UInt64]
+  // Reserve generation metadata only for pages actually written, independently of virtual size.
+  private var codePageGenerations: [Int: UInt64] = [:]
+
+  var trackedCodePageCount: Int { lock.withLock { codePageGenerations.count } }
 
   public init(baseAddress: UInt64 = 0, bytes: [UInt8]) {
     self.baseAddress = baseAddress
     byteCount = bytes.count
     storage = bytes
-    codePageGenerations = .init(repeating: 0, count: (bytes.count + 4_095) / 4_096)
   }
 
   public convenience init(baseAddress: UInt64 = 0, byteCount: Int) {
     self.init(baseAddress: baseAddress, bytes: .init(repeating: 0, count: byteCount))
   }
 
+  /// Validates caller-controlled sizes before Swift allocation. Swift Array allocation exhaustion
+  /// remains process-fatal; production large RAM should use the throwing mmap initializer.
+  public convenience init(baseAddress: UInt64 = 0, validatingByteCount byteCount: Int) throws {
+    try validateDoryX86RAMAllocation(baseAddress: baseAddress, byteCount: byteCount)
+    self.init(baseAddress: baseAddress, byteCount: byteCount)
+  }
+
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    guard maximumCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: maximumCount)
+    }
     guard maximumCount > 0 else { return [] }
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: 1, access: .instructionFetch)
-    return Array(storage[offset..<min(storage.count, offset + maximumCount)])
+    let available = min(
+      maximumCount, storage.count - offset, Int(clamping: UInt64.max - address))
+    return Array(storage[offset..<(offset + available)])
   }
 
   public func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
     guard byteCount > 0 else { return [] }
     lock.lock()
     defer { lock.unlock() }
@@ -241,6 +275,9 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, @unchecked Sendab
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
     guard byteCount > 0 else { return }
     lock.lock()
     defer { lock.unlock() }
@@ -286,12 +323,15 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, @unchecked Sendab
     guard byteCount > 0 else { return }
     let first = offset / 4_096
     let last = (offset + byteCount - 1) / 4_096
-    for page in first...last { codePageGenerations[page] &+= 1 }
+    for page in first...last { codePageGenerations[page, default: 0] &+= 1 }
   }
 }
 
 extension DoryX86ByteArrayMemory: DoryX86CodeGenerationMemory {
   public func codeGeneration(at address: UInt64, byteCount: Int) throws -> UInt64? {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
     guard byteCount > 0 else { return nil }
     return try lock.withLock {
       let offset = try checkedOffset(
@@ -305,7 +345,7 @@ extension DoryX86ByteArrayMemory: DoryX86CodeGenerationMemory {
       for page in first...last {
         token ^= UInt64(page)
         token &*= 0x0000_0100_0000_01b3
-        token ^= codePageGenerations[page]
+        token ^= codePageGenerations[page, default: 0]
         token &*= 0x0000_0100_0000_01b3
       }
       token ^= UInt64(offset & 0xfff)
@@ -324,12 +364,13 @@ extension DoryX86ByteArrayMemory: DoryX86RestartableScalarMemory {
 
 extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
   public func bulkCopyRAMSpan(at address: UInt64, maximumByteCount: Int) -> Int? {
-    guard maximumByteCount > 0 else { return 0 }
+    guard maximumByteCount > 0 else { return maximumByteCount == 0 ? 0 : nil }
     return lock.withLock {
       guard address >= baseAddress else { return nil }
       let distance = address - baseAddress
       guard distance < UInt64(storage.count), distance <= UInt64(Int.max) else { return nil }
-      return min(maximumByteCount, storage.count - Int(distance))
+      return min(
+        maximumByteCount, storage.count - Int(distance), Int(clamping: UInt64.max - address))
     }
   }
 
@@ -338,7 +379,7 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
     to destinationAddress: UInt64,
     maximumByteCount: Int
   ) throws -> Int? {
-    guard maximumByteCount > 0 else { return 0 }
+    guard maximumByteCount > 0 else { return maximumByteCount == 0 ? 0 : nil }
     return lock.withLock {
       guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
       let sourceDistance = sourceAddress - baseAddress
@@ -353,7 +394,10 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
         storage.count - sourceOffset,
         storage.count - destinationOffset
       )
-      guard count > 0 else { return nil }
+      guard count > 0,
+        !sourceAddress.addingReportingOverflow(UInt64(count)).overflow,
+        !destinationAddress.addingReportingOverflow(UInt64(count)).overflow
+      else { return nil }
       guard sourceOffset + count <= destinationOffset || destinationOffset + count <= sourceOffset
       else { return nil }
       let bytes = Array(storage[sourceOffset..<(sourceOffset + count)])
@@ -389,6 +433,7 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
       )
       guard elementCount > 0 else { return nil }
       let byteCount = elementCount * elementByteCount
+      guard !sourceAddress.addingReportingOverflow(UInt64(byteCount)).overflow else { return nil }
       guard
         sourceOffset + byteCount <= destinationOffset
           || destinationOffset + byteCount <= sourceOffset
@@ -397,7 +442,10 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
         UInt64(byteCount))
       guard !destinationOverflow else { return nil }
       let destinationRange = destinationAddress..<destinationEnd
-      guard !excludingDestinationRanges.contains(where: { $0.overlaps(destinationRange) }) else {
+      guard
+        !excludingDestinationRanges.contains(where: { !$0.isEmpty && $0.overlaps(destinationRange) }
+        )
+      else {
         return nil
       }
       let bytes = Array(storage[sourceOffset..<(sourceOffset + byteCount)])
@@ -426,6 +474,9 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
       )
       guard elementCount > 0 else { return nil }
       let byteCount = elementCount * pattern.count
+      guard !destinationAddress.addingReportingOverflow(UInt64(byteCount)).overflow else {
+        return nil
+      }
       storage.withUnsafeMutableBytes { destination in
         pattern.withUnsafeBytes { source in
           guard let destinationBase = destination.baseAddress,

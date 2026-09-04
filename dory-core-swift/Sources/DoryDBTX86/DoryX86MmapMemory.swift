@@ -8,20 +8,35 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
   public let byteCount: Int
   private let lock = NSLock()
   private let pointer: UnsafeMutableRawPointer
-  private var codePageGenerations: [UInt64]
+  // Reserve generation metadata only for pages actually written, independently of virtual size.
+  private var codePageGenerations: [Int: UInt64] = [:]
 
-  public init(baseAddress: UInt64 = 0, byteCount: Int) {
-    self.baseAddress = baseAddress
-    self.byteCount = byteCount
+  var trackedCodePageCount: Int { lock.withLock { codePageGenerations.count } }
+
+  /// Compatibility convenience for existing fixed-size fixtures. Caller-controlled allocations
+  /// must use the throwing initializer so invalid configuration and mmap failures are recoverable.
+  public convenience init(baseAddress: UInt64 = 0, byteCount: Int) {
+    do {
+      try self.init(baseAddress: baseAddress, validatingByteCount: byteCount)
+    } catch {
+      preconditionFailure("Unable to allocate x86 RAM: \(error)")
+    }
+  }
+
+  public init(baseAddress: UInt64 = 0, validatingByteCount byteCount: Int) throws {
+    try validateDoryX86RAMAllocation(baseAddress: baseAddress, byteCount: byteCount)
     let mapped = mmap(
       nil, byteCount,
       PROT_READ | PROT_WRITE,
       MAP_ANONYMOUS | MAP_PRIVATE,
       -1, 0
     )
-    precondition(mapped != MAP_FAILED, "mmap failed for \(byteCount) bytes")
-    pointer = mapped!
-    codePageGenerations = .init(repeating: 0, count: (byteCount + 4_095) / 4_096)
+    guard mapped != MAP_FAILED, let mapped else {
+      throw DoryX86MemoryAllocationError.mappingFailed(byteCount: byteCount, errorNumber: errno)
+    }
+    self.baseAddress = baseAddress
+    self.byteCount = byteCount
+    pointer = mapped
   }
 
   deinit {
@@ -54,10 +69,13 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
     guard byteCount > 0 else { return }
     let first = offset / 4_096
     let last = (offset + byteCount - 1) / 4_096
-    for page in first...last { codePageGenerations[page] &+= 1 }
+    for page in first...last { codePageGenerations[page, default: 0] &+= 1 }
   }
 
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    guard maximumCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: maximumCount)
+    }
     guard maximumCount > 0 else { return [] }
     lock.lock()
     defer { lock.unlock() }
@@ -70,6 +88,9 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
   }
 
   public func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
     guard byteCount > 0 else { return [] }
     lock.lock()
     defer { lock.unlock() }
@@ -89,7 +110,9 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .read)
     var value: UInt64 = 0
     for index in 0..<byteCount {
-      value |= UInt64(pointer.advanced(by: offset + index).assumingMemoryBound(to: UInt8.self).pointee) << UInt64(index * 8)
+      value |=
+        UInt64(pointer.advanced(by: offset + index).assumingMemoryBound(to: UInt8.self).pointee)
+        << UInt64(index * 8)
     }
     return value
   }
@@ -124,6 +147,9 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
     guard byteCount > 0 else { return }
     lock.lock()
     defer { lock.unlock() }
@@ -138,16 +164,20 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
   // MARK: - DoryX86CodeGenerationMemory
 
   public func codeGeneration(at address: UInt64, byteCount: Int) throws -> UInt64? {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
     guard byteCount > 0 else { return nil }
     return try lock.withLock {
-      let offset = try checkedOffset(address: address, byteCount: byteCount, access: .instructionFetch)
+      let offset = try checkedOffset(
+        address: address, byteCount: byteCount, access: .instructionFetch)
       let first = offset / 4_096
       let last = (offset + byteCount - 1) / 4_096
       var token: UInt64 = 0xcbf2_9ce4_8422_2325
       for page in first...last {
         token ^= UInt64(page)
         token &*= 0x0000_0100_0000_01b3
-        token ^= codePageGenerations[page]
+        token ^= codePageGenerations[page, default: 0]
         token &*= 0x0000_0100_0000_01b3
       }
       token ^= UInt64(offset & 0xfff)
@@ -160,7 +190,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
   // MARK: - DoryX86BulkMemory
 
   public func bulkCopyRAMSpan(at address: UInt64, maximumByteCount: Int) -> Int? {
-    guard maximumByteCount > 0 else { return 0 }
+    guard maximumByteCount > 0 else { return maximumByteCount == 0 ? 0 : nil }
     return lock.withLock {
       guard address >= baseAddress else { return nil }
       let distance = address - baseAddress
@@ -174,8 +204,8 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
     to destinationAddress: UInt64,
     maximumByteCount: Int
   ) throws -> Int? {
-    guard maximumByteCount > 0 else { return 0 }
-    return try lock.withLock {
+    guard maximumByteCount > 0 else { return maximumByteCount == 0 ? 0 : nil }
+    return lock.withLock {
       guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
       let sourceDistance = sourceAddress - baseAddress
       let destinationDistance = destinationAddress - baseAddress
@@ -206,7 +236,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
     guard elementByteCount > 0, maximumElementCount > 0,
       maximumElementCount <= Int.max / elementByteCount
     else { return maximumElementCount == 0 ? 0 : nil }
-    return try lock.withLock {
+    return lock.withLock {
       guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
       let sourceDistance = sourceAddress - baseAddress
       let destinationDistance = destinationAddress - baseAddress
@@ -221,15 +251,16 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
         (byteCount - destinationOffset) / elementByteCount)
       guard elementCount > 0 else { return nil }
       let totalBytes = elementCount * elementByteCount
-      guard sourceOffset + totalBytes <= destinationOffset
-        || destinationOffset + totalBytes <= sourceOffset
+      guard
+        sourceOffset + totalBytes <= destinationOffset
+          || destinationOffset + totalBytes <= sourceOffset
       else { return nil }
-      let destStart = UInt64(destinationOffset)
-      let destEnd = destStart + UInt64(totalBytes)
-      for range in excludingDestinationRanges {
-        let rangeStart = range.lowerBound - baseAddress
-        let rangeEnd = range.upperBound - baseAddress
-        if rangeStart < destEnd && rangeEnd > destStart { return nil }
+      let destinationRange = destinationAddress..<(destinationAddress + UInt64(totalBytes))
+      guard
+        !excludingDestinationRanges.contains(where: { !$0.isEmpty && $0.overlaps(destinationRange) }
+        )
+      else {
+        return nil
       }
       pointer.advanced(by: destinationOffset).copyMemory(
         from: pointer.advanced(by: sourceOffset), byteCount: totalBytes)
@@ -243,8 +274,10 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
     pattern: [UInt8],
     maximumElementCount: Int
   ) throws -> Int? {
-    guard !pattern.isEmpty, maximumElementCount > 0 else { return 0 }
-    return try lock.withLock {
+    guard !pattern.isEmpty, maximumElementCount > 0 else {
+      return maximumElementCount == 0 ? 0 : nil
+    }
+    return lock.withLock {
       guard destinationAddress >= baseAddress else { return nil }
       let distance = destinationAddress - baseAddress
       guard distance < UInt64(byteCount), distance <= UInt64(Int.max) else { return nil }
