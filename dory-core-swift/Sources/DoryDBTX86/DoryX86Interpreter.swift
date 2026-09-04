@@ -5805,8 +5805,8 @@ public struct DoryX86Interpreter: Sendable {
   ) throws {
     // Explicit RMW operands must fault before invoking the backing memory for
     // noncanonical spans or unusable cached legacy data/stack segments.
-    if !operand.ignoresLegacySegmentBase, state.control.cr0 & 1 != 0,
-      !state.rflags.contains(.virtual8086)
+    let virtual8086 = state.control.efer & (1 << 10) == 0 && state.rflags.contains(.virtual8086)
+    if !operand.ignoresLegacySegmentBase, state.control.cr0 & 1 != 0, !virtual8086
     {
       let segment = segmentState(operand.segment, state: state)
       guard segment.selector & ~UInt16(3) != 0, segment.attributes & 0x90 == 0x90 else {

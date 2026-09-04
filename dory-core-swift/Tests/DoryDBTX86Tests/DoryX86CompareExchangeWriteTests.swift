@@ -124,6 +124,24 @@ import Testing
     }
   }
 
+  @Test func ignoredVMInCompatibilityModeDoesNotMakeANullSegmentUsable() throws {
+    for baseCode in [scalarCode(4), pairCode(false)] {
+      for stack in [false, true] {
+        let code = (stack ? [UInt8(0x36)] : []) + baseCode
+        var state = try self.state(matches: false, mode: .protected32)
+        state.control.efer |= 1 << 10
+        state.rflags.insert(.virtual8086) // Ignored with IA-32e active.
+        if stack { state.ss.selector = 0 } else { state.ds.selector = 0 }
+        let before = state
+        let memory = CompareExchangeMemory(code: code, byteCount: 8)
+        #expect(DoryX86Interpreter().step(state: &state, memory: memory, mode: .protected32)
+          == .exception(.init(kind: stack ? .stackSegment : .generalProtection,
+            vector: stack ? 12 : 13, errorCode: 0, instructionPointer: 0x1000)))
+        #expect(state == before && memory.reads == 0 && memory.writes == 0)
+      }
+    }
+  }
+
   @Test func failedRegisterComparisonPreservesDestinationUpperBitsAndPairAlignmentStaysPrecise() throws {
     let code: [UInt8] = [0x0F, 0xB1, 0xCB] // CMPXCHG EBX,ECX
     var state = try self.state(matches: false)
