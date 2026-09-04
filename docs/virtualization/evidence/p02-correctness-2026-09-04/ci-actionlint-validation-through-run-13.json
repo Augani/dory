@@ -1,0 +1,11 @@
+{
+  "command": [
+    "actionlint",
+    "-shellcheck=",
+    ".github/workflows/tests.yml"
+  ],
+  "exitCode": 0,
+  "workflowSHA256": "027d4db6c4b8a7c5cccad66770cdb05ca1608cd94b7226d2cb6cdf1f45989c6c",
+  "logSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "scope": "Workflow syntax and expressions only; shell checks recorded separately; no hosted job execution"
+}

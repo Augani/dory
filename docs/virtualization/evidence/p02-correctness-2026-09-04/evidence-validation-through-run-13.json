@@ -1,0 +1,51 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-evidence-validation",
+  "scope": "Read-only JSON schema, retained artifact hashes, original byte identity, recorded run counts and outcome consistency. No source build, VM run or behavioral qualification.",
+  "command": "uv run --offline --with jsonschema python /tmp/dory-p02-validate-through-13.py",
+  "schema": {
+    "path": "Config/DoryVirtualizationEvidence.schema.json",
+    "sha256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb"
+  },
+  "schemaEnvelopes": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/cpu-envelope-through-run-13.json",
+      "sha256": "ff5712035d56bbd2fe0367ef635bc7906293bae6ed4ecacc3648d8b8d5ede1a4"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/firmware-envelope-through-run-13.json",
+      "sha256": "6d13d5346c1bd1d5df0faf4b202d6e57a3768647c9f00457680de5c5d47e431f"
+    }
+  ],
+  "review": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-13.json",
+    "sha256": "b30ed3bf2d66e8f5562d25eb765f6b1af966c439e01688a94df2d3da92422e4a"
+  },
+  "uniqueArtifactReferences": 27,
+  "artifactReferenceOccurrences": 105,
+  "newFilesChecked": 15,
+  "hashMismatches": 0,
+  "schemaErrors": 0,
+  "privateHomePathsInNewFiles": 0,
+  "runCountsVerified": [
+    {
+      "run": 12,
+      "swiftTestingPassed": 580,
+      "swiftTestingSeparatelyDisabled": 1,
+      "xctestReported": 11,
+      "xctestSkipped": 1
+    },
+    {
+      "run": 13,
+      "swiftTestingPassed": 590,
+      "swiftTestingSeparatelyDisabled": 1,
+      "xctestReported": 11,
+      "xctestSkipped": 1
+    }
+  ],
+  "realKernelProbesRetained": 3,
+  "realKernelProbesPassed": 0,
+  "allRetainedProbesGuestReset": true,
+  "gitDiffCheckExitCode": 0,
+  "releaseQualified": false
+}

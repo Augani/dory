@@ -1,0 +1,133 @@
+{
+  "sourceCommit": "bf3ee61a63e9357527788a66981db5fbb7008b82",
+  "workflowSHA256": "027d4db6c4b8a7c5cccad66770cdb05ca1608cd94b7226d2cb6cdf1f45989c6c",
+  "checks": [
+    {
+      "step": "Record source and require the ARM64 build tuple",
+      "command": [
+        "bash",
+        "-n"
+      ],
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "step": "Record source and require the ARM64 build tuple",
+      "command": [
+        "shellcheck",
+        "--shell=bash",
+        "-"
+      ],
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "step": "Install Protocol Buffers compiler",
+      "command": [
+        "bash",
+        "-n"
+      ],
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "step": "Install Protocol Buffers compiler",
+      "command": [
+        "shellcheck",
+        "--shell=bash",
+        "-"
+      ],
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "step": "Prepare the clean-checkout Swift package dependency",
+      "command": [
+        "bash",
+        "-n"
+      ],
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "step": "Prepare the clean-checkout Swift package dependency",
+      "command": [
+        "shellcheck",
+        "--shell=bash",
+        "-"
+      ],
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "step": "Build the bounded PVH runner",
+      "command": [
+        "bash",
+        "-n"
+      ],
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "step": "Build the bounded PVH runner",
+      "command": [
+        "shellcheck",
+        "--shell=bash",
+        "-"
+      ],
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "step": "Fetch and verify the pinned minimal diagnostic fixture",
+      "command": [
+        "bash",
+        "-n"
+      ],
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "step": "Fetch and verify the pinned minimal diagnostic fixture",
+      "command": [
+        "shellcheck",
+        "--shell=bash",
+        "-"
+      ],
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "step": "Require all userspace workloads and ACPI poweroff",
+      "command": [
+        "bash",
+        "-n"
+      ],
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "step": "Require all userspace workloads and ACPI poweroff",
+      "command": [
+        "shellcheck",
+        "--shell=bash",
+        "-"
+      ],
+      "exitCode": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  ],
+  "executedCI": false
+}

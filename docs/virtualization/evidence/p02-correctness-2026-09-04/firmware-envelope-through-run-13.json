@@ -1,0 +1,151 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "firmware",
+  "issueLabel": "subsystem:firmware",
+  "planItems": [
+    "P02-01",
+    "P02-05",
+    "P02-06",
+    "P02-07",
+    "P02-22",
+    "P02-24"
+  ],
+  "sourceCommit": "ce91ed19d1b8031ac15082c49263a9152a4e8fc7",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Partial P02 correctness evidence through frozen run 13, linked to earlier reviews; unit successes, explicit optional/physical-test exclusions, failed real-kernel probes and CI source validation.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/ci-actionlint-confirmed-through-run-13.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/ci-actionlint-original-through-run-13.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/ci-actionlint-validation-through-run-13.json",
+      "sha256": "617cbf85aaf74781631a8d5cb1d3c63869eddce55a72d2547e35a04160ce308c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/ci-shell-validation-through-run-13.json",
+      "sha256": "7d8186fcdff25c85fae582b5fa40b61348b48d7dee31218844d48f71d4b2559c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-11.json",
+      "sha256": "97cf59f9c9da5fe296fb968055d3a7be27b7c1a46a024f5459d1221297933686"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-13.json",
+      "sha256": "b30ed3bf2d66e8f5562d25eb765f6b1af966c439e01688a94df2d3da92422e4a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-12-13-source-verification.json",
+      "sha256": "4e56eb6e5becc0d71705cb17eece807c00586bd0c498789e1f71efe85299fbf7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-12-release-runner-build.log.gz",
+      "sha256": "e2e89cc0411772185a405294dfbfd2a2015a03f950a8df2be87746b16a344f8f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-12-source-manifest.json.gz",
+      "sha256": "8fd47864b22137ed1d615f23e1f574c26a6b227e74fb04c030d9ba5c34fb0f62"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-12-source-overlay.tar.gz",
+      "sha256": "83e3880000da04ea5038f43d29c24a21a1ba298459591a110f8fe58e76cb69ff"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-12.log.gz",
+      "sha256": "3bef9b578f1b920339da238d23e1c12cb1aefd654658e421254978910974d165"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-13-release-runner-build.log.gz",
+      "sha256": "89c6504a48ae0b0f9242ebecbfdd3a0f2888e9abc43bbaf3dc2588cf1fe35bac"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-13-source-manifest.json.gz",
+      "sha256": "f2563edd46cebb0ef046cccfeb7a2e717dd23eab49f22631205c3ad1763e5706"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-13-source-overlay.tar.gz",
+      "sha256": "7a492f12cbfe513672c8626cfb7231e11bf0df9f313ef22a3f3e0b734aaa736f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-13.log.gz",
+      "sha256": "341918af770305f491a34a9e0dd1a36da42b6c1ce3169afab8746607dc647b9b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-2-exit.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-2-invocation.json",
+      "sha256": "9701f8630ff07e6dee9e08ac294530bc8c3f835c127daa3111f0f13325030bb3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-2-summary.json",
+      "sha256": "97b0e9db6941d4572df94085c33af14e0d6e8f6689813bc0498f1ab76476128c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-2.json",
+      "sha256": "651551c911660f9b72a2adff9993e6ebc2c5cc3c87364e44bb234419192eea14"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-3-exit.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-3-invocation.json",
+      "sha256": "86114259dc5ffc63990eba842bd491eaa34a8048ab2159a82416a061d654e81a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-3-summary.json",
+      "sha256": "7fdb4a1bc4545ba0a5e059ffc46347bee2dc9be125012ad6f301ee3783a4f8f3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-3.json",
+      "sha256": "e2900d8bc5f3070d208d5a55614ca57c522aaa6649fa8333b9960abef36cdfd1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-2-exit.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-2-invocation.json",
+      "sha256": "e02b0f1b2823d3acb46d06dfa91150e16c0c465828b57cec7e9143c9283b6bfe"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-2-summary.json",
+      "sha256": "15918f551b5061eb0a281789de00b6d57731cf3f7505da4417c2202933afa2eb"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-interpreter-probe-2.json",
+      "sha256": "e740f2a9ebb49356efda8db62f30ac8d1578e10f1f4b5302d211594dcbab115d"
+    }
+  ],
+  "limitations": [
+    "P02 remains in progress. No physical x86, userspace, glibc/systemd, full ISA, stress, or release qualification is claimed.",
+    "Each unit gate has 11 reported XCTest cases with one optional PVH boot skip, and a separately disabled physical-reference Swift test. Successful bounded unit tests cannot substitute for either gate.",
+    "All three newly retained real-kernel probes reset without an accepted userspace workload receipt or clean ACPI poweroff.",
+    "The host tuple is arm64 macOS 27 beta (26A5425a), Xcode 26.6 (17F109), SDK 26.5, classified experimental. A passing schema or optimized build is not a release qualification.",
+    "The run-12 probe invocation names FS/GS implementation commit 904485e88 while its frozen full source snapshot matches 313ede248; both immutable identities are retained and distinguished.",
+    "Six generated ignored FFI inputs remain hash-bound separately from the committed sources and overlays; generated runner executable identities are recorded without vendoring the binaries.",
+    "CI evidence records actionlint, bash syntax, and shellcheck only. The required two-tier job has not been executed by these checks.",
+    "Every source/test result after run 13 is excluded, including the later physical-memory negative-length patch.",
+    "Guest-handled exceptions are reflected only when the guest console reports them; runner fault fields describe terminal exits. The bounded trace is not exhaustive fault history.",
+    "Matching timer/ExtINT failure consoles across interpreter and baseline-JIT suggest a shared device path only. Different UUIDs, a 28-instruction delta, and no RAM comparison prevent any full-machine parity claim."
+  ]
+}
