@@ -811,10 +811,11 @@ public struct DoryX86Interpreter: Sendable {
           instruction: instruction,
           state: state
         )
-        try executionMemory.validateWrite(at: address, byteCount: 512)
+        let bytes = floatingPointSaveArea(state.floatingPoint, mode: mode)
+        try executionMemory.validateWrite(at: address, byteCount: bytes.count)
         try executionMemory.write(
           at: address,
-          bytes: floatingPointSaveArea(state.floatingPoint, mode: mode)
+          bytes: bytes
         )
       case .restoreFloatingPointState(let source):
         let address = effectiveAddress(source, instruction: instruction, state: state)
@@ -826,12 +827,13 @@ public struct DoryX86Interpreter: Sendable {
           instruction: instruction,
           state: state
         )
-        let bytes = try executionMemory.read(at: address, byteCount: 512)
+        let bytes = try executionMemory.read(
+          at: address, byteCount: floatingPointTransferByteCount(mode: mode))
         guard
           let restored = try restoredFloatingPointState(
             from: bytes,
             mode: mode,
-            mxcsrMask: state.floatingPoint.mxcsrMask
+            preserving: state.floatingPoint
           )
         else { return generalProtection(at: originalRIP) }
         state.floatingPoint = restored
@@ -3262,11 +3264,19 @@ public struct DoryX86Interpreter: Sendable {
     }
   }
 
+  private func floatingPointTransferByteCount(mode: DoryX86ExecutionMode) -> Int {
+    // Intel SDM Vol. 1 §10.5.1: bytes 416...511 are unused, including the
+    // software-owned tail at 464...511. Outside 64-bit mode, the XMM8...15
+    // slots at 288...415 are also neither saved nor restored (§10.5.1.2).
+    // The architectural operand remains m512 for segment-range validation.
+    mode == .long64 ? 416 : 288
+  }
+
   private func floatingPointSaveArea(
     _ floatingPoint: DoryX86FloatingPointState,
     mode: DoryX86ExecutionMode
   ) -> [UInt8] {
-    var bytes = [UInt8](repeating: 0, count: 512)
+    var bytes = [UInt8](repeating: 0, count: floatingPointTransferByteCount(mode: mode))
     replaceLittleEndian(floatingPoint.x87ControlWord, in: &bytes, at: 0)
     replaceLittleEndian(floatingPoint.x87StatusWord, in: &bytes, at: 2)
     var abridgedTag: UInt8 = 0
@@ -3295,11 +3305,11 @@ public struct DoryX86Interpreter: Sendable {
   private func restoredFloatingPointState(
     from bytes: [UInt8],
     mode: DoryX86ExecutionMode,
-    mxcsrMask: UInt32
+    preserving floatingPoint: DoryX86FloatingPointState
   ) throws -> DoryX86FloatingPointState? {
-    precondition(bytes.count == 512)
+    precondition(bytes.count == floatingPointTransferByteCount(mode: mode))
     let mxcsr = UInt32(fromLittleEndian(Array(bytes[24..<28])))
-    guard mxcsr & ~mxcsrMask == 0 else { return nil }
+    guard mxcsr & ~floatingPoint.mxcsrMask == 0 else { return nil }
     let abridgedTag = bytes[4]
     var tagWord: UInt16 = 0
     var x87: [DoryX86RegisterBytes] = []
@@ -3311,7 +3321,9 @@ public struct DoryX86Interpreter: Sendable {
         try .init(bytes: Array(bytes[32 + index * 16..<42 + index * 16]), expectedByteCount: 10)
       )
     }
-    var ymm = [DoryX86RegisterBytes](repeating: .ymmZero(), count: 16)
+    // FXRSTOR loads SSE state, not the AVX upper halves. In non-64-bit modes
+    // it also leaves XMM8...15 unchanged (Intel SDM Vol. 1 §10.5.1.2).
+    var ymm = floatingPoint.ymm
     let vectorCount = mode == .long64 ? 16 : 8
     for index in 0..<vectorCount {
       var register = ymm[index].bytes
@@ -3325,7 +3337,7 @@ public struct DoryX86Interpreter: Sendable {
       x87StatusWord: UInt16(fromLittleEndian(Array(bytes[2..<4]))),
       x87TagWord: tagWord,
       mxcsr: mxcsr,
-      mxcsrMask: mxcsrMask
+      mxcsrMask: floatingPoint.mxcsrMask
     )
   }
 
