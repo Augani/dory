@@ -558,21 +558,19 @@ jobs:
           test -z "$(git status --porcelain --untracked-files=no)"
           git rev-parse HEAD | grep -qx "$GITHUB_SHA"
 
-      - name: Select the pinned Xcode 26.6 release toolchain
+      - name: Select the pinned final Xcode 26.6 release toolchain
         run: |
-          xcode_app=/Applications/Xcode-26.6.0-Release.Candidate.app
+          xcode_app=/Applications/Xcode-26.6.app
           test -x "$xcode_app/Contents/Developer/usr/bin/xcodebuild"
+          test "$(DEVELOPER_DIR="$xcode_app/Contents/Developer" xcodebuild -version)" = "$(printf 'Xcode 26.6\nBuild version 17F113')"
           echo "selected: $xcode_app"
           echo "DEVELOPER_DIR=$xcode_app/Contents/Developer" >> "$GITHUB_ENV"
 
       - name: Bind VZMac paths to the selected final public SDK
-        env:
-          # The physical release Mac already carries the macOS 27 Command Line Tools SDK while
-          # the app build remains pinned to the independently qualified Xcode 26.6 toolchain.
-          DEVELOPER_DIR: /Library/Developer/CommandLineTools
         run: |
-          test -d "$DEVELOPER_DIR/SDKs/MacOSX.sdk"
-          test "$(xcrun --sdk macosx --show-sdk-version | cut -d. -f1)" -ge 27
+          # Inspect the SDK that builds the candidate. macOS 27 physical USB inspection is
+          # explicitly experimental (--experimental-usb), outside this release baseline.
+          test "$(xcrun --sdk macosx --show-sdk-version)" = 26.5
           python3 .github/scripts/verify-vz-platform-sdk.py \
             --output "$RUNNER_TEMP/dory-vz-platform-sdk.json"
 
@@ -592,6 +590,8 @@ jobs:
           test "$(sysctl -in kern.hv_vmm_present 2>/dev/null || printf 0)" != 1
           test "$(sysctl -in hw.optional.arm64 2>/dev/null || printf 0)" = 1
           case "$(sysctl -n hw.model)" in VirtualMac*) exit 1 ;; esac
+          python3 .github/scripts/verify-release-host-policy.py \
+            --output "$RUNNER_TEMP/dory-release-host-policy.json"
           echo 'DORY_RELEASE_PHYSICAL_ARM64_CONFIRMED=1' >> "$GITHUB_ENV"
 
       - name: Ensure Metal toolchain (SwiftTerm ships Metal shaders)
@@ -932,6 +932,7 @@ jobs:
           path: |
             ${{ runner.temp }}/dory-arm64-host-facts.txt
             ${{ runner.temp }}/dory-vz-platform-sdk.json
+            ${{ runner.temp }}/dory-release-host-policy.json
             ${{ runner.temp }}/dory-jit-probe/evidence
             ${{ runner.temp }}/dory-release-direct-dmg/evidence
             ${{ runner.temp }}/dory-release-live-*
@@ -1006,12 +1007,25 @@ jobs:
         with:
           name: dory-release-candidate-${{ github.sha }}-${{ github.run_attempt }}
           path: release-build
-      - name: Select the pinned Xcode 26.6 release toolchain
+      - name: Select the pinned final Xcode 26.6 release toolchain
         run: |
-          xcode_app=/Applications/Xcode-26.6.0-Release.Candidate.app
+          xcode_app=/Applications/Xcode-26.6.app
           test -x "$xcode_app/Contents/Developer/usr/bin/xcodebuild"
+          test "$(DEVELOPER_DIR="$xcode_app/Contents/Developer" xcodebuild -version)" = "$(printf 'Xcode 26.6\nBuild version 17F113')"
           echo "selected: $xcode_app"
           echo "DEVELOPER_DIR=$xcode_app/Contents/Developer" >> "$GITHUB_ENV"
+      - name: Verify the public release-testing host policy
+        run: |
+          python3 .github/scripts/verify-release-host-policy.py \
+            --output "$RUNNER_TEMP/dory-release-host-policy.json"
+      - name: Retain release-testing host eligibility
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dory-release-qualification-host-${{ github.sha }}-${{ github.run_attempt }}
+          retention-days: 30
+          if-no-files-found: warn
+          path: ${{ runner.temp }}/dory-release-host-policy.json
       - name: Obtain short-lived ECR credentials through GitHub OIDC
         uses: aws-actions/configure-aws-credentials@61815dcd50bd041e203e49132bacad1fd04d2708 # v5.1.1
         with:

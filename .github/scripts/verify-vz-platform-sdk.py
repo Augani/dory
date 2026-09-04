@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind Phase 0A VZMac capability decisions to one selected public SDK."""
+"""Check the final P00 SDK baseline, or an explicitly experimental USB SDK."""
 
 from __future__ import annotations
 
@@ -43,32 +43,62 @@ def require(source: str, pattern: str, label: str) -> None:
         raise SDKContractFailure(f"selected SDK does not prove {label}")
 
 
-def inspect_sdk(sdk: Path, sdk_version: str) -> dict[str, object]:
-    try:
-        major = int(sdk_version.split(".", 1)[0])
-    except (ValueError, IndexError) as error:
-        raise SDKContractFailure(f"invalid selected SDK version: {sdk_version}") from error
-    if major < 27:
+def require_class(source: str, name: str, minimum: str) -> None:
+    require(
+        source,
+        r"VZ_EXPORT API_AVAILABLE\(macos\(" + re.escape(minimum)
+        + r"\)\)\s*@interface " + re.escape(name) + r"\b",
+        f"{name} availability on macOS {minimum}",
+    )
+
+
+def inspect_sdk(
+    sdk: Path, sdk_version: str, *, experimental_usb: bool = False
+) -> dict[str, object]:
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", sdk_version) is None:
+        raise SDKContractFailure(f"invalid selected SDK version: {sdk_version}")
+    version = tuple(int(part) for part in sdk_version.split("."))
+    if experimental_usb and version[0] < 27:
         raise SDKContractFailure(
-            f"selected SDK {sdk_version} predates the required final macOS 27 USB API contract"
+            "experimental physical USB inspection requires a macOS 27 or later SDK"
+        )
+    if not experimental_usb and version not in {(26, 5), (26, 5, 0)}:
+        raise SDKContractFailure(
+            f"selected SDK {sdk_version} differs from the frozen final SDK 26.5 baseline; "
+            "macOS 27 USB inspection requires --experimental-usb"
         )
     headers = sdk / "System/Library/Frameworks/Virtualization.framework/Headers"
     graphics = read_header(headers, "VZMacGraphicsDeviceConfiguration.h")
-    usb = read_header(headers, "VZUSBPassthroughDeviceConfiguration.h")
     audio_input = read_header(headers, "VZHostAudioInputStreamSource.h")
     audio_output = read_header(headers, "VZHostAudioOutputStreamSink.h")
     trackpad = read_header(headers, "VZMacTrackpadConfiguration.h")
     keyboard = read_header(headers, "VZMacKeyboardConfiguration.h")
     configuration = read_header(headers, "VZVirtualMachineConfiguration.h")
     umbrella = read_header(headers, "Virtualization.h")
+    xhci = read_header(headers, "VZXHCIControllerConfiguration.h")
+    usb_storage = read_header(headers, "VZUSBMassStorageDeviceConfiguration.h")
+    hypervisor_headers = sdk / "System/Library/Frameworks/Hypervisor.framework/Headers"
+    gic = read_header(hypervisor_headers, "hv_gic.h")
 
     require(graphics, r"Maximum of one display is supported[.]", "VZMac one-display maximum")
-    require(usb, r"VZ_EXPORT API_AVAILABLE\(macos\(27[.]0\)\)", "macOS 27 USB passthrough")
-    require(usb, r"initWithDevice:\(AAUSBAccessory \*\)device", "AccessoryAccess USB authority")
-    require(audio_input, r"@interface VZHostAudioInputStreamSource", "host audio input")
-    require(audio_output, r"@interface VZHostAudioOutputStreamSink", "host audio output")
-    require(trackpad, r"@interface VZMacTrackpadConfiguration", "Mac trackpad")
-    require(keyboard, r"@interface VZMacKeyboardConfiguration", "Mac keyboard")
+    require_class(graphics, "VZMacGraphicsDeviceConfiguration", "12.0")
+    if experimental_usb:
+        usb = read_header(headers, "VZUSBPassthroughDeviceConfiguration.h")
+        require(usb, r"VZ_EXPORT API_AVAILABLE\(macos\(27[.]0\)\)", "macOS 27 USB passthrough")
+        require(usb, r"initWithDevice:\(AAUSBAccessory \*\)device", "AccessoryAccess USB authority")
+    elif (headers / "VZUSBPassthroughDeviceConfiguration.h").exists():
+        raise SDKContractFailure("final SDK baseline unexpectedly declares physical USB passthrough")
+    require_class(audio_input, "VZHostAudioInputStreamSource", "12.0")
+    require_class(audio_output, "VZHostAudioOutputStreamSink", "12.0")
+    require_class(trackpad, "VZMacTrackpadConfiguration", "13.0")
+    require_class(keyboard, "VZMacKeyboardConfiguration", "14.0")
+    require_class(xhci, "VZXHCIControllerConfiguration", "15.0")
+    require_class(usb_storage, "VZUSBMassStorageDeviceConfiguration", "13.0")
+    require(
+        gic,
+        r"API_AVAILABLE\(macos\(15[.]0\)\)\s*hv_return_t hv_gic_create\(",
+        "macOS 15 native GIC",
+    )
     require(
         configuration,
         r"validateSaveRestoreSupportWithError:.*API_AVAILABLE\(macos\(14[.]0\)\)",
@@ -79,20 +109,25 @@ def inspect_sdk(sdk: Path, sdk_version: str) -> dict[str, object]:
             "selected SDK unexpectedly exposes a VZCamera symbol; camera policy requires review"
         )
     return {
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "status": "PASS",
         "sdkVersion": sdk_version,
         "hostRequirement": "apple-silicon",
+        "productMinimumHostVersion": "15.0",
+        "sdkProfile": "experimental-usb" if experimental_usb else "final-26.5-baseline",
         "macGraphicsMaximumDisplays": 1,
         "macKeyboardAPI": "public",
         "macTrackpadAPI": "public",
         "hostAudioInputAPI": "public",
         "hostAudioOutputAPI": "public",
-        "usbPassthroughAPI": "public-from-macos-27.0",
-        "usbAuthority": "AccessoryAccess",
+        "nativeGICAPI": "public-from-macos-15.0",
+        "virtualUSBMassStorageAPI": "public-from-macos-13.0-controller-from-15.0",
+        "usbPassthroughAPI": "experimental-from-macos-27.0" if experimental_usb else "not-in-baseline",
+        "usbAuthority": "AccessoryAccess" if experimental_usb else None,
         "directVZCameraAPI": "absent-requires-qualified-usb-or-guest-bridge",
         "saveRestoreValidationAPI": "public-from-macos-14.0",
         "qualificationScope": "sdk-contract-only-physical-probes-required",
+        "releaseQualification": False,
     }
 
 
@@ -101,13 +136,19 @@ def main() -> int:
     parser.add_argument("--sdk", type=Path)
     parser.add_argument("--sdk-version")
     parser.add_argument("--output", type=Path)
+    parser.add_argument(
+        "--experimental-usb", action="store_true",
+        help="inspect macOS 27 physical USB declarations without qualifying the product baseline",
+    )
     arguments = parser.parse_args()
     try:
         sdk = arguments.sdk or Path(command("xcrun", "--sdk", "macosx", "--show-sdk-path"))
         version = arguments.sdk_version or command(
             "xcrun", "--sdk", "macosx", "--show-sdk-version"
         )
-        receipt = inspect_sdk(sdk.resolve(strict=True), version)
+        receipt = inspect_sdk(
+            sdk.resolve(strict=True), version, experimental_usb=arguments.experimental_usb
+        )
         encoded = json.dumps(receipt, sort_keys=True, separators=(",", ":")) + "\n"
         if arguments.output is None:
             sys.stdout.write(encoded)
