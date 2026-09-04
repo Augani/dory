@@ -148,6 +148,12 @@
           "compressedOffset": 17092,
           "sha256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
           "maximumBytes": 268435456
+        },
+        {
+          "member": "boot/System.map-6.18.35-0-virt",
+          "filename": "x86_64-System.map-6.18.35",
+          "sha256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+          "maximumBytes": 6391693
         }
       ]
     },
@@ -169,6 +175,51 @@
       "bootLayout": "IPSW restore through VZMacOSInstaller with persisted hardware model, machine identifier and auxiliary storage.",
       "metadataEvidence": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/apple-cdn-metadata.json",
       "qualification": "compatible restore candidate discovered; no download, installation or guest Metal qualification"
+    },
+    {
+      "id": "alpine-virt-3.23.5-x86_64",
+      "family": "alpine",
+      "role": "diagnostic",
+      "guest": "linux",
+      "architecture": "x86_64",
+      "version": "3.23.5",
+      "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-virt-3.23.5-x86_64.iso",
+      "filename": "alpine-virt-3.23.5-x86_64.iso",
+      "sha256": "06df31436dc9ada6330a3d2ee561a70143569e9d1896627c2138c0c9fb4c9a76",
+      "kernel": "6.18.36-0-virt",
+      "libc": "Not independently inspected for this stock initramfs; diagnostic workload uses separately pinned 3.24.1 musl inputs.",
+      "graphics": "Headless diagnostic input; no graphics qualification.",
+      "bootLayout": "ELF64 x86 PVH kernel extracted from bzImage gzip payload. Stock initramfs needs matching installation media.",
+      "metadataEvidence": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-3.23.5-inputs.json",
+      "qualification": "Verified source and extracted bytes; kernel execution and userspace acceptance tracked separately.",
+      "extractions": [
+        {
+          "member": "boot/vmlinuz-virt",
+          "filename": "alpine-3.23.5-x86_64-vmlinuz",
+          "sha256": "a49cf19ae5fa6470b215da782c47aed10c6d395414386b687df772946095241f",
+          "maximumBytes": 12571648
+        },
+        {
+          "member": "boot/vmlinuz-virt",
+          "filename": "alpine-3.23.5-x86_64-vmlinux",
+          "sha256": "ae0dcbf0d699293a29e8c55e4b319e8fe093aa07a18e1902beb41c3e0243c405",
+          "compression": "gzip",
+          "compressedOffset": 17092,
+          "maximumBytes": 134217728
+        },
+        {
+          "member": "boot/initramfs-virt",
+          "filename": "alpine-3.23.5-x86_64-initramfs",
+          "sha256": "91fe673fa5e630af6dd94ebeebafabdcfa58b55ffcfd87b86b4f34b886e23624",
+          "maximumBytes": 9562856
+        },
+        {
+          "member": "boot/System.map-6.18.36-0-virt",
+          "filename": "x86_64-System.map-6.18.36",
+          "sha256": "757089956b5ff578a61933a71ba400952ac883853caa2f6d6f8e406328926df5",
+          "maximumBytes": 6392230
+        }
+      ]
     }
   ]
 }

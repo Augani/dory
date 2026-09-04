@@ -1,0 +1,28 @@
+{
+  "url": "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-virt-3.23.5-x86_64.iso",
+  "isoSHA256": "06df31436dc9ada6330a3d2ee561a70143569e9d1896627c2138c0c9fb4c9a76",
+  "files": [
+    {
+      "member": "boot/vmlinuz-virt",
+      "filename": "alpine-3.23.5-x86_64-vmlinuz",
+      "bytes": 12571648,
+      "sha256": "a49cf19ae5fa6470b215da782c47aed10c6d395414386b687df772946095241f"
+    },
+    {
+      "filename": "alpine-3.23.5-x86_64-vmlinux",
+      "bytes": 39274336,
+      "sha256": "ae0dcbf0d699293a29e8c55e4b319e8fe093aa07a18e1902beb41c3e0243c405",
+      "compressedOffset": 17092
+    },
+    {
+      "member": "boot/initramfs-virt",
+      "filename": "alpine-3.23.5-x86_64-initramfs",
+      "bytes": 9562856,
+      "sha256": "91fe673fa5e630af6dd94ebeebafabdcfa58b55ffcfd87b86b4f34b886e23624"
+    }
+  ],
+  "kernelVersion": "6.18.36-0-virt",
+  "upstreamChecksumURL": "https://dl-cdn.alpinelinux.org/alpine/v3.23/releases/x86_64/alpine-virt-3.23.5-x86_64.iso.sha256",
+  "observedUpstreamChecksum": "06df31436dc9ada6330a3d2ee561a70143569e9d1896627c2138c0c9fb4c9a76  alpine-virt-3.23.5-x86_64.iso",
+  "status": "downloaded and hashes verified; no userspace qualification"
+}
