@@ -4750,8 +4750,9 @@ public struct DoryX86Interpreter: Sendable {
       reloadPDPTEs = candidate.isLegacyPAEPagingActive
       invalidate = !noFlush
     case 4:
-      // Engineering mechanisms remain testable while their CPUID qualification is
-      // incomplete; this mask does not advertise PAE/PSE/PGE/PCID/SMEP/SMAP support.
+      // Engineering mechanisms remain independently testable. The selected
+      // profiles advertise the now-qualified PSE/PAE/PGE subset; PCID, SMEP,
+      // and SMAP remain unadvertised.
       var implementedMask: UInt64 =
         (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8)
         | (1 << 9) | (1 << 10) | (1 << 17) | (1 << 20) | (1 << 21)

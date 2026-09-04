@@ -121,7 +121,7 @@ import Testing
       profile: profile(removing: .longMode))
   }
 
-  @Test func protectedBootPreparationCanActivateIA32eWithoutPromotingFeatures() throws {
+  @Test func protectedBootPreparationUsesTheQualifiedPagingFeatureSet() throws {
     // A normal protected-mode boot preparation sequence: install the long-mode
     // root, select PAE and kernel control mechanisms, set EFER, then enable PG.
     var state = try makeState()
@@ -136,7 +136,9 @@ import Testing
     #expect(state.control.cr4 == bootCR4)
     #expect(state.control.legacyPAEPDPTEs == nil)
     let leaf = DoryX86CPUProfile.compatibleV1.cpuid(leaf: 1)
-    #expect(leaf.edx & ((1 << 3) | (1 << 6) | (1 << 13)) == 0) // PSE, PAE, PGE remain unadvertised.
+    #expect(leaf.edx & ((1 << 3) | (1 << 6) | (1 << 13))
+      == (1 << 3) | (1 << 6) | (1 << 13)) // PSE, PAE, PGE.
+    #expect(leaf.edx & (1 << 16) == 0) // PAT remains unadvertised.
     #expect(leaf.ecx & (1 << 17) == 0) // PCID remains unadvertised.
   }
 

@@ -30,6 +30,12 @@ public enum DoryX86Feature: String, Codable, CaseIterable, Sendable, Hashable {
   case osxsave
   case avx
   case avx2
+  // Append new cases so cached clients keep the discriminator ordering of the
+  // original versioned feature set during an incremental local rebuild.
+  case pageSizeExtension
+  case physicalAddressExtension
+  case pageGlobalEnable
+  case pageAttributeTable
 }
 
 public struct DoryX86CPUIDResult: Codable, Sendable, Hashable {
@@ -97,14 +103,17 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       identity: values.decodeIfPresent(DoryX86CPUIdentity.self, forKey: .identity) ?? .legacyDoryV1)
   }
 
-  /// Engineering candidate, not a qualified Linux or x86-64-v2 baseline. PAE/PSE/PGE
-  /// remain absent pending paging conformance; x86-64 Linux cannot qualify without PAE.
+  /// Engineering candidate, not a qualified x86-64-v2 baseline. The legacy PSE,
+  /// PAE, and PGE mechanisms are exposed after their paging conformance gates.
+  /// PAT remains absent until Dory implements its guest-visible memory types.
   /// XSAVE/AVX are absent while extended-state save/restore remains unsupported.
   /// A retirement counter is not an invariant-frequency architectural clock.
   public static let compatibleV1 = Self(
     identifier: compatibleV1Identifier,
     features: [
-      .x87, .tsc, .msr, .cmpxchg8b, .apic, .sysenter, .cmov, .clflush, .mmx, .fxsave, .sse, .sse2, .cmpxchg16b,
+      .x87, .tsc, .msr, .cmpxchg8b, .apic, .sysenter,
+      .pageSizeExtension, .physicalAddressExtension, .pageGlobalEnable,
+      .cmov, .clflush, .mmx, .fxsave, .sse, .sse2, .cmpxchg16b,
       .syscall, .executeDisable, .oneGiBPages, .longMode, .lahf64,
     ],
     physicalAddressBits: 40,
@@ -134,6 +143,9 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     case .sse3, .ssse3, .sse41, .sse42: return supports(.sse2)
     case .avx: return supports(.xsave) && supports(.sse2) && supports(.fxsave)
     case .avx2: return supports(.avx)
+    case .longMode, .executeDisable: return supports(.physicalAddressExtension)
+    case .oneGiBPages:
+      return supports(.physicalAddressExtension) && supports(.longMode)
     default: return true
     }
   }
@@ -179,6 +191,10 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       set(.cmpxchg8b, bit: 8, in: &edx)
       set(.apic, bit: 9, in: &edx)
       set(.sysenter, bit: 11, in: &edx)
+      set(.pageSizeExtension, bit: 3, in: &edx)
+      set(.physicalAddressExtension, bit: 6, in: &edx)
+      set(.pageGlobalEnable, bit: 13, in: &edx)
+      set(.pageAttributeTable, bit: 16, in: &edx)
       set(.cmov, bit: 15, in: &edx)
       set(.clflush, bit: 19, in: &edx)
       set(.mmx, bit: 23, in: &edx)

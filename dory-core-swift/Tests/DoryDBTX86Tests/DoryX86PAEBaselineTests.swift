@@ -4,8 +4,8 @@ import Testing
 
 // Intel SDM 092 Vol. 3A §§5.4.1/5.4.2, 5.6, 5.7 and 5.8:
 // https://cdrdv2-public.intel.com/922487/253668-092-sdm-vol-3a.pdf
-// Authored legacy-PAE mechanism tests, not physical-reference evidence or a
-// profile promotion. The absent-PAT reserved-bit boundary is separate work.
+// Authored legacy-PAE mechanism tests supporting the selected profile's PAE
+// promotion. They are not physical-reference evidence. PAT remains separate.
 @Suite struct DoryX86PAEBaselineTests {
   @Test func fourKiBAndTwoMiBPermissionsCombinePDEAndPTEWithCPLAndWP() throws {
     for large in [false, true] {

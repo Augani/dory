@@ -28,12 +28,13 @@ import Testing
     }
   }
 
-  @Test func candidateLeavesLinuxPagingAndExtendedStateGapsVisible() {
+  @Test func candidatePublishesQualifiedPagingWhileLeavingPATAndExtendedStateGapsVisible() {
     let cpu = DoryX86CPUProfile.compatibleV1
     let standard = cpu.cpuid(leaf: 1)
     let extended = cpu.cpuid(leaf: 0x8000_0001)
-    // PSE, PAE and PGE are not unlocked by a boot fixture's feature requirements.
-    #expect(standard.edx & ((1 << 3) | (1 << 6) | (1 << 13)) == 0)
+    #expect(standard.edx & ((1 << 3) | (1 << 6) | (1 << 13))
+      == (1 << 3) | (1 << 6) | (1 << 13)) // PSE, PAE, PGE.
+    #expect(standard.edx & (1 << 16) == 0) // PAT memory types remain unimplemented.
     // VMX, SMX, XSAVE, OSXSAVE, AVX, and AMD SVM remain unadvertised.
     #expect(standard.ecx & ((1 << 5) | (1 << 6) | (7 << 26)) == 0)
     #expect(extended.ecx & (1 << 2) == 0)
@@ -89,8 +90,11 @@ import Testing
   }
 
   @Test func featureDependenciesDoNotAdvertiseOrphanedExtensions() {
-    let cpu = profile([.avx2, .avx, .osxsave, .sse2, .sse42, .rdtscp, .invariantTSC])
-    for feature: DoryX86Feature in [.avx2, .avx, .osxsave, .sse2, .sse42, .rdtscp, .invariantTSC] {
+    let cpu = profile([.avx2, .avx, .osxsave, .sse2, .sse42, .rdtscp, .invariantTSC,
+      .longMode, .executeDisable, .oneGiBPages])
+    for feature: DoryX86Feature in [.avx2, .avx, .osxsave, .sse2, .sse42, .rdtscp,
+      .invariantTSC, .longMode, .executeDisable, .oneGiBPages]
+    {
       #expect(!cpu.supports(feature))
     }
     #expect(cpu.cpuid(leaf: 1) == .init(eax: 0x0006_0f00, ebx: 1 << 16))
