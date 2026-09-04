@@ -2042,6 +2042,11 @@ func withProductionIntegrationTestStack(
     try completion.wait()
 }
 
+/// Stopped-only lifecycle tests still activate signed production planning and artifact authority.
+func makeStoppedProductionTrustFixture() throws -> ProductionTrustFixture {
+    try ProductionTrustFixture()
+}
+
 /// Source-preserving mutations require the same authenticated ready generation as production.
 /// The signed helper supplies control-plane receipts; it does not qualify a physical guest.
 private func authenticatedProductionTrustFixture() throws -> ProductionTrustFixture {

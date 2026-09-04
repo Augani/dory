@@ -2862,47 +2862,72 @@ final class MachineManagerTests: XCTestCase {
     }
 
     func testNativeSandboxPolicyPersistsWithoutEnvironmentAndSurvivesSnapshotRestore() throws {
-        let base = "/tmp/dory-machine-native-sandbox-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        defer { try? FileManager.default.removeItem(atPath: base) }
-        let configuration = MachineManagerConfiguration(
-            vmmExecutablePath: "/bin/sleep",
-            stateDirectory: base,
-            baseArguments: ["30"],
-            passMachineArguments: false,
-            requiresReadyHandoff: false
-        )
-        let policy = DoryVMSandboxPolicy(
-            expiresAtUnixSeconds: 2_000,
-            sshAgentAccess: .denied
-        )
-        var manager: MachineManager? = MachineManager(
-            configuration: configuration,
-            launchPolicy: .perWorkspaceAuthority
-        )
-        let created = try XCTUnwrap(manager).stageMachineForBootstrap(
-            DoryMachineConfiguration(
-                id: "sandbox",
-                kernelPath: doryTestKernelPath,
-                rootfsPath: doryTestRootfsPath
-            ),
-            sandboxPolicy: policy
-        )
-        XCTAssertTrue(created.environment.isEmpty)
-        XCTAssertEqual(created.sandboxPolicy, policy)
+        try withProductionIntegrationTestStack {
+            let fixture = try makeStoppedProductionTrustFixture()
+            defer { fixture.cleanup() }
+            func activate() throws -> DoryDaemonVirtualMachineProductionActivationContext {
+                let result = fixture.factory.activate(
+                    store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                    appVersion: fixture.appVersion, publicKey: fixture.publicKey,
+                    expectedArchitecture: "arm64")
+                guard case .activated(let context) = result else {
+                    throw MachineManagerError.persistence("sandbox fixture activation failed: \(result)")
+                }
+                return context
+            }
+            let disk = fixture.root.appendingPathComponent("sandbox.raw")
+            try Data("sandbox-policy-source".utf8).write(to: disk)
+            let handle = try FileHandle(forWritingTo: disk)
+            try handle.truncate(atOffset: 16 * 1_024 * 1_024 * 1_024)
+            try handle.synchronize()
+            try handle.close()
+            let policy = DoryVMSandboxPolicy(
+                expiresAtUnixSeconds: 2_000_000_000, sshAgentAccess: .denied)
+            var initial: DoryDaemonVirtualMachineProductionActivationContext? = try activate()
+            let created = try XCTUnwrap(initial).machineManager.create(
+                DoryMachineConfiguration(id: "sandbox", kernelPath: fixture.directKernelPath,
+                    rootfsPath: disk.path, memoryMB: 2_048, cpuCount: 2, displayMode: .headless),
+                sandboxPolicy: policy, operationID: UUID())
+            XCTAssertTrue(created.environment.isEmpty)
+            XCTAssertEqual(created.sandboxPolicy, policy)
+            XCTAssertEqual(created.runtimeIdentity.mode, .resolvedPlan)
+            XCTAssertNil(created.pid)
+            let sourceWorkspace = try XCTUnwrap(initial).planning.workspaces.readPersistedRecord(id: "sandbox")
+            XCTAssertEqual(sourceWorkspace.definition.sandboxPolicy, policy)
+            XCTAssertNil(sourceWorkspace.legacyConfigurationSHA256)
+            initial = nil
 
-        manager = nil
-        let reloaded = MachineManager(
-            configuration: configuration,
-            launchPolicy: .perWorkspaceAuthority
-        )
-        XCTAssertTrue(try XCTUnwrap(reloaded.status(id: "sandbox")).environment.isEmpty)
-        XCTAssertEqual(reloaded.status(id: "sandbox")?.sandboxPolicy, policy)
+            let reloaded = try activate()
+            let manager = reloaded.machineManager
+            defer { try? manager.delete(id: "sandbox") }
+            let loaded = try XCTUnwrap(manager.status(id: "sandbox"))
+            XCTAssertEqual(loaded.state, .stopped)
+            XCTAssertNil(loaded.pid)
+            XCTAssertTrue(loaded.environment.isEmpty)
+            XCTAssertEqual(loaded.sandboxPolicy, policy)
 
-        let snapshot = try reloaded.snapshot(id: "sandbox", snapshotID: "policy-v1")
-        XCTAssertEqual(snapshot.sandboxPolicy, policy)
-        _ = try reloaded.restoreSnapshot(machineID: "sandbox", snapshotID: "policy-v1")
-        XCTAssertEqual(reloaded.status(id: "sandbox")?.sandboxPolicy, policy)
-        XCTAssertTrue(try XCTUnwrap(reloaded.status(id: "sandbox")).environment.isEmpty)
+            let snapshotID = UUID()
+            let snapshot = try manager.snapshot(id: "sandbox", snapshotID: "policy-v1", operationID: snapshotID)
+            XCTAssertEqual(snapshot.sandboxPolicy, policy)
+            XCTAssertEqual(manager.status(id: "sandbox")?.state, .stopped)
+            XCTAssertNil(manager.status(id: "sandbox")?.pid)
+            let restoreID = UUID()
+            let restored = try manager.restoreSnapshot(machineID: "sandbox", snapshotID: "policy-v1",
+                                                        operationID: restoreID)
+            XCTAssertEqual(restored.state, .stopped)
+            XCTAssertNil(restored.pid)
+            XCTAssertEqual(restored.sandboxPolicy, policy)
+            XCTAssertTrue(restored.environment.isEmpty)
+            XCTAssertEqual(restored.runtimeIdentity.mode, .resolvedPlan)
+            let restoredWorkspace = try reloaded.planning.workspaces.readPersistedRecord(id: "sandbox")
+            XCTAssertEqual(restoredWorkspace.definition.sandboxPolicy, policy)
+            XCTAssertNil(restoredWorkspace.legacyConfigurationSHA256)
+            XCTAssertGreaterThan(restoredWorkspace.definition.lifecycle.revision,
+                                 sourceWorkspace.definition.lifecycle.revision)
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            XCTAssertEqual(try journal.read(snapshotID).state.status, .completed)
+            XCTAssertEqual(try journal.read(restoreID).state.status, .completed)
+        }
     }
 
     func testMachineDefinitionsLoadWithoutOptionalShareField() throws {
