@@ -539,6 +539,54 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     )
   }
 
+  /// Returns FXTRACT's two exact binary80 results before the architectural
+  /// stack push. The caller is responsible for publishing #IA, #Z, and #D.
+  func extractedExponentAndSignificand() -> (exponent: Self, significand: Self) {
+    switch kind {
+    case .finite where significand == 0:
+      return (
+        .init(kind: .infinity, isNegative: true, exponent: 0, significand: 0),
+        self
+      )
+    case .finite:
+      return (
+        .init(Int64(exponent)),
+        .init(kind: .finite, isNegative: isNegative, exponent: 0, significand: significand)
+      )
+    case .infinity:
+      return (
+        .init(kind: .infinity, isNegative: false, exponent: 0, significand: 0),
+        self
+      )
+    case .nan:
+      let quiet = quietedNaN()
+      return (quiet, quiet)
+    case .unsupported:
+      let indefinite = Self.realIndefinite()
+      return (indefinite, indefinite)
+    }
+  }
+
+  /// Implements the non-finite-source rows of the FSCALE result table without
+  /// narrowing either binary80 operand through the host floating-point type.
+  /// The caller publishes invalid-operation status for the two indeterminate
+  /// infinity/zero combinations and for signaling or unsupported operands.
+  func scaledByNonFinitePowerOfTwo(_ scale: Self) -> Self {
+    precondition(!isFinite || !scale.isFinite)
+    if isUnsupported || scale.isUnsupported { return Self.realIndefinite() }
+    if let nan = propagatedNaN(with: scale) { return nan }
+    if scale.isFinite { return self }
+    precondition(scale.isInfinite)
+    if (isInfinite && scale.isNegative) || (isZero && !scale.isNegative) {
+      return Self.realIndefinite()
+    }
+    if isInfinite || isZero { return self }
+    if scale.isNegative {
+      return .init(kind: .finite, isNegative: isNegative, exponent: 0, significand: 0)
+    }
+    return .init(kind: .infinity, isNegative: isNegative, exponent: 0, significand: 0)
+  }
+
   func signedIntegerBits(
     bitCount: Int,
     rounding: DoryX86FloatingRounding

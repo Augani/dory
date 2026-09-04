@@ -966,6 +966,40 @@ public struct DoryX86Interpreter: Sendable {
           }
           break
         }
+        if operation == .extract {
+          let physical = physicalX87Register(0, state: state.floatingPoint)
+          let operandExceptions = consumedX87OperandExceptions(
+            state.floatingPoint.x87[physical].bytes)
+          if operandExceptions & 1 != 0 {
+            guard recordX87Exceptions(1, state: &state.floatingPoint) else { break }
+          } else if testOperand.isZero {
+            guard recordX87Exceptions(1 << 2, state: &state.floatingPoint) else { break }
+          } else if operandExceptions & 2 != 0 {
+            guard recordX87Exceptions(2, state: &state.floatingPoint) else { break }
+          }
+        }
+        if operation == .scale {
+          let scale = readX87Register(1, state: state.floatingPoint)
+          let firstPhysical = physicalX87Register(0, state: state.floatingPoint)
+          let secondPhysical = physicalX87Register(1, state: state.floatingPoint)
+          let operandExceptions = consumedX87OperandExceptions(
+            state.floatingPoint.x87[firstPhysical].bytes)
+            | consumedX87OperandExceptions(state.floatingPoint.x87[secondPhysical].bytes)
+          let invalidNonFiniteCombination =
+            (testOperand.isInfinite && scale.isInfinite && scale.isNegative)
+            || (testOperand.isZero && scale.isInfinite && !scale.isNegative)
+          if testOperand.isUnsupported || scale.isUnsupported || operandExceptions & 1 != 0
+            || invalidNonFiniteCombination
+          {
+            guard recordX87Exceptions(1, state: &state.floatingPoint) else { break }
+          } else if testOperand.isNaN || scale.isNaN {
+            _ = recordX87Exceptions(0, state: &state.floatingPoint)
+          } else if operandExceptions & 2 != 0 {
+            guard recordX87Exceptions(2, state: &state.floatingPoint) else { break }
+          } else {
+            _ = recordX87Exceptions(0, state: &state.floatingPoint)
+          }
+        }
         executeX87Special(operation, state: &state.floatingPoint)
       case .loadX87Environment(let source):
         let byteCount = DoryX86FloatingPointEnvironment.byteCount(
@@ -4472,7 +4506,6 @@ public struct DoryX86Interpreter: Sendable {
     state: inout DoryX86FloatingPointState
   ) {
     let extendedX = readX87Register(0, state: state)
-    let x = extendedX.doubleValue
     switch operation {
     case .changeSign:
       writeX87Register(0, value: extendedX.negated(), state: &state)
@@ -4550,24 +4583,27 @@ public struct DoryX86Interpreter: Sendable {
     case .loadZero:
       pushX87(DoryX86ExtendedFloat.zero, state: &state)
     case .twoToXMinusOne:
+      let x = extendedX.doubleValue
       writeX87Register(0, value: Foundation.pow(2, x) - 1, state: &state)
     case .yLog2X:
+      let x = extendedX.doubleValue
       let y = readX87Register(1, state: state).doubleValue
       writeX87Register(1, value: y * Foundation.log2(x), state: &state)
       popX87(state: &state)
     case .tangent:
+      let x = extendedX.doubleValue
       guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
       writeX87Register(0, value: Foundation.tan(x), state: &state)
       pushX87(1, state: &state)
     case .arctangent:
+      let x = extendedX.doubleValue
       let y = readX87Register(1, state: state).doubleValue
       writeX87Register(1, value: Foundation.atan2(y, x), state: &state)
       popX87(state: &state)
     case .extract:
-      let exponent = x == 0 ? -.infinity : Foundation.floor(Foundation.log2(abs(x)))
-      let significand = x == 0 ? x : x / Foundation.pow(2, exponent)
-      writeX87Register(0, value: significand, state: &state)
-      pushX87(exponent, state: &state)
+      let components = extendedX.extractedExponentAndSignificand()
+      writeX87Register(0, value: components.exponent, state: &state)
+      pushX87(components.significand, state: &state)
     case .partialRemainderNearest:
       executeX87Remainder(nearest: true, state: &state)
     case .decrementTop:
@@ -4577,12 +4613,15 @@ public struct DoryX86Interpreter: Sendable {
     case .partialRemainder:
       executeX87Remainder(nearest: false, state: &state)
     case .yLog2XPlusOne:
+      let x = extendedX.doubleValue
       let y = readX87Register(1, state: state).doubleValue
       writeX87Register(1, value: y * Foundation.log2(x + 1), state: &state)
       popX87(state: &state)
     case .squareRoot:
+      let x = extendedX.doubleValue
       writeX87Register(0, value: Foundation.sqrt(x), state: &state)
     case .sineCosine:
+      let x = extendedX.doubleValue
       guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
       writeX87Register(0, value: Foundation.sin(x), state: &state)
       pushX87(Foundation.cos(x), state: &state)
@@ -4594,7 +4633,7 @@ public struct DoryX86Interpreter: Sendable {
       )
     case .scale:
       let scale = readX87Register(1, state: state)
-      if scale.isFinite {
+      if extendedX.isFinite && scale.isFinite {
         // Truncate the binary80 operand before narrowing: Double can round a
         // value just below an integer upward, and Double(Int.max) is 2^63.
         // A power beyond ±65536 already exceeds the entire binary80 exponent
@@ -4608,12 +4647,15 @@ public struct DoryX86Interpreter: Sendable {
           state: &state
         )
       } else {
-        writeX87Register(0, value: x * Foundation.pow(2, scale.doubleValue), state: &state)
+        writeX87Register(
+          0, value: extendedX.scaledByNonFinitePowerOfTwo(scale), state: &state)
       }
     case .sine:
+      let x = extendedX.doubleValue
       guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
       writeX87Register(0, value: Foundation.sin(x), state: &state)
     case .cosine:
+      let x = extendedX.doubleValue
       guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
       writeX87Register(0, value: Foundation.cos(x), state: &state)
     }
