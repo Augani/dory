@@ -6,7 +6,7 @@ import Testing
 @Suite struct DoryPCIOAPICMaskTests {
   @Test func freshRedirectionEntriesReadBackArchitecturalResetValues() throws {
     let ram = DoryX86ByteArrayMemory(byteCount: 0x1000)
-    let bus = DoryPCPhysicalMemoryBus(ram: ram)
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     let io = DoryPCIOAPIC()
     let mmio = DoryPCIOAPICMMIO(ioAPIC: io)
     try bus.attach(mmio)
@@ -55,7 +55,7 @@ import Testing
 
   @Test func guestMaskAndClearInstructionRetiresAndWindowReadsBackZeroVector() throws {
     let ram = DoryX86ByteArrayMemory(byteCount: 0x1000)
-    let bus = DoryPCPhysicalMemoryBus(ram: ram)
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     let io = DoryPCIOAPIC()
     let mmio = DoryPCIOAPICMMIO(ioAPIC: io)
     try bus.attach(mmio)

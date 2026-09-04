@@ -13,7 +13,7 @@ import Testing
 
   @Test func invalidLengthsMatchRAMBeforeAnyUnsealedOrSealedDeviceAccess() throws {
     for ram in try backends() {
-      let bus = DoryPCPhysicalMemoryBus(ram: ram)
+      let bus = try DoryPCPhysicalMemoryBus(ram: ram)
       let device = LengthConformanceMMIO()
       try bus.attach(device)
       for sealed in [false, true] {
@@ -60,7 +60,7 @@ import Testing
 
   @Test func unsupportedBulkLengthsDeclineConsistentlyWithoutTouchingMMIO() throws {
     for ram in try backends() {
-      let bus = DoryPCPhysicalMemoryBus(ram: ram)
+      let bus = try DoryPCPhysicalMemoryBus(ram: ram)
       let device = LengthConformanceMMIO()
       try bus.attach(device)
       for sealed in [false, true] {
@@ -92,7 +92,7 @@ import Testing
 
   @Test func zeroLengthNoOpsRetainTheirDefinedBehaviorEvenAtUnmappedAddresses() throws {
     for ram in try backends() {
-      let bus = DoryPCPhysicalMemoryBus(ram: ram)
+      let bus = try DoryPCPhysicalMemoryBus(ram: ram)
       let device = LengthConformanceMMIO()
       try bus.attach(device)
       bus.seal()

@@ -387,8 +387,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       validatingByteCount: memoryBytes
     )
     memory = sharedMemory
-    physicalMemories = (0..<processorCount).map {
-      _ in DoryPCPhysicalMemoryBus(ram: sharedMemory)
+    physicalMemories = try (0..<processorCount).map {
+      _ in try DoryPCPhysicalMemoryBus(ram: sharedMemory)
     }
     physicalMemory = physicalMemories[0]
     memoryByteCount = memoryBytes

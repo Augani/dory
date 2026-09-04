@@ -8,7 +8,7 @@ import Testing
     var image = Data(repeating: 0xa5, count: 4_096)
     image.replaceSubrange((image.count - 16)..<image.count, with: (0..<16).map(UInt8.init))
     let flash = try DoryPCFirmwareFlash(image: image)
-    let bus = DoryPCPhysicalMemoryBus(ram: DoryX86ByteArrayMemory(byteCount: 1 << 20))
+    let bus = try DoryPCPhysicalMemoryBus(ram: DoryX86ByteArrayMemory(byteCount: 1 << 20))
     try bus.attach(flash)
     bus.seal()
 

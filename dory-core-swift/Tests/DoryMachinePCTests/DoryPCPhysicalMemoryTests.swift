@@ -6,7 +6,7 @@ import Testing
 @Suite struct DoryPCPhysicalMemoryTests {
   @Test func sealedBusRoutesRAMAndStandardAPICWindows() throws {
     let ram = DoryX86ByteArrayMemory(byteCount: 0x1000)
-    let bus = DoryPCPhysicalMemoryBus(ram: ram)
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     let local = DoryPCLocalAPIC(apicID: 2)
     let io = DoryPCIOAPIC()
     try io.attach(local)
@@ -25,7 +25,7 @@ import Testing
 
   @Test func routingRemainsExactAcrossSealedTablePublication() throws {
     let ram = DoryX86ByteArrayMemory(byteCount: 0x4000)
-    let bus = DoryPCPhysicalMemoryBus(ram: ram)
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     let first = TestMMIODevice(baseAddress: 0x1000, byteCount: 0x100)
     let second = TestMMIODevice(baseAddress: 0x3000, byteCount: 0x100)
     try bus.attach(first)
@@ -51,7 +51,7 @@ import Testing
 
   @Test func codeGenerationsCoverOnlyOrdinaryRAMPages() throws {
     let ram = DoryX86ByteArrayMemory(byteCount: 0x4000)
-    let bus = DoryPCPhysicalMemoryBus(ram: ram)
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     try bus.attach(TestMMIODevice(baseAddress: 0x2000, byteCount: 0x100))
     bus.seal()
 
@@ -131,7 +131,7 @@ import Testing
 
   @Test func busRejectsOverlapCrossBoundaryAndMMIOInstructionFetch() throws {
     let ram = DoryX86ByteArrayMemory(byteCount: 0x1000)
-    let bus = DoryPCPhysicalMemoryBus(ram: ram)
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     let local = DoryPCLocalAPIC(apicID: 0)
     try bus.attach(DoryPCLocalAPICMMIO(apic: local))
     #expect(
@@ -151,7 +151,7 @@ import Testing
 
   @Test func bulkStringCopiesStayInsideOrdinaryRAM() throws {
     let ram = DoryX86ByteArrayMemory(byteCount: 0x1000)
-    let bus = DoryPCPhysicalMemoryBus(ram: ram)
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     let local = DoryPCLocalAPIC(apicID: 0)
     try bus.attach(DoryPCLocalAPICMMIO(apic: local))
     bus.seal()
@@ -174,7 +174,7 @@ import Testing
 
   @Test func remapsCompactRAMAboveTheGuestMMIOHole() throws {
     let ram = DoryX86ByteArrayMemory(byteCount: 0x1200)
-    let bus = DoryPCPhysicalMemoryBus(
+    let bus = try DoryPCPhysicalMemoryBus(
       ram: ram,
       mmioHoleStart: 0x1000,
       above4GRAMStart: 0x2000
@@ -205,7 +205,7 @@ import Testing
 
   @Test func highRAMDMAAndBulkCopiesUseTheCompactBackingRange() throws {
     let ram = DoryX86ByteArrayMemory(byteCount: 0x1200)
-    let bus = DoryPCPhysicalMemoryBus(
+    let bus = try DoryPCPhysicalMemoryBus(
       ram: ram,
       mmioHoleStart: 0x1000,
       above4GRAMStart: 0x2000

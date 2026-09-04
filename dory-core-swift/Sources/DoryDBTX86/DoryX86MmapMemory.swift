@@ -13,14 +13,9 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
 
   var trackedCodePageCount: Int { lock.withLock { codePageGenerations.count } }
 
-  /// Compatibility convenience for existing fixed-size fixtures. Caller-controlled allocations
-  /// must use the throwing initializer so invalid configuration and mmap failures are recoverable.
-  public convenience init(baseAddress: UInt64 = 0, byteCount: Int) {
-    do {
-      try self.init(baseAddress: baseAddress, validatingByteCount: byteCount)
-    } catch {
-      preconditionFailure("Unable to allocate x86 RAM: \(error)")
-    }
+  /// Both public allocation spellings preserve configuration and host mapping errors.
+  public convenience init(baseAddress: UInt64 = 0, byteCount: Int) throws {
+    try self.init(baseAddress: baseAddress, validatingByteCount: byteCount)
   }
 
   public init(baseAddress: UInt64 = 0, validatingByteCount byteCount: Int) throws {

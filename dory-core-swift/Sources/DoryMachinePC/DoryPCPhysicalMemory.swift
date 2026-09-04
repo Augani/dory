@@ -8,6 +8,7 @@ public enum DoryPCPhysicalMemoryError: Error, Sendable, Equatable {
   case invalidRange(base: UInt64, byteCount: UInt64)
   case overlappingRange(base: UInt64, byteCount: UInt64)
   case unsupportedAccess(offset: UInt64, byteCount: Int, write: Bool)
+  case invalidRAMConfiguration(base: UInt64, byteCount: Int, mmioHoleStart: UInt64, above4GRAMStart: UInt64)
 }
 
 public protocol DoryPCMMIODevice: AnyObject, Sendable {
@@ -73,8 +74,8 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   private var sealedMappings: SealedMappings?
   private let hasPublishedSealedMappings: UnsafeMutablePointer<UInt8>
 
-  public convenience init(ram: any DoryX86PhysicalRAM) {
-    self.init(
+  public convenience init(ram: any DoryX86PhysicalRAM) throws {
+    try self.init(
       ram: ram,
       mmioHoleStart: DoryPCV1ABI.mmioHoleStart,
       above4GRAMStart: DoryPCV1ABI.above4GRAMStart
@@ -85,9 +86,14 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     ram: any DoryX86PhysicalRAM,
     mmioHoleStart: UInt64,
     above4GRAMStart: UInt64
-  ) {
-    precondition(ram.baseAddress == 0)
-    precondition(above4GRAMStart > mmioHoleStart)
+  ) throws {
+    guard ram.baseAddress == 0, ram.byteCount > 0, mmioHoleStart > 0,
+      above4GRAMStart > mmioHoleStart
+    else {
+      throw DoryPCPhysicalMemoryError.invalidRAMConfiguration(
+        base: ram.baseAddress, byteCount: ram.byteCount,
+        mmioHoleStart: mmioHoleStart, above4GRAMStart: above4GRAMStart)
+    }
     self.ram = ram
     self.mmioHoleStart = mmioHoleStart
     self.above4GRAMStart = above4GRAMStart
