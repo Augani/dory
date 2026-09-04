@@ -1,0 +1,425 @@
+{
+  "schemaVersion": 1,
+  "id": "p02-support-v1",
+  "corpusSHA256": "2729a5d1fa5ef4621541989eb89ecd647877522cec654d1e44ad90367123deec",
+  "sourceCommit": "61cd728a4938e6e7e44319e0bd71f6147b115205",
+  "run": 30,
+  "receipt": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-30.json",
+    "sha256": "f6d0bdff312b7ccf72722f83f174f97c54953443eac0a971f378322072508766"
+  },
+  "log": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30.log.gz",
+    "sha256": "ec34b4083ddcc6bf439265a88bd1b36b00aeeb4da5985ab19e03b57db1cb961a"
+  },
+  "manifest": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30-source-manifest.json.gz",
+    "sha256": "b13b69de63f3d5abcfa4d181586fbb299a5c90918097c0699a2bd0883c84b984"
+  },
+  "overlay": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-30-source-overlay.tar.gz",
+    "sha256": "e67f0012252b028d444fca6770cf945fcdd21b3a0e7252807ea79cbdddbdc0a0"
+  },
+  "tests": [
+    {
+      "id": "nop-state",
+      "method": "agreementIncludesExtendedStateMemoryDevicesAndExit",
+      "source": {
+        "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialIsolationTests.swift",
+        "sha256": "805d3a84bb0fe53337902d6e83d8b4adbc1150c6c7be339518b9ac79ac5d1b4d"
+      },
+      "firstLine": 118,
+      "lastLine": 154,
+      "excerptSHA256": "00485c7d5b2468b43185a9c39af4e5483628545eabdd4f2c97cc4db490b6df58",
+      "passedLogLine": "\udbc4\udc5b  Test agreementIncludesExtendedStateMemoryDevicesAndExit() passed after 0.001 seconds."
+    },
+    {
+      "id": "alu-flags",
+      "method": "nativeRegisterALUPreservesExactX86ResultsAndFlags",
+      "source": {
+        "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialTests.swift",
+        "sha256": "d23e435815c088c0d5959df219b3026595e75554db7d187336d99a3a4f0b545f"
+      },
+      "firstLine": 56,
+      "lastLine": 91,
+      "excerptSHA256": "f11aae77f3d580938e30f72a2eadf8e9ea21277e0f4fb9ec35e1b3351e467ec9",
+      "passedLogLine": "\udbc4\udc5b  Test nativeRegisterALUPreservesExactX86ResultsAndFlags() passed after 0.001 seconds."
+    },
+    {
+      "id": "monitor-ud",
+      "method": "unsupportedGroup7FormsRaiseUDAtBothPrivilegeLevelsWithoutOperandAccess",
+      "source": {
+        "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86SystemGroupDecodeTests.swift",
+        "sha256": "52b178fd9b569f4f901407bb25839c106749cc007575383b2f4e8a7f67f6bae7"
+      },
+      "firstLine": 64,
+      "lastLine": 80,
+      "excerptSHA256": "320cac61e548d790b3ab8a13df2dd7d8b10cea286588a1d09085802f3e57ab5c",
+      "passedLogLine": "\udbc4\udc5b  Test unsupportedGroup7FormsRaiseUDAtBothPrivilegeLevelsWithoutOperandAccess() passed after 0.012 seconds."
+    }
+  ],
+  "forms": [
+    {
+      "vector": {
+        "id": "0f01.register.c8.long64",
+        "name": "monitor",
+        "form": "0f01.register.c8",
+        "mode": "long64",
+        "bytes": [
+          15,
+          1,
+          200
+        ],
+        "referenceIDs": [
+          "intel-group7",
+          "intel-xed"
+        ],
+        "expectedPrefixes": {
+          "lock": false,
+          "operandSizeOverride": false,
+          "addressSizeOverride": false
+        },
+        "expectedOperation": {
+          "unsupportedSystemInstruction": {
+            "_0": "monitor"
+          }
+        }
+      },
+      "operandSizeAttributeBits": 32,
+      "addressSizeAttributeBits": 64,
+      "decodedOperandWidthsBits": [],
+      "decodedAddressWidthsBits": [],
+      "interpreterSemantics": {
+        "status": "unsupported",
+        "evidence": [
+          "monitor-ud"
+        ],
+        "scope": "Compatible candidate rejects MONITOR with #UD at CPL0/3; this is expected unsupported behavior."
+      },
+      "baselineJIT": {
+        "status": "unmeasured",
+        "evidence": [],
+        "scope": "No verified execution evidence for this exact form and dimension."
+      },
+      "optimizingJIT": {
+        "status": "unmeasured",
+        "evidence": [],
+        "scope": "No verified execution evidence for this exact form and dimension."
+      },
+      "flags": {
+        "status": "unmeasured",
+        "evidence": [],
+        "scope": "No verified execution evidence for this exact form and dimension."
+      },
+      "faults": {
+        "status": "supported",
+        "evidence": [
+          "monitor-ud"
+        ],
+        "scope": "Expected #UD before operand access, with precise RIP and unchanged state at CPL0/3."
+      },
+      "executions": [
+        {
+          "testID": "monitor-ud",
+          "engine": "interpreter",
+          "outcome": "faulted",
+          "description": "MONITOR0F01C8 is included in the full ModRM register loop, long64 at CPL0 and CPL3; exact #UD and no operand access. No retirement/native execution is claimed.",
+          "sourceAnchors": [
+            "for mode in modes {",
+            "for modRM in UInt8.min...UInt8.max {",
+            "for cpl: UInt16 in [0, 3] {",
+            "try expectUD(groupBytes(opcode: 1, modRM: modRM, mode: mode), mode: mode, cpl: cpl)"
+          ]
+        }
+      ]
+    },
+    {
+      "vector": {
+        "id": "baseline.add-register.48.long64",
+        "name": "ADD register",
+        "form": "baseline.add-register.48",
+        "mode": "long64",
+        "bytes": [
+          72,
+          1,
+          216
+        ],
+        "referenceIDs": [
+          "intel-basic"
+        ],
+        "expectedPrefixes": {
+          "lock": false,
+          "operandSizeOverride": false,
+          "addressSizeOverride": false,
+          "rex": {
+            "w": true,
+            "r": false,
+            "x": false,
+            "b": false
+          }
+        },
+        "expectedOperation": {
+          "alu": {
+            "_0": "add",
+            "destination": {
+              "register": {
+                "_0": "rax",
+                "width": 64
+              }
+            },
+            "source": {
+              "register": {
+                "_0": "rbx",
+                "width": 64
+              }
+            }
+          }
+        }
+      },
+      "operandSizeAttributeBits": 64,
+      "addressSizeAttributeBits": 64,
+      "decodedOperandWidthsBits": [
+        64
+      ],
+      "decodedAddressWidthsBits": [],
+      "interpreterSemantics": {
+        "status": "supported",
+        "evidence": [
+          "alu-flags"
+        ],
+        "scope": "Historical synthetic case only; interpreter agrees with independently initialized baseline JIT."
+      },
+      "baselineJIT": {
+        "status": "supported",
+        "evidence": [
+          "alu-flags"
+        ],
+        "scope": "Historical arm64 baseline native execution of the recorded synthetic case; optimizing tier unmeasured."
+      },
+      "optimizingJIT": {
+        "status": "unmeasured",
+        "evidence": [],
+        "scope": "No verified execution evidence for this exact form and dimension."
+      },
+      "flags": {
+        "status": "supported",
+        "evidence": [
+          "alu-flags"
+        ],
+        "scope": "Exact RFLAGS equality for the recorded initial state and operands; not an exhaustive flags truth table."
+      },
+      "faults": {
+        "status": "unmeasured",
+        "evidence": [],
+        "scope": "No verified execution evidence for this exact form and dimension."
+      },
+      "executions": [
+        {
+          "testID": "alu-flags",
+          "engine": "interpreter",
+          "outcome": "retired",
+          "description": "ADD RAX,RBX case0: RAX=0x7fffffffffffffff, RBX=1; initial CF/AF/DF/IF set.",
+          "sourceAnchors": [
+            "([0x48, 0x01, 0xD8], 0x7FFF_FFFF_FFFF_FFFF, 1),",
+            "mode: .long64",
+            "#expect(result.compiled.tier == .baseline, \"case \\(index) fell back\")",
+            "#expect(result.agrees, \"case \\(index) diverged\")"
+          ]
+        },
+        {
+          "testID": "alu-flags",
+          "engine": "baselineJIT",
+          "outcome": "retired",
+          "description": "ADD RAX,RBX case0: RAX=0x7fffffffffffffff, RBX=1; initial CF/AF/DF/IF set.",
+          "sourceAnchors": [
+            "([0x48, 0x01, 0xD8], 0x7FFF_FFFF_FFFF_FFFF, 1),",
+            "mode: .long64",
+            "#expect(result.compiled.tier == .baseline, \"case \\(index) fell back\")",
+            "#expect(result.agrees, \"case \\(index) diverged\")"
+          ]
+        }
+      ]
+    },
+    {
+      "vector": {
+        "id": "baseline.add-register.none.long64",
+        "name": "ADD register",
+        "form": "baseline.add-register.none",
+        "mode": "long64",
+        "bytes": [
+          1,
+          216
+        ],
+        "referenceIDs": [
+          "intel-basic"
+        ],
+        "expectedPrefixes": {
+          "lock": false,
+          "operandSizeOverride": false,
+          "addressSizeOverride": false
+        },
+        "expectedOperation": {
+          "alu": {
+            "_0": "add",
+            "destination": {
+              "register": {
+                "_0": "rax",
+                "width": 32
+              }
+            },
+            "source": {
+              "register": {
+                "_0": "rbx",
+                "width": 32
+              }
+            }
+          }
+        }
+      },
+      "operandSizeAttributeBits": 32,
+      "addressSizeAttributeBits": 64,
+      "decodedOperandWidthsBits": [
+        32
+      ],
+      "decodedAddressWidthsBits": [],
+      "interpreterSemantics": {
+        "status": "supported",
+        "evidence": [
+          "alu-flags"
+        ],
+        "scope": "Historical synthetic case only; interpreter agrees with independently initialized baseline JIT."
+      },
+      "baselineJIT": {
+        "status": "supported",
+        "evidence": [
+          "alu-flags"
+        ],
+        "scope": "Historical arm64 baseline native execution of the recorded synthetic case; optimizing tier unmeasured."
+      },
+      "optimizingJIT": {
+        "status": "unmeasured",
+        "evidence": [],
+        "scope": "No verified execution evidence for this exact form and dimension."
+      },
+      "flags": {
+        "status": "supported",
+        "evidence": [
+          "alu-flags"
+        ],
+        "scope": "Exact RFLAGS equality for the recorded initial state and operands; not an exhaustive flags truth table."
+      },
+      "faults": {
+        "status": "unmeasured",
+        "evidence": [],
+        "scope": "No verified execution evidence for this exact form and dimension."
+      },
+      "executions": [
+        {
+          "testID": "alu-flags",
+          "engine": "interpreter",
+          "outcome": "retired",
+          "description": "ADD EAX,EBX case7: RAX=0xffffffffffffffff, RBX=1; initial CF/AF/DF/IF set.",
+          "sourceAnchors": [
+            "([0x01, 0xD8], 0xFFFF_FFFF_FFFF_FFFF, 1),",
+            "mode: .long64",
+            "#expect(result.compiled.tier == .baseline, \"case \\(index) fell back\")",
+            "#expect(result.agrees, \"case \\(index) diverged\")"
+          ]
+        },
+        {
+          "testID": "alu-flags",
+          "engine": "baselineJIT",
+          "outcome": "retired",
+          "description": "ADD EAX,EBX case7: RAX=0xffffffffffffffff, RBX=1; initial CF/AF/DF/IF set.",
+          "sourceAnchors": [
+            "([0x01, 0xD8], 0xFFFF_FFFF_FFFF_FFFF, 1),",
+            "mode: .long64",
+            "#expect(result.compiled.tier == .baseline, \"case \\(index) fell back\")",
+            "#expect(result.agrees, \"case \\(index) diverged\")"
+          ]
+        }
+      ]
+    },
+    {
+      "vector": {
+        "id": "baseline.nop.long64",
+        "name": "NOP",
+        "form": "baseline.nop",
+        "mode": "long64",
+        "bytes": [
+          144
+        ],
+        "referenceIDs": [
+          "intel-basic"
+        ],
+        "expectedPrefixes": {
+          "lock": false,
+          "operandSizeOverride": false,
+          "addressSizeOverride": false
+        },
+        "expectedOperation": {
+          "noOperation": {}
+        }
+      },
+      "operandSizeAttributeBits": 32,
+      "addressSizeAttributeBits": 64,
+      "decodedOperandWidthsBits": [],
+      "decodedAddressWidthsBits": [],
+      "interpreterSemantics": {
+        "status": "supported",
+        "evidence": [
+          "nop-state"
+        ],
+        "scope": "Historical synthetic case only; interpreter agrees with independently initialized baseline JIT."
+      },
+      "baselineJIT": {
+        "status": "supported",
+        "evidence": [
+          "nop-state"
+        ],
+        "scope": "Historical arm64 baseline native execution of the recorded synthetic case; optimizing tier unmeasured."
+      },
+      "optimizingJIT": {
+        "status": "unmeasured",
+        "evidence": [],
+        "scope": "No verified execution evidence for this exact form and dimension."
+      },
+      "flags": {
+        "status": "supported",
+        "evidence": [
+          "nop-state"
+        ],
+        "scope": "Exact RFLAGS equality for the recorded initial state and operands; not an exhaustive flags truth table."
+      },
+      "faults": {
+        "status": "unmeasured",
+        "evidence": [],
+        "scope": "No verified execution evidence for this exact form and dimension."
+      },
+      "executions": [
+        {
+          "testID": "nop-state",
+          "engine": "interpreter",
+          "outcome": "retired",
+          "description": "NOP90; isolated exact one-instruction program with full state/memory/device/exit comparison.",
+          "sourceAnchors": [
+            "let source = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0x90])",
+            "bytes: [0x90], initialState: state(), memory: source, mode: .long64)",
+            "#expect(result.agrees)"
+          ]
+        },
+        {
+          "testID": "nop-state",
+          "engine": "baselineJIT",
+          "outcome": "retired",
+          "description": "NOP90; isolated exact one-instruction program with full state/memory/device/exit comparison.",
+          "sourceAnchors": [
+            "let source = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0x90])",
+            "bytes: [0x90], initialState: state(), memory: source, mode: .long64)",
+            "#expect(result.agrees)"
+          ]
+        }
+      ]
+    }
+  ]
+}

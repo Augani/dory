@@ -15,6 +15,7 @@ private struct AuditResult {
 
 private struct AuditOptions {
   let inventory: Bool
+  let evidenceRoot: String?
   let mode: DoryX86ExecutionMode
   let inputArguments: [String]
   let startAddress: UInt64?
@@ -30,7 +31,7 @@ private enum AuditError: Error, CustomStringConvertible {
   var description: String {
     switch self {
     case .usage:
-      "usage: dory-x86-decode-audit --inventory (bounded corpus JSON; no execution)\n"
+      "usage: dory-x86-decode-audit --inventory [--evidence-root <checkout>] (bounded corpus JSON; no execution)\n"
         + "   or: dory-x86-decode-audit [--mode real16|protected16|protected32|long64] "
         + "[--start-address <integer>] [--stop-address <integer>] [--skip-unknown-mnemonics] "
         + "<module-or-directory> [...]"
@@ -46,7 +47,13 @@ private enum DoryX86DecodeAudit {
   static func main() throws {
     let options = try arguments(Array(CommandLine.arguments.dropFirst()))
     if options.inventory {
-      let report = try ISAInventory.report(data: ISAInventory.bundledCorpusData())
+      let root = options.evidenceRoot.map { URL(fileURLWithPath: $0, isDirectory: true) }
+        ?? ISASupportCatalog.discoverEvidenceRoot(
+          startingAt: URL(fileURLWithPath: FileManager.default.currentDirectoryPath, isDirectory: true))
+      let report = try ISAInventory.report(
+        data: ISAInventory.bundledCorpusData(),
+        supportCatalogData: root == nil ? nil : ISASupportCatalog.bundledData(),
+        evidenceLoader: root.map { ISASupportCatalog.loader(root: $0) })
       FileHandle.standardOutput.write(try ISAInventory.json(report))
       FileHandle.standardOutput.write(Data([0x0A]))
       if report.mismatchedVectorCount != 0 { Foundation.exit(EXIT_FAILURE) }
@@ -91,6 +98,7 @@ private enum DoryX86DecodeAudit {
   ) throws -> AuditOptions {
     var mode = DoryX86ExecutionMode.long64
     var inventory = false
+    var evidenceRoot: String?
     var modeSpecified = false
     var inputs: [String] = []
     var startAddress: UInt64?
@@ -101,6 +109,12 @@ private enum DoryX86DecodeAudit {
       if values[index] == "--inventory" {
         inventory = true
         index += 1
+      } else if values[index] == "--evidence-root" {
+        guard evidenceRoot == nil, index + 1 < values.count, !values[index + 1].isEmpty else {
+          throw AuditError.usage
+        }
+        evidenceRoot = values[index + 1]
+        index += 2
       } else if values[index] == "--mode" {
         guard index + 1 < values.count,
           let requestedMode = DoryX86ExecutionMode(rawValue: values[index + 1])
@@ -135,13 +149,14 @@ private enum DoryX86DecodeAudit {
         !skipUnknownMnemonics
       else { throw AuditError.usage }
     } else {
-      guard !inputs.isEmpty else { throw AuditError.usage }
+      guard !inputs.isEmpty, evidenceRoot == nil else { throw AuditError.usage }
     }
     if let startAddress, let stopAddress, startAddress >= stopAddress {
       throw AuditError.usage
     }
     return AuditOptions(
       inventory: inventory,
+      evidenceRoot: evidenceRoot,
       mode: mode,
       inputArguments: inputs,
       startAddress: startAddress,

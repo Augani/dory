@@ -28,9 +28,15 @@ struct ISACorpus: Codable {
   let vectors: [ISAVector]
 }
 
-struct ISAQualification: Encodable {
-  let status = "unmeasured"
-  let evidence: [String] = []
+struct ISAQualification: Codable, Equatable {
+  var status = "unmeasured"
+  var evidence: [String] = []
+  var scope = "No verified execution evidence for this exact form."
+}
+
+struct ISAJITQualification: Encodable {
+  var baseline = ISAQualification()
+  var optimizing = ISAQualification()
 }
 
 struct ISAInventoryRecord: Encodable {
@@ -46,15 +52,16 @@ struct ISAInventoryRecord: Encodable {
   let decodeErrorCategory: String?
   let decodeError: String?
   let expectationMismatches: [String]
-  let interpreterSemantics = ISAQualification()
-  let jitSupport = ISAQualification()
-  let flags = ISAQualification()
-  let faults = ISAQualification()
-  let executedFormCount = 0
+  var interpreterSemantics = ISAQualification()
+  var jitSupport = ISAJITQualification()
+  var flags = ISAQualification()
+  var faults = ISAQualification()
+  var executedFormCount = 0
+  var faultAttemptFormCount = 0
 }
 
 struct ISAInventoryReport: Encodable {
-  let schemaVersion = 1
+  let schemaVersion = 2
   let corpusID: String
   let corpusSHA256: String
   let scope: String
@@ -65,9 +72,14 @@ struct ISAInventoryReport: Encodable {
   let rejectedVectorCount: Int
   let mismatchedVectorCount: Int
   let staticBinaryInstructionCount = 0
-  let executedFormCount = 0
-  let executionMeasurement = "not performed; this command only invokes the decoder"
-  let qualification = "unmeasured; static decoding does not qualify interpreter, JIT, flags or faults"
+  let executedFormCount: Int
+  let faultAttemptFormCount: Int
+  let currentInvocationExecutedFormCount = 0
+  let physicalReferenceExecutedFormCount = 0
+  let physicalReference = ISAQualification()
+  let supportCatalog: ISASupportSummary?
+  let executionMeasurement = "Historical, exact-form test evidence only; this invocation executes no guest instructions. Fault attempts are counted separately from retired forms."
+  let qualification = "Each annotation is limited to its recorded case and source revision. Uncovered dimensions remain unmeasured; no full ISA, current-source, physical-reference or release qualification is implied."
   let records: [ISAInventoryRecord]
 }
 
@@ -125,20 +137,34 @@ enum ISAInventory {
     return corpus
   }
 
-  static func report(data: Data, decoder: DoryX86Decoder = .init()) throws -> ISAInventoryReport {
+  static func report(
+    data: Data, decoder: DoryX86Decoder = .init(), supportCatalogData: Data? = nil,
+    evidenceLoader: ((String) throws -> Data)? = nil
+  ) throws -> ISAInventoryReport {
     let corpus = try parse(data)
-    let records = try corpus.vectors.sorted { $0.id < $1.id }.map { vector in
+    var records = try corpus.vectors.sorted { $0.id < $1.id }.map { vector in
       try record(vector: vector, decoder: decoder)
+    }
+    let corpusDigest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    var support: ISASupportSummary?
+    if let supportCatalogData {
+      guard let evidenceLoader else { throw ISASupportError.invalid("missing evidence root") }
+      support = try ISASupportCatalog.apply(
+        data: supportCatalogData, corpusSHA256: corpusDigest,
+        records: &records, load: evidenceLoader)
     }
     return .init(
       corpusID: corpus.id,
-      corpusSHA256: SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(),
+      corpusSHA256: corpusDigest,
       scope: corpus.scope,
       references: corpus.references.sorted { $0.id < $1.id },
       corpusVectorCount: records.count,
       staticDecodedFormCount: records.filter { $0.decodedInstruction != nil }.count,
       rejectedVectorCount: records.filter { $0.decodedInstruction == nil }.count,
       mismatchedVectorCount: records.filter { !$0.expectationMismatches.isEmpty }.count,
+      executedFormCount: records.reduce(0) { $0 + $1.executedFormCount },
+      faultAttemptFormCount: records.reduce(0) { $0 + $1.faultAttemptFormCount },
+      supportCatalog: support,
       records: records)
   }
 
