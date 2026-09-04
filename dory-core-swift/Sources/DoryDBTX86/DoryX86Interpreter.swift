@@ -6788,6 +6788,42 @@ public struct DoryX86Interpreter: Sendable {
             state: state
           )
           let maximumCount = Int(min(remaining, iterationBudget - completed))
+          let sourceOperand = stringMemoryOperand(
+            source: true,
+            width: width,
+            addressWidth: addressWidth,
+            instruction: instruction,
+            mode: mode
+          )
+          let destinationOperand = stringMemoryOperand(
+            source: false,
+            width: width,
+            addressWidth: addressWidth,
+            instruction: instruction,
+            mode: mode
+          )
+          // A bulk backend only proves its own mapping. Decline it when the
+          // architectural linear span crosses a segment or canonical boundary
+          // so the scalar loop can commit the valid REP prefix and fault on the
+          // first invalid element.
+          guard
+            bulkStringSpanIsArchitecturallyValid(
+              sourceOperand,
+              effectiveOffset: stringRegister(.rsi, width: addressWidth, state: state),
+              byteCount: maximumCount,
+              write: false,
+              instruction: instruction,
+              state: state
+            ),
+            bulkStringSpanIsArchitecturallyValid(
+              destinationOperand,
+              effectiveOffset: stringRegister(.rdi, width: addressWidth, state: state),
+              byteCount: maximumCount,
+              write: true,
+              instruction: instruction,
+              state: state
+            )
+          else { break }
           do {
             guard
               let copied = try bulkMemory.copyForwardNonoverlapping(
@@ -6834,6 +6870,23 @@ public struct DoryX86Interpreter: Sendable {
         let maximumElementCount = Int(
           min(remaining, iterationBudget - completed, UInt64(Int.max))
         )
+        let destinationOperand = stringMemoryOperand(
+          source: false,
+          width: width,
+          addressWidth: addressWidth,
+          instruction: instruction,
+          mode: mode
+        )
+        guard
+          bulkStringSpanIsArchitecturallyValid(
+            destinationOperand,
+            effectiveOffset: stringRegister(.rdi, width: addressWidth, state: state),
+            byteCount: maximumElementCount * width.byteCount,
+            write: true,
+            instruction: instruction,
+            state: state
+          )
+        else { break }
         do {
           guard
             let filled = try bulkMemory.fillRepeating(
@@ -7151,6 +7204,29 @@ public struct DoryX86Interpreter: Sendable {
     let destinationEnd = destination.addingReportingOverflow(byteCount)
     guard !sourceEnd.overflow, !destinationEnd.overflow else { return false }
     return sourceEnd.partialValue <= destination || destinationEnd.partialValue <= source
+  }
+
+  private func bulkStringSpanIsArchitecturallyValid(
+    _ operand: DoryX86MemoryOperand,
+    effectiveOffset: UInt64,
+    byteCount: Int,
+    write: Bool,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState
+  ) -> Bool {
+    do {
+      try validateSegmentAccess(
+        operand,
+        effectiveOffset: effectiveOffset,
+        byteCount: byteCount,
+        write: write,
+        instruction: instruction,
+        state: state
+      )
+      return true
+    } catch {
+      return false
+    }
   }
 
   private func stringMemoryOperand(
