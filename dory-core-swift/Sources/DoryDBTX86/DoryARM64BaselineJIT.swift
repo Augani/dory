@@ -2464,6 +2464,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let exitCode: DoryJITExitCode
   }
 
+  private enum QwordCopyLoopAttempt {
+    case unavailable
+    case requiresInterpreter
+    case executed(DoryARM64ExecutionSummary)
+  }
+
   private static let qwordCopyLoopBytes: [UInt8] = [
     0x48, 0x8b, 0x0c, 0x06, 0x48, 0x89, 0x0c, 0x07,
     0x48, 0x83, 0xc0, 0x08, 0x48, 0x89, 0xd1, 0x48,
@@ -2741,7 +2747,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     return try lock.withLock {
       chainedExecutionCallCount &+= 1
       chainedRequestedInstructionCount &+= UInt64(maximumInstructions)
-      if let accelerated = try executeQwordCopyLoop(
+      switch try executeQwordCopyLoop(
         byteProvider: byteProvider,
         guestStart: guestStart,
         mode: mode,
@@ -2749,8 +2755,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         state: &state,
         memory: memory
       ) {
+      case .executed(let accelerated):
         chainedRetiredInstructionCount &+= UInt64(accelerated.guestInstructionCount)
         return accelerated
+      case .requiresInterpreter:
+        return nil
+      case .unavailable:
+        break
       }
       return try withUnsafeTemporaryAllocation(
         of: UInt64.self,
@@ -2903,30 +2914,42 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     maximumInstructions: Int,
     state: inout DoryX86ArchitecturalState,
     memory: (any DoryX86Memory)?
-  ) throws -> DoryARM64ExecutionSummary? {
+  ) throws -> QwordCopyLoopAttempt {
     guard mode == .long64, maximumInstructions >= 7,
       let bulkMemory = memory as? any DoryX86BulkMemory,
       state.rip == guestStart
-    else { return nil }
+    else { return .unavailable }
     let bytes = try speculativeInstructionBytes(
       using: { try byteProvider(guestStart, $0) },
       maximumCount: Self.qwordCopyLoopBytes.count
     )
     guard bytes == Self.qwordCopyLoopBytes,
       recognizesQwordCopyLoop(bytes, at: guestStart)
-    else { return nil }
+    else { return .unavailable }
 
     let offset = state.registers.rax
-    guard offset <= UInt64.max - 8, state.registers.rdx >= offset + 8 else { return nil }
+    guard offset <= UInt64.max - 8, state.registers.rdx >= offset + 8 else {
+      return .unavailable
+    }
     let remainingByteCount = state.registers.rdx - offset
-    let requestedElementCount = min(Int(remainingByteCount / 8), maximumInstructions / 7)
-    guard requestedElementCount > 0 else { return nil }
+    let requestedElementCount = min(
+      Int(remainingByteCount / 8), maximumInstructions / 7, Int(UInt32.max / 7))
+    guard requestedElementCount > 0 else { return .unavailable }
+    // Keep wrapped effective-address cases on the architectural path, and
+    // validate the complete accelerated span before a permissive bulk backend
+    // can observe it. The interpreter must handle non-canonical elements.
     let (sourceAddress, sourceOverflow) = state.registers.rsi.addingReportingOverflow(offset)
-    let (destinationAddress, destinationOverflow) = state.registers.rdi.addingReportingOverflow(
-      offset)
+    let (destinationAddress, destinationOverflow) =
+      state.registers.rdi.addingReportingOverflow(offset)
+    guard !sourceOverflow, !destinationOverflow else { return .requiresInterpreter }
+    let requestedByteCount = UInt64(requestedElementCount) * 8
+    guard
+      Self.isCanonicalSpan(start: sourceAddress, byteCount: requestedByteCount),
+      Self.isCanonicalSpan(start: destinationAddress, byteCount: requestedByteCount)
+    else { return .requiresInterpreter }
     let (loopEnd, loopEndOverflow) = guestStart.addingReportingOverflow(
       UInt64(Self.qwordCopyLoopBytes.count))
-    guard !sourceOverflow, !destinationOverflow, !loopEndOverflow else { return nil }
+    guard !loopEndOverflow else { return .unavailable }
 
     let copied: Int?
     do {
@@ -2938,13 +2961,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         excludingDestinationRanges: [guestStart..<loopEnd]
       )
     } catch {
-      return nil
+      return .unavailable
     }
     guard let copiedElementCount = copied, copiedElementCount > 0,
       copiedElementCount <= requestedElementCount
-    else { return nil }
+    else { return .unavailable }
 
-    let copiedByteCount = UInt64(copiedElementCount * 8)
+    let copiedByteCount = UInt64(copiedElementCount) * 8
     let nextOffset = offset + copiedByteCount
     let comparisonLeft = state.registers.rdx - nextOffset
     state.registers.rax = nextOffset
@@ -2955,12 +2978,22 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       preserving: state.rflags
     )
     state.rip = comparisonLeft > 7 ? guestStart : loopEnd
-    return .init(
-      guestInstructionCount: UInt32(copiedElementCount * 7),
-      residentBlockCount: UInt32(copiedElementCount * 2),
-      tier: optimization == .optimizing ? .optimizing : .baseline,
-      exitCode: .dispatch
+    return .executed(
+      .init(
+        guestInstructionCount: UInt32(copiedElementCount * 7),
+        residentBlockCount: UInt32(copiedElementCount * 2),
+        tier: optimization == .optimizing ? .optimizing : .baseline,
+        exitCode: .dispatch
+      )
     )
+  }
+
+  private static func isCanonicalSpan(start: UInt64, byteCount: UInt64) -> Bool {
+    guard byteCount > 0 else { return false }
+    let last = start.addingReportingOverflow(byteCount - 1)
+    return !last.overflow && DoryX86ArchitecturalState.isCanonical(start)
+      && DoryX86ArchitecturalState.isCanonical(last.partialValue)
+      && (start ^ last.partialValue) & (1 << 47) == 0
   }
 
   private func recognizesQwordCopyLoop(_ bytes: [UInt8], at guestStart: UInt64) -> Bool {
