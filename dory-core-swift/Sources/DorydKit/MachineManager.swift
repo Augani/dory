@@ -3348,13 +3348,7 @@ public final class MachineManager: @unchecked Sendable {
             throw MachineManagerError.persistence("cannot open runtime executable at \(path)")
         }
         defer { _ = try? handle.close() }
-        var hash = SHA256()
-        while true {
-            let data = try handle.read(upToCount: 1_048_576) ?? Data()
-            if data.isEmpty { break }
-            hash.update(data: data)
-        }
-        return hash.finalize().map { String(format: "%02x", $0) }.joined()
+        return try sha256(descriptor: handle.fileDescriptor)
     }
 
     private func prepareMachineStart(
@@ -10874,14 +10868,19 @@ public final class MachineManager: @unchecked Sendable {
             let input = FileHandle(fileDescriptor: sourceFD, closeOnDealloc: false)
             let output = FileHandle(fileDescriptor: destinationFD, closeOnDealloc: false)
             while true {
-                let chunk = try input.read(upToCount: 1024 * 1024) ?? Data()
-                if chunk.isEmpty { break }
-                copied = copied.addingReportingOverflow(UInt64(chunk.count)).partialValue
-                guard copied <= expectedByteCount else {
-                    throw MachineManagerError.persistence("verified desktop update artifact grew while staging")
+                let readChunk = try autoreleasepool {
+                    let chunk = try input.read(upToCount: 1024 * 1024) ?? Data()
+                    guard !chunk.isEmpty else { return false }
+                    let next = copied.addingReportingOverflow(UInt64(chunk.count))
+                    guard !next.overflow, next.partialValue <= expectedByteCount else {
+                        throw MachineManagerError.persistence("verified desktop update artifact grew while staging")
+                    }
+                    copied = next.partialValue
+                    hasher.update(data: chunk)
+                    try output.write(contentsOf: chunk)
+                    return true
                 }
-                hasher.update(data: chunk)
-                try output.write(contentsOf: chunk)
+                if !readChunk { break }
             }
             guard fsync(destinationFD) == 0 else {
                 throw MachineManagerError.persistence("could not sync private desktop update artifact")
@@ -14258,21 +14257,15 @@ public final class MachineManager: @unchecked Sendable {
         guard descriptor >= 0 else {
             throw MachineManagerError.persistence("could not open machine snapshot artifact")
         }
-        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
+        defer { close(descriptor) }
+        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         let byteCount = try handle.seekToEnd()
         guard byteCount > 0 else {
             throw MachineManagerError.persistence("machine snapshot artifact is empty")
         }
-        try handle.seek(toOffset: 0)
-        var hasher = SHA256()
-        while true {
-            let chunk = try handle.read(upToCount: 4 * 1_024 * 1_024) ?? Data()
-            if chunk.isEmpty { break }
-            hasher.update(data: chunk)
-        }
         return DoryMachineSnapshotArtifact(
             byteCount: byteCount,
-            sha256: hasher.finalize().map { String(format: "%02x", $0) }.joined()
+            sha256: try sha256(descriptor: descriptor)
         )
     }
 
@@ -15215,9 +15208,15 @@ public final class MachineManager: @unchecked Sendable {
         defer { try? handle.seek(toOffset: 0) }
         var hasher = SHA256()
         while true {
-            let chunk = try handle.read(upToCount: 4 * 1_024 * 1_024) ?? Data()
-            if chunk.isEmpty { break }
-            hasher.update(data: chunk)
+            // Foundation's read buffer can be autoreleased even after Swift's Data leaves
+            // scope. Long-lived daemon worker threads must drain it for every bounded chunk.
+            let readChunk = try autoreleasepool {
+                let chunk = try handle.read(upToCount: 4 * 1_024 * 1_024) ?? Data()
+                guard !chunk.isEmpty else { return false }
+                hasher.update(data: chunk)
+                return true
+            }
+            if !readChunk { break }
         }
         return hasher.finalize().map { String(format: "%02x", $0) }.joined()
     }
@@ -15410,14 +15409,8 @@ public final class MachineManager: @unchecked Sendable {
         guard descriptor >= 0 else {
             throw MachineManagerError.persistence("could not open desktop update bundle")
         }
-        let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
-        var hasher = SHA256()
-        while true {
-            let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
-            if chunk.isEmpty { break }
-            hasher.update(data: chunk)
-        }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        defer { close(descriptor) }
+        return try sha256(descriptor: descriptor)
     }
 
     private static func sha256(data: Data) -> String {
@@ -18247,12 +18240,14 @@ private enum MachineSnapshotBundle {
         var hasher = SHA256()
         while remaining > 0 {
             let requested = Int(min(remaining, UInt64(copyChunkSize)))
-            let chunk = try input.read(upToCount: requested) ?? Data()
-            guard !chunk.isEmpty else {
-                throw MachineManagerError.persistence("truncated dory machine bundle payload")
+            try autoreleasepool {
+                let chunk = try input.read(upToCount: requested) ?? Data()
+                guard !chunk.isEmpty else {
+                    throw MachineManagerError.persistence("truncated dory machine bundle payload")
+                }
+                hasher.update(data: chunk)
+                remaining -= UInt64(chunk.count)
             }
-            hasher.update(data: chunk)
-            remaining -= UInt64(chunk.count)
         }
         return Data(hasher.finalize())
     }
@@ -18306,13 +18301,15 @@ private enum MachineSnapshotBundle {
         var hasher = SHA256()
         while remaining > 0 {
             let requested = Int(min(remaining, UInt64(copyChunkSize)))
-            let chunk = try input.read(upToCount: requested) ?? Data()
-            guard !chunk.isEmpty else {
-                throw MachineManagerError.persistence("truncated dory machine bundle payload")
+            try autoreleasepool {
+                let chunk = try input.read(upToCount: requested) ?? Data()
+                guard !chunk.isEmpty else {
+                    throw MachineManagerError.persistence("truncated dory machine bundle payload")
+                }
+                try output.write(contentsOf: chunk)
+                hasher.update(data: chunk)
+                remaining -= UInt64(chunk.count)
             }
-            try output.write(contentsOf: chunk)
-            hasher.update(data: chunk)
-            remaining -= UInt64(chunk.count)
         }
         if rejectTrailingInput {
             let extra = try input.read(upToCount: 1) ?? Data()
