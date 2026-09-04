@@ -145,6 +145,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    guard maximumCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: maximumCount)
+    }
     guard maximumCount > 0 else { return [] }
     if let resolved = try directRAMRoute(address: address, byteCount: 1) {
       return try ram.instructionBytes(
@@ -178,6 +181,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   public func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
     guard byteCount > 0 else { return [] }
     if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
       return try ram.read(at: resolved.backingAddress, byteCount: byteCount)
@@ -190,6 +196,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   public func codeGeneration(at address: UInt64, byteCount: Int) throws -> UInt64? {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
     guard byteCount > 0 else { return nil }
     if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
       return try ram.codeGeneration(at: resolved.backingAddress, byteCount: byteCount)
@@ -262,6 +271,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
     guard byteCount > 0 else { return }
     if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
       try ram.validateWrite(at: resolved.backingAddress, byteCount: byteCount)
@@ -460,7 +472,7 @@ extension DoryPCPhysicalMemoryBus: DoryX86RestartableScalarMemory {
 
 extension DoryPCPhysicalMemoryBus: DoryX86BulkMemory {
   public func bulkCopyRAMSpan(at address: UInt64, maximumByteCount: Int) -> Int? {
-    guard maximumByteCount > 0 else { return 0 }
+    guard maximumByteCount > 0 else { return maximumByteCount == 0 ? 0 : nil }
     guard
       let resolved = try? resolveRAM(
         address: address,
@@ -476,7 +488,7 @@ extension DoryPCPhysicalMemoryBus: DoryX86BulkMemory {
     to destinationAddress: UInt64,
     maximumByteCount: Int
   ) throws -> Int? {
-    guard maximumByteCount > 0 else { return 0 }
+    guard maximumByteCount > 0 else { return maximumByteCount == 0 ? 0 : nil }
     guard
       let sourceSpan = bulkCopyRAMSpan(
         at: sourceAddress, maximumByteCount: maximumByteCount),
