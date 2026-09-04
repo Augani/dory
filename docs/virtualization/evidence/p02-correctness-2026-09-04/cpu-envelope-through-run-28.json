@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-11",
+    "P02-13",
+    "P02-18",
+    "P02-19",
+    "P02-26"
+  ],
+  "sourceCommit": "ae471c9f8c8aec859545ab10b3e061c6109e4723",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Failed constructor compile27, successful bounded source gate28, recoverable heap and descriptor/fetch regressions, and optimized run28 runner build. Completed diagnostic probe8 retained.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-28.json",
+      "sha256": "83f67036efe4f03e6531c29b10db6063d52788ce29598dee4a5eea5071a1fc6b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-26.json",
+      "sha256": "49dfd0bda93c5cd8dd3f7882b5c1c317271ef8f36316923636add20fd2772738"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete. These are bounded source gates and an experimental-host optimized runner build; no physical x86 reference, glibc/systemd boot, sustained stress, full ISA or release qualification is established.",
+    "The successful gate reports732 Swift tests, comprising731 passing and1 disabled physical-reference case. XCTest reports11, comprising10 passing and1 optional pinned-boot fixture skip. Run27 did not execute tests.",
+    "Run27 is bound to base plus exact overlay: it differs from the run28 comparison commit in the JIT implementation and allocating test wrapper, and lacks the new decode-boundary test file. It must not be relabeled as the complete run28 source.",
+    "Recoverable heap construction does not make Array-returning diagnostic snapshots, read copies or unrelated Swift metadata allocation failure recoverable. mmap remains an independent implementation.",
+    "Ignored generated FFI inputs and the copied optimized executable are hash-bound without vendoring executable payloads. No capability bits or completion checkboxes are promoted.",
+    "Probe8 architectural state and counters describe the last completed runner quantum if an error interrupts machine.run; they are not necessarily the exact fault state."
+  ]
+}

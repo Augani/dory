@@ -1,0 +1,40 @@
+{
+  "kind": "p02-guest-receipt-contract-validation",
+  "sourceCommit": "ae471c9f8c8aec859545ab10b3e061c6109e4723",
+  "runID": "71b35915-37e0-4b73-96ed-f1efe1e8397a",
+  "checks": {
+    "processExitZero": true,
+    "resultSuccess": true,
+    "diagnosticSuccess": true,
+    "runIDMatches": true,
+    "exactSevenSuccessfulWorkloads": true,
+    "hostStopPoweredOff": true,
+    "hostFinalCountMatches": true,
+    "retiredTierCountersSum": true,
+    "pinnedInputHashesMatch": true,
+    "runnerAndSourceMatch": true,
+    "invocationWorkloadNamesMatch": true
+  },
+  "kernel": {
+    "byteCount": 39274268,
+    "sha256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "elfBuildID": "6605cb9027e42995c51847655ec230aeb78559bd"
+  },
+  "initrd": {
+    "byteCount": 1482752,
+    "sha256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249"
+  },
+  "lastStop": {
+    "elapsedNanoseconds": 386985428167,
+    "instructionCount": 875,
+    "nearestSymbol": {
+      "name": "acpi_os_write_port",
+      "offset": 40,
+      "symbolAddress": 18446744071588573680
+    },
+    "reason": "powered-off",
+    "rip": 18446744071588573720,
+    "totalInstructions": 751119875
+  },
+  "scope": "Offline consistency checks against retained process result, diagnostic record, invocation and exit. One real pinned musl userspace run completed on baseline JIT. This is not glibc/systemd, other execution-tier/kernel, physical-reference, full-phase or release qualification."
+}

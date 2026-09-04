@@ -1,0 +1,266 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-18-recoverable-heap-backing-handoff",
+  "files": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryX86Differential.swift": {
+      "sha256": "5e96dc747b0e50c4d2daa4dc8b5670ccde7e499f262e8d143350f46ff9711907",
+      "bytes": 10973,
+      "beforeSHA256": "f3dc24837ace4bcbdcefaa8fd7daa41e6d54bb24a449eb28a49577623e372f67"
+    },
+    "dory-core-swift/Sources/DoryDBTX86/DoryX86Memory.swift": {
+      "sha256": "6aad704e6b9253feacd908d2186c3b0374cece76b2d14bfff01956b3bc64320d",
+      "bytes": 22210,
+      "beforeSHA256": "1d9ba0af6fc53a96c76b7dcb08bd61cac7d406e6fbfc9603d3ff5b5dff12caa4"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": {
+      "sha256": "8e4b7e1238ab59c0d497fdacd34db189cb4e68b4c45608da4773df8a5cf3bf16",
+      "bytes": 127601,
+      "beforeSHA256": "cda51e64c12418e11de6640866a299a16779024081203ebf29250d7f93a78d88"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64CanonicalFaultTests.swift": {
+      "sha256": "8b3ab7eefdb9124d5e9c23d9b30c74a52bca0a691b2041bda58323148702211f",
+      "bytes": 11731,
+      "beforeSHA256": "e753e83aab1e0dc3dbc7e8b4333c712c20c9e92f0886bd5d2fc0b6fa4bdcee5d"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64MetadataFaultTests.swift": {
+      "sha256": "5ad6102f974da2b01c88280429ed8f43a042712097c66617fe77d74591404c97",
+      "bytes": 7100,
+      "beforeSHA256": "59c32ebad61c4003fbe0251900ce28382e159b5fef23bd3f255f17e28207e1fe"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64PAELatchTests.swift": {
+      "sha256": "a7dd33df87ef7fe29aeacab4e50f8bbc0117a58e6b846a2fc022fc1f3a77b16a",
+      "bytes": 3671,
+      "beforeSHA256": "7515ee0fe7de51b693eee004c304848fa1626ee03a5f7ed3e8a1fb1b20dcb62a"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64SegmentBaseTests.swift": {
+      "sha256": "308b5693b30e62fb1e676f094b30c74b649bb1078deed6e012ea681afaa0edbe",
+      "bytes": 9921,
+      "beforeSHA256": "08779cd737417016f3f3474a02de283f3b22b2ba37524de856d111ba4388071c"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86BoundedCorpusTests.swift": {
+      "sha256": "ca34bbd2e503675e966b1e0e76a98eb5b0e5a2ea772106b2b5c767d66918b094",
+      "bytes": 13448,
+      "beforeSHA256": "67dc171cc1f59ba8c5e7348cb2adc2d16e617caecf91b5a7e4068d00d91f3c9f"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ControlTransitionTests.swift": {
+      "sha256": "8df681f134f5cfe58b6d66e6cf4cb41f259884936bf825e26b09728c3105b02a",
+      "bytes": 14404,
+      "beforeSHA256": "7448cd41609f5f6275f324416820f4e46b8167833178a5ff6e4e7638c0597a3b"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DebugRegisterTests.swift": {
+      "sha256": "11e51139beda731af3d06dd921c18991dc13e7030106dc6e2065c84ebe4d8bfc",
+      "bytes": 10811,
+      "beforeSHA256": "0b8d92db4a511345dd93d813236bad6bf7d9d3cf82ae6311dc536d378ef244ae"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DescriptorTableAccessTests.swift": {
+      "sha256": "b062452be9c6602b6e324cbdad307401c9b7b7b80837c6e9f3fdbb92a69bfc12",
+      "bytes": 13386,
+      "beforeSHA256": "2d27ac9c98e0524d62490080f3e0a7f9fb68df86a3d9dddf86ea12e2261b8486"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialIsolationTests.swift": {
+      "sha256": "b47f1abe2fb2594daef1f2cdbd98ae114eaffe41584063f0fe7032a4ee8db591",
+      "bytes": 11592,
+      "beforeSHA256": "19ffa24e6c3665316e83df2b4faabdcc198df2a6c780333866f69bd68022aab6"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialTests.swift": {
+      "sha256": "d23e435815c088c0d5959df219b3026595e75554db7d187336d99a3a4f0b545f",
+      "bytes": 8506,
+      "beforeSHA256": "12844d4a024f9c7bed935d3611cebaa861217216c2c4a65887d33fff2edd4ef0"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86HypervisorBoundaryTests.swift": {
+      "sha256": "a2cfaacca97fb497478223595f7793480ba8bb835a36b58a881e7865381f5381",
+      "bytes": 3393,
+      "beforeSHA256": "b7f569f988b1b4d8ea540f7b85afca08f27882d2f304c4dec94c2b5005ab0f0c"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86IOBitmapPagingTests.swift": {
+      "sha256": "5ff376368b407bc2ca3ffc71d16bc9ddd504aeb0d3e9765a9eb6aa65af346160",
+      "bytes": 10105,
+      "beforeSHA256": "eb27b3b4c0bd3500276e28fc282269482590fff47ca2df21b9303d125661498a"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86InterpreterTests.swift": {
+      "sha256": "8cc5a4858f51c37f72eb42b4e72eb5b06029273b77da3174fc18366a6440701c",
+      "bytes": 124525,
+      "beforeSHA256": "3d2b1a06f5b996f2c185147d6ba7287c793c179f3729e59c71306c8674e7eabd"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86InterruptTests.swift": {
+      "sha256": "4930858f45ad442b2cd9d49a243e01870e64eda975f5f9ade13db020ad018f77",
+      "bytes": 10584,
+      "beforeSHA256": "421c6762eb1a74083d4702b7150bed4a14686790aaca7249d542b2b35a6fa4b5"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86MemoryTests.swift": {
+      "sha256": "169536414dbfa6745e70c79ae1eed7901aad4a175026024d65520c3705b45d39",
+      "bytes": 9438,
+      "beforeSHA256": "c13551d5407ba2221b43510120c5fb3a9508dcf0c01b7893efaff4b8fbd40b8a"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ModePrivilegeTests.swift": {
+      "sha256": "4b5dbe4fea0e0024eb64f52b003cb6b6f1f074b8bfbb271db5adfb1c86b12136",
+      "bytes": 10882,
+      "beforeSHA256": "ecf877df9be6b34cfbf4e47005f11b768f93ea63233020135ed7d10ac17fba4c"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PAEPDPTELatchTests.swift": {
+      "sha256": "3f053018dd77f8eed9554c28126088edb4801e3b1adf8cfad725d1b6e9496137",
+      "bytes": 17125,
+      "beforeSHA256": "25d12885d675d93fed47e71a74dd980b2ddff8afa3a8bd90f6a7a12cc54a9d70"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PagingReservedBitsTests.swift": {
+      "sha256": "5fbbb34454e154971befc8258102e371cfa8663a254966b363fe61c4f63297a2",
+      "bytes": 8031,
+      "beforeSHA256": "dd001b7b1b8341b37201ca17a5c062295aba91cdd713ef3154968882c5d7856f"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PagingTests.swift": {
+      "sha256": "b916f7940c2294e9c1dde2215e870a9661bed66635e29043c77ff9379f3c56ea",
+      "bytes": 33362,
+      "beforeSHA256": "a82c63aec05a5577562d3dff77ee9030132b14dadd0cef4cc113e2503cf9a7c7"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PhysicalReferenceTests.swift": {
+      "sha256": "1b79333192495fa33856ba2d615c5349420d28c39666c6b7d0cd039f59722ceb",
+      "bytes": 11781,
+      "beforeSHA256": "09d3b2ad0d6d960386f67c1d7223f5fc3970b2e923a7b8a492962e3ecc82b777"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PreciseFaultTests.swift": {
+      "sha256": "252f13de063cdb108f8c6793a04cb528df42cd943680de4687e827ee6b7e0ef9",
+      "bytes": 7218,
+      "beforeSHA256": "d4c703c01b48412c80eb9d7ec946dc628d173ec7ca94a2e81d1c57ab4be7811f"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ReplayTests.swift": {
+      "sha256": "944528a6f0615f27f40c916be226b55570aaaba4c0d28ae2fb8c54d2feedbb60",
+      "bytes": 3871,
+      "beforeSHA256": "d7de748f7c926177c424e818c1015e7b7a3b845fa861936fcff0567c9bc6370a"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86SSE2ScalarFPTests.swift": {
+      "sha256": "e392efeafe92fe288013433df4e684c565a92ee345578f847ad56ca32b4db9fe",
+      "bytes": 9090,
+      "beforeSHA256": "6f73fdc93a4591cf86c6f2a561b6a529962648d0d3556ba813d5ffea1eff459b"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86SSE3AndSSE4Tests.swift": {
+      "sha256": "86b703ec7afaeadc4134b8c5267daa6ac1cb40e77009e9d5b9b9e5363c0c5eab",
+      "bytes": 19003,
+      "beforeSHA256": "2416df017392220d534d35264452f5701061bee9dbbf341299b8a7f0cec9d87c"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86SystemGroupDecodeTests.swift": {
+      "sha256": "52b178fd9b569f4f901407bb25839c106749cc007575383b2f4e8a7f67f6bae7",
+      "bytes": 10456,
+      "beforeSHA256": "bd89c53bc17122107a864404043669b920089e0fd45eeca9ffbdac5169f521fe"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86SystemGroupExecutionTests.swift": {
+      "sha256": "2c1c674c7b8b10a836336b60f86e7cfe73930bf1cbe88bebe932bcbd79e5bcb7",
+      "bytes": 10045,
+      "beforeSHA256": "1e68cdae059d0aac3e4d3d5e494621f9bee9457c38bac0187b8d7745bf247b9b"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86SystemPrivilegeTests.swift": {
+      "sha256": "b9b58c4b3a48dbe04fcf0e32b6bd7c7b62d425bb6156bdd94c2b4d408c3c3da7",
+      "bytes": 4249,
+      "beforeSHA256": "95391e35e7bb515f9bf1ff8c0b0d154c9aa61e5efac2c5e81e7c2b7cbc65422e"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86VEXTests.swift": {
+      "sha256": "8281208db9e83d704cf195cb8be2ba4546969e62219a2f3d3586e2f0c21d8171",
+      "bytes": 18271,
+      "beforeSHA256": "277f495ae39cdc0a3313ac2d67a987b256426027681209a09b87950bcf87d7ef"
+    },
+    "dory-core-swift/Tests/DoryFirmwareTests/DoryPCUEFIVariableBridgeMMIOTests.swift": {
+      "sha256": "6e480c45ebb3bab830debb33441dcab999f34f8b5622d8da0b1c80a21589aa23",
+      "bytes": 6416,
+      "beforeSHA256": "c43a6703c8c0ab7c5beed7f3aef59d0b0104ba4034317d6a9ea3d8d34728ae32"
+    },
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCACPITests.swift": {
+      "sha256": "d8b4bdb19eb93b0e20003d4623369435daa73f4871054d56b3e544f837098392",
+      "bytes": 11276,
+      "beforeSHA256": "36f9cf1737295ed4fe7c48b277cfb79dd4992b79c6180cc49dc5529812affd17"
+    },
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCIOAPICMaskTests.swift": {
+      "sha256": "ebc09f6a14e540f45e908e0e4d222584215fbcfde45a386cd6d053ba32f578e0",
+      "bytes": 3706,
+      "beforeSHA256": "180314670851bc70bad6c13333ff18c45334c26e7c1a17c62e49bf75d7a58927"
+    },
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPVHBootTests.swift": {
+      "sha256": "03940fe4e7db927578553947dff93b0f2b812c2478c0f8ce2c037eca54be9e5f",
+      "bytes": 9300,
+      "beforeSHA256": "89ace71340b942f45ca4e340685f40d6c7961a942aaad07982103cd4735245fe"
+    },
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPVHKernelTests.swift": {
+      "sha256": "ec43d8792420dabe33afe8b2a154ed786a8105ab8c5a52600116278d3e3b7231",
+      "bytes": 11871,
+      "beforeSHA256": "b6804e0f8a4160b40deea09d64d9c8e9f51aeefda455c1d99726b5f2ef7a1259"
+    },
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPortIOTests.swift": {
+      "sha256": "1c7f105ae55bdbe79ec33e03de5a83ddb4e597c1603def8b8bb513b987f14118",
+      "bytes": 3835,
+      "beforeSHA256": "758a85a8d7247649017c87c2729f4d11f3f8bd55d70857c274a7f2475b998410"
+    },
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCRAMConfigurationTests.swift": {
+      "sha256": "b4ba3cdc302737c2fb19e1641efa1e324e69dfd7886dff26633d93dc5c6f8617",
+      "bytes": 2759,
+      "beforeSHA256": "eebf945c9c98db4ca9a15661b4c9dcaee6b957806b862d252ec59ba1061a0741"
+    },
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCSMBIOSTests.swift": {
+      "sha256": "0c67ddf5b29091fe465ae68851ed58e3113b63f994de3dd606588f74e6325a58",
+      "bytes": 9809,
+      "beforeSHA256": "50059bc2b9601f8d9970b1ef7908c1ae4943cc061401759f66cb0e59f8a929fd"
+    },
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86HeapMemoryConstructionTests.swift": {
+      "sha256": "db7f20989ad2b0b19e1acf1e30b48966c9e1bd4da8d92b3a8c81bf925b1ce94d",
+      "bytes": 5342,
+      "beforeSHA256": null
+    }
+  },
+  "patch": {
+    "path": "/tmp/dory-p02-heap-memory.patch",
+    "sha256": "02c770abdc395f931005e83daa284e104dec80a2ab582b6490a1782cb9d92b5b"
+  },
+  "scope": "Checked calloc/free ownership independent of mmap, throwing public ByteArray constructors, caller migration, malformed bus test doubles and four constructor contract tests. No arbitrary allocation cap. Existing read/snapshot Swift Array allocation limitations remain explicit.",
+  "tests": {
+    "newSuite": "DoryX86HeapMemoryConstructionTests",
+    "newTestMethods": 4,
+    "sharedSuites": [
+      "DoryX86MemoryTests",
+      "DoryPCPhysicalMemoryTests",
+      "DoryPCPhysicalMemoryBoundaryTests",
+      "DoryPCPhysicalMemoryConformanceTests",
+      "DoryPCFirmwareFlashTests",
+      "DoryX86DifferentialIsolationTests",
+      "DoryX86DifferentialTests"
+    ],
+    "packageTestExecution": "Deferred to parent combined frozen gate; no Swift package build or VM run by agent."
+  },
+  "boundedCompilerChecks": [
+    {
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swiftc -typecheck dory-core-swift/Sources/DoryDBTX86/DoryX86Memory.swift",
+      "exitCode": 0,
+      "log": "/tmp/dory-p02-heap-memory-source-typecheck.log",
+      "logSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swiftc -emit-module -parse-as-library -enable-testing -module-name DoryDBTX86 dory-core-swift/Sources/DoryDBTX86/DoryX86Memory.swift dory-core-swift/Sources/DoryDBTX86/DoryX86MmapMemory.swift -emit-module-path /tmp/dory-p02-heap-typecheck/DoryDBTX86.swiftmodule",
+      "exitCode": 0,
+      "log": "/tmp/dory-p02-heap-module-typecheck.log",
+      "logSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swiftc -typecheck -I /tmp/dory-p02-heap-typecheck -F /Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks -plugin-path /Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/lib/swift/host/plugins/testing dory-core-swift/Tests/DoryDBTX86Tests/DoryX86HeapMemoryConstructionTests.swift dory-core-swift/Tests/DoryDBTX86Tests/DoryX86MemoryTests.swift",
+      "exitCode": 0,
+      "log": "/tmp/dory-p02-heap-tests-typecheck-3.log",
+      "logSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  ],
+  "earlierTypecheckSetupFailures": [
+    {
+      "log": "/tmp/dory-p02-heap-tests-typecheck.log",
+      "cause": "Direct swiftc lacked Testing framework search path; fixed with Xcode -F flag.",
+      "exitCode": 1
+    },
+    {
+      "log": "/tmp/dory-p02-heap-tests-typecheck-2.log",
+      "cause": "Direct swiftc lacked TestingMacros plugin search path; fixed with Xcode -plugin-path flag.",
+      "exitCode": 1
+    }
+  ],
+  "notOwned": [
+    "DoryX86Interpreter.swift",
+    "DoryX86Decoder.swift",
+    "DoryX86Paging.swift",
+    "DoryX86SystemInstructionBoundaryTests.swift",
+    "DoryX86SystemDescriptorLoadTests.swift"
+  ],
+  "cpuAgentCoordination": "CPU agent migrated its live system-boundary constructors to try and is using try in new system-descriptor tests. Those files must be taken from CPU agent separately; they are excluded from this patch.",
+  "deferred": "Generic physical-bus validateRead optimization remains unchanged."
+}

@@ -1,0 +1,29 @@
+--- a/dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialIsolationTests.swift
++++ b/dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialIsolationTests.swift
+@@ -71,7 +71,7 @@
+       // after both engines have written the same shared RAM.
+       let bytes: [UInt8] = [0x48, 0x89, 0x03]
+       for sharesOriginal in [false, true] {
+-        let source = DifferentialShallowMemory(instructions: bytes, sharesOriginal: sharesOriginal)
++        let source = try DifferentialShallowMemory(instructions: bytes, sharesOriginal: sharesOriginal)
+         var initial = try state()
+         initial.registers.rax = 0x42
+         #expect(throws: DoryX86DifferentialError.sharedMemoryBacking) {
+@@ -239,10 +239,14 @@
+   private let ram: DoryX86ByteArrayMemory
+   private let cloneRAM: DoryX86ByteArrayMemory
+ 
+-  init(instructions: [UInt8], sharesOriginal: Bool) {
++  init(instructions: [UInt8], sharesOriginal: Bool) throws {
+     let bytes = instructions + Array(repeating: UInt8(0), count: 256 - instructions.count)
+-    ram = .init(baseAddress: 0x1000, bytes: bytes)
+-    cloneRAM = sharesOriginal ? ram : .init(baseAddress: 0x1000, bytes: bytes)
++    ram = try .init(baseAddress: 0x1000, bytes: bytes)
++    if sharesOriginal {
++      cloneRAM = ram
++    } else {
++      cloneRAM = try .init(baseAddress: 0x1000, bytes: bytes)
++    }
+   }
+ 
+   private init(ram: DoryX86ByteArrayMemory) {

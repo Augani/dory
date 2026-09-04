@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-evidence-retention-validation",
+  "reviewSHA256": "83f67036efe4f03e6531c29b10db6063d52788ce29598dee4a5eea5071a1fc6b",
+  "newArtifactsBeforeThisValidation": 31,
+  "distinctRepositoryArtifactReferencesVerified": 30,
+  "previousReviewHashVerified": true,
+  "envelopesSchemaValidated": 2,
+  "schemaPath": "Config/DoryVirtualizationEvidence.schema.json",
+  "schemaSHA256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb",
+  "sourceBinding": "All 685 tracked run27 and 686 tracked run28 inputs were independently reconstructed from base plus retained overlays. Run28 matches ae471c9f8; run27 preserves two differing inputs. Six generated FFI artifacts per run are hash-bound, not vendored.",
+  "strictLogCountsVerified": true,
+  "guestProbe8ContractChecksPassed": 11,
+  "noUserHomePathsInNewArtifactTextOrMembers": true,
+  "tarOwnerAndTimeNormalizationVerified": true,
+  "qualification": "Artifact/schema/source/receipt consistency validation only; no additional build or guest execution by evidence agent."
+}

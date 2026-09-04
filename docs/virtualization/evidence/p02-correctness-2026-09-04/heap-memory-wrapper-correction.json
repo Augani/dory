@@ -1,0 +1,19 @@
+{
+  "kind": "p02-heap-wrapper-correction",
+  "originalHandoff": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-original-handoff.json",
+    "sha256": "93331a27244041ffc58e4742da6c1d7ce087e6fd2033bec852791b8557b5cd58"
+  },
+  "originalHandoffFiles": 40,
+  "originalHandoffMatchesRun27Files": 40,
+  "run28UnchangedOriginalHandoffFiles": 39,
+  "changedFile": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialIsolationTests.swift",
+  "beforeSHA256": "b47f1abe2fb2594daef1f2cdbd98ae114eaffe41584063f0fe7032a4ee8db591",
+  "afterSHA256": "805d3a84bb0fe53337902d6e83d8b4adbc1150c6c7be339518b9ac79ac5d1b4d",
+  "patch": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-wrapper-correction.patch",
+    "sha256": "d705542087353cec7abfe6c680d962455128109431e1baa3e43b10afbfc770f5"
+  },
+  "scope": "DifferentialShallowMemory allocating initializer now throws; both inferred heap constructions and its sole allocating caller use try. Nonallocating clone initializer unchanged. Fixes the only two distinct source errors in run27.",
+  "validation": "Covered by the successful combined run28. The original handoff and failed compile remain retained without alteration."
+}

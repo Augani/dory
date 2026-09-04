@@ -1,0 +1,46 @@
+{
+  "kind": "p02-frozen-source-reconstruction",
+  "comparisonCommit": "ae471c9f8c8aec859545ab10b3e061c6109e4723",
+  "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+  "runs": [
+    {
+      "run": 27,
+      "totalInputs": 691,
+      "trackedInputsVerified": 685,
+      "ignoredGeneratedFFIInputsHashBoundOnly": 6,
+      "overlayMembersVerified": 89,
+      "basePlusOverlayMatchesEveryTrackedInput": true,
+      "comparisonCommitDifferences": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift",
+          "frozenSHA256": "c1d8b55eeb71a9aeb4825a676097bdb8c6b67aa6d7be0d4b6a9134123811007b",
+          "commitSHA256": "0366113abc6eb1218c7ef85d5cb43c25c1ec42400b99bdd3465cb43a9c123251"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialIsolationTests.swift",
+          "frozenSHA256": "b47f1abe2fb2594daef1f2cdbd98ae114eaffe41584063f0fe7032a4ee8db591",
+          "commitSHA256": "805d3a84bb0fe53337902d6e83d8b4adbc1150c6c7be339518b9ac79ac5d1b4d"
+        }
+      ]
+    },
+    {
+      "run": 28,
+      "totalInputs": 692,
+      "trackedInputsVerified": 686,
+      "ignoredGeneratedFFIInputsHashBoundOnly": 6,
+      "overlayMembersVerified": 90,
+      "basePlusOverlayMatchesEveryTrackedInput": true,
+      "comparisonCommitDifferences": []
+    }
+  ],
+  "run27To28": {
+    "changedCommonInputs": [
+      "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift",
+      "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialIsolationTests.swift"
+    ],
+    "addedInputs": [
+      "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64DecodeBoundaryTests.swift"
+    ],
+    "removedInputs": []
+  }
+}

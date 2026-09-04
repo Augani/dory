@@ -1,0 +1,10 @@
+{
+  "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift package --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 clean > /tmp/dory-p02-correctness-clean-before-27.log 2>&1",
+  "exitCode": 0,
+  "observation": "Parent tool exit_code0, chunk a538db. Tool wall1.97796s also included source-freeze Python; not a standalone clean duration.",
+  "log": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-27.log.gz",
+    "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+  },
+  "scope": "Clean before run27, whose compilation failed. No additional clean-before28 command is claimed."
+}

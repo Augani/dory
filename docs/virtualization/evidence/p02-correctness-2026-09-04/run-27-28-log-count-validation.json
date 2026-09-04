@@ -1,0 +1,25 @@
+{
+  "kind": "p02-strict-log-count-validation",
+  "run27": {
+    "sourceDiagnostics": [
+      "/private/tmp/dory-p02-correctness-source-1/dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialIsolationTests.swift:244:11: error: call can throw, but it is not marked with 'try' and the error is not handled",
+      "/private/tmp/dory-p02-correctness-source-1/dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialIsolationTests.swift:245:39: error: call can throw, but it is not marked with 'try' and the error is not handled"
+    ],
+    "distinctSourceErrors": 2,
+    "testStartFound": false,
+    "testsExecuted": false
+  },
+  "run28": {
+    "swiftReported": 732,
+    "swiftIndividualPassLines": 731,
+    "swiftDisabledLines": [
+      "\udbc1\ude5f  Test explicitlyImportedPhysicalReceiptMatchesInterpreter() skipped."
+    ],
+    "swiftPassingSuiteLines": 84,
+    "swiftElapsedSeconds": 3.592,
+    "xctestFinalSummary": "Executed 11 tests, with 1 test skipped and 0 failures (0 unexpected)",
+    "xctestActualPasses": 10,
+    "xctestOptionalSkip": 1,
+    "countRule": "Strict full-line Swift Test pass/skipped anchors; Suite and global lines excluded from case counts. XCTest final global summary used once; nested suite totals are not summed."
+  }
+}

@@ -1,0 +1,461 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-correctness-review",
+  "status": "in-progress",
+  "phaseComplete": false,
+  "releaseQualified": false,
+  "sourceCommit": "ae471c9f8c8aec859545ab10b3e061c6109e4723",
+  "previousReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-26.json",
+    "sha256": "49dfd0bda93c5cd8dd3f7882b5c1c317271ef8f36316923636add20fd2772738"
+  },
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "testCommand": {
+    "environment": {
+      "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+      "SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH": "1"
+    },
+    "arguments": [
+      "swift",
+      "test",
+      "--package-path",
+      "/tmp/dory-p02-correctness-source-1/dory-core-swift",
+      "--scratch-path",
+      "/tmp/dory-p02-correctness-build-1",
+      "--jobs",
+      "3",
+      "--no-parallel",
+      "--filter",
+      "DoryX86|DoryPC|DoryARM64|PVHBootRunnerTests|ISAInventoryTests"
+    ]
+  },
+  "cleanBeforeRun27": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-27-command.json",
+    "sha256": "c17a4f1c44caaeb83ced5ac7a8367a215439e98a3f9ab668518676d72518b385"
+  },
+  "runs": [
+    {
+      "run": 27,
+      "exitCode": 1,
+      "stage": "compile-failed",
+      "sourceBinding": {
+        "run": 27,
+        "comparisonCommit": "ae471c9f8c8aec859545ab10b3e061c6109e4723",
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "totalInputs": 691,
+        "trackedInputs": 685,
+        "trackedDifferences": [
+          {
+            "path": "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift",
+            "frozenSHA256": "c1d8b55eeb71a9aeb4825a676097bdb8c6b67aa6d7be0d4b6a9134123811007b",
+            "commitSHA256": "0366113abc6eb1218c7ef85d5cb43c25c1ec42400b99bdd3465cb43a9c123251"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialIsolationTests.swift",
+            "frozenSHA256": "b47f1abe2fb2594daef1f2cdbd98ae114eaffe41584063f0fe7032a4ee8db591",
+            "commitSHA256": "805d3a84bb0fe53337902d6e83d8b4adbc1150c6c7be339518b9ac79ac5d1b4d"
+          }
+        ],
+        "ignoredFFIInputs": [
+          {
+            "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+            "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+          },
+          {
+            "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+            "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+            "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+            "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+            "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+            "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+          }
+        ],
+        "overlayFiles": 89,
+        "baseAndOverlayReconstructionPassed": true
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27-source-manifest.json.gz",
+        "sha256": "fc39b30531afb355aa347f3d1bc1e4389f03bd0c3eb2347406490fa25297b1de"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27-source-overlay.tar.gz",
+        "sha256": "cdab05da2e1e8000377242f97dbe97411d79d47d12c706ecd1a2a7c3ad1adbbf"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27.log.gz",
+        "sha256": "1ab0c4c80970867ab2d4e320ad9763f712a150696dd5a08adb9f6786bfb17d3b"
+      },
+      "binding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27-commit-binding.json",
+        "sha256": "987a88aac94c22edddcf453f0866922727d7c7bfa63ed0356ed4fe503c7fb597"
+      },
+      "testsExecuted": false,
+      "distinctSourceDiagnostics": [
+        "/private/tmp/dory-p02-correctness-source-1/dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialIsolationTests.swift:244:11: error: call can throw, but it is not marked with 'try' and the error is not handled",
+        "/private/tmp/dory-p02-correctness-source-1/dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialIsolationTests.swift:245:39: error: call can throw, but it is not marked with 'try' and the error is not handled"
+      ]
+    },
+    {
+      "run": 28,
+      "exitCode": 0,
+      "observedToolSession": 53450,
+      "sourceBinding": {
+        "run": 28,
+        "comparisonCommit": "ae471c9f8c8aec859545ab10b3e061c6109e4723",
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "totalInputs": 692,
+        "trackedInputs": 686,
+        "trackedDifferences": [],
+        "ignoredFFIInputs": [
+          {
+            "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+            "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+          },
+          {
+            "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+            "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+            "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+            "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+            "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+            "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+          }
+        ],
+        "overlayFiles": 90,
+        "baseAndOverlayReconstructionPassed": true
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-28-source-manifest.json.gz",
+        "sha256": "8e5e01dc1f49cd8502fa0d44edc0e5ed1ba15dc6791309912ded5d64ddfdc752"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-28-source-overlay.tar.gz",
+        "sha256": "ac86f4f94aafef58a13cfab32805da070cf745b97f92d6a939f95accd06d08d3"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-28.log.gz",
+        "sha256": "23b1fb6981066ac65ada34ebd3bbbcb1befb7081752a649791e204f4ef187523"
+      },
+      "binding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-28-commit-binding.json",
+        "sha256": "ce45935d815ea522f5bba61dfab4454340710245cb685006658ec791d1b64f51"
+      },
+      "buildElapsedSeconds": 80.77,
+      "swiftTesting": {
+        "reported": 732,
+        "passed": 731,
+        "disabledPhysicalReference": 1,
+        "failed": 0,
+        "suites": 84,
+        "elapsedSeconds": 3.592
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    }
+  ],
+  "componentChanges": [
+    {
+      "commit": "93cb5e03b",
+      "scope": "Checked calloc/free ByteArray backing, throwing public constructors and caller migration, allocation-failure/exact-release tests; independent mmap and Array expected-state conformance retained."
+    },
+    {
+      "commit": "938a83aa5",
+      "scope": "Precise LLDT/LTR descriptor validation with supervisor memory access and write-protected TSS busy-bit publication; eight focused methods."
+    },
+    {
+      "commit": "ae471c9f8",
+      "scope": "Speculative JIT decode/fetch failures decline before native publication; completed native prefix state survives cold/cached guest fetch faults, without negative-caching incomplete input; six focused methods across both tiers."
+    }
+  ],
+  "heapConstructionHandoff": {
+    "original": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-original-handoff.json",
+      "sha256": "93331a27244041ffc58e4742da6c1d7ce087e6fd2033bec852791b8557b5cd58"
+    },
+    "originalPatch": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-original.patch.gz",
+      "sha256": "4dce90b529697e1c2c7d00ff901b201ca5dea24ef73c1573f36b82bababedd76"
+    },
+    "correction": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-wrapper-correction.json",
+      "sha256": "af291338f6a6ac6af8c91920072561ed12d99550d15bce91473f00769d44fc27"
+    },
+    "compilerLogs": [
+      {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-source-typecheck.log.gz",
+        "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+      },
+      {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-module-typecheck.log.gz",
+        "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+      },
+      {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-test-typecheck-setup-failure-1.log.gz",
+        "sha256": "87b879b58cb7fe431073e3b95b964af2f0c47fc03cfee8c35a0fc7a34c69133d"
+      },
+      {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-test-typecheck-setup-failure-2.log.gz",
+        "sha256": "636569fdbeb6c53c964b2ca63b1946409d5db05164fc005dc9c04ee69e0ea6e0"
+      },
+      {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-test-typecheck-success.log.gz",
+        "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+      }
+    ],
+    "scratchReferenceScope": "The original handoff retains original scratch paths and pre-correction hashes. Every referenced patch/compiler log is copied in this review and mapped by retentionTransformations; the wrapper correction is separately bound."
+  },
+  "sourceVerification": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27-28-source-verification.json",
+    "sha256": "fc30177be534ab7507ecdb183361c4a33494c8eb7b63cc01d0c6ec3954e77f65"
+  },
+  "countVerification": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27-28-log-count-validation.json",
+    "sha256": "f9c82418b8f22c5ec96834a1f2f7a009690713160495a1e894ef1f8227d31ae2"
+  },
+  "retentionTransformations": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27-28-retention-transformations.json",
+    "sha256": "2ef45b838a872c41ede24b4dba6820ea771184fa5821e9f1406eb5061f30705b"
+  },
+  "releaseBuild": {
+    "run": 28,
+    "sourceCommit": "ae471c9f8c8aec859545ab10b3e061c6109e4723",
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift build --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 --jobs 3 -c release --product dory-pc-linux-boot-runner",
+    "exitCode": 0,
+    "observedToolSession": 17051,
+    "elapsedSeconds": 54.37,
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-28-release-runner-build.log.gz",
+      "sha256": "e3d00cfe17f0946f58d55ae583c5f098fd72d830550559dca5baea3b3d143528"
+    },
+    "runnerSHA256": "c310b2740b57562e924ce7d7bcab1a4fb4f6123ce8ce39b8bec6b7502c692049",
+    "runnerBytes": 8911048,
+    "runnerRetention": "Hash-bound immutable scratch copy; executable payload not vendored."
+  },
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27-source-overlay.tar.gz",
+      "sha256": "cdab05da2e1e8000377242f97dbe97411d79d47d12c706ecd1a2a7c3ad1adbbf"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27-source-manifest.json.gz",
+      "sha256": "fc39b30531afb355aa347f3d1bc1e4389f03bd0c3eb2347406490fa25297b1de"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27.log.gz",
+      "sha256": "1ab0c4c80970867ab2d4e320ad9763f712a150696dd5a08adb9f6786bfb17d3b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27-commit-binding.json",
+      "sha256": "987a88aac94c22edddcf453f0866922727d7c7bfa63ed0356ed4fe503c7fb597"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-28-source-overlay.tar.gz",
+      "sha256": "ac86f4f94aafef58a13cfab32805da070cf745b97f92d6a939f95accd06d08d3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-28-source-manifest.json.gz",
+      "sha256": "8e5e01dc1f49cd8502fa0d44edc0e5ed1ba15dc6791309912ded5d64ddfdc752"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-28.log.gz",
+      "sha256": "23b1fb6981066ac65ada34ebd3bbbcb1befb7081752a649791e204f4ef187523"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-28-commit-binding.json",
+      "sha256": "ce45935d815ea522f5bba61dfab4454340710245cb685006658ec791d1b64f51"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27-28-source-verification.json",
+      "sha256": "fc30177be534ab7507ecdb183361c4a33494c8eb7b63cc01d0c6ec3954e77f65"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-27.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-27-command.json",
+      "sha256": "c17a4f1c44caaeb83ced5ac7a8367a215439e98a3f9ab668518676d72518b385"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-original-handoff.json",
+      "sha256": "93331a27244041ffc58e4742da6c1d7ce087e6fd2033bec852791b8557b5cd58"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-original.patch.gz",
+      "sha256": "4dce90b529697e1c2c7d00ff901b201ca5dea24ef73c1573f36b82bababedd76"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-source-typecheck.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-module-typecheck.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-test-typecheck-setup-failure-1.log.gz",
+      "sha256": "87b879b58cb7fe431073e3b95b964af2f0c47fc03cfee8c35a0fc7a34c69133d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-test-typecheck-setup-failure-2.log.gz",
+      "sha256": "636569fdbeb6c53c964b2ca63b1946409d5db05164fc005dc9c04ee69e0ea6e0"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-test-typecheck-success.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-wrapper-correction.patch",
+      "sha256": "d705542087353cec7abfe6c680d962455128109431e1baa3e43b10afbfc770f5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/heap-memory-wrapper-correction.json",
+      "sha256": "af291338f6a6ac6af8c91920072561ed12d99550d15bce91473f00769d44fc27"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-28-release-runner-build.log.gz",
+      "sha256": "e3d00cfe17f0946f58d55ae583c5f098fd72d830550559dca5baea3b3d143528"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27-28-log-count-validation.json",
+      "sha256": "f9c82418b8f22c5ec96834a1f2f7a009690713160495a1e894ef1f8227d31ae2"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-8.json",
+      "sha256": "c5a5b4db3cee0364db1afa6f6576a0d95633184a7e21e4466c6e71ce52930db1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-8.log.gz",
+      "sha256": "f11c85be4325cc036991fd66509988bd71b817d239a76dd0db243abb0488148d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-8.invocation.json",
+      "sha256": "90b0d7b8158edec98f080004685bd7b92ff5a6aa710c71465606d8d37c9e252e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-8.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-27-28-retention-transformations.json",
+      "sha256": "2ef45b838a872c41ede24b4dba6820ea771184fa5821e9f1406eb5061f30705b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-8-validation.json",
+      "sha256": "9e4400801cf4ff7598c06ee22dcb3abdedade8b773520038793157559dde5e18"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete. These are bounded source gates and an experimental-host optimized runner build; no physical x86 reference, glibc/systemd boot, sustained stress, full ISA or release qualification is established.",
+    "The successful gate reports732 Swift tests, comprising731 passing and1 disabled physical-reference case. XCTest reports11, comprising10 passing and1 optional pinned-boot fixture skip. Run27 did not execute tests.",
+    "Run27 is bound to base plus exact overlay: it differs from the run28 comparison commit in the JIT implementation and allocating test wrapper, and lacks the new decode-boundary test file. It must not be relabeled as the complete run28 source.",
+    "Recoverable heap construction does not make Array-returning diagnostic snapshots, read copies or unrelated Swift metadata allocation failure recoverable. mmap remains an independent implementation.",
+    "Ignored generated FFI inputs and the copied optimized executable are hash-bound without vendoring executable payloads. No capability bits or completion checkboxes are promoted.",
+    "Probe8 architectural state and counters describe the last completed runner quantum if an error interrupts machine.run; they are not necessarily the exact fault state."
+  ],
+  "guestProbe8": {
+    "artifacts": {
+      ".json": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-8.json",
+        "sha256": "c5a5b4db3cee0364db1afa6f6576a0d95633184a7e21e4466c6e71ce52930db1"
+      },
+      ".log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-8.log.gz",
+        "sha256": "f11c85be4325cc036991fd66509988bd71b817d239a76dd0db243abb0488148d"
+      },
+      ".invocation.json": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-8.invocation.json",
+        "sha256": "90b0d7b8158edec98f080004685bd7b92ff5a6aa710c71465606d8d37c9e252e"
+      },
+      ".exit": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-8.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      }
+    },
+    "sourceCommit": "ae471c9f8c8aec859545ab10b3e061c6109e4723",
+    "processExitCode": 0,
+    "outcome": {
+      "exitCode": 0,
+      "passed": true,
+      "reason": "userspace-workloads-powered-off"
+    },
+    "retiredInstructions": 751119875,
+    "elapsedNanoseconds": 386985433708,
+    "error": null,
+    "executionStatistics": {
+      "baselineJITBlocks": 254505762,
+      "baselineJITInstructions": 692966613,
+      "interpreterInstructions": 58153262,
+      "optimizingJITBlocks": 0,
+      "optimizingJITInstructions": 0
+    },
+    "guestReceipt": {
+      "doryPVHBoot": "userspace-ready",
+      "runID": "71b35915-37e0-4b73-96ed-f1efe1e8397a",
+      "schemaVersion": 1,
+      "workloads": [
+        "bootstrap.filesystems",
+        "syscall.identity",
+        "process.creation_exec_wait",
+        "memory.allocation_copy",
+        "signal.handler_return",
+        "timer.sleep_elapsed",
+        "filesystem.write_read_sync"
+      ],
+      "workloadsPassed": true
+    },
+    "observationScope": "Last runner slice exits; guest-handled exceptions are not sampled. Timeout state is the last completed slice.",
+    "consoleTail": "[    0.000000] Linux version 6.18.35-0-virt (buildozer@build-3-24-x86_64) (cc (Alpine 15.2.0) 15.2.0, GNU ld (GNU Binutils) 2.45.1) #1-Alpine SMP PREEMPT_DYNAMIC 2026-06-09 12:34:47\r\n[    0.000000] Command line: console=ttyS0 earlycon=uart,io,0x3f8,115200 panic=-1 rdinit=/init dory.pvh_run_id=71b35915-37e0-4b73-96ed-f1efe1e8397a\r\n[    0.000000] CPU: vendor_id 'DoryDoryDory' unknown, using generic init.\r\n[    0.000000] CPU: Your system may be unstable.\r\n[    0.000000] BIOS-provided physical RAM map:\r\n[    0.000000] BIOS-e820: [mem 0x0000000000000000-0x000000000008ffff] usable\r\n[    0.000000] BIOS-e820: [mem 0x0000000000090000-0x00000000000fffff] reserved\r\n[    0.000000] BIOS-e820: [mem 0x0000000000100000-0x000000001fffffff] usable\r\n[    0.000000] earlycon: uart0 at I/O port 0x3f8 (options '115200')\r\n[    0.000000] printk: legacy bootconsole [uart0] enabled\r\n[    0.000000] NX (Execute Disable) protection: active\r\n[    0.000000] APIC: Static calls initialized\r\n[    0.000000] SMBIOS 3.0.0 present.\r\n[    0.000000] DMI: Dory DoryPC-v1, BIOS DoryPC Firmware ABI 1 01/01/2026\r\n[    0.000000] DMI: Memory slots populated: 1/1\r\n[    0.000000] tsc: Fast TSC calibration using PIT\r\n[    0.000000] tsc: Detected 1000.049 MHz processor\r\n[    0.004523] last_pfn = 0x20000 max_arch_pfn = 0x400000000\r\n[    0.005684] MTRRs disabled (not available)\r\n[    0.006593] x86/PAT: PAT not supported by the CPU.\r\n[    0.007622] x86/PAT: Configuration [0-7]: WB  WT  UC- UC  WB  WT  UC- UC  \r\n[    1.709632] RAMDISK: [mem 0x10000000-0x10169fff]\r\n[    1.710782] ACPI: Early table checksum verification disabled\r\n[    1.711877] ACPI: RSDP 0x000000000009E000 000024 (v02 DORY  )\r\n[    1.713862] ACPI: XSDT 0x000000000009E100 000044 (v01 DORY   DORYPCV1 00000001 DORY 00000001)\r\n[    1.716478] ACPI: FACP 0x000000000009E400 000114 (v06 DORY   DORYPCV1 00000001 DORY 00000001)\r\n[    1.719283] ACPI: DSDT 0x000000000009E600 00070C (v02 DORY   DORYPCV1 00000001 DORY 00000001)\r\n[    1.721834] ACPI: FACS 0x000000000009E540 000040\r\n[    1.723711] ACPI: FACS 0x000000000009E540 000040\r\n[    1.725616] ACPI: APIC 0x000000000009F000 000050 (v05 DORY   DORYPCV1 00000001 DORY 00000001)\r\n[    1.728189] ACPI: HPET 0x000000000009E200 000038 (v01 DORY   DORYPCV1 00000001 DORY 00000001)\r\n[    1.730762] ACPI: MCFG 0x000000000009E300 00003C (v01 DORY   DORYPCV1 00000001 DORY 00000001)\r\n[    1.733195] ACPI: Reserving FACP table memory at [mem 0x9e400-0x9e513]\r\n[    1.734515] ACPI: Reserving DSDT table memory at [mem 0x9e600-0x9ed0b]\r\n[    1.735835] ACPI: Reserving FACS table memory at [mem 0x9e540-0x9e57f]\r\n[    1.737155] ACPI: Reserving FACS table memory at [mem 0x9e540-0x9e57f]\r\n[    1.738476] ACPI: Reserving APIC table memory at [mem 0x9f000-0x9f04f]\r\n[    1.739796] ACPI: Reserving HPET table memory at [mem 0x9e200-0x9e237]\r\n[    1.741116] ACPI: Reserving MCFG table memory at [mem 0x9e300-0x9e33b]\r\n[    1.743963] No NUMA configuration found\r\n[    1.744859] Faking a node at [mem 0x0000000000000000-0x000000001fffffff]\r\n[    1.746705] NODE_DATA(0) allocated [mem 0x1fefdd40-0x1ff01fff]\r\n[    1.852910] Zone ranges:\r\n[    1.853605]   DMA      [mem 0x0000000000001000-0x0000000000ffffff]\r\n[    1.855135]   DMA32    [mem 0x0000000001000000-0x000000001fffffff]\r\n[    1.856681]   Normal   empty\r\n[    1.857717] Movable zone start for each node\r\n[    1.858686] Early memory node ranges\r\n[    1.859491]   node   0: [mem 0x0000000000001000-0x000000000008ffff]\r\n[    1.860814]   node   0: [mem 0x0000000000100000-0x000000001fffffff]\r\n[    1.862212] Initmem setup node 0 [mem 0x0000000000001000-0x000000001fffffff]\r\n[    1.864461] On node 0, zone DMA: 1 pages in unavailable ranges\r\n[    1.877239] On node 0, zone DMA: 112 pages in unavailable ranges\r\n[    2.248538] ACPI: PM-Timer IO Port: 0x608\r\n[    2.250405] ACPI: LAPIC_NMI (acpi_id[0xff] dfl dfl lint[0x1])\r\n[    2.251880] IOAPIC[0]: apic_id 0, version 32, address 0xfec00000, GSI 0-23\r\n[    2.253611] ACPI: INT_SRC_OVR (bus 0 bus_irq 0 global_irq 2 dfl dfl)\r\n[    2.256006] ACPI: Using ACPI (MADT) for SMP configuration information\r\n[    2.257149] ACPI: HPET id: 0xd0d0a201 base: 0xfed00000\r\n[    2.261763] CPU topo: Max. logical packages:   1\r\n[    2.262736] CPU topo: Max. logical dies:       1\r\n[    2.263709] CPU topo: Max. dies per package:   1\r\n[    2.267861] CPU topo: Max. threads per core:   1\r\n[    2.268846] CPU topo: Num. cores per package:     1\r\n[    2.269854] CPU topo: Num. threads per package:   1\r\n[    2.270852] CPU topo: Allowing 1 present CPUs plus 0 hotplug CPUs\r\n[    2.273350] [mem 0x20000000-0xffffffff] available for PCI devices\r\n[    2.274589] Booting paravirtualized kernel on bare hardware\r\n[    2.275665] clocksource: refined-jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1910969940391419 ns\r\n[    4.249356] setup_percpu: NR_CPUS:256 nr_cpumask_bits:1 nr_cpu_ids:1 nr_node_ids:1\r\n[    4.288136] percpu: Embedded 55 pages/cpu s185752 r8192 d31336 u2097152\r\n[    4.297408] Kernel command line: console=ttyS0 earlycon=uart,io,0x3f8,115200 panic=-1 rdinit=/init dory.pvh_run_id=71b35915-37e0-4b73-96ed-f1efe1e8397a\r\n[    4.318218] printk: log buffer data + meta data: 131072 + 458752 = 589824 bytes\r\n[    4.329121] Dentry cache hash table entries: 65536 (order: 7, 524288 bytes, linear)\r\n[    4.335665] Inode-cache hash table entries: 32768 (order: 6, 262144 bytes, linear)\r\n[    4.339756] Fallback order for Node 0: 0 \r\n[    4.340397] Built 1 zonelists, mobility grouping on.  Total pages: 130959\r\n[    4.342235] Policy zone: DMA32\r\n[    4.386337] mem auto-init: stack:all(zero), heap alloc:on, heap free:off\r\n[    9.339176] SLUB: HWalign=64, Order=0-3, MinObjects=0, CPUs=1, Nodes=1\r\n[    9.403441] Kernel/User page tables isolation: enabled\r\n[    9.992006] Dynamic Preempt: none\r\n[   10.024122] rcu: Preemptible hierarchical RCU implementation.\r\n[   10.025143] rcu: \tRCU restricting CPUs from NR_CPUS=256 to nr_cpu_ids=1.\r\n[   10.026413] \tTrampoline variant of Tasks RCU enabled.\r\n[   10.027366] \tTracing variant of Tasks RCU enabled.\r\n[   10.028299] rcu: RCU calculated value of scheduler-enlistment delay is 100 jiffies.\r\n[   10.029584] rcu: Adjusting geometry for rcu_fanout_leaf=16, nr_cpu_ids=1\r\n[   10.031850] RCU Tasks: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.\r\n[   10.033520] RCU Tasks Trace: Setting shift to 0 and lim to 1 rcu_task_cb_adjust=1 rcu_task_cpu_ids=1.\r\n[   13.779428] NR_IRQS: 16640, nr_irqs: 256, preallocated irqs: 16\r\n[   13.803655] rcu: srcu_init: Setting srcu_struct sizes based on contention.\r\n[   14.083674] kfence: initialized - using 2097152 bytes for 255 objects at 0x(____ptrval____)-0x(____ptrval____)\r\n[   14.108598] Console: colour dummy device 80x25\r\n[   14.110444] printk: legacy console [ttyS0] enabled\r\n[   14.110444] printk: legacy console [ttyS0] enabled\r\n[   14.112468] printk: legacy bootconsole [uart0] disabled\r\n[   14.112468] printk: legacy bootconsole [uart0] disabled\r\n[   14.202933] ACPI: Core revision 20250807\r\n[   14.261051] clocksource: hpet: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 191126044627 ns\r\n[   14.263500] APIC: Switch to symmetric I/O mode setup\r\n[   14.277398] ..TIMER: vector=0x30 apic1=0 pin1=2 apic2=-1 pin2=-1\r\n[   14.283673] clocksource: tsc-early: mask: 0xffffffffffffffff max_cycles: 0xe6a455dc9f, max_idle_ns: 440795220211 ns\r\n[   14.287233] Calibrating delay loop (skipped), value calculated using timer frequency.. 2000.09 BogoMIPS (lpj=1000049)\r\n[   14.291185] Last level iTLB entries: 4KB 0, 2MB 0, 4MB 0\r\n[   14.293302] Last level dTLB entries: 4KB 0, 2MB 0, 4MB 0, 1GB 0\r\n[   14.296261] mitigations: Enabled attack vectors: user_kernel, user_user, guest_host, guest_guest, SMT mitigations: auto\r\n[   14.301328] Speculative Store Bypass: Vulnerable\r\n[   14.303304] Spectre V2 : Mitigation: Retpolines\r\n[   14.305278] MDS: Vulnerable: Clear CPU buffers attempted, no microcode\r\n[   14.307286] Spectre V1 : Mitigation: usercopy/swapgs barriers and __user pointer sanitization\r\n[   14.310314] Spectre V2 : Spectre v2 / SpectreRSB: Filling RSB on context switch and VMEXIT\r\n[   14.313352] x86/fpu: x87 FPU will use FXSAVE\r\n[   22.913813] Freeing SMP alternatives memory: 40K\r\n[   22.916355] pid_max: default: 32768 minimum: 301\r\n[   23.259277] LSM: initializing lsm=lockdown,capability,landlock,yama\r\n[   23.396572] landlock: Up and running.\r\n[   23.397792] Yama: becoming mindful.\r\n[   23.425289] Mount-cache hash table entries: 1024 (order: 1, 8192 bytes, linear)\r\n[   23.427431] Mountpoint-cache hash table entries: 1024 (order: 1, 8192 bytes, linear)\r\n[   23.762834] smpboot: CPU0: DoryDoryDory 0f/60 (family: 0xf, model: 0x60, stepping: 0x0)\r\n[   23.843739] Performance Events: no PMU driver, software events only.\r\n[   23.849152] signal: max sigframe size: 1440\r\n[   23.866148] rcu: Hierarchical SRCU implementation.\r\n[   23.867226] rcu: \tMax phase no-delay instances is 400.\r\n[   23.985465] NMI watchdog: Perf NMI watchdog permanently disabled\r\n[   23.998356] smp: Bringing up secondary CPUs ...\r\n[   24.000514] smp: Brought up 1 node, 1 CPU\r\n[   24.002225] smpboot: Total of 1 processors activated (2000.09 BogoMIPS)\r\n[   24.015340] Memory: 469220K/523836K available (14650K kernel code, 2032K rwdata, 9844K rodata, 2996K init, 1168K bss, 51528K reserved, 0K cma-reserved)\r\n[   24.054115] devtmpfs: initialized\r\n[   24.072283] x86/mm: Memory block size: 128MB\r\n[   24.235121] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1911260446275000 ns\r\n[   24.239783] posixtimers hash table entries: 512 (order: 1, 8192 bytes, linear)\r\n[   24.244493] futex hash table entries: 256 (16384 bytes on 1 NUMA nodes, total 16 KiB, linear).\r\n[   24.542442] NET: Registered PF_NETLINK/PF_ROUTE protocol family\r\n[   24.601139] audit: initializing netlink subsys (disabled)\r\n[   24.633578] thermal_sys: Registered thermal governor 'step_wise'\r\n[   24.636175] audit: type=2000 audit(25.336:1): state=initialized audit_enabled=0 res=1\r\n[   24.641572] cpuidle: using governor ladder\r\n[   24.644336] cpuidle: using governor menu\r\n[   24.663656] ACPI FADT declares the system doesn't support PCIe ASPM, so disable it\r\n[   24.666148] acpiphp: ACPI Hot Plug PCI Controller Driver version: 0.5\r\n[   24.719300] PCI: ECAM [mem 0xe0000000-0xefffffff] (base 0xe0000000) for domain 0000 [bus 00-ff]\r\n[   25.134276] kprobes: kprobe jump-optimization is enabled. All kprobes are optimized if possible.\r\n[   25.193450] HugeTLB: huge pages not supported, ignoring associated command-line parameters\r\n[   25.360779] ACPI: Added _OSI(Module Device)\r\n[   25.362319] ACPI: Added _OSI(Processor Device)\r\n[   25.364314] ACPI: Added _OSI(Processor Aggregator Device)\r\n[   25.559778] ACPI: 1 ACPI AML tables successfully acquired and loaded\r\n[   26.986426] ACPI: Interpreter enabled\r\n[   26.990206] ACPI: PM: (supports S0 S5)\r\n[   26.991235] ACPI: Using IOAPIC for interrupt routing\r\n[   26.996498] PCI: Using host bridge windows from ACPI; if necessary, use \"pci=nocrs\" and report a bug\r\n[   26.999217] PCI: Ignoring E820 reservations for host bridge windows\r\n[   27.118568] ACPI: PCI Root Bridge [PCI0] (domain 0000 [bus 00-ff])\r\n[   27.121686] acpi PNP0A08:00: _OSC: OS supports [ExtendedConfig ASPM ClockPM Segments MSI HPX-Type3]\r\n[   27.124514] acpi PNP0A08:00: _OSC: OS requested [PCIeHotplug PME PCIeCapability LTR]\r\n[   27.127534] acpi PNP0A08:00: _OSC: platform willing to grant [PCIeHotplug PME PCIeCapability LTR]\r\n[   27.130315] acpi PNP0A08:00: _OSC: platform retains control of PCIe features (AE_NOT_FOUND)\r\n[   27.146400] PCI host bridge to bus 0000:00\r\n[   27.148640] pci_bus 0000:00: root bus resource [mem 0xd0000000-0xdfffffff window]\r\n[   27.151365] pci_bus 0000:00: root bus resource [bus 00-ff]\r\n[   27.204656] iommu: Default domain type: Translated\r\n[   27.206210] iommu: DMA domain TLB invalidation policy: lazy mode\r\n[   27.554535] SCSI subsystem initialized\r\n[   27.575385] pps_core: LinuxPPS API ver. 1 registered\r\n[   27.577197] pps_core: Software ver. 5.3.6 - Copyright 2005-2007 Rodolfo Giometti <giometti@linux.it>\r\n[   27.579380] PTP clock support registered\r\n[   27.734415] PCI: Using ACPI for IRQ routing\r\n[   28.165647] hpet: 3 channels of 0 reserved for per-cpu timers\r\n[   28.216578] clocksource: Switched to clocksource tsc-early\r\n[   28.338564] VFS: Disk quotas dquot_6.6.0\r\n[   28.345973] VFS: Dquot-cache hash table entries: 512 (order 0, 4096 bytes)\r\n[   28.479797] hugetlbfs: disabling because there are no supported hugepage sizes\r\n[   28.488758] pnp: PnP ACPI init\r\n[   28.503907] system 00:00: [mem 0xe0000000-0xefffffff] has been reserved\r\n[   28.509500] pnp: PnP ACPI: found 1 devices\r\n[   29.825508] clocksource: acpi_pm: mask: 0xffffff max_cycles: 0xffffff, max_idle_ns: 2085701024 ns\r\n[   29.856565] NET: Registered PF_INET protocol family\r\n[   29.867741] IP idents hash table entries: 8192 (order: 4, 65536 bytes, linear)\r\n[   44.076861] tcp_listen_portaddr_hash hash table entries: 256 (order: 0, 4096 bytes, linear)\r\n[   44.087678] Table-perturb hash table entries: 65536 (order: 6, 262144 bytes, linear)\r\n[   44.092005] TCP established hash table entries: 4096 (order: 3, 32768 bytes, linear)\r\n[   44.105973] TCP bind hash table entries: 4096 (order: 5, 131072 bytes, linear)\r\n[   44.121579] TCP: Hash tables configured (established 4096 bind 4096)\r\n[   44.136783] MPTCP token hash table entries: 512 (order: 2, 12288 bytes, linear)\r\n[   44.145530] UDP hash table entries: 256 (order: 2, 16384 bytes, linear)\r\n[   44.150946] UDP-Lite hash table entries: 256 (order: 2, 16384 bytes, linear)\r\n[   44.167895] NET: Registered PF_UNIX/PF_LOCAL protocol family\r\n[   44.172795] NET: Registered PF_XDP protocol family\r\n[   44.175469] pci_bus 0000:00: resource 4 [mem 0xd0000000-0xdfffffff window]\r\n[   44.178902] PCI: CLS 0 bytes, default 64\r\n[   44.200995] platform rtc_cmos: registered platform RTC device (no PNP device found)\r\n[   44.295895] Initialise system trusted keyrings\r\n[   44.338527] Unpacking initramfs...\r\n[   45.388870] workingset: timestamp_bits=40 max_order=17 bucket_order=0\r\n[   45.432537] Key type asymmetric registered\r\n[   45.434031] Asymmetric key parser 'x509' registered\r\n[   45.444676] Block layer SCSI generic (bsg) driver version 0.4 loaded (major 247)\r\n[   45.610019] Freeing initrd memory: 1448K\r\n[   45.688616] io scheduler mq-deadline registered\r\n[   45.690679] io scheduler kyber registered\r\n[   45.697738] io scheduler bfq registered\r\n[   45.810796] ERST DBG: ERST support is disabled.\r\n[   45.894645] Serial: 8250/16550 driver, 4 ports, IRQ sharing enabled\r\n[   45.922577] serial8250: ttyS0 at I/O 0x3f8 (irq = 4, base_baud = 115200) is a 16450\r\n[   46.074905] tsc: Refined TSC clocksource calibration: 1000.000 MHz\r\n[   46.077533] clocksource: tsc: mask: 0xffffffffffffffff max_cycles: 0x1cd42e4dffb, max_idle_ns: 881590591483 ns\r\n[   46.089890] clocksource: Switched to clocksource tsc\r\n[   46.541827] VMware PVSCSI driver - version 1.0.7.0-k\r\n[   46.560049] hv_vmbus: registering driver hv_netvsc\r\n[   46.571842] i8042: PNP: No PS/2 controller found.\r\n[   46.573712] hv_vmbus: registering driver hyperv_keyboard\r\n[   46.858456] rtc_cmos rtc_cmos: registered as rtc0\r\n[   46.860912] rtc_cmos rtc_cmos: setting system clock to 1970-01-01T00:00:48 UTC (48)\r\n[   46.871717] rtc_cmos rtc_cmos: alarms up to one day, y3k, 114 bytes nvram, hpet irqs\r\n[   47.640491] gre: GRE over IPv4 demultiplexer driver\r\n[   47.662820] NET: Registered PF_INET6 protocol family\r\n[   47.766927] Segment Routing with IPv6\r\n[   47.772439] In-situ OAM (IOAM) with IPv6\r\n[   47.834824] Key type dns_resolver registered\r\n[   47.852952] microcode: no support for this CPU vendor\r\n[   47.859499] IPI shorthand broadcast: enabled\r\n[   49.005483] sched_clock: Marking stable (48536160566, 469069978)->(49027746119, -22515575)\r\n[   52.846860] registered taskstats version 1\r\n[   52.913698] Loading compiled-in X.509 certificates\r\n[   55.516651] Loaded X.509 cert 'alpinelinux.org: Alpine Linux kernel key: d76a695f66ad9cd28f5c22a8508f36e91f521f7a'\r\n[   57.690681] Demotion targets for Node 0: null\r\n[   57.726865] Key type .fscrypt registered\r\n[   57.728605] Key type fscrypt-provisioning registered\r\n[   61.917419] Freeing unused kernel image (initmem) memory: 2996K\r\n[   61.944722] Write protecting the kernel read-only data: 26624k\r\n[   62.617546] Freeing unused kernel image (text/rodata gap) memory: 1732K\r\n[   62.674459] Freeing unused kernel image (rodata/data gap) memory: 396K\r\n[   62.682437] rodata_test: all tests were successful\r\n[   62.893807] Run /init as init process\r\nDORY_P02_RESULT {\"schemaVersion\":1,\"kind\":\"userspace-result\",\"runUUID\":\"71b35915-37e0-4b73-96ed-f1efe1e8397a\",\"name\":\"bootstrap.filesystems\",\"status\":\"pass\",\"detail\":\"proc, devtmpfs, sysfs and bounded tmpfs mounts\"}\r\nDORY_P02_RESULT {\"schemaVersion\":1,\"kind\":\"userspace-result\",\"runUUID\":\"71b35915-37e0-4b73-96ed-f1efe1e8397a\",\"name\":\"syscall.identity\",\"status\":\"pass\",\"detail\":\"musl dynamic loader, uname and procfs PID 1 read\"}\r\nDORY_P02_RESULT {\"schemaVersion\":1,\"kind\":\"userspace-result\",\"runUUID\":\"71b35915-37e0-4b73-96ed-f1efe1e8397a\",\"name\":\"process.creation_exec_wait\",\"status\":\"pass\",\"detail\":\"isolated subshell, exec of musl BusyBox, child PID and wait status\"}\r\nDORY_P02_RESULT {\"schemaVersion\":1,\"kind\":\"userspace-result\",\"runUUID\":\"71b35915-37e0-4b73-96ed-f1efe1e8397a\",\"name\":\"memory.allocation_copy\",\"status\":\"pass\",\"detail\":\"65536-byte shell heap string allocated and copied\"}\r\nDORY_P02_RESULT {\"schemaVersion\":1,\"kind\":\"userspace-result\",\"runUUID\":\"71b35915-37e0-4b73-96ed-f1efe1e8397a\",\"name\":\"signal.handler_return\",\"status\":\"pass\",\"detail\":\"USR1 handler delivered to PID 1 and returned to shell\"}\r\nDORY_P02_RESULT {\"schemaVersion\":1,\"kind\":\"userspace-result\",\"runUUID\":\"71b35915-37e0-4b73-96ed-f1efe1e8397a\",\"name\":\"timer.sleep_elapsed\",\"status\":\"pass\",\"detail\":\"one-second sleep and monotonic procfs elapsed time\"}\r\nDORY_P02_RESULT {\"schemaVersion\":1,\"kind\":\"userspace-result\",\"runUUID\":\"71b35915-37e0-4b73-96ed-f1efe1e8397a\",\"name\":\"filesystem.write_read_sync\",\"status\":\"pass\",\"detail\":\"tmpfs 65536-byte write, separate read/copy, content comparison and sync\"}\r\nDORY_P02_SUMMARY {\"schemaVersion\":1,\"kind\":\"userspace-summary\",\"runUUID\":\"71b35915-37e0-4b73-96ed-f1efe1e8397a\",\"status\":\"pass\",\"passed\":7,\"failed\":0,\"shutdownExpected\":\"acpi-s5\"}\r\nDORY_P02_RESULT {\"schemaVersion\":1,\"kind\":\"userspace-result\",\"runUUID\":\"71b35915-37e0-4b73-96ed-f1efe1e8397a\",\"name\":\"shutdown.request\",\"status\":\"requested\",\"detail\":\"sync followed by Linux POWER_OFF; host must independently observe ACPI S5\"}\r\n{\"schemaVersion\":1,\"doryPVHBoot\":\"userspace-ready\",\"runID\":\"71b35915-37e0-4b73-96ed-f1efe1e8397a\",\"workloadsPassed\":true,\"workloads\":[\"bootstrap.filesystems\",\"syscall.identity\",\"process.creation_exec_wait\",\"memory.allocation_copy\",\"signal.handler_return\",\"timer.sleep_elapsed\",\"filesystem.write_read_sync\"]}\r\n[   74.048864] ACPI: PM: Preparing to enter system sleep state S5\r\n[   74.052997] reboot: Power down\r\n",
+    "qualification": "One pinned musl seven-workload baseline-JIT success with UUID-matched receipt and host-observed poweroff; no other execution tier, kernel, libc, physical-reference or release qualification.",
+    "validation": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-8-validation.json",
+      "sha256": "9e4400801cf4ff7598c06ee22dcb3abdedade8b773520038793157559dde5e18"
+    },
+    "runID": "71b35915-37e0-4b73-96ed-f1efe1e8397a",
+    "poweredOff": true,
+    "userspaceReceiptSeen": true,
+    "kernel": {
+      "byteCount": 39274268,
+      "sha256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+      "elfBuildID": "6605cb9027e42995c51847655ec230aeb78559bd"
+    },
+    "initrd": {
+      "byteCount": 1482752,
+      "sha256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249"
+    }
+  }
+}
