@@ -3406,8 +3406,21 @@ final class DorydServiceTests: XCTestCase {
         // A controller that reports neither commit nor durable abort leaves this update pending.
         // It must block further mutations of this workspace until recovery resolves its outcome.
         XCTAssertThrowsError(try manager.snapshot(id: "updatable", snapshotID: "pending-update"))
-        // Start must also retain the caller-owned target when fresh planning is rejected.
-        let startReply = expectation(description: "production start planning rejection")
+        // A competing start cannot acquire the target retained by the unfinished creation.
+        // Rejection must occur before another planner call or any change to recovery inputs.
+        let retainedStatus = try XCTUnwrap(manager.status(id: "planned"))
+        let retainedPaths = [
+            base + "/planned/machine.json",
+            base + "/planned/" + DoryWorkspaceRepository.recordFileName,
+            base + "/planned/" + DoryMachineRuntimeIdentityStore.recordFileName,
+            base + "/planned/kernel",
+            base + "/planned/rootfs.ext4",
+        ]
+        let retainedBytes = try retainedPaths.map { try Data(contentsOf: URL(fileURLWithPath: $0)) }
+        let journal = try DoryOperationJournalStore(home: base + "/.lifecycle-journal")
+        let retainedJournal = try journal.list()
+        let capturesBeforeStart = controller.captures.count
+        let startReply = expectation(description: "competing start rejected before planning")
         service.machineStart("planned") { ok, _, message in
             XCTAssertFalse(ok)
             XCTAssertFalse(message.isEmpty)
@@ -3416,8 +3429,16 @@ final class DorydServiceTests: XCTestCase {
         wait(for: [startReply], timeout: 5)
         XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
         XCTAssertTrue(FileManager.default.fileExists(atPath: base + "/planned/machine.json"))
-        XCTAssertEqual(controller.captures.count, 3)
-        XCTAssertEqual(controller.captures.last?.request.planning.machine.id, "planned")
+        XCTAssertEqual(controller.captures.count, capturesBeforeStart)
+        XCTAssertEqual(controller.captures.last?.request.planning.machine.id, "updatable")
+        let afterStart = try XCTUnwrap(manager.status(id: "planned"))
+        XCTAssertEqual(afterStart.state, retainedStatus.state)
+        XCTAssertEqual(afterStart.runtimeIdentity, retainedStatus.runtimeIdentity)
+        XCTAssertNil(afterStart.pid)
+        XCTAssertEqual(try journal.list(), retainedJournal)
+        for (path, expected) in zip(retainedPaths, retainedBytes) {
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), expected, path)
+        }
     }
 
     func testMachineExecOverXPCUsesMachineAgent() throws {
