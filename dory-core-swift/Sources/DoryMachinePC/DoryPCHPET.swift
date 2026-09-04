@@ -16,12 +16,19 @@ public struct DoryPCHPETSnapshot: Sendable, Hashable {
   public let timers: [DoryPCHPETTimerSnapshot]
 }
 
+/// Legacy replacement selects an ISA source, while ordinary routing selects an I/O APIC pin.
+/// The board resolves ISA wiring independently for the PIC and I/O APIC.
+public enum DoryPCHPETInterruptRoute: Sendable, Hashable {
+  case legacyIRQ(UInt8)
+  case ioAPICPin(Int)
+}
+
 public struct DoryPCHPETInterruptDeadline: Sendable, Hashable {
   public let timer: Int
-  public let route: Int
+  public let route: DoryPCHPETInterruptRoute
   public let ticks: UInt64
 
-  public init(timer: Int, route: Int, ticks: UInt64) {
+  public init(timer: Int, route: DoryPCHPETInterruptRoute, ticks: UInt64) {
     self.timer = timer
     self.route = route
     self.ticks = ticks
@@ -41,7 +48,7 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
 
   private struct Notification {
     let timer: Int
-    let route: Int
+    let route: DoryPCHPETInterruptRoute
     let asserted: Bool
   }
 
@@ -50,7 +57,7 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
   public let timerCount: Int
 
   private let lock = NSLock()
-  private let interruptSink: @Sendable (_ timer: Int, _ route: Int, _ asserted: Bool) -> Void
+  private let interruptSink: @Sendable (_ timer: Int, _ route: DoryPCHPETInterruptRoute, _ asserted: Bool) -> Void
   private var generalConfiguration: UInt64 = 0
   private var interruptStatus: UInt64 = 0
   private var mainCounter: UInt64 = 0
@@ -59,7 +66,7 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
   public init(
     baseAddress: UInt64 = DoryPCV1ABI.hpetBase,
     timerCount: Int = 3,
-    interruptSink: @escaping @Sendable (_ timer: Int, _ route: Int, _ asserted: Bool) -> Void = {
+    interruptSink: @escaping @Sendable (_ timer: Int, _ route: DoryPCHPETInterruptRoute, _ asserted: Bool) -> Void = {
       _, _, _ in
     }
   ) {
@@ -255,9 +262,9 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
     return (index, timerOffset)
   }
 
-  private func interruptRouteLocked(timer index: Int) -> Int {
-    if generalConfiguration & 2 != 0, index < 2 { return index == 0 ? 0 : 8 }
-    return Int((timers[index].configuration >> 9) & 0x1F)
+  private func interruptRouteLocked(timer index: Int) -> DoryPCHPETInterruptRoute {
+    if generalConfiguration & 2 != 0, index < 2 { return .legacyIRQ(index == 0 ? 0 : 8) }
+    return .ioAPICPin(Int((timers[index].configuration >> 9) & 0x1F))
   }
 
   private func expired(_ deadline: UInt64, after old: UInt64, through new: UInt64) -> Bool {

@@ -417,8 +417,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       try? ioAPIC.setAsserted(asserted, pin: 8)
     }
     hpet = DoryPCHPET { [legacyPIC, ioAPIC] _, route, asserted in
-      if asserted, route < 16 { try? legacyPIC.raise(irq: UInt8(route)) }
-      try? ioAPIC.setAsserted(asserted, pin: route)
+      if asserted, case .legacyIRQ(let irq) = route { try? legacyPIC.raise(irq: irq) }
+      try? ioAPIC.setAsserted(asserted, pin: Self.ioAPICPin(forHPETRoute: route))
     }
     pciExpress = DoryPCPCIExpressECAM()
     pciBARWindow = DoryPCPCIBARWindow()
@@ -1102,18 +1102,28 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           )
         )
       }
-      for deadline in hpet.interruptDeadlines()
-      where
-        (deadline.route < 16
-        && legacyPIC.canAccept(
-          irq: UInt8(deadline.route),
-          interruptsEnabled: interruptsEnabled
-        )) || ioAPICCanAccept(pin: deadline.route)
-      {
-        deadlines.append(deadline.ticks)
+      for deadline in hpet.interruptDeadlines() {
+        let picAccepts: Bool
+        if case .legacyIRQ(let irq) = deadline.route {
+          picAccepts = legacyPIC.canAccept(irq: irq, interruptsEnabled: interruptsEnabled)
+        } else {
+          picAccepts = false
+        }
+        if picAccepts || ioAPICCanAccept(pin: Self.ioAPICPin(forHPETRoute: deadline.route)) {
+          deadlines.append(deadline.ticks)
+        }
       }
     }
     return deadlines.min()
+  }
+
+  private static func ioAPICPin(forHPETRoute route: DoryPCHPETInterruptRoute) -> Int {
+    switch route {
+    // Match the PIT source and the IRQ0 -> GSI2 override in DoryPC-v1's MADT.
+    case .legacyIRQ(0): 2
+    case .legacyIRQ(let irq): Int(irq)
+    case .ioAPICPin(let pin): pin
+    }
   }
 
   private func ioAPICCanAccept(pin: Int) -> Bool {

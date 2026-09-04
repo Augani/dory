@@ -839,6 +839,65 @@ import Testing
     #expect(machine.localAPIC.snapshot().timer.currentCount == 1)
   }
 
+  @Test func haltedCPUWakesForHPETLegacyAndOrdinaryRoutesWithPICMasked() throws {
+    for (timer, legacy, pin) in [(0, true, 2), (1, true, 8), (0, false, 0)] {
+      let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+      var code = [UInt8](repeating: 0x90, count: 0x109)
+      code.replaceSubrange(0..<16, with: [
+        0x0F, 0x01, 0x1D, 0, 0, 8, 0, // LIDT [0x80000]
+        0x0F, 0x01, 0x15, 6, 0, 8, 0, // LGDT [0x80006]
+        0xFB, 0xF4, // STI; HLT
+      ])
+      code.replaceSubrange(0x100..<0x109, with: [
+        0xB0, UInt8(ascii: "H"), 0xBA, 0xF8, 0x03, 0, 0, 0xEE, 0xF4,
+      ])
+      try machine.load(kernel: makeELF(code: code), commandLine: "x")
+      try installProtectedTables(machine: machine, vector: 0x30)
+      try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
+      try machine.ioAPIC.configure(pin: pin,
+        route: .init(vector: 0x30, destinationAPICID: 0, masked: false))
+      #expect(machine.legacyPIC.snapshot().masterMask == 0xFF)
+      #expect(machine.legacyPIC.snapshot().slaveMask == 0xFF)
+      try machine.physicalMemory.writeScalar(at: 0xFED0_0100 + UInt64(timer * 0x20),
+        value: (1 << 2), byteCount: 8)
+      try machine.physicalMemory.writeScalar(at: 0xFED0_0108 + UInt64(timer * 0x20),
+        value: 10, byteCount: 8)
+      try machine.physicalMemory.writeScalar(at: 0xFED0_0010, value: legacy ? 3 : 1, byteCount: 8)
+      #expect(try machine.run(maximumInstructions: 16, exceptionPolicy: .deliver)
+        == .halted(instructionCount: 8))
+      #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "H")])
+    }
+  }
+
+  @Test func nativeQuantumStopsAtHPETLegacyDeadlineWhenOnlyGSI2CanDeliver() throws {
+    #if arch(arm64)
+      for tier: DoryPCExecutionTier in [.baselineJIT, .optimizingJIT] {
+        let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024,
+          executionTier: tier, baselineJITMaximumCodeBytes: 16 * 1024)
+        try machine.load(kernel: makeELF(code: [0xFB, 0xEB, 0xFE]), commandLine: "x")
+        try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
+        try machine.ioAPIC.configure(pin: 2,
+          route: .init(vector: 0x30, destinationAPICID: 0, masked: false))
+        try machine.physicalMemory.writeScalar(at: 0xFED0_0100, value: 1 << 2, byteCount: 8)
+        try machine.physicalMemory.writeScalar(at: 0xFED0_0108, value: 5, byteCount: 8)
+        try machine.physicalMemory.writeScalar(at: 0xFED0_0010, value: 3, byteCount: 8)
+        // Deliberately omit an IDT: observing delivery before the 20-instruction budget proves
+        // that batching stopped at the accepted timer deadline instead of overrunning it.
+        let stop = try machine.run(maximumInstructions: 20)
+        guard case .tripleFault(let source, let count) = stop,
+          case .interrupt(let vector, _, let processor) = source
+        else {
+          Issue.record("Expected the HPET interrupt at its deadline, got \(stop)")
+          continue
+        }
+        #expect(vector == 0x30)
+        #expect(processor == 0)
+        #expect(count == 4)
+        #expect(machine.hpet.snapshot().mainCounter == 5)
+      }
+    #endif
+  }
+
   private func installProtectedTables(
     machine: DoryPCDirectKernelMachine,
     vector: UInt8
