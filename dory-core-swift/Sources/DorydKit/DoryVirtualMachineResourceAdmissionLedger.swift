@@ -472,7 +472,7 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
                 throw DoryVirtualMachineResourceAdmissionLedgerError.planAlreadyBound
             }
             try Self.validate(plan, against: lease, requireBoundDigest: false)
-            lease.boundPlanSHA256 = Self.planSHA256(plan)
+            lease.boundPlanSHA256 = try plan.canonicalSHA256()
             lease.leaseRevision = try Self.incrementing(lease.leaseRevision)
             lease.updatedAtUnixMilliseconds = timestamp
             record.leases[index] = lease
@@ -508,21 +508,29 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
         }
     }
 
-    /// Revalidates an already bound starting lease against exact plan bytes and the same daemon
-    /// host snapshot. It never replans or silently refreshes evidence.
+    /// Revalidates exact plan bytes and the same host snapshot without writing, cleaning staging
+    /// files, or persisting expiry recovery. Restart preflight requires retained running capacity;
+    /// stopped preflight checks prospective capacity without reserving it. An actual launch
+    /// requires a non-expired starting lease.
     public func revalidateForStart(
         leaseID: String,
         plan: DoryResolvedMachinePlan,
-        hostFacts: DoryVMHostResources
+        hostFacts: DoryVMHostResources,
+        purpose: DoryDaemonVirtualMachineLaunchValidationPurpose = .start
     ) throws -> DoryResolvedMachineResourceAdmissionEvidence {
-        try withExclusiveAccess {
+        try withExclusiveAccess(readOnly: true) {
             let timestamp = now()
             var record = try readRecord()
-            let recovered = try recoverExpired(in: &record, at: timestamp)
-            if recovered { try persistRecoveredRecord(&record) }
+            _ = try recoverExpired(in: &record, at: timestamp)
             let index = try leaseIndex(leaseID, in: record)
             let lease = record.leases[index]
-            guard lease.state == .starting else {
+            let allowedStates: Set<DoryVirtualMachineResourceLeaseState>
+            switch purpose {
+            case .start: allowedStates = [.starting]
+            case .restartPreflight: allowedStates = [.running]
+            case .stoppedPreflight: allowedStates = [.starting, .stopped]
+            }
+            guard allowedStates.contains(lease.state) else {
                 throw DoryVirtualMachineResourceAdmissionLedgerError.invalidLeaseState(lease.state)
             }
             guard hostFacts == lease.hostFacts,
@@ -531,6 +539,11 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
                 throw DoryVirtualMachineResourceAdmissionLedgerError.hostFactsMismatch
             }
             try Self.validate(plan, against: lease, requireBoundDigest: true)
+            if purpose == .stoppedPreflight, lease.state == .stopped {
+                // Test the prospective execution budget without granting it or changing the
+                // durable lease. Only a later planning/starting transaction may reserve it.
+                record.leases[index].state = .starting
+            }
             try Self.validateCapacity(record.leases, hostFacts: hostFacts)
             return lease.evidence
         }
@@ -563,7 +576,7 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
             guard lease.state == .recoveryRequired else {
                 throw DoryVirtualMachineResourceAdmissionLedgerError.invalidLeaseState(lease.state)
             }
-            let digest = Self.planSHA256(plan)
+            let digest = try plan.canonicalSHA256()
             guard authorization.machineID == lease.binding.machineID,
                   authorization.machineID == plan.machineID,
                   authorization.planSHA256 == digest,
@@ -775,12 +788,13 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
         var assessorVersion: UInt16
     }
 
-    private func withExclusiveAccess<T>(_ body: () throws -> T) throws -> T {
+    private func withExclusiveAccess<T>(readOnly: Bool = false, _ body: () throws -> T) throws -> T {
         try processLock.withLock {
-            try Self.ensurePrivateDirectory(root)
+            if readOnly { try Self.validatePrivateDirectory(root) }
+            else { try Self.ensurePrivateDirectory(root) }
             let path = root + "/" + Self.lockFilename
             let descriptor = path.withCString {
-                open($0, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))
+                open($0, (readOnly ? O_RDONLY : O_RDWR | O_CREAT) | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, mode_t(0o600))
             }
             guard descriptor >= 0 else { throw filesystem("open resource admission lock") }
             defer { close(descriptor) }
@@ -796,7 +810,7 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
                 guard errno == EINTR else { throw filesystem("lock resource admission ledger") }
             }
             defer { _ = flock(descriptor, LOCK_UN) }
-            try cleanupTemporaryFiles()
+            if !readOnly { try cleanupTemporaryFiles() }
             return try body()
         }
     }
@@ -903,7 +917,9 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
         } catch {
             throw filesystem("enumerate resource admission directory")
         }
-        for name in names where name.hasPrefix(Self.temporaryPrefix) {
+        // The lock shares the staging prefix. Unlinking it while locked would let a second
+        // process create and lock a different inode, bypassing cross-process serialization.
+        for name in names where name.hasPrefix(Self.temporaryPrefix) && name != Self.lockFilename {
             let path = root + "/" + name
             var status = stat()
             guard lstat(path, &status) == 0 else { continue }
@@ -986,13 +1002,14 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
               plan.definitionRevision == lease.binding.definitionRevision,
               plan.definitionSHA256?.lowercased() == lease.binding.definitionSHA256.lowercased(),
               plan.planRevision == lease.binding.plannedPlanRevision,
+              plan.resources == lease.resources,
               plan.portForwards == lease.portForwards,
               plan.resourceAdmission == lease.evidence else {
             throw DoryVirtualMachineResourceAdmissionLedgerError.planMismatch
         }
         if requireBoundDigest {
             guard let bound = lease.boundPlanSHA256,
-                  bound == planSHA256(plan) else {
+                  bound == (try plan.canonicalSHA256()) else {
                 throw DoryVirtualMachineResourceAdmissionLedgerError.planMismatch
             }
         }
@@ -1015,8 +1032,8 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
         guard host.logicalCPUCount > 0,
               host.physicalMemoryBytes > 0,
               host.freeStorageBytes > 0,
-              host.admittedVirtualCPUCount <= host.logicalCPUCount,
-              host.admittedMemoryBytes <= host.physicalMemoryBytes,
+              host.totalAdmittedVirtualCPUCount <= host.logicalCPUCount,
+              host.totalAdmittedMemoryBytes <= host.physicalMemoryBytes,
               host.reservedStorageBytes <= host.freeStorageBytes else {
             throw DoryVirtualMachineResourceAdmissionLedgerError.invalidHostFacts
         }
@@ -1245,7 +1262,8 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
             if lease.state == .starting || lease.state == .running
                 || lease.state == .recoveryRequired {
                 cpu = try adding(cpu, lease.resources.virtualCPUCount)
-                memory = try adding(memory, lease.resources.memoryBytes)
+                memory = try adding(memory, lease.resources.accountedMemoryBytes)
+                storage = try adding(storage, lease.resources.stagingBytes)
             }
         }
         return Commitments(
@@ -1268,10 +1286,10 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
             physicalMemoryBytes: host.physicalMemoryBytes,
             freeStorageBytes: host.freeStorageBytes,
             admittedVirtualCPUCount: try adding(
-                host.admittedVirtualCPUCount,
+                host.totalAdmittedVirtualCPUCount,
                 runtime.virtualCPUCount
             ),
-            admittedMemoryBytes: try adding(host.admittedMemoryBytes, runtime.memoryBytes),
+            admittedMemoryBytes: try adding(host.totalAdmittedMemoryBytes, runtime.memoryBytes),
             reservedStorageBytes: try adding(host.reservedStorageBytes, storage)
         )
     }
@@ -1335,13 +1353,6 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
         try adding(value, 1)
     }
 
-    private static func planSHA256(_ plan: DoryResolvedMachinePlan) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        let data = (try? encoder.encode(plan)) ?? Data()
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-
     private static func canonicalData<T: Encodable>(_ value: T) -> Data {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
@@ -1369,6 +1380,10 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
         if mkdir(path, mode_t(0o700)) != 0, errno != EEXIST {
             throw filesystem("create resource admission directory")
         }
+        try validatePrivateDirectory(path)
+    }
+
+    private static func validatePrivateDirectory(_ path: String) throws {
         var status = stat()
         guard lstat(path, &status) == 0,
               status.st_mode & S_IFMT == S_IFDIR,

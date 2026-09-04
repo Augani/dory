@@ -10,6 +10,7 @@ public enum DoryOperationKind: String, Codable, CaseIterable, Sendable {
     case workspaceProvision
     case workspaceResolve
     case workspaceStart
+    case workspaceRestart
     case workspaceStop
     case workspacePause
     case workspaceResume
@@ -32,7 +33,7 @@ public enum DoryOperationAuthorityKind: String, Codable, CaseIterable, Sendable 
     case componentSet
 }
 
-public enum DoryOperationPhase: String, Codable, CaseIterable, Sendable {
+public enum DoryOperationPhase: String, Codable, CaseIterable, Sendable, Hashable {
     case planned
     case quiescing
     case staging

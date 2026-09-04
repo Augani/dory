@@ -8,6 +8,112 @@ import Testing
 
 @Suite("Resolved machine plan")
 struct DoryResolvedMachinePlanTests {
+    @Test("persistence authority rejects missing, malformed and changed workspace roots")
+    func exactPersistenceBinding() throws {
+        for path in ["relative", "/", "/private/tmp/../other", "/private/tmp/", "/private/tmp\0bad"] {
+            #expect(throws: DoryResolvedMachinePlanConstructionError.invalidPersistenceRoot) {
+                _ = try DoryResolvedMachinePersistence(stateDirectory: path, machineID: "workspace-one")
+            }
+        }
+        let plan = supportedPlan()
+        var missing = plan
+        missing.persistence = nil
+        #expect(missing.validate().contains { $0.code == .invalidPersistenceBinding })
+        for data in [
+            Data("{\"workspaceRootSHA256\":\"bad\",\"layoutVersion\":1}".utf8),
+            Data("{\"workspaceRootSHA256\":\"\(digest("a"))\",\"layoutVersion\":2}".utf8),
+        ] {
+            var malformed = plan
+            malformed.persistence = try JSONDecoder().decode(DoryResolvedMachinePersistence.self, from: data)
+            #expect(malformed.validate().contains { $0.code == .invalidPersistenceBinding })
+        }
+        var input = exactInput(for: plan)
+        input.runtimeEvidence.persistence = try DoryResolvedMachinePersistence(
+            stateDirectory: "/other/machines", machineID: plan.machineID
+        )
+        let result = DoryResolvedMachinePlanStartValidator.revalidate(plan, against: input)
+        #expect(!result.mayStart)
+        #expect(result.issues.contains { $0.code == .persistenceMismatch })
+    }
+
+    @Test("firmware URLs have one canonical plan digest across encoders and runtime identity")
+    func canonicalPlanEncoding() throws {
+        let plan = mutableARMVirtPlan()
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
+        let decoded = try JSONDecoder().decode(DoryResolvedMachinePlan.self, from: encoder.encode(plan))
+        #expect(try plan.canonicalData() == decoded.canonicalData())
+        #expect(try plan.canonicalSHA256() == decoded.canonicalSHA256())
+        #expect(try plan.canonicalSHA256() == DoryMachineRuntimeIdentity.planSHA256(plan))
+    }
+
+    @Test("UEFI plans require exact firmware and reject changes during start revalidation")
+    func exactFirmwareBinding() throws {
+        let plan = mutableARMVirtPlan()
+        #expect(plan.validate().isEmpty)
+        #expect(try JSONDecoder().decode(
+            DoryResolvedMachinePlan.self, from: JSONEncoder().encode(plan)
+        ) == plan)
+        var missing = plan
+        missing.firmware = nil
+        #expect(missing.validate().contains { $0.code == .invalidFirmwareBinding })
+        var wrongPlatform = plan
+        wrongPlatform.firmware = try resolvedFirmwareTestArtifacts(platform: .pcV1).manifest
+        #expect(wrongPlatform.validate().contains { $0.code == .invalidFirmwareBinding })
+        var unexpected = supportedPlan()
+        unexpected.firmware = plan.firmware
+        #expect(unexpected.validate().contains { $0.code == .invalidFirmwareBinding })
+        var input = exactInput(for: plan)
+        input.runtimeEvidence.firmware = try resolvedFirmwareTestArtifacts(fill: 0xb6).manifest
+        let validation = DoryResolvedMachinePlanStartValidator.revalidate(plan, against: input)
+        #expect(!validation.mayStart)
+        #expect(validation.issues.contains { $0.code == .firmwareMismatch })
+    }
+
+    @Test("runtime identity shares immutable plan storage while copies remain independent")
+    func runtimeIdentityValueSemantics() throws {
+        let plan = supportedPlan()
+        let original = try DoryMachineRuntimeIdentity(
+            resolvedPlan: plan, planSHA256: DoryMachineRuntimeIdentity.planSHA256(plan)
+        )
+        var edited = original
+        edited.resolvedPlan?.planRevision += 1
+        #expect(original.resolvedPlan == plan)
+        #expect(edited.resolvedPlan?.planRevision == plan.planRevision + 1)
+        let data = try JSONEncoder().encode(original)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        #expect(object["planStorage"] == nil)
+        #expect(object["resolvedPlan"] != nil)
+        #expect(try JSONDecoder().decode(DoryMachineRuntimeIdentity.self, from: data) == original)
+    }
+
+    @Test("schema six rejects missing and inconsistent architecture or resource authority")
+    func exactArchitectureAndResources() throws {
+        let mutations: [(inout DoryResolvedMachinePlan) -> Void] = [
+            { $0.architecture = nil },
+            { $0.platform = nil },
+            { $0.resources = nil },
+            { $0.architecture?.hostArchitecture = .x86_64 },
+            { $0.architecture?.cpuProfile = .compatibleX8664V1 },
+            { $0.architecture?.machineABI = .pcV1 },
+            { $0.architecture?.executionTier = .translated },
+            { $0.architecture?.productCell = .macOSARM64VZMac },
+            { $0.architecture?.detectedMediaArchitecture = .arm64 },
+            { $0.resources = DoryVMResourceRequest(virtualCPUCount: 99, memoryBytes: 1, diskBytes: 1) },
+        ]
+        for mutate in mutations {
+            var plan = supportedPlan()
+            mutate(&plan)
+            let decoded = try JSONDecoder().decode(
+                DoryResolvedMachinePlan.self, from: JSONEncoder().encode(plan)
+            )
+            #expect(!decoded.validate().isEmpty)
+            #expect(!DoryResolvedMachinePlanStartValidator.revalidate(
+                decoded, against: exactInput(for: decoded)
+            ).mayStart)
+        }
+    }
+
     @Test("current exact plan validates and round trips")
     func roundTrip() throws {
         let plan = supportedPlan()
@@ -18,7 +124,7 @@ struct DoryResolvedMachinePlanTests {
 
     @Test("Linux plans never admit QEMU/HVF as a runnable runtime")
     func linuxQEMUIsNotRunnable() {
-        var plan = mutableVZPlan()
+        var plan = mutableARMVirtPlan()
         plan.backend = .qemuHypervisorFramework
 
         #expect(plan.validate().contains {
@@ -29,7 +135,8 @@ struct DoryResolvedMachinePlanTests {
 
     @Test("x86_64 Linux plans are invalid even on the VZ backend")
     func x86LinuxGuestIsNotPersistable() {
-        var plan = mutableVZPlan()
+        var plan = mutableARMVirtPlan()
+        plan.backend = .appleVirtualizationFramework
         plan.guest.architecture = .x86_64
 
         #expect(plan.validate().contains {
@@ -181,26 +288,34 @@ struct DoryResolvedMachinePlanTests {
             plan.qualificationEvidence.runtime?.devices = plan.devices
         }
 
-        var connectedLow = mutableVZPlan()
+        var connectedLow = mutableARMVirtPlan()
+        connectedLow.backend = .appleVirtualizationFramework
+        connectedLow.armVirtTopology = nil
         bindNetwork(&connectedLow, attachment: .sharedNAT, mtu: 1_280)
         #expect(connectedLow.validate().contains {
             $0.code == .unsupportedRuntimeCombination
                 && $0.field == "devices.networkInterface.maximumTransmissionUnit"
         })
 
-        var hostOnlyLow = mutableVZPlan()
+        var hostOnlyLow = mutableARMVirtPlan()
+        hostOnlyLow.backend = .appleVirtualizationFramework
+        hostOnlyLow.armVirtTopology = nil
         bindNetwork(&hostOnlyLow, attachment: .isolated, mtu: 1_280)
         #expect(hostOnlyLow.validate().contains {
             $0.code == .unsupportedRuntimeCombination
         })
 
-        var connected = mutableVZPlan()
+        var connected = mutableARMVirtPlan()
+        connected.backend = .appleVirtualizationFramework
+        connected.armVirtTopology = nil
         bindNetwork(&connected, attachment: .sharedNAT, mtu: 1_500)
-        #expect(connected.validate().isEmpty)
+        #expect(connected.validate().contains { $0.code == .platformCompositionMismatch })
 
-        var disconnected = mutableVZPlan()
+        var disconnected = mutableARMVirtPlan()
+        disconnected.backend = .appleVirtualizationFramework
+        disconnected.armVirtTopology = nil
         bindNetwork(&disconnected, attachment: .disconnected, mtu: 1_280)
-        #expect(disconnected.validate().isEmpty)
+        #expect(disconnected.validate().contains { $0.code == .platformCompositionMismatch })
     }
 
     @Test("port forwards are exact start evidence and fail closed structurally")
@@ -243,7 +358,7 @@ struct DoryResolvedMachinePlanTests {
 
     @Test("mutable disk provenance revision mismatch rejects start")
     func mutableProvenanceMismatch() {
-        let plan = mutableVZPlan()
+        let plan = mutableARMVirtPlan()
         #expect(plan.validate().isEmpty)
         var input = exactInput(for: plan)
         input.runtimeEvidence.bootMedia.media.mutableProvenance?.revision += 1
@@ -255,7 +370,7 @@ struct DoryResolvedMachinePlanTests {
 
     @Test("portable installed EFI disk needs provenance but no distro qualification")
     func portableInstalledEFIDiskPlan() throws {
-        var plan = mutableVZPlan()
+        var plan = mutableARMVirtPlan()
         plan.qualificationEvidence = DoryResolvedMachineQualificationEvidence()
         plan.hostQualification = nil
 
@@ -406,16 +521,16 @@ struct DoryResolvedMachinePlanTests {
 
     @Test("preferred unavailable candidate persists an approved named fallback")
     func approvedFallback() throws {
-        let plan = try fallbackVZPlan(policy: .preferred, includeAuthorization: true)
+        let plan = try fallbackARMVirtPlan(policy: .preferred, includeAuthorization: true)
         let selection = try #require(plan.selectionEvidence)
         #expect(selection.disposition == .approvedFallback)
         #expect(selection.selectedEvaluationIndex == 1)
         #expect(selection.rejectedCandidates.count == 1)
-        #expect(selection.rejectedCandidates[0].backend == .doryHypervisor)
+        #expect(selection.rejectedCandidates[0].backend == .appleVirtualizationFramework)
         #expect(selection.rejectedCandidates[0].availability.reason?.code
             == .bootMediaDoesNotSupportBackend)
-        #expect(selection.fallbackAuthorization?.fromBackend == .doryHypervisor)
-        #expect(selection.fallbackAuthorization?.toBackend == .appleVirtualizationFramework)
+        #expect(selection.fallbackAuthorization?.fromBackend == .appleVirtualizationFramework)
+        #expect(selection.fallbackAuthorization?.toBackend == .doryHypervisor)
         #expect(plan.validate().isEmpty)
         #expect(DoryResolvedMachinePlanStartValidator.revalidate(
             plan,
@@ -432,10 +547,10 @@ struct DoryResolvedMachinePlanTests {
     @Test("preferred fallback requires approval and required alternatives do not")
     func fallbackPolicySafety() throws {
         #expect(throws: DoryResolvedMachinePlanConstructionError.fallbackAuthorizationRequired) {
-            _ = try fallbackVZPlan(policy: .preferred, includeAuthorization: false)
+            _ = try fallbackARMVirtPlan(policy: .preferred, includeAuthorization: false)
         }
 
-        let requiredAlternative = try fallbackVZPlan(
+        let requiredAlternative = try fallbackARMVirtPlan(
             policy: .required,
             includeAuthorization: false
         )
@@ -444,14 +559,14 @@ struct DoryResolvedMachinePlanTests {
         #expect(requiredAlternative.validate().isEmpty)
 
         #expect(throws: DoryResolvedMachinePlanConstructionError.fallbackAuthorizationInvalid) {
-            _ = try fallbackVZPlan(policy: .required, includeAuthorization: true)
+            _ = try fallbackARMVirtPlan(policy: .required, includeAuthorization: true)
         }
     }
 
-    @Test("required policy permits an explicitly listed lower graphics contract")
+    @Test("required backend still requires explicit graphics recovery authorization")
     func requiredGraphicsAlternative() throws {
         var plan = supportedPlan()
-        let request = DoryVirtualMachineBackendPlanRequest(
+        var request = DoryVirtualMachineBackendPlanRequest(
             guest: plan.guest,
             bootMedia: plan.bootMedia.media,
             acceptableGraphics: [.hardwareAccelerated3D, .hostAcceleratedDisplay],
@@ -486,31 +601,46 @@ struct DoryResolvedMachinePlanTests {
                 state: .available
             )
         )
-        plan.selectionEvidence = try DoryResolvedMachineBackendSelectionEvidence.resolving(
-            request: request,
-            result: DoryVirtualMachineBackendPlanResult(
-                selectedDescriptor: selected,
-                evaluatedDescriptors: [rejected, selected],
-                failure: nil
-            ),
-            definitionRevision: plan.definitionRevision
+        let result = DoryVirtualMachineBackendPlanResult(
+            selectedDescriptor: selected, evaluatedDescriptors: [rejected, selected], failure: nil
         )
-
-        #expect(plan.selectionEvidence?.disposition == .explicitAlternative)
-        #expect(plan.selectionEvidence?.selectedEvaluationIndex == 1)
+        #expect(throws: DoryResolvedMachinePlanConstructionError.fallbackDisallowed) {
+            _ = try DoryResolvedMachineBackendSelectionEvidence.resolving(
+                request: request, result: result, definitionRevision: plan.definitionRevision
+            )
+        }
+        request.graphicsRecovery = true
+        #expect(throws: DoryResolvedMachinePlanConstructionError.fallbackAuthorizationRequired) {
+            _ = try DoryResolvedMachineBackendSelectionEvidence.resolving(
+                request: request, result: result, definitionRevision: plan.definitionRevision
+            )
+        }
+        plan.selectionEvidence = try DoryResolvedMachineBackendSelectionEvidence.resolving(
+            request: request, result: result, definitionRevision: plan.definitionRevision,
+            fallbackAuthorization: DoryResolvedMachineFallbackAuthorization(
+                authorizationIdentity: "explicit-graphics-recovery",
+                definitionRevision: plan.definitionRevision,
+                fromBackend: plan.backend, fromGraphics: .hardwareAccelerated3D,
+                toBackend: plan.backend, toGraphics: plan.graphics,
+                authorizedAtUnixMilliseconds: plan.createdAtUnixMilliseconds
+            )
+        )
+        #expect(plan.selectionEvidence?.disposition == .approvedFallback)
         #expect(plan.validate().isEmpty)
+        plan.selectionEvidence?.plannerRequest.graphicsRecovery = false
+        #expect(plan.validate().contains { $0.code == .fallbackDisallowed })
     }
 
     @Test("required policy rejects a backend the request did not list")
     func requiredImplicitBackendRejection() {
-        let plan = mutableVZPlan()
+        let plan = mutableARMVirtPlan()
         let request = DoryVirtualMachineBackendPlanRequest(
             guest: plan.guest,
             bootMedia: plan.bootMedia.media,
             acceptableGraphics: [plan.graphics],
             devices: plan.devices,
             virtualHardwareABIVersion: plan.virtualHardwareABIVersion,
-            backendPreferences: [.doryHypervisor],
+            backendPreferences: [.appleVirtualizationFramework],
             backendPreferencePolicy: .required
         )
         let selected = capabilityDescriptor(
@@ -537,7 +667,7 @@ struct DoryResolvedMachinePlanTests {
 
     @Test("missing or changed fallback evidence rejects start")
     func fallbackTamperSafety() throws {
-        let plan = try fallbackVZPlan(policy: .preferred, includeAuthorization: true)
+        let plan = try fallbackARMVirtPlan(policy: .preferred, includeAuthorization: true)
         var missing = plan
         missing.selectionEvidence?.fallbackAuthorization = nil
         #expect(missing.validate().contains { $0.code == .missingFallbackAuthorization })
@@ -590,24 +720,24 @@ struct DoryResolvedMachinePlanTests {
         )
     }
 
-    private func fallbackVZPlan(
+    private func fallbackARMVirtPlan(
         policy: DoryVirtualMachineBackendPreferencePolicy,
         includeAuthorization: Bool
     ) throws -> DoryResolvedMachinePlan {
-        var plan = mutableVZPlan()
+        var plan = mutableARMVirtPlan()
         let request = DoryVirtualMachineBackendPlanRequest(
             guest: plan.guest,
             bootMedia: plan.bootMedia.media,
             acceptableGraphics: [plan.graphics],
             devices: plan.devices,
             virtualHardwareABIVersion: plan.virtualHardwareABIVersion,
-            backendPreferences: [.doryHypervisor, .appleVirtualizationFramework],
+            backendPreferences: [.appleVirtualizationFramework, .doryHypervisor],
             backendPreferencePolicy: policy
         )
         let rejectedRequest = DoryVirtualMachineCapabilityRequest(
             guest: plan.guest,
             bootMedia: plan.bootMedia.media,
-            backend: .doryHypervisor,
+            backend: .appleVirtualizationFramework,
             graphics: plan.graphics,
             devices: plan.devices,
             virtualHardwareABIVersion: plan.virtualHardwareABIVersion
@@ -640,9 +770,9 @@ struct DoryResolvedMachinePlanTests {
             ? DoryResolvedMachineFallbackAuthorization(
                 authorizationIdentity: "fallback-consent-1",
                 definitionRevision: plan.definitionRevision,
-                fromBackend: .doryHypervisor,
+                fromBackend: .appleVirtualizationFramework,
                 fromGraphics: plan.graphics,
-                toBackend: .appleVirtualizationFramework,
+                toBackend: .doryHypervisor,
                 toGraphics: plan.graphics,
                 authorizedAtUnixMilliseconds: plan.createdAtUnixMilliseconds
             )
@@ -699,7 +829,7 @@ struct DoryResolvedMachinePlanRepositoryTests {
     @Test("create read replace uses owner-only crash-safe optimistic revisions")
     func optimisticLifecycle() throws {
         try withRepository { repository, root in
-            let initial = mutableVZPlan()
+            let initial = mutableARMVirtPlan()
             try repository.create(initial)
             #expect(try repository.read(id: initial.machineID) == initial)
 
@@ -736,12 +866,12 @@ struct DoryResolvedMachinePlanRepositoryTests {
     @Test("record integrity digest rejects edited plan bytes")
     func tamperedRecord() throws {
         try withRepository { repository, root in
-            let plan = mutableVZPlan()
+            let plan = mutableARMVirtPlan()
             try repository.create(plan)
             let path = root + "/" + plan.machineID + "/"
                 + DoryResolvedMachinePlanRepository.recordFileName
             var text = try String(contentsOfFile: path, encoding: .utf8)
-            text = text.replacingOccurrences(of: "vz-runtime-1", with: "vz-runtime-2")
+            text = text.replacingOccurrences(of: "raw-runtime-1", with: "raw-runtime-2")
             try Data(text.utf8).write(to: URL(fileURLWithPath: path))
             _ = chmod(path, mode_t(0o600))
             #expect(throws: DoryResolvedMachinePlanRepositoryError.invalidRecord(path)) {
@@ -753,7 +883,7 @@ struct DoryResolvedMachinePlanRepositoryTests {
     @Test("current repository records use one compact canonical JSON representation")
     func canonicalCurrentRecord() throws {
         try withRepository { repository, root in
-            let plan = mutableVZPlan()
+            let plan = mutableARMVirtPlan()
             try repository.create(plan)
             let path = repositoryRecordPath(root: root, machineID: plan.machineID)
             let data = try Data(contentsOf: URL(fileURLWithPath: path))
@@ -775,7 +905,7 @@ struct DoryResolvedMachinePlanRepositoryTests {
     @Test("current records reject equivalent noncanonical lexical forms and key ordering")
     func noncanonicalCurrentRecord() throws {
         try withRepository { repository, root in
-            let plan = mutableVZPlan()
+            let plan = mutableARMVirtPlan()
             try repository.create(plan)
             let path = repositoryRecordPath(root: root, machineID: plan.machineID)
             let original = try Data(contentsOf: URL(fileURLWithPath: path))
@@ -811,7 +941,7 @@ struct DoryResolvedMachinePlanRepositoryTests {
     @Test("record and nested plan authority reject unknown fields even with a valid digest")
     func unknownAuthorityFields() throws {
         try withRepository { repository, root in
-            let plan = mutableVZPlan()
+            let plan = mutableARMVirtPlan()
             try repository.create(plan)
             let path = repositoryRecordPath(root: root, machineID: plan.machineID)
             let original = try Data(contentsOf: URL(fileURLWithPath: path))
@@ -864,7 +994,7 @@ struct DoryResolvedMachinePlanRepositoryTests {
     @Test("historical schema v4 digest remains readable only as replan input")
     func repositoryV4Migration() throws {
         try withRepository { repository, root in
-            let plan = mutableVZPlan()
+            let plan = mutableARMVirtPlan()
             let path = try installRepositoryRecord(
                 try legacySchemaV4Record(from: plan),
                 root: root,
@@ -879,7 +1009,9 @@ struct DoryResolvedMachinePlanRepositoryTests {
             #expect(migrated.sourceSchemaVersion == 4)
             #expect(migrated.migrationDisposition == .requiresReplanning)
             #expect(migrated.armVirtTopology == nil)
-            #expect(Set(migrated.validate().map(\.code)) == [.legacyPlanRequiresReplanning])
+            #expect(Set(migrated.validate().map(\.code)) == [
+                .legacyPlanRequiresReplanning, .invalidVirtualHardwareTopology,
+            ])
 
             let start = DoryResolvedMachinePlanStartValidator.revalidate(
                 migrated,
@@ -899,7 +1031,7 @@ struct DoryResolvedMachinePlanRepositoryTests {
     @Test("historical schema v4 rejects contradictory provenance and invalid authority")
     func repositoryV4RejectsContradictions() throws {
         try withRepository { repository, root in
-            let plan = mutableVZPlan()
+            let plan = mutableARMVirtPlan()
             let path = try installRepositoryRecord(
                 try legacySchemaV4Record(from: plan) {
                     $0["sourceSchemaVersion"] = 3
@@ -969,7 +1101,7 @@ struct DoryResolvedMachinePlanRepositoryTests {
     @Test("repository rejects symlink hard-link public and oversized records")
     func hostileRecords() throws {
         try withRepository { repository, root in
-            let plan = mutableVZPlan()
+            let plan = mutableARMVirtPlan()
             try repository.create(plan)
             let directory = root + "/" + plan.machineID
             let record = directory + "/" + DoryResolvedMachinePlanRepository.recordFileName
@@ -1010,20 +1142,20 @@ struct DoryResolvedMachinePlanRepositoryTests {
     @Test("invalid and experimental-without-authorization plans are never published")
     func publicationValidation() throws {
         try withRepository { repository, _ in
-            var unsupported = mutableVZPlan()
+            var unsupported = mutableARMVirtPlan()
             unsupported.supportTier = .unsupported
             #expect(throws: DoryResolvedMachinePlanRepositoryError.self) {
                 try repository.create(unsupported)
             }
 
-            var experimental = mutableVZPlan()
+            var experimental = mutableARMVirtPlan()
             experimental.supportTier = .experimental
             experimental.qualificationEvidence.runtime = nil
             #expect(throws: DoryResolvedMachinePlanRepositoryError.self) {
                 try repository.create(experimental)
             }
 
-            var x86Linux = mutableVZPlan()
+            var x86Linux = mutableARMVirtPlan()
             x86Linux.guest.architecture = .x86_64
             #expect(throws: DoryResolvedMachinePlanRepositoryError.self) {
                 try repository.create(x86Linux)
@@ -1053,6 +1185,76 @@ struct DoryResolvedMachinePlanRepositoryTests {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 
+    @Test("schema five records retain their original bytes and require explicit replanning")
+    func repositoryV5Migration() throws {
+        try withRepository { repository, root in
+            let plan = mutableARMVirtPlan()
+            var object = try #require(
+                JSONSerialization.jsonObject(with: JSONEncoder().encode(plan)) as? [String: Any]
+            )
+            object["schemaVersion"] = 5
+            object["sourceSchemaVersion"] = 5
+            for key in ["architecture", "platform", "resources", "firmware", "persistence"] { object.removeValue(forKey: key) }
+            let planData = try repositoryCanonicalJSON(object)
+            let original = try repositoryCanonicalJSON([
+                "schemaVersion": 3, "planSHA256": repositorySHA256(planData), "plan": object,
+            ])
+            let path = try installRepositoryRecord(original, root: root, machineID: plan.machineID)
+            let migrated = try repository.read(id: plan.machineID)
+            #expect(migrated.sourceSchemaVersion == 5)
+            #expect(migrated.migrationDisposition == .requiresReplanning)
+            #expect(migrated.architecture == nil)
+            #expect(migrated.resources == nil)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == original)
+            #expect(throws: DoryResolvedMachinePlanRepositoryError.self) {
+                try repository.replace(migrated, expectedPlanRevision: plan.planRevision)
+            }
+        }
+    }
+
+    @Test("embedded schema five identity can be replanned without deleting its original record")
+    func embeddedIdentityV5Migration() throws {
+        try withRepository { repository, root in
+            let plan = mutableARMVirtPlan()
+            try repository.create(plan)
+            let store = DoryMachineRuntimeIdentityStore(root: root)
+            let legacy = Data("retained-machine-definition".utf8)
+            let current = try DoryMachineRuntimeIdentity(
+                resolvedPlan: plan, planSHA256: DoryMachineRuntimeIdentity.planSHA256(plan)
+            )
+            try store.publish(current, machineID: plan.machineID, authoritativeLegacyData: legacy)
+            let directory = root + "/" + plan.machineID + "/"
+            let recordPath = directory + DoryMachineRuntimeIdentityStore.recordFileName
+            let headPath = directory + DoryMachineRuntimeIdentityStore.headFileName
+            var record = try #require(JSONSerialization.jsonObject(
+                with: Data(contentsOf: URL(fileURLWithPath: recordPath))
+            ) as? [String: Any])
+            var identity = try #require(record["identity"] as? [String: Any])
+            var historicalPlan = try #require(identity["resolvedPlan"] as? [String: Any])
+            historicalPlan["schemaVersion"] = 5
+            historicalPlan["sourceSchemaVersion"] = 5
+            for key in ["architecture", "platform", "resources", "firmware", "persistence"] { historicalPlan.removeValue(forKey: key) }
+            identity["resolvedPlan"] = historicalPlan
+            identity["resolvedPlanSHA256"] = repositorySHA256(try repositoryCanonicalJSON(historicalPlan))
+            record["identity"] = identity
+            let original = try repositoryCanonicalJSON(record)
+            try original.write(to: URL(fileURLWithPath: recordPath))
+            var head = try #require(JSONSerialization.jsonObject(
+                with: Data(contentsOf: URL(fileURLWithPath: headPath))
+            ) as? [String: Any])
+            head["recordSHA256"] = repositorySHA256(original)
+            try repositoryCanonicalJSON(head).write(to: URL(fileURLWithPath: headPath))
+            let migrated = try #require(try store.readIfPresent(
+                machineID: plan.machineID, authoritativeLegacyData: legacy
+            ))
+            #expect(migrated.mode == .requiresReplanning)
+            #expect(migrated.resolvedPlan == nil)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: recordPath)) == original)
+            try store.publish(current, machineID: plan.machineID, authoritativeLegacyData: legacy)
+            #expect(try store.readIfPresent(machineID: plan.machineID, authoritativeLegacyData: legacy) == current)
+        }
+    }
+
     private func legacySchemaV4Record(
         from plan: DoryResolvedMachinePlan,
         mutate: (inout [String: Any]) -> Void = { _ in }
@@ -1064,6 +1266,11 @@ struct DoryResolvedMachinePlanRepositoryTests {
         planObject["sourceSchemaVersion"] = 4
         planObject["migrationDisposition"] = "current"
         planObject.removeValue(forKey: "armVirtTopology")
+        planObject.removeValue(forKey: "architecture")
+        planObject.removeValue(forKey: "platform")
+        planObject.removeValue(forKey: "resources")
+        planObject.removeValue(forKey: "firmware")
+        planObject.removeValue(forKey: "persistence")
         mutate(&planObject)
         let canonicalPlan = try repositoryCanonicalJSON(planObject)
         return try JSONSerialization.data(
@@ -1189,7 +1396,8 @@ private func supportedPlan() -> DoryResolvedMachinePlan {
         hostQualification: hostQualification(
             backend: .doryHypervisor,
             runtimeBuild: "raw-runtime-1"
-        )
+        ),
+        persistence: resolvedPersistenceTestBinding()
     )
 }
 
@@ -1234,13 +1442,13 @@ private func supportedRawHVTopology() -> DoryARMVirtV1Topology {
     ])
 }
 
-private func mutableVZPlan() -> DoryResolvedMachinePlan {
+private func mutableARMVirtPlan() -> DoryResolvedMachinePlan {
     let provenance = DoryMutableBootMediaProvenanceReference(
         repositoryIdentity: "machine-store",
         mediaIdentity: "workspace-one-disk",
         revision: 7
     )
-    let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
+    let devices = DoryVirtualMachineDeviceCapabilityRequest(networkInterface: .stable(machineID: "workspace-one"))
     let media = DoryBootMedia(
         kind: .virtualDisk,
         source: .userProvided,
@@ -1254,10 +1462,11 @@ private func mutableVZPlan() -> DoryResolvedMachinePlan {
         createdAtUnixMilliseconds: 1_700_000_000_000,
         updatedAtUnixMilliseconds: 1_700_000_000_000,
         guest: DoryGuestPlatform(family: .linux, architecture: .arm64),
-        backend: .appleVirtualizationFramework,
-        backendImplementationIdentifier: "dory.vz-linux.compatibility.v1",
-        backendRuntimeBuildIdentifier: "vz-runtime-1",
+        backend: .doryHypervisor,
+        backendImplementationIdentifier: "dory.raw-hv-linux.compatibility.v1",
+        backendRuntimeBuildIdentifier: "raw-runtime-1",
         virtualHardwareABIVersion: 1,
+        armVirtTopology: resolvedARMVirtTestTopology(devices: devices),
         bootMedia: DoryResolvedMachineBootMedia(
             resolverReference: DoryVMResolverReference(
                 namespace: "machine",
@@ -1286,8 +1495,8 @@ private func mutableVZPlan() -> DoryResolvedMachinePlan {
             )
         ),
         components: [DoryResolvedBackendComponentEvidence(
-            componentIdentifier: "dory-vmm",
-            buildIdentifier: "vz-runtime-1",
+            componentIdentifier: "dory-hv",
+            buildIdentifier: "raw-runtime-1",
             artifactSHA256: digest("d")
         )],
         devices: devices,
@@ -1296,24 +1505,14 @@ private func mutableVZPlan() -> DoryResolvedMachinePlan {
         selectionEvidence: primarySelectionEvidence(
             guest: DoryGuestPlatform(family: .linux, architecture: .arm64),
             media: media,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             devices: devices
         ),
-        qualificationEvidence: DoryResolvedMachineQualificationEvidence(
-            runtime: runtimeQualification(
-                media: media,
-                backend: .appleVirtualizationFramework,
-                runtimeBuild: "vz-runtime-1",
-                graphics: .software,
-                devices: devices
-            )
-        ),
+        qualificationEvidence: DoryResolvedMachineQualificationEvidence(),
         resourceAdmission: resourceAdmission(),
-        hostQualification: hostQualification(
-            backend: .appleVirtualizationFramework,
-            runtimeBuild: "vz-runtime-1"
-        )
+        firmware: try! resolvedFirmwareTestArtifacts().manifest,
+        persistence: resolvedPersistenceTestBinding()
     )
 }
 

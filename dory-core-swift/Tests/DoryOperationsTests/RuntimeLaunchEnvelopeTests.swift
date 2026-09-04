@@ -26,7 +26,7 @@ final class RuntimeLaunchEnvelopeTests: XCTestCase {
         let resources = try decoded.validatedResolvedARMVirtResources()
 
         XCTAssertEqual(decoded.schemaVersion, RuntimeLaunchEnvelope.currentSchemaVersion)
-        XCTAssertEqual(decoded.schemaVersion, 7)
+        XCTAssertEqual(decoded.schemaVersion, 8)
         XCTAssertEqual(decoded.platform, .arm64LinuxV1)
         XCTAssertEqual(decoded.executionResources.memoryMB, 8_192)
         XCTAssertEqual(decoded.executionResources.virtualCPUCount, 4)

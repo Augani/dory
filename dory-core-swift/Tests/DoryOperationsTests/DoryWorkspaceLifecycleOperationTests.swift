@@ -4,6 +4,103 @@ import Testing
 
 @Suite("Workspace lifecycle operation contract")
 struct DoryWorkspaceLifecycleOperationTests {
+    @Test("a compound target requirement cannot authorize start or replace source runtime authority")
+    func plannedRuntimeIsOnlyACompoundPostcondition() throws {
+        var operation = makeOperation()
+        operation.kind = .updating
+        operation.source.state = .paused
+        operation.target.state = .running
+        operation.configurationUpdateSpecificationDigest = String(repeating: "b", count: 64)
+        operation.target.plannedRuntime = .init(
+            configurationSHA256: try #require(operation.target.configurationAuthority?.legacyConfigurationSHA256),
+            virtualHardwareABIVersion: 1
+        )
+        operation.target.runtime = nil
+        #expect(operation.validate().isEmpty)
+        let data = try JSONEncoder().encode(operation)
+        #expect(try JSONDecoder().decode(DoryWorkspaceLifecycleOperation.self, from: data) == operation)
+        for kind in [DoryWorkspaceMutationKind.starting, .restarting, .resuming, .restoring] {
+            var invalid = operation
+            invalid.kind = kind
+            #expect(!invalid.validate().isEmpty)
+        }
+        var invalid = operation
+        invalid.source.plannedRuntime = operation.target.plannedRuntime
+        invalid.source.runtime = nil
+        #expect(!invalid.validate().isEmpty)
+        invalid = operation
+        invalid.target.plannedRuntime?.configurationSHA256 = String(repeating: "f", count: 64)
+        #expect(!invalid.validate().isEmpty)
+        invalid = operation
+        invalid.target.plannedRuntime?.virtualHardwareABIVersion = 2
+        #expect(!invalid.validate().isEmpty)
+        invalid = operation
+        invalid.readinessGates = []
+        #expect(!invalid.validate().isEmpty)
+        invalid = operation
+        invalid.target.runtime = operation.source.runtime
+        #expect(!invalid.validate().isEmpty)
+    }
+
+    @Test("configuration recovery inputs are required, digest-bound, and reacquired under the exact workspace lock")
+    func configurationUpdateSpecificationAuthority() throws {
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("update-spec-\(UUID())")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: home) }
+        var operation = makeOperation()
+        operation.kind = .updating
+        operation.source.state = .paused
+        operation.target.state = .stopped
+        operation.readinessGates = []
+        let specification = try DoryOperationSpecification(data: Data("private recovery input".utf8))
+        operation.configurationUpdateSpecificationDigest = specification.digest
+        #expect(operation.validate().isEmpty)
+        let binding = try operation.journalBinding(dependencyClosureDigest: String(repeating: "b", count: 64))
+        let store = try DoryOperationJournalStore(home: home.path)
+        #expect(throws: DoryOperationJournalError.self) { try store.begin(binding) }
+        #expect(throws: DoryOperationJournalError.self) {
+            try store.begin(binding, configurationUpdateSpecification: DoryOperationSpecification(data: Data("different".utf8)))
+        }
+        try store.prepare()
+        let workspaceLock = try EngineStateDirectoryLock(stateDirectory: store.root, lockFileName: ".mutation.workspace-one.lock")
+        var lease: DoryOperationLease? = try store.begin(
+            binding, holdingMutationLock: workspaceLock, configurationUpdateSpecification: specification
+        )
+        #expect(try lease?.readSpecification(digest: specification.digest) == specification.data)
+        lease = nil
+        let wrongLock = try EngineStateDirectoryLock(stateDirectory: store.root, lockFileName: ".mutation.other.lock")
+        #expect(throws: DoryOperationJournalError.self) { try store.acquire(operation.operationID, holdingMutationLock: wrongLock) }
+        let acquired = try store.acquire(operation.operationID, holdingMutationLock: workspaceLock)
+        #expect(try acquired.readWorkspaceLifecycleOperation() == operation)
+        let path = store.operationDirectory(for: operation.operationID) + "/specs/objects/" + specification.digest
+        try Data("altered".utf8).write(to: URL(fileURLWithPath: path))
+        #expect(throws: DoryOperationJournalError.self) { try acquired.readWorkspaceLifecycleOperation() }
+    }
+
+    @Test("restart binds the source generation and rejects plan drift or missing readiness")
+    func restartBindsBothRuntimeGenerations() throws {
+        var operation = makeOperation()
+        operation.kind = .restarting
+        operation.source.state = .running
+        operation.sourceRuntimeOperationID = UUID()
+        #expect(operation.validate().isEmpty)
+        #expect(operation.kind.journalKind == .workspaceRestart)
+        let specification = try operation.journalSpecification()
+        #expect(try JSONDecoder().decode(DoryWorkspaceLifecycleOperation.self, from: specification.data) == operation)
+        var invalid = operation
+        invalid.sourceRuntimeOperationID = nil
+        #expect(!invalid.validate().isEmpty)
+        invalid = operation
+        invalid.sourceRuntimeOperationID = operation.operationID
+        #expect(!invalid.validate().isEmpty)
+        invalid = operation
+        invalid.readinessGates = []
+        #expect(!invalid.validate().isEmpty)
+        invalid = operation
+        invalid.target.runtime?.runtimeIdentityDigest = String(repeating: "f", count: 64)
+        #expect(!invalid.validate().isEmpty)
+    }
+
     @Test("start binds exact state plan ABI deadlines readiness and recovery into journal bytes")
     func validStartContract() throws {
         let operation = makeOperation()

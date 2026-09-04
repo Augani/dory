@@ -29,9 +29,9 @@ public enum DoryDesktopVMMPreference: String, CaseIterable, Sendable, Codable {
 
 /// Requested graphics behavior for Dory's raw-Hypervisor desktop runtime.
 ///
-/// `automatic` prefers the combined VirGL2 + Venus backend, then resolves through the explicitly
-/// declared host-display and software recovery levels. The selected level is persisted and exposed
-/// to the UI; it is never presented as accelerated when it resolved to software. `virglVenus`
+/// `automatic` requests the combined VirGL2 + Venus backend. Its declared host-display and software
+/// levels require a separately authorized recovery operation. The selected level is persisted and
+/// exposed to the UI; software is never presented as accelerated. `virglVenus`
 /// remains the strict hardware-3D request, while `virgl` and `software` select exact compatibility
 /// levels for qualification and recovery.
 public enum DoryDesktopGraphicsPreference: String, CaseIterable, Sendable, Codable {

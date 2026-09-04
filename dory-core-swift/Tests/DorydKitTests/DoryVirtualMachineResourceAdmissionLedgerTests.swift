@@ -6,6 +6,103 @@ import Foundation
 import XCTest
 
 final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
+    func testStoppedPreflightChecksProspectiveCapacityWithoutGrantingOrWriting() throws {
+        try withFixture("stopped-preflight") { fixture in
+            let reserved = try fixture.ledger.reserveStarting(
+                binding: fixture.binding("selected"), hostFacts: fixture.host,
+                workload: .desktop, resources: fixture.resources
+            )
+            let plan = fixture.plan(binding: reserved.binding, evidence: reserved.evidence)
+            let bound = try fixture.ledger.bind(
+                leaseID: reserved.leaseID, to: plan, expectedLeaseRevision: reserved.leaseRevision
+            )
+            let running = try fixture.ledger.markRunning(
+                leaseID: bound.leaseID, plan: plan, hostFacts: fixture.host,
+                expectedLeaseRevision: bound.leaseRevision
+            )
+            let stopped = try fixture.ledger.markStopped(
+                leaseID: running.leaseID, expectedLeaseRevision: running.leaseRevision
+            )
+            let path = URL(fileURLWithPath: fixture.ledger.root + "/resource-admissions.json")
+            let before = try Data(contentsOf: path)
+            XCTAssertEqual(try fixture.ledger.revalidateForStart(
+                leaseID: stopped.leaseID, plan: plan, hostFacts: fixture.host, purpose: .stoppedPreflight
+            ), stopped.evidence)
+            XCTAssertEqual(try Data(contentsOf: path), before)
+            XCTAssertThrowsError(try fixture.ledger.revalidateForStart(
+                leaseID: stopped.leaseID, plan: plan, hostFacts: fixture.host
+            ))
+            _ = try fixture.ledger.reserveStarting(
+                binding: fixture.binding("competing"), hostFacts: fixture.host,
+                workload: .desktop, resources: fixture.resources
+            )
+            let contended = try Data(contentsOf: path)
+            XCTAssertThrowsError(try fixture.ledger.revalidateForStart(
+                leaseID: stopped.leaseID, plan: plan, hostFacts: fixture.host, purpose: .stoppedPreflight
+            )) { error in
+                guard case DoryVirtualMachineResourceAdmissionLedgerError.capacityUnavailable = error else {
+                    return XCTFail("Expected prospective capacity rejection: \(error)")
+                }
+            }
+            XCTAssertEqual(try Data(contentsOf: path), contended)
+            XCTAssertEqual(try fixture.ledger.snapshot().leases.first { $0.leaseID == stopped.leaseID }?.state, .stopped)
+        }
+    }
+
+    func testRuntimeOverheadAndStagingRemainReservedAcrossLedgerReload() throws {
+        try withFixture("overhead") { fixture in
+            let gib: UInt64 = 1_073_741_824
+            let resources = DoryVMResourceRequest(
+                virtualCPUCount: 1, memoryBytes: 4 * gib, diskBytes: 16 * gib,
+                translationCacheBytes: 3 * gib, rendererBytes: gib,
+                workerOverheadBytes: gib, stagingBytes: 200 * gib
+            )
+            let lease = try fixture.ledger.reserveStarting(
+                binding: fixture.binding("machine-a"), hostFacts: fixture.host,
+                workload: .server, resources: resources
+            )
+            let reloaded = DoryVirtualMachineResourceAdmissionLedger(root: fixture.ledger.root)
+            let snapshot = try reloaded.snapshot()
+            XCTAssertEqual(snapshot.leases.first?.resources, resources)
+            XCTAssertThrowsError(try reloaded.reserveStarting(
+                binding: fixture.binding("machine-b"), hostFacts: fixture.host,
+                workload: .server, resources: fixture.resources
+            )) { error in
+                guard case let DoryVirtualMachineResourceAdmissionLedgerError.capacityUnavailable(issues) = error else {
+                    return XCTFail("Expected capacity rejection: \(error)")
+                }
+                XCTAssertTrue(issues.contains { $0.resource == .memory && $0.severity == .error })
+                XCTAssertTrue(issues.contains { $0.resource == .storage && $0.severity == .error })
+            }
+            _ = try reloaded.cancelUnboundStarting(
+                leaseID: lease.leaseID, expectedLeaseRevision: lease.leaseRevision
+            )
+            let next = try reloaded.reserveStarting(
+                binding: fixture.binding("machine-b"), hostFacts: fixture.host,
+                workload: .server, resources: fixture.resources
+            )
+            XCTAssertEqual(next.evidence.existingMemoryCommitmentBytes, 0)
+            XCTAssertEqual(next.evidence.existingStorageReservationBytes, resources.diskBytes)
+        }
+    }
+
+    func testEngineCommitmentsSurviveLedgerHostComposition() throws {
+        try withFixture("engine") { fixture in
+            let host = DoryVMHostResources(
+                logicalCPUCount: fixture.host.logicalCPUCount,
+                physicalMemoryBytes: fixture.host.physicalMemoryBytes,
+                freeStorageBytes: fixture.host.freeStorageBytes,
+                engineAdmittedVirtualCPUCount: 5,
+                engineAdmittedMemoryBytes: 8 * ResourceLedgerFixture.gibibyte
+            )
+            XCTAssertThrowsError(try fixture.ledger.reserveStarting(
+                binding: fixture.binding("machine-a"), hostFacts: host,
+                workload: .desktop, resources: fixture.resources
+            ))
+            XCTAssertTrue(try fixture.ledger.snapshot().leases.isEmpty)
+        }
+    }
+
     func testTwoLedgerInstancesAtomicallyAdmitOnlyOneContendingStart() async throws {
         let fixture = try ResourceLedgerFixture("concurrent")
         defer { fixture.cleanup() }
@@ -591,6 +688,73 @@ final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
         XCTAssertEqual(snapshot.leases.first?.leaseID, first.leaseID)
     }
 
+    func testLedgerCleanupPreservesCrossProcessLockIdentity() throws {
+        let fixture = try ResourceLedgerFixture("stable-lock")
+        defer { fixture.cleanup() }
+        _ = try fixture.ledger.snapshot()
+        let path = fixture.ledger.root + "/.resource-admissions.lock"
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        guard descriptor >= 0 else { return }
+        defer { close(descriptor) }
+        var before = stat()
+        XCTAssertEqual(fstat(descriptor, &before), 0)
+        let staging = fixture.ledger.root + "/.resource-admissions.abandoned-stage"
+        try Data("unfinished publication".utf8).write(to: URL(fileURLWithPath: staging))
+        let other = DoryVirtualMachineResourceAdmissionLedger(root: fixture.ledger.root)
+        _ = try other.reserveStarting(
+            binding: fixture.binding("selected"), hostFacts: fixture.host,
+            workload: .desktop, resources: fixture.resources
+        )
+        _ = try fixture.ledger.snapshot()
+        var current = stat()
+        XCTAssertEqual(lstat(path, &current), 0)
+        XCTAssertEqual(current.st_ino, before.st_ino)
+        XCTAssertEqual(current.st_dev, before.st_dev)
+        XCTAssertEqual(fstat(descriptor, &current), 0)
+        XCTAssertEqual(current.st_nlink, 1)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging))
+    }
+
+    func testLaunchRevalidationDoesNotPersistExpiryOrCleanTemporaryFiles() throws {
+        let clock = ResourceLedgerClock(now: 10_000)
+        let fixture = try ResourceLedgerFixture("readonly-preflight", clock: clock)
+        defer { fixture.cleanup() }
+        _ = try fixture.ledger.reserveStarting(
+            binding: fixture.binding("abandoned"), hostFacts: fixture.host, workload: .server,
+            resources: fixture.lightweightResources, startingLeaseDurationMilliseconds: 100
+        )
+        let selected = try fixture.ledger.reserveStarting(
+            binding: fixture.binding("selected"), hostFacts: fixture.host, workload: .desktop,
+            resources: fixture.resources, startingLeaseDurationMilliseconds: 1_000
+        )
+        let plan = fixture.plan(binding: selected.binding, evidence: selected.evidence)
+        _ = try fixture.ledger.bind(leaseID: selected.leaseID, to: plan, expectedLeaseRevision: selected.leaseRevision)
+        let record = URL(fileURLWithPath: fixture.ledger.root + "/resource-admissions.json")
+        let staging = URL(fileURLWithPath: fixture.ledger.root + "/.resource-admissions.tmp-readonly-test")
+        let retained = Data("staged authority".utf8)
+        try retained.write(to: staging)
+        let before = try Data(contentsOf: record)
+        let names = try FileManager.default.contentsOfDirectory(atPath: fixture.ledger.root).sorted()
+        clock.advance(by: 100)
+        XCTAssertEqual(try fixture.ledger.revalidateForStart(
+            leaseID: selected.leaseID, plan: plan, hostFacts: fixture.host
+        ), selected.evidence)
+        XCTAssertEqual(try Data(contentsOf: record), before)
+        XCTAssertEqual(try Data(contentsOf: staging), retained)
+        clock.advance(by: 900)
+        XCTAssertThrowsError(try fixture.ledger.revalidateForStart(
+            leaseID: selected.leaseID, plan: plan, hostFacts: fixture.host
+        ))
+        XCTAssertEqual(try Data(contentsOf: record), before)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: fixture.ledger.root).sorted(), names)
+        let absent = DoryVirtualMachineResourceAdmissionLedger(root: fixture.root + "/absent")
+        XCTAssertThrowsError(try absent.revalidateForStart(
+            leaseID: selected.leaseID, plan: plan, hostFacts: fixture.host
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: absent.root))
+    }
+
     func testRestartRecoveryExpiresAbandonedStartAndPreservesBoundDisk() throws {
         let clock = ResourceLedgerClock(now: 10_000)
         let fixture = try ResourceLedgerFixture("recovery", clock: clock)
@@ -731,7 +895,7 @@ final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
         ))
         let exact = DoryVirtualMachineBoundPlanningLeaseRecoveryAuthorization(
             machineID: plan.machineID,
-            planSHA256: DoryDaemonVirtualMachinePlanningCoordinator.planSHA256(plan)
+            planSHA256: try plan.canonicalSHA256()
         )
         let recovered = try fixture.ledger.recoverBoundPlanningLease(
             leaseID: expired.leaseID,
@@ -742,7 +906,7 @@ final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
         )
         XCTAssertEqual(recovered.state, .starting)
         XCTAssertEqual(recovered.boundPlanSHA256,
-                       DoryDaemonVirtualMachinePlanningCoordinator.planSHA256(plan))
+                       try plan.canonicalSHA256())
     }
 
     func testBoundPlanAndHostFactsAreExactStartGates() throws {
@@ -1090,7 +1254,7 @@ private final class ResourceLedgerFixture {
             source: .userProvided,
             mutableProvenance: provenance
         )
-        var devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
+        var devices = DoryVirtualMachineDeviceCapabilityRequest(networkInterface: .stable(machineID: binding.machineID))
         if !portForwards.isEmpty { devices.networkAttachment = .sharedNAT }
         let guest = DoryGuestPlatform(family: .linux, architecture: .arm64)
         return DoryResolvedMachinePlan(
@@ -1101,10 +1265,11 @@ private final class ResourceLedgerFixture {
             createdAtUnixMilliseconds: 1_700_000_000_000,
             updatedAtUnixMilliseconds: 1_700_000_000_000,
             guest: guest,
-            backend: .appleVirtualizationFramework,
-            backendImplementationIdentifier: "dory.vz-linux.compatibility.v1",
-            backendRuntimeBuildIdentifier: "vz-runtime-1",
+            backend: .doryHypervisor,
+            backendImplementationIdentifier: "dory.raw-hv-linux.compatibility.v1",
+            backendRuntimeBuildIdentifier: "raw-runtime-1",
             virtualHardwareABIVersion: 1,
+            armVirtTopology: resolvedARMVirtTestTopology(devices: devices),
             bootMedia: DoryResolvedMachineBootMedia(
                 resolverReference: DoryVMResolverReference(
                     namespace: "machine",
@@ -1134,8 +1299,8 @@ private final class ResourceLedgerFixture {
                 )
             ),
             components: [DoryResolvedBackendComponentEvidence(
-                componentIdentifier: "dory-vmm",
-                buildIdentifier: "vz-runtime-1",
+                componentIdentifier: "dory-hv",
+                buildIdentifier: "raw-runtime-1",
                 artifactSHA256: digest("d")
             )],
             devices: devices,
@@ -1149,41 +1314,16 @@ private final class ResourceLedgerFixture {
                     bootMedia: media,
                     acceptableGraphics: [.software],
                     devices: devices,
-                    backendPreferences: [.appleVirtualizationFramework],
+                    backendPreferences: [.doryHypervisor],
                     backendPreferencePolicy: .required
                 ),
                 selectedEvaluationIndex: 0,
                 rejectedCandidates: []
             ),
-            qualificationEvidence: DoryResolvedMachineQualificationEvidence(
-                runtime: DoryVirtualMachineRuntimeQualificationEvidence(
-                    qualificationIdentity: "runtime-qualification-1",
-                    qualificationReportSHA256: digest("c"),
-                    signingKeyID: "dory-runtime-1",
-                    qualificationFormatVersion: 1,
-                    guest: guest,
-                    bootMediaKind: media.kind,
-                    immutableArtifactSHA256: nil,
-                    mutableProvenance: provenance,
-                    backend: .appleVirtualizationFramework,
-                    backendRuntimeBuildID: "vz-runtime-1",
-                    virtualHardwareABIVersion: 1,
-                    graphics: .software,
-                    devices: devices
-                )
-            ),
+            qualificationEvidence: DoryResolvedMachineQualificationEvidence(),
             resourceAdmission: evidence,
-            hostQualification: DoryResolvedHostQualificationEvidence(
-                qualificationIdentity: "host-qualification-1",
-                qualificationReportSHA256: digest("e"),
-                hostHardwareModelIdentifier: "Mac16.1",
-                hostOperatingSystemBuild: "26A5406c",
-                backend: .appleVirtualizationFramework,
-                backendRuntimeBuildIdentifier: "vz-runtime-1",
-                virtualHardwareABIVersion: 1,
-                qualifierIdentifier: "dory-host-qualifier",
-                qualifierVersion: 1
-            )
+            firmware: try! resolvedFirmwareTestArtifacts().manifest,
+            persistence: resolvedPersistenceTestBinding(machineID: binding.machineID)
         )
     }
 

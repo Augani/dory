@@ -7,7 +7,7 @@ import Foundation
 /// Canonical descriptor-only launch authority for one DoryPC-v1 machine running through DBT.
 /// Host paths never cross this boundary.
 public struct DoryPCRuntimeLaunchEnvelope: Codable, Sendable, Equatable {
-    public static let currentSchemaVersion: UInt16 = 1
+    public static let currentSchemaVersion: UInt16 = 2
     public static let maximumEncodedArgumentBytes = 65_536
 
     public enum ExecutionTier: String, Codable, Sendable, Equatable {
@@ -67,6 +67,8 @@ public struct DoryPCRuntimeLaunchEnvelope: Codable, Sendable, Equatable {
     public let devices: DoryVirtualMachineDeviceCapabilityRequest
     public let portForwards: [DoryVMPortForward]
     public let executionResources: ExecutionResources
+    /// Complete host admission for this translated runner, including its bounded code cache.
+    public let resourceBudget: DoryVMResourceRequest
     public let launchPlan: DoryPCUEFILaunchPlan
     public let inheritedFileDescriptors: [RuntimeLaunchEnvelope.InheritedFileDescriptorSlot]
     public let inheritedDirectoryDescriptors: [RuntimeLaunchEnvelope.InheritedDirectoryDescriptorSlot]
@@ -83,6 +85,7 @@ public struct DoryPCRuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         portForwards: [DoryVMPortForward],
         executionResources: ExecutionResources,
+        resourceBudget: DoryVMResourceRequest? = nil,
         launchPlan: DoryPCUEFILaunchPlan,
         inheritedFileDescriptors: [RuntimeLaunchEnvelope.InheritedFileDescriptorSlot],
         inheritedDirectoryDescriptors: [RuntimeLaunchEnvelope.InheritedDirectoryDescriptorSlot]
@@ -99,6 +102,12 @@ public struct DoryPCRuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         self.devices = devices
         self.portForwards = portForwards
         self.executionResources = executionResources
+        self.resourceBudget = resourceBudget ?? Self.derivedResourceBudget(
+            graphics: graphics,
+            devices: devices,
+            executionResources: executionResources,
+            inheritedFileDescriptors: inheritedFileDescriptors
+        )
         self.launchPlan = launchPlan
         self.inheritedFileDescriptors = inheritedFileDescriptors
         self.inheritedDirectoryDescriptors = inheritedDirectoryDescriptors
@@ -115,6 +124,7 @@ public struct DoryPCRuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         portForwards: [DoryVMPortForward],
         executionResources: ExecutionResources,
+        resourceBudget: DoryVMResourceRequest? = nil,
         systemDiskCapacityBytes: UInt64,
         systemDiskLogicalID: DoryVirtualDeviceID,
         launchPlan: DoryPCUEFILaunchPlan,
@@ -186,6 +196,7 @@ public struct DoryPCRuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             devices: devices,
             portForwards: portForwards,
             executionResources: executionResources,
+            resourceBudget: resourceBudget,
             launchPlan: launchPlan,
             inheritedFileDescriptors: files,
             inheritedDirectoryDescriptors: [
@@ -208,7 +219,13 @@ public struct DoryPCRuntimeLaunchEnvelope: Codable, Sendable, Equatable {
               virtualHardwareABIVersion == 1,
               platform == .x86_64LinuxV1,
               launchPlan.machineABIIdentity == DoryPCV1ABI.identity,
-              executionResources.isValid else {
+              executionResources.isValid,
+              resourceBudget == Self.derivedResourceBudget(
+                  graphics: graphics,
+                  devices: devices,
+                  executionResources: executionResources,
+                  inheritedFileDescriptors: inheritedFileDescriptors
+              ) else {
             throw DoryPCRuntimeLaunchEnvelopeError.invalidIdentity
         }
         guard devices.networkInterface?.isValid == true,
@@ -386,6 +403,39 @@ public struct DoryPCRuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         return value.utf8.allSatisfy {
             (48...57).contains($0) || (97...102).contains($0)
         }
+    }
+
+    private static func derivedResourceBudget(
+        graphics: DoryGraphicsAccelerationLevel,
+        devices: DoryVirtualMachineDeviceCapabilityRequest,
+        executionResources: ExecutionResources,
+        inheritedFileDescriptors: [RuntimeLaunchEnvelope.InheritedFileDescriptorSlot]
+    ) -> DoryVMResourceRequest {
+        let memory = executionResources.memoryMB.multipliedReportingOverflow(by: 1_024 * 1_024)
+        let diskBytes = inheritedFileDescriptors.first {
+            $0.name == RuntimeLaunchEnvelope.systemDiskSlotName
+        }?.byteCount ?? 0
+        let stagingBytes = inheritedFileDescriptors.first {
+            $0.name == RuntimeLaunchEnvelope.installerMediaSlotName
+        }?.byteCount ?? 0
+        return DoryVMProductionResourceBudget.make(
+            guest: DoryGuestPlatform(family: .linux, architecture: .x86_64),
+            graphics: DoryVMGraphicsPolicy(acceptableLevels: [graphics]),
+            displays: devices.displays.map {
+                DoryVMDisplayConfiguration(
+                    id: $0.id,
+                    widthPixels: $0.widthPixels,
+                    heightPixels: $0.heightPixels,
+                    backingScaleFactor: $0.backingScaleFactor,
+                    guestUIScaleFactor: $0.guestUIScaleFactor
+                )
+            },
+            shareCount: devices.directorySharing ? 1 : 0,
+            virtualCPUCount: UInt64(executionResources.virtualCPUCount),
+            memoryBytes: memory.overflow ? .max : memory.partialValue,
+            diskBytes: diskBytes,
+            stagingBytes: stagingBytes
+        )
     }
 
     private static func isASCIIAlphaNumeric(_ byte: UInt8) -> Bool {

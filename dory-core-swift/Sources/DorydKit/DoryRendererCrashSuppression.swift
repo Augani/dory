@@ -47,9 +47,8 @@ struct DoryRendererCrashSuppressionCandidate: Codable, Hashable, Sendable {
 /// Durable, candidate-bound circuit breaker for renderer failures classified by dory-hv.
 ///
 /// A renderer crash suppresses the exact candidate for a bounded interval. Production planning
-/// then sees acceleration as unavailable: an automatic graphics policy can select its declared
-/// software recovery candidate, while a hardware-only policy receives a normal unsupported-plan
-/// error. Corrupt health state fails acceleration closed but never prevents software Linux.
+/// then reports requested acceleration as unavailable. A later, explicitly authorized recovery
+/// operation may select a declared software level. Corrupt health state fails acceleration closed.
 final class DoryRendererCrashSuppressionStore: @unchecked Sendable {
     static let defaultSuppressionInterval: TimeInterval = 6 * 60 * 60
 

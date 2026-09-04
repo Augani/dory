@@ -231,11 +231,19 @@ public final class DoryResolvedMachinePlanRepository: @unchecked Sendable {
                 throw DoryResolvedMachinePlanRepositoryError.invalidRecord(path)
             }
         case DoryResolvedMachinePlanRepositoryRecord.currentSchemaVersion:
-            guard authority.planSchemaVersion == DoryResolvedMachinePlan.currentSchemaVersion,
-                  let expected = record.planSHA256,
+            guard let expected = record.planSHA256,
                   Self.isSHA256(expected),
-                  expected == Self.sha256(authority.canonicalPlanData),
-                  let decodedCanonicalPlanData = try? Self.canonicalEncodedPlanData(record.plan),
+                  expected == Self.sha256(authority.canonicalPlanData) else {
+                throw DoryResolvedMachinePlanRepositoryError.invalidRecord(path)
+            }
+            if authority.planSchemaVersion == 5 {
+                guard Self.isHistoricallyValidMigrationPlan(record.plan, persistedSchemaVersion: 5) else {
+                    throw DoryResolvedMachinePlanRepositoryError.invalidRecord(path)
+                }
+                break
+            }
+            guard authority.planSchemaVersion == DoryResolvedMachinePlan.currentSchemaVersion,
+                  let decodedCanonicalPlanData = try? record.plan.canonicalData(),
                   decodedCanonicalPlanData == authority.canonicalPlanData,
                   record.plan.sourceSchemaVersion == DoryResolvedMachinePlan.currentSchemaVersion,
                   record.plan.migrationDisposition == .current,
@@ -269,7 +277,7 @@ public final class DoryResolvedMachinePlanRepository: @unchecked Sendable {
     ) throws {
         let data: Data
         do {
-            let encodedPlan = try JSONEncoder().encode(plan)
+            let encodedPlan = try plan.canonicalData()
             guard let planObject = try JSONSerialization.jsonObject(
                 with: encodedPlan
             ) as? [String: Any] else {
@@ -500,9 +508,10 @@ public final class DoryResolvedMachinePlanRepository: @unchecked Sendable {
             }
         case DoryResolvedMachinePlanRepositoryRecord.currentSchemaVersion:
             guard Set(root.keys) == ["plan", "planSHA256", "schemaVersion"],
-                  planSchemaVersion == DoryResolvedMachinePlan.currentSchemaVersion,
+                  (planSchemaVersion == 5
+                    || planSchemaVersion == DoryResolvedMachinePlan.currentSchemaVersion),
                   exactUInt16(planObject["sourceSchemaVersion"])
-                    == DoryResolvedMachinePlan.currentSchemaVersion,
+                    == planSchemaVersion,
                   planObject["migrationDisposition"] as? String
                     == DoryResolvedMachinePlanMigrationDisposition.current.rawValue,
                   let canonicalRecordData = try? canonicalJSONData(root),
@@ -523,14 +532,6 @@ public final class DoryResolvedMachinePlanRepository: @unchecked Sendable {
             throw CocoaError(.propertyListWriteInvalid)
         }
         return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
-    }
-
-    private static func canonicalEncodedPlanData(
-        _ plan: DoryResolvedMachinePlan
-    ) throws -> Data {
-        let encoded = try JSONEncoder().encode(plan)
-        let object = try JSONSerialization.jsonObject(with: encoded)
-        return try canonicalJSONData(object)
     }
 
     private static func exactUInt16(_ value: Any?) -> UInt16? {
@@ -573,9 +574,12 @@ public final class DoryResolvedMachinePlanRepository: @unchecked Sendable {
             modern.insert("launchArtifacts")
         case 4:
             modern.formUnion(["launchArtifacts", "portForwards"])
+        case 5:
+            modern.formUnion(["launchArtifacts", "portForwards", "armVirtTopology"])
         case DoryResolvedMachinePlan.currentSchemaVersion:
             modern.formUnion([
                 "launchArtifacts", "portForwards", "armVirtTopology",
+                "architecture", "platform", "resources", "firmware", "persistence",
             ])
         default:
             return false
@@ -583,14 +587,30 @@ public final class DoryResolvedMachinePlanRepository: @unchecked Sendable {
         return Set(plan.keys).isSubset(of: modern)
     }
 
+    /// Authenticate a historical embedded plan without upgrading its launch authority. Runtime
+    /// identity records use this same migration boundary as standalone plan records.
+    static func authenticatedSchemaFivePlan(
+        _ object: [String: Any], expectedSHA256: String
+    ) -> DoryResolvedMachinePlan? {
+        guard exactUInt16(object["schemaVersion"]) == 5,
+              exactUInt16(object["sourceSchemaVersion"]) == 5,
+              object["migrationDisposition"] as? String == "current",
+              hasOnlyAllowedPlanKeys(object, schemaVersion: 5),
+              let data = try? canonicalJSONData(object),
+              sha256(data) == expectedSHA256,
+              let plan = try? JSONDecoder().decode(DoryResolvedMachinePlan.self, from: data),
+              isHistoricallyValidMigrationPlan(plan, persistedSchemaVersion: 5) else { return nil }
+        return plan
+    }
+
     private static func isHistoricallyValidMigrationPlan(
         _ plan: DoryResolvedMachinePlan,
         persistedSchemaVersion: UInt16
     ) -> Bool {
-        guard (2...4).contains(persistedSchemaVersion),
+        guard (2...5).contains(persistedSchemaVersion),
               plan.sourceSchemaVersion == persistedSchemaVersion,
               plan.migrationDisposition == .requiresReplanning,
-              plan.armVirtTopology == nil else {
+              (persistedSchemaVersion >= 5 || plan.armVirtTopology == nil) else {
             return false
         }
         var allowed: Set<DoryResolvedMachinePlanValidationCode> = [

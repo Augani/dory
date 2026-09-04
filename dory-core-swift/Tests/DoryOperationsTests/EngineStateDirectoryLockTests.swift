@@ -95,6 +95,25 @@ final class EngineStateDirectoryLockTests: XCTestCase {
         XCTAssertEqual(try String(contentsOfFile: foreign, encoding: .utf8), "foreign\n")
     }
 
+    func testReadOnlyAcquisitionPreservesExistingLockAndRejectsAbsence() throws {
+        let state = temporaryStateDirectory()
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        XCTAssertThrowsError(try EngineStateDirectoryLock(stateDirectory: state, readOnly: true))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: state))
+        do { withExtendedLifetime(try EngineStateDirectoryLock(stateDirectory: state)) {} }
+        let path = state + "/engine.lock"
+        let bytes = try Data(contentsOf: URL(fileURLWithPath: path))
+        let before = try FileManager.default.attributesOfItem(atPath: path)
+        let lock = try EngineStateDirectoryLock(stateDirectory: state, readOnly: true)
+        XCTAssertThrowsError(try EngineStateDirectoryLock(stateDirectory: state))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), bytes)
+        let after = try FileManager.default.attributesOfItem(atPath: path)
+        for key: FileAttributeKey in [.systemFileNumber, .posixPermissions, .modificationDate] {
+            XCTAssertEqual(before[key] as? NSObject, after[key] as? NSObject)
+        }
+        withExtendedLifetime(lock) {}
+    }
+
     private func temporaryStateDirectory() -> String {
         FileManager.default.temporaryDirectory
             .appendingPathComponent("dory-engine-lock-\(UUID().uuidString)", isDirectory: true)

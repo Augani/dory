@@ -57,24 +57,10 @@ public extension MachineBackendRuntimeObservation {
     init(_ status: DoryMachineStatus) {
         self.init(
             machineID: status.id,
-            state: MachineBackendRuntimeState(status.state),
+            state: status.state,
             processIdentifier: status.pid,
             failureMessage: status.lastError
         )
-    }
-}
-
-private extension MachineBackendRuntimeState {
-    init(_ state: DoryMachineState) {
-        switch state {
-        case .created: self = .created
-        case .starting: self = .starting
-        case .running: self = .running
-        case .paused: self = .paused
-        case .suspended: self = .suspended
-        case .stopped: self = .stopped
-        case .failed: self = .failed
-        }
     }
 }
 

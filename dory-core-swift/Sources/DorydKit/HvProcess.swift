@@ -408,6 +408,7 @@ public final class HvProcess: @unchecked Sendable {
         /// The peer audit token, rather than this object's numeric PID, authorizes every signal.
         let applicationLaunch: DoryWorkspaceApplicationLaunch?
         let applicationAuditToken: audit_token_t?
+        let processGenerationIsCurrent: (@Sendable () -> Bool)?
         let terminationWaiter = DispatchGroup()
         private let lifecycleLock = NSLock()
         private var terminationObserved = false
@@ -416,12 +417,14 @@ public final class HvProcess: @unchecked Sendable {
             pid: pid_t,
             applicationMonitor: DoryApplicationProcessMonitor? = nil,
             applicationLaunch: DoryWorkspaceApplicationLaunch? = nil,
-            applicationAuditToken: audit_token_t? = nil
+            applicationAuditToken: audit_token_t? = nil,
+            processGenerationIsCurrent: (@Sendable () -> Bool)? = nil
         ) {
             self.pid = pid
             self.applicationMonitor = applicationMonitor
             self.applicationLaunch = applicationLaunch
             self.applicationAuditToken = applicationAuditToken
+            self.processGenerationIsCurrent = processGenerationIsCurrent
             terminationWaiter.enter()
         }
 
@@ -438,6 +441,10 @@ public final class HvProcess: @unchecked Sendable {
             lifecycleLock.lock()
             defer { lifecycleLock.unlock() }
             guard !terminationObserved else { return false }
+            guard processGenerationIsCurrent?() ?? true else {
+                terminationObserved = true
+                return false
+            }
             if let applicationAuditToken {
                 switch DoryApplicationLaunchHandoffProtocol.signal(
                     signal,
@@ -578,6 +585,59 @@ public final class HvProcess: @unchecked Sendable {
         launchGatedChildCodeValidator = DorySecurityLaunchGatedChildCodeValidator()
         applicationLauncher = DoryWorkspaceApplicationLauncher()
         self.unexpectedTerminationHandler = unexpectedTerminationHandler
+    }
+
+    /// Reconstitutes supervision for a non-child helper only after its private control endpoint
+    /// has authenticated the exact machine, operation, plan, PID, and process start generation.
+    public static func adopting(
+        configuration: HvProcessConfiguration,
+        processIdentity: DoryHostProcessIdentity,
+        processGenerationIsCurrent: @escaping @Sendable () -> Bool,
+        unexpectedTerminationHandler: HvProcessUnexpectedTerminationHandler? = nil
+    ) throws -> HvProcess {
+        guard processIdentity.isValid, processGenerationIsCurrent() else {
+            throw DoryRuntimeReconnectError.invalidProcess
+        }
+        let supervisor = HvProcess(
+            configuration: configuration,
+            unexpectedTerminationHandler: unexpectedTerminationHandler
+        )
+        try supervisor.adopt(
+            processIdentity: processIdentity,
+            processGenerationIsCurrent: processGenerationIsCurrent
+        )
+        return supervisor
+    }
+
+    private func adopt(
+        processIdentity: DoryHostProcessIdentity,
+        processGenerationIsCurrent: @escaping @Sendable () -> Bool
+    ) throws {
+        let monitor = try DoryApplicationProcessMonitor(
+            pid: processIdentity.processIdentifier,
+            terminationObservedAfterRegistration: { !processGenerationIsCurrent() }
+        )
+        let child = SupervisedChild(
+            pid: processIdentity.processIdentifier,
+            applicationMonitor: monitor,
+            processGenerationIsCurrent: processGenerationIsCurrent
+        )
+        lock.lock()
+        guard process == nil, !hasStarted else {
+            lock.unlock()
+            throw ProcessError.alreadyRunning
+        }
+        process = child
+        hasStarted = true
+        stopping = false
+        restartsEnabled = false
+        restartPending = false
+        lock.unlock()
+        DispatchQueue.global(qos: .utility).async { [self, child] in
+            let termination = Self.waitForTermination(of: child)
+            handleTermination(child, termination: termination)
+            child.terminationWaiter.leave()
+        }
     }
 
     /// Internal injection seam for deterministic lifecycle tests. Production always uses the
@@ -1073,6 +1133,7 @@ public final class HvProcess: @unchecked Sendable {
 
     private func validateDescriptorEnvelope(mappings: [InheritedDescriptorMapping]) throws {
         let dockerDiskIndex = try validatedDockerDataDiskDescriptorIndex(mappings: mappings)
+        let reconnectIndex = try validatedRuntimeReconnectDescriptorIndex(mappings: mappings)
         guard configuration.runtimeLaunchEnvelopeAuthority == nil
                 || configuration.pcRuntimeLaunchEnvelopeAuthority == nil else {
             throw ProcessError.descriptorEnvelopeMismatch
@@ -1083,14 +1144,16 @@ public final class HvProcess: @unchecked Sendable {
         } else if let authority = configuration.pcRuntimeLaunchEnvelopeAuthority {
             slots = authority.inheritedDescriptorSlots()
         } else {
-            guard mappings.count == (dockerDiskIndex == nil ? 0 : 1) else {
+            let supplementalCount = (dockerDiskIndex == nil ? 0 : 1)
+                + (reconnectIndex == nil ? 0 : 1)
+            guard mappings.count == supplementalCount else {
                 throw ProcessError.descriptorEnvelopeMismatch
             }
             return
         }
         let envelopeAuthorities = configuration.inheritedFileDescriptors.enumerated().compactMap {
             index, authority in
-            index == dockerDiskIndex ? nil : authority
+            index == dockerDiskIndex || index == reconnectIndex ? nil : authority
         }
         guard slots.count == envelopeAuthorities.count,
               zip(slots, envelopeAuthorities).allSatisfy({ slot, authority in
@@ -1103,6 +1166,37 @@ public final class HvProcess: @unchecked Sendable {
         } else if let authority = configuration.pcRuntimeLaunchEnvelopeAuthority {
             try authority.validateResources()
         }
+    }
+
+    private func validatedRuntimeReconnectDescriptorIndex(
+        mappings: [InheritedDescriptorMapping]
+    ) throws -> Int? {
+        let name = DoryRuntimeReconnectContract.authorityName
+        let childDescriptor = DoryRuntimeReconnectContract.childFileDescriptor
+        let flag = DoryRuntimeReconnectContract.fileDescriptorArgument
+        let candidates = configuration.inheritedFileDescriptors.indices.filter { index in
+            let authority = configuration.inheritedFileDescriptors[index]
+            return authority.name == name || authority.childDescriptor == childDescriptor
+        }
+        let indices = configuration.arguments.indices.filter { configuration.arguments[$0] == flag }
+        let hasInline = configuration.arguments.contains { $0.hasPrefix(flag + "=") }
+        guard !candidates.isEmpty || !indices.isEmpty || hasInline else { return nil }
+        guard !hasInline,
+              candidates.count == 1, indices.count == 1,
+              let index = candidates.first,
+              let argumentIndex = indices.first,
+              configuration.arguments.indices.contains(argumentIndex + 1),
+              configuration.arguments[argumentIndex + 1] == String(childDescriptor),
+              mappings.indices.contains(index) else {
+            throw ProcessError.descriptorEnvelopeMismatch
+        }
+        let authority = configuration.inheritedFileDescriptors[index]
+        guard authority.name == name,
+              authority.childDescriptor == childDescriptor,
+              mappings[index].childDescriptor == childDescriptor else {
+            throw ProcessError.descriptorEnvelopeMismatch
+        }
+        return index
     }
 
     /// The Docker engine disk is a daemon-admitted supplemental resource, not part of the signed

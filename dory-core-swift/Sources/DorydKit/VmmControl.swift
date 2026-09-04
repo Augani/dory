@@ -1,5 +1,6 @@
 import Darwin
 import DoryCore
+import DoryOperations
 import Foundation
 
 /// The minimal daemon-to-helper authority needed to replace the backing directory of an
@@ -37,6 +38,7 @@ public struct VmmControlRequest: Sendable, Equatable, Codable {
     public var lifecycleAction: DoryLifecycleReceiptAction?
     public var operationID: String?
     public var directoryShares: [VmmDirectoryShareReplacement]?
+    public var reconnectChallenge: String?
 
     public init(
         command: String,
@@ -44,7 +46,8 @@ public struct VmmControlRequest: Sendable, Equatable, Codable {
         statePath: String? = nil,
         lifecycleAction: DoryLifecycleReceiptAction? = nil,
         operationID: String? = nil,
-        directoryShares: [VmmDirectoryShareReplacement]? = nil
+        directoryShares: [VmmDirectoryShareReplacement]? = nil,
+        reconnectChallenge: String? = nil
     ) {
         self.command = command
         self.targetMB = targetMB
@@ -52,6 +55,7 @@ public struct VmmControlRequest: Sendable, Equatable, Codable {
         self.lifecycleAction = lifecycleAction
         self.operationID = operationID
         self.directoryShares = directoryShares
+        self.reconnectChallenge = reconnectChallenge
     }
 
     public static func setBalloonTarget(_ targetMB: UInt64) -> VmmControlRequest {
@@ -94,6 +98,10 @@ public struct VmmControlRequest: Sendable, Equatable, Codable {
     ) -> VmmControlRequest {
         VmmControlRequest(command: "replaceDirectoryShares", directoryShares: shares)
     }
+
+    public static func authenticateRuntime(challenge: String) -> VmmControlRequest {
+        VmmControlRequest(command: "authenticateRuntime", reconnectChallenge: challenge)
+    }
 }
 
 public struct VmmControlResponse: Sendable, Equatable, Codable {
@@ -103,6 +111,7 @@ public struct VmmControlResponse: Sendable, Equatable, Codable {
     public var lifecycleAction: DoryLifecycleReceiptAction?
     public var operationID: String?
     public var deviceTelemetry: DoryDeviceTelemetrySnapshot?
+    public var reconnect: DoryRuntimeReconnectResponse?
 
     public init(
         ok: Bool,
@@ -110,7 +119,8 @@ public struct VmmControlResponse: Sendable, Equatable, Codable {
         targetMB: UInt64? = nil,
         lifecycleAction: DoryLifecycleReceiptAction? = nil,
         operationID: String? = nil,
-        deviceTelemetry: DoryDeviceTelemetrySnapshot? = nil
+        deviceTelemetry: DoryDeviceTelemetrySnapshot? = nil,
+        reconnect: DoryRuntimeReconnectResponse? = nil
     ) {
         self.ok = ok
         self.message = message
@@ -118,6 +128,7 @@ public struct VmmControlResponse: Sendable, Equatable, Codable {
         self.lifecycleAction = lifecycleAction
         self.operationID = operationID
         self.deviceTelemetry = deviceTelemetry
+        self.reconnect = reconnect
     }
 }
 
@@ -330,6 +341,30 @@ public struct UnixMachineBalloonController: MachineBalloonControlling {
 }
 
 public enum VmmControlClient {
+    public static func authenticateRuntime(
+        socketPath: String,
+        launchIdentity: DoryRuntimeReconnectLaunchIdentity,
+        timeoutSeconds: TimeInterval = 5
+    ) throws -> DoryRuntimeReconnectResponse {
+        var challengeBytes = [UInt8](repeating: 0, count: 32)
+        var generator = SystemRandomNumberGenerator()
+        for index in challengeBytes.indices {
+            challengeBytes[index] = UInt8.random(in: .min ... .max, using: &generator)
+        }
+        let challenge = challengeBytes.map { String(format: "%02x", $0) }.joined()
+        let response = try send(
+            socketPath: socketPath,
+            request: .authenticateRuntime(challenge: challenge),
+            timeoutSeconds: timeoutSeconds
+        )
+        guard response.ok,
+              let reconnect = response.reconnect,
+              reconnect.matches(launchIdentity, challenge: challenge) else {
+            throw VmmControlError.rejected("VMM runtime reconnect authentication failed")
+        }
+        return reconnect
+    }
+
     public static func send(
         socketPath: String,
         request: VmmControlRequest,
@@ -445,15 +480,24 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
     private var boundIdentity: (device: dev_t, inode: ino_t)?
     private let deviceTelemetryProvider: (@Sendable () throws -> DoryDeviceTelemetrySnapshot)?
     private let lifecycleHandler: (@Sendable (DoryLifecycleReceiptAction) throws -> Void)?
+    private let reconnectIdentity: DoryRuntimeReconnectLaunchIdentity?
+    private let executionStateProvider: @Sendable () -> DoryVirtualMachineState
+    private let executionLifecycleHandler: (@Sendable (DoryLifecycleReceiptAction) throws -> Void)?
 
     public init(
         socketPath: String,
         deviceTelemetryProvider: (@Sendable () throws -> DoryDeviceTelemetrySnapshot)? = nil,
-        lifecycleHandler: (@Sendable (DoryLifecycleReceiptAction) throws -> Void)? = nil
+        lifecycleHandler: (@Sendable (DoryLifecycleReceiptAction) throws -> Void)? = nil,
+        reconnectIdentity: DoryRuntimeReconnectLaunchIdentity? = nil,
+        executionStateProvider: @escaping @Sendable () -> DoryVirtualMachineState = { .running },
+        executionLifecycleHandler: (@Sendable (DoryLifecycleReceiptAction) throws -> Void)? = nil
     ) {
         self.socketPath = socketPath
         self.deviceTelemetryProvider = deviceTelemetryProvider
         self.lifecycleHandler = lifecycleHandler
+        self.reconnectIdentity = reconnectIdentity
+        self.executionStateProvider = executionStateProvider
+        self.executionLifecycleHandler = executionLifecycleHandler
     }
 
     public func start() throws {
@@ -537,12 +581,39 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
             try setSocketTimeouts(fd: clientFD, seconds: 5)
             let data = try readAll(from: clientFD)
             let request = try JSONDecoder().decode(VmmControlRequest.self, from: data)
+            if request.command == "authenticateRuntime" {
+                guard request.targetMB == nil,
+                      request.statePath == nil,
+                      request.lifecycleAction == nil,
+                      request.operationID == nil,
+                      request.directoryShares == nil,
+                      let challenge = request.reconnectChallenge,
+                      let reconnectIdentity,
+                      reconnectIdentity.isValid else {
+                    throw VmmControlError.rejected("invalid helper runtime authentication request")
+                }
+                let processIdentity = try DoryHostProcessIdentity.capture()
+                response = VmmControlResponse(
+                    ok: true,
+                    reconnect: try DoryRuntimeReconnectResponse(
+                        launchIdentity: reconnectIdentity,
+                        challenge: challenge,
+                        processIdentity: processIdentity,
+                        runtimeState: executionStateProvider()
+                    )
+                )
+                if let encoded = try? JSONEncoder().encode(response) {
+                    try? writeAll(encoded, to: clientFD)
+                }
+                return
+            }
             if request.command == "deviceTelemetry" {
                 guard request.targetMB == nil,
                       request.statePath == nil,
                       request.lifecycleAction == nil,
                       request.operationID == nil,
-                      request.directoryShares == nil else {
+                      request.directoryShares == nil,
+                      request.reconnectChallenge == nil else {
                     throw VmmControlError.rejected("invalid helper device telemetry request")
                 }
                 guard let deviceTelemetryProvider else {
@@ -558,17 +629,27 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
                 }
                 return
             }
-            guard request.command == "acknowledgeLifecycle",
+            guard ["acknowledgeLifecycle", "pauseMachine", "resumeMachine"].contains(request.command),
                   let action = request.lifecycleAction,
                   let operationID = request.operationID,
                   request.targetMB == nil,
                   request.statePath == nil,
                   request.directoryShares == nil,
+                  request.reconnectChallenge == nil,
                   DoryOperationIdentity.parseCanonical(operationID) != nil,
                   operationID != "00000000-0000-0000-0000-000000000000" else {
                 throw VmmControlError.rejected("invalid helper lifecycle receipt request")
             }
-            try lifecycleHandler?(action)
+            if request.command == "acknowledgeLifecycle" {
+                try lifecycleHandler?(action)
+            } else {
+                guard let executionLifecycleHandler,
+                      (request.command == "pauseMachine" && action == .preparePause)
+                        || (request.command == "resumeMachine" && action == .resumed) else {
+                    throw VmmControlError.rejected("unsupported helper execution lifecycle request")
+                }
+                try executionLifecycleHandler(action)
+            }
             response = VmmControlResponse(
                 ok: true,
                 lifecycleAction: action,

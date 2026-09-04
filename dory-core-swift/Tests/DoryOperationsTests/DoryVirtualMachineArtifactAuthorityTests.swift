@@ -459,6 +459,28 @@ final class DoryVirtualMachineArtifactAuthorityTests: XCTestCase {
         }
     }
 
+    func testRejectedResolutionDoesNotCreateMissingAuthorityOrLock() throws {
+        try withFixture("readonly-missing") { fixture in
+            let root = fixture.authority.root
+            XCTAssertThrowsError(try fixture.authority.resolve(
+                reference: fixture.reference, kind: .linuxKernel, source: .userProvided
+            ))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root))
+            let kernel = try fixture.file("kernel", data: Data("kernel bytes".utf8))
+            _ = try fixture.authority.publishImmutable(
+                reference: fixture.reference, path: kernel, kind: .linuxKernel, source: .userProvided
+            )
+            let lock = root + "/.artifact-authority.lock"
+            try FileManager.default.removeItem(atPath: lock)
+            let entries = try FileManager.default.contentsOfDirectory(atPath: root).sorted()
+            XCTAssertThrowsError(try fixture.authority.resolve(
+                reference: fixture.reference, kind: .linuxKernel, source: .userProvided
+            ))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: lock))
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root).sorted(), entries)
+        }
+    }
+
     private func withFixture(
         _ name: String,
         body: (ArtifactFixture) throws -> Void

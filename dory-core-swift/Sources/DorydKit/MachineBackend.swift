@@ -172,15 +172,7 @@ public struct MachineBackendPlanResult: Codable, Sendable, Equatable, Hashable {
     }
 }
 
-public enum MachineBackendRuntimeState: String, Codable, Sendable, Equatable, Hashable {
-    case created
-    case starting
-    case running
-    case paused
-    case suspended
-    case stopped
-    case failed
-}
+public typealias MachineBackendRuntimeState = DoryVirtualMachineState
 
 public struct MachineBackendRuntimeObservation: Codable, Sendable, Equatable, Hashable {
     public var machineID: String

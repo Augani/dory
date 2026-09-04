@@ -83,7 +83,9 @@ public final class EngineStateDirectoryLock: @unchecked Sendable {
         _ = Darwin.fsync(descriptor)
     }
 
-    public init(stateDirectory: String, lockFileName: String = "engine.lock") throws {
+    /// Read-only acquisition requires an existing private lock and retains its diagnostic hint.
+    /// It provides the same exclusion while permitting preflight to reject without file writes.
+    public init(stateDirectory: String, lockFileName: String = "engine.lock", readOnly: Bool = false) throws {
         let canonicalState: String
         do {
             // Use the same physical, no-follow spelling as the journal/data-drive authority.
@@ -97,10 +99,12 @@ public final class EngineStateDirectoryLock: @unchecked Sendable {
                 errno: EINVAL
             )
         }
-        try FileManager.default.createDirectory(
-            atPath: canonicalState,
-            withIntermediateDirectories: true
-        )
+        if !readOnly {
+            try FileManager.default.createDirectory(
+                atPath: canonicalState,
+                withIntermediateDirectories: true
+            )
+        }
         guard !lockFileName.isEmpty,
               lockFileName != ".",
               lockFileName != "..",
@@ -113,7 +117,7 @@ public final class EngineStateDirectoryLock: @unchecked Sendable {
         path = canonicalState + "/" + lockFileName
 
         let opened = path.withCString {
-            Darwin.open($0, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))
+            Darwin.open($0, (readOnly ? O_RDONLY : O_RDWR | O_CREAT) | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, mode_t(0o600))
         }
         guard opened >= 0 else {
             throw EngineStateDirectoryLockError.cannotOpen(path: path, errno: errno)
@@ -122,7 +126,8 @@ public final class EngineStateDirectoryLock: @unchecked Sendable {
         guard fstat(opened, &status) == 0,
               status.st_mode & S_IFMT == S_IFREG,
               status.st_uid == getuid(),
-              status.st_nlink == 1 else {
+              status.st_nlink == 1,
+              !readOnly || status.st_mode & 0o077 == 0 else {
             Darwin.close(opened)
             throw EngineStateDirectoryLockError.cannotOpen(path: path, errno: EINVAL)
         }
@@ -138,6 +143,7 @@ public final class EngineStateDirectoryLock: @unchecked Sendable {
             )
         }
         descriptor = opened
+        if readOnly { return }
         _ = Darwin.fchmod(descriptor, mode_t(0o600))
 
         let owner = "pid=\(getpid())\nstate=\(canonicalState)\n"

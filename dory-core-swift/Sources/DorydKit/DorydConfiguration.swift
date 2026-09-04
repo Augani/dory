@@ -852,6 +852,16 @@ public struct DorydEnvironment: Sendable {
         return FileManager.default.fileExists(atPath: helpers) ? helpers : nil
     }
 
+    /// Shares the exact configured engine ceiling with VM admission. Keep it reserved while
+    /// the engine is asleep so a concurrent wake cannot overcommit the host.
+    public var engineResourceReservation: DoryVMResourceRequest {
+        DoryVMResourceRequest(
+            virtualCPUCount: UInt64(clampedCPUs()),
+            memoryBytes: UInt64(clampedMemoryMB()) * 1_048_576,
+            diskBytes: 0
+        )
+    }
+
     private func clampedCPUs() -> Int {
         max(1, int("DORYD_CPUS") ?? Self.hostScaledCPUCount())
     }

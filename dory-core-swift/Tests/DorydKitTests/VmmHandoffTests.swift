@@ -5,6 +5,67 @@ import DoryOperations
 import XCTest
 
 final class VmmHandoffTests: XCTestCase {
+    func testReadinessRefreshRetainsIndependentDescriptorOwnership() throws {
+        let originalFD = open("/dev/null", O_RDONLY)
+        XCTAssertGreaterThanOrEqual(originalFD, 0)
+        var original: VmmHandoff? = VmmHandoff(
+            ready: VmmReadyMessage(machineID: "dev"), fileDescriptors: [originalFD]
+        )
+        var ready = try XCTUnwrap(original).ready
+        ready.guestBooted = true
+        ready.toolsConnected = true
+        var refreshed: VmmHandoff? = try XCTUnwrap(original).replacingReady(ready)
+        let copiedFD = try XCTUnwrap(refreshed?.fileDescriptors.first)
+        XCTAssertNotEqual(copiedFD, originalFD)
+        XCTAssertNotEqual(fcntl(copiedFD, F_GETFD) & FD_CLOEXEC, 0)
+        XCTAssertFalse(try XCTUnwrap(original).ready.toolsConnected)
+        XCTAssertTrue(try XCTUnwrap(refreshed).ready.toolsConnected)
+        original = nil
+        XCTAssertEqual(fcntl(originalFD, F_GETFD), -1)
+        XCTAssertGreaterThanOrEqual(fcntl(copiedFD, F_GETFD), 0)
+        refreshed = nil
+        XCTAssertEqual(fcntl(copiedFD, F_GETFD), -1)
+    }
+
+    func testReadinessObservationsRoundTripIndependentlyAndRejectImpossibleOrdering() throws {
+        let operationID = UUID().uuidString.lowercased()
+        let ready = VmmReadyMessage(
+            machineID: "dev",
+            operationID: operationID,
+            guestBooted: true,
+            toolsConnected: false,
+            desktopVisible: true,
+            workloadReady: false
+        )
+
+        let decoded = try JSONDecoder().decode(
+            VmmReadyMessage.self,
+            from: JSONEncoder().encode(ready)
+        )
+        XCTAssertEqual(decoded, ready)
+        XCTAssertTrue(decoded.guestBooted)
+        XCTAssertFalse(decoded.toolsConnected)
+        XCTAssertTrue(decoded.desktopVisible)
+        XCTAssertFalse(decoded.workloadReady)
+        XCTAssertTrue(decoded.hasValidOperationIdentity)
+
+        XCTAssertFalse(VmmReadyMessage(
+            machineID: "dev",
+            operationID: operationID,
+            guestBooted: false,
+            workloadReady: true
+        ).hasValidOperationIdentity)
+
+        let historical = Data(
+            #"{"machineID":"dev","operationID":"01234567-89ab-4cde-8f01-23456789abcd"}"#.utf8
+        )
+        let historicalDecoded = try JSONDecoder().decode(VmmReadyMessage.self, from: historical)
+        XCTAssertFalse(historicalDecoded.guestBooted)
+        XCTAssertFalse(historicalDecoded.toolsConnected)
+        XCTAssertFalse(historicalDecoded.desktopVisible)
+        XCTAssertFalse(historicalDecoded.workloadReady)
+    }
+
     func testResolvedSoftwareGraphicsSelectionRoundTripsAsLiveAuthority() throws {
         let operationID = UUID()
         let planSHA256 = String(repeating: "a", count: 64)

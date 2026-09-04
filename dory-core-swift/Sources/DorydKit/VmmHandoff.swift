@@ -136,7 +136,21 @@ public struct VmmReadyMessage: Sendable, Equatable, Codable {
     public var shellSocketPath: String?
     public var controlSocketPath: String?
     public var graphicsSelection: DoryRuntimeGraphicsSelection?
+    /// Observations made by the runner before it published this handoff. These are deliberately
+    /// independent: a live VM can still be in firmware, a booted guest can lack Dory Tools, and a
+    /// tools connection does not prove that a desktop frame or requested workload is usable.
+    public var guestBooted: Bool
+    public var toolsConnected: Bool
+    public var desktopVisible: Bool
+    public var workloadReady: Bool
     public var detail: String?
+
+    private enum CodingKeys: String, CodingKey {
+        case machineID, operationID, agentBuild, agentProtocolVersion, agentCapabilities
+        case agentSocketPath, dockerdSocketPath, shellSocketPath, controlSocketPath
+        case graphicsSelection, guestBooted, toolsConnected, desktopVisible, workloadReady
+        case detail
+    }
 
     public init(
         machineID: String,
@@ -149,6 +163,10 @@ public struct VmmReadyMessage: Sendable, Equatable, Codable {
         shellSocketPath: String? = nil,
         controlSocketPath: String? = nil,
         graphicsSelection: DoryRuntimeGraphicsSelection? = nil,
+        guestBooted: Bool = false,
+        toolsConnected: Bool = false,
+        desktopVisible: Bool = false,
+        workloadReady: Bool = false,
         detail: String? = nil
     ) {
         self.machineID = machineID
@@ -161,11 +179,41 @@ public struct VmmReadyMessage: Sendable, Equatable, Codable {
         self.shellSocketPath = shellSocketPath
         self.controlSocketPath = controlSocketPath
         self.graphicsSelection = graphicsSelection
+        self.guestBooted = guestBooted
+        self.toolsConnected = toolsConnected
+        self.desktopVisible = desktopVisible
+        self.workloadReady = workloadReady
         self.detail = detail
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        machineID = try values.decode(String.self, forKey: .machineID)
+        operationID = try values.decodeIfPresent(String.self, forKey: .operationID)
+        agentBuild = try values.decodeIfPresent(String.self, forKey: .agentBuild)
+        agentProtocolVersion = try values.decodeIfPresent(UInt32.self, forKey: .agentProtocolVersion)
+        agentCapabilities = try values.decodeIfPresent(
+            [DoryAgentCapability].self, forKey: .agentCapabilities
+        ) ?? []
+        agentSocketPath = try values.decodeIfPresent(String.self, forKey: .agentSocketPath)
+        dockerdSocketPath = try values.decodeIfPresent(String.self, forKey: .dockerdSocketPath)
+        shellSocketPath = try values.decodeIfPresent(String.self, forKey: .shellSocketPath)
+        controlSocketPath = try values.decodeIfPresent(String.self, forKey: .controlSocketPath)
+        graphicsSelection = try values.decodeIfPresent(
+            DoryRuntimeGraphicsSelection.self, forKey: .graphicsSelection
+        )
+        guestBooted = try values.decodeIfPresent(Bool.self, forKey: .guestBooted) ?? false
+        toolsConnected = try values.decodeIfPresent(Bool.self, forKey: .toolsConnected) ?? false
+        desktopVisible = try values.decodeIfPresent(Bool.self, forKey: .desktopVisible) ?? false
+        workloadReady = try values.decodeIfPresent(Bool.self, forKey: .workloadReady) ?? false
+        detail = try values.decodeIfPresent(String.self, forKey: .detail)
     }
 
     public var hasValidOperationIdentity: Bool {
         operationID.flatMap(DoryOperationIdentity.parseCanonical) != nil
+            && (!toolsConnected || guestBooted)
+            && (!desktopVisible || guestBooted)
+            && (!workloadReady || guestBooted)
     }
 }
 
@@ -176,6 +224,22 @@ public final class VmmHandoff: @unchecked Sendable {
     public init(ready: VmmReadyMessage, fileDescriptors: [Int32]) {
         self.ready = ready
         self.fileDescriptors = fileDescriptors
+    }
+
+    /// A readiness refresh must not transfer descriptor ownership out of a handoff which may
+    /// still be retained by an in-flight operation.
+    func replacingReady(_ ready: VmmReadyMessage) throws -> VmmHandoff {
+        var copies: [Int32] = []
+        for fd in fileDescriptors {
+            let copy = fcntl(fd, F_DUPFD_CLOEXEC, 0)
+            guard copy >= 0 else {
+                let code = errno
+                for copy in copies { close(copy) }
+                throw VmmHandoffError.syscall("duplicate handoff descriptor", code)
+            }
+            copies.append(copy)
+        }
+        return VmmHandoff(ready: ready, fileDescriptors: copies)
     }
 
     deinit {

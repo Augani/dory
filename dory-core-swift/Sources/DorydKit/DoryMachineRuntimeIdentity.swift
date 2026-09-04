@@ -2,6 +2,18 @@ import CryptoKit
 import DoryOperations
 import Foundation
 
+/// Immutable heap storage prevents every status, snapshot and launch frame from embedding a
+/// complete plan. Replacing the box preserves value semantics when a copied identity is edited.
+private final class ResolvedRuntimePlanStorage: Sendable, Hashable {
+    let value: DoryResolvedMachinePlan
+
+    init(_ value: DoryResolvedMachinePlan) { self.value = value }
+    static func == (lhs: ResolvedRuntimePlanStorage, rhs: ResolvedRuntimePlanStorage) -> Bool {
+        lhs === rhs || lhs.value == rhs.value
+    }
+    func hash(into hasher: inout Hasher) { hasher.combine(value) }
+}
+
 public enum DoryMachineRuntimeIdentityMode: String, Codable, Sendable, Hashable {
     case legacyCompatibility = "legacy-compatibility"
     case resolvedPlan = "resolved-plan"
@@ -60,7 +72,21 @@ public struct DoryMachineRuntimeIdentity: Codable, Sendable, Equatable, Hashable
     public var virtualHardwareABIVersion: UInt16
     public var invalidationReason: DoryMachineRuntimeIdentityInvalidationReason?
     public var resolvedPlanSHA256: String?
-    public var resolvedPlan: DoryResolvedMachinePlan?
+    private var planStorage: ResolvedRuntimePlanStorage? = nil
+    public var resolvedPlan: DoryResolvedMachinePlan? {
+        get { planStorage?.value }
+        set { planStorage = newValue.map(ResolvedRuntimePlanStorage.init) }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(schemaVersion, forKey: .schemaVersion)
+        try values.encode(mode, forKey: .mode)
+        try values.encode(virtualHardwareABIVersion, forKey: .virtualHardwareABIVersion)
+        try values.encodeIfPresent(invalidationReason, forKey: .invalidationReason)
+        try values.encodeIfPresent(resolvedPlanSHA256, forKey: .resolvedPlanSHA256)
+        try values.encodeIfPresent(resolvedPlan, forKey: .resolvedPlan)
+    }
 
     public static func legacyCompatibility(virtualHardwareABIVersion: UInt16 = 1) -> Self {
         Self(
@@ -226,10 +252,7 @@ public struct DoryMachineRuntimeIdentity: Codable, Sendable, Equatable, Hashable
     }
 
     public static func planSHA256(_ plan: DoryResolvedMachinePlan) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let data = try? encoder.encode(plan) else { return "" }
-        return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        (try? plan.canonicalSHA256()) ?? ""
     }
 
     private static func isSHA256(_ value: String) -> Bool {

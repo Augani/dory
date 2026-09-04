@@ -45,6 +45,42 @@ public enum HelperProcessJanitor {
         return pids
     }
 
+    /// Locate a unique candidate by command line. This is a liveness hint, not identity or
+    /// machine-generation authority, and must never authorize adoption or resource reclamation.
+    public static func liveHelperPID(
+        executablePath: String,
+        stateDirectory: String,
+        machineID: String,
+        psOutput: String,
+        currentPID: Int32 = getpid()
+    ) -> Int32? {
+        let executable = normalizedPath(executablePath)
+        let stateRoot = normalizedPath(stateDirectory)
+        guard !executable.isEmpty, !stateRoot.isEmpty, !machineID.isEmpty else { return nil }
+        let matches = psOutput
+            .split(whereSeparator: \.isNewline)
+            .compactMap { line -> Int32? in
+                let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard let separator = trimmed.firstIndex(where: { $0 == " " || $0 == "\t" }) else {
+                    return nil
+                }
+                let pidText = trimmed[..<separator]
+                guard let pid = Int32(pidText), pid > 0, pid != currentPID else { return nil }
+                let commandStart = trimmed[separator...].firstIndex(where: { $0 != " " && $0 != "\t" })
+                guard let commandStart else { return nil }
+                let command = String(trimmed[commandStart...])
+                guard command == executable || command.hasPrefix(executable + " ") else { return nil }
+                guard let processStateDirectory = stateDirectoryArgument(in: command) else { return nil }
+                guard normalizedPath(processStateDirectory) == stateRoot else { return nil }
+                guard let processMachineID = machineIDArgument(in: command),
+                      processMachineID == machineID else {
+                    return nil
+                }
+                return pid
+            }
+        return matches.count == 1 ? matches[0] : nil
+    }
+
     public static func staleHelperPIDs(
         executablePath: String,
         stateDirectory: String,
@@ -64,7 +100,7 @@ public enum HelperProcessJanitor {
                     return nil
                 }
                 let pidText = trimmed[..<separator]
-                guard let pid = Int32(pidText), pid != currentPID else { return nil }
+                guard let pid = Int32(pidText), pid > 0, pid != currentPID else { return nil }
 
                 let commandStart = trimmed[separator...].firstIndex(where: { $0 != " " && $0 != "\t" })
                 guard let commandStart else { return nil }
@@ -89,6 +125,20 @@ public enum HelperProcessJanitor {
             }
             if part.hasPrefix("--state-dir=") {
                 return String(part.dropFirst("--state-dir=".count))
+            }
+        }
+        return nil
+    }
+
+    public static func machineIDArgument(in commandLine: String) -> String? {
+        let parts = commandLine.split(whereSeparator: { $0 == " " || $0 == "\t" }).map(String.init)
+        for index in parts.indices {
+            let part = parts[index]
+            if part == "--machine-id", parts.indices.contains(index + 1) {
+                return parts[index + 1]
+            }
+            if part.hasPrefix("--machine-id=") {
+                return String(part.dropFirst("--machine-id=".count))
             }
         }
         return nil

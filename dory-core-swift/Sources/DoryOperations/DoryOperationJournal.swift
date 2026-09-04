@@ -68,10 +68,23 @@ public struct DoryOperationJournalStore: Sendable, Equatable {
         )
     }
 
+    /// Reuses a retained fence only for the scope authenticated by the immutable journal.
+    public func acquire(
+        _ id: UUID,
+        holdingMutationLock: EngineStateDirectoryLock,
+        fileManager: FileManager = .default
+    ) throws -> DoryOperationLease {
+        try acquireVerified(
+            id, requestedMutationScope: nil, fileManager: fileManager,
+            heldMutationLock: holdingMutationLock
+        )
+    }
+
     private func acquireVerified(
         _ id: UUID,
         requestedMutationScope: String?,
-        fileManager: FileManager
+        fileManager: FileManager,
+        heldMutationLock: EngineStateDirectoryLock? = nil
     ) throws -> DoryOperationLease {
         guard Self.pathEntryExists(root) else {
             throw DoryOperationJournalError.operationNotFound(id)
@@ -82,7 +95,16 @@ public struct DoryOperationJournalStore: Sendable, Equatable {
         if let requestedMutationScope, requestedMutationScope != authenticatedScope {
             throw DoryOperationJournalError.invalidPlan("mutation scope mismatch")
         }
-        let lock = try acquireMutationLock(scope: authenticatedScope)
+        let lock: EngineStateDirectoryLock
+        if let heldMutationLock {
+            let name = authenticatedScope.map { ".mutation.\($0).lock" } ?? ".mutation.lock"
+            guard heldMutationLock.path == root + "/" + name else {
+                throw DoryOperationJournalError.invalidPlan("held mutation lock scope mismatch")
+            }
+            lock = heldMutationLock
+        } else {
+            lock = try acquireMutationLock(scope: authenticatedScope)
+        }
         let lease = DoryOperationLease(store: self, operationID: id, lock: lock)
         let after = try lease.read()
         guard after.plan == before.plan,
@@ -212,7 +234,7 @@ public struct DoryOperationJournalStore: Sendable, Equatable {
 
     private static func isWorkspaceLifecycleKind(_ kind: DoryOperationKind) -> Bool {
         switch kind {
-        case .workspaceImport, .workspaceProvision, .workspaceResolve, .workspaceStart,
+        case .workspaceImport, .workspaceProvision, .workspaceResolve, .workspaceStart, .workspaceRestart,
              .workspaceStop, .workspacePause, .workspaceResume, .workspaceSuspend,
              .workspaceRestore, .workspaceSnapshot, .workspaceClone, .workspaceUpdate,
              .workspaceRepair, .workspaceDelete:

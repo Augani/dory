@@ -93,6 +93,7 @@ final class DorydConfigurationTests: XCTestCase {
 
         let arguments = try XCTUnwrap(environment.dockerTierConfiguration()?.hvProcess?.arguments)
         XCTAssertArgumentPair(arguments, "--mem-mb", "63488")
+        XCTAssertEqual(environment.engineResourceReservation.memoryBytes, 63_488 * 1_048_576)
     }
 
     func testBuildsDockerTierWithDoryHvForwardArguments() throws {
@@ -129,6 +130,9 @@ final class DorydConfigurationTests: XCTestCase {
         ], cwd: directory, hostPlatform: DorydHostPlatform(architecture: .arm64, macOSMajorVersion: 15))
 
         let config = try XCTUnwrap(env.dockerTierConfiguration())
+        XCTAssertEqual(env.engineResourceReservation, DoryVMResourceRequest(
+            virtualCPUCount: 6, memoryBytes: 4_096 * 1_048_576, diskBytes: 0
+        ))
         XCTAssertEqual(config.home, directory + "/home")
         XCTAssertEqual(config.forwardSocketPath, directory + "/state/agent-vsock-forward.sock")
         XCTAssertEqual(config.agentControl, AgentControlConfiguration(

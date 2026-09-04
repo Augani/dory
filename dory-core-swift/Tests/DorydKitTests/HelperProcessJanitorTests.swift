@@ -55,4 +55,32 @@ final class HelperProcessJanitorTests: XCTestCase {
             []
         )
     }
+
+    func testLiveHelperMatchesMachineIdentityAndStateDirectory() {
+        let output = """
+          401 /opt/dory/dory-hv desktop --machine-id dev --state-dir /Users/me/.dory/machines/dev
+          402 /opt/dory/dory-hv desktop --machine-id other --state-dir /Users/me/.dory/machines/dev
+          403 /opt/dory/dory-hv desktop --machine-id dev --state-dir /Users/me/.dory/machines/other
+        """
+
+        XCTAssertEqual(
+            HelperProcessJanitor.liveHelperPID(
+                executablePath: "/opt/dory/dory-hv",
+                stateDirectory: "/Users/me/.dory/machines/dev",
+                machineID: "dev",
+                psOutput: output,
+                currentPID: 999
+            ),
+            401
+        )
+        XCTAssertNil(
+            HelperProcessJanitor.liveHelperPID(
+                executablePath: "/opt/dory/dory-hv",
+                stateDirectory: "/Users/me/.dory/machines/dev",
+                machineID: "missing",
+                psOutput: output,
+                currentPID: 999
+            )
+        )
+    }
 }

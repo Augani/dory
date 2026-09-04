@@ -7,7 +7,7 @@ import Foundation
 ///
 /// This contract contains resolved identity and named object-authority slots, never host paths.
 public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
-    public static let currentSchemaVersion: UInt16 = 7
+    public static let currentSchemaVersion: UInt16 = 8
     public static let maximumEncodedArgumentBytes = 65_536
     public static let systemDiskSlotName = "systemDisk"
     public static let linuxKernelSlotName = "linuxKernel"
@@ -252,6 +252,8 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
     public let devices: DoryVirtualMachineDeviceCapabilityRequest
     public let portForwards: [DoryVMPortForward]
     public let executionResources: ARMVirtExecutionResources
+    /// Full admission budget, including host-side allocations omitted from guest-visible RAM.
+    public let resourceBudget: DoryVMResourceRequest
     public let boot: ARMVirtBoot
     public let inheritedFileDescriptors: [InheritedFileDescriptorSlot]
     public let inheritedDirectoryDescriptors: [InheritedDirectoryDescriptorSlot]
@@ -278,6 +280,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         portForwards: [DoryVMPortForward],
         executionResources: ARMVirtExecutionResources,
+        resourceBudget: DoryVMResourceRequest? = nil,
         linuxDirectBoot: LinuxDirectBoot,
         inheritedFileDescriptors: [InheritedFileDescriptorSlot],
         inheritedDirectoryDescriptors: [InheritedDirectoryDescriptorSlot] = []
@@ -296,6 +299,12 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         self.devices = devices
         self.portForwards = portForwards
         self.executionResources = executionResources
+        self.resourceBudget = resourceBudget ?? Self.derivedResourceBudget(
+            graphics: graphics,
+            devices: devices,
+            executionResources: executionResources,
+            inheritedFileDescriptors: inheritedFileDescriptors
+        )
         self.boot = .linuxDirect(linuxDirectBoot)
         self.inheritedFileDescriptors = inheritedFileDescriptors
         self.inheritedDirectoryDescriptors = inheritedDirectoryDescriptors
@@ -316,6 +325,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         portForwards: [DoryVMPortForward],
         executionResources: ARMVirtExecutionResources,
+        resourceBudget: DoryVMResourceRequest? = nil,
         boot: ARMVirtBoot,
         inheritedFileDescriptors: [InheritedFileDescriptorSlot],
         inheritedDirectoryDescriptors: [InheritedDirectoryDescriptorSlot]
@@ -334,6 +344,12 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         self.devices = devices
         self.portForwards = portForwards
         self.executionResources = executionResources
+        self.resourceBudget = resourceBudget ?? Self.derivedResourceBudget(
+            graphics: graphics,
+            devices: devices,
+            executionResources: executionResources,
+            inheritedFileDescriptors: inheritedFileDescriptors
+        )
         self.boot = boot
         self.inheritedFileDescriptors = inheritedFileDescriptors
         self.inheritedDirectoryDescriptors = inheritedDirectoryDescriptors
@@ -351,6 +367,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         portForwards: [DoryVMPortForward],
         executionResources: ARMVirtExecutionResources,
+        resourceBudget: DoryVMResourceRequest? = nil,
         systemDiskCapacityBytes: UInt64,
         systemDiskLogicalID: DoryVirtualDeviceID,
         linuxRootDevice: String,
@@ -409,6 +426,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             devices: devices,
             portForwards: portForwards,
             executionResources: executionResources,
+            resourceBudget: resourceBudget,
             linuxDirectBoot: LinuxDirectBoot(
                 rootDevice: linuxRootDevice,
                 genericGuest: genericGuest
@@ -429,6 +447,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         portForwards: [DoryVMPortForward],
         executionResources: ARMVirtExecutionResources,
+        resourceBudget: DoryVMResourceRequest? = nil,
         systemDiskCapacityBytes: UInt64,
         systemDiskLogicalID: DoryVirtualDeviceID,
         launchPlan: DoryARMVirtUEFILaunchPlan,
@@ -502,6 +521,7 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
             devices: devices,
             portForwards: portForwards,
             executionResources: executionResources,
+            resourceBudget: resourceBudget,
             boot: .uefi(launchPlan),
             inheritedFileDescriptors: fileSlots,
             inheritedDirectoryDescriptors: [InheritedDirectoryDescriptorSlot(
@@ -589,7 +609,13 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
               }) else {
             throw RuntimeLaunchEnvelopeError.invalidPlanSHA256
         }
-        guard executionResources.isValid else {
+        guard executionResources.isValid,
+              resourceBudget == Self.derivedResourceBudget(
+                  graphics: graphics,
+                  devices: devices,
+                  executionResources: executionResources,
+                  inheritedFileDescriptors: inheritedFileDescriptors
+              ) else {
             throw RuntimeLaunchEnvelopeError.invalidExecutionResources
         }
 
@@ -724,6 +750,12 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
               platform == .arm64LinuxV1,
               armVirtTopology.machineABIIdentity == platform.machineModel.rawValue,
               executionResources.isValid,
+              resourceBudget == Self.derivedResourceBudget(
+                  graphics: graphics,
+                  devices: devices,
+                  executionResources: executionResources,
+                  inheritedFileDescriptors: inheritedFileDescriptors
+              ),
               Self.isLowercaseSHA256(resolvedPlanSHA256) else {
             throw RuntimeLaunchEnvelopeError.invalidBootProtocol
         }
@@ -929,6 +961,39 @@ public struct RuntimeLaunchEnvelope: Codable, Sendable, Equatable {
         return value.utf8.allSatisfy {
             (48...57).contains($0) || (97...102).contains($0)
         }
+    }
+
+    private static func derivedResourceBudget(
+        graphics: DoryGraphicsAccelerationLevel,
+        devices: DoryVirtualMachineDeviceCapabilityRequest,
+        executionResources: ARMVirtExecutionResources,
+        inheritedFileDescriptors: [InheritedFileDescriptorSlot]
+    ) -> DoryVMResourceRequest {
+        let memory = executionResources.memoryMB.multipliedReportingOverflow(by: 1_024 * 1_024)
+        let diskBytes = inheritedFileDescriptors.first {
+            $0.name == Self.systemDiskSlotName
+        }?.byteCount ?? 0
+        let stagingBytes = inheritedFileDescriptors.first {
+            $0.name == Self.installerMediaSlotName
+        }?.byteCount ?? 0
+        return DoryVMProductionResourceBudget.make(
+            guest: DoryGuestPlatform(family: .linux, architecture: .arm64),
+            graphics: DoryVMGraphicsPolicy(acceptableLevels: [graphics]),
+            displays: devices.displays.map {
+                DoryVMDisplayConfiguration(
+                    id: $0.id,
+                    widthPixels: $0.widthPixels,
+                    heightPixels: $0.heightPixels,
+                    backingScaleFactor: $0.backingScaleFactor,
+                    guestUIScaleFactor: $0.guestUIScaleFactor
+                )
+            },
+            shareCount: devices.directorySharing ? 1 : 0,
+            virtualCPUCount: UInt64(executionResources.virtualCPUCount),
+            memoryBytes: memory.overflow ? .max : memory.partialValue,
+            diskBytes: diskBytes,
+            stagingBytes: stagingBytes
+        )
     }
 
     private static func isValidLinuxRootDevice(_ value: String) -> Bool {
