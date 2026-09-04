@@ -143,17 +143,20 @@ import Testing
     #expect(unmasked.floatingPoint.x87StatusWord == 0xC181)
   }
 
-  @Test func squareRootInvalidWritesIndefiniteOnlyWhenMasked() throws {
+  @Test func squareRootInvalidUsesTheArchitecturalMaskedResponse() throws {
     let invalidInputs = [
-      binary80(
-        significand: 0x8000_0000_0000_0000, exponent: 0x4001, negative: true),
-      signalingNaN,
-      binary80(significand: 1, exponent: 1),
+      (
+        binary80(
+          significand: 0x8000_0000_0000_0000, exponent: 0x4001, negative: true),
+        realIndefinite
+      ),
+      (signalingNaN, quietedSignalingNaN),
+      (binary80(significand: 1, exponent: 1), realIndefinite),
     ]
-    for input in invalidInputs {
+    for (input, expected) in invalidInputs {
       var masked = try unaryState(input, controlWord: 0x037F)
-      try retire(&masked, code: [0xD9, 0xFA]) // FSQRT
-      #expect(masked.floatingPoint.x87[0].bytes == realIndefinite)
+      try retire(&masked, code: [0xD9, 0xFA])  // FSQRT
+      #expect(masked.floatingPoint.x87[0].bytes == expected)
       #expect(masked.floatingPoint.x87StatusWord & 0x8081 == 1)
 
       var unmasked = try unaryState(input, controlWord: 0x037E)

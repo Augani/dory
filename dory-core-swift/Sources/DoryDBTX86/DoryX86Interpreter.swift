@@ -956,16 +956,6 @@ public struct DoryX86Interpreter: Sendable {
           }
           break
         }
-        if operation == .squareRoot,
-          testOperand.isUnsupported || testOperand.isSignalingNaN
-            || (!testOperand.isNaN && testOperand.isNegative && !testOperand.isZero)
-        {
-          if recordX87Exceptions(1, state: &state.floatingPoint) {
-            writeX87Register(
-              0, value: DoryX86X87Stack.indefinite, state: &state.floatingPoint)
-          }
-          break
-        }
         if operation == .extract {
           let physical = physicalX87Register(0, state: state.floatingPoint)
           let operandExceptions = consumedX87OperandExceptions(
@@ -4506,6 +4496,10 @@ public struct DoryX86Interpreter: Sendable {
     state: inout DoryX86FloatingPointState
   ) {
     let extendedX = readX87Register(0, state: state)
+    if operation == .squareRoot {
+      executeX87SquareRoot(extendedX, state: &state)
+      return
+    }
     switch operation {
     case .changeSign:
       writeX87Register(0, value: extendedX.negated(), state: &state)
@@ -4618,8 +4612,7 @@ public struct DoryX86Interpreter: Sendable {
       writeX87Register(1, value: y * Foundation.log2(x + 1), state: &state)
       popX87(state: &state)
     case .squareRoot:
-      let x = extendedX.doubleValue
-      writeX87Register(0, value: Foundation.sqrt(x), state: &state)
+      preconditionFailure("FSQRT is handled before host floating-point conversion")
     case .sineCosine:
       let x = extendedX.doubleValue
       guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
@@ -4659,6 +4652,34 @@ public struct DoryX86Interpreter: Sendable {
       guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
       writeX87Register(0, value: Foundation.cos(x), state: &state)
     }
+  }
+
+  private func executeX87SquareRoot(
+    _ operand: DoryX86ExtendedFloat,
+    state: inout DoryX86FloatingPointState
+  ) {
+    let result = operand.squareRootWithStatus(
+      rounding: x87Rounding(state), precision: x87Precision(state))
+    let invalid =
+      operand.isUnsupported || operand.isSignalingNaN
+      || (!operand.isNaN && operand.isNegative && !operand.isZero)
+    if invalid {
+      guard recordX87Exceptions(1, state: &state) else { return }
+      writeX87Register(0, value: result.value, state: &state)
+      return
+    }
+
+    var exceptions: UInt16 = operand.isSubnormal ? 1 << 1 : 0
+    if exceptions != 0, state.x87ControlWord & (1 << 1) == 0 {
+      // #D is a pre-operation exception. It suppresses the result and lower
+      // priority #P when unmasked.
+      _ = recordX87Exceptions(exceptions, state: &state)
+      return
+    }
+    if result.inexact { exceptions |= 1 << 5 }
+    // #P is post-operation, so the rounded result commits even when PM is clear.
+    _ = recordX87Exceptions(exceptions, roundedUp: result.roundedUp, state: &state)
+    writeX87Register(0, value: result.value, state: &state)
   }
 
   /// Intel SDM092 Vol. 1 §8.3.4: the five irrational load constants are

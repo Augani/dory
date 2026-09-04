@@ -84,6 +84,22 @@ private struct DoryX86WideUnsigned: Equatable, Comparable {
     let result = divisor.dividingFullWidth((high: high, low: low))
     return (result.quotient, result.remainder)
   }
+
+  func squareRootAndRemainder() -> (root: UInt64, remainder: Self) {
+    var root = Self(0)
+    var remainder = Self(0)
+    for pairIndex in stride(from: 63, through: 0, by: -1) {
+      let pair = (self >> (pairIndex * 2)).low & 3
+      remainder = remainder << 2 | Self(pair)
+      root <<= 1
+      let trial = root << 1 | Self(1)
+      if remainder >= trial {
+        remainder -= trial
+        root += Self(1)
+      }
+    }
+    return (root.low, remainder)
+  }
 }
 
 enum DoryX86FloatingRounding: Sendable {
@@ -492,6 +508,76 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       rounding: rounding,
       precision: precision,
       minimumNormalExponent: minimumNormalExponent
+    )
+  }
+
+  func squareRootWithStatus(
+    rounding: DoryX86FloatingRounding = .nearestEven,
+    precision: Int = 64
+  ) -> DoryX86ExtendedArithmeticResult {
+    if isUnsupported { return .exact(Self.realIndefinite()) }
+    if isNaN { return .exact(quietedNaN()) }
+    if isNegative, !isZero { return .exact(Self.realIndefinite()) }
+    if isZero || isInfinite { return .exact(self) }
+
+    // For m in [1, 2), sqrt(m * 2^e) has exponent floor(e / 2).
+    // Making an odd exponent even turns the exact significand calculation
+    // into the square root of either a 127- or 128-bit integer.
+    let oddExponent = exponent & 1 != 0
+    let radicand = DoryX86WideUnsigned(significand) << (oddExponent ? 64 : 63)
+    let integerRoot = radicand.squareRootAndRemainder()
+    let precision = min(64, max(1, precision))
+    let discardedBitCount = 64 - precision
+    let discardedMask =
+      discardedBitCount == 0
+      ? UInt64(0) : (UInt64(1) << UInt64(discardedBitCount)) - 1
+    let discarded = integerRoot.root & discardedMask
+    let inexact = discarded != 0 || integerRoot.remainder != DoryX86WideUnsigned(0)
+    let truncated = integerRoot.root & ~discardedMask
+    let increment: Bool
+    if !inexact {
+      increment = false
+    } else {
+      switch rounding {
+      case .down, .towardZero:
+        increment = false
+      case .up:
+        increment = true
+      case .nearestEven where discardedBitCount == 0:
+        // The half-integer boundary squares to q^2 + q + 1/4. Since the
+        // radicand is integral, the exact root is above halfway iff r > q.
+        increment = integerRoot.remainder > DoryX86WideUnsigned(integerRoot.root)
+      case .nearestEven:
+        let halfway = UInt64(1) << UInt64(discardedBitCount - 1)
+        increment =
+          discarded > halfway
+          || (discarded == halfway
+            && (integerRoot.remainder != DoryX86WideUnsigned(0)
+              || truncated >> UInt64(discardedBitCount) & 1 != 0))
+      }
+    }
+
+    var resultExponent = (exponent - (oddExponent ? 1 : 0)) / 2
+    var resultSignificand = truncated
+    if increment {
+      let unit = UInt64(1) << UInt64(discardedBitCount)
+      let addition = resultSignificand.addingReportingOverflow(unit)
+      if addition.overflow {
+        resultSignificand = 0x8000_0000_0000_0000
+        resultExponent += 1
+      } else {
+        resultSignificand = addition.partialValue
+      }
+    }
+    return .init(
+      value: Self(
+        kind: .finite,
+        isNegative: false,
+        exponent: resultExponent,
+        significand: resultSignificand
+      ),
+      inexact: inexact,
+      roundedUp: increment
     )
   }
 
