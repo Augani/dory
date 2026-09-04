@@ -1,0 +1,505 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-correctness-review",
+  "status": "in-progress",
+  "phaseComplete": false,
+  "releaseQualified": false,
+  "sourceCommit": "7c6259f8c12945d6c2ed0709c97557c62a1b1d76",
+  "previousReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-22.json",
+    "sha256": "fb51f216434a0493bf91700d98474c69201896734d5dd5e68ad680ed89973b0b"
+  },
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "verificationCommand": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=1 swift test --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 --jobs 3 --no-parallel --filter 'DoryX86|DoryPC|DoryARM64|PVHBootRunnerTests|ISAInventoryTests'",
+  "cleanBeforeRun24": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-24-command.json",
+    "sha256": "81a2ae38c1f64b95a324c58a05e643d454869945e8f170da61ff7ab7575fe1b6"
+  },
+  "runs": [
+    {
+      "run": 23,
+      "exitCode": 1,
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23.log.gz",
+        "sha256": "d5da291d0d95b037ec080b09916f406d0587f0a2cc30491897cebde2381118ed"
+      },
+      "sourceBinding": {
+        "run": 23,
+        "comparisonCommit": "7c6259f8c12945d6c2ed0709c97557c62a1b1d76",
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "totalInputs": 687,
+        "trackedInputs": 681,
+        "trackedDifferences": [],
+        "ignoredFFIInputs": [
+          {
+            "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+            "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+          },
+          {
+            "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+            "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+            "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+            "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+            "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+            "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+          }
+        ],
+        "overlayFiles": 76,
+        "baseAndOverlayReconstructionPassed": true,
+        "matchingComparisonInputs": 681,
+        "matchingReconstructedInputs": 681,
+        "manifest": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23-source-manifest.json.gz",
+          "sha256": "ba927035697f3eeebd0cf4888c891f14f3284f988ff5565e999b022a380c4a0d"
+        },
+        "overlay": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23-source-overlay.tar.gz",
+          "sha256": "bb5bee2926c892deb8ad1cc26cb7b25b561862b9d419630c56f957a233f4270b"
+        },
+        "binding": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23-commit-binding.json",
+          "sha256": "b7a9aeb028a81811fdbda6c5201b7f6d22816b30fdc23167b54273c0b32b0c2b"
+        }
+      },
+      "buildElapsedSeconds": 28.31,
+      "swiftTesting": {
+        "reported": 700,
+        "passed": 694,
+        "failed": 5,
+        "issues": 16,
+        "disabledPhysicalReference": 1,
+        "suites": 79,
+        "elapsedSeconds": 2.936,
+        "failedMethods": [
+          {
+            "name": "stopsOnBudgetAndReportsPreciseExceptions()",
+            "issues": 1
+          },
+          {
+            "name": "tripleFaultPreservesTheOriginalProcessorStateAndOpcodeBytes()",
+            "issues": 1
+          },
+          {
+            "name": "jitUnmappedBlockFetchFallsBackToPreciseInterpreterPageFault()",
+            "issues": 2
+          },
+          {
+            "name": "revokingCachedCodeReturnsArchitecturalFaultAndNeverReplaysCompletedStores()",
+            "issues": 6
+          },
+          {
+            "name": "narrowerPhysicalWidthRejectsPagingEnableWithoutPublishingControlOrLatch()",
+            "issues": 6
+          }
+        ]
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "failed": 0,
+        "optionalPVHFixtureSkipped": 1
+      },
+      "failure": "Incremental build retained stale cross-module exception enum ordinals after the new debug kind: existing machine assertions show invalidOpcode compared with debug, pageFault with generalProtection, and generalProtection with stackSegment. Five methods report 16 issues; both new control/debug suites pass. The identical source manifest and overlay pass the clean run24. This build-cache diagnosis does not erase the failed run."
+    },
+    {
+      "run": 24,
+      "exitCode": 0,
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-24.log.gz",
+        "sha256": "4b1ce4e7e6521572c4982f95529bbd61576669ceafd32ff0faee3a65fa1b7c9c"
+      },
+      "sourceBinding": {
+        "run": 24,
+        "comparisonCommit": "7c6259f8c12945d6c2ed0709c97557c62a1b1d76",
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "totalInputs": 687,
+        "trackedInputs": 681,
+        "trackedDifferences": [],
+        "ignoredFFIInputs": [
+          {
+            "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+            "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+          },
+          {
+            "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+            "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+            "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+            "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+            "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+            "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+          }
+        ],
+        "overlayFiles": 76,
+        "baseAndOverlayReconstructionPassed": true,
+        "matchingComparisonInputs": 681,
+        "matchingReconstructedInputs": 681,
+        "manifest": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-24-source-manifest.json.gz",
+          "sha256": "ba927035697f3eeebd0cf4888c891f14f3284f988ff5565e999b022a380c4a0d"
+        },
+        "overlay": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-24-source-overlay.tar.gz",
+          "sha256": "bb5bee2926c892deb8ad1cc26cb7b25b561862b9d419630c56f957a233f4270b"
+        },
+        "binding": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-24-commit-binding.json",
+          "sha256": "44d9c3a8c26621b1c7b4b25e6937012a2f876fc206cfd519d661f6703b63433e"
+        }
+      },
+      "buildElapsedSeconds": 120.87,
+      "swiftTesting": {
+        "reported": 700,
+        "passed": 699,
+        "failed": 0,
+        "issues": 0,
+        "disabledPhysicalReference": 1,
+        "suites": 79,
+        "elapsedSeconds": 3.091,
+        "failedMethods": []
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "failed": 0,
+        "optionalPVHFixtureSkipped": 1
+      },
+      "cleanRebuild": true
+    }
+  ],
+  "sourceVerification": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23-24-source-verification.json",
+    "sha256": "207dd15e9fba3b000767b0e7c992b79950c9e82b19dd8c490854ca2a6bd2e5ec"
+  },
+  "componentChanges": [
+    {
+      "commit": "31c215a97",
+      "scope": "CR0/CR4 and EFER reserved values, feature checks and transition invariants before state/TLB publication;11 focused control tests."
+    },
+    {
+      "commit": "7c6259f8c",
+      "scope": "MOV DR alias, mode width, reserved high bits and precise general-detect fault state;8 focused debug tests."
+    },
+    {
+      "commit": "89abba784c43f89e2bafa0a18770ce6bd682bac4",
+      "scope": "Pinned deterministic glibc BusyBox/initramfs input with separately identified klibc shutdown helper; no guest execution."
+    }
+  ],
+  "guestProbe6": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-6-summary.json",
+    "sha256": "ec8d05dd8b270a68dcd1e1c4fdfba1299ebd53b9d70dd8c43a99496dce8934f2"
+  },
+  "glibcFixture": {
+    "sourceCommit": "89abba784c43f89e2bafa0a18770ce6bd682bac4",
+    "sourceFiles": {
+      "scripts/prepare-virtualization-fixtures.py": {
+        "sha256": "eb03ad10c2a03783c3eb74392b18d0af394012e5e5006248c45be80300baf912",
+        "commitBytesMatch": true
+      },
+      "scripts/test-prepare-virtualization-fixtures.py": {
+        "sha256": "c5e9e622cddee4b01b71a84eb190d00b2a85899bab89df5c8fe97df3b74fadc5",
+        "commitBytesMatch": true
+      },
+      "guest/diagnostics/p02-glibc-userspace/init": {
+        "sha256": "67bd3c52a7da6c9f97d26858534f91f3fab61e9d9887e3de8b5d4e13c5e391e8",
+        "commitBytesMatch": true
+      },
+      "guest/diagnostics/p02-glibc-userspace/fixture.json": {
+        "sha256": "57228f927a6f9ef3bf541393e7172e9b3756ae13472405cfbc13acc175ed2657",
+        "commitBytesMatch": true
+      },
+      "guest/diagnostics/p02-glibc-userspace/README.md": {
+        "sha256": "bada5fb20da10a4ab8736085be1996f92ce81bcdeac519f4adf23c4ef4ed0ad5",
+        "commitBytesMatch": true
+      }
+    },
+    "handoff": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-evidence-handoff.json",
+      "sha256": "8c2a28c592a613abf58e8f7d6216425650c21fb11ef740db3eb699d013be1e20"
+    },
+    "buildManifest": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-build-manifest.json",
+      "sha256": "f5a9b5fa0c348b20e546633252ddd8dc4687efc305492a48b477ee52cc88885a"
+    },
+    "preparationVerification": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-preparation-verification.json",
+      "sha256": "6a7cff3a81b73fcbe5226105d5b9149ce00a4780ad0a36517a3a5a87527dcd37"
+    },
+    "replayVerification": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-replay-verification.json",
+      "sha256": "0689f12af9ec6a097313110a3319367e1f4176afc4abfd33903ba7325499ad1a"
+    },
+    "agentTests": {
+      "passed": 31,
+      "failed": 0,
+      "skipped": 0,
+      "existingTestsRetained": 22,
+      "newTests": 9,
+      "testRuntimeSeconds": 0.167,
+      "processWallSeconds": 0.24876550000044517,
+      "exitCode": 0
+    },
+    "independentParentTests": {
+      "passed": 31,
+      "failed": 0,
+      "skipped": 0,
+      "elapsedSeconds": 0.194,
+      "command": [
+        "python3",
+        "scripts/test-prepare-virtualization-fixtures.py"
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-parent-tests.log.gz",
+        "sha256": "bca66ffddfd22bdce46d21abec6d99f81fc99024baafebca125e8b36d0517866"
+      }
+    },
+    "preparation": {
+      "exitCode": 0,
+      "wallSeconds": 3.9990208329982124,
+      "source": "Existing cached P00 pinned Ubuntu Server24.04.4 x86_64 ISO; no download",
+      "replayExitCode": 0,
+      "replayWallSeconds": 2.027526042002137,
+      "replayResultIdentical": true
+    },
+    "output": {
+      "path": "/tmp/dory-p02-glibc-final-fixtures/x86_64-p02-glibc-userspace-v1.cpio",
+      "sha256": "813de160103ef6179de5d3b6d9271ed8f9883d8c3fa7671a49254f0ec7cb9d24",
+      "bytes": 2788352
+    },
+    "outputLocallyHashVerifiedDuringRetention": true,
+    "sourceCommitBlobsVerifiedDuringRetention": true,
+    "muslPreservation": {
+      "outputBytes": 1482752,
+      "reconstructedSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+      "existingArchiveSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+      "pinnedSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+      "unchanged": true
+    },
+    "guestExecuted": false,
+    "releaseQualified": false,
+    "scope": "Archive and ELF dependency integrity plus deterministic construction. All seven intended checks use glibc BusyBox; only shutdown uses the pinned klibc helper. No guest execution, systemd, distribution, physical-machine or release qualification. The independent parent 31-test run is separate evidence, not counted here."
+  },
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23-source-manifest.json.gz",
+      "sha256": "ba927035697f3eeebd0cf4888c891f14f3284f988ff5565e999b022a380c4a0d",
+      "originalSHA256": "665a14243bd713dc0592954c2bedb3264cc9149996cfe461f0c4dc5f1e3b226f",
+      "bytes": 36687
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23-source-overlay.tar.gz",
+      "sha256": "bb5bee2926c892deb8ad1cc26cb7b25b561862b9d419630c56f957a233f4270b",
+      "originalSHA256": "bb5bee2926c892deb8ad1cc26cb7b25b561862b9d419630c56f957a233f4270b",
+      "bytes": 300579
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23.log.gz",
+      "sha256": "d5da291d0d95b037ec080b09916f406d0587f0a2cc30491897cebde2381118ed",
+      "originalSHA256": "0daa2c2e05ce83440c30245c05d567b616e283bd2008d01e3849d430f333480e",
+      "bytes": 24771
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23-commit-binding.json",
+      "sha256": "b7a9aeb028a81811fdbda6c5201b7f6d22816b30fdc23167b54273c0b32b0c2b",
+      "originalSHA256": "b7a9aeb028a81811fdbda6c5201b7f6d22816b30fdc23167b54273c0b32b0c2b",
+      "bytes": 1410
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-24-source-manifest.json.gz",
+      "sha256": "ba927035697f3eeebd0cf4888c891f14f3284f988ff5565e999b022a380c4a0d",
+      "originalSHA256": "665a14243bd713dc0592954c2bedb3264cc9149996cfe461f0c4dc5f1e3b226f",
+      "bytes": 36687
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-24-source-overlay.tar.gz",
+      "sha256": "bb5bee2926c892deb8ad1cc26cb7b25b561862b9d419630c56f957a233f4270b",
+      "originalSHA256": "bb5bee2926c892deb8ad1cc26cb7b25b561862b9d419630c56f957a233f4270b",
+      "bytes": 300579
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-24.log.gz",
+      "sha256": "4b1ce4e7e6521572c4982f95529bbd61576669ceafd32ff0faee3a65fa1b7c9c",
+      "originalSHA256": "aaabb5b0134f13ce4e755cc7656a2d5170748a1578d86e845391c3cf5b0b4e9a",
+      "bytes": 34955
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-24-commit-binding.json",
+      "sha256": "44d9c3a8c26621b1c7b4b25e6937012a2f876fc206cfd519d661f6703b63433e",
+      "originalSHA256": "44d9c3a8c26621b1c7b4b25e6937012a2f876fc206cfd519d661f6703b63433e",
+      "bytes": 1410
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-6.json",
+      "sha256": "44513f8511d9edcdb0e843300eee35cd5143210e320df8808b8d77a014e9f30a",
+      "originalSHA256": "44513f8511d9edcdb0e843300eee35cd5143210e320df8808b8d77a014e9f30a",
+      "bytes": 27317
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-6.log.gz",
+      "sha256": "71606dd14a6b66e5ec9c76d6cbc8e8c6ac9cae924f167125e03dbdc4dcf16a57",
+      "originalSHA256": "e29d1f1c7340265de8c51b49c3280680e93fb98a0c85ffbc7b8d1730a6918286",
+      "bytes": 337
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-6.invocation.json",
+      "sha256": "07c70821859c96440bad91790e9cb2342d30f41e09770e3e12482a6e6cad2574",
+      "originalSHA256": "07c70821859c96440bad91790e9cb2342d30f41e09770e3e12482a6e6cad2574",
+      "bytes": 1652
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-6.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "originalSHA256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "bytes": 2
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-24.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "bytes": 20,
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-evidence-handoff.json",
+      "sha256": "8c2a28c592a613abf58e8f7d6216425650c21fb11ef740db3eb699d013be1e20",
+      "originalSHA256": "8c2a28c592a613abf58e8f7d6216425650c21fb11ef740db3eb699d013be1e20",
+      "bytes": 4601
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-source-handoff.json",
+      "sha256": "1014ea654ebb4c994d8a2378aabeb0ff463a81a6687289461eb25ff88c08ae6f",
+      "originalSHA256": "1014ea654ebb4c994d8a2378aabeb0ff463a81a6687289461eb25ff88c08ae6f",
+      "bytes": 2088
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-preparation-verification.json",
+      "sha256": "6a7cff3a81b73fcbe5226105d5b9149ce00a4780ad0a36517a3a5a87527dcd37",
+      "originalSHA256": "6a7cff3a81b73fcbe5226105d5b9149ce00a4780ad0a36517a3a5a87527dcd37",
+      "bytes": 3771
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-replay-verification.json",
+      "sha256": "0689f12af9ec6a097313110a3319367e1f4176afc4abfd33903ba7325499ad1a",
+      "originalSHA256": "0689f12af9ec6a097313110a3319367e1f4176afc4abfd33903ba7325499ad1a",
+      "bytes": 542
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-source.patch.gz",
+      "sha256": "c9938ebf6dada41766e04f71f6f9cef4fb04ef967652f95d4043b117c38c7210",
+      "originalSHA256": "2b5396701e65aba85372f3d1289c38a1c49d1f3b34f86bdeb2308a46ca2fa01d",
+      "bytes": 14526
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-parent-tests.log.gz",
+      "sha256": "bca66ffddfd22bdce46d21abec6d99f81fc99024baafebca125e8b36d0517866",
+      "originalSHA256": "e9a3f03b675ca4d6a4da6a77362f73e2225da383b6cafccdca820578d7fb0f01",
+      "bytes": 907
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-build-manifest.json",
+      "sha256": "f5a9b5fa0c348b20e546633252ddd8dc4687efc305492a48b477ee52cc88885a",
+      "originalSHA256": "f5a9b5fa0c348b20e546633252ddd8dc4687efc305492a48b477ee52cc88885a",
+      "bytes": 5480
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-tests.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-tests.stderr",
+      "sha256": "a44a994ad080c041f783e47fe56d2922ebfa0992d40c6d2cbae588a7ede05ce4",
+      "originalSHA256": "a44a994ad080c041f783e47fe56d2922ebfa0992d40c6d2cbae588a7ede05ce4",
+      "bytes": 3183
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-shell.stdout",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-shell.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-prepare.stdout",
+      "sha256": "09a1c5e886a99381b057a5a93c5160b7d6881c7d628393035cf2f7f4942555f2",
+      "originalSHA256": "09a1c5e886a99381b057a5a93c5160b7d6881c7d628393035cf2f7f4942555f2",
+      "bytes": 977
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-prepare.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-replay.stdout",
+      "sha256": "09a1c5e886a99381b057a5a93c5160b7d6881c7d628393035cf2f7f4942555f2",
+      "originalSHA256": "09a1c5e886a99381b057a5a93c5160b7d6881c7d628393035cf2f7f4942555f2",
+      "bytes": 977
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-fixture-replay.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23-24-source-verification.json",
+      "sha256": "207dd15e9fba3b000767b0e7c992b79950c9e82b19dd8c490854ca2a6bd2e5ec"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-24-command.json",
+      "sha256": "81a2ae38c1f64b95a324c58a05e643d454869945e8f170da61ff7ab7575fe1b6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-6-summary.json",
+      "sha256": "ec8d05dd8b270a68dcd1e1c4fdfba1299ebd53b9d70dd8c43a99496dce8934f2"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete. No physical x86 receipt, full ISA/debug/control qualification, complete userspace workload receipt, glibc boot, systemd, sustained stress or release qualification is established.",
+    "Run23 remains a failed incremental gate:694 actual Swift passes,5 failing methods,16 issues and1 disabled physical-reference method. Identical source passes clean24 with699 actual Swift passes plus1 disabled; both XCTest runs pass10 and skip1 optional fixture.",
+    "Probe6 runs the copied run22 executable, not the run24 source. It observes ACPI S5/powered-off but misses the required guest receipt and exits1; only D is visible from userspace.",
+    "Glibc evidence proves pinned ELF dependency closure and deterministic archive preparation only. All seven intended workloads use glibc BusyBox; only the final shutdown helper uses separately pinned klibc. No guest binary executes during preparation.",
+    "The ARM64 macOS27 beta/Xcode17F109/SDK26.5 host remains experimental. Compiler release optimization and successful schema validation are not release qualification.",
+    "Generated FFI input identities and runner executable hashes are retained without vendoring binary payloads. Glibc fixture binaries remain reproducible external inputs.",
+    "The MOV DR overlapping-fault order is a narrow Dory compatibility policy based on externally reported Intel observations; AMD differs for GD versus CPL. This is separate from local physical-reference qualification and adds no breakpoint/watchpoint engine.",
+    "No CPU capability bits are promoted. Broader control/descriptor semantics, alignment checks, breakpoint execution, optional instruction gates, syscall/stress coverage and complete phase acceptance remain open.",
+    "UART run25 and later guest probes are deliberately excluded from this through-run24 receipt."
+  ]
+}

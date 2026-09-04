@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "kind": "virtualization-fixture-preparation",
+  "cacheDirectory": "/tmp/dory-p02-glibc-final-fixtures",
+  "qualification": "input integrity only; no guest boot or workload qualification",
+  "artifacts": [
+    {
+      "id": "ubuntu-server-24.04.4-x86_64",
+      "filename": "ubuntu-24.04.4-live-server-amd64.iso",
+      "sha256": "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433",
+      "bytes": 3405469696,
+      "action": "verified-cache",
+      "extractions": []
+    }
+  ],
+  "diagnosticInitramfs": {
+    "filename": "x86_64-p02-glibc-userspace-v1.cpio",
+    "sha256": "813de160103ef6179de5d3b6d9271ed8f9883d8c3fa7671a49254f0ec7cb9d24",
+    "bytes": 2788352,
+    "manifestFilename": "x86_64-p02-glibc-userspace-v1.cpio.manifest.json",
+    "manifestSHA256": "f5a9b5fa0c348b20e546633252ddd8dc4687efc305492a48b477ee52cc88885a",
+    "qualification": "archive integrity and deterministic construction only; guest has not executed"
+  }
+}

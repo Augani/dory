@@ -1,0 +1,55 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-04",
+    "P02-12",
+    "P02-20"
+  ],
+  "sourceCommit": "7c6259f8c12945d6c2ed0709c97557c62a1b1d76",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Bounded control/MOV DR source gates23\u201324, deterministic glibc input preparation, and completed musl probe6 that powers off without a guest receipt. No workload or release qualification.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-24.json",
+      "sha256": "02c40bfc835da9003ff1296007b3a14e0cac126659bd102840f2d70dbd68b3f4"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-22.json",
+      "sha256": "fb51f216434a0493bf91700d98474c69201896734d5dd5e68ad680ed89973b0b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23-24-source-verification.json",
+      "sha256": "207dd15e9fba3b000767b0e7c992b79950c9e82b19dd8c490854ca2a6bd2e5ec"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-6-summary.json",
+      "sha256": "ec8d05dd8b270a68dcd1e1c4fdfba1299ebd53b9d70dd8c43a99496dce8934f2"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete. No physical x86 receipt, full ISA/debug/control qualification, complete userspace workload receipt, glibc boot, systemd, sustained stress or release qualification is established.",
+    "Run23 remains a failed incremental gate:694 actual Swift passes,5 failing methods,16 issues and1 disabled physical-reference method. Identical source passes clean24 with699 actual Swift passes plus1 disabled; both XCTest runs pass10 and skip1 optional fixture.",
+    "Probe6 runs the copied run22 executable, not the run24 source. It observes ACPI S5/powered-off but misses the required guest receipt and exits1; only D is visible from userspace.",
+    "Glibc evidence proves pinned ELF dependency closure and deterministic archive preparation only. All seven intended workloads use glibc BusyBox; only the final shutdown helper uses separately pinned klibc. No guest binary executes during preparation.",
+    "The ARM64 macOS27 beta/Xcode17F109/SDK26.5 host remains experimental. Compiler release optimization and successful schema validation are not release qualification.",
+    "Generated FFI input identities and runner executable hashes are retained without vendoring binary payloads. Glibc fixture binaries remain reproducible external inputs.",
+    "The MOV DR overlapping-fault order is a narrow Dory compatibility policy based on externally reported Intel observations; AMD differs for GD versus CPL. This is separate from local physical-reference qualification and adds no breakpoint/watchpoint engine.",
+    "No CPU capability bits are promoted. Broader control/descriptor semantics, alignment checks, breakpoint execution, optional instruction gates, syscall/stress coverage and complete phase acceptance remain open.",
+    "UART run25 and later guest probes are deliberately excluded from this through-run24 receipt."
+  ]
+}

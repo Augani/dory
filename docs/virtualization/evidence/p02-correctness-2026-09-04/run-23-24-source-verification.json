@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-source-verification",
+  "comparisonCommit": "7c6259f8c12945d6c2ed0709c97557c62a1b1d76",
+  "runs": [
+    {
+      "run": 23,
+      "comparisonCommit": "7c6259f8c12945d6c2ed0709c97557c62a1b1d76",
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "totalInputs": 687,
+      "trackedInputs": 681,
+      "trackedDifferences": [],
+      "ignoredFFIInputs": [
+        {
+          "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+          "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+        },
+        {
+          "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+          "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+          "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+          "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+          "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+          "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+        }
+      ],
+      "overlayFiles": 76,
+      "baseAndOverlayReconstructionPassed": true,
+      "matchingComparisonInputs": 681,
+      "matchingReconstructedInputs": 681,
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23-source-manifest.json.gz",
+        "sha256": "ba927035697f3eeebd0cf4888c891f14f3284f988ff5565e999b022a380c4a0d"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23-source-overlay.tar.gz",
+        "sha256": "bb5bee2926c892deb8ad1cc26cb7b25b561862b9d419630c56f957a233f4270b"
+      },
+      "binding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23-commit-binding.json",
+        "sha256": "b7a9aeb028a81811fdbda6c5201b7f6d22816b30fdc23167b54273c0b32b0c2b"
+      }
+    },
+    {
+      "run": 24,
+      "comparisonCommit": "7c6259f8c12945d6c2ed0709c97557c62a1b1d76",
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "totalInputs": 687,
+      "trackedInputs": 681,
+      "trackedDifferences": [],
+      "ignoredFFIInputs": [
+        {
+          "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+          "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+        },
+        {
+          "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+          "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+          "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+          "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+          "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+          "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+        }
+      ],
+      "overlayFiles": 76,
+      "baseAndOverlayReconstructionPassed": true,
+      "matchingComparisonInputs": 681,
+      "matchingReconstructedInputs": 681,
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-24-source-manifest.json.gz",
+        "sha256": "ba927035697f3eeebd0cf4888c891f14f3284f988ff5565e999b022a380c4a0d"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-24-source-overlay.tar.gz",
+        "sha256": "bb5bee2926c892deb8ad1cc26cb7b25b561862b9d419630c56f957a233f4270b"
+      },
+      "binding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-24-commit-binding.json",
+        "sha256": "44d9c3a8c26621b1c7b4b25e6937012a2f876fc206cfd519d661f6703b63433e"
+      }
+    }
+  ],
+  "identicalManifestAndOverlayAcrossRuns": true,
+  "method": "Read each retained tar member without extraction; compare all 681 tracked input hashes with git commit blobs and base-plus-overlay reconstruction. Six ignored FFI input identities are retained separately."
+}

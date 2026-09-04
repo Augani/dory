@@ -1,0 +1,69 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-guest-probe-summary",
+  "implementationCommit": "6d2987592a993cb4025881237c7c7e3c040917c0",
+  "sourceRun": 22,
+  "runnerSHA256": "d7097f5c9cfd83c82faa3e2900b6e7f65164fe65e0f796306b4279dac1a1cf26",
+  "diagnostic": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-6.json",
+    "sha256": "44513f8511d9edcdb0e843300eee35cd5143210e320df8808b8d77a014e9f30a"
+  },
+  "invocation": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-6.invocation.json",
+    "sha256": "07c70821859c96440bad91790e9cb2342d30f41e09770e3e12482a6e6cad2574"
+  },
+  "consoleLog": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-6.log.gz",
+    "sha256": "71606dd14a6b66e5ec9c76d6cbc8e8c6ac9cae924f167125e03dbdc4dcf16a57"
+  },
+  "exitRecord": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-6.exit",
+    "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+  },
+  "outcome": {
+    "exitCode": 1,
+    "passed": false,
+    "reason": "missing-guest-receipt"
+  },
+  "retiredInstructions": 749291906,
+  "elapsedNanoseconds": 371115605416,
+  "consoleBytes": 16633,
+  "lastExit": {
+    "elapsedNanoseconds": 371115603083,
+    "instructionCount": 906,
+    "nearestSymbol": {
+      "name": "acpi_os_write_port",
+      "offset": 40,
+      "symbolAddress": 18446744071588573680
+    },
+    "reason": "powered-off",
+    "rip": 18446744071588573720,
+    "totalInstructions": 749291906
+  },
+  "kernel": {
+    "byteCount": 39274268,
+    "elfBuildID": "6605cb9027e42995c51847655ec230aeb78559bd",
+    "path": "/tmp/dory-p00-guest-fixtures/x86_64-vmlinux",
+    "sha256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8"
+  },
+  "initrd": {
+    "byteCount": 1482752,
+    "path": "/tmp/dory-p00-guest-fixtures/x86_64-p02-minimal-userspace-v2.cpio",
+    "sha256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249"
+  },
+  "observations": [
+    "Linux logs Run /init as init process.",
+    "The only visible unprefixed userspace output is literal D immediately before the ACPI S5 preparation log.",
+    "Host runner independently observes powered-off, but records no guest userspace receipt and returns exit1."
+  ],
+  "diagnosis": "UART source review found no transmit-empty interrupt implementation; Linux identifies the port as16450, whose interrupt-driven transmitter writes one byte per service. This explains the observed prefix while polling printk is intact. A UART correction and later reboot are outside this receipt.",
+  "observationScope": "Last runner slice exits; guest-handled exceptions are not sampled. Timeout state is the last completed slice.",
+  "workloadsPassed": false,
+  "userspaceQualified": false,
+  "releaseQualified": false,
+  "limitations": [
+    "Poweroff alone does not prove workload completion. The guest could have taken an early error/shutdown branch; the missing serial receipt leaves workload results unknown.",
+    "No exact fault state is inferred from CR2 or previous completed slice state. Guest-handled exceptions are not sampled.",
+    "This baseline-JIT musl probe does not provide glibc, interpreter-equivalence, systemd, stress or physical-machine qualification."
+  ]
+}

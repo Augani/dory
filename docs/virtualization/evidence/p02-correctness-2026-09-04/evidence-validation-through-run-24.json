@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-evidence-validation",
+  "review": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-24.json",
+    "sha256": "02c40bfc835da9003ff1296007b3a14e0cac126659bd102840f2d70dbd68b3f4"
+  },
+  "schema": {
+    "path": "Config/DoryVirtualizationEvidence.schema.json",
+    "sha256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb"
+  },
+  "schemaEnvelopesPassed": 2,
+  "jsonschemaVersion": "4.26.0",
+  "uniqueReferencedArtifactsVerified": 33,
+  "individualTestCountsReconciled": true,
+  "testCounts": [
+    {
+      "run": 23,
+      "passed": 694,
+      "failedMethods": 5,
+      "issues": 16,
+      "disabled": 1
+    },
+    {
+      "run": 24,
+      "passed": 699,
+      "failedMethods": 0,
+      "issues": 0,
+      "disabled": 1
+    }
+  ],
+  "trackedSourceReconstructionPassed": true,
+  "sourceVerification": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-23-24-source-verification.json",
+    "sha256": "207dd15e9fba3b000767b0e7c992b79950c9e82b19dd8c490854ca2a6bd2e5ec"
+  },
+  "glibcCommitSourceAndLocalArchiveHashVerified": true,
+  "probe6Outcome": "missing-guest-receipt despite independently observed powered-off",
+  "releaseQualified": false
+}

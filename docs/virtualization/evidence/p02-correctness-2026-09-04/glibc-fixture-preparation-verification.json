@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-glibc-fixture-preparation-verification",
+  "qualification": "Fixture integrity and deterministic preparation only; no guest execution, poweroff, libc, distribution or physical qualification.",
+  "sourceFiles": {
+    "scripts/prepare-virtualization-fixtures.py": "eb03ad10c2a03783c3eb74392b18d0af394012e5e5006248c45be80300baf912",
+    "scripts/test-prepare-virtualization-fixtures.py": "c5e9e622cddee4b01b71a84eb190d00b2a85899bab89df5c8fe97df3b74fadc5",
+    "guest/diagnostics/p02-glibc-userspace/init": "67bd3c52a7da6c9f97d26858534f91f3fab61e9d9887e3de8b5d4e13c5e391e8",
+    "guest/diagnostics/p02-glibc-userspace/fixture.json": "57228f927a6f9ef3bf541393e7172e9b3756ae13472405cfbc13acc175ed2657",
+    "guest/diagnostics/p02-glibc-userspace/README.md": "bada5fb20da10a4ab8736085be1996f92ce81bcdeac519f4adf23c4ef4ed0ad5",
+    "guest/diagnostics/p02-minimal-userspace/init": "2fff09875bd5de4d30622d582aaac09eb23e2eef90b1c9591b163cbfcadf7f5d",
+    "guest/diagnostics/p02-minimal-userspace/fixture.json": "52b01dc00c935064e09bc006955aa27e5a8895a8a660fc16dbe4376fa289bbb6",
+    "Config/DoryVirtualizationGuestCandidates.json": "be7e5f9a171f6b487334886eb089fa121aa0f7959cba805381572f1766285ad1"
+  },
+  "sourcesUnchanged": true,
+  "runs": [
+    {
+      "command": [
+        "python3",
+        "scripts/test-prepare-virtualization-fixtures.py"
+      ],
+      "exitCode": 0,
+      "wallSeconds": 0.24876550000044517,
+      "stdout": {
+        "path": "/tmp/dory-p02-glibc-final-tests.stdout",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/tmp/dory-p02-glibc-final-tests.stderr",
+        "sha256": "a44a994ad080c041f783e47fe56d2922ebfa0992d40c6d2cbae588a7ede05ce4"
+      }
+    },
+    {
+      "command": [
+        "/bin/sh",
+        "-n",
+        "guest/diagnostics/p02-glibc-userspace/init"
+      ],
+      "exitCode": 0,
+      "wallSeconds": 0.005390834005083889,
+      "stdout": {
+        "path": "/tmp/dory-p02-glibc-final-shell.stdout",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "stderr": {
+        "path": "/tmp/dory-p02-glibc-final-shell.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/prepare-virtualization-fixtures.py",
+        "--id",
+        "ubuntu-server-24.04.4-x86_64",
+        "--cache-directory",
+        "/tmp/dory-p02-glibc-final-fixtures",
+        "--verify-only",
+        "--extract",
+        "--glibc-diagnostic-initramfs"
+      ],
+      "exitCode": 0,
+      "wallSeconds": 3.9990208329982124,
+      "stdout": {
+        "path": "/tmp/dory-p02-glibc-final-prepare.stdout",
+        "sha256": "09a1c5e886a99381b057a5a93c5160b7d6881c7d628393035cf2f7f4942555f2"
+      },
+      "stderr": {
+        "path": "/tmp/dory-p02-glibc-final-prepare.stderr",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    }
+  ],
+  "muslPreservation": {
+    "outputBytes": 1482752,
+    "reconstructedSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "existingArchiveSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "pinnedSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "unchanged": true
+  },
+  "outputFiles": {
+    "x86_64-p02-glibc-userspace-v1.cpio": {
+      "bytes": 2788352,
+      "sha256": "813de160103ef6179de5d3b6d9271ed8f9883d8c3fa7671a49254f0ec7cb9d24"
+    },
+    "x86_64-p02-glibc-userspace-v1.cpio.manifest.json": {
+      "bytes": 5480,
+      "sha256": "f5a9b5fa0c348b20e546633252ddd8dc4687efc305492a48b477ee52cc88885a"
+    }
+  }
+}

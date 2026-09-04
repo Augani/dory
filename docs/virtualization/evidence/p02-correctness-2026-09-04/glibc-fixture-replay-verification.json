@@ -1,0 +1,18 @@
+{
+  "command": [
+    "python3",
+    "scripts/prepare-virtualization-fixtures.py",
+    "--id",
+    "ubuntu-server-24.04.4-x86_64",
+    "--cache-directory",
+    "/tmp/dory-p02-glibc-final-fixtures",
+    "--verify-only",
+    "--extract",
+    "--glibc-diagnostic-initramfs"
+  ],
+  "exitCode": 0,
+  "wallSeconds": 2.027526042002137,
+  "matchesFirstPreparationResult": true,
+  "stdoutSHA256": "09a1c5e886a99381b057a5a93c5160b7d6881c7d628393035cf2f7f4942555f2",
+  "stderrSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+}
