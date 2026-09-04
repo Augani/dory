@@ -769,6 +769,15 @@ public struct DoryX86InterruptDelivery: Sendable {
     let type: UInt8
   }
 
+  private struct LegacyReturnSegment {
+    let segment: DoryX86SegmentState
+    let descriptorPrivilegeLevel: UInt8
+    let type: UInt8
+    let present: Bool
+    let descriptorAccessAddress: UInt64
+    let access: UInt8
+  }
+
   private struct IA32eReturnSegment {
     let segment: DoryX86SegmentState
     let descriptorPrivilegeLevel: UInt8
@@ -862,6 +871,11 @@ public struct DoryX86InterruptDelivery: Sendable {
     mode: DoryX86ExecutionMode,
     width: DoryX86OperandWidth
   ) throws {
+    guard !state.rflags.contains(.nestedTask), !state.rflags.contains(.virtual8086) else {
+      // Hardware task returns and returns from virtual-8086 mode require state
+      // that Dory's protected-mode execution contract does not expose.
+      throw generalProtectionException(errorCode: 0, instructionPointer: state.rip)
+    }
     let currentCPL = UInt8(state.cs.selector & 3)
     let memory = translatedMemory(physicalMemory: physicalMemory,
       pagingUnit: pagingUnit, state: state, mode: mode, cpl: currentCPL)
@@ -885,15 +899,46 @@ public struct DoryX86InterruptDelivery: Sendable {
     let codeSelector = UInt16(truncatingIfNeeded: try readFrameValue((stack &+ frameBytes) & pointerMask))
     let flagsValue = try readFrameValue((stack &+ 2 * frameBytes) & pointerMask)
     let targetCPL = UInt8(codeSelector & 3)
-    guard targetCPL >= currentCPL else {
-      throw DoryX86InterruptDeliveryError.invalidReturnFrame
+    guard !(currentCPL == 0 && flagsValue & DoryX86RFLAGS.virtual8086.rawValue != 0) else {
+      // Returning to virtual-8086 mode needs the extended ES/DS/FS/GS frame,
+      // which is intentionally outside this protected-return implementation.
+      throw generalProtectionException(errorCode: 0, instructionPointer: state.rip)
     }
-    let code = try readLegacySegment(selector: codeSelector, state: state, memory: systemMemory)
+    guard codeSelector & 0xfff8 != 0 else {
+      throw generalProtectionException(errorCode: 0, instructionPointer: state.rip)
+    }
+    guard targetCPL >= currentCPL else {
+      throw generalProtectionException(
+        errorCode: UInt32(codeSelector & 0xfffc),
+        instructionPointer: state.rip
+      )
+    }
+    let code = try readLegacyReturnSegment(
+      selector: codeSelector,
+      state: state,
+      memory: systemMemory
+    )
+    let conformingCode = code.type & 4 != 0
     guard code.type & 8 != 0,
-      code.descriptorPrivilegeLevel == targetCPL,
-      instructionPointer <= code.segment.limit
+      conformingCode
+        ? code.descriptorPrivilegeLevel <= targetCPL
+        : code.descriptorPrivilegeLevel == targetCPL
     else {
-      throw DoryX86InterruptDeliveryError.invalidReturnFrame
+      throw generalProtectionException(
+        errorCode: UInt32(codeSelector & 0xfffc),
+        instructionPointer: state.rip
+      )
+    }
+    guard code.present else {
+      throw DoryX86Exception(
+        kind: .segmentNotPresent,
+        vector: 11,
+        errorCode: UInt32(codeSelector & 0xfffc),
+        instructionPointer: state.rip
+      )
+    }
+    guard instructionPointer <= code.segment.limit else {
+      throw generalProtectionException(errorCode: 0, instructionPointer: state.rip)
     }
     // Intel SDM Vol. 2A IRET: word operands preserve RF/AC/ID/VIF/VIP.
     // IF and IOPL permissions use the executing CPL and the old IOPL.
@@ -908,30 +953,70 @@ public struct DoryX86InterruptDelivery: Sendable {
     let requestedFlags = DoryX86RFLAGS(rawValue:
       (state.rflags.rawValue & ~flagsMask) | (flagsValue & flagsMask) | 2)
     guard let validatedFlags = try? requestedFlags.validated() else {
-      throw DoryX86InterruptDeliveryError.invalidReturnFrame
+      throw generalProtectionException(errorCode: 0, instructionPointer: state.rip)
     }
 
+    let stackSegment: LegacyReturnSegment?
+    let outerStack: UInt64?
+    let outerSelector: UInt16?
     if targetCPL > currentCPL {
       let outerStackAddress = (stack &+ 3 * frameBytes) & pointerMask
       try validateProtectedReturnStack(outerStackAddress,
         byteCount: 2 * width.byteCount, segment: state.ss, instructionPointer: state.rip)
-      let outerStack = try readFrameValue(outerStackAddress)
-      let outerSelector = UInt16(truncatingIfNeeded:
+      let poppedStack = try readFrameValue(outerStackAddress)
+      let poppedSelector = UInt16(truncatingIfNeeded:
         try readFrameValue((outerStackAddress &+ frameBytes) & pointerMask))
-      let stackSegment = try readLegacySegment(
-        selector: outerSelector,
+      guard poppedSelector & 0xfff8 != 0 else {
+        throw generalProtectionException(errorCode: 0, instructionPointer: state.rip)
+      }
+      let descriptor = try readLegacyReturnSegment(
+        selector: poppedSelector,
         state: state,
         memory: systemMemory
       )
-      guard outerSelector & 3 == targetCPL,
-        stackSegment.descriptorPrivilegeLevel == targetCPL,
-        stackSegment.type & 8 == 0,
-        stackSegment.type & 2 != 0
+      guard poppedSelector & 3 == targetCPL,
+        descriptor.descriptorPrivilegeLevel == targetCPL,
+        descriptor.type & 8 == 0,
+        descriptor.type & 2 != 0
       else {
-        throw DoryX86InterruptDeliveryError.invalidReturnFrame
+        throw generalProtectionException(
+          errorCode: UInt32(poppedSelector & 0xfffc),
+          instructionPointer: state.rip
+        )
       }
-      state.ss = stackSegment.segment
-      state.ss.selector = outerSelector
+      guard descriptor.present else {
+        throw stackSegmentException(
+          errorCode: UInt32(poppedSelector & 0xfffc),
+          instructionPointer: state.rip
+        )
+      }
+      stackSegment = descriptor
+      outerStack = poppedStack
+      outerSelector = poppedSelector
+    } else {
+      stackSegment = nil
+      outerStack = nil
+      outerSelector = nil
+    }
+
+    let accessedSegments = [code] + (stackSegment.map { [$0] } ?? [])
+    for descriptor in accessedSegments where descriptor.access & 1 == 0 {
+      try systemMemory.validateWrite(at: descriptor.descriptorAccessAddress, byteCount: 1)
+    }
+    for descriptor in accessedSegments where descriptor.access & 1 == 0 {
+      try systemMemory.write(
+        at: descriptor.descriptorAccessAddress,
+        bytes: [descriptor.access | 1]
+      )
+    }
+
+    if var loadedStack = stackSegment?.segment,
+      let outerStack,
+      let outerSelector
+    {
+      loadedStack.selector = outerSelector
+      loadedStack.attributes |= 1
+      state.ss = loadedStack
       // SDM Vol. 3B §25.31.4: a word pop zero-extends ESP when the returned
       // stack is 32-bit. Preserve the existing 16-bit-stack high-word behavior
       // (the Intel IRET behavior for which Linux uses ESPFIX).
@@ -944,7 +1029,11 @@ public struct DoryX86InterruptDelivery: Sendable {
     state.rip = instructionPointer
     state.cs = code.segment
     state.cs.selector = codeSelector
+    state.cs.attributes |= 1
     state.rflags = validatedFlags
+    if targetCPL > currentCPL {
+      invalidateOuterPrivilegeDataSegments(targetCPL: targetCPL, state: &state)
+    }
   }
 
   private func validateProtectedReturnStack(
@@ -1095,6 +1184,80 @@ public struct DoryX86InterruptDelivery: Sendable {
       descriptorPrivilegeLevel: (access >> 5) & 3,
       type: access & 0x0f
     )
+  }
+
+  private func readLegacyReturnSegment(
+    selector: UInt16,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> LegacyReturnSegment {
+    let selectorError = UInt32(selector & 0xfffc)
+    func selectorFault() -> DoryX86Exception {
+      generalProtectionException(errorCode: selectorError, instructionPointer: state.rip)
+    }
+
+    let usesLDT = selector & 4 != 0
+    if usesLDT {
+      let attributes = state.ldtr.attributes
+      guard state.ldtr.selector & 0xfffc != 0,
+        state.ldtr.selector & 4 == 0,
+        attributes & 0x80 != 0,
+        attributes & 0x10 == 0,
+        attributes & 0x0f == 2
+      else { throw selectorFault() }
+    }
+    let tableBase = usesLDT ? state.ldtr.base : state.gdtr.base
+    let tableLimit = usesLDT ? UInt64(state.ldtr.limit) : UInt64(state.gdtr.limit)
+    let offset = UInt64(selector & 0xfff8)
+    guard offset + 7 <= tableLimit else { throw selectorFault() }
+    let (address, addressOverflow) = tableBase.addingReportingOverflow(offset)
+    let (lastByte, rangeOverflow) = address.addingReportingOverflow(7)
+    // Legacy descriptor-table bases are 32-bit linear addresses. Reject an
+    // impossible restored/synthetic cache instead of wrapping an implicit read.
+    guard !addressOverflow, !rangeOverflow, lastByte <= UInt64(UInt32.max) else {
+      throw selectorFault()
+    }
+
+    let raw = try read64(memory, address)
+    let access = UInt8(truncatingIfNeeded: raw >> 40)
+    let flags = UInt8(truncatingIfNeeded: raw >> 52) & 0x0f
+    guard access & 0x10 != 0 else { throw selectorFault() }
+    let base =
+      ((raw >> 16) & 0xffff)
+      | ((raw >> 32) & 0xff) << 16
+      | ((raw >> 56) & 0xff) << 24
+    var limit = UInt32(raw & 0xffff) | UInt32((raw >> 48) & 0x0f) << 16
+    if flags & 8 != 0 { limit = (limit << 12) | 0xfff }
+    return .init(
+      segment: .init(
+        selector: selector,
+        attributes: UInt16(access) | UInt16(flags) << 12,
+        limit: limit,
+        base: base
+      ),
+      descriptorPrivilegeLevel: (access >> 5) & 3,
+      type: access & 0x0f,
+      present: access & 0x80 != 0,
+      descriptorAccessAddress: address + 5,
+      access: access
+    )
+  }
+
+  private func invalidateOuterPrivilegeDataSegments(
+    targetCPL: UInt8,
+    state: inout DoryX86ArchitecturalState
+  ) {
+    func retained(_ segment: DoryX86SegmentState) -> DoryX86SegmentState {
+      guard segment.selector & 0xfffc != 0 else { return .init() }
+      let type = UInt8(truncatingIfNeeded: segment.attributes) & 0x0f
+      let descriptorPrivilege = UInt8(truncatingIfNeeded: segment.attributes >> 5) & 3
+      let nonconforming = type & 8 == 0 || type & 4 == 0
+      return descriptorPrivilege < targetCPL && nonconforming ? .init() : segment
+    }
+    state.es = retained(state.es)
+    state.fs = retained(state.fs)
+    state.gs = retained(state.gs)
+    state.ds = retained(state.ds)
   }
 
   private func writeProtectedFrame(
@@ -1294,7 +1457,10 @@ public struct DoryX86InterruptDelivery: Sendable {
       )
     }
     guard descriptor.present else {
-      throw stackSegmentException(instructionPointer: state.rip)
+      throw stackSegmentException(
+        errorCode: UInt32(selector & 0xfffc),
+        instructionPointer: state.rip
+      )
     }
     return descriptor.segment
   }
@@ -1389,11 +1555,14 @@ public struct DoryX86InterruptDelivery: Sendable {
     )
   }
 
-  private func stackSegmentException(instructionPointer: UInt64) -> DoryX86Exception {
+  private func stackSegmentException(
+    errorCode: UInt32 = 0,
+    instructionPointer: UInt64
+  ) -> DoryX86Exception {
     .init(
       kind: .stackSegment,
       vector: 12,
-      errorCode: 0,
+      errorCode: errorCode,
       instructionPointer: instructionPointer
     )
   }

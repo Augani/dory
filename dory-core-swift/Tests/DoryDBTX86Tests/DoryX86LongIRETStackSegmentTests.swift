@@ -4,7 +4,7 @@ import Testing
 
 // Intel SDM 092 Vol. 2A IRET/IRETD/IRETQ, pp. 3-493 and 3-497--498.
 // IRETQ validates the popped SS descriptor before publishing any return state:
-// invalid type/privilege is #GP(selector), while a non-present stack is #SS(0).
+// invalid type/privilege is #GP(selector), while a non-present stack is #SS(selector).
 @Suite struct DoryX86LongIRETStackSegmentTests {
   @Test func outerReturnLoadsTheValidatedStackDescriptor() throws {
     let memory = try fixtureMemory(stackDescriptor: dataDescriptor(dpl: 3, present: true))
@@ -63,7 +63,7 @@ import Testing
     #expect(state == before)
   }
 
-  @Test func nonPresentReturnStackRaisesSSZeroAndOnlyUnblocksNMI() throws {
+  @Test func nonPresentReturnStackRaisesSelectorSSAndOnlyUnblocksNMI() throws {
     let memory = try fixtureMemory(stackDescriptor: dataDescriptor(dpl: 3, present: false))
     var state = try kernelState()
     state.nmiBlocked = true
@@ -76,7 +76,7 @@ import Testing
           .init(
             kind: .stackSegment,
             vector: 12,
-            errorCode: 0,
+            errorCode: 0x20,
             instructionPointer: 0x1000
           ))
     )
