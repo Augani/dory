@@ -1968,6 +1968,14 @@ public struct DoryX86Decoder: Sendable {
         let operands = try decodeModRM(
           cursor: &cursor, width: operandWidth, prefixes: prefixes, mode: mode)
         operation = .compareExchange(destination: operands.rm, source: operands.reg)
+      case 0xB8:
+        guard prefixes.repeatPrefix == 0xF3 else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "POPCNT requires the F3 mandatory prefix")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: width, prefixes: prefixes, mode: mode)
+        operation = .populationCount(destination: operands.reg, source: operands.rm)
       case 0xB6, 0xB7, 0xBE, 0xBF:
         let sourceWidth: DoryX86OperandWidth = second == 0xB6 || second == 0xBE ? .byte : .word
         let operands = try decodeModRM(

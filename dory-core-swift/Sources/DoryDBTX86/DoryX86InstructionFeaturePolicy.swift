@@ -39,6 +39,8 @@ enum DoryX86InstructionFeaturePolicy {
     switch instruction.operation {
     case .conditionalMove:
       return profile.supports(.cmov)
+    case .populationCount:
+      return profile.supports(.popcnt)
     case .compareExchangePair(_, let doubleQuadword):
       return profile.supports(doubleQuadword ? .cmpxchg16b : .cmpxchg8b)
     case .duplicateVectorScalar:

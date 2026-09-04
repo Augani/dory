@@ -581,6 +581,26 @@ public struct DoryX86Interpreter: Sendable {
             memory: executionMemory
           )
         }
+      case .populationCount(let destination, let source):
+        // Intel SDM 092 Vol. 2B POPCNT pp. 4-688–4-690: all six arithmetic
+        // status flags are defined. ZF describes whether the source was zero;
+        // CF, PF, AF, SF, and OF are cleared.
+        let value = try read(
+          source, instruction: instruction, state: state, memory: executionMemory)
+        let result = UInt64(value.nonzeroBitCount)
+        try write(
+          result,
+          to: destination,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
+        setFlag(.carry, false, in: &state.rflags)
+        setFlag(.parity, false, in: &state.rflags)
+        setFlag(.auxiliaryCarry, false, in: &state.rflags)
+        setFlag(.zero, value == 0, in: &state.rflags)
+        setFlag(.sign, false, in: &state.rflags)
+        setFlag(.overflow, false, in: &state.rflags)
       case .byteSwap(let operand):
         let value = try read(
           operand, instruction: instruction, state: state, memory: executionMemory)

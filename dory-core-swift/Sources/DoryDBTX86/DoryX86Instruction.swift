@@ -900,6 +900,8 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   /// `MOVDQ2Q mm, xmm`: copy the low quadword of the XMM source into the MMX
   /// destination. Normal MMX retirement effects are applied after the copy.
   case moveVectorToMMX(destination: UInt8, source: UInt8)
+  /// `POPCNT r16/32/64, r/m16/32/64`: count set bits in the source operand.
+  case populationCount(destination: DoryX86Operand, source: DoryX86Operand)
 }
 
 public struct DoryX86DecodedInstruction: Codable, Sendable, Hashable {
