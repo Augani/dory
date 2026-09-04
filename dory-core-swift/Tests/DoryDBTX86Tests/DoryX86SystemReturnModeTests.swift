@@ -4,13 +4,14 @@ import Testing
 
 // Intel SDM 092 Vol. 2D SYSRET. SYSRET is executable only from 64-bit mode at
 // CPL0 with EFER.SCE enabled. Its operand size selects a compatibility-mode
-// EIP return or a canonical 64-bit RIP return; neither form changes RSP.
+// EIP return or a 64-bit RIP return after validating full RCX as canonical;
+// neither form changes RSP.
 @Suite struct DoryX86SystemReturnModeTests {
   @Test func defaultOperandSizeReturnsToCompatibilityModeUsingECX() throws {
     let bytes: [UInt8] = [0x0F, 0x07]
     let memory = try codeMemory(bytes)
     var state = try longModeState(
-      rcx: 0x8000_0000_7654_3210,
+      rcx: 0xFFFF_8000_7654_3210,
       r11: DoryX86RFLAGS.reservedOne.rawValue
         | DoryX86RFLAGS.interruptEnable.rawValue
         | DoryX86RFLAGS.direction.rawValue)
@@ -25,7 +26,7 @@ import Testing
     #expect(
       state.cs
         == .init(
-          selector: 0x33, attributes: 0xC0FB,
+          selector: 0x23, attributes: 0xC0FB,
           limit: .max, base: 0))
     #expect(
       state.ss
@@ -65,6 +66,19 @@ import Testing
             kind: .generalProtection, vector: 13,
             errorCode: 0, instructionPointer: 0x1000)))
     #expect(noncanonical == before)
+  }
+
+  @Test func compatibilityReturnAlsoRequiresCanonicalFullRCX() throws {
+    let bytes: [UInt8] = [0x0F, 0x07]
+    let memory = try codeMemory(bytes)
+    var state = try longModeState(
+      rcx: 0x0000_8000_7654_3210,
+      r11: DoryX86RFLAGS.reservedOne.rawValue | DoryX86RFLAGS.direction.rawValue)
+    let before = state
+
+    expectFault(.generalProtection, state: &state, memory: memory, mode: .long64)
+
+    #expect(state == before)
   }
 
   @Test func unavailableAndWrongModeSYSRETRaiseUDWithoutStateChanges() throws {

@@ -3491,8 +3491,8 @@ public struct DoryX86Interpreter: Sendable {
         nextRIP = state.modelSpecific.longStar
       case .sysret:
         // Intel SDM Vol. 2D SYSRET: lack of the instruction/SCE or execution
-        // outside 64-bit mode is #UD. Only the CPL check and a noncanonical
-        // 64-bit return target are #GP conditions.
+        // outside 64-bit mode is #UD. Only the CPL check and a noncanonical RCX
+        // are #GP conditions.
         guard profile.supports(.syscall), mode == .long64,
           state.control.efer & 1 != 0
         else {
@@ -3503,12 +3503,15 @@ public struct DoryX86Interpreter: Sendable {
           return generalProtection(at: originalRIP)
         }
         let return64Bit = instruction.prefixes.rex?.w == true
+        // Intel checks the complete RCX value before selecting the 32-bit or
+        // 64-bit return target. The compatibility form subsequently loads EIP,
+        // but noncanonical high bits in RCX still raise #GP(0).
+        guard DoryX86ArchitecturalState.isCanonical(state.registers.rcx) else {
+          return generalProtection(at: originalRIP)
+        }
         let targetRIP = return64Bit
           ? state.registers.rcx
           : UInt64(UInt32(truncatingIfNeeded: state.registers.rcx))
-        guard !return64Bit || DoryX86ArchitecturalState.isCanonical(targetRIP) else {
-          return generalProtection(at: originalRIP)
-        }
         // Intel SDM Vol. 2B SYSRET uses the fixed 0x3C7FD7 restore mask:
         // RF and VM remain clear regardless of their saved R11 values.
         let sysretFlagMask = DoryX86RFLAGS.architecturallyWritableMask
@@ -3521,9 +3524,19 @@ public struct DoryX86Interpreter: Sendable {
         }
         state.rflags = validatedFlags
         let selector = UInt16(truncatingIfNeeded: state.modelSpecific.star >> 48) & 0xfffc
-        state.cs = .init(selector: (selector &+ 16) | 3,
-          attributes: return64Bit ? 0xA0FB : 0xC0FB, limit: .max, base: 0)
-        state.ss = .init(selector: (selector &+ 8) | 3, attributes: 0xC0F3, limit: .max, base: 0)
+        let codeSelector = return64Bit ? selector &+ 16 : selector
+        state.cs = .init(
+          selector: codeSelector | 3,
+          attributes: return64Bit ? 0xA0FB : 0xC0FB,
+          limit: .max,
+          base: 0
+        )
+        state.ss = .init(
+          selector: (selector &+ 8) | 3,
+          attributes: 0xC0F3,
+          limit: .max,
+          base: 0
+        )
         nextRIP = targetRIP
       }
       DoryX86LegacyFloatingPointPolicy.applyRetiredMMXEffects(instruction, state: &state.floatingPoint)
