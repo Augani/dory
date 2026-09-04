@@ -1564,14 +1564,19 @@ public struct DoryX86Decoder: Sendable {
           )
         }
       case 0x70:
-        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
+        let format: DoryX86VectorShuffleFormat
+        switch (prefixes.operandSizeOverride, prefixes.repeatPrefix) {
+        case (true, nil): format = .packedDoublewords
+        case (false, 0xF2): format = .packedLowWords
+        case (false, 0xF3): format = .packedHighWords
+        default:
           throw DoryX86DecodeError.invalidEncoding(
-            address: address, detail: "PSHUFD requires 66 prefix")
+            address: address, detail: "unsupported 0F 70 mandatory prefix")
         }
         let operands = try decodeModRM(
           cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
         operation = .vectorShuffle(
-          format: .packedDoublewords,
+          format: format,
           destination: vectorRegister(operands.reg),
           source: vectorOperand(operands.rm),
           control: try cursor.readByte()

@@ -277,6 +277,7 @@ public enum DoryX86VEXBroadcastMode: String, Codable, Sendable, Hashable {
 
 public enum DoryX86VectorShuffleFormat: String, Codable, Sendable, Hashable {
   case packedSingle, packedDouble, packedDoublewords
+  case packedLowWords, packedHighWords
 }
 
 public enum DoryX87MemoryFormat: String, Codable, Sendable, Hashable {

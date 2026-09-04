@@ -2281,6 +2281,18 @@ public struct DoryX86Interpreter: Sendable {
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
       case .vectorShuffle(let format, let destination, let source, let control):
+        if format == .packedLowWords || format == .packedHighWords,
+          case .memory(let operand) = source
+        {
+          // Legacy PSHUFLW/PSHUFHW use a complete aligned 128-bit source.
+          // SDM 092 Vol. 2A Table 2-21: Type 4 legacy memory alignment is
+          // checked before translation, after the segment/canonical check.
+          try validateFloatingPointTransfer(operand, byteCount: 16, write: false,
+            instruction: instruction, state: state)
+          if effectiveAddress(operand, instruction: instruction, state: state) & 0xF != 0 {
+            return generalProtection(at: originalRIP)
+          }
+        }
         let rhs = try readVectorBytes(
           source,
           byteCount: 16,
@@ -3341,6 +3353,24 @@ public struct DoryX86Interpreter: Sendable {
       instructionPointer: instruction.address))
   }
 
+  private func validateFloatingPointTransfer(
+    _ operand: DoryX86MemoryOperand, byteCount: Int, write: Bool,
+    instruction: DoryX86DecodedInstruction, state: DoryX86ArchitecturalState
+  ) throws {
+    try validateSegmentAccess(operand, byteCount: byteCount, write: write,
+      instruction: instruction, state: state)
+    if operand.ignoresLegacySegmentBase {
+      let address = effectiveAddress(operand, instruction: instruction, state: state)
+      let last = address.addingReportingOverflow(UInt64(byteCount - 1))
+      guard !last.overflow, DoryX86ArchitecturalState.isCanonical(address),
+        DoryX86ArchitecturalState.isCanonical(last.partialValue)
+      else {
+        throw operand.segment == .ss ? stackProtection(at: instruction.address)
+          : segmentProtection(at: instruction.address)
+      }
+    }
+  }
+
   private func floatingPointTransferByteCount(mode: DoryX86ExecutionMode) -> Int {
     // Intel SDM Vol. 1 §10.5.1: bytes 416...511 are unused, including the
     // software-owned tail at 464...511. Outside 64-bit mode, the XMM8...15
@@ -4257,6 +4287,18 @@ public struct DoryX86Interpreter: Sendable {
     control: UInt8
   ) -> [UInt8] {
     switch format {
+    case .packedLowWords, .packedHighWords:
+      // SDM 092 Vol. 2B PSHUFLW/PSHUFHW: select each word independently
+      // from the chosen source half; copy the other source half unchanged.
+      let halfOffset = format == .packedLowWords ? 0 : 8
+      var result = rhs
+      for lane in 0..<4 {
+        let sourceOffset = halfOffset + Int((control >> (lane * 2)) & 3) * 2
+        let destinationOffset = halfOffset + lane * 2
+        result[destinationOffset] = rhs[sourceOffset]
+        result[destinationOffset + 1] = rhs[sourceOffset + 1]
+      }
+      return result
     case .packedDoublewords:
       return (0..<4).flatMap { lane -> [UInt8] in
         let sourceLane = Int(control >> UInt8(lane * 2) & 3)
