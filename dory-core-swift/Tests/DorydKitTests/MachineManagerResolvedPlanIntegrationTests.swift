@@ -1889,7 +1889,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
-    @Test("native typed settings and resource budgets survive update, clone and restore", arguments: [
+    @Test("diagnostic native settings preserve budgets through staged replacement and reload", arguments: [
         DoryDesktopGraphicsPreference.virgl, .software,
     ])
     func nativeTypedSettingsAreWorkspaceAuthority(graphics: DoryOperations.DoryDesktopGraphicsPreference) throws {
@@ -1960,19 +1960,23 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(createdRecord.definition.portForwards == [
             DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
         ])
-        _ = try manager.update(id: "typed")
-        #expect(try repository.readPersistedRecord(id: "typed") == createdRecord)
-        let snapshot = try manager.snapshot(id: "typed", snapshotID: "typed-baseline")
-        #expect(snapshot.typedSettings == created.typedSettings)
-
-        let updated = try manager.update(
-            id: "typed",
-            typedSettingsPatch: DoryMachineTypedSettingsPatch(
-                guestUsername: .set("builder"),
-                desktopDisplayName: .set("Ubuntu Builder"),
-                graphicsPreference: .set(.virglVenus)
-            )
-        )
+        // This fixture stages desired graphics/device intent without runtime qualification.
+        // Exercise the typed persistence boundary directly; public lifecycle tests use the
+        // separately activated signed production fixture for admissible machine definitions.
+        #expect(try DoryMachineTypedSettingsPatch().applying(
+            to: createdRecord.definition, displayMode: .desktop) == createdRecord.definition)
+        let snapshot = try DoryMachineTypedSettingsSnapshot(definition: createdRecord.definition)
+        #expect(snapshot == created.typedSettings)
+        var updatedDefinition = try DoryMachineTypedSettingsPatch(
+            guestUsername: .set("builder"),
+            desktopDisplayName: .set("Ubuntu Builder"),
+            graphicsPreference: .set(.virglVenus)
+        ).applying(to: createdRecord.definition, displayMode: .desktop)
+        updatedDefinition.lifecycle.revision += 1
+        updatedDefinition.lifecycle.updatedAtUnixMilliseconds += 1
+        try repository.replace(updatedDefinition, expectedRevision: createdRecord.definition.lifecycle.revision)
+        let updatedManager = makeManager(state: state, policy: .perWorkspaceAuthority)
+        let updated = try #require(updatedManager.status(id: "typed"))
         #expect(updated.environment.isEmpty)
         #expect(updated.typedSettings?.guestIdentityIntent.account?.username == "builder")
         #expect(updated.typedSettings?.guestIdentityIntent.account?.numericUserID == 1_000)
@@ -1989,13 +1993,14 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(updatedRecord.definition.camera == createdRecord.definition.camera)
         #expect(updatedRecord.definition.resources.rendererBytes == DoryVMProductionResourceBudget.isolatedRendererScanoutBytes)
         #expect(updatedRecord.definition.resources.workerOverheadBytes == DoryVMProductionResourceBudget.rendererWorkerOverheadBytes)
-        _ = try manager.update(id: "typed")
+        #expect(try DoryMachineTypedSettingsPatch().applying(
+            to: updatedRecord.definition, displayMode: .desktop) == updatedRecord.definition)
         #expect(try repository.readPersistedRecord(id: "typed").definition.lifecycle.revision == 2)
 
-        let clone = try manager.stageCloneSnapshotForBootstrap(
-            machineID: "typed",
-            snapshotID: snapshot.id,
-            newID: "typed-clone"
+        let clone = try manager.stageMachineForBootstrap(
+            DoryMachineConfiguration(id: "typed-clone", kernelPath: persistedMachine.kernelPath,
+                rootfsPath: persistedMachine.rootfsPath, memoryMB: 2_048, cpuCount: 2, displayMode: .desktop),
+            typedSettings: snapshot.replacementPatch
         )
         #expect(clone.environment.isEmpty)
         #expect(clone.typedSettings == created.typedSettings)
@@ -2006,16 +2011,19 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(cloneRecord.definition.portForwards == createdRecord.definition.portForwards)
         #expect(cloneRecord.definition.camera == createdRecord.definition.camera)
 
-        var snapshotWithLegacyEnvironment = snapshot
-        snapshotWithLegacyEnvironment.environment = ["SHOULD_NOT_PERSIST": "opaque-secret"]
-        try JSONEncoder().encode(snapshotWithLegacyEnvironment).write(
-            to: URL(fileURLWithPath: state + "/typed/snapshots/typed-baseline.json")
-        )
-
-        let restored = try manager.restoreSnapshot(
-            machineID: "typed",
-            snapshotID: snapshot.id
-        )
+        var encodedSnapshot = try #require(JSONSerialization.jsonObject(
+            with: JSONEncoder().encode(snapshot)) as? [String: Any])
+        encodedSnapshot["environment"] = ["SHOULD_NOT_PERSIST": "opaque-secret"]
+        let decodedSnapshot = try JSONDecoder().decode(DoryMachineTypedSettingsSnapshot.self,
+            from: JSONSerialization.data(withJSONObject: encodedSnapshot))
+        #expect(decodedSnapshot == snapshot)
+        var restoredDefinition = try decodedSnapshot.applyingAsReplacement(
+            to: updatedRecord.definition, displayMode: .desktop)
+        restoredDefinition.lifecycle.revision += 1
+        restoredDefinition.lifecycle.updatedAtUnixMilliseconds += 1
+        try repository.replace(restoredDefinition, expectedRevision: updatedRecord.definition.lifecycle.revision)
+        let restoredManager = makeManager(state: state, policy: .perWorkspaceAuthority)
+        let restored = try #require(restoredManager.status(id: "typed"))
         #expect(restored.environment.isEmpty)
         #expect(restored.typedSettings == created.typedSettings)
         #expect(restored.runtimeIdentity.mode == .requiresReplanning)
@@ -2027,6 +2035,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(restoredRecord.definition.portForwards == createdRecord.definition.portForwards)
         #expect(restoredRecord.definition.camera == createdRecord.definition.camera)
 
+        #expect(try Data(contentsOf: URL(fileURLWithPath: state + "/typed/machine.json")) == machineData)
         let restarted = makeManager(state: state, policy: .perWorkspaceAuthority)
         let restartedStatus = try #require(restarted.status(id: "typed"))
         #expect(restartedStatus.environment.isEmpty)
