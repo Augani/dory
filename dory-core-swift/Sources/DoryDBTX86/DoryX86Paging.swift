@@ -55,6 +55,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     let cr0: UInt64
     let cr4: UInt64
     let efer: UInt64
+    let legacyPAEPDPTEs: DoryX86PAEPDPTEs?
     let cpl: UInt8
     let access: DoryX86MemoryAccessKind
     let alignmentCheck: Bool
@@ -125,6 +126,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     context: DoryX86PagingContext,
     physicalMemory: any DoryX86Memory
   ) throws -> DoryX86Translation {
+    try context.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits)
     let ia32eActive = context.control.efer & (1 << 10) != 0
     guard isCanonical(linearAddress, bits: ia32eActive ? 48 : 32) else {
       throw DoryX86MemoryError.addressOverflow(address: linearAddress, byteCount: 1)
@@ -148,6 +150,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       cr0: context.control.cr0,
       cr4: context.control.cr4,
       efer: context.control.efer,
+      legacyPAEPDPTEs: context.control.legacyPAEPDPTEs,
       cpl: context.currentPrivilegeLevel,
       access: access,
       alignmentCheck: context.rflags.contains(.alignmentCheck),
@@ -311,11 +314,17 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     context: DoryX86PagingContext,
     physicalMemory: any DoryX86Memory
   ) throws -> DoryX86Translation {
-    let indices = [
-      (linearAddress >> 30) & 0x3, (linearAddress >> 21) & 0x1ff, (linearAddress >> 12) & 0x1ff,
-    ]
-    // Legacy PAE uses CR3[31:5], unlike IA-32e's 4 KiB-aligned root.
-    var table = context.control.cr3 & 0xffff_ffe0
+    guard let pdptes = context.control.legacyPAEPDPTEs else {
+      throw DoryX86StateError.missingLegacyPAEPDPTEs
+    }
+    // CR3 is consulted only by an architectural PDPTE load. RAM edits and TLB
+    // invalidation cannot change these four processor-internal values.
+    let pdpte = pdptes[Int((linearAddress >> 30) & 3)]
+    guard pdpte & 1 != 0 else {
+      throw pageFault(linearAddress, access, context, protection: false)
+    }
+    let indices = [(linearAddress >> 21) & 0x1ff, (linearAddress >> 12) & 0x1ff]
+    var table = pdpte & physicalAddressMask & ~0xfff
     var user = true
     var writable = true
     var executable = true
@@ -329,16 +338,13 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       }
       try validate64BitEntry(
         entry, linearAddress: linearAddress, access: access, context: context,
-        paeDirectoryOrTable: level != 0)
-      if level != 0 {
-        // A legacy PAE PDPTE has no R/W, U/S, NX or accessed flag. Its
-        // reserved bits must eventually be checked when the PDPTEs are loaded.
-        user = user && entry & (1 << 2) != 0
-        writable = writable && entry & (1 << 1) != 0
-        executable = executable && entry & (1 << 63) == 0
-      }
-      let huge = level == 1 && entry & (1 << 7) != 0
-      let isLeaf = level == 2 || huge
+        paeDirectoryOrTable: true)
+      // Only the PDE/PTE contribute R/W, U/S, NX and accessed/dirty flags.
+      user = user && entry & (1 << 2) != 0
+      writable = writable && entry & (1 << 1) != 0
+      executable = executable && entry & (1 << 63) == 0
+      let huge = level == 0 && entry & (1 << 7) != 0
+      let isLeaf = level == 1 || huge
       let pageSize: UInt64 = huge ? 1 << 21 : 1 << 12
       if isLeaf {
         let rawAddressField = entry & physicalAddressMask & ~0xfff
@@ -369,7 +375,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
           executable: executable
         )
       }
-      if level != 0, entry & (1 << 5) == 0 {
+      if entry & (1 << 5) == 0 {
         entry |= 1 << 5
         try writeUInt64(entry, at: entryAddress, physicalMemory: physicalMemory)
       }
@@ -583,6 +589,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
   private let bulkPhysicalMemory: (any DoryX86BulkMemory)?
   private let codeGenerationPhysicalMemory: (any DoryX86CodeGenerationMemory)?
   private let pagingUnit: DoryX86PagingUnit
+  // Control-register instructions must invalidate the supplied translated-memory cache too.
+  var translationUnit: DoryX86PagingUnit { pagingUnit }
   private var context: DoryX86PagingContext
 
   public init(

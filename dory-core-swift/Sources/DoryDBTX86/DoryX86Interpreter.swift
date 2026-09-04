@@ -98,6 +98,11 @@ public struct DoryX86Interpreter: Sendable {
     ioBus: (any DoryX86IOBus)?
   ) -> DoryX86InterpreterResult {
     let originalRIP = state.rip
+    do {
+      try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: profile.physicalAddressBits)
+    } catch {
+      return generalProtection(at: originalRIP)
+    }
     let executionMemory: any DoryX86Memory
     if let translatedMemory {
       translatedMemory.updateContext(.init(state: state, mode: mode))
@@ -2488,9 +2493,10 @@ public struct DoryX86Interpreter: Sendable {
         guard currentPrivilegeLevel(state, mode: mode) == 0,
           writeControlRegister(
             index,
-            value: state.registers[source],
+            value: mode == .long64 ? state.registers[source] : state.registers[source] & 0xffff_ffff,
             state: &state,
-            pagingUnit: pagingUnit
+            physicalMemory: memory,
+            pagingUnit: pagingUnit ?? translatedMemory?.translationUnit
           )
         else {
           return generalProtection(at: originalRIP)
@@ -4234,8 +4240,13 @@ public struct DoryX86Interpreter: Sendable {
     _ index: UInt8,
     value: UInt64,
     state: inout DoryX86ArchitecturalState,
+    physicalMemory: any DoryX86Memory,
     pagingUnit: DoryX86PagingUnit?
   ) -> Bool {
+    let previous = state.control
+    var candidate = previous
+    var invalidate = false
+    var reloadPDPTEs = false
     switch index {
     case 0:
       // CR0.ET has been architecturally fixed at one since the 486. A MOV to
@@ -4248,21 +4259,22 @@ public struct DoryX86Interpreter: Sendable {
       guard !paging || protectedMode,
         !notWriteThrough || cacheDisable
       else { return false }
-      let wasPaging = state.control.cr0 & (1 << 31) != 0
-      if paging, !wasPaging, state.control.efer & (1 << 8) != 0 {
-        guard state.control.cr4 & (1 << 5) != 0 else { return false }
-        state.control.efer |= 1 << 10
+      let wasPaging = previous.cr0 & (1 << 31) != 0
+      if paging, !wasPaging, previous.efer & (1 << 8) != 0 {
+        guard previous.cr4 & (1 << 5) != 0 else { return false }
+        candidate.efer |= 1 << 10
       } else if !paging {
-        state.control.efer &= ~(1 << 10)
+        candidate.efer &= ~(1 << 10)
       }
-      state.control.cr0 = normalizedValue
-      pagingUnit?.invalidateAll()
-      return true
+      candidate.cr0 = normalizedValue
+      let reloadMask: UInt64 = (1 << 30) | (1 << 29) | (1 << 31) // CD, NW, PG
+      reloadPDPTEs = candidate.isLegacyPAEPagingActive
+        && (previous.cr0 ^ candidate.cr0) & reloadMask != 0
+      invalidate = true
     case 2:
-      state.control.cr2 = value
-      return true
+      candidate.cr2 = value
     case 3:
-      let pcidEnabled = state.control.cr4 & (1 << 17) != 0
+      let pcidEnabled = previous.cr4 & (1 << 17) != 0
       let noFlush = value & (1 << 63) != 0
       // Low CR3 bits are a PCID, cache controls, ignored bits, or part of a
       // legacy PAE 32-byte root. They are never an alignment fault; the walker
@@ -4272,25 +4284,54 @@ public struct DoryX86Interpreter: Sendable {
       guard !noFlush || pcidEnabled,
         storedValue & ~addressMask & ~UInt64(0xfff) == 0
       else { return false }
-      state.control.cr3 = storedValue
-      if !noFlush { pagingUnit?.invalidateAll() }
-      return true
+      candidate.cr3 = storedValue
+      reloadPDPTEs = candidate.isLegacyPAEPagingActive
+      invalidate = !noFlush
     case 4:
       var supportedMask: UInt64 =
         (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8)
         | (1 << 9) | (1 << 10) | (1 << 17) | (1 << 20) | (1 << 21)
       if profile.supports(.xsave) { supportedMask |= 1 << 18 }
       guard value & ~supportedMask == 0 else { return false }
-      state.control.cr4 = value
-      pagingUnit?.invalidateAll()
-      return true
+      // IA-32e cannot be left by clearing PAE. Otherwise it could bypass the
+      // required CR0 transition and leave the walker in an inconsistent mode.
+      guard previous.efer & (1 << 10) == 0 || value & (1 << 5) != 0 else { return false }
+      candidate.cr4 = value
+      let reloadMask: UInt64 = (1 << 5) | (1 << 7) | (1 << 4) | (1 << 20) // PAE, PGE, PSE, SMEP
+      reloadPDPTEs = candidate.isLegacyPAEPagingActive
+        && (previous.cr4 ^ candidate.cr4) & reloadMask != 0
+      invalidate = true
     case 8:
       guard value <= 15 else { return false }
-      state.control.cr8 = value
-      return true
+      candidate.cr8 = value
     default:
       return false
     }
+    if reloadPDPTEs {
+      do {
+        // Intel SDM 092 Vol. 3A §5.4.1: load all four using physical CR3[31:5].
+        // Do not translate this read through either the old or candidate page tables.
+        let root = candidate.cr3 & 0xffff_ffe0
+        var entries: [UInt64] = []
+        for index in 0..<4 {
+          let bytes = try physicalMemory.read(at: root + UInt64(index) * 8, byteCount: 8)
+          guard bytes.count == 8 else { return false }
+          entries.append(bytes.enumerated().reduce(UInt64(0)) {
+            $0 | (UInt64($1.element) << ($1.offset * 8))
+          })
+        }
+        let loaded = DoryX86PAEPDPTEs(entries[0], entries[1], entries[2], entries[3])
+        try loaded.validate(physicalAddressBits: profile.physicalAddressBits)
+        candidate.legacyPAEPDPTEs = loaded
+      } catch {
+        return false
+      }
+    }
+    // A failed physical read or reserved-bit check publishes neither controls nor latch,
+    // and leaves cached translations intact. Broad successful invalidation is permitted.
+    state.control = candidate
+    if invalidate { pagingUnit?.invalidateAll() }
+    return true
   }
 
   private func readModelSpecificRegister(

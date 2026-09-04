@@ -149,7 +149,8 @@ import Testing
 
   private func paeContext(cpl: UInt8, nxe: Bool) -> DoryX86PagingContext {
     .init(control: .init(cr0: (1 << 31) | 1, cr3: 0x1000, cr4: 1 << 5,
-      efer: nxe ? 1 << 11 : 0), rflags: [.reservedOne], currentPrivilegeLevel: cpl, mode: .protected32)
+      efer: nxe ? 1 << 11 : 0, legacyPAEPDPTEs: .init(0x2001)),
+      rflags: [.reservedOne], currentPrivilegeLevel: cpl, mode: .protected32)
   }
 
   private func legacyContext(cpl: UInt8, pse: Bool) -> DoryX86PagingContext {

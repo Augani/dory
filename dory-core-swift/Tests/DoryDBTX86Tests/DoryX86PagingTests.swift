@@ -184,7 +184,7 @@ import Testing
               control: .init(
                 cr0: 0x8000_0011, cr3: 0x1000,
                 cr4: (pae ? 1 << 5 : 0) | (smep ? 1 << 20 : 0),
-                efer: nxe ? 1 << 11 : 0),
+                efer: nxe ? 1 << 11 : 0, legacyPAEPDPTEs: pae ? .init() : nil),
               rflags: .reset, currentPrivilegeLevel: cpl, mode: .protected32)
             for access: DoryX86MemoryAccessKind in [.read, .write, .instructionFetch] {
               var expected: UInt32 = cpl == 3 ? 4 : 0
@@ -438,7 +438,8 @@ import Testing
     try write64(paeMemory, 0x1000, 0x2000 | 0x1)
     try write64(paeMemory, 0x2000 + 2 * 8, 0x87)
     let paeContext = DoryX86PagingContext(
-      control: .init(cr0: 0x8000_0011, cr3: 0x1000, cr4: 1 << 5, efer: 1 << 11),
+      control: .init(cr0: 0x8000_0011, cr3: 0x1000, cr4: 1 << 5, efer: 1 << 11,
+        legacyPAEPDPTEs: .init(0x2001)),
       rflags: .reset,
       currentPrivilegeLevel: 3,
       mode: .protected32
@@ -481,7 +482,7 @@ import Testing
     }
   }
 
-  @Test func legacyPAEUsesAllCR3RootAddressBitsWithoutChangingPDPTEs() throws {
+  @Test func legacyPAESelectsEachLatchedPDPTEWithoutChangingItsRAMImage() throws {
     for root: UInt64 in [0x1020, 0x17e0, 0x1fe0] {
       for quadrant: UInt64 in 0..<4 {
         let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
@@ -494,7 +495,9 @@ import Testing
         let context = DoryX86PagingContext(
           control: .init(
             cr0: 0x8001_0011, cr3: (1 << 40) | root | 0x1f,
-            cr4: 1 << 5, efer: 1 << 11),
+            cr4: 1 << 5, efer: 1 << 11, legacyPAEPDPTEs: .init(
+              quadrant == 0 ? pdpte : 0, quadrant == 1 ? pdpte : 0,
+              quadrant == 2 ? pdpte : 0, quadrant == 3 ? pdpte : 0)),
           rflags: .reset, currentPrivilegeLevel: 3, mode: .protected32)
         let translation = try DoryX86PagingUnit().translate(
           linearAddress: linear, access: .write, context: context, physicalMemory: memory)
@@ -519,7 +522,8 @@ import Testing
         try write64(memory, 0x3000, 0x9007)
         try write64(memory, restrictedEntry, try read64(memory, restrictedEntry) & ~deniedFlag)
         let context = DoryX86PagingContext(
-          control: .init(cr0: 0x8001_0011, cr3: 0x1020, cr4: 1 << 5),
+          control: .init(cr0: 0x8001_0011, cr3: 0x1020, cr4: 1 << 5,
+            legacyPAEPDPTEs: .init(0x2001)),
           rflags: .reset, currentPrivilegeLevel: 3, mode: .protected32)
         #expect(throws: DoryX86MemoryError.pageFault(address: linear, errorCode: 7)) {
           try DoryX86PagingUnit().translate(

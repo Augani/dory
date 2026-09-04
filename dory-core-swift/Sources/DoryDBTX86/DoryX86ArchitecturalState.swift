@@ -7,6 +7,9 @@ public enum DoryX86StateError: Error, Sendable, Equatable, CustomStringConvertib
   case invalidX87RegisterCount(Int)
   case invalidVectorRegisterCount(Int)
   case invalidXCR0(UInt64)
+  case invalidPhysicalAddressBits(UInt8)
+  case missingLegacyPAEPDPTEs
+  case invalidLegacyPAEPDPTE(index: Int, value: UInt64)
   case noncanonicalAddress(UInt64)
 
   public var description: String {
@@ -21,6 +24,12 @@ public enum DoryX86StateError: Error, Sendable, Equatable, CustomStringConvertib
       "x86 state contains \(count) vector registers; expected 16"
     case .invalidXCR0(let value):
       "x86 XCR0 contains an unsupported state-component mask: 0x\(String(value, radix: 16))"
+    case .invalidPhysicalAddressBits(let value):
+      "x86 physical address width is \(value); expected 32 through 52 bits"
+    case .missingLegacyPAEPDPTEs:
+      "Active legacy PAE paging requires the four latched PDPTEs"
+    case .invalidLegacyPAEPDPTE(let index, let value):
+      "Legacy PAE PDPTE\(index) contains reserved bits: 0x\(String(value, radix: 16))"
     case .noncanonicalAddress(let value):
       "x86 address is not canonical: 0x\(String(value, radix: 16))"
     }
@@ -176,6 +185,47 @@ public struct DoryX86DescriptorTableState: Codable, Sendable, Hashable {
   }
 }
 
+/// The four processor-internal PDPTE registers used by legacy PAE paging. Keeping a fixed
+/// shape prevents a truncated snapshot from silently supplying fewer than four entries.
+public struct DoryX86PAEPDPTEs: Codable, Sendable, Hashable {
+  public let pdpte0: UInt64
+  public let pdpte1: UInt64
+  public let pdpte2: UInt64
+  public let pdpte3: UInt64
+
+  public init(_ pdpte0: UInt64 = 0, _ pdpte1: UInt64 = 0,
+    _ pdpte2: UInt64 = 0, _ pdpte3: UInt64 = 0) {
+    self.pdpte0 = pdpte0
+    self.pdpte1 = pdpte1
+    self.pdpte2 = pdpte2
+    self.pdpte3 = pdpte3
+  }
+
+  public subscript(index: Int) -> UInt64 {
+    switch index {
+    case 0: pdpte0
+    case 1: pdpte1
+    case 2: pdpte2
+    case 3: pdpte3
+    default: preconditionFailure("A PAE PDPTE selector has two bits")
+    }
+  }
+
+  public func validate(physicalAddressBits: UInt8) throws {
+    guard (32...52).contains(physicalAddressBits) else {
+      throw DoryX86StateError.invalidPhysicalAddressBits(physicalAddressBits)
+    }
+    // Intel SDM 092, Vol. 3A §5.4.1, Table 5-8: NX is reserved here even with NXE.
+    let reservedMask = (UInt64.max << physicalAddressBits) | 0x1e6
+    for index in 0..<4 {
+      let value = self[index]
+      if value & 1 != 0, value & reservedMask != 0 {
+        throw DoryX86StateError.invalidLegacyPAEPDPTE(index: index, value: value)
+      }
+    }
+  }
+}
+
 public struct DoryX86ControlState: Codable, Sendable, Hashable {
   public var cr0: UInt64
   public var cr2: UInt64
@@ -184,6 +234,8 @@ public struct DoryX86ControlState: Codable, Sendable, Hashable {
   public var cr8: UInt64
   public var efer: UInt64
   public var xcr0: UInt64
+  /// Nil for reset/old non-PAE snapshots. Active legacy PAE must never rebuild this from RAM.
+  public var legacyPAEPDPTEs: DoryX86PAEPDPTEs?
 
   public init(
     cr0: UInt64 = 0x6000_0010,
@@ -192,7 +244,8 @@ public struct DoryX86ControlState: Codable, Sendable, Hashable {
     cr4: UInt64 = 0,
     cr8: UInt64 = 0,
     efer: UInt64 = 0,
-    xcr0: UInt64 = 1
+    xcr0: UInt64 = 1,
+    legacyPAEPDPTEs: DoryX86PAEPDPTEs? = nil
   ) {
     self.cr0 = cr0
     self.cr2 = cr2
@@ -201,6 +254,21 @@ public struct DoryX86ControlState: Codable, Sendable, Hashable {
     self.cr8 = cr8
     self.efer = efer
     self.xcr0 = xcr0
+    self.legacyPAEPDPTEs = legacyPAEPDPTEs
+  }
+
+  public var isLegacyPAEPagingActive: Bool {
+    cr0 & (1 << 31) != 0 && cr4 & (1 << 5) != 0 && efer & (1 << 10) == 0
+  }
+
+  /// Snapshot construction uses the architectural maximum; dispatch applies its CPU's width.
+  public func validateLegacyPAEPDPTEs(physicalAddressBits: UInt8 = 52) throws {
+    guard (32...52).contains(physicalAddressBits) else {
+      throw DoryX86StateError.invalidPhysicalAddressBits(physicalAddressBits)
+    }
+    guard isLegacyPAEPagingActive else { return }
+    guard let legacyPAEPDPTEs else { throw DoryX86StateError.missingLegacyPAEPDPTEs }
+    try legacyPAEPDPTEs.validate(physicalAddressBits: physicalAddressBits)
   }
 }
 
@@ -398,6 +466,7 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
     guard control.xcr0 & ~0x7 == 0, control.xcr0 & 1 == 1 else {
       throw DoryX86StateError.invalidXCR0(control.xcr0)
     }
+    try control.validateLegacyPAEPDPTEs()
     self.registers = registers
     self.rip = rip
     self.rflags = rflags

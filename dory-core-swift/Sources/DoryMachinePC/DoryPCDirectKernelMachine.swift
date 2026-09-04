@@ -338,6 +338,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     guard (1...255).contains(processorCount) else {
       throw DoryPCMachineError.invalidProcessorCount(processorCount)
     }
+    guard (32...52).contains(interpreter.profile.physicalAddressBits) else {
+      throw DoryX86StateError.invalidPhysicalAddressBits(interpreter.profile.physicalAddressBits)
+    }
     self.processorCount = processorCount
     self.executionTier = executionTier
     self.optimizingJITWarmupDispatches = optimizingJITWarmupDispatches
@@ -351,6 +354,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           maximumCodeBytes: baselineJITMaximumCodeBytes,
           decoder: interpreter.decoder,
           cpuProfileIdentifier: interpreter.profile.identifier,
+          physicalAddressBits: interpreter.profile.physicalAddressBits,
           optimization: .baseline
         )
       case .optimizingJIT:
@@ -358,6 +362,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           maximumCodeBytes: max(4_096, baselineJITMaximumCodeBytes / 4),
           decoder: interpreter.decoder,
           cpuProfileIdentifier: interpreter.profile.identifier,
+          physicalAddressBits: interpreter.profile.physicalAddressBits,
           optimization: .baseline
         )
       }
@@ -370,6 +375,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           maximumCodeBytes: max(4_096, baselineJITMaximumCodeBytes * 3 / 4),
           decoder: interpreter.decoder,
           cpuProfileIdentifier: interpreter.profile.identifier,
+          physicalAddressBits: interpreter.profile.physicalAddressBits,
           optimization: .optimizing
         )
       }
@@ -488,7 +494,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       for device in self.platformMMIODevices { try bus.attach(device) }
       bus.seal()
     }
-    pagingUnits = (0..<processorCount).map { _ in DoryX86PagingUnit() }
+    pagingUnits = (0..<processorCount).map { _ in
+      DoryX86PagingUnit(physicalAddressBits: interpreter.profile.physicalAddressBits)
+    }
     pagingUnit = pagingUnits[0]
     translatedMemories = zip(physicalMemories, pagingUnits).map { physicalMemory, pagingUnit in
       DoryX86TranslatedMemory(
@@ -543,6 +551,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         rsdpPhysicalAddress: acpiLayout.rsdp
       )
       let initialState = try bootImage.initialState(entryPoint: kernelImage.physicalEntryPoint)
+      try initialState.control.validateLegacyPAEPDPTEs(
+        physicalAddressBits: interpreter.profile.physicalAddressBits
+      )
       try validateDirectBoot(
         kernel: kernelImage, boot: bootImage, acpi: acpi, memoryMap: memoryMap
       )
@@ -620,6 +631,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public func loadUEFI() throws {
     try lock.withLock {
       guard !consumedPayload else { throw DoryPCMachineError.alreadyLoaded }
+      let initialState = DoryX86ArchitecturalState.reset()
+      try initialState.control.validateLegacyPAEPDPTEs(
+        physicalAddressBits: interpreter.profile.physicalAddressBits
+      )
       let acpi = try DoryPCACPIBuilder.build(
         layout: acpiLayout,
         processorCount: UInt8(processorCount)
@@ -635,7 +650,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       } catch {
         throw error
       }
-      loadedStates[0] = ProcessorState(.reset())
+      loadedStates[0] = ProcessorState(initialState)
       for index in 1..<processorCount {
         loadedStates[index] = ProcessorState(applicationProcessorResetState())
       }
@@ -718,8 +733,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   ) throws -> DoryPCMachineStop {
     guard maximumInstructions > 0 else { return .instructionBudget(0) }
     return try lock.withLock {
-      defer { publishExecutionStatistics() }
       guard loadedStates[0] != nil else { throw DoryPCMachineError.notLoaded }
+      // Validate installed latches before consuming device events, advancing clocks, or
+      // entering either execution tier. Guest RAM is not a substitute for latched state.
+      for processorState in loadedStates {
+        try processorState?.value.control.validateLegacyPAEPDPTEs(
+          physicalAddressBits: interpreter.profile.physicalAddressBits
+        )
+      }
+      defer { publishExecutionStatistics() }
       var completed: UInt64 = 0
       while completed < maximumInstructions {
         if let stop = powerStop(instructionCount: completed) { return stop }

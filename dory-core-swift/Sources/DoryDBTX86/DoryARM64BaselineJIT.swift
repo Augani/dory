@@ -2487,6 +2487,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let lock = NSLock()
   private let decoder: DoryX86Decoder
   private let cpuProfileIdentifier: String
+  private let physicalAddressBits: UInt8
   private let emitter: DoryARM64BaselineEmitter
   private let optimization: DoryARM64JITOptimization
   private let optimizer: DoryIROptimizer
@@ -2523,13 +2524,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     maximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
     decoder: DoryX86Decoder = .init(),
     cpuProfileIdentifier: String = DoryX86CPUProfile.compatibleV1Identifier,
+    physicalAddressBits: UInt8 = DoryX86CPUProfile.compatibleV1.physicalAddressBits,
     emitter: DoryARM64BaselineEmitter = .init(),
     optimization: DoryARM64JITOptimization = .baseline,
     optimizer: DoryIROptimizer = .init()
   ) throws {
+    guard (32...52).contains(physicalAddressBits) else {
+      throw DoryX86StateError.invalidPhysicalAddressBits(physicalAddressBits)
+    }
     self.maximumCodeBytes = max(4_096, maximumCodeBytes)
     self.decoder = decoder
     self.cpuProfileIdentifier = cpuProfileIdentifier
+    self.physicalAddressBits = physicalAddressBits
     self.emitter = emitter
     self.optimization = optimization
     self.optimizer = optimizer
@@ -2721,6 +2727,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     memory: (any DoryX86Memory)? = nil
   ) throws -> DoryARM64ExecutionSummary? {
     guard maximumInstructions > 0, !state.rflags.contains(.virtual8086) else { return nil }
+    // Fall back before fetch, optimized copies or native state publication. The interpreter
+    // reports the precise fault for a malformed/missing legacy PAE latch.
+    do { try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits) }
+    catch { return nil }
     return try lock.withLock {
       chainedExecutionCallCount &+= 1
       chainedRequestedInstructionCount &+= UInt64(maximumInstructions)
@@ -3026,6 +3036,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     memory: (any DoryX86Memory)?
   ) throws -> ResidentExecution? {
     guard maximumInstructions > 0, !state.rflags.contains(.virtual8086) else { return nil }
+    do { try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits) }
+    catch { return nil }
     return try lock.withLock { () -> ResidentExecution? in
       guard
         let resident = try resolveResident(
