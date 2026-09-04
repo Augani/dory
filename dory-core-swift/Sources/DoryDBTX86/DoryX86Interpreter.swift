@@ -1705,33 +1705,24 @@ public struct DoryX86Interpreter: Sendable {
         let rhs = try readVectorBytes(
           source, byteCount: elementSize, instruction: instruction,
           state: state, memory: executionMemory)
-        let unordered: Bool
-        let equal: Bool
-        let lessThan: Bool
-        if doublePrecision {
-          let a = Double(bitPattern: fromLittleEndian(lhs))
-          let b = Double(bitPattern: fromLittleEndian(rhs))
-          unordered = a.isNaN || b.isNaN
-          equal = !unordered && a == b
-          lessThan = !unordered && a < b
-        } else {
-          let a = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(lhs)))
-          let b = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(rhs)))
-          unordered = a.isNaN || b.isNaN
-          equal = !unordered && a == b
-          lessThan = !unordered && a < b
+        let compared = simdScalarFlagsComparison(
+          ordered: ordered, lhs: lhs, rhs: rhs,
+          doublePrecision: doublePrecision, mxcsr: state.floatingPoint.mxcsr)
+        var resultFlags = state.rflags
+        resultFlags.remove([.zero, .parity, .carry, .overflow, .sign, .auxiliaryCarry])
+        if compared.unordered {
+          resultFlags.insert([.zero, .parity, .carry])
+        } else if compared.equal {
+          resultFlags.insert(.zero)
+        } else if compared.lessThan {
+          resultFlags.insert(.carry)
         }
-        // Set EFLAGS: ZF, PF, CF. For ordered compare, unordered sets all three.
-        state.rflags.remove([.zero, .parity, .carry])
-        if unordered {
-          state.rflags.insert([.zero, .parity, .carry])
-        } else if equal {
-          state.rflags.insert(.zero)
-        } else if lessThan {
-          state.rflags.insert(.carry)
-        }
-        // OF=0, SF=0, AF=0
-        state.rflags.remove([.overflow, .sign, .auxiliaryCarry])
+        // A pending unmasked SIMD exception leaves EFLAGS unchanged. Sticky
+        // MXCSR status is published by `publishSIMDExceptions` before #XM/#UD.
+        if let fault = publishSIMDExceptions(
+          compared.exceptions, originalRIP: originalRIP, state: &state
+        ) { return fault }
+        state.rflags = resultFlags
       case .vexComparePackedIntegers(let greaterThan, let laneWidth, let destination, let firstSource, let secondSource, let length):
         let byteCount = Int(length.rawValue)
         let laneByteCount = Int(laneWidth.rawValue)
@@ -7950,6 +7941,53 @@ public struct DoryX86Interpreter: Sendable {
     }
     return (evaluateScalarCompare(predicate,
       a: Double(Float(bitPattern: lhsBits)), b: Double(Float(bitPattern: rhsBits))), exceptions)
+  }
+
+  private func simdScalarFlagsComparison(
+    ordered: Bool, lhs lhsBytes: [UInt8], rhs rhsBytes: [UInt8],
+    doublePrecision: Bool, mxcsr: UInt32
+  ) -> (unordered: Bool, equal: Bool, lessThan: Bool, exceptions: UInt32) {
+    let daz = mxcsr & (1 << 6) != 0
+    if doublePrecision {
+      var lhsBits = fromLittleEndian(lhsBytes)
+      var rhsBits = fromLittleEndian(rhsBytes)
+      var exceptions: UInt32 = 0
+      for bits in [lhsBits, rhsBits] {
+        let exponent = bits & 0x7FF0_0000_0000_0000
+        let fraction = bits & 0x000F_FFFF_FFFF_FFFF
+        if exponent == 0, fraction != 0, !daz { exceptions |= 1 << 1 }
+        if exponent == 0x7FF0_0000_0000_0000, fraction != 0,
+          ordered || bits & 0x0008_0000_0000_0000 == 0
+        { exceptions |= 1 }
+      }
+      if daz {
+        if lhsBits & 0x7FF0_0000_0000_0000 == 0 { lhsBits &= 0x8000_0000_0000_0000 }
+        if rhsBits & 0x7FF0_0000_0000_0000 == 0 { rhsBits &= 0x8000_0000_0000_0000 }
+      }
+      let lhs = Double(bitPattern: lhsBits)
+      let rhs = Double(bitPattern: rhsBits)
+      let unordered = lhs.isNaN || rhs.isNaN
+      return (unordered, !unordered && lhs == rhs, !unordered && lhs < rhs, exceptions)
+    }
+    var lhsBits = UInt32(truncatingIfNeeded: fromLittleEndian(lhsBytes))
+    var rhsBits = UInt32(truncatingIfNeeded: fromLittleEndian(rhsBytes))
+    var exceptions: UInt32 = 0
+    for bits in [lhsBits, rhsBits] {
+      let exponent = bits & 0x7F80_0000
+      let fraction = bits & 0x007F_FFFF
+      if exponent == 0, fraction != 0, !daz { exceptions |= 1 << 1 }
+      if exponent == 0x7F80_0000, fraction != 0,
+        ordered || bits & 0x0040_0000 == 0
+      { exceptions |= 1 }
+    }
+    if daz {
+      if lhsBits & 0x7F80_0000 == 0 { lhsBits &= 0x8000_0000 }
+      if rhsBits & 0x7F80_0000 == 0 { rhsBits &= 0x8000_0000 }
+    }
+    let lhs = Float(bitPattern: lhsBits)
+    let rhs = Float(bitPattern: rhsBits)
+    let unordered = lhs.isNaN || rhs.isNaN
+    return (unordered, !unordered && lhs == rhs, !unordered && lhs < rhs, exceptions)
   }
 
   private func publishSIMDExceptions(
