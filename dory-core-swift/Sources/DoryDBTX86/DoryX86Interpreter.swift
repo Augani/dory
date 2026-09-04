@@ -1732,7 +1732,12 @@ public struct DoryX86Interpreter: Sendable {
         let rhs = try readVectorBytes(
           secondSource, byteCount: byteCount, instruction: instruction,
           state: state, memory: executionMemory)
-        executeVectorFloatingBinary(operation, format: format, destination: &lhs, source: rhs)
+        let exceptions = executeVectorFloatingBinary(
+          operation, format: format, destination: &lhs, source: rhs,
+          mxcsr: state.floatingPoint.mxcsr)
+        if let fault = publishSIMDExceptions(
+          exceptions, originalRIP: originalRIP, state: &state
+        ) { return fault }
         var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
         registerBytes.replaceSubrange(0..<byteCount, with: lhs)
         if length == .xmm128 {
@@ -2263,12 +2268,13 @@ public struct DoryX86Interpreter: Sendable {
           memory: executionMemory
         )
       case .vectorFloatingBinary:
-        try executeLegacySIMDFloatingBinary(
+        if let fault = try executeLegacySIMDFloatingBinary(
           instruction.operation,
           instruction: instruction,
+          originalRIP: originalRIP,
           state: &state,
           memory: executionMemory
-        )
+        ) { return fault }
       case .scalarCompare:
         if let fault = try executeLegacySIMDComparison(
           instruction.operation,
@@ -4434,8 +4440,10 @@ public struct DoryX86Interpreter: Sendable {
     _ operation: DoryX86VectorFloatingOperation,
     format: DoryX86VectorFloatingFormat,
     destination: inout [UInt8],
-    source: [UInt8]
-  ) {
+    source: [UInt8],
+    mxcsr: UInt32
+  ) -> UInt32 {
+    var exceptions: UInt32 = 0
     switch format {
     case .packedSingle, .scalarSingle:
       let laneCount = format == .packedSingle ? 4 : 1
@@ -4443,12 +4451,9 @@ public struct DoryX86Interpreter: Sendable {
         let offset = lane * 4
         let lhsBits = UInt32(fromLittleEndian(Array(destination[offset..<offset + 4])))
         let rhsBits = UInt32(fromLittleEndian(Array(source[offset..<offset + 4])))
-        let result = floatingResult(
-          operation,
-          lhs: Float(bitPattern: lhsBits),
-          rhs: Float(bitPattern: rhsBits)
-        )
-        replaceLittleEndian(result.bitPattern, in: &destination, at: offset)
+        let result = simdFloatingBinary32(operation, lhs: lhsBits, rhs: rhsBits, mxcsr: mxcsr)
+        replaceLittleEndian(result.value, in: &destination, at: offset)
+        exceptions |= result.exceptions
       }
     case .packedDouble, .scalarDouble:
       let laneCount = format == .packedDouble ? 2 : 1
@@ -4456,14 +4461,12 @@ public struct DoryX86Interpreter: Sendable {
         let offset = lane * 8
         let lhsBits = fromLittleEndian(Array(destination[offset..<offset + 8]))
         let rhsBits = fromLittleEndian(Array(source[offset..<offset + 8]))
-        let result = floatingResult(
-          operation,
-          lhs: Double(bitPattern: lhsBits),
-          rhs: Double(bitPattern: rhsBits)
-        )
-        replaceLittleEndian(result.bitPattern, in: &destination, at: offset)
+        let result = simdFloatingBinary64(operation, lhs: lhsBits, rhs: rhsBits, mxcsr: mxcsr)
+        replaceLittleEndian(result.value, in: &destination, at: offset)
+        exceptions |= result.exceptions
       }
     }
+    return exceptions
   }
 
   private func floatingResult<T: BinaryFloatingPoint>(
@@ -4483,6 +4486,112 @@ public struct DoryX86Interpreter: Sendable {
       if lhs.isNaN || rhs.isNaN || lhs == rhs { return rhs }
       return lhs > rhs ? lhs : rhs
     }
+  }
+
+  private func simdFloatingBinary32(
+    _ operation: DoryX86VectorFloatingOperation,
+    lhs originalLHS: UInt32,
+    rhs originalRHS: UInt32,
+    mxcsr: UInt32
+  ) -> (value: UInt32, exceptions: UInt32) {
+    let exponentMask: UInt32 = 0x7F80_0000
+    let fractionMask: UInt32 = 0x007F_FFFF
+    let quietBit: UInt32 = 0x0040_0000
+    let magnitudeMask: UInt32 = 0x7FFF_FFFF
+    let daz = mxcsr & (1 << 6) != 0
+    var lhs = originalLHS
+    var rhs = originalRHS
+    var exceptions: UInt32 = 0
+    for bits in [lhs, rhs] {
+      let exponent = bits & exponentMask
+      let fraction = bits & fractionMask
+      if exponent == 0, fraction != 0, !daz { exceptions |= 1 << 1 }
+      if exponent == exponentMask, fraction != 0, bits & quietBit == 0 { exceptions |= 1 }
+    }
+    if daz {
+      if lhs & exponentMask == 0, lhs & fractionMask != 0 { lhs &= 0x8000_0000 }
+      if rhs & exponentMask == 0, rhs & fractionMask != 0 { rhs &= 0x8000_0000 }
+    }
+    let lhsNaN = lhs & exponentMask == exponentMask && lhs & fractionMask != 0
+    let rhsNaN = rhs & exponentMask == exponentMask && rhs & fractionMask != 0
+    if operation == .minimum || operation == .maximum {
+      if lhsNaN || rhsNaN || Float(bitPattern: lhs) == Float(bitPattern: rhs) {
+        return (rhs, exceptions)
+      }
+    } else if lhsNaN || rhsNaN {
+      return ((lhsNaN ? lhs : rhs) | quietBit, exceptions)
+    }
+    let lhsInfinite = lhs & magnitudeMask == exponentMask
+    let rhsInfinite = rhs & magnitudeMask == exponentMask
+    let lhsZero = lhs & magnitudeMask == 0
+    let rhsZero = rhs & magnitudeMask == 0
+    let invalid =
+      switch operation {
+      case .add: lhsInfinite && rhsInfinite && (lhs ^ rhs) & 0x8000_0000 != 0
+      case .subtract: lhsInfinite && rhsInfinite && (lhs ^ rhs) & 0x8000_0000 == 0
+      case .multiply: lhsInfinite && rhsZero || rhsInfinite && lhsZero
+      case .divide: lhsZero && rhsZero || lhsInfinite && rhsInfinite
+      case .minimum, .maximum: false
+      }
+    if invalid { return (0xFFC0_0000, exceptions | 1) }
+    if operation == .divide, rhsZero, !lhsZero, !lhsInfinite { exceptions |= 1 << 2 }
+    return (
+      floatingResult(operation, lhs: Float(bitPattern: lhs), rhs: Float(bitPattern: rhs)).bitPattern,
+      exceptions
+    )
+  }
+
+  private func simdFloatingBinary64(
+    _ operation: DoryX86VectorFloatingOperation,
+    lhs originalLHS: UInt64,
+    rhs originalRHS: UInt64,
+    mxcsr: UInt32
+  ) -> (value: UInt64, exceptions: UInt32) {
+    let exponentMask: UInt64 = 0x7FF0_0000_0000_0000
+    let fractionMask: UInt64 = 0x000F_FFFF_FFFF_FFFF
+    let quietBit: UInt64 = 0x0008_0000_0000_0000
+    let magnitudeMask: UInt64 = 0x7FFF_FFFF_FFFF_FFFF
+    let daz = mxcsr & (1 << 6) != 0
+    var lhs = originalLHS
+    var rhs = originalRHS
+    var exceptions: UInt32 = 0
+    for bits in [lhs, rhs] {
+      let exponent = bits & exponentMask
+      let fraction = bits & fractionMask
+      if exponent == 0, fraction != 0, !daz { exceptions |= 1 << 1 }
+      if exponent == exponentMask, fraction != 0, bits & quietBit == 0 { exceptions |= 1 }
+    }
+    if daz {
+      if lhs & exponentMask == 0, lhs & fractionMask != 0 { lhs &= 0x8000_0000_0000_0000 }
+      if rhs & exponentMask == 0, rhs & fractionMask != 0 { rhs &= 0x8000_0000_0000_0000 }
+    }
+    let lhsNaN = lhs & exponentMask == exponentMask && lhs & fractionMask != 0
+    let rhsNaN = rhs & exponentMask == exponentMask && rhs & fractionMask != 0
+    if operation == .minimum || operation == .maximum {
+      if lhsNaN || rhsNaN || Double(bitPattern: lhs) == Double(bitPattern: rhs) {
+        return (rhs, exceptions)
+      }
+    } else if lhsNaN || rhsNaN {
+      return ((lhsNaN ? lhs : rhs) | quietBit, exceptions)
+    }
+    let lhsInfinite = lhs & magnitudeMask == exponentMask
+    let rhsInfinite = rhs & magnitudeMask == exponentMask
+    let lhsZero = lhs & magnitudeMask == 0
+    let rhsZero = rhs & magnitudeMask == 0
+    let invalid =
+      switch operation {
+      case .add: lhsInfinite && rhsInfinite && (lhs ^ rhs) & 0x8000_0000_0000_0000 != 0
+      case .subtract: lhsInfinite && rhsInfinite && (lhs ^ rhs) & 0x8000_0000_0000_0000 == 0
+      case .multiply: lhsInfinite && rhsZero || rhsInfinite && lhsZero
+      case .divide: lhsZero && rhsZero || lhsInfinite && rhsInfinite
+      case .minimum, .maximum: false
+      }
+    if invalid { return (0xFFF8_0000_0000_0000, exceptions | 1) }
+    if operation == .divide, rhsZero, !lhsZero, !lhsInfinite { exceptions |= 1 << 2 }
+    return (
+      floatingResult(operation, lhs: Double(bitPattern: lhs), rhs: Double(bitPattern: rhs)).bitPattern,
+      exceptions
+    )
   }
 
   private func executeVectorIntegerBinary(
@@ -4928,9 +5037,10 @@ public struct DoryX86Interpreter: Sendable {
   private func executeLegacySIMDFloatingBinary(
     _ instructionOperation: DoryX86InstructionOperation,
     instruction: DoryX86DecodedInstruction,
+    originalRIP: UInt64,
     state: inout DoryX86ArchitecturalState,
     memory: any DoryX86Memory
-  ) throws {
+  ) throws -> DoryX86InterpreterResult? {
     guard case .vectorFloatingBinary(
       let operation, let format, let destination, let source
     ) = instructionOperation
@@ -4943,14 +5053,19 @@ public struct DoryX86Interpreter: Sendable {
       memory: memory
     )
     var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
-    executeVectorFloatingBinary(
+    let exceptions = executeVectorFloatingBinary(
       operation,
       format: format,
       destination: &registerBytes,
-      source: rhs
+      source: rhs,
+      mxcsr: state.floatingPoint.mxcsr
     )
+    if let fault = publishSIMDExceptions(
+      exceptions, originalRIP: originalRIP, state: &state
+    ) { return fault }
     state.floatingPoint.ymm[Int(destination)] = try .init(
       bytes: registerBytes, expectedByteCount: 32)
+    return nil
   }
 
   private func executeLegacySIMDUnpack(
