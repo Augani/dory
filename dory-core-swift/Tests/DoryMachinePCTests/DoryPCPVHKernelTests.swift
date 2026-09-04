@@ -7,7 +7,7 @@ import Testing
 @Suite struct DoryPCPVHKernelTests {
   @Test func parsesLoadsAndZerosPVHKernelSegments() throws {
     let image = try DoryPCPVHKernelImage(data: makeELF())
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x20_0000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x20_0000)
     try memory.write(at: 0x10_0000, bytes: [UInt8](repeating: 0xFF, count: 8))
 
     try image.load(into: memory)
@@ -192,7 +192,7 @@ import Testing
       physicalAddress: 0x10_0001, fileSize: 0, memorySize: 0
     )
     let image = try DoryPCPVHKernelImage(data: data)
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x20_0000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x20_0000)
     try memory.write(at: 0x11_0000, bytes: [UInt8](repeating: 0xAA, count: 0x10002))
     try image.load(into: memory)
     #expect(image.segments.count == 2)
@@ -220,7 +220,7 @@ import Testing
       physicalAddress: highAddress, fileSize: 4, memorySize: 4
     )
     let image = try DoryPCPVHKernelImage(data: data)
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x20_0000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x20_0000)
     try memory.write(at: 0x10_0000, bytes: [9, 9, 9, 9])
     #expect(image.segments[1].physicalAddress == highAddress)
     #expect(throws: DoryPCPVHKernelError.self) { try image.load(into: memory) }
@@ -241,7 +241,7 @@ import Testing
     write(UInt64(4), to: &data, at: 0x2A0)
     data.replaceSubrange(0x240..<0x244, with: [5, 6, 7, 8])
     let image = try DoryPCPVHKernelImage(data: data)
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x20_0000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x20_0000)
     try memory.write(at: 0x2000, bytes: [9, 9, 9, 9])
     try image.load(into: memory)
     #expect(try memory.read(at: 0x2000, byteCount: 4) == [9, 9, 9, 9])

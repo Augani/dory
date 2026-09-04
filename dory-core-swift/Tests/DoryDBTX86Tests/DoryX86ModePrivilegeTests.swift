@@ -18,7 +18,7 @@ import Testing
         for bytes in instructions {
           var state = try makeState(mode: mode, selector: selector, virtual8086: true)
           let before = state
-          let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+          let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
           #expect(DoryX86Interpreter().step(state: &state, memory: memory, mode: mode)
             == generalProtection)
           #expect(state == before)
@@ -35,7 +35,7 @@ import Testing
       [0x0F, 0x06], [0x0F, 0x08], [0x0F, 0x09],
       [0x0F, 0x01, 0xF0], [0x0F, 0x32], [0x0F, 0x30],
     ] {
-      let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+      let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
       var reference = try makeState(mode: .real16, selector: 0)
       let decoded = try DoryX86Decoder().decode(bytes, at: 0x1000, mode: .real16)
       #expect(DoryX86Interpreter().step(state: &reference, memory: memory, mode: .real16)
@@ -52,7 +52,7 @@ import Testing
 
   @Test func cliAndSTIUseModePrivilegeWithVirtualExtensionsDisabled() throws {
     for opcode: UInt8 in [0xFA, 0xFB] {
-      let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [opcode])
+      let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [opcode])
       for mode: DoryX86ExecutionMode in [.real16, .protected16, .protected32] {
         for ioPrivilege: UInt64 in [0, 3] {
           let virtual = mode != .real16
@@ -76,7 +76,7 @@ import Testing
 
   @Test func timestampDisableTreatsVirtual8086AsUserAndRealModeAsSupervisor() throws {
     let bytes: [UInt8] = [0x0F, 0x31]
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     for mode: DoryX86ExecutionMode in [.real16, .protected16, .protected32] {
       for disabled in [false, true] {
         var state = try makeState(mode: mode, selector: mode == .real16 ? 3 : 0,
@@ -103,7 +103,7 @@ import Testing
       for ioPrivilege: UInt64 in [0, 3] {
         for denied in [false, true] {
           let bytes: [UInt8] = [opcode, 0x20]
-          let memory = DoryX86ByteArrayMemory(byteCount: 0x4000)
+          let memory = try DoryX86ByteArrayMemory(byteCount: 0x4000)
           try memory.write(at: 0x1000, bytes: bytes)
           try memory.writeScalar(at: 0x2066, value: 0x68, byteCount: 2)
           try memory.writeScalar(at: 0x206C, value: denied ? 1 : 0, byteCount: 1)
@@ -213,7 +213,7 @@ import Testing
   }
 
   private func pagingMemory(leafFlags: UInt64) throws -> DoryX86ByteArrayMemory {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x5000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x5000)
     try memory.writeScalar(at: 0x1000, value: 0x2007, byteCount: 4)
     try memory.writeScalar(at: 0x2010, value: 0x3000 | leafFlags, byteCount: 4)
     return memory

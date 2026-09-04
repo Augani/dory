@@ -10,7 +10,7 @@ import Testing
         0x48, 0x89, 0xC1,
         0x90,
       ]
-      let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+      let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
       let state = try DoryX86ArchitecturalState(
         rip: 0x1000,
         cs: .init(selector: 0, attributes: 0xA09A, limit: .max)
@@ -34,7 +34,7 @@ import Testing
   @Test func nativeMemoryLoadAgreesWithInterpreter() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x48, 0x8B, 0x00] + .init(repeating: 0, count: 8)
-      let memory = DoryX86ByteArrayMemory(baseAddress: 0x2000, bytes: bytes)
+      let memory = try DoryX86ByteArrayMemory(baseAddress: 0x2000, bytes: bytes)
       let state = try DoryX86ArchitecturalState(
         registers: .init(rax: 0x2000),
         rip: 0x2000,
@@ -69,7 +69,7 @@ import Testing
       for (index, testCase) in cases.enumerated() {
         let (bytes, rax, rbx) = testCase
         let address = UInt64(0x3000 + index * 0x100)
-        let memory = DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+        let memory = try DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
         let state = try DoryX86ArchitecturalState(
           registers: .init(rax: rax, rbx: rbx),
           rip: address,
@@ -104,7 +104,7 @@ import Testing
         for (caseIndex, operand) in operands.enumerated() {
           let bytes: [UInt8] = [0x48, 0x39, 0xD8, 0x70 | condition.rawValue, 0x05]
           let address = UInt64(0x5000 + Int(condition.rawValue) * 0x100 + caseIndex * 0x10)
-          let memory = DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+          let memory = try DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
           let state = try DoryX86ArchitecturalState(
             registers: .init(rax: operand.0, rbx: operand.1),
             rip: address,
@@ -141,7 +141,7 @@ import Testing
       for (index, testCase) in cases.enumerated() {
         let (bytes, rax, rbx, carry) = testCase
         let address = UInt64(0x8000 + index * 0x10)
-        let memory = DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+        let memory = try DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
         var flags: DoryX86RFLAGS = [.reservedOne, .direction, .interruptEnable]
         if carry { flags.insert(.carry) }
         let state = try DoryX86ArchitecturalState(
@@ -178,7 +178,7 @@ import Testing
       for (index, testCase) in cases.enumerated() {
         let (bytes, rax, carry) = testCase
         let address = UInt64(0x9000 + index * 0x10)
-        let memory = DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+        let memory = try DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
         var flags: DoryX86RFLAGS = [
           .reservedOne, .parity, .auxiliaryCarry, .zero, .sign, .overflow, .direction,
         ]
@@ -211,7 +211,7 @@ import Testing
       for (index, testCase) in cases.enumerated() {
         let (bytes, rbx, rcx) = testCase
         let address = UInt64(0xA000 + index * 0x100)
-        let memory = DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+        let memory = try DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
         let state = try DoryX86ArchitecturalState(
           registers: .init(rcx: rcx, rbx: rbx),
           rip: address,

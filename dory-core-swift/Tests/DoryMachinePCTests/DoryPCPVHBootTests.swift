@@ -18,7 +18,7 @@ import Testing
       memoryMap: [.init(address: 0, size: 0x10_0000, kind: .ram)],
       layout: layout
     )
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x30_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x30_000)
 
     try image.install(into: memory)
     let state = try image.initialState(entryPoint: 0x10_0020)
@@ -108,7 +108,7 @@ import Testing
         initrd: 0x2000
       )
     )
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x1000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
     #expect(throws: DoryPCPVHBootError.self) { try image.install(into: memory) }
     #expect(try memory.read(at: 0x100, byteCount: 4) == [0, 0, 0, 0])
   }

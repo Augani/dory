@@ -10,8 +10,8 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   private var _bulkCallCount = 0
   private var _bulkFillCallCount = 0
 
-  init(baseAddress: UInt64, bytes: [UInt8]) {
-    backing = DoryX86ByteArrayMemory(baseAddress: baseAddress, bytes: bytes)
+  init(baseAddress: UInt64, bytes: [UInt8]) throws {
+    backing = try DoryX86ByteArrayMemory(baseAddress: baseAddress, bytes: bytes)
   }
 
   var bulkCallCount: Int { lock.withLock { _bulkCallCount } }
@@ -67,7 +67,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
 
   @Test func falseLongModeDoublewordConditionalMoveStillZeroExtendsDestination() throws {
     let bytes: [UInt8] = [0x0F, 0x42, 0xCB]  // cmovb ecx,ebx
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rcx: 0xFFFF_FFFF_1234_5678, rbx: 0xAAAA_AAAA_DEAD_BEEF),
       rip: 0,
@@ -86,7 +86,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
 
   @Test func falseLongModeQuadwordConditionalMovePreservesDestination() throws {
     let bytes: [UInt8] = [0x48, 0x0F, 0x42, 0xCB]  // cmovb rcx,rbx
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rcx: 0xFFFF_FFFF_1234_5678, rbx: 0xAAAA_AAAA_DEAD_BEEF),
       rip: 0,
@@ -105,7 +105,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
 
   @Test func falseMemoryConditionalMoveStillReadsAndFaultsBeforeMutation() throws {
     let bytes: [UInt8] = [0x0F, 0x44, 0x08]  // cmove ecx,[rax]
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     let registers = DoryX86GeneralRegisters(rax: 0x1000, rcx: 0xFFFF_FFFF_1234_5678)
     var state = try DoryX86ArchitecturalState(
       registers: registers,
@@ -138,7 +138,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0x48, 0xBB, 42, 0, 0, 0, 0, 0, 0, 0,
       0xF4,
     ]
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: program + .init(repeating: 0, count: 64))
     var state = try DoryX86ArchitecturalState(rip: 0x1000)
     var result: DoryX86InterpreterResult = .exception(
@@ -164,7 +164,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0x48, 0xB8, 9, 0, 0, 0, 0, 0, 0, 0,
       0xC3,
     ]
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x2000, bytes: program + .init(repeating: 0, count: 0x100))
     var registers = DoryX86GeneralRegisters()
     registers.rsp = 0x2100
@@ -183,7 +183,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0x0F, 0x18, 0x90, 0x00, 0x10, 0x00, 0x00,
       0x0F, 0x18, 0x98, 0x00, 0x00, 0x00, 0x80,
     ]
-    let memory = DoryX86ByteArrayMemory(baseAddress: base, bytes: program)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: base, bytes: program)
     let flags: DoryX86RFLAGS = [.reservedOne, .carry, .zero, .overflow]
     var state = try DoryX86ArchitecturalState(
       registers: .init(rax: UInt64.max),
@@ -210,7 +210,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0xF3, 0x0F, 0x1E, 0xFA,
       0xF3, 0x0F, 0x1E, 0xFB,
     ]
-    let memory = DoryX86ByteArrayMemory(baseAddress: base, bytes: program)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: base, bytes: program)
     let registers = DoryX86GeneralRegisters(rax: 0x1122_3344_5566_7788, rcx: UInt64.max)
     let flags: DoryX86RFLAGS = [.reservedOne, .carry, .zero, .overflow]
     var state = try DoryX86ArchitecturalState(
@@ -234,7 +234,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
 
   @Test func returnWithImmediateReleasesCallerArguments() throws {
     let base: UInt64 = 0x2200
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: base,
       bytes: [0xC2, 0x10, 0x00] + .init(repeating: 0, count: 0xFD)
     )
@@ -265,7 +265,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       virtualTSCFrequencyHz: 1_000_000_000
     )
     let interpreter = DoryX86Interpreter(profile: profile)
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x2400,
       bytes: [
         0x0F, 0x23, 0xC0,  // mov dr0, rax
@@ -300,7 +300,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func cpuidCannotAdvertiseUnimplementedAVX() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x3000, bytes: [0x0F, 0xA2] + .init(repeating: 0, count: 16))
     let registers = DoryX86GeneralRegisters(rax: 1)
     var state = try DoryX86ArchitecturalState(registers: registers, rip: 0x3000)
@@ -309,7 +309,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func cacheLineFlushChecksItsArchitecturalAddressWithoutHostCacheState() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x3400,
       bytes: [0x0F, 0xAE, 0x38] + .init(repeating: 0, count: 29)
     )
@@ -345,7 +345,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func memoryFaultIsPreciseAndLeavesInstructionRestartable() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x4000, bytes: [0x48, 0x8B, 0x00] + .init(repeating: 0, count: 16))
     let registers = DoryX86GeneralRegisters(rax: 0xDEAD_0000)
     var state = try DoryX86ArchitecturalState(registers: registers, rip: 0x4000)
@@ -365,7 +365,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func architecturalUndefinedInstructionsRaisePreciseInvalidOpcodeFaults() throws {
-    let memory = DoryX86ByteArrayMemory(bytes: [0x0F, 0x0B])
+    let memory = try DoryX86ByteArrayMemory(bytes: [0x0F, 0x0B])
     var state = try DoryX86ArchitecturalState(
       registers: .init(rax: 0x1122),
       rip: 0,
@@ -384,7 +384,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func faultingStackWriteDoesNotLeakTheSpeculativeStackPointer() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x4800,
       bytes: [0x50] + .init(repeating: 0, count: 16)
     )
@@ -417,7 +417,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       virtualTSCFrequencyHz: baseline.virtualTSCFrequencyHz
     ))
     // mov cr3,rbx; mov rcx,cr3; rdtscp
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x5000,
       bytes: [0x0F, 0x22, 0xDB, 0x0F, 0x20, 0xD9, 0x0F, 0x01, 0xF9]
         + .init(repeating: 0, count: 16)
@@ -442,7 +442,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func writingCR0NormalizesTheFixedExtensionTypeBit() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x5800,
       bytes: [0x0F, 0x22, 0xC0] + .init(repeating: 0, count: 16)
     )
@@ -470,7 +470,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0x40..<0x48,
       with: [0xFF, 0xFF, 0x00, 0x00, 0x00, 0x9B, 0xCF, 0x00]
     )
-    let memory = DoryX86ByteArrayMemory(baseAddress: base, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: base, bytes: bytes)
     let decoded = try DoryX86Decoder().decode(
       Array(bytes[7..<22]),
       at: 0xFE87,
@@ -503,7 +503,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0x210..<0x218,
       with: [0xFF, 0xFF, 0x00, 0x00, 0x00, 0x9B, 0xCF, 0x00]
     )
-    let memory = DoryX86ByteArrayMemory(baseAddress: base, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: base, bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rdi: 0x100),
       rip: 0x35,
@@ -534,7 +534,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0x238..<0x240,
       with: [0xFF, 0xFF, 0x00, 0x00, 0x00, 0x9B, 0xAF, 0x00]
     )
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0, bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       rip: 0x100,
       cs: .init(selector: 0x10, attributes: 0xC09B, limit: .max),
@@ -552,7 +552,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func firmwareCanEnableMachineCheckAndOperatingSystemSIMDSupport() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x5900,
       bytes: [0x0F, 0x22, 0xE0] + .init(repeating: 0, count: 16)
     )
@@ -584,7 +584,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     )
     bytes.replaceSubrange(0x20..<0x22, with: [0x7F, 0x02])
     bytes.replaceSubrange(0x22..<0x26, with: [0x80, 0x1F, 0x00, 0x00])
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     var floatingPoint = try DoryX86FloatingPointState()
     floatingPoint.x87ControlWord = 0
     floatingPoint.x87StatusWord = 0xFFFF
@@ -632,7 +632,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       with: littleEndian(UInt64(Float(2.5).bitPattern)).prefix(4)
     )
     bytes.replaceSubrange(0x110..<0x118, with: littleEndian(Double(-42.75).bitPattern))
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rbx: 0x1100),
       rip: 0x1000
@@ -683,7 +683,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0x104..<0x108,
       with: littleEndian(UInt64(Float(5).bitPattern)).prefix(4)
     )
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     var state = try DoryX86ArchitecturalState(registers: .init(rbx: 0x1100), rip: 0x1000)
 
     for _ in 0..<5 {
@@ -722,7 +722,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     let leastBitAtOne = [UInt8](repeating: 0, count: 7) + [0x80, 0xC0, 0x3F]
     bytes.replaceSubrange(0x100..<0x10A, with: one)
     bytes.replaceSubrange(0x110..<0x11A, with: leastBitAtOne)
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     var floatingPoint = try DoryX86FloatingPointState()
     floatingPoint.x87ControlWord = 0x0B7F
     var state = try DoryX86ArchitecturalState(
@@ -768,7 +768,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
         0xD9, 0xF3,
         0xDD, 0x5B, 0x28,
       ])
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     var state = try DoryX86ArchitecturalState(registers: .init(rbx: 0x1100), rip: 0x1000)
     for _ in 0..<14 {
       let result = interpreter.step(state: &state, memory: memory, mode: .long64)
@@ -816,7 +816,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0x164..<0x168,
       with: littleEndian(UInt64(Float(2).bitPattern)).prefix(4)
     )
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     var floatingPoint = try DoryX86FloatingPointState()
     floatingPoint.x87ControlWord = 0x027F
     var state = try DoryX86ArchitecturalState(
@@ -853,7 +853,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     bytes.replaceSubrange(0x8F0..<0x8F8, with: littleEndian(0xBBBB))
     bytes.replaceSubrange(0x8F8..<0x900, with: littleEndian(0xAAAA))
     bytes[0xA05] = 0xCC
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rax: 5, rbx: 0x1A00, rsp: 0x1800, rbp: 0x1900),
       rip: 0x1000
@@ -887,7 +887,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
         0x48, 0x0F, 0x7E, 0xD2,
         0x0F, 0x77,
       ])
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(
         rax: 0xFFFF_FFFF_1122_3344,
@@ -911,7 +911,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func mmxPackedArithmeticUsesOnlyTheAliasedSixtyFourBits() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [
         0x48, 0x0F, 0x6E, 0xC0,
@@ -951,7 +951,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     var bytes = [UInt8](repeating: 0, count: 0x30)
     bytes.replaceSubrange(0..<8, with: [0xF3, 0x0F, 0x6F, 0x35, 0x08, 0, 0, 0])
     bytes.replaceSubrange(0x10..<0x20, with: Array(0x80..<0x90))
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     var floatingPoint = try DoryX86FloatingPointState()
     floatingPoint.ymm[6] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
     var state = try DoryX86ArchitecturalState(
@@ -973,7 +973,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     bytes.replaceSubrange(0..<8, with: [0x66, 0x0F, 0x6F, 0x35, 0x18, 0, 0, 0])
     bytes.replaceSubrange(8..<16, with: [0x66, 0x0F, 0x7F, 0x35, 0x20, 0, 0, 0])
     bytes.replaceSubrange(0x20..<0x30, with: Array(0x40..<0x50))
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     var floatingPoint = try DoryX86FloatingPointState()
     floatingPoint.ymm[6] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
     var state = try DoryX86ArchitecturalState(
@@ -996,7 +996,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0..<8,
       with: [0x66, 0x0F, 0x6F, 0x35, 0x09, 0, 0, 0]
     )
-    let misalignedMemory = DoryX86ByteArrayMemory(baseAddress: 0x2000, bytes: misalignedBytes)
+    let misalignedMemory = try DoryX86ByteArrayMemory(baseAddress: 0x2000, bytes: misalignedBytes)
     var misalignedState = try DoryX86ArchitecturalState(
       rip: 0x2000,
       cs: .init(selector: 0x38, attributes: 0xA09B, limit: .max)
@@ -1014,7 +1014,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     var bytes = [UInt8](repeating: 0, count: 0x400)
     bytes.replaceSubrange(0..<7, with: [0x0F, 0xAE, 0x05, 0xF9, 0, 0, 0])
     bytes.replaceSubrange(7..<14, with: [0x0F, 0xAE, 0x0D, 0xF2, 0, 0, 0])
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     var floatingPoint = try DoryX86FloatingPointState()
     floatingPoint.x87ControlWord = 0x027F
     floatingPoint.x87StatusWord = 0x3800
@@ -1058,7 +1058,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     bytes.replaceSubrange(16..<21, with: [0x66, 0x48, 0x0F, 0x6E, 0xC2])
     bytes.replaceSubrange(21..<26, with: [0x66, 0x48, 0x0F, 0x7E, 0xC1])
     bytes.replaceSubrange(0x40..<0x44, with: [0xF0, 0xF1, 0xF2, 0xF3])
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     var floatingPoint = try DoryX86FloatingPointState()
     floatingPoint.ymm[0] = try .init(
       bytes: .init(repeating: 0xAA, count: 32), expectedByteCount: 32)
@@ -1106,7 +1106,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func fxsaveRequiresSixteenByteAlignment() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [0x0F, 0xAE, 0x05, 0xFA, 0, 0, 0] + .init(repeating: 0, count: 0x200)
     )
@@ -1124,7 +1124,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func sseFloatingArithmeticHandlesPackedAndScalarLanes() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [0xF3, 0x0F, 0x58, 0xC1, 0x66, 0x0F, 0x5E, 0xC1]
         + .init(repeating: 0, count: 16)
@@ -1174,7 +1174,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func sse2PackedIntegerArithmeticAndComparisonsOperatePerLane() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [
         0x66, 0x0F, 0xFC, 0xC1,
@@ -1231,7 +1231,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func packedIntegerSaturationSelectionAverageAndSADMatchSSE2() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [
         0x66, 0x0F, 0xEC, 0xC1,
@@ -1274,7 +1274,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func packedIntegerNarrowingSaturatesSignedAndUnsignedResults() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [
         0x66, 0x0F, 0x63, 0xC1,
@@ -1329,7 +1329,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func vectorMoveMasksExtractLaneSignBitsAndZeroExtendTheDestination() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [
         0x0F, 0x50, 0xC1,
@@ -1369,7 +1369,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func sseScalarComparisonsSetOnlyArchitecturalStatusFlags() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [0x0F, 0x2F, 0xC1, 0x66, 0x0F, 0x2E, 0xC1]
         + .init(repeating: 0, count: 16)
@@ -1403,7 +1403,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func sse2InterleavesLowAndHighPackedLanes() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [0x66, 0x0F, 0x60, 0xC1, 0x66, 0x0F, 0x6D, 0xC1]
         + .init(repeating: 0, count: 16)
@@ -1424,7 +1424,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func sseShufflesSelectArchitecturalSourceLanes() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [
         0x66, 0x0F, 0x70, 0xC1, 0x1B,
@@ -1454,7 +1454,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func sseScalarIntegerConversionsHonorWidthRoundingAndIndefiniteResults() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [
         0xF2, 0x48, 0x0F, 0x2A, 0xC0,
@@ -1489,7 +1489,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func sse2PackedShiftsHonorLaneWidthsAndSaturatingCounts() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [
         0x66, 0x0F, 0x71, 0xF0, 0x04,
@@ -1540,7 +1540,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   @Test func sse2ByteShiftsAndStreamingStoresPreserveArchitecturalData() throws {
     let base: UInt64 = 0x1000
     let target = base + 0x100
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: base,
       bytes: [
         0x66, 0x0F, 0x73, 0xF8, 0x04,
@@ -1588,7 +1588,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     saturatedBytes.replaceSubrange(0..<16, with: Array(0..<16))
     saturated.floatingPoint.ymm[0] = try .init(
       bytes: saturatedBytes, expectedByteCount: 32)
-    let saturatingShift = DoryX86ByteArrayMemory(
+    let saturatingShift = try DoryX86ByteArrayMemory(
       baseAddress: base,
       bytes: [0x66, 0x0F, 0x73, 0xF8, 0xFF]
     )
@@ -1601,7 +1601,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
 
   @Test func packedWordExtractionSelectsWrappedSSE2AndMMXLanes() throws {
     let base: UInt64 = 0x1000
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: base,
       bytes: [
         0x66, 0x0F, 0xC5, 0xC1, 0x0B,
@@ -1633,7 +1633,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func sse2PackedMultipliesProduceArchitecturalLaneResults() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [
         0x66, 0x0F, 0xD5, 0xC1,
@@ -1670,7 +1670,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     var bytes = [UInt8](repeating: 0, count: 0x20)
     bytes.replaceSubrange(0..<4, with: [0x0F, 0xB6, 0x71, 0x02])
     bytes[0x12] = 0x0D
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rcx: 0x1010, rdx: 0x81_EE_70),
       rip: 0x1000,
@@ -1687,7 +1687,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func readsAndWritesOnlyTheDefinedMSRSurface() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x6000,
       bytes: [0x0F, 0x30, 0x0F, 0x32, 0x0F, 0x32] + .init(repeating: 0, count: 16)
     )
@@ -1719,7 +1719,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func platformIdentityMSRIsStableAndReadOnly() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x6800,
       bytes: [0x0F, 0x32, 0x0F, 0x30] + .init(repeating: 0, count: 16)
     )
@@ -1751,7 +1751,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func syscallAndSysretPerformArchitecturalRegisterTransitions() throws {
-    let syscallMemory = DoryX86ByteArrayMemory(
+    let syscallMemory = try DoryX86ByteArrayMemory(
       baseAddress: 0x7000,
       bytes: [0x0F, 0x05] + .init(repeating: 0, count: 16)
     )
@@ -1776,7 +1776,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(!state.rflags.contains(.interruptEnable))
     #expect(state.cs.selector == 8)
 
-    let sysretMemory = DoryX86ByteArrayMemory(
+    let sysretMemory = try DoryX86ByteArrayMemory(
       baseAddress: state.rip,
       bytes: [0x0F, 0x07] + .init(repeating: 0, count: 16)
     )
@@ -1792,7 +1792,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   @Test func sysenterAndSysexitUseArchitecturalMSRsAndFixedSegments() throws {
     let kernelEntry: UInt64 = 0xffff_8000_0000_2000
     let kernelStack: UInt64 = 0xffff_8000_0000_8000
-    let entryMemory = DoryX86ByteArrayMemory(
+    let entryMemory = try DoryX86ByteArrayMemory(
       baseAddress: 0x7100,
       bytes: [0x0F, 0x34] + .init(repeating: 0, count: 16)
     )
@@ -1822,7 +1822,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(!state.rflags.contains(.interruptEnable))
     #expect(!state.rflags.contains(.virtual8086))
 
-    let returnMemory = DoryX86ByteArrayMemory(
+    let returnMemory = try DoryX86ByteArrayMemory(
       baseAddress: kernelEntry,
       bytes: [0x48, 0x0F, 0x35] + .init(repeating: 0, count: 16)
     )
@@ -1838,7 +1838,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(state.cs == .init(selector: 0x2B, attributes: 0xA0FB, limit: .max, base: 0))
     #expect(state.ss == .init(selector: 0x33, attributes: 0xC0F3, limit: .max, base: 0))
 
-    let compatibilityReturnMemory = DoryX86ByteArrayMemory(
+    let compatibilityReturnMemory = try DoryX86ByteArrayMemory(
       baseAddress: 0x7300,
       bytes: [0x0F, 0x35] + .init(repeating: 0, count: 16)
     )
@@ -1862,7 +1862,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func sysexitRejectsPrivilegeAndNoncanonicalReturnsPrecisely() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x7200,
       bytes: [0x48, 0x0F, 0x35] + .init(repeating: 0, count: 16)
     )
@@ -1921,7 +1921,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
 
   @Test func executesByteLanesCarryArithmeticAndRotates() throws {
     // mov ah,7f; mov spl,77; stc; adc al,0; rol ah,1
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x9000,
       bytes: [
         0xB4, 0x7F,
@@ -1942,7 +1942,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
 
   @Test func executesUnaryAndImmediateGroupsWithArchitecturalFlags() throws {
     // mov al,7f; inc al; sbb al,1; neg al; sar al,1
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x9200,
       bytes: [
         0xB0, 0x7F,
@@ -1960,7 +1960,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func indirectCallUsesTheLongModeStackWidth() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0xA000,
       bytes: [0xFF, 0xD0] + .init(repeating: 0, count: 0x200)
     )
@@ -1977,7 +1977,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
 
   @Test func executesExtensionMultiplyAndConditionalMoves() throws {
     // mov al,80; movsx rax,al; imul rax,rax,-2; cmp rax,100; sete bl; cmove rcx,rdx
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0xB000,
       bytes: [
         0xB0, 0x80,
@@ -1998,7 +1998,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func multiplyAndDivideUseTheArchitecturalAccumulatorPairs() throws {
-    let byteMemory = DoryX86ByteArrayMemory(
+    let byteMemory = try DoryX86ByteArrayMemory(
       baseAddress: 0xB100,
       bytes: [0xF6, 0xF3, 0xF6, 0xE3] + .init(repeating: 0, count: 16)
     )
@@ -2014,7 +2014,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(byteState.rflags.contains(.carry))
     #expect(byteState.rflags.contains(.overflow))
 
-    let signedMemory = DoryX86ByteArrayMemory(
+    let signedMemory = try DoryX86ByteArrayMemory(
       baseAddress: 0xB200,
       bytes: [0x48, 0xF7, 0xFB] + .init(repeating: 0, count: 16)
     )
@@ -2033,7 +2033,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func divideErrorIsPreciseAndNeverTrapsTheHostRuntime() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0xB300,
       bytes: [0xF6, 0xF3] + .init(repeating: 0, count: 16)
     )
@@ -2062,7 +2062,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     var bytes = program + [UInt8](repeating: 0, count: 0x200)
     let dataOffset = 0x100
     bytes.replaceSubrange(dataOffset..<(dataOffset + 8), with: littleEndian(5))
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0xB000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0xB000, bytes: bytes)
     let registers = DoryX86GeneralRegisters(rcx: 3, rsi: 0xB000 + UInt64(dataOffset))
     var state = try DoryX86ArchitecturalState(registers: registers, rip: 0xB000)
 
@@ -2092,7 +2092,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     bytes.replaceSubrange(0x120..<0x128, with: littleEndian(0x1111))
     bytes.replaceSubrange(0x128..<0x130, with: littleEndian(0x2222))
     bytes.replaceSubrange(0x140..<0x148, with: littleEndian(0x3344_5566_7788_99AA))
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0xC000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0xC000, bytes: bytes)
     let registers = DoryX86GeneralRegisters(
       rax: 9,
       rcx: 12,
@@ -2128,7 +2128,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     let iterations = 500
     var bytes = [0xF0, 0x48, 0x01, 0x06] + [UInt8](repeating: 0, count: 0x100)
     bytes.replaceSubrange(0x80..<0x88, with: littleEndian(0))
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0xD000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0xD000, bytes: bytes)
 
     DispatchQueue.concurrentPerform(iterations: iterations) { _ in
       var state = try! DoryX86ArchitecturalState(
@@ -2150,7 +2150,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     var bytes = program + [UInt8](repeating: 0, count: 0x200)
     bytes.replaceSubrange(0x80..<0x84, with: [1, 2, 3, 4])
     bytes.replaceSubrange(0xA0..<0xA4, with: [1, 2, 3, 4])
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0xE000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0xE000, bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rcx: 4, rsi: 0xE080, rdi: 0xE0A0),
       rip: 0xE000
@@ -2184,7 +2184,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     var bytes = [0xF3, 0xA4] + [UInt8](repeating: 0, count: 0x3E)
     bytes[0x10] = 0x5A
     bytes[0x11] = 0xA5
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0xF000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0xF000, bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rcx: 2, rsi: 0xF010, rdi: 0xF03F),
       rip: 0xF000
@@ -2213,7 +2213,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     let count: UInt64 = 4_097
     var bytes = [0xF3, 0xA4] + [UInt8](repeating: 0, count: 0x3FFE)
     for index in 0..<Int(count) { bytes[0x100 + index] = UInt8(truncatingIfNeeded: index) }
-    let memory = BulkRecordingMemory(baseAddress: 0x10_000, bytes: bytes)
+    let memory = try BulkRecordingMemory(baseAddress: 0x10_000, bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rcx: count, rsi: 0x10_100, rdi: 0x12_000),
       rip: 0x10_000
@@ -2244,7 +2244,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   @Test func longRepeatStoresUseBulkRAMAndYieldAtAnInterruptibleBoundary() throws {
     let count: UInt64 = 4_097
     let pattern: UInt64 = 0x1122_3344_5566_7788
-    let memory = BulkRecordingMemory(
+    let memory = try BulkRecordingMemory(
       baseAddress: 0x20_000,
       bytes: [0xF3, 0x48, 0xAB] + [UInt8](repeating: 0, count: 0x9FFD)
     )
@@ -2280,7 +2280,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   @Test func overlappingRepeatMovePreservesSequentialX86Semantics() throws {
     var bytes = [0xF3, 0xA4] + [UInt8](repeating: 0, count: 0x40)
     bytes.replaceSubrange(0x20..<0x24, with: [1, 2, 3, 4])
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x14_000, bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x14_000, bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rcx: 3, rsi: 0x14_020, rdi: 0x14_021),
       rip: 0x14_000
@@ -2301,7 +2301,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     var bytes = [UInt8](repeating: 0, count: 0x300)
     bytes.replaceSubrange(0x110..<0x113, with: [0x8B, 0x42, 0xFE])
     bytes.replaceSubrange(0x23E..<0x240, with: [0xEF, 0xBE])
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     let registers = DoryX86GeneralRegisters(rbp: 0x30, rsi: 0x10)
     var state = try DoryX86ArchitecturalState(
       registers: registers,
@@ -2319,7 +2319,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     var bytes = [UInt8](repeating: 0, count: 0x300)
     bytes.replaceSubrange(0x100..<0x106, with: [0x0F, 0x01, 0x10, 0x0F, 0x01, 0x01])
     bytes.replaceSubrange(0x180..<0x186, with: [0x34, 0x12, 0xEF, 0xCD, 0xAB, 0x89])
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rbx: 0x100, rsi: 0x80, rdi: 0x90),
       rip: 0x100,
@@ -2338,7 +2338,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0x100..<0x10A,
       with: [0xB8, 0x34, 0x12, 0x8E, 0xD8, 0xEA, 0x00, 0x02, 0x78, 0x56]
     )
-    let realMemory = DoryX86ByteArrayMemory(bytes: realBytes)
+    let realMemory = try DoryX86ByteArrayMemory(bytes: realBytes)
     var realState = try DoryX86ArchitecturalState(
       rip: 0x100,
       cs: .init(selector: 0, attributes: 0x93, limit: 0xffff, base: 0)
@@ -2361,7 +2361,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0x208..<0x210,
       with: [0xFF, 0xFF, 0, 0, 0, 0x9A, 0xCF, 0]
     )
-    let protectedMemory = DoryX86ByteArrayMemory(bytes: protectedBytes)
+    let protectedMemory = try DoryX86ByteArrayMemory(bytes: protectedBytes)
     var protectedState = try DoryX86ArchitecturalState(
       rip: 0x100,
       cs: .init(selector: 0, attributes: 0x9A, limit: 0xffff, base: 0),
@@ -2377,7 +2377,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
 
   @Test func longModeNullStackSelectorFollowsCPLAndRPLRules() throws {
     let base: UInt64 = 0x600
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: base,
       bytes: [0x8E, 0xD0] + .init(repeating: 0, count: 16)
     )
@@ -2436,7 +2436,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func machineStatusTransitionsPreserveProtectedMode() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x11_000,
       bytes: [0x0F, 0x01, 0xF0, 0x0F, 0x01, 0xE3, 0x0F, 0x06]
         + [UInt8](repeating: 0, count: 16)
@@ -2465,7 +2465,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     bytes.replaceSubrange(0x100..<0x106, with: [0x0F, 0x00, 0xD0, 0x0F, 0x00, 0xDB])
     bytes.replaceSubrange(0x208..<0x210, with: [0xFF, 0, 0, 0x30, 0, 0x82, 0, 0])
     bytes.replaceSubrange(0x210..<0x218, with: [0x67, 0, 0, 0x40, 0, 0x89, 0, 0])
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rax: 8, rbx: 16),
       rip: 0x100,
@@ -2491,7 +2491,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     bytes.replaceSubrange(0x210..<0x218, with: [0xFF, 0, 0, 0, 0, 0x9A, 0, 0])
     // DPL 0 conforming code descriptor remains visible from CPL 3.
     bytes.replaceSubrange(0x218..<0x220, with: [0x34, 0x12, 0, 0, 0, 0x9C, 0, 0])
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rax: .max, rcx: 0x0B, rdx: .max),
       rip: 0x100,
@@ -2524,7 +2524,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func segmentDescriptorInspectionRejectsRealAndVirtual8086Modes() throws {
-    let memory = DoryX86ByteArrayMemory(bytes: [0x0F, 0x02, 0xC1])
+    let memory = try DoryX86ByteArrayMemory(bytes: [0x0F, 0x02, 0xC1])
     var realState = try DoryX86ArchitecturalState(
       registers: .init(rcx: 8),
       rip: 0,
@@ -2560,7 +2560,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     bytes.replaceSubrange(0x208..<0x210, with: [0, 0, 0, 0, 0, 0xF2, 0, 0])
     bytes.replaceSubrange(0x210..<0x218, with: [0, 0, 0, 0, 0, 0xF0, 0, 0])
     bytes.replaceSubrange(0x218..<0x220, with: [0, 0, 0, 0, 0, 0xF8, 0, 0])
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rcx: 0x0B),
       rip: 0x100,
@@ -2587,7 +2587,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func systemSegmentStoresExposeSelectorsAndHonorUMIP() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1_000,
       bytes: [0x66, 0x0F, 0x00, 0xC8, 0x0F, 0x00, 0x01]
         + [UInt8](repeating: 0, count: 32)
@@ -2622,7 +2622,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     var bytes = [UInt8](repeating: 0, count: 0x500)
     bytes.replaceSubrange(0x100..<0x105, with: [0x9A, 0x20, 0, 0x20, 0])
     bytes.replaceSubrange(0x220..<0x221, with: [0xCB])
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rsp: 0x80),
       rip: 0x100,
@@ -2646,7 +2646,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     bytes.replaceSubrange(0x100..<0x104, with: [0xFF, 0x1E, 0x00, 0x02])
     bytes.replaceSubrange(0x200..<0x204, with: [0x20, 0x00, 0x20, 0x00])
     bytes.replaceSubrange(0x220..<0x221, with: [0xCB])
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rsp: 0x80),
       rip: 0x100,
@@ -2669,7 +2669,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     var bytes = [UInt8](repeating: 0, count: 0x300)
     bytes.replaceSubrange(0x100..<0x106, with: [0x66, 0x8B, 0x07, 0x66, 0x89, 0x07])
     bytes.replaceSubrange(0x20E..<0x210, with: [0x34, 0x12])
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rdi: 0x0E),
       rip: 0x100,
@@ -2700,7 +2700,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
 
   @Test func scalarPortIOUsesTheDeviceBusAndAccumulatorWidths() throws {
     let program: [UInt8] = [0xE4, 0x60, 0xE6, 0x61, 0x66, 0xED, 0xEF]
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1_000,
       bytes: program + .init(repeating: 0, count: 16)
     )
@@ -2739,7 +2739,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     bytes.replaceSubrange(0x100..<0x104, with: [0xE4, 0x60, 0xE4, 0x61])
     bytes.replaceSubrange(0x266..<0x268, with: [0x68, 0])
     bytes[0x274] = 0b0000_0010
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     let bus = RecordingIOBus(readValues: [0x60: 0x11, 0x61: 0x22])
     var state = try DoryX86ArchitecturalState(
       rip: 0x100,
@@ -2767,7 +2767,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     var bytes = [UInt8](repeating: 0, count: 0x500)
     bytes.replaceSubrange(0x100..<0x105, with: [0xF3, 0x6C, 0xF3, 0x66, 0x6F])
     bytes.replaceSubrange(0x300..<0x304, with: [0x34, 0x12, 0x78, 0x56])
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     let bus = RecordingIOBus(readValues: [0x1F0: 0x7A])
     var state = try DoryX86ArchitecturalState(
       registers: .init(rcx: 3, rdx: 0x1F0, rdi: 0x200),
@@ -2803,7 +2803,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func stringInputPreflightsMemoryBeforeConsumingDeviceData() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x100,
       bytes: [0x6C] + .init(repeating: 0, count: 15)
     )
@@ -2830,7 +2830,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   @Test func realModeStackOperationsUseSSBaseAndSixteenBitSP() throws {
     var bytes = [UInt8](repeating: 0, count: 0x400)
     bytes.replaceSubrange(0x100..<0x102, with: [0x50, 0x5B])
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rax: 0x1234, rsp: 0xAAAA_0010),
       rip: 0x100,
@@ -2847,7 +2847,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func stackLimitViolationsRaisePreciseStackSegmentFaults() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x100,
       bytes: [0x50] + .init(repeating: 0, count: 0x200)
     )
@@ -2876,7 +2876,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0x200..<0x208,
       with: [0x34, 0x12, 0, 0, 0, 0, 0, 0]
     )
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rsp: 0x200),
       rip: 0x100,
@@ -2895,7 +2895,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       0x200..<0x208,
       with: [0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0]
     )
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rsp: 0x200),
       rip: 0x100,
@@ -2913,7 +2913,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func doublePrecisionShiftsMergeOperandsAndSetDefinedFlags() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x100,
       bytes: [
         0x48, 0x0F, 0xA4, 0xD0, 0x04,  // shld rax,rdx,4
@@ -2945,7 +2945,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func zeroCountDoubleShiftPreservesDestinationAndFlags() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x180,
       bytes: [0x48, 0x0F, 0xA5, 0xD0] + .init(repeating: 0, count: 16)
     )
@@ -2963,7 +2963,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func instructionFetchEnforcesExecutableCSAndItsLimit() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x100,
       bytes: [0xB8, 1, 2, 3, 4] + .init(repeating: 0, count: 16)
     )
@@ -3008,7 +3008,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       ]
     )
     bytes.replaceSubrange(0x200..<0x204, with: [0x10, 0, 0, 0x80])
-    let memory = DoryX86ByteArrayMemory(bytes: bytes)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rcx: 2),
       rip: 0x100,
@@ -3037,7 +3037,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func flagByteTransfersOnlyTheArchitecturalStatusBits() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x100,
       bytes: [0x9F, 0x9E] + .init(repeating: 0, count: 16)
     )

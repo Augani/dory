@@ -20,7 +20,7 @@ import Testing
             let decoded = try DoryX86Decoder().decode(bytes + [0x90], at: 0x1000, mode: mode)
             #expect(decoded.length == bytes.count)
             #expect(decoded.operation == .memoryFence(fence))
-            let memory = DoryX86ByteArrayMemory(byteCount: 0x2000)
+            let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
             try memory.write(at: 0x1000, bytes: bytes)
             var state = try makeState(mode: mode, cpl: 3)
             let before = state
@@ -49,7 +49,7 @@ import Testing
               try DoryX86Decoder().decode(bytes, at: 0x1000, mode: mode)
             }
             for cpl: UInt16 in [0, 3] {
-              let memory = DoryX86ByteArrayMemory(byteCount: 0x2000)
+              let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
               try memory.write(at: 0x1000, bytes: bytes)
               var state = try makeState(mode: mode, cpl: cpl)
               let before = state
@@ -71,7 +71,7 @@ import Testing
             for register in [false, true] {
               let prefix: [UInt8] = mode == .real16 || mode == .protected16 ? [0x67] : []
               let bytes = prefix + [0x0F, 0x01, register ? 0xE0 : 0x20]
-              let memory = DoryX86ByteArrayMemory(byteCount: 0x3000)
+              let memory = try DoryX86ByteArrayMemory(byteCount: 0x3000)
               try memory.write(at: 0x1000, bytes: bytes)
               var state = try makeState(mode: mode, cpl: cpl)
               if virtual { state.rflags.insert(.virtual8086) }
@@ -169,7 +169,7 @@ import Testing
 
   private func pagedFixture(code: [UInt8], state: inout DoryX86ArchitecturalState) throws
     -> (DoryX86ByteArrayMemory, DoryX86PagingUnit, DoryX86TranslatedMemory) {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10000)
     try memory.write(at: 0x1000, bytes: code)
     let flags: UInt64 = state.cs.selector & 3 == 3 ? 7 : 3
     try memory.writeScalar(at: 0x2000, value: 0x3000 | flags, byteCount: 8)

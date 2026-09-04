@@ -575,7 +575,7 @@ import Testing
 
   @Test func executorLoadsAndStoresGuestMemoryThroughBoundedCallbacks() throws {
     #if arch(arm64)
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
       try memory.write(at: 0x80, bytes: [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11])
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       var state = try DoryX86ArchitecturalState(registers: .init(rax: 0x80), rip: 0x1000)
@@ -616,7 +616,7 @@ import Testing
 
   @Test func executorUsesAllocationFreeScalarMemoryCallbacksWhenAvailable() throws {
     #if arch(arm64)
-      let memory = ScalarTrackingMemory(byteCount: 0x100)
+      let memory = try ScalarTrackingMemory(byteCount: 0x100)
       try memory.backing.writeScalar(
         at: 0x80, value: 0x1122_3344_5566_7788, byteCount: 8)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
@@ -657,7 +657,7 @@ import Testing
 
   @Test func executorRunsMultipleOrdinaryRAMReadsAsOneRestartableBlock() throws {
     #if arch(arm64)
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
       try memory.writeScalar(at: 0x80, value: 11, byteCount: 8)
       try memory.writeScalar(at: 0x88, value: 31, byteCount: 8)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
@@ -690,7 +690,7 @@ import Testing
 
   @Test func multiAccessBlockDeclinesBeforeNonrestartableReadsOrWrites() throws {
     #if arch(arm64)
-      let memory = ScalarTrackingMemory(byteCount: 0x100)
+      let memory = try ScalarTrackingMemory(byteCount: 0x100)
       try memory.backing.writeScalar(at: 0x80, value: 0xA5, byteCount: 8)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       let initial = try DoryX86ArchitecturalState(
@@ -724,7 +724,7 @@ import Testing
 
   @Test func failedLaterRestartableReadSuppressesTheRemainingNativeWrite() throws {
     #if arch(arm64)
-      let memory = SelectiveRestartableMemory(byteCount: 0x100, declinedAddress: 0x88)
+      let memory = try SelectiveRestartableMemory(byteCount: 0x100, declinedAddress: 0x88)
       try memory.backing.writeScalar(at: 0x80, value: 0xA5, byteCount: 8)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       let initial = try DoryX86ArchitecturalState(registers: .init(rax: 0x80), rip: 0x3700)
@@ -756,7 +756,7 @@ import Testing
 
   @Test func directCallAndReturnStayNativeAndMatchLongModeStackSemantics() throws {
     #if arch(arm64)
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x200)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       var state = try DoryX86ArchitecturalState(registers: .init(rsp: 0x100), rip: 0x4000)
 
@@ -836,8 +836,8 @@ import Testing
             maximumCodeBytes: 16 * 1024,
             optimization: optimization
           )
-          let interpretedMemory = DoryX86ByteArrayMemory(byteCount: 0x200)
-          let translatedMemory = DoryX86ByteArrayMemory(byteCount: 0x200)
+          let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+          let translatedMemory = try DoryX86ByteArrayMemory(byteCount: 0x200)
           try interpretedMemory.write(at: 0x20, bytes: testCase.bytes)
           try translatedMemory.write(at: 0x20, bytes: testCase.bytes)
           if let stackValue = testCase.stackValue {
@@ -909,7 +909,7 @@ import Testing
           )
           _ = DoryX86Interpreter().step(
             state: &interpreted,
-            memory: DoryX86ByteArrayMemory(bytes: bytes),
+            memory: try DoryX86ByteArrayMemory(bytes: bytes),
             mode: .long64
           )
           var translated = try DoryX86ArchitecturalState(
@@ -986,7 +986,7 @@ import Testing
 
       for (bytes, registers) in cases {
         let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024)
-        let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
         let initial = try DoryX86ArchitecturalState(registers: registers, rip: 0x7000)
         var state = initial
         let execution = try #require(
@@ -1028,8 +1028,8 @@ import Testing
             maximumCodeBytes: 16 * 1024,
             optimization: optimization
           )
-          let interpretedMemory = DoryX86ByteArrayMemory(byteCount: 0x200)
-          let translatedMemory = DoryX86ByteArrayMemory(byteCount: 0x200)
+          let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+          let translatedMemory = try DoryX86ByteArrayMemory(byteCount: 0x200)
           try interpretedMemory.write(at: 0x20, bytes: bytes)
           try translatedMemory.write(at: 0x20, bytes: bytes)
           try interpretedMemory.write(at: sourceAddress, bytes: [0xA5])
@@ -1081,7 +1081,7 @@ import Testing
           maximumCodeBytes: 16 * 1024,
           optimization: optimization
         )
-        let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
         let initial = try DoryX86ArchitecturalState(
           registers: .init(rax: 0x100, rcx: 0x1122_3344_5566_7788, rsi: 0),
           rip: 0x7000,
@@ -1160,8 +1160,8 @@ import Testing
             rax: 0x8877_6655_4433_2200 | UInt64(al),
             rcx: 0x1122_3344_5566_7700 | UInt64(cl)
           )
-          let interpretedMemory = DoryX86ByteArrayMemory(byteCount: 0x100)
-          let translatedMemory = DoryX86ByteArrayMemory(byteCount: 0x100)
+          let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+          let translatedMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
           try interpretedMemory.write(at: 0x20, bytes: [0x20, 0xC1])
           try translatedMemory.write(at: 0x20, bytes: [0x20, 0xC1])
           var interpreted = try DoryX86ArchitecturalState(
@@ -1292,7 +1292,7 @@ import Testing
 
   @Test func returnAndPopAndIndirectJumpStayNativeInLongMode() throws {
     #if arch(arm64)
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x200)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
       try memory.write(at: 0x80, bytes: [0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0])
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       var state = try DoryX86ArchitecturalState(
@@ -1332,7 +1332,7 @@ import Testing
 
   @Test func memoryIndirectCallEvaluatesItsTargetBeforeTheNativeStackPush() throws {
     #if arch(arm64)
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x200)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
       try memory.write(at: 0x88, bytes: [0x78, 0x56, 0x34, 0x12, 0, 0, 0, 0])
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       var state = try DoryX86ArchitecturalState(
@@ -1360,7 +1360,7 @@ import Testing
 
   @Test func failedNativeCallPushLeavesArchitecturalStateRestartable() throws {
     #if arch(arm64)
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       let initial = try DoryX86ArchitecturalState(registers: .init(rsp: 4), rip: 0x7000)
       var state = initial
@@ -1383,7 +1383,7 @@ import Testing
 
   @Test func failedPackedNativeReadLeavesTheWholeBlockRestartable() throws {
     #if arch(arm64)
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       let initial = try DoryX86ArchitecturalState(
         registers: .init(rax: 0x1000, rbx: 0xCAFE), rip: 0x3000)
@@ -1429,7 +1429,7 @@ import Testing
         )
         var interpreted = try DoryX86ArchitecturalState(
           registers: .init(rax: value), rip: 0, rflags: initialFlags)
-        let memory = DoryX86ByteArrayMemory(bytes: bytes)
+        let memory = try DoryX86ByteArrayMemory(bytes: bytes)
         _ = DoryX86Interpreter().step(state: &interpreted, memory: memory, mode: .long64)
 
         var translated = try DoryX86ArchitecturalState(
@@ -1515,7 +1515,7 @@ import Testing
           )
           _ = DoryX86Interpreter().step(
             state: &interpreted,
-            memory: DoryX86ByteArrayMemory(bytes: bytes),
+            memory: try DoryX86ByteArrayMemory(bytes: bytes),
             mode: .long64
           )
 
@@ -1549,7 +1549,7 @@ import Testing
             )
             _ = DoryX86Interpreter().step(
               state: &interpreted,
-              memory: DoryX86ByteArrayMemory(bytes: bytes),
+              memory: try DoryX86ByteArrayMemory(bytes: bytes),
               mode: .long64
             )
 
@@ -1606,7 +1606,7 @@ import Testing
           )
           _ = DoryX86Interpreter().step(
             state: &interpreted,
-            memory: DoryX86ByteArrayMemory(bytes: bytes),
+            memory: try DoryX86ByteArrayMemory(bytes: bytes),
             mode: .long64
           )
 
@@ -1751,7 +1751,7 @@ import Testing
             )
             _ = DoryX86Interpreter().step(
               state: &interpreted,
-              memory: DoryX86ByteArrayMemory(bytes: bytes),
+              memory: try DoryX86ByteArrayMemory(bytes: bytes),
               mode: .long64
             )
 
@@ -1865,7 +1865,7 @@ import Testing
             )
             _ = DoryX86Interpreter().step(
               state: &interpreted,
-              memory: DoryX86ByteArrayMemory(bytes: bytes),
+              memory: try DoryX86ByteArrayMemory(bytes: bytes),
               mode: .long64
             )
 
@@ -1907,7 +1907,7 @@ import Testing
             )
             _ = DoryX86Interpreter().step(
               state: &interpreted,
-              memory: DoryX86ByteArrayMemory(bytes: bytes),
+              memory: try DoryX86ByteArrayMemory(bytes: bytes),
               mode: .long64
             )
 
@@ -2048,7 +2048,7 @@ import Testing
                   rip: 0,
                   rflags: flags
                 )
-                let memory = DoryX86ByteArrayMemory(bytes: bytes)
+                let memory = try DoryX86ByteArrayMemory(bytes: bytes)
                 _ = DoryX86Interpreter().step(
                   state: &interpreted,
                   memory: memory,
@@ -2163,7 +2163,7 @@ import Testing
               )
               _ = DoryX86Interpreter().step(
                 state: &interpreted,
-                memory: DoryX86ByteArrayMemory(bytes: bytes),
+                memory: try DoryX86ByteArrayMemory(bytes: bytes),
                 mode: .long64
               )
 
@@ -2230,7 +2230,7 @@ import Testing
             rip: 0,
             rflags: [.reservedOne, .interruptEnable, .direction]
           )
-          let memory = DoryX86ByteArrayMemory(bytes: bytes)
+          let memory = try DoryX86ByteArrayMemory(bytes: bytes)
           _ = DoryX86Interpreter().step(state: &interpreted, memory: memory, mode: .long64)
           _ = DoryX86Interpreter().step(state: &interpreted, memory: memory, mode: .long64)
 
@@ -2316,7 +2316,7 @@ import Testing
             guard
               case .retired = DoryX86Interpreter().step(
                 state: &interpreted,
-                memory: DoryX86ByteArrayMemory(bytes: bytes),
+                memory: try DoryX86ByteArrayMemory(bytes: bytes),
                 mode: .long64
               )
             else {
@@ -2368,7 +2368,7 @@ import Testing
           if carry { flags.insert(.carry) }
           var interpreted = try DoryX86ArchitecturalState(
             registers: registers, rip: 0, rflags: flags)
-          let referenceMemory = DoryX86ByteArrayMemory(bytes: bytes)
+          let referenceMemory = try DoryX86ByteArrayMemory(bytes: bytes)
           for _ in 0..<2 {
             guard
               case .retired = DoryX86Interpreter().step(
@@ -2485,7 +2485,7 @@ import Testing
           registers: .init(rax: right, rbx: left), rip: 0, rflags: initialFlags)
         _ = DoryX86Interpreter().step(
           state: &interpreted,
-          memory: DoryX86ByteArrayMemory(bytes: bytes),
+          memory: try DoryX86ByteArrayMemory(bytes: bytes),
           mode: .long64
         )
 
@@ -2513,7 +2513,7 @@ import Testing
   @Test func zeroExtendWordMemoryMatchesTheFirmwareHotInstruction() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x46, 0x0F, 0xB7, 0x0C, 0x40]  // movzx r9d,[rax+r8*2]
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
       try memory.write(at: 0, bytes: bytes)
       try memory.write(at: 0x26, bytes: [0xCD, 0xAB])
       let initial = try DoryX86ArchitecturalState(
@@ -2549,7 +2549,7 @@ import Testing
   @Test func narrowStoreMatchesTheFirmwareDictionaryCopyInstruction() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x44, 0x88, 0x06]  // mov [rsi],r8b
-      let interpretedMemory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
       try interpretedMemory.write(at: 0, bytes: bytes)
       let initial = try DoryX86ArchitecturalState(
         registers: .init(rsi: 0x80, r8: 0x1234_5678_9ABC_DEFF), rip: 0)
@@ -2557,7 +2557,7 @@ import Testing
       _ = DoryX86Interpreter().step(
         state: &interpreted, memory: interpretedMemory, mode: .long64)
 
-      let translatedMemory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      let translatedMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
       var translated = initial
       let execution = try #require(
         DoryARM64BaselineExecutor(maximumCodeBytes: 4096).execute(
@@ -2583,7 +2583,7 @@ import Testing
 
   @Test func executorPerformsNativeMemoryALUAndReadModifyWrite() throws {
     #if arch(arm64)
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
       try memory.write(at: 0x80, bytes: [5, 0, 0, 0, 0, 0, 0, 0])
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       var state = try DoryX86ArchitecturalState(
@@ -2624,7 +2624,7 @@ import Testing
 
   @Test func executorPerformsNativeUnaryMemoryUpdates() throws {
     #if arch(arm64)
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x100)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
       try memory.write(at: 0x80, bytes: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x7F])
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       var state = try DoryX86ArchitecturalState(
@@ -3146,7 +3146,7 @@ import Testing
         0x29, 0xc1, 0x48, 0x83, 0xf9, 0x07, 0x77, 0xe8,
       ]
       let payload = (0..<128).map(UInt8.init)
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x8000)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x8000)
       try memory.write(at: base, bytes: loop)
       try memory.write(at: source, bytes: payload)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
@@ -3198,7 +3198,7 @@ import Testing
         0x48, 0x83, 0xc0, 0x08, 0x48, 0x89, 0xd1, 0x48,
         0x29, 0xc1, 0x48, 0x83, 0xf9, 0x07, 0x77, 0xe8,
       ]
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x8000)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x8000)
       try memory.write(at: base, bytes: loop)
       try memory.write(at: source, bytes: Array(0..<24))
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
@@ -3243,7 +3243,7 @@ import Testing
         0x48, 0x83, 0xc0, 0x08, 0x48, 0x89, 0xd1, 0x48,
         0x29, 0xc1, 0x48, 0x83, 0xf9, 0x07, 0x77, 0xe8,
       ]
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x8000)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x8000)
       try memory.write(at: base, bytes: loop)
       try memory.write(at: source, bytes: Array(0..<32))
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
@@ -3283,7 +3283,7 @@ import Testing
         0x48, 0x83, 0xc0, 0x08, 0x48, 0x89, 0xd1, 0x48,
         0x29, 0xc1, 0x48, 0x83, 0xf9, 0x07, 0x77, 0xe8,
       ]
-      let memory = FaultingBulkMemory(byteCount: 0x8000, faultingReadAddress: source)
+      let memory = try FaultingBulkMemory(byteCount: 0x8000, faultingReadAddress: source)
       try memory.backing.write(at: base, bytes: loop)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       let initial = try DoryX86ArchitecturalState(
@@ -3326,7 +3326,7 @@ import Testing
       let payload = (0..<4_680).map { UInt8(truncatingIfNeeded: $0) }
 
       for budget in [4_095, 4_096, 4_097] {
-        let memory = DoryX86ByteArrayMemory(byteCount: 0x20_000)
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x20_000)
         try memory.write(at: base, bytes: loop)
         try memory.write(at: source, bytes: payload)
         let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
@@ -3436,8 +3436,8 @@ private final class FaultingBulkMemory: DoryX86BulkMemory, @unchecked Sendable {
   let faultingReadAddress: UInt64
   private(set) var bulkCopyAttempts = 0
 
-  init(byteCount: Int, faultingReadAddress: UInt64) {
-    backing = DoryX86ByteArrayMemory(byteCount: byteCount)
+  init(byteCount: Int, faultingReadAddress: UInt64) throws {
+    backing = try DoryX86ByteArrayMemory(byteCount: byteCount)
     self.faultingReadAddress = faultingReadAddress
   }
 
@@ -3492,8 +3492,8 @@ private final class ScalarTrackingMemory: DoryX86ScalarMemory, @unchecked Sendab
   private(set) var arrayReads = 0
   private(set) var arrayWrites = 0
 
-  init(byteCount: Int) {
-    backing = DoryX86ByteArrayMemory(byteCount: byteCount)
+  init(byteCount: Int) throws {
+    backing = try DoryX86ByteArrayMemory(byteCount: byteCount)
   }
 
   func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
@@ -3537,8 +3537,8 @@ private final class SelectiveRestartableMemory: DoryX86ScalarMemory,
   private(set) var restartableReads = 0
   private(set) var scalarWrites = 0
 
-  init(byteCount: Int, declinedAddress: UInt64) {
-    backing = DoryX86ByteArrayMemory(byteCount: byteCount)
+  init(byteCount: Int, declinedAddress: UInt64) throws {
+    backing = try DoryX86ByteArrayMemory(byteCount: byteCount)
     self.declinedAddress = declinedAddress
   }
 

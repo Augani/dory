@@ -116,7 +116,7 @@ import Testing
     }
 
     let tables = try DoryPCSMBIOSBuilder.build(memoryBytes: 1024 * 1024)
-    let undersized = DoryX86ByteArrayMemory(byteCount: 0xF0000)
+    let undersized = try DoryX86ByteArrayMemory(byteCount: 0xF0000)
     #expect(throws: DoryPCSMBIOSError.self) { try tables.install(into: undersized) }
     #expect(try undersized.read(at: 0, byteCount: 16) == .init(repeating: 0, count: 16))
   }

@@ -165,7 +165,7 @@ import Testing
     smap: Bool = false,
     alignmentCheck: Bool = false
   ) throws -> Fixture {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x20000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x20000)
     let long = mode == .long64
     let virtual = mode == .protected16
     let entryBytes = long ? 8 : 4

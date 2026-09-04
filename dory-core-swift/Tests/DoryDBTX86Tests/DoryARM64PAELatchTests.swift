@@ -21,7 +21,7 @@ import Testing
           state.control = .init(cr0: 0x8000_0011, cr3: 0x1020, cr4: 1 << 5,
             legacyPAEPDPTEs: latch)
           let original = state
-          let memory = DoryX86ByteArrayMemory(byteCount: 0x1000)
+          let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
           let originalMemory = memory.snapshot()
           var fetches = 0
           // MOV [0x200],EAX would make a guest-visible write if any path entered native code.

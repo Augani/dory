@@ -207,7 +207,7 @@ import Testing
   }
 
   private func expectUD(_ bytes: [UInt8], mode: DoryX86ExecutionMode, cpl: UInt16) throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x200)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
     try memory.write(at: 0x100, bytes: bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rax: 0xFFFF_FFFF, rcx: 0xFFFF_FFFF, rdx: 0xFFFF_FFFF,

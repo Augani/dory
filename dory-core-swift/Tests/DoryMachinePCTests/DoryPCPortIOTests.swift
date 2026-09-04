@@ -10,7 +10,7 @@ import Testing
     let uart = DoryPCUART16550()
     try bus.attach(uart)
     bus.seal()
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xEE])
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xEE])
     var state = try DoryX86ArchitecturalState(
       registers: .init(rax: UInt64(UInt8(ascii: "D")), rdx: 0x3F8),
       rip: 0x1000,

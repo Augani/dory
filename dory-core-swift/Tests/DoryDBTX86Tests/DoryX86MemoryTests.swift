@@ -56,8 +56,11 @@ import Testing
     }
   }
 
-  @Test func legacyByteArrayFetchCannotCrossTheGuestAddressLimit() throws {
-    let memory = DoryX86ByteArrayMemory(baseAddress: .max - 1, bytes: [0x90, 0xF4, 0xCC])
+  @Test func byteArrayConstructionAndFetchRespectTheGuestAddressLimit() throws {
+    #expect(throws: DoryX86MemoryAllocationError.addressOverflow(baseAddress: .max - 1, byteCount: 3)) {
+      try DoryX86ByteArrayMemory(baseAddress: .max - 1, bytes: [0x90, 0xF4, 0xCC])
+    }
+    let memory = try DoryX86ByteArrayMemory(baseAddress: .max - 1, bytes: [0x90])
     #expect(try memory.instructionBytes(at: .max - 1, maximumCount: 3) == [0x90])
     #expect(try memory.instructionBytes(at: .max - 1, maximumCount: .max) == [0x90])
     #expect(memory.bulkCopyRAMSpan(at: .max - 1, maximumByteCount: .max) == 1)
@@ -67,7 +70,7 @@ import Testing
     #expect(throws: DoryX86MemoryError.addressOverflow(address: .max, byteCount: 1)) {
       try memory.instructionBytes(at: .max, maximumCount: 1)
     }
-    #expect(memory.snapshot() == [0x90, 0xF4, 0xCC])
+    #expect(memory.snapshot() == [0x90])
   }
 
   @Test func negativeSizesFailConsistentlyWithoutMutation() throws {

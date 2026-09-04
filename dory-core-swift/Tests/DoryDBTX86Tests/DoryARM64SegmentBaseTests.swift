@@ -43,7 +43,7 @@ import Testing
           for addressPrefix: [UInt8] in [[], [0x67]] {
             for opcode: UInt8 in [0x8B, 0x89, 0x01] {
               let bytes = [prefix] + addressPrefix + [0x48, opcode, 0x03]
-              let memory = SegmentRecordingMemory()
+              let memory = try SegmentRecordingMemory()
               try memory.backing.write(at: 0, bytes: bytes)
               try memory.backing.writeScalar(at: 0x100, value: 0xDEAD, byteCount: 8)
               try memory.backing.writeScalar(at: segmentBase + 0x100, value: 0x20, byteCount: 8)
@@ -79,7 +79,7 @@ import Testing
       // add rbx,gs:[rip+0xf8]: the linked slot at 0x100 differs from its per-CPU copy.
       let bytes: [UInt8] = [0x65, 0x48, 0x03, 0x1D, 0xF8, 0, 0, 0]
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
-        let memory = SegmentRecordingMemory()
+        let memory = try SegmentRecordingMemory()
         try memory.backing.write(at: 0, bytes: bytes)
         try memory.backing.writeScalar(at: 0x100, value: 0, byteCount: 8)
         try memory.backing.writeScalar(at: 0x2100, value: 0x1000, byteCount: 8)
@@ -107,7 +107,7 @@ import Testing
       let prefix: [UInt8] = [0xB8, 7, 0, 0, 0]
       let segmented: [UInt8] = [0x65, 0x48, 0x8B, 0x03]
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
-        let memory = SegmentRecordingMemory()
+        let memory = try SegmentRecordingMemory()
         var state = try makeState()
         state.registers.rax = 99
         let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16384, optimization: optimization)
@@ -137,7 +137,7 @@ import Testing
           for addressing: [UInt8] in [[0x03], [0x45, 0]] {
             for opcode: UInt8 in [0x8B, 0x89, 0x01] {
               let bytes = prefix + [0x48, opcode] + addressing
-              let memory = DoryX86ByteArrayMemory(byteCount: 0x4000)
+              let memory = try DoryX86ByteArrayMemory(byteCount: 0x4000)
               try memory.writeScalar(at: 0x100, value: 0x20, byteCount: 8)
               try memory.writeScalar(at: 0x1100, value: 0xDEAD, byteCount: 8)
               try memory.writeScalar(at: 0x2100, value: 0xBEEF, byteCount: 8)
@@ -173,8 +173,12 @@ import Testing
 private final class SegmentRecordingMemory:
   DoryX86ScalarMemory, DoryX86RestartableScalarMemory, @unchecked Sendable
 {
-  let backing = DoryX86ByteArrayMemory(byteCount: 0x4000)
+  let backing: DoryX86ByteArrayMemory
   private(set) var dataAccessCount = 0
+
+  init() throws {
+    backing = try DoryX86ByteArrayMemory(byteCount: 0x4000)
+  }
 
   func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
     try backing.instructionBytes(at: address, maximumCount: maximumCount)

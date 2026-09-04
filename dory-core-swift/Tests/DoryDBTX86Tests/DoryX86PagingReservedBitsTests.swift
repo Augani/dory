@@ -61,7 +61,7 @@ import Testing
   @Test func ia32eDoesNotTreatIgnoredHighBitsAsLegacyPAEReservedBits() throws {
     for width: UInt8 in [32, 40, 52] {
       for access: DoryX86MemoryAccessKind in [.read, .write, .instructionFetch] {
-        let memory = DoryX86ByteArrayMemory(byteCount: 0x6000)
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x6000)
         for (entryAddress, nextPage): (UInt64, UInt64) in [
           (0x1000, 0x2000), (0x2000, 0x3000), (0x3000, 0x4000), (0x4000, 0x5000),
         ] {
@@ -85,7 +85,7 @@ import Testing
       for bit in 13...21 {
         for cpl: UInt8 in [0, 3] {
           for access: DoryX86MemoryAccessKind in [.read, .write, .instructionFetch] {
-            let memory = DoryX86ByteArrayMemory(byteCount: 0x2000)
+            let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
             let original: UInt64 = 0x0040_0087 | (1 << bit)
             try memory.writeScalar(at: 0x1000, value: original, byteCount: 4)
             let before = memory.snapshot()
@@ -107,7 +107,7 @@ import Testing
     for (pse, ps) in [(false, false), (false, true), (true, false)] {
       for bit in 13...21 {
         let table: UInt64 = 1 << bit
-        let memory = DoryX86ByteArrayMemory(byteCount: Int(table + 0x1000))
+        let memory = try DoryX86ByteArrayMemory(byteCount: Int(table + 0x1000))
         try memory.writeScalar(at: 0x1000, value: table | 7 | (ps ? 0x80 : 0), byteCount: 4)
         try memory.writeScalar(at: table, value: 0x5007, byteCount: 4)
         let translation = try DoryX86PagingUnit().translate(
@@ -120,7 +120,7 @@ import Testing
   }
 
   @Test func validAndNonpresentLegacyLargePagesRetainTheirExistingSemantics() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x2000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
     try memory.writeScalar(at: 0x1000, value: 0x0040_0087, byteCount: 4)
     let valid = try DoryX86PagingUnit().translate(linearAddress: 0x123, access: .write,
       context: legacyContext(cpl: 3, pse: true), physicalMemory: memory)
@@ -140,7 +140,7 @@ import Testing
   }
 
   private func paeMemory(huge: Bool = false) throws -> DoryX86ByteArrayMemory {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x5000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x5000)
     try memory.writeScalar(at: 0x1000, value: 0x2001, byteCount: 8)
     try memory.writeScalar(at: 0x2000, value: huge ? 0x87 : 0x3007, byteCount: 8)
     try memory.writeScalar(at: 0x3000, value: 0x4007, byteCount: 8)

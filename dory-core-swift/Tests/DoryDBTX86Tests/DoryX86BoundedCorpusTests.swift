@@ -51,7 +51,7 @@ import Testing
       for index in 0..<128 {
         var bytes = structuredBytes(index: index, random: &random)
         while bytes.count < Self.maximumInputBytes { bytes.append(random.byte()) }
-        let memory = DoryX86ByteArrayMemory(byteCount: 4096)
+        let memory = try DoryX86ByteArrayMemory(byteCount: 4096)
         try memory.write(at: 0x80, bytes: bytes)
         var registers = DoryX86GeneralRegisters()
         for register in DoryX86GeneralRegister.allCases {
@@ -94,7 +94,7 @@ import Testing
       let completed = shouldFault ? count - 1 : count
       let source = reverse ? 0x180 + count : 0x180
       let destination = shouldFault ? 1024 - completed : (reverse ? 0x280 + count : 0x280)
-      let memory = DoryX86ByteArrayMemory(byteCount: 1024)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 1024)
       let instruction: [UInt8] = [0xF3, 0xA4]  // REP MOVSB: at most seven byte iterations.
       try memory.write(at: 0x40, bytes: instruction)
       try memory.write(at: 0x180, bytes: (0..<32).map { _ in random.byte() })
@@ -140,7 +140,7 @@ import Testing
       let layout = PageLayout(random: &random)
       let policy = index % 6 // unrestricted, read-only, supervisor, NX, absent, reserved physical bit.
       let level = Int(random.next() % 4)
-      let memory = DoryX86ByteArrayMemory(byteCount: Self.maximumMemoryBytes)
+      let memory = try DoryX86ByteArrayMemory(byteCount: Self.maximumMemoryBytes)
       try layout.install(in: memory)
       let entryAddress = layout.entryAddresses[level]
       var entry = try memory.readScalar(at: entryAddress, byteCount: 8)
@@ -198,7 +198,7 @@ import Testing
   @Test func noncanonicalPageWalkInputsCannotTouchPageTables() throws {
     var random = CorpusRandom(seed: Self.seeds[0] ^ 0xCA11)
     for index in 0..<64 {
-      let memory = DoryX86ByteArrayMemory(byteCount: Self.maximumMemoryBytes)
+      let memory = try DoryX86ByteArrayMemory(byteCount: Self.maximumMemoryBytes)
       let lower = random.next() & 0x0000_7FFF_FFFF_FFFF
       // Deliberately disagree between bit 47 and the upper sixteen bits, in both directions.
       let linear = index.isMultiple(of: 2) ? lower | (1 << 47) : lower | 0xFFFF_0000_0000_0000

@@ -15,7 +15,7 @@ import Testing
       for selector: UInt16 in [1, 2, 3] {
         var state = try state(mode: mode, selector: selector)
         let before = state
-        let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xF4])
+        let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xF4])
         #expect(DoryX86Interpreter().step(state: &state, memory: memory, mode: mode)
           == .exception(.init(kind: .generalProtection, vector: 13, errorCode: 0, instructionPointer: 0x1000)))
         #expect(state == before)
@@ -24,7 +24,7 @@ import Testing
   }
 
   @Test func haltDistinguishesRealAndVirtual8086Modes() throws {
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xF4])
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xF4])
     var real = try state(mode: .real16, selector: 3)
     guard case .halted = DoryX86Interpreter().step(state: &real, memory: memory, mode: .real16) else {
       Issue.record("HLT must work in real mode regardless of selector low bits")
@@ -47,7 +47,7 @@ import Testing
         state.modelSpecific.gsBase = 0x1234
         state.modelSpecific.kernelGSBase = 0x5678
         let before = state
-        let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0x0F, 0x01, 0xF8])
+        let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0x0F, 0x01, 0xF8])
         let result = DoryX86Interpreter().step(state: &state, memory: memory, mode: mode)
         if mode != .long64 {
           #expect(result == .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: 0x1000)))

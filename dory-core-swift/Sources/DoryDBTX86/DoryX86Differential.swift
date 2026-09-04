@@ -32,7 +32,7 @@ public protocol DoryX86DifferentialMemory: DoryX86Memory {
 
 extension DoryX86ByteArrayMemory: DoryX86DifferentialMemory {
   public func makeDifferentialCopy() throws -> any DoryX86DifferentialMemory {
-    DoryX86ByteArrayMemory(baseAddress: baseAddress, bytes: snapshot())
+    try DoryX86ByteArrayMemory(baseAddress: baseAddress, bytes: snapshot())
   }
 
   public func differentialState() throws -> DoryX86DifferentialMemoryState {

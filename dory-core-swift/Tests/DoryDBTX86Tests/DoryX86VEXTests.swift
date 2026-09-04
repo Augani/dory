@@ -51,7 +51,7 @@ import Testing
           bytes: Array(repeating: 0xFF, count: 32), expectedByteCount: 32)
       }
     }
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xC5, 0xF8, 0x77])
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xC5, 0xF8, 0x77])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
     for i in 0..<16 {
@@ -76,7 +76,7 @@ import Testing
     var registers = DoryX86GeneralRegisters()
     registers.rbx = 0x2000
     var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [0xC5, 0xF8, 0x10, 0x03] + .init(repeating: 0, count: 0x1100))
     try memory.write(at: 0x2000, bytes: bytes(10..<26))
@@ -98,7 +98,7 @@ import Testing
     var registers = DoryX86GeneralRegisters()
     registers.rbx = 0x2000
     var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [0xC5, 0xFC, 0x10, 0x03] + .init(repeating: 0, count: 0x1100))
     try memory.write(at: 0x2000, bytes: bytes(0..<32))
@@ -128,7 +128,7 @@ import Testing
         bytes: Array(repeating: 0xFF, count: 16) + Array(repeating: 0, count: 16),
         expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xC5, 0xE8, 0x57, 0xC8])
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xC5, 0xE8, 0x57, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
     // 0xFF XOR 0xAA = 0x55; upper 128 should be zeroed (128-bit VEX)
@@ -156,7 +156,7 @@ import Testing
         bytes: Array(repeating: 0xF0, count: 16) + Array(repeating: 0, count: 16),
         expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xC5, 0xE1, 0xEB, 0xC8])
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xC5, 0xE1, 0xEB, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
     #expect(ymmBytes(1, in: current) == Array(repeating: 0xFF, count: 16))
@@ -180,7 +180,7 @@ import Testing
       floatingPoint.ymm[0] = try .init(
         bytes: Array(repeating: 0x42, count: 32), expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xC5, 0xFD, 0x74, 0xC8])
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xC5, 0xFD, 0x74, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
     // All bytes equal -> all 0xFF
@@ -205,7 +205,7 @@ import Testing
       for i in 0..<32 where i % 2 == 0 { vectorBytes[i] = 0x80 }
       floatingPoint.ymm[0] = try .init(bytes: vectorBytes, expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xC5, 0xFD, 0xD7, 0xC0])
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xC5, 0xFD, 0xD7, 0xC0])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
     // 256-bit: 32 bytes, bits 0,2,4,...,30 set -> 0x55555555
@@ -226,7 +226,7 @@ import Testing
     var registers = DoryX86GeneralRegisters()
     registers.rax = 0x1122_3344_5566_7788
     var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0xC4, 0xE1, 0xF9, 0x6E, 0xC0])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
@@ -260,7 +260,7 @@ import Testing
         bytes: Array(0..<16) + Array(repeating: 0, count: 16),
         expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0xC4, 0xE2, 0x79, 0x00, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
@@ -284,7 +284,7 @@ import Testing
         bytes: [0x42, 0x00, 0x00, 0x00] + Array(repeating: 0, count: 28),
         expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0xC4, 0xE2, 0x79, 0x18, 0xC0])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
@@ -308,7 +308,7 @@ import Testing
         bytes: bytes(0..<16) + Array(repeating: 0xFF, count: 16),
         expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0xC4, 0xE2, 0x7D, 0x5A, 0xC0])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
@@ -335,7 +335,7 @@ import Testing
     current.floatingPoint.ymm[0] = try .init(
       bytes: bytes(0..<32), expectedByteCount: 32)
     // Backing must cover 0x1000..0x2120 (0x1120 bytes)
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [0xC5, 0xFC, 0x29, 0x03] + .init(repeating: 0, count: 0x1200))
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
@@ -368,7 +368,7 @@ import Testing
     var state = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
     // Set some flags to verify they're preserved.
     state.rflags.insert(.carry)
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0xC4, 0xE2, 0xF3, 0xF7, 0xC0])
     let result = interpreter.step(state: &state, memory: memory, mode: .long64)
     expectRetired(result)
@@ -402,7 +402,7 @@ import Testing
     registers.rax = 0x0000_0000_0000_000F
     registers.rcx = 4
     var state = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0xC4, 0xE2, 0xF1, 0xF7, 0xC0])
     let result = interpreter.step(state: &state, memory: memory, mode: .long64)
     expectRetired(result)
@@ -430,7 +430,7 @@ import Testing
     registers.rdx = 0x8000_0000_0000_0000
     registers.rcx = 4
     var state = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0xC4, 0xE2, 0xF2, 0xF7, 0xC2])
     let result = interpreter.step(state: &state, memory: memory, mode: .long64)
     expectRetired(result)

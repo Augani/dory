@@ -262,7 +262,7 @@ import Testing
   private func execute(_ code: [UInt8], state: inout DoryX86ArchitecturalState,
     mode: DoryX86ExecutionMode, profile: DoryX86CPUProfile = .compatibleV1,
     translatedOnly: Bool = false, success: Bool, expectInvalidation: Bool = true) throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10000)
     try memory.write(at: 0x1000, bytes: code)
     let wide = state.control.efer & 0x500 != 0 || state.control.cr4 & (1 << 5) != 0
     try memory.writeScalar(at: 0x2000, value: 0x3003, byteCount: 8)

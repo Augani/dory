@@ -8,7 +8,7 @@ import Testing
   @Test func MOVControlAndDebugRegisterAliasesRetireWithoutReadingAnApparentMemoryOperand() throws {
     for opcode: UInt8 in [0x20, 0x21, 0x22, 0x23] {
       for mod: UInt8 in 0..<4 {
-        let memory = DoryX86ByteArrayMemory(byteCount: 0x2000)
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
         // REG=2 selects CR2/DR2, R/M=4 selects RSP. MOD!=3 would normally
         // require a SIB byte, but MOV CR/DR ignores MOD and reads no SIB/memory.
         try memory.write(at: 0x100, bytes: [0x0F, opcode, (mod << 6) | 0x14])
@@ -37,7 +37,7 @@ import Testing
     for (prefix, expected): ([UInt8], UInt64) in [
       ([], cr0), ([0x66], (initial & ~0xffff) | (cr0 & 0xffff)), ([0x48], cr0),
     ] {
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x2000)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
       try memory.write(at: 0x100, bytes: prefix + [0x0F, 0x01, 0xE0])
       var state = try state(mode: .long64)
       state.registers.rax = initial
@@ -57,7 +57,7 @@ import Testing
         ([0x0F, 0x00, 0x00], 0x6789), // SLDT [RAX]
         ([0x0F, 0x00, 0x08], 0xABCD), // STR [RAX]
       ] {
-        let memory = DoryX86ByteArrayMemory(byteCount: 0x2000)
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
         try memory.write(at: 0x100, bytes: prefix + bytes)
         try memory.write(at: 0x1000, bytes: .init(repeating: 0x5A, count: 8))
         var state = try state(mode: .long64)
@@ -77,7 +77,7 @@ import Testing
         let word = prefix.first == 0x48 || prefix.first == 0x49 ? false
           : ((mode == .protected16) != (prefix.first == 0x66))
         for (modRM, selector): (UInt8, UInt64) in [(0xC0, 0x6789), (0xC8, 0xABCD)] {
-          let memory = DoryX86ByteArrayMemory(byteCount: 0x2000)
+          let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
           try memory.write(at: 0x100, bytes: prefix + [0x0F, 0x00, modRM])
           var state = try state(mode: mode)
           let destination: DoryX86GeneralRegister = prefix.first == 0x49 ? .r8 : .rax
@@ -93,7 +93,7 @@ import Testing
     for mode: DoryX86ExecutionMode in [.real16, .protected16, .protected32] {
       for group: UInt8 in 0...3 {
         for registerForm in [false, true] {
-          let memory = DoryX86ByteArrayMemory(byteCount: 0x2000)
+          let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
           let modRM = (registerForm ? UInt8(0xC0) : 0) | (group << 3)
           try memory.write(at: 0x100, bytes: [0x0F, 0x00, modRM])
           var state = try state(mode: mode)
@@ -114,7 +114,7 @@ import Testing
 
   @Test func privilegedSystemSegmentLoadsRejectUserModeBeforeUnmappedSourceRead() throws {
     for group: UInt8 in [2, 3] {
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x2000)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
       try memory.write(at: 0x100, bytes: [0x0F, 0x00, group << 3])
       var state = try state(mode: .long64)
       state.cs.selector = 3
@@ -140,7 +140,7 @@ import Testing
       #expect(decoded.length == bytes.count)
       #expect(operand.base == nil)
       #expect(operand.ripRelative == relative)
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x2000)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
       try memory.write(at: 0x100, bytes: bytes)
       try memory.writeScalar(at: 0x500, value: 0xAAAA, byteCount: 2)
       var state = try state(mode: .long64)
@@ -161,7 +161,7 @@ import Testing
     ] {
       let bytes: [UInt8] = [0x67, 0x41, 0x8D, 0x05]
         + (0..<4).map { UInt8(truncatingIfNeeded: displacement >> ($0 * 8)) }
-      let memory = DoryX86ByteArrayMemory(baseAddress: rip, byteCount: 32)
+      let memory = try DoryX86ByteArrayMemory(baseAddress: rip, byteCount: 32)
       try memory.write(at: rip, bytes: bytes)
       let initial = try DoryX86ArchitecturalState(registers: .init(r13: 0xDEAD_BEEF), rip: rip)
       var interpreted = initial
@@ -184,7 +184,7 @@ import Testing
       let rip: UInt64 = 0x1_FFFF_FFF0
       let bytes: [UInt8] = [prefix, 0x67, 0x41, 0x8B, 0x05, 0x20, 0, 0, 0]
       // nextEIP=FFFFFFF9; +0x20 wraps to0x19, then FS/GS.base=200000080 is added.
-      let memory = DoryX86ByteArrayMemory(baseAddress: rip, byteCount: 0x200)
+      let memory = try DoryX86ByteArrayMemory(baseAddress: rip, byteCount: 0x200)
       try memory.write(at: rip, bytes: bytes)
       try memory.writeScalar(at: 0x2_0000_0099, value: 0x89AB_CDEF, byteCount: 4)
       var state = try DoryX86ArchitecturalState(registers: .init(r13: 0xDEAD_BEEF), rip: rip,

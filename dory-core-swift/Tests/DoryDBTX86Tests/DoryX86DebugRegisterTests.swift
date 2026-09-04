@@ -210,7 +210,7 @@ import Testing
   }
 
   private func memory(_ bytes: [UInt8]) throws -> DoryX86ByteArrayMemory {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x2000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
     try memory.write(at: 0x100, bytes: bytes)
     return memory
   }

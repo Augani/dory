@@ -4,7 +4,7 @@ import Testing
 
 @Suite struct DoryX86InterruptTests {
   @Test func realModeInterruptAndIRETRoundTripSegmentedFrames() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x500)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x500)
     try memory.write(at: 0x40, bytes: [0, 2, 0, 0])
     try memory.write(at: 0x100, bytes: [0xCD, 0x10])
     try memory.write(at: 0x200, bytes: [0xCF])
@@ -32,7 +32,7 @@ import Testing
   }
 
   @Test func protectedModeInterruptAndIRETRoundTripThirtyTwoBitFrames() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x6000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x6000)
     try write64(memory, 0x1008, 0x00CF_9A00_0000_FFFF)
     let gateTarget: UInt64 = 0x3100
     let gate =
@@ -69,7 +69,7 @@ import Testing
   }
 
   @Test func protectedModeInterruptSwitchesThroughTSSAndRestoresRingThree() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x7000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x7000)
     try write64(memory, 0x1008, 0x00CF_9A00_0000_FFFF)
     try write64(memory, 0x1010, 0x00CF_9200_0000_FFFF)
     try write64(memory, 0x1018, 0x00CF_FA00_0000_FFFF)
@@ -123,7 +123,7 @@ import Testing
   }
 
   @Test func softwareInterruptSwitchesPrivilegeStacksAndIRETRestoresUserState() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     try installSegments(memory)
     try installGate(
       vector: 0x80,
@@ -177,7 +177,7 @@ import Testing
   }
 
   @Test func softwareInterruptHonorsGatePrivilegeAndLeavesStateRestartable() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     try installSegments(memory)
     try installGate(
       vector: 0x80,
@@ -212,7 +212,7 @@ import Testing
   }
 
   @Test func exceptionEntryPushesArchitecturalErrorCode() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     try installSegments(memory)
     try installGate(
       vector: 14,

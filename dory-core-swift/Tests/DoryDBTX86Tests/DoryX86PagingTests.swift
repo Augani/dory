@@ -5,7 +5,7 @@ import Testing
 
 @Suite struct DoryX86PagingTests {
   @Test func scalarMemoryUsesLittleEndianValuesWithoutWeakeningBounds() throws {
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, byteCount: 16)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, byteCount: 16)
     try memory.writeScalar(at: 0x1004, value: 0x8877_6655_4433_2211, byteCount: 8)
     #expect(try memory.readScalar(at: 0x1004, byteCount: 8) == 0x8877_6655_4433_2211)
     #expect(try memory.read(at: 0x1004, byteCount: 8) == [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88])
@@ -25,7 +25,7 @@ import Testing
   }
 
   @Test func codeGenerationsTrackOnlyTheTouchedBackingPages() throws {
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, byteCount: 0x3000)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, byteCount: 0x3000)
     let first = try #require(try memory.codeGeneration(at: 0x1800, byteCount: 16))
     try memory.writeScalar(at: 0x3000, value: 1, byteCount: 1)
     #expect(try memory.codeGeneration(at: 0x1800, byteCount: 16) == first)
@@ -34,7 +34,7 @@ import Testing
   }
 
   @Test func translatedCodeGenerationsFollowPhysicalRemapsAndWrites() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0040_0000
     try installFourLevelMapping(
       linear: linear,
@@ -61,7 +61,7 @@ import Testing
   }
 
   @Test func walksFourLevelsAndSetsAccessedAndDirtyBits() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0040_0123
     try installFourLevelMapping(linear: linear, physicalPage: 0x8000, flags: 0x7, memory: memory)
     let paging = DoryX86PagingUnit()
@@ -83,7 +83,7 @@ import Testing
   }
 
   @Test func walksOneGiBPagesAdvertisedByTheCompatibleCPUProfile() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x5234_5678
     try write64(memory, 0x1000, 0x2000 | 0x7)
     try write64(memory, 0x2000 + 8, 0x4000_0000 | 0x87)
@@ -103,7 +103,7 @@ import Testing
   }
 
   @Test func fourKiBPATBitDoesNotSelectALargePage() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0040_0123
     try installFourLevelMapping(linear: linear, physicalPage: 0x98000, flags: 0x87, memory: memory)
     let translation = try DoryX86PagingUnit().translate(
@@ -117,7 +117,7 @@ import Testing
 
   @Test func largePagePATBitDoesNotContributeToThePhysicalAddress() throws {
     for pageSize: UInt64 in [1 << 21, 1 << 30] {
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
       let linear = pageSize + 0x3123
       let physicalBase = pageSize * 2
       try installIA32eLargePage(
@@ -133,7 +133,7 @@ import Testing
 
   @Test func reservedPML4AndMisalignedLargePagesStillFault() throws {
     for reservedAtPML4 in [true, false] {
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
       let linear: UInt64 = 0x0040_0123
       try installIA32eLargePage(
         linear: linear, physicalBase: 0, pageSize: 1 << 21, flags: 0x87, memory: memory)
@@ -151,7 +151,7 @@ import Testing
   }
 
   @Test func reportsExecuteDisableAndUserProtectionPrecisely() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0080_0000
     try installFourLevelMapping(
       linear: linear,
@@ -175,7 +175,7 @@ import Testing
   }
 
   @Test func pageFaultInstructionBitRequiresSMEPOrPAEWithNXE() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x2000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
     for pae in [false, true] {
       for nxe in [false, true] {
         for smep in [false, true] {
@@ -202,7 +202,7 @@ import Testing
   }
 
   @Test func invalidationMakesChangedPageTablesVisible() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0040_0000
     try installFourLevelMapping(linear: linear, physicalPage: 0x8000, flags: 0x7, memory: memory)
     let paging = DoryX86PagingUnit()
@@ -227,7 +227,7 @@ import Testing
   @Test func invalidationEvictsEveryCachedSliceOfALargePage() throws {
     for pageSize: UInt64 in [1 << 21, 1 << 30] {
       for global in [false, true] {
-        let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
         let linearBase = pageSize * 2
         let flags: UInt64 = global ? 0x187 : 0x87
         try installIA32eLargePage(
@@ -269,7 +269,7 @@ import Testing
   }
 
   @Test func instructionFetchAcrossMissingPageRaisesPageFaultNotInvalidOpcode() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linearPage: UInt64 = 0x0040_0000
     try installFourLevelMapping(
       linear: linearPage, physicalPage: 0x8000, flags: 0x3, memory: memory)
@@ -300,7 +300,7 @@ import Testing
   }
 
   @Test func bulkCopyRejectsDistinctLinearRangesThatAliasPhysicalRAM() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let source: UInt64 = 0x0040_0100
     let destination: UInt64 = 0x0040_1102
     try installFourLevelMapping(
@@ -323,7 +323,7 @@ import Testing
   }
 
   @Test func bulkFillStopsAtLinearPageBoundariesWithCompleteElements() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0040_0000
     try installFourLevelMapping(
       linear: linear, physicalPage: 0x8000, flags: 0x7, memory: memory)
@@ -357,7 +357,7 @@ import Testing
   }
 
   @Test func translatedScalarAccessesCrossPagesPrecisely() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0040_0000
     try installFourLevelMapping(
       linear: linear, physicalPage: 0x8000, flags: 0x7, memory: memory)
@@ -395,7 +395,7 @@ import Testing
   }
 
   @Test func translatedWriteValidationDoesNotReadMMIO() throws {
-    let backing = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let backing = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0040_0000
     try installFourLevelMapping(
       linear: linear, physicalPage: 0x9000, flags: 0x7, memory: backing)
@@ -411,7 +411,7 @@ import Testing
   }
 
   @Test func rejectedSecondPhysicalPageLeavesCrossPageStoreUnchanged() throws {
-    let backing = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let backing = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0040_0000
     try installFourLevelMapping(
       linear: linear, physicalPage: 0x8000, flags: 0x7, memory: backing)
@@ -434,7 +434,7 @@ import Testing
   }
 
   @Test func walksPAELargePagesAndLegacyPageTables() throws {
-    let paeMemory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let paeMemory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     try write64(paeMemory, 0x1000, 0x2000 | 0x1)
     try write64(paeMemory, 0x2000 + 2 * 8, 0x87)
     let paeContext = DoryX86PagingContext(
@@ -453,7 +453,7 @@ import Testing
     #expect(pae.physicalAddress == 0x1234)
     #expect(pae.pageSize == 1 << 21)
 
-    let legacyMemory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let legacyMemory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     try write32(legacyMemory, 0x1000 + 4, 0x2000 | 0x7)
     try write32(legacyMemory, 0x2000 + 4, 0x8000 | 0x5)
     let legacyContext = DoryX86PagingContext(
@@ -485,7 +485,7 @@ import Testing
   @Test func legacyPAESelectsEachLatchedPDPTEWithoutChangingItsRAMImage() throws {
     for root: UInt64 in [0x1020, 0x17e0, 0x1fe0] {
       for quadrant: UInt64 in 0..<4 {
-        let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
         let linear = (quadrant << 30) | 0x0020_3123
         let pdpteAddress = root + quadrant * 8
         let pdpte: UInt64 = 0x2000 | 0xe19 // Present, PWT/PCD, ignored bits 11:9.
@@ -516,7 +516,7 @@ import Testing
     let linear: UInt64 = 0x123
     for restrictedEntry: UInt64 in [0x2000, 0x3000] {
       for deniedFlag: UInt64 in [1 << 1, 1 << 2] {
-        let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
         try write64(memory, 0x1020, 0x2001)
         try write64(memory, 0x2000, 0x3007)
         try write64(memory, 0x3000, 0x9007)
@@ -535,7 +535,7 @@ import Testing
   }
 
   @Test func movCR3PreservesLegacyPAE32ByteRootAlignment() throws {
-    let memory = DoryX86ByteArrayMemory(bytes: [0x0F, 0x22, 0xD8]) // MOV CR3,EAX
+    let memory = try DoryX86ByteArrayMemory(bytes: [0x0F, 0x22, 0xD8]) // MOV CR3,EAX
     for root: UInt64 in [0x1020, 0x17e0, 0x1fe0] {
       for ignoredBits: UInt64 in [0, 1, 0x1f] {
         let value = root | ignoredBits
@@ -556,11 +556,11 @@ import Testing
   }
 
   @Test func movCR3AcceptsIgnoredLowBitsWithoutChangingFourKiBRoots() throws {
-    let instructionMemory = DoryX86ByteArrayMemory(bytes: [0x0F, 0x22, 0xD8])
+    let instructionMemory = try DoryX86ByteArrayMemory(bytes: [0x0F, 0x22, 0xD8])
     let linear: UInt64 = 0x0040_1123
     for mode: DoryX86ExecutionMode in [.protected32, .long64] {
       for ignoredBits: UInt64 in [0x21, 0x7ff] {
-        let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
         let control: DoryX86ControlState
         if mode == .long64 {
           try installFourLevelMapping(linear: linear, physicalPage: 0x8000, flags: 7, memory: memory)
@@ -590,7 +590,7 @@ import Testing
   }
 
   @Test func movCR3RejectsReservedHighBitsAndNoFlushWithoutPCID() throws {
-    let memory = DoryX86ByteArrayMemory(bytes: [0x0F, 0x22, 0xD8])
+    let memory = try DoryX86ByteArrayMemory(bytes: [0x0F, 0x22, 0xD8])
     for value: UInt64 in [1 << DoryX86CPUProfile.compatibleV1.physicalAddressBits, 1 << 63] {
       var state = try DoryX86ArchitecturalState(
         registers: .init(rax: value), rip: 0,
@@ -604,7 +604,7 @@ import Testing
 
   @Test func legacyPDEPageSizeBitIsIgnoredWhenPSEIsClear() throws {
     for pse in [false, true] {
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
       try write32(memory, 0x1004, pse ? 0x87 : 0x2087)
       try write32(memory, 0x2004, 0x9007)
       let context = DoryX86PagingContext(
@@ -618,7 +618,7 @@ import Testing
   }
 
   @Test func compatibilityModeUsesIA32ePageTablesOnceLongModeIsActive() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x00C0_0123
     try installFourLevelMapping(linear: linear, physicalPage: 0x8000, flags: 0x3, memory: memory)
     let context = DoryX86PagingContext(
@@ -642,7 +642,7 @@ import Testing
   }
 
   @Test func elementBulkCopyStopsBeforeAPageBoundaryWithoutPartialQwords() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x20_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x20_000)
     let source: UInt64 = 0x0040_0000
     let destination: UInt64 = 0x0050_0000
     try installFourLevelMapping(
@@ -680,7 +680,7 @@ import Testing
   }
 
   @Test func elementBulkCopyRejectsPhysicalCodeAliasesBeforeMutation() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x20_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x20_000)
     let source: UInt64 = 0x0040_0000
     let destination: UInt64 = 0x0050_0000
     let codeAlias: UInt64 = 0x0060_0000

@@ -9,7 +9,7 @@ import Testing
     #if arch(arm64)
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
         for bytes: [UInt8] in [[0xFF, 0xD0], [0xFF, 0xE0], [0xC3], [0xC2, 0x10, 0x00]] {
-          let memory = DoryX86ByteArrayMemory(byteCount: 0x200)
+          let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
           try memory.write(at: 0, bytes: bytes)
           try memory.writeScalar(at: 0x100, value: noncanonical, byteCount: 8)
           var state = try DoryX86ArchitecturalState(
@@ -37,7 +37,7 @@ import Testing
   @Test func indirectMemoryCallChecksTargetBeforePushingReturnAddress() throws {
     #if arch(arm64)
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
-        let memory = DoryX86ByteArrayMemory(byteCount: 0x200)
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
         try memory.writeScalar(at: 0x80, value: noncanonical, byteCount: 8)
         var state = try DoryX86ArchitecturalState(registers: .init(rax: 0x80, rsp: 0x100), rip: 0)
         let original = state
@@ -65,7 +65,7 @@ import Testing
         for (bytes, rsp) in cases {
           // The backing memory deliberately accepts these addresses. Only the CPU guard
           // can prevent the write or noncanonical stack read from appearing successful.
-          let memory = DoryX86ByteArrayMemory(baseAddress: base, byteCount: 0x200)
+          let memory = try DoryX86ByteArrayMemory(baseAddress: base, byteCount: 0x200)
           try memory.write(at: base, bytes: bytes)
           var state = try DoryX86ArchitecturalState(
             registers: .init(rax: 0xAA, rsp: rsp), rip: base, control: .init(cr2: 0x1234))
@@ -89,7 +89,7 @@ import Testing
 
   @Test func overflowingStackSpanFallsBackToStackFault() throws {
     #if arch(arm64)
-      let memory = DoryX86ByteArrayMemory(bytes: [0x50])
+      let memory = try DoryX86ByteArrayMemory(bytes: [0x50])
       var state = try DoryX86ArchitecturalState(registers: .init(rsp: 4), rip: 0)
       let before = state
       let result = try #require(DoryARM64BaselineExecutor(maximumCodeBytes: 4096).execute(
@@ -142,7 +142,7 @@ import Testing
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
         for target: UInt64 in [0x1234_5678, 0xFFFF_8000_0000_0000] {
           for bytes: [UInt8] in [[0xFF, 0xD0], [0xFF, 0xE0], [0xC3]] {
-            let memory = DoryX86ByteArrayMemory(byteCount: 0x200)
+            let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
             try memory.writeScalar(at: 0x100, value: target, byteCount: 8)
             var state = try DoryX86ArchitecturalState(registers: .init(rax: target, rsp: 0x100), rip: 0)
             let result = try #require(DoryARM64BaselineExecutor(

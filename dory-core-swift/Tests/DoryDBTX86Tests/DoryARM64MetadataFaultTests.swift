@@ -117,7 +117,7 @@ import Testing
   }
 
   private func memory() throws -> DoryX86ByteArrayMemory {
-    let physical = DoryX86ByteArrayMemory(byteCount: 0x10000)
+    let physical = try DoryX86ByteArrayMemory(byteCount: 0x10000)
     for (address, value): (UInt64, UInt64) in [
       (0x9000, 0xA007), (0xA000, 0xB007), (0xB000, 0xC007),
       (0xC008, 0x1007), (0xC010, 0x2007), (0xC040, 0x8007),

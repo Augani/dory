@@ -94,7 +94,7 @@ import Testing
 
   private func execute(_ vector: ReferenceVector) throws -> ReferenceRegisters {
     let initial = try vector.initial.values()
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: vector.bytes)
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: vector.bytes)
     var state = try DoryX86ArchitecturalState(
       registers: .init(rax: initial[0], rcx: initial[2], rdx: initial[3], rbx: initial[1]), rip: 0x1000,
       rflags: .init(rawValue: initial[4]))

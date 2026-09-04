@@ -328,7 +328,7 @@ import Testing
   }
 
   private func fixture(register: UInt8, byteCount: Int = 0x10000) throws -> DoryX86ByteArrayMemory {
-    let memory = DoryX86ByteArrayMemory(byteCount: byteCount)
+    let memory = try DoryX86ByteArrayMemory(byteCount: byteCount)
     try memory.write(at: code, bytes: [0x0F, 0x22, 0xC0 | (register << 3)])
     try memory.writeScalar(at: root, value: 0x2001, byteCount: 8)
     try memory.writeScalar(at: 0x2000, value: 0xa3, byteCount: 8) // Supervisor 2 MiB identity mapping.

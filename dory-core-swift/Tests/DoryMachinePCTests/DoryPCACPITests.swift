@@ -90,7 +90,7 @@ import Testing
   @Test func installsAtomicallyAfterPreflightingEveryTable() throws {
     let tables = try DoryPCACPIBuilder.build(
       layout: .init(rsdp: 0x100, xsdt: 0x200, madt: 0x300, hpet: 0x400, mcfg: 0x500))
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x3000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x3000)
 
     try tables.install(into: memory)
 

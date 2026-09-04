@@ -31,7 +31,7 @@ import Testing
   @Test func deviceReadsStartFromIndependentIdenticalState() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x48, 0x8B, 0x03]
-      let source = DifferentialDeviceMemory(instructions: bytes)
+      let source = try DifferentialDeviceMemory(instructions: bytes)
       let result = try DoryX86DifferentialHarness().compare(
         bytes: bytes, initialState: state(), memory: source, mode: .long64)
       #expect(result.agrees)
@@ -44,7 +44,7 @@ import Testing
   }
 
   @Test func sharedCopiesAndUnknownMemoryCannotProduceAgreement() throws {
-    let source = DifferentialDeviceMemory(instructions: [0x90], cloneBehavior: .reuseSelf)
+    let source = try DifferentialDeviceMemory(instructions: [0x90], cloneBehavior: .reuseSelf)
     #expect(throws: DoryX86DifferentialError.sharedMemoryInstance) {
       try DoryX86DifferentialHarness().compare(
         bytes: [0x90], initialState: state(), memory: source, mode: .long64)
@@ -57,7 +57,7 @@ import Testing
   }
 
   @Test func unequalDeviceInitialStateRejectsBeforeExecutingEitherEngine() throws {
-    let source = DifferentialDeviceMemory(instructions: [0x90], cloneBehavior: .changeDevice)
+    let source = try DifferentialDeviceMemory(instructions: [0x90], cloneBehavior: .changeDevice)
     #expect(throws: DoryX86DifferentialError.unequalInitialMemoryState) {
       try DoryX86DifferentialHarness().compare(
         bytes: [0x90], initialState: state(), memory: source, mode: .long64)
@@ -71,7 +71,7 @@ import Testing
       // after both engines have written the same shared RAM.
       let bytes: [UInt8] = [0x48, 0x89, 0x03]
       for sharesOriginal in [false, true] {
-        let source = DifferentialShallowMemory(instructions: bytes, sharesOriginal: sharesOriginal)
+        let source = try DifferentialShallowMemory(instructions: bytes, sharesOriginal: sharesOriginal)
         var initial = try state()
         initial.registers.rax = 0x42
         #expect(throws: DoryX86DifferentialError.sharedMemoryBacking) {
@@ -84,7 +84,7 @@ import Testing
 
   @Test func comparedProgramMustMatchTheInterpreterInstructionSource() throws {
     #if arch(arm64)
-      let source = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0x90])
+      let source = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0x90])
       #expect(throws: DoryX86DifferentialError.instructionBytesDoNotMatchMemory) {
         try DoryX86DifferentialHarness().compare(
           bytes: [0xF4], initialState: state(), memory: source, mode: .long64)
@@ -95,7 +95,7 @@ import Testing
   @Test func permissionFaultRetainsPreciseEvidenceAndDoesNotCountFallbackAsAgreement() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x48, 0x89, 0x03]  // mov [rbx],rax
-      let source = DifferentialDeviceMemory(instructions: bytes, rejectWrites: true)
+      let source = try DifferentialDeviceMemory(instructions: bytes, rejectWrites: true)
       let result = try DoryX86DifferentialHarness().compare(
         bytes: bytes, initialState: state(), memory: source, mode: .long64)
       let expected = DoryX86MemoryError.pageFault(address: 0x1080, errorCode: 7)
@@ -117,7 +117,7 @@ import Testing
 
   @Test func agreementIncludesExtendedStateMemoryDevicesAndExit() throws {
     #if arch(arm64)
-      let source = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0x90])
+      let source = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0x90])
       let result = try DoryX86DifferentialHarness().compare(
         bytes: [0x90], initialState: state(), memory: source, mode: .long64)
       #expect(result.agrees)
@@ -155,7 +155,7 @@ import Testing
   @Test func guardedNativeFallbackDoesNotPublishScratchRegisterChanges() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x48, 0x83, 0xC3, 1, 0xFF, 0xE0]  // add rbx,1; jmp rax
-      let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+      let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
       var initial = try state()
       initial.registers.rax = 0x0000_8000_0000_0000
       let result = try DoryX86DifferentialHarness().compare(
@@ -180,8 +180,8 @@ private final class DifferentialDeviceMemory: DoryX86DifferentialMemory, @unchec
 
   init(
     instructions: [UInt8], cloneBehavior: CloneBehavior = .independent, rejectWrites: Bool = false
-  ) {
-    ram = DoryX86ByteArrayMemory(
+  ) throws {
+    ram = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: instructions + Array(repeating: 0, count: 256 - instructions.count))
     self.cloneBehavior = cloneBehavior
@@ -190,8 +190,8 @@ private final class DifferentialDeviceMemory: DoryX86DifferentialMemory, @unchec
 
   func makeDifferentialCopy() throws -> any DoryX86DifferentialMemory {
     if cloneBehavior == .reuseSelf { return self }
-    return lock.withLock {
-      let copy = DifferentialDeviceMemory(instructions: ram.snapshot(), rejectWrites: rejectWrites)
+    return try lock.withLock {
+      let copy = try DifferentialDeviceMemory(instructions: ram.snapshot(), rejectWrites: rejectWrites)
       copy.counter = cloneBehavior == .changeDevice ? counter &+ 1 : counter
       return copy
     }
@@ -239,10 +239,14 @@ private final class DifferentialShallowMemory: DoryX86DifferentialMemory, @unche
   private let ram: DoryX86ByteArrayMemory
   private let cloneRAM: DoryX86ByteArrayMemory
 
-  init(instructions: [UInt8], sharesOriginal: Bool) {
+  init(instructions: [UInt8], sharesOriginal: Bool) throws {
     let bytes = instructions + Array(repeating: UInt8(0), count: 256 - instructions.count)
-    ram = .init(baseAddress: 0x1000, bytes: bytes)
-    cloneRAM = sharesOriginal ? ram : .init(baseAddress: 0x1000, bytes: bytes)
+    ram = try .init(baseAddress: 0x1000, bytes: bytes)
+    if sharesOriginal {
+      cloneRAM = ram
+    } else {
+      cloneRAM = try .init(baseAddress: 0x1000, bytes: bytes)
+    }
   }
 
   private init(ram: DoryX86ByteArrayMemory) {

@@ -5,7 +5,7 @@ import Testing
 
 @Suite struct DoryX86ReplayTests {
   @Test func capturesSerializesAndReplaysMemoryAndPortIOExactly() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [0xE4, 0x60] + .init(repeating: 0, count: 16)
     )
@@ -32,7 +32,7 @@ import Testing
   }
 
   @Test func replaysPreciseFaultsWithoutAccessingOriginalMemory() throws {
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x2000,
       bytes: [0x48, 0x8B, 0x00] + .init(repeating: 0, count: 8)
     )
@@ -57,7 +57,7 @@ import Testing
   }
 
   @Test func reconstructsPagingConfigurationAndReplaysPageTableWalks() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x0040_0000
     try installFourLevelMapping(linear: linear, physicalPage: 0x8000, memory: memory)
     try memory.write(at: 0x8000, bytes: [0x90])

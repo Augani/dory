@@ -6,7 +6,7 @@ import Testing
   @Test func noncanonicalIndirectCallsJumpsAndReturnsDoNotCommitStateOrStackWrites() throws {
     let target: UInt64 = 0x0000_8000_0000_0000
     for bytes: [UInt8] in [[0xFF, 0xD0], [0xFF, 0xE0], [0xC3], [0xC2, 0x10, 0x00]] {
-      let memory = DoryX86ByteArrayMemory(byteCount: 0x200)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
       try memory.write(at: 0, bytes: bytes)
       try memory.writeScalar(at: 0x100, value: target, byteCount: 8)
       var state = try DoryX86ArchitecturalState(
@@ -31,7 +31,7 @@ import Testing
       (0x0000_7FFF_FFFF_FFC0, [0xE2, 0x7F]),
     ]
     for (rip, bytes) in cases {
-      let memory = DoryX86ByteArrayMemory(baseAddress: rip, byteCount: 0x200)
+      let memory = try DoryX86ByteArrayMemory(baseAddress: rip, byteCount: 0x200)
       try memory.write(at: rip, bytes: bytes)
       var state = try DoryX86ArchitecturalState(
         registers: .init(rcx: 2, rsp: rip + 0x100), rip: rip,
@@ -51,7 +51,7 @@ import Testing
 
   @Test func untakenConditionalBranchDoesNotValidateItsUnusedTarget() throws {
     let rip: UInt64 = 0x0000_7FFF_FFFF_F000
-    let memory = DoryX86ByteArrayMemory(baseAddress: rip, bytes: [0x0F, 0x84, 0, 0x10, 0, 0])
+    let memory = try DoryX86ByteArrayMemory(baseAddress: rip, bytes: [0x0F, 0x84, 0, 0x10, 0, 0])
     var state = try DoryX86ArchitecturalState(rip: rip)
     guard case .retired = DoryX86Interpreter().step(state: &state, memory: memory, mode: .long64)
     else {
@@ -67,7 +67,7 @@ import Testing
       (0x50, 0x0000_8000_0000_0004), (0x58, 0x0000_7FFF_FFFF_FFFC),
     ]
     for (opcode, rsp) in cases {
-      let memory = DoryX86ByteArrayMemory(bytes: [opcode])
+      let memory = try DoryX86ByteArrayMemory(bytes: [opcode])
       var state = try DoryX86ArchitecturalState(
         registers: .init(rax: 0xAA, rsp: rsp), rip: 0, control: .init(cr2: 0x1234))
       let before = state
@@ -85,7 +85,7 @@ import Testing
     // byte is unmapped in both cases, after the first comparison has changed arithmetic flags.
     for prefix: UInt8 in [0xF3, 0xF2] {
       for opcode: UInt8 in [0xA6, 0xAE] {
-        let memory = DoryX86ByteArrayMemory(byteCount: 0x21)
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x21)
         try memory.write(at: 0, bytes: [prefix, opcode])
         try memory.write(at: 0x10, bytes: [0x41, 0x42])
         try memory.write(at: 0x20, bytes: [prefix == 0xF3 ? 0x41 : 0x40])
@@ -110,7 +110,7 @@ import Testing
   }
 
   @Test func repeatedStackSegmentFaultRetainsItsOriginalExceptionVector() throws {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x40)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x40)
     try memory.write(at: 0, bytes: [0x36, 0xF3, 0xA4])  // REP MOVSB from SS:ESI to ES:EDI.
     try memory.write(at: 0x10, bytes: [0x5A, 0xA5])
     var state = try DoryX86ArchitecturalState(
@@ -146,7 +146,7 @@ import Testing
       ([0x48, 0xF7, 0xFB], 0, 1 << 63, .max),
     ]
     for (bytes, rax, rdx, rbx) in cases {
-      let memory = DoryX86ByteArrayMemory(bytes: bytes)
+      let memory = try DoryX86ByteArrayMemory(bytes: bytes)
       var state = try DoryX86ArchitecturalState(
         registers: .init(rax: rax, rdx: rdx, rbx: rbx), rip: 0,
         rflags: [.reservedOne, .carry, .overflow], control: .init(cr2: 0x1234))

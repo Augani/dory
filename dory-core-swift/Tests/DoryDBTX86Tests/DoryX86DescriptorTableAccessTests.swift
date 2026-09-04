@@ -249,7 +249,7 @@ import Testing
 
   private func pagedFixture(mode: DoryX86ExecutionMode, group: Int, operand: UInt64) throws
     -> (state: DoryX86ArchitecturalState, memory: DoryX86ByteArrayMemory, paging: DoryX86PagingUnit) {
-    let memory = DoryX86ByteArrayMemory(byteCount: 0x20000)
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x20000)
     let long = mode == .long64
     let entrySize = long ? 8 : 4
     if long {

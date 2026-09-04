@@ -10,7 +10,7 @@ import Testing
       physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000
     ))
     for (leaf, xcr0, expected): (UInt64, UInt64, UInt64) in [(1, 1, 1 << 27), (13, 1, 576), (13, 7, 832)] {
-      let memory = DoryX86ByteArrayMemory(bytes: [0x0F, 0xA2])
+      let memory = try DoryX86ByteArrayMemory(bytes: [0x0F, 0xA2])
       var state = try DoryX86ArchitecturalState(
         registers: .init(rax: leaf), rip: 0, control: .init(cr4: 1 << 18, xcr0: xcr0)
       )
@@ -38,7 +38,7 @@ import Testing
           linearAddressBits: baseline.linearAddressBits,
           virtualTSCFrequencyHz: baseline.virtualTSCFrequencyHz
         ))
-        let memory = DoryX86ByteArrayMemory(bytes: auxiliary ? [0x0F, 0x01, 0xF9] : [0x0F, 0x31])
+        let memory = try DoryX86ByteArrayMemory(bytes: auxiliary ? [0x0F, 0x01, 0xF9] : [0x0F, 0x31])
         var state = try DoryX86ArchitecturalState(
           registers: .init(rax: 11, rcx: 12, rdx: 13),
           rip: 0,
@@ -59,7 +59,7 @@ import Testing
       for privilege: UInt16 in [0, 3] {
         for call: UInt64 in [7, 12, 17, 18, 35, .max] {
           let bytes: [UInt8] = [0x0F, 0x01, opcode] + .init(repeating: 0xA5, count: 61)
-          let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+          let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
           var state = try DoryX86ArchitecturalState(
             registers: .init(rax: call, rdx: 8, rsi: 0x1020, rdi: 0),
             rip: 0x1000,

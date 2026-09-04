@@ -52,7 +52,7 @@ import Testing
       floatingPoint.ymm[0] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
       floatingPoint.ymm[1] = try .init(bytes: Array(32..<64), expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0x0F, 0x12, 0xC8])
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0x0F, 0x12, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
     // Destination low 64 becomes source high 64 (bytes 8...15); high 64 preserved (40...47).
@@ -72,7 +72,7 @@ import Testing
       floatingPoint.ymm[0] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
       floatingPoint.ymm[1] = try .init(bytes: Array(32..<64), expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0x0F, 0x16, 0xC8])
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0x0F, 0x16, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
     // Destination low 64 preserved (32...39); high 64 becomes source low 64 (0...7).
@@ -90,7 +90,7 @@ import Testing
     var current = try state { floatingPoint in
       floatingPoint.ymm[0] = try .init(bytes: Array(0..<32), expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xF2, 0x0F, 0x12, 0xC8])
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xF2, 0x0F, 0x12, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
     #expect(ymmBytes(1, in: current) == bytes(0..<8, 0..<8))
@@ -112,7 +112,7 @@ import Testing
           + Array(repeating: 0, count: 16),
         expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xF3, 0x0F, 0x12, 0xC8])
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xF3, 0x0F, 0x12, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
     let low: [UInt8] = [0x10, 0x11, 0x12, 0x13]
@@ -136,7 +136,7 @@ import Testing
           + Array(repeating: 0, count: 16),
         expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xF3, 0x0F, 0x16, 0xC8])
+    let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0xF3, 0x0F, 0x16, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
     let a: [UInt8] = [0x20, 0x21, 0x22, 0x23]
@@ -166,7 +166,7 @@ import Testing
         return fp
       }()
     )
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000,
       bytes: [0x0F, 0x12, 0x0B] + .init(repeating: 0, count: 0x1100))
     // Place 8 distinct bytes at 0x2000.
@@ -197,7 +197,7 @@ import Testing
         bytes: indices + Array(repeating: 0, count: 16), expectedByteCount: 32)
       floatingPoint.ymm[1] = try .init(bytes: bytes(0..<16, 0..<16), expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0x66, 0x0F, 0x38, 0x00, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
@@ -222,7 +222,7 @@ import Testing
       floatingPoint.ymm[1] = try .init(
         bytes: bytes(16..<32) + Array(repeating: 0, count: 16), expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0x66, 0x0F, 0x3A, 0x0F, 0xC8, 0x02])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
@@ -245,7 +245,7 @@ import Testing
           + Array(repeating: 0, count: 24),
         expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0x66, 0x0F, 0x38, 0x35, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
@@ -268,7 +268,7 @@ import Testing
           + Array(repeating: 0, count: 24),
         expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0x66, 0x0F, 0x38, 0x25, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
@@ -297,7 +297,7 @@ import Testing
         bytes: Array(repeating: 0xFF, count: 32), expectedByteCount: 32)
     }
     let destinationBefore = ymmBytes(1, in: current)
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0x66, 0x0F, 0x38, 0x17, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
@@ -315,7 +315,7 @@ import Testing
       floatingPoint.ymm[1] = try .init(
         bytes: Array(repeating: 0xF0, count: 32), expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0x66, 0x0F, 0x38, 0x17, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
@@ -344,7 +344,7 @@ import Testing
       bytes1.replaceSubrange(8..<16, with: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
       floatingPoint.ymm[1] = try .init(bytes: bytes1, expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0x66, 0x0F, 0x38, 0x29, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
@@ -367,7 +367,7 @@ import Testing
         bytes: [0x7F, 0x80] + Array(repeating: 0, count: 30),
         expectedByteCount: 32)
     }
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0x66, 0x0F, 0x38, 0x22, 0xC8])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
@@ -391,7 +391,7 @@ import Testing
     var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
     current.floatingPoint.ymm[0] = try .init(
       bytes: Array(repeating: 0xAA, count: 32), expectedByteCount: 32)
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0x66, 0x48, 0x0F, 0x3A, 0x22, 0xC0, 0x00])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)
@@ -415,7 +415,7 @@ import Testing
     var current = try DoryX86ArchitecturalState(registers: registers, rip: 0x1000)
     current.floatingPoint.ymm[0] = try .init(
       bytes: Array(repeating: 0xAA, count: 32), expectedByteCount: 32)
-    let memory = DoryX86ByteArrayMemory(
+    let memory = try DoryX86ByteArrayMemory(
       baseAddress: 0x1000, bytes: [0x66, 0x48, 0x0F, 0x3A, 0x22, 0xC0, 0x01])
     let result = interpreter.step(state: &current, memory: memory, mode: .long64)
     expectRetired(result)

@@ -38,6 +38,22 @@ public enum DoryX86MemoryAllocationError: Error, Sendable, Equatable {
   case invalidByteCount(Int)
   case addressOverflow(baseAddress: UInt64, byteCount: Int)
   case mappingFailed(byteCount: Int, errorNumber: Int32)
+  case heapAllocationFailed(byteCount: Int, errorNumber: Int32)
+}
+
+/// Internal ownership seam: tests can fail allocation and observe release without exhausting the
+/// process. The allocator and its matching deallocator stay attached to one backing instance.
+struct DoryX86HeapAllocator: Sendable {
+  let allocate: @Sendable (Int) -> (pointer: UnsafeMutableRawPointer?, errorNumber: Int32)
+  let deallocate: @Sendable (UnsafeMutableRawPointer, Int) -> Void
+
+  static let system = Self(
+    allocate: { byteCount in
+      let pointer = calloc(byteCount, 1)
+      return (pointer, pointer == nil ? errno : 0)
+    },
+    deallocate: { pointer, _ in free(pointer) }
+  )
 }
 
 func validateDoryX86RAMAllocation(baseAddress: UInt64, byteCount: Int) throws {
@@ -190,34 +206,56 @@ extension DoryX86ScalarMemory {
   }
 }
 
-/// Deterministic flat address space for interpreter conformance, firmware bring-up, and replay.
-/// Product paging composes a translator in front of the same protocol rather than weakening this
-/// exact bounds behavior.
+/// Deterministic heap byte array for interpreter conformance, firmware bring-up, and replay.
+/// Its checked calloc/free ownership is independent of mmap RAM. Array-returning read/snapshot
+/// APIs still allocate diagnostic copies through Swift; those copies do not promise recoverable
+/// allocation exhaustion. Product paging composes a translator over this exact bounds behavior.
 public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, @unchecked Sendable {
   public let baseAddress: UInt64
   public let byteCount: Int
   private let lock = NSLock()
-  private var storage: [UInt8]
+  private let storage: UnsafeMutableBufferPointer<UInt8>
+  private let allocator: DoryX86HeapAllocator
   // Reserve generation metadata only for pages actually written, independently of virtual size.
   private var codePageGenerations: [Int: UInt64] = [:]
 
   var trackedCodePageCount: Int { lock.withLock { codePageGenerations.count } }
 
-  public init(baseAddress: UInt64 = 0, bytes: [UInt8]) {
-    self.baseAddress = baseAddress
-    byteCount = bytes.count
-    storage = bytes
+  public convenience init(baseAddress: UInt64 = 0, bytes: [UInt8]) throws {
+    try self.init(baseAddress: baseAddress, bytes: bytes, allocator: .system)
   }
 
-  public convenience init(baseAddress: UInt64 = 0, byteCount: Int) {
-    self.init(baseAddress: baseAddress, bytes: .init(repeating: 0, count: byteCount))
+  convenience init(baseAddress: UInt64 = 0, bytes: [UInt8], allocator: DoryX86HeapAllocator) throws {
+    try self.init(baseAddress: baseAddress, byteCount: bytes.count, allocator: allocator)
+    bytes.withUnsafeBufferPointer { source in
+      storage.baseAddress!.update(from: source.baseAddress!, count: source.count)
+    }
   }
 
-  /// Validates caller-controlled sizes before Swift allocation. Swift Array allocation exhaustion
-  /// remains process-fatal; production large RAM should use the throwing mmap initializer.
+  public convenience init(baseAddress: UInt64 = 0, byteCount: Int) throws {
+    try self.init(baseAddress: baseAddress, byteCount: byteCount, allocator: .system)
+  }
+
+  /// Source-compatible label for callers already using validated construction.
   public convenience init(baseAddress: UInt64 = 0, validatingByteCount byteCount: Int) throws {
+    try self.init(baseAddress: baseAddress, byteCount: byteCount)
+  }
+
+  init(baseAddress: UInt64 = 0, byteCount: Int, allocator: DoryX86HeapAllocator) throws {
     try validateDoryX86RAMAllocation(baseAddress: baseAddress, byteCount: byteCount)
-    self.init(baseAddress: baseAddress, byteCount: byteCount)
+    let allocation = allocator.allocate(byteCount)
+    guard let pointer = allocation.pointer else {
+      throw DoryX86MemoryAllocationError.heapAllocationFailed(
+        byteCount: byteCount, errorNumber: allocation.errorNumber)
+    }
+    self.baseAddress = baseAddress
+    self.byteCount = byteCount
+    self.allocator = allocator
+    storage = .init(start: pointer.bindMemory(to: UInt8.self, capacity: byteCount), count: byteCount)
+  }
+
+  deinit {
+    allocator.deallocate(UnsafeMutableRawPointer(storage.baseAddress!), byteCount)
   }
 
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
@@ -273,7 +311,9 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, @unchecked Sendab
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
-    storage.replaceSubrange(offset..<(offset + bytes.count), with: bytes)
+    bytes.withUnsafeBufferPointer { source in
+      storage.baseAddress!.advanced(by: offset).update(from: source.baseAddress!, count: source.count)
+    }
     markCodePagesWritten(offset: offset, byteCount: bytes.count)
   }
 
@@ -308,7 +348,7 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, @unchecked Sendab
   public func snapshot() -> [UInt8] {
     lock.lock()
     defer { lock.unlock() }
-    return storage
+    return Array(storage)
   }
 
   private func checkedOffset(
@@ -416,8 +456,8 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
       else { return nil }
       guard sourceOffset + count <= destinationOffset || destinationOffset + count <= sourceOffset
       else { return nil }
-      let bytes = Array(storage[sourceOffset..<(sourceOffset + count)])
-      storage.replaceSubrange(destinationOffset..<(destinationOffset + count), with: bytes)
+      storage.baseAddress!.advanced(by: destinationOffset).update(
+        from: storage.baseAddress!.advanced(by: sourceOffset), count: count)
       markCodePagesWritten(offset: destinationOffset, byteCount: count)
       return count
     }
@@ -464,8 +504,8 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
       else {
         return nil
       }
-      let bytes = Array(storage[sourceOffset..<(sourceOffset + byteCount)])
-      storage.replaceSubrange(destinationOffset..<(destinationOffset + byteCount), with: bytes)
+      storage.baseAddress!.advanced(by: destinationOffset).update(
+        from: storage.baseAddress!.advanced(by: sourceOffset), count: byteCount)
       markCodePagesWritten(offset: destinationOffset, byteCount: byteCount)
       return elementCount
     }
@@ -493,19 +533,12 @@ extension DoryX86ByteArrayMemory: DoryX86BulkMemory {
       guard !destinationAddress.addingReportingOverflow(UInt64(byteCount)).overflow else {
         return nil
       }
-      storage.withUnsafeMutableBytes { destination in
-        pattern.withUnsafeBytes { source in
-          guard let destinationBase = destination.baseAddress,
-            let sourceBase = source.baseAddress
-          else { return }
-          var offset = 0
-          while offset < byteCount {
-            destinationBase.advanced(by: destinationOffset + offset).copyMemory(
-              from: sourceBase,
-              byteCount: pattern.count
-            )
-            offset += pattern.count
-          }
+      pattern.withUnsafeBufferPointer { source in
+        var offset = 0
+        while offset < byteCount {
+          storage.baseAddress!.advanced(by: destinationOffset + offset).update(
+            from: source.baseAddress!, count: pattern.count)
+          offset += pattern.count
         }
       }
       markCodePagesWritten(offset: destinationOffset, byteCount: byteCount)

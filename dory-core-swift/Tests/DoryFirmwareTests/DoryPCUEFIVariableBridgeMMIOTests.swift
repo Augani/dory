@@ -11,7 +11,7 @@ import Testing
     let device = try DoryPCUEFIVariableBridgeMMIO(
       service: DoryUEFIVariableBridgeService(store: fixture.store)
     )
-    let bus = try DoryPCPhysicalMemoryBus(ram: DoryX86ByteArrayMemory(byteCount: 1 << 20))
+    let bus = try DoryPCPhysicalMemoryBus(ram: try DoryX86ByteArrayMemory(byteCount: 1 << 20))
     try bus.attach(device)
     bus.seal()
     let base = DoryPCV1ABI.firmwareVariableBase
