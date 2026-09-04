@@ -215,8 +215,12 @@ public struct DoryX86IRTranslator: Sendable {
     mode: DoryX86ExecutionMode
   ) -> (statements: [DoryIRStatement], terminator: DoryIRTerminator?) {
     switch instruction.operation {
-    case .noOperation, .processorPause, .memoryFence:
+    case .noOperation, .processorPause:
       return ([], nil)
+    case .memoryFence:
+      // A fence must reach the memory implementation's ordering callback. Until native IR
+      // represents that effect, retire it through the interpreter at its exact boundary.
+      return fallback(instruction, reason: .interpreter)
     case .move(let destination, let source):
       return (
         [
