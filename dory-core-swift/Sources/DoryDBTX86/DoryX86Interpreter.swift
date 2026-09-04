@@ -2556,11 +2556,39 @@ public struct DoryX86Interpreter: Sendable {
           linearAddress: effectiveAddress(operand, instruction: instruction, state: state)
         )
       case .descriptorTable(let table, let load, let address):
-        if load, currentPrivilegeLevel(state, mode: mode) != 0 {
+        let privilege = currentPrivilegeLevel(state, mode: mode)
+        if (load && privilege != 0)
+          || (!load && privilege != 0 && state.control.cr4 & (1 << 11) != 0)
+        {
           return generalProtection(at: originalRIP)
         }
         let linearAddress = effectiveAddress(address, instruction: instruction, state: state)
         let byteCount = mode == .long64 ? 10 : 6
+        if mode == .long64 {
+          // Segment limits are ignored in 64-bit mode, including FS/GS; their bases
+          // still contribute to the explicit operand's canonical linear address.
+          let last = linearAddress.addingReportingOverflow(UInt64(byteCount - 1))
+          guard !last.overflow,
+            DoryX86ArchitecturalState.isCanonical(linearAddress),
+            DoryX86ArchitecturalState.isCanonical(last.partialValue)
+          else {
+            throw address.segment == .ss
+              ? stackProtection(at: originalRIP) : segmentProtection(at: originalRIP)
+          }
+        } else {
+          let virtual8086 = state.control.efer & (1 << 10) == 0
+            && state.rflags.contains(.virtual8086)
+          if mode != .real16, !virtual8086, state.control.cr0 & 1 != 0,
+            address.segment != .cs, address.segment != .ss,
+            segmentState(address.segment, state: state).selector & ~UInt16(3) == 0
+          {
+            return generalProtection(at: originalRIP)
+          }
+          try validateSegmentAccess(
+            address, byteCount: byteCount, write: !load,
+            instruction: instruction, state: state
+          )
+        }
         if load {
           let bytes = try executionMemory.read(at: linearAddress, byteCount: byteCount)
           let limit = UInt16(bytes[0]) | UInt16(bytes[1]) << 8
@@ -2568,7 +2596,8 @@ public struct DoryX86Interpreter: Sendable {
           for index in 0..<(byteCount - 2) {
             base |= UInt64(bytes[index + 2]) << UInt64(index * 8)
           }
-          if mode == .real16, !instruction.prefixes.operandSizeOverride {
+          let default16 = mode == .real16 || mode == .protected16
+          if mode != .long64, default16 != instruction.prefixes.operandSizeOverride {
             base &= 0x00ff_ffff
           }
           let value = DoryX86DescriptorTableState(limit: limit, base: base)
