@@ -649,8 +649,26 @@ public struct DoryX86Interpreter: Sendable {
           state: state,
           memory: executionMemory
         )
-        pushX87(value, state: &state.floatingPoint)
+        if let fault = DoryX86X87Stack.loadFault(source: source, state: state.floatingPoint) {
+          if DoryX86X87Stack.record(fault, instruction: instruction, state: &state.floatingPoint) {
+            DoryX86X87Stack.commitPush(DoryX86X87Stack.indefinite, state: &state.floatingPoint)
+          }
+        } else {
+          state.floatingPoint.x87StatusWord &= ~UInt16(0x0200)
+          DoryX86X87Stack.commitPush(value, state: &state.floatingPoint)
+        }
       case .storeX87(let destination, let format, let pop, let truncate):
+        if DoryX86X87Stack.isEmpty(0, state: state.floatingPoint) {
+          // Suppressed unmasked stores do not access the destination. This is
+          // Dory's Bochs-correlated priority choice for overlapping data faults;
+          // it is not a claim of locally qualified physical-CPU behavior.
+          guard DoryX86X87Stack.record(.underflow, instruction: instruction,
+            state: &state.floatingPoint) else { break }
+          try writeX87Memory(DoryX86X87Stack.indefiniteBytes(for: format), to: destination,
+            instruction: instruction, state: state, memory: executionMemory)
+          if pop { popX87(state: &state.floatingPoint) }
+          break
+        }
         let value = readX87Register(0, state: state.floatingPoint)
         let bytes = storeX87Bytes(
           value,
@@ -667,6 +685,16 @@ public struct DoryX86Interpreter: Sendable {
         )
         if pop { popX87(state: &state.floatingPoint) }
       case .exchangeX87(let register):
+        let firstEmpty = DoryX86X87Stack.isEmpty(0, state: state.floatingPoint)
+        let secondEmpty = DoryX86X87Stack.isEmpty(register, state: state.floatingPoint)
+        if firstEmpty || secondEmpty {
+          guard DoryX86X87Stack.record(.underflow, instruction: instruction,
+            state: &state.floatingPoint) else { break }
+          if firstEmpty { writeX87Register(0, value: DoryX86X87Stack.indefinite, state: &state.floatingPoint) }
+          if secondEmpty { writeX87Register(register, value: DoryX86X87Stack.indefinite, state: &state.floatingPoint) }
+        } else {
+          state.floatingPoint.x87StatusWord &= ~UInt16(0x0200)
+        }
         let first = physicalX87Register(0, state: state.floatingPoint)
         let second = physicalX87Register(register, state: state.floatingPoint)
         state.floatingPoint.x87.swapAt(first, second)
@@ -739,6 +767,13 @@ public struct DoryX86Interpreter: Sendable {
         }
         for _ in 0..<popCount { popX87(state: &state.floatingPoint) }
       case .x87Special(let operation):
+        if DoryX86X87Stack.isConstantLoad(operation),
+          let fault = DoryX86X87Stack.loadFault(source: nil, state: state.floatingPoint) {
+          if DoryX86X87Stack.record(fault, instruction: instruction, state: &state.floatingPoint) {
+            DoryX86X87Stack.commitPush(DoryX86X87Stack.indefinite, state: &state.floatingPoint)
+          }
+          break
+        }
         executeX87Special(operation, state: &state.floatingPoint)
       case .loadX87Environment(let source):
         let byteCount = DoryX86FloatingPointEnvironment.byteCount(
@@ -776,7 +811,7 @@ public struct DoryX86Interpreter: Sendable {
         state.floatingPoint.x87ControlWord |= 0x003F
         DoryX86LegacyFloatingPointPolicy.updateExceptionSummary(state: &state.floatingPoint)
       case .loadX87PackedBCD(let source):
-        try validateSegmentAccess(
+        try validateFloatingPointTransfer(
           source,
           byteCount: 10,
           write: false,
@@ -787,8 +822,24 @@ public struct DoryX86Interpreter: Sendable {
           at: effectiveAddress(source, instruction: instruction, state: state),
           byteCount: 10
         )
-        pushX87(decodeX87PackedBCD(bytes, state: &state.floatingPoint), state: &state.floatingPoint)
+        if let fault = DoryX86X87Stack.loadFault(source: nil, state: state.floatingPoint) {
+          if DoryX86X87Stack.record(fault, instruction: instruction, state: &state.floatingPoint) {
+            DoryX86X87Stack.commitPush(DoryX86X87Stack.indefinite, state: &state.floatingPoint)
+          }
+        } else {
+          let value = decodeX87PackedBCD(bytes, state: &state.floatingPoint)
+          state.floatingPoint.x87StatusWord &= ~UInt16(0x0200)
+          DoryX86X87Stack.commitPush(.init(value), state: &state.floatingPoint)
+        }
       case .storeX87PackedBCD(let destination, let pop):
+        if DoryX86X87Stack.isEmpty(0, state: state.floatingPoint) {
+          guard DoryX86X87Stack.record(.underflow, instruction: instruction,
+            state: &state.floatingPoint) else { break }
+          try writeX87Memory(DoryX86X87Stack.packedBCDIndefinite, to: destination,
+            instruction: instruction, state: state, memory: executionMemory)
+          if pop { popX87(state: &state.floatingPoint) }
+          break
+        }
         let bytes = encodeX87PackedBCD(
           readX87Register(0, state: state.floatingPoint).doubleValue,
           state: &state.floatingPoint
@@ -802,6 +853,14 @@ public struct DoryX86Interpreter: Sendable {
         )
         if pop { popX87(state: &state.floatingPoint) }
       case .moveX87(let destination, let source, let pop):
+        if DoryX86X87Stack.isEmpty(source, state: state.floatingPoint) {
+          guard DoryX86X87Stack.record(.underflow, instruction: instruction,
+            state: &state.floatingPoint) else { break }
+          writeX87Register(destination, value: DoryX86X87Stack.indefinite, state: &state.floatingPoint)
+          if pop { popX87(state: &state.floatingPoint) }
+          break
+        }
+        state.floatingPoint.x87StatusWord &= ~UInt16(0x0200)
         writeX87Register(
           destination,
           value: readX87Register(source, state: state.floatingPoint),
@@ -3644,7 +3703,7 @@ public struct DoryX86Interpreter: Sendable {
     case .register(let register):
       return readX87Register(register, state: state.floatingPoint)
     case .memory(let memoryOperand, let format):
-      try validateSegmentAccess(
+      try validateFloatingPointTransfer(
         memoryOperand,
         byteCount: format.byteCount,
         write: false,
@@ -3682,7 +3741,7 @@ public struct DoryX86Interpreter: Sendable {
     state: DoryX86ArchitecturalState,
     memory: any DoryX86Memory
   ) throws {
-    try validateSegmentAccess(
+    try validateFloatingPointTransfer(
       memoryOperand,
       byteCount: bytes.count,
       write: true,
@@ -4052,7 +4111,7 @@ public struct DoryX86Interpreter: Sendable {
     let rounded = value.rounded(x87RoundingRule(state))
     guard rounded.isFinite, abs(rounded) < 1_000_000_000_000_000_000 else {
       state.x87StatusWord |= 1
-      return [UInt8](repeating: 0, count: 9) + [0xC0]
+      return DoryX86X87Stack.packedBCDIndefinite
     }
     var magnitude = UInt64(abs(rounded))
     var bytes = [UInt8](repeating: 0, count: 10)
