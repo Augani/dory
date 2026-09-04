@@ -1183,8 +1183,30 @@ public struct DoryX86Decoder: Sendable {
           throw DoryX86DecodeError.invalidEncoding(
             address: address, detail: "unsupported vector move mandatory prefix")
         }
+      case 0x13:
+        // MOVLPS/MOVLPD store the low qword of the XMM source. Both forms are
+        // memory-only; 66 selects the SSE2 packed-double spelling.
+        guard prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "MOVLPS/MOVLPD store rejects repeat prefixes")
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        guard case .memory = operands.rm else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "MOVLPS/MOVLPD store requires memory")
+        }
+        operation = .moveVectorQwordHalf(
+          destination: vectorOperand(operands.rm),
+          source: vectorOperand(operands.reg),
+          sourceHigh: false,
+          destinationHigh: false)
       case 0x14, 0x15:
         // UNPCKLPS (no prefix) / UNPCKLPD (66) / UNPCKHPS (no prefix) / UNPCKHPD (66)
+        guard prefixes.repeatPrefix == nil else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "packed floating unpack rejects repeat prefixes")
+        }
         let doublePrecision = prefixes.operandSizeOverride
         let operands = try decodeModRM(
           cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
@@ -1336,14 +1358,17 @@ public struct DoryX86Decoder: Sendable {
           )
         }
       case 0x51:
-        // SQRTSS (F3 0F 51) / SQRTSD (F2 0F 51)
-        guard prefixes.operandSizeOverride == false,
-              prefixes.repeatPrefix == 0xF3 || prefixes.repeatPrefix == 0xF2 else {
+        // SQRTPS (NP), SQRTPD (66), SQRTSS (F3), and SQRTSD (F2).
+        let format: DoryX86VectorFloatingFormat
+        switch (prefixes.repeatPrefix, prefixes.operandSizeOverride) {
+        case (nil, false): format = .packedSingle
+        case (nil, true): format = .packedDouble
+        case (0xF3, false): format = .scalarSingle
+        case (0xF2, false): format = .scalarDouble
+        default:
           throw DoryX86DecodeError.unsupportedOpcode(
             address: address, bytes: cursor.consumedBytes)
         }
-        let format: DoryX86VectorFloatingFormat =
-          prefixes.repeatPrefix == 0xF2 ? .scalarDouble : .scalarSingle
         let operands = try decodeModRM(
           cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
         operation = .scalarSquareRoot(
@@ -1352,46 +1377,63 @@ public struct DoryX86Decoder: Sendable {
           source: vectorOperand(operands.rm)
         )
       case 0x5A:
-        // CVTSD2SS (F2 0F 5A) / CVTSS2SD (F3 0F 5A)
-        guard prefixes.operandSizeOverride == false,
-              prefixes.repeatPrefix == 0xF2 || prefixes.repeatPrefix == 0xF3 else {
-          throw DoryX86DecodeError.unsupportedOpcode(
-            address: address, bytes: cursor.consumedBytes)
-        }
-        let direction: DoryX86ScalarConvertDirection =
-          prefixes.repeatPrefix == 0xF2 ? .doubleToSingle : .singleToDouble
-        let operands = try decodeModRM(
-          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-        operation = .scalarConvert(
-          direction: direction,
-          destination: vectorRegister(operands.reg),
-          source: vectorOperand(operands.rm)
-        )
-      case 0x5B:
-        // Intel SDM Vol. 2A: 66 selects CVTPS2DQ; F3 selects CVTTPS2DQ.
-        // The unprefixed CVTDQ2PS direction is a separate, unsupported operation.
-        let truncated: Bool
-        switch (prefixes.operandSizeOverride, prefixes.repeatPrefix) {
-        case (true, nil): truncated = false
-        case (false, 0xF3): truncated = true
+        let operands: ModRMOperands
+        switch (prefixes.repeatPrefix, prefixes.operandSizeOverride) {
+        case (nil, false):
+          operands = try decodeModRM(
+            cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+          operation = .convertPackedSingleToDouble(
+            destination: vectorRegister(operands.reg), source: vectorOperand(operands.rm))
+        case (nil, true):
+          operands = try decodeModRM(
+            cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+          operation = .convertPackedDoubleToSingle(
+            destination: vectorRegister(operands.reg), source: vectorOperand(operands.rm))
+        case (0xF2, false), (0xF3, false):
+          // CVTSD2SS (F2) / CVTSS2SD (F3).
+          operands = try decodeModRM(
+            cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+          operation = .scalarConvert(
+            direction: prefixes.repeatPrefix == 0xF2 ? .doubleToSingle : .singleToDouble,
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm)
+          )
         default:
           throw DoryX86DecodeError.unsupportedOpcode(
             address: address, bytes: cursor.consumedBytes)
         }
-        let operands = try decodeModRM(
-          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-        operation = .convertPackedSingleToDword(
-          truncated: truncated, destination: vectorRegister(operands.reg),
-          source: vectorOperand(operands.rm))
-      case 0xC2:
-        // CMPSS (F3 0F C2) / CMPSD (F2 0F C2) with immediate predicate
-        guard prefixes.operandSizeOverride == false,
-              prefixes.repeatPrefix == 0xF3 || prefixes.repeatPrefix == 0xF2 else {
+      case 0x5B:
+        // Intel SDM Vol. 2A: NP selects CVTDQ2PS, 66 selects CVTPS2DQ,
+        // and F3 selects CVTTPS2DQ.
+        switch (prefixes.operandSizeOverride, prefixes.repeatPrefix) {
+        case (false, nil):
+          let operands = try decodeModRM(
+            cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+          operation = .convertPackedDwordToSingle(
+            destination: vectorRegister(operands.reg), source: vectorOperand(operands.rm))
+        case (true, nil), (false, 0xF3):
+          let operands = try decodeModRM(
+            cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+          operation = .convertPackedSingleToDword(
+            truncated: prefixes.repeatPrefix == 0xF3,
+            destination: vectorRegister(operands.reg),
+            source: vectorOperand(operands.rm))
+        default:
           throw DoryX86DecodeError.unsupportedOpcode(
             address: address, bytes: cursor.consumedBytes)
         }
-        let format: DoryX86VectorFloatingFormat =
-          prefixes.repeatPrefix == 0xF2 ? .scalarDouble : .scalarSingle
+      case 0xC2:
+        // CMPPS (NP), CMPPD (66), CMPSS (F3), and CMPSD (F2).
+        let format: DoryX86VectorFloatingFormat
+        switch (prefixes.repeatPrefix, prefixes.operandSizeOverride) {
+        case (nil, false): format = .packedSingle
+        case (nil, true): format = .packedDouble
+        case (0xF3, false): format = .scalarSingle
+        case (0xF2, false): format = .scalarDouble
+        default:
+          throw DoryX86DecodeError.unsupportedOpcode(
+            address: address, bytes: cursor.consumedBytes)
+        }
         let operands = try decodeModRM(
           cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
         let predicate = try cursor.readByte()

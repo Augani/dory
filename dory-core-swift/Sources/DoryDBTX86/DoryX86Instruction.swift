@@ -212,7 +212,7 @@ public enum DoryX86VectorFloatingOperation: String, Codable, Sendable, Hashable 
   case add, multiply, subtract, minimum, divide, maximum
 }
 
-/// SSE scalar comparison predicates for `CMPSS`/`CMPSD` (`0F C2`).
+/// Legacy SSE comparison predicates for `CMPPS`/`CMPPD`/`CMPSS`/`CMPSD` (`0F C2`).
 public enum DoryX86ScalarComparePredicate: UInt8, Codable, Sendable, Hashable {
   case equal = 0
   case lessThan = 1
@@ -575,8 +575,8 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     destination: UInt8,
     source: DoryX86VectorOperand
   )
-  /// `CMPSS`/`CMPSD` (`0F C2`): scalar single/double compare with immediate
-  /// predicate. Sets the low element to all-1s or all-0s; preserves upper bits.
+  /// `CMPPS`/`CMPPD`/`CMPSS`/`CMPSD` (`0F C2`): packed or scalar compare with
+  /// an immediate predicate. Sets selected elements to all-1s or all-0s.
   case scalarCompare(
     predicate: DoryX86ScalarComparePredicate,
     format: DoryX86VectorFloatingFormat,
@@ -589,7 +589,7 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     destination: UInt8,
     source: DoryX86VectorOperand
   )
-  /// `SQRTSS`/`SQRTSD` (`F3/F2 0F 51`): scalar square root.
+  /// `SQRTPS`/`SQRTPD`/`SQRTSS`/`SQRTSD` (`0F 51`): packed or scalar square root.
   case scalarSquareRoot(
     format: DoryX86VectorFloatingFormat,
     destination: UInt8,
@@ -885,6 +885,13 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case setInterruptsEnabled(Bool)
   case noOperation
   case undefinedInstruction
+  // Append new cases so incremental clients retain every existing enum discriminator.
+  /// CVTPS2PD (0F 5A): convert two packed singles from XMM/m64 to two doubles.
+  case convertPackedSingleToDouble(destination: UInt8, source: DoryX86VectorOperand)
+  /// CVTPD2PS (66 0F 5A): convert two packed doubles from XMM/m128 to two singles.
+  case convertPackedDoubleToSingle(destination: UInt8, source: DoryX86VectorOperand)
+  /// CVTDQ2PS (0F 5B): convert four signed dwords from XMM/m128 to four singles.
+  case convertPackedDwordToSingle(destination: UInt8, source: DoryX86VectorOperand)
 }
 
 public struct DoryX86DecodedInstruction: Codable, Sendable, Hashable {

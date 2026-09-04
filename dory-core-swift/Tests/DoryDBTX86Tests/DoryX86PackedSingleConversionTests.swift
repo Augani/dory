@@ -2,7 +2,7 @@ import Testing
 
 @testable import DoryDBTX86
 
-// Intel SDM 092 Vol. 2A CVTPS2DQ pp. 3-225–227, CVTTPS2DQ pp. 3-249–251;
+// Intel SDM 092 Vol. 2A CVTDQ2PS, CVTPS2DQ pp. 3-225–227, CVTTPS2DQ pp. 3-249–251;
 // Vol. 1 §11.5.2.1–2 and §11.5.3 (invalid, DAZ, precision and exception priority).
 // https://cdrdv2-public.intel.com/922480/253666-092-sdm-vol-2a.pdf
 @Suite struct DoryX86PackedSingleConversionTests {
@@ -23,8 +23,23 @@ import Testing
           try DoryX86Decoder().decode([0xF0] + code(prefix), at: 0x1000, mode: mode)
         }
       }
-      // No alias to the separate unimplemented CVTDQ2PS direction or invalid F2 form.
-      for prefix: [UInt8] in [[], [0xF2], [0x66, 0xF3], [0xF3, 0x66]] {
+      for modRM in UInt8(0xC0)...UInt8(0xFF) {
+        let instruction = try DoryX86Decoder().decode(
+          [0x0F, 0x5B, modRM], at: 0x1000, mode: mode)
+        #expect(instruction.operation == .convertPackedDwordToSingle(
+          destination: (modRM >> 3) & 7, source: .register(modRM & 7)))
+      }
+      for extra: [UInt8] in [[], [0x67], [0x3E]] {
+        let instruction = try DoryX86Decoder().decode(
+          extra + [0x0F, 0x5B, 0xC1], at: 0x1000, mode: mode)
+        #expect(instruction.operation == .convertPackedDwordToSingle(
+          destination: 0, source: .register(1)))
+      }
+      #expect(throws: DoryX86DecodeError.self) {
+        try DoryX86Decoder().decode([0xF0, 0x0F, 0x5B, 0xC1], at: 0x1000, mode: mode)
+      }
+      // F2 and conflicting mandatory prefixes remain invalid.
+      for prefix: [UInt8] in [[0xF2], [0x66, 0xF3], [0xF3, 0x66]] {
         #expect(throws: DoryX86DecodeError.self) {
           try DoryX86Decoder().decode(prefix + [0x0F, 0x5B, 0xC1], at: 0x1000, mode: mode)
         }

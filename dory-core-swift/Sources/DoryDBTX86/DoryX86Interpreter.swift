@@ -1367,38 +1367,13 @@ public struct DoryX86Interpreter: Sendable {
           state.floatingPoint.ymm[Int(destination)] = try .init(
             bytes: registerBytes, expectedByteCount: 32)
         }
-      case .unpackVector(let high, let doublePrecision, let destination, let source):
-        let lhs = Array(state.floatingPoint.ymm[Int(destination)].bytes.prefix(16))
-        let rhs = try readVectorBytes(
-          source, byteCount: 16, instruction: instruction,
-          state: state, memory: executionMemory)
-        var result = [UInt8](repeating: 0, count: 16)
-        if doublePrecision {
-          if high {
-            result.replaceSubrange(0..<8, with: lhs[8..<16])
-            result.replaceSubrange(8..<16, with: rhs[8..<16])
-          } else {
-            result.replaceSubrange(0..<8, with: lhs[0..<8])
-            result.replaceSubrange(8..<16, with: rhs[0..<8])
-          }
-        } else {
-          if high {
-            result.replaceSubrange(0..<4, with: lhs[8..<12])
-            result.replaceSubrange(4..<8, with: rhs[8..<12])
-            result.replaceSubrange(8..<12, with: lhs[12..<16])
-            result.replaceSubrange(12..<16, with: rhs[12..<16])
-          } else {
-            result.replaceSubrange(0..<4, with: lhs[0..<4])
-            result.replaceSubrange(4..<8, with: rhs[0..<4])
-            result.replaceSubrange(8..<12, with: lhs[4..<8])
-            result.replaceSubrange(12..<16, with: rhs[4..<8])
-          }
-        }
-        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
-        registerBytes.replaceSubrange(0..<16, with: result)
-        registerBytes.replaceSubrange(16..<32, with: repeatElement(0, count: 16))
-        state.floatingPoint.ymm[Int(destination)] = try .init(
-          bytes: registerBytes, expectedByteCount: 32)
+      case .unpackVector:
+        try executeLegacySIMDUnpack(
+          instruction.operation,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
+        )
       case .convertPackedDoubleToDword(let truncated, let destination, let source):
         if case .memory(let operand) = source {
           try validateSegmentAccess(
@@ -1485,6 +1460,15 @@ public struct DoryX86Interpreter: Sendable {
         }
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
+      case .convertPackedSingleToDouble, .convertPackedDoubleToSingle,
+        .convertPackedDwordToSingle:
+        if let fault = try executePackedFloatingConversion(
+          instruction.operation,
+          instruction: instruction,
+          originalRIP: originalRIP,
+          state: &state,
+          memory: executionMemory
+        ) { return fault }
       case .packedCompareStringIndex(let destination, let source, let immediate):
         // PCMPISTRI: SSE4.2 packed compare implicit-length strings.
         // Produces an index in ECX. The immediate encodes:
@@ -2179,104 +2163,43 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
-      case .vectorBitwise(let operation, let destination, let source):
-        let rhs = try readVectorBytes(
-          source,
-          byteCount: 16,
+      case .vectorBitwise:
+        try executeLegacySIMDBitwise(
+          instruction.operation,
           instruction: instruction,
-          state: state,
+          state: &state,
           memory: executionMemory
         )
-        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
-        for index in 0..<16 {
-          let lhs = registerBytes[index]
-          registerBytes[index] =
-            switch operation {
-            case .and: lhs & rhs[index]
-            case .andNot: ~lhs & rhs[index]
-            case .or: lhs | rhs[index]
-            case .xor: lhs ^ rhs[index]
-            }
-        }
-        state.floatingPoint.ymm[Int(destination)] = try .init(
-          bytes: registerBytes, expectedByteCount: 32)
-      case .vectorFloatingBinary(let operation, let format, let destination, let source):
-        let rhs = try readVectorBytes(
-          source,
-          byteCount: 16,
+      case .vectorFloatingBinary:
+        try executeLegacySIMDFloatingBinary(
+          instruction.operation,
           instruction: instruction,
-          state: state,
+          state: &state,
           memory: executionMemory
         )
-        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
-        executeVectorFloatingBinary(
-          operation,
-          format: format,
-          destination: &registerBytes,
-          source: rhs
+      case .scalarCompare:
+        if let fault = try executeLegacySIMDComparison(
+          instruction.operation,
+          instruction: instruction,
+          originalRIP: originalRIP,
+          state: &state,
+          memory: executionMemory
+        ) { return fault }
+      case .scalarConvert:
+        try executeLegacySIMDScalarConversion(
+          instruction.operation,
+          instruction: instruction,
+          state: &state,
+          memory: executionMemory
         )
-        state.floatingPoint.ymm[Int(destination)] = try .init(
-          bytes: registerBytes, expectedByteCount: 32)
-      case .scalarCompare(let predicate, let format, let destination, let source):
-        // CMPSS/CMPSD: compare low scalar elements, set low element to mask.
-        let elementSize = format == .scalarDouble ? 8 : 4
-        let rhs = try readVectorBytes(
-          source, byteCount: elementSize,
-          instruction: instruction, state: state, memory: executionMemory)
-        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
-        let lhs = Array(registerBytes.prefix(elementSize))
-        let result: Bool
-        if format == .scalarDouble {
-          let a = Double(bitPattern: fromLittleEndian(lhs))
-          let b = Double(bitPattern: fromLittleEndian(rhs))
-          result = evaluateScalarCompare(predicate, a: a, b: b)
-        } else {
-          let a = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(lhs)))
-          let b = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(rhs)))
-          result = evaluateScalarCompare(predicate, a: Double(a), b: Double(b))
-        }
-        let mask: [UInt8] = Array(repeating: result ? 0xFF : 0, count: elementSize)
-        registerBytes.replaceSubrange(0..<elementSize, with: mask)
-        state.floatingPoint.ymm[Int(destination)] = try .init(
-          bytes: registerBytes, expectedByteCount: 32)
-      case .scalarConvert(let direction, let destination, let source):
-        // CVTSD2SS / CVTSS2SD: convert scalar double↔single.
-        let sourceBytes = try readVectorBytes(
-          source, byteCount: direction == .doubleToSingle ? 8 : 4,
-          instruction: instruction, state: state, memory: executionMemory)
-        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
-        switch direction {
-        case .doubleToSingle:
-          let doubleValue = Double(bitPattern: fromLittleEndian(sourceBytes))
-          let singleValue = Float(doubleValue)
-          let singleBits = littleEndian(UInt64(singleValue.bitPattern), width: .doubleword)
-          registerBytes.replaceSubrange(0..<4, with: singleBits)
-        case .singleToDouble:
-          let singleValue = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(sourceBytes)))
-          let doubleValue = Double(singleValue)
-          let doubleBits = littleEndian(doubleValue.bitPattern, width: .quadword)
-          registerBytes.replaceSubrange(0..<8, with: doubleBits)
-        }
-        state.floatingPoint.ymm[Int(destination)] = try .init(
-          bytes: registerBytes, expectedByteCount: 32)
-      case .scalarSquareRoot(let format, let destination, let source):
-        // SQRTSS / SQRTSD: scalar square root of low element.
-        let elementSize = format == .scalarDouble ? 8 : 4
-        let sourceBytes = try readVectorBytes(
-          source, byteCount: elementSize,
-          instruction: instruction, state: state, memory: executionMemory)
-        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
-        if format == .scalarDouble {
-          let value = Double(bitPattern: fromLittleEndian(sourceBytes))
-          let result = value.squareRoot()
-          registerBytes.replaceSubrange(0..<8, with: littleEndian(result.bitPattern, width: .quadword))
-        } else {
-          let value = Float(bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(sourceBytes)))
-          let result = value.squareRoot()
-          registerBytes.replaceSubrange(0..<4, with: littleEndian(UInt64(result.bitPattern), width: .doubleword))
-        }
-        state.floatingPoint.ymm[Int(destination)] = try .init(
-          bytes: registerBytes, expectedByteCount: 32)
+      case .scalarSquareRoot:
+        if let fault = try executeLegacySIMDSquareRoot(
+          instruction.operation,
+          instruction: instruction,
+          originalRIP: originalRIP,
+          state: &state,
+          memory: executionMemory
+        ) { return fault }
       case .vectorIntegerBinary(let operation, let laneWidth, let destination, let source):
         let rhs = try readVectorBytes(
           source,
@@ -3469,7 +3392,8 @@ public struct DoryX86Interpreter: Sendable {
         .duplicateVectorScalar, .shufflePackedBytes, .alignPackedBytes, .testPackedBits,
         .extendPackedDwordToQword, .extendPackedByteToQword, .comparePackedQwords,
         .insertPackedQword, .unpackVector, .convertPackedDoubleToDword, .convertPackedSingleToDword,
-        .convertPackedDwordToDouble,
+        .convertPackedDwordToDouble, .convertPackedSingleToDouble,
+        .convertPackedDoubleToSingle, .convertPackedDwordToSingle,
         .packedCompareStringIndex, .moveIntegerToVector, .moveVectorToInteger, .vectorBitwise,
         .vectorFloatingBinary, .scalarCompare, .scalarConvert, .scalarSquareRoot,
         .vectorIntegerBinary, .vectorIntegerShift, .vectorByteShift, .vectorFloatingCompare,
@@ -3644,6 +3568,35 @@ public struct DoryX86Interpreter: Sendable {
         at: effectiveAddress(memoryOperand, instruction: instruction, state: state),
         byteCount: byteCount
       )
+    }
+  }
+
+  private func readAlignedVectorBytes(
+    _ operand: DoryX86VectorOperand,
+    byteCount: Int,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> [UInt8] {
+    switch operand {
+    case .register(let register):
+      return Array(state.floatingPoint.ymm[Int(register)].bytes.prefix(byteCount))
+    case .memory(let memoryOperand):
+      // Legacy Type 2/4 SIMD operands check the complete segment/canonical
+      // range, then 16-byte alignment, before attempting paging translation.
+      try validateFloatingPointTransfer(
+        memoryOperand,
+        byteCount: byteCount,
+        write: false,
+        instruction: instruction,
+        state: state
+      )
+      let address = effectiveAddress(
+        memoryOperand, instruction: instruction, state: state)
+      guard address & 0xF == 0 else {
+        throw segmentProtection(at: instruction.address)
+      }
+      return try memory.read(at: address, byteCount: byteCount)
     }
   }
 
@@ -4445,6 +4398,409 @@ public struct DoryX86Interpreter: Sendable {
       return (0x8000_0000, 1)
     }
     return (UInt32(bitPattern: Int32(rounded)), rounded == value ? 0 : 1 << 5)
+  }
+
+  /// Keep the packed floating-point conversions out of `executeStep`. Its
+  /// debug-build stack frame is already large enough that adding lane-local
+  /// arrays there can exhaust Swift Testing's cooperative-thread stack.
+  private func executePackedFloatingConversion(
+    _ operation: DoryX86InstructionOperation,
+    instruction: DoryX86DecodedInstruction,
+    originalRIP: UInt64,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> DoryX86InterpreterResult? {
+    let destination: UInt8
+    let source: DoryX86VectorOperand
+    let sourceByteCount: Int
+    let sourceLaneByteCount: Int
+    let destinationLaneByteCount: Int
+    let laneCount: Int
+    let requiresAlignedMemory: Bool
+    switch operation {
+    case .convertPackedSingleToDouble(let target, let operand):
+      destination = target
+      source = operand
+      sourceByteCount = 8
+      sourceLaneByteCount = 4
+      destinationLaneByteCount = 8
+      laneCount = 2
+      requiresAlignedMemory = false
+    case .convertPackedDoubleToSingle(let target, let operand):
+      destination = target
+      source = operand
+      sourceByteCount = 16
+      sourceLaneByteCount = 8
+      destinationLaneByteCount = 4
+      laneCount = 2
+      requiresAlignedMemory = true
+    case .convertPackedDwordToSingle(let target, let operand):
+      destination = target
+      source = operand
+      sourceByteCount = 16
+      sourceLaneByteCount = 4
+      destinationLaneByteCount = 4
+      laneCount = 4
+      requiresAlignedMemory = true
+    default:
+      preconditionFailure("unexpected packed floating-point conversion")
+    }
+
+    let sourceBytes = try requiresAlignedMemory
+      ? readAlignedVectorBytes(
+        source, byteCount: sourceByteCount, instruction: instruction,
+        state: state, memory: memory)
+      : readVectorBytes(
+        source, byteCount: sourceByteCount, instruction: instruction,
+        state: state, memory: memory)
+    // Legacy CVTPD2PS clears XMM[127:64]. The other forms overwrite all 128
+    // destination bits; every form preserves the upper YMM half.
+    var result = [UInt8](repeating: 0, count: 16)
+    var exceptions: UInt32 = 0
+    for lane in 0..<laneCount {
+      let sourceOffset = lane * sourceLaneByteCount
+      let destinationOffset = lane * destinationLaneByteCount
+      switch operation {
+      case .convertPackedSingleToDouble:
+        let sourceBits = UInt32(fromLittleEndian(
+          Array(sourceBytes[sourceOffset..<sourceOffset + 4])))
+        let converted = packedSingleToDoubleResult(
+          sourceBits, mxcsr: state.floatingPoint.mxcsr)
+        replaceLittleEndian(converted.value, in: &result, at: destinationOffset)
+        exceptions |= converted.exceptions
+      case .convertPackedDoubleToSingle:
+        let sourceBits = fromLittleEndian(
+          Array(sourceBytes[sourceOffset..<sourceOffset + 8]))
+        let converted = packedDoubleToSingleResult(
+          sourceBits, mxcsr: state.floatingPoint.mxcsr)
+        replaceLittleEndian(converted.value, in: &result, at: destinationOffset)
+        exceptions |= converted.exceptions
+      case .convertPackedDwordToSingle:
+        let sourceBits = UInt32(fromLittleEndian(
+          Array(sourceBytes[sourceOffset..<sourceOffset + 4])))
+        let converted = packedDwordToSingleResult(
+          sourceBits, mxcsr: state.floatingPoint.mxcsr)
+        replaceLittleEndian(converted.value, in: &result, at: destinationOffset)
+        exceptions |= converted.exceptions
+      default:
+        preconditionFailure("unexpected packed floating-point conversion")
+      }
+    }
+    if let fault = publishSIMDExceptions(
+      exceptions, originalRIP: originalRIP, state: &state
+    ) { return fault }
+    var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+    registerBytes.replaceSubrange(0..<16, with: result)
+    state.floatingPoint.ymm[Int(destination)] = try .init(
+      bytes: registerBytes, expectedByteCount: 32)
+    return nil
+  }
+
+  private func executeLegacySIMDComparison(
+    _ operation: DoryX86InstructionOperation,
+    instruction: DoryX86DecodedInstruction,
+    originalRIP: UInt64,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> DoryX86InterpreterResult? {
+    guard case .scalarCompare(let predicate, let format, let destination, let source) = operation
+    else { preconditionFailure("unexpected legacy SIMD comparison") }
+    // CMPPS/CMPPD compare every packed lane; CMPSS/CMPSD update only the low
+    // scalar lane. All legacy forms preserve the upper YMM half.
+    let doublePrecision = format == .packedDouble || format == .scalarDouble
+    let elementSize = doublePrecision ? 8 : 4
+    let laneCount = format == .packedSingle ? 4 : format == .packedDouble ? 2 : 1
+    let rhs = try laneCount > 1
+      ? readAlignedVectorBytes(
+        source, byteCount: elementSize * laneCount, instruction: instruction,
+        state: state, memory: memory)
+      : readVectorBytes(
+        source, byteCount: elementSize, instruction: instruction,
+        state: state, memory: memory)
+    var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+    var exceptions: UInt32 = 0
+    for lane in 0..<laneCount {
+      let offset = lane * elementSize
+      let compared = simdCompareResult(
+        predicate,
+        lhs: Array(registerBytes[offset..<offset + elementSize]),
+        rhs: Array(rhs[offset..<offset + elementSize]),
+        doublePrecision: doublePrecision,
+        mxcsr: state.floatingPoint.mxcsr
+      )
+      exceptions |= compared.exceptions
+      registerBytes.replaceSubrange(
+        offset..<offset + elementSize,
+        with: repeatElement(compared.value ? 0xFF : 0, count: elementSize)
+      )
+    }
+    if let fault = publishSIMDExceptions(
+      exceptions, originalRIP: originalRIP, state: &state
+    ) { return fault }
+    state.floatingPoint.ymm[Int(destination)] = try .init(
+      bytes: registerBytes, expectedByteCount: 32)
+    return nil
+  }
+
+  private func executeLegacySIMDBitwise(
+    _ instructionOperation: DoryX86InstructionOperation,
+    instruction: DoryX86DecodedInstruction,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    guard case .vectorBitwise(let operation, let destination, let source) = instructionOperation
+    else { preconditionFailure("unexpected legacy SIMD bitwise operation") }
+    let rhs = try readVectorBytes(
+      source,
+      byteCount: 16,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+    for index in 0..<16 {
+      let lhs = registerBytes[index]
+      registerBytes[index] =
+        switch operation {
+        case .and: lhs & rhs[index]
+        case .andNot: ~lhs & rhs[index]
+        case .or: lhs | rhs[index]
+        case .xor: lhs ^ rhs[index]
+        }
+    }
+    state.floatingPoint.ymm[Int(destination)] = try .init(
+      bytes: registerBytes, expectedByteCount: 32)
+  }
+
+  private func executeLegacySIMDFloatingBinary(
+    _ instructionOperation: DoryX86InstructionOperation,
+    instruction: DoryX86DecodedInstruction,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    guard case .vectorFloatingBinary(
+      let operation, let format, let destination, let source
+    ) = instructionOperation
+    else { preconditionFailure("unexpected legacy SIMD floating binary operation") }
+    let rhs = try readVectorBytes(
+      source,
+      byteCount: 16,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+    executeVectorFloatingBinary(
+      operation,
+      format: format,
+      destination: &registerBytes,
+      source: rhs
+    )
+    state.floatingPoint.ymm[Int(destination)] = try .init(
+      bytes: registerBytes, expectedByteCount: 32)
+  }
+
+  private func executeLegacySIMDUnpack(
+    _ operation: DoryX86InstructionOperation,
+    instruction: DoryX86DecodedInstruction,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    guard case .unpackVector(let high, let doublePrecision, let destination, let source) = operation
+    else { preconditionFailure("unexpected legacy SIMD unpack") }
+    let lhs = Array(state.floatingPoint.ymm[Int(destination)].bytes.prefix(16))
+    let rhs = try readAlignedVectorBytes(
+      source,
+      byteCount: 16,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    var result = [UInt8](repeating: 0, count: 16)
+    if doublePrecision {
+      if high {
+        result.replaceSubrange(0..<8, with: lhs[8..<16])
+        result.replaceSubrange(8..<16, with: rhs[8..<16])
+      } else {
+        result.replaceSubrange(0..<8, with: lhs[0..<8])
+        result.replaceSubrange(8..<16, with: rhs[0..<8])
+      }
+    } else if high {
+      result.replaceSubrange(0..<4, with: lhs[8..<12])
+      result.replaceSubrange(4..<8, with: rhs[8..<12])
+      result.replaceSubrange(8..<12, with: lhs[12..<16])
+      result.replaceSubrange(12..<16, with: rhs[12..<16])
+    } else {
+      result.replaceSubrange(0..<4, with: lhs[0..<4])
+      result.replaceSubrange(4..<8, with: rhs[0..<4])
+      result.replaceSubrange(8..<12, with: lhs[4..<8])
+      result.replaceSubrange(12..<16, with: rhs[4..<8])
+    }
+    var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+    registerBytes.replaceSubrange(0..<16, with: result)
+    state.floatingPoint.ymm[Int(destination)] = try .init(
+      bytes: registerBytes, expectedByteCount: 32)
+  }
+
+  private func executeLegacySIMDScalarConversion(
+    _ operation: DoryX86InstructionOperation,
+    instruction: DoryX86DecodedInstruction,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws {
+    guard case .scalarConvert(let direction, let destination, let source) = operation
+    else { preconditionFailure("unexpected legacy SIMD scalar conversion") }
+    // CVTSD2SS / CVTSS2SD: convert scalar double↔single.
+    let sourceBytes = try readVectorBytes(
+      source,
+      byteCount: direction == .doubleToSingle ? 8 : 4,
+      instruction: instruction,
+      state: state,
+      memory: memory
+    )
+    var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+    switch direction {
+    case .doubleToSingle:
+      let doubleValue = Double(bitPattern: fromLittleEndian(sourceBytes))
+      let singleValue = Float(doubleValue)
+      let singleBits = littleEndian(UInt64(singleValue.bitPattern), width: .doubleword)
+      registerBytes.replaceSubrange(0..<4, with: singleBits)
+    case .singleToDouble:
+      let singleValue = Float(
+        bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(sourceBytes)))
+      let doubleValue = Double(singleValue)
+      let doubleBits = littleEndian(doubleValue.bitPattern, width: .quadword)
+      registerBytes.replaceSubrange(0..<8, with: doubleBits)
+    }
+    state.floatingPoint.ymm[Int(destination)] = try .init(
+      bytes: registerBytes, expectedByteCount: 32)
+  }
+
+  private func executeLegacySIMDSquareRoot(
+    _ operation: DoryX86InstructionOperation,
+    instruction: DoryX86DecodedInstruction,
+    originalRIP: UInt64,
+    state: inout DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> DoryX86InterpreterResult? {
+    guard case .scalarSquareRoot(let format, let destination, let source) = operation
+    else { preconditionFailure("unexpected legacy SIMD square root") }
+    // SQRTPS/SQRTPD update every packed lane; SQRTSS/SQRTSD update only the
+    // low scalar lane. Legacy encodings preserve the upper YMM half.
+    let doublePrecision = format == .packedDouble || format == .scalarDouble
+    let elementSize = doublePrecision ? 8 : 4
+    let laneCount = format == .packedSingle ? 4 : format == .packedDouble ? 2 : 1
+    let sourceBytes = try laneCount > 1
+      ? readAlignedVectorBytes(
+        source, byteCount: elementSize * laneCount, instruction: instruction,
+        state: state, memory: memory)
+      : readVectorBytes(
+        source, byteCount: elementSize, instruction: instruction,
+        state: state, memory: memory)
+    var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+    var exceptions: UInt32 = 0
+    for lane in 0..<laneCount {
+      let offset = lane * elementSize
+      if doublePrecision {
+        let computed = simdSquareRoot64(
+          fromLittleEndian(Array(sourceBytes[offset..<offset + 8])),
+          mxcsr: state.floatingPoint.mxcsr
+        )
+        replaceLittleEndian(computed.value, in: &registerBytes, at: offset)
+        exceptions |= computed.exceptions
+      } else {
+        let computed = simdSquareRoot32(
+          UInt32(fromLittleEndian(Array(sourceBytes[offset..<offset + 4]))),
+          mxcsr: state.floatingPoint.mxcsr
+        )
+        replaceLittleEndian(computed.value, in: &registerBytes, at: offset)
+        exceptions |= computed.exceptions
+      }
+    }
+    if let fault = publishSIMDExceptions(
+      exceptions, originalRIP: originalRIP, state: &state
+    ) { return fault }
+    state.floatingPoint.ymm[Int(destination)] = try .init(
+      bytes: registerBytes, expectedByteCount: 32)
+    return nil
+  }
+
+  private func packedSingleToDoubleResult(
+    _ originalBits: UInt32, mxcsr: UInt32
+  ) -> (value: UInt64, exceptions: UInt32) {
+    var bits = originalBits
+    let exponent = bits & 0x7F80_0000
+    let fraction = bits & 0x007F_FFFF
+    var exceptions: UInt32 = 0
+    if exponent == 0, fraction != 0 {
+      if mxcsr & (1 << 6) != 0 { bits &= 0x8000_0000 } else { exceptions |= 1 << 1 }
+    }
+    if exponent == 0x7F80_0000, fraction != 0, bits & 0x0040_0000 == 0 {
+      exceptions |= 1
+    }
+    return (Double(Float(bitPattern: bits)).bitPattern, exceptions)
+  }
+
+  private func packedDoubleToSingleResult(
+    _ originalBits: UInt64, mxcsr: UInt32
+  ) -> (value: UInt32, exceptions: UInt32) {
+    var bits = originalBits
+    let exponent = bits & 0x7FF0_0000_0000_0000
+    let fraction = bits & 0x000F_FFFF_FFFF_FFFF
+    var exceptions: UInt32 = 0
+    if exponent == 0, fraction != 0 {
+      if mxcsr & (1 << 6) != 0 { bits &= 0x8000_0000_0000_0000 } else { exceptions |= 1 << 1 }
+    }
+    if exponent == 0x7FF0_0000_0000_0000, fraction != 0,
+      bits & 0x0008_0000_0000_0000 == 0 { exceptions |= 1 }
+    let value = Double(bitPattern: bits)
+    var result = Float(value)
+    if value.isFinite {
+      let widened = Double(result)
+      let inexact = widened != value
+      if inexact {
+        exceptions |= 1 << 5
+        switch simdRounding(mxcsr) {
+        case .nearestEven: break
+        case .down:
+          if widened > value { result = result.nextDown }
+        case .up:
+          if widened < value { result = result.nextUp }
+        case .towardZero:
+          if value.sign == .plus, widened > value { result = result.nextDown }
+          if value.sign == .minus, widened < value { result = result.nextUp }
+        }
+      }
+      if abs(value) > Double(Float.greatestFiniteMagnitude) { exceptions |= 1 << 3 }
+      if inexact, value != 0,
+        (result.isZero || abs(result) < Float.leastNormalMagnitude) {
+        exceptions |= 1 << 4
+        if mxcsr & (1 << 15) != 0 {
+          result = Float(bitPattern: result.sign == .minus ? 0x8000_0000 : 0)
+        }
+      }
+    }
+    return (result.bitPattern, exceptions)
+  }
+
+  private func packedDwordToSingleResult(
+    _ bits: UInt32, mxcsr: UInt32
+  ) -> (value: UInt32, exceptions: UInt32) {
+    let value = Double(Int32(bitPattern: bits))
+    var result = Float(value)
+    let widened = Double(result)
+    guard widened != value else { return (result.bitPattern, 0) }
+    switch simdRounding(mxcsr) {
+    case .nearestEven: break
+    case .down:
+      if widened > value { result = result.nextDown }
+    case .up:
+      if widened < value { result = result.nextUp }
+    case .towardZero:
+      if value > 0, widened > value { result = result.nextDown }
+      if value < 0, widened < value { result = result.nextUp }
+    }
+    return (result.bitPattern, 1 << 5)
   }
 
   private func floatingIntegerResult<T: BinaryFloatingPoint>(
@@ -6775,7 +7131,217 @@ public struct DoryX86Interpreter: Sendable {
     bytes.enumerated().reduce(0) { $0 | UInt64($1.element) << UInt64($1.offset * 8) }
   }
 
-  /// Evaluate an SSE scalar comparison predicate for CMPSS/CMPSD.
+  private struct SIMDWideMagnitude {
+    let high: UInt64
+    let low: UInt64
+
+    init(_ value: UInt64) { high = 0; low = value }
+    init(high: UInt64, low: UInt64) { self.high = high; self.low = low }
+
+    static func product(_ value: UInt64) -> Self {
+      let product = value.multipliedFullWidth(by: value)
+      return .init(high: product.high, low: product.low)
+    }
+
+    var bitWidth: Int {
+      high == 0 ? 64 - low.leadingZeroBitCount : 128 - high.leadingZeroBitCount
+    }
+
+    func shiftedLeft(_ count: Int) -> Self {
+      guard count > 0 else { return self }
+      guard count < 128 else { return .init(0) }
+      if count >= 64 { return .init(high: low << UInt64(count - 64), low: 0) }
+      return .init(
+        high: high << UInt64(count) | low >> UInt64(64 - count),
+        low: low << UInt64(count))
+    }
+  }
+
+  private func compareScaledMagnitudes(
+    _ lhs: SIMDWideMagnitude, exponent lhsExponent: Int,
+    _ rhs: SIMDWideMagnitude, exponent rhsExponent: Int
+  ) -> ComparisonResult {
+    let lhsTop = lhsExponent + lhs.bitWidth
+    let rhsTop = rhsExponent + rhs.bitWidth
+    if lhsTop != rhsTop { return lhsTop < rhsTop ? .orderedAscending : .orderedDescending }
+    let normalizedLHS = lhs.shiftedLeft(128 - lhs.bitWidth)
+    let normalizedRHS = rhs.shiftedLeft(128 - rhs.bitWidth)
+    if normalizedLHS.high != normalizedRHS.high {
+      return normalizedLHS.high < normalizedRHS.high ? .orderedAscending : .orderedDescending
+    }
+    if normalizedLHS.low != normalizedRHS.low {
+      return normalizedLHS.low < normalizedRHS.low ? .orderedAscending : .orderedDescending
+    }
+    return .orderedSame
+  }
+
+  private func binaryMagnitude(
+    _ bits: UInt64, exponentBits: Int, fractionBits: Int, bias: Int
+  ) -> (significand: UInt64, exponent: Int) {
+    let fractionMask = (UInt64(1) << UInt64(fractionBits)) - 1
+    let exponentMask = (UInt64(1) << UInt64(exponentBits)) - 1
+    let exponentField = Int(bits >> UInt64(fractionBits) & exponentMask)
+    let fraction = bits & fractionMask
+    if exponentField == 0 { return (fraction, 1 - bias - fractionBits) }
+    return ((UInt64(1) << UInt64(fractionBits)) | fraction,
+      exponentField - bias - fractionBits)
+  }
+
+  private func compareSquare32(_ resultBits: UInt32, to sourceBits: UInt32) -> ComparisonResult {
+    let result = binaryMagnitude(UInt64(resultBits), exponentBits: 8, fractionBits: 23, bias: 127)
+    let source = binaryMagnitude(UInt64(sourceBits), exponentBits: 8, fractionBits: 23, bias: 127)
+    return compareScaledMagnitudes(
+      .product(result.significand), exponent: result.exponent * 2,
+      .init(source.significand), exponent: source.exponent)
+  }
+
+  private func compareSquare64(_ resultBits: UInt64, to sourceBits: UInt64) -> ComparisonResult {
+    let result = binaryMagnitude(resultBits, exponentBits: 11, fractionBits: 52, bias: 1_023)
+    let source = binaryMagnitude(sourceBits, exponentBits: 11, fractionBits: 52, bias: 1_023)
+    return compareScaledMagnitudes(
+      .product(result.significand), exponent: result.exponent * 2,
+      .init(source.significand), exponent: source.exponent)
+  }
+
+  private func simdRounding(_ mxcsr: UInt32) -> DoryX86FloatingRounding {
+    switch (mxcsr >> 13) & 3 {
+    case 0: .nearestEven
+    case 1: .down
+    case 2: .up
+    default: .towardZero
+    }
+  }
+
+  private func simdSquareRoot32(
+    _ originalBits: UInt32, mxcsr: UInt32
+  ) -> (value: UInt32, exceptions: UInt32) {
+    let exponent = originalBits & 0x7F80_0000
+    let fraction = originalBits & 0x007F_FFFF
+    let isNaN = exponent == 0x7F80_0000 && fraction != 0
+    if isNaN {
+      return (originalBits | 0x0040_0000,
+        originalBits & 0x0040_0000 == 0 ? 1 : 0)
+    }
+    var bits = originalBits
+    var exceptions: UInt32 = 0
+    if exponent == 0, fraction != 0 {
+      if mxcsr & (1 << 6) != 0 { bits &= 0x8000_0000 } else { exceptions |= 1 << 1 }
+    }
+    if bits & 0x8000_0000 != 0, bits & 0x7FFF_FFFF != 0 {
+      return (0xFFC0_0000, exceptions | 1)
+    }
+    let value = Float(bitPattern: bits)
+    guard value.isFinite, !value.isZero else { return (bits, exceptions) }
+    var result = value.squareRoot()
+    let relation = compareSquare32(result.bitPattern, to: bits)
+    if relation != .orderedSame { exceptions |= 1 << 5 }
+    switch simdRounding(mxcsr) {
+    case .nearestEven: break
+    case .down, .towardZero:
+      if relation == .orderedDescending { result = result.nextDown }
+    case .up:
+      if relation == .orderedAscending { result = result.nextUp }
+    }
+    return (result.bitPattern, exceptions)
+  }
+
+  private func simdSquareRoot64(
+    _ originalBits: UInt64, mxcsr: UInt32
+  ) -> (value: UInt64, exceptions: UInt32) {
+    let exponent = originalBits & 0x7FF0_0000_0000_0000
+    let fraction = originalBits & 0x000F_FFFF_FFFF_FFFF
+    let isNaN = exponent == 0x7FF0_0000_0000_0000 && fraction != 0
+    if isNaN {
+      return (originalBits | 0x0008_0000_0000_0000,
+        originalBits & 0x0008_0000_0000_0000 == 0 ? 1 : 0)
+    }
+    var bits = originalBits
+    var exceptions: UInt32 = 0
+    if exponent == 0, fraction != 0 {
+      if mxcsr & (1 << 6) != 0 { bits &= 0x8000_0000_0000_0000 } else { exceptions |= 1 << 1 }
+    }
+    if bits & 0x8000_0000_0000_0000 != 0,
+      bits & 0x7FFF_FFFF_FFFF_FFFF != 0
+    {
+      return (0xFFF8_0000_0000_0000, exceptions | 1)
+    }
+    let value = Double(bitPattern: bits)
+    guard value.isFinite, !value.isZero else { return (bits, exceptions) }
+    var result = value.squareRoot()
+    let relation = compareSquare64(result.bitPattern, to: bits)
+    if relation != .orderedSame { exceptions |= 1 << 5 }
+    switch simdRounding(mxcsr) {
+    case .nearestEven: break
+    case .down, .towardZero:
+      if relation == .orderedDescending { result = result.nextDown }
+    case .up:
+      if relation == .orderedAscending { result = result.nextUp }
+    }
+    return (result.bitPattern, exceptions)
+  }
+
+  private func simdCompareResult(
+    _ predicate: DoryX86ScalarComparePredicate,
+    lhs lhsBytes: [UInt8], rhs rhsBytes: [UInt8],
+    doublePrecision: Bool, mxcsr: UInt32
+  ) -> (value: Bool, exceptions: UInt32) {
+    let signalingPredicate: Bool =
+      predicate == .lessThan || predicate == .lessEqual
+      || predicate == .notLessThan || predicate == .notLessEqual
+    if doublePrecision {
+      var lhsBits = fromLittleEndian(lhsBytes)
+      var rhsBits = fromLittleEndian(rhsBytes)
+      var exceptions: UInt32 = 0
+      for bits in [lhsBits, rhsBits] {
+        let exponent = bits & 0x7FF0_0000_0000_0000
+        let fraction = bits & 0x000F_FFFF_FFFF_FFFF
+        if exponent == 0, fraction != 0, mxcsr & (1 << 6) == 0 { exceptions |= 1 << 1 }
+        if exponent == 0x7FF0_0000_0000_0000, fraction != 0,
+          signalingPredicate || bits & 0x0008_0000_0000_0000 == 0 { exceptions |= 1 }
+      }
+      if mxcsr & (1 << 6) != 0 {
+        if lhsBits & 0x7FF0_0000_0000_0000 == 0 { lhsBits &= 0x8000_0000_0000_0000 }
+        if rhsBits & 0x7FF0_0000_0000_0000 == 0 { rhsBits &= 0x8000_0000_0000_0000 }
+      }
+      return (evaluateScalarCompare(predicate,
+        a: Double(bitPattern: lhsBits), b: Double(bitPattern: rhsBits)), exceptions)
+    }
+    var lhsBits = UInt32(fromLittleEndian(lhsBytes))
+    var rhsBits = UInt32(fromLittleEndian(rhsBytes))
+    var exceptions: UInt32 = 0
+    for bits in [lhsBits, rhsBits] {
+      let exponent = bits & 0x7F80_0000
+      let fraction = bits & 0x007F_FFFF
+      if exponent == 0, fraction != 0, mxcsr & (1 << 6) == 0 { exceptions |= 1 << 1 }
+      if exponent == 0x7F80_0000, fraction != 0,
+        signalingPredicate || bits & 0x0040_0000 == 0 { exceptions |= 1 }
+    }
+    if mxcsr & (1 << 6) != 0 {
+      if lhsBits & 0x7F80_0000 == 0 { lhsBits &= 0x8000_0000 }
+      if rhsBits & 0x7F80_0000 == 0 { rhsBits &= 0x8000_0000 }
+    }
+    return (evaluateScalarCompare(predicate,
+      a: Double(Float(bitPattern: lhsBits)), b: Double(Float(bitPattern: rhsBits))), exceptions)
+  }
+
+  private func publishSIMDExceptions(
+    _ candidate: UInt32, originalRIP: UInt64,
+    state: inout DoryX86ArchitecturalState
+  ) -> DoryX86InterpreterResult? {
+    var exceptions = candidate & 0x3F
+    let masks = (state.floatingPoint.mxcsr >> 7) & 0x3F
+    for priority in 0..<6 where exceptions & (1 << priority) != 0 && masks & (1 << priority) == 0 {
+      exceptions &= (1 << (priority + 1)) - 1
+      break
+    }
+    state.floatingPoint.mxcsr |= exceptions
+    guard exceptions & ~masks != 0 else { return nil }
+    if state.control.cr4 & (1 << 10) == 0 { return invalidOpcode(at: originalRIP) }
+    return .exception(.init(
+      kind: .simdFloatingPoint, vector: 19, instructionPointer: originalRIP))
+  }
+
+  /// Evaluate a legacy SSE comparison predicate for CMPPS/CMPPD/CMPSS/CMPSD.
   private func evaluateScalarCompare(
     _ predicate: DoryX86ScalarComparePredicate, a: Double, b: Double
   ) -> Bool {

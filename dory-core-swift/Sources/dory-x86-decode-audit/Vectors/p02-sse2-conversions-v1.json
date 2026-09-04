@@ -1,19 +1,19 @@
 {
   "schemaVersion": 1,
   "id": "dory.p02.sse2-conversions-v1",
-  "scope": "Bounded static decode corpus for legacy CVTPS2DQ/CVTTPS2DQ: register and representative memory/address-prefix forms in four modes. Includes explicitly unimplemented CVTDQ2PS and rejected F2/LOCK controls. This is not the full SSE2 instruction set and carries no execution, physical-reference or release qualification. Historical p02-isa-v1 and its support catalog are unchanged.",
+  "scope": "Bounded static decode corpus for legacy CVTDQ2PS/CVTPS2DQ/CVTTPS2DQ: register and representative memory/address-prefix forms in four modes, plus rejected F2/LOCK controls. This is not the full SSE2 instruction set and carries no execution, physical-reference or release qualification. Historical p02-isa-v1 and its support catalog are unchanged.",
   "references": [
     {
       "id": "intel-sse2-conversions",
-      "title": "Intel SDM 092 Vol. 2A, CVTPS2DQ pp. 3-225–227 and CVTTPS2DQ pp. 3-249–251",
+      "title": "Intel SDM 092 Vol. 2A, CVTDQ2PS, CVTPS2DQ, and CVTTPS2DQ",
       "url": "https://cdrdv2-public.intel.com/922480/253666-092-sdm-vol-2a.pdf"
     }
   ],
   "vectors": [
     {
-      "id": "cvtdq2ps-unimplemented.long64",
-      "name": "cvtdq2ps-unimplemented",
-      "form": "cvtdq2ps-unimplemented",
+      "id": "cvtdq2ps.register.long64",
+      "name": "CVTDQ2PS",
+      "form": "cvtdq2ps.register",
       "mode": "long64",
       "bytes": [
         15,
@@ -28,12 +28,21 @@
         "operandSizeOverride": false,
         "addressSizeOverride": false
       },
-      "expectedErrorCategory": "unsupportedOpcode"
+      "expectedOperation": {
+        "convertPackedDwordToSingle": {
+          "destination": 0,
+          "source": {
+            "register": {
+              "_0": 1
+            }
+          }
+        }
+      }
     },
     {
-      "id": "cvtdq2ps-unimplemented.protected16",
-      "name": "cvtdq2ps-unimplemented",
-      "form": "cvtdq2ps-unimplemented",
+      "id": "cvtdq2ps.register.protected16",
+      "name": "CVTDQ2PS",
+      "form": "cvtdq2ps.register",
       "mode": "protected16",
       "bytes": [
         15,
@@ -48,12 +57,21 @@
         "operandSizeOverride": false,
         "addressSizeOverride": false
       },
-      "expectedErrorCategory": "unsupportedOpcode"
+      "expectedOperation": {
+        "convertPackedDwordToSingle": {
+          "destination": 0,
+          "source": {
+            "register": {
+              "_0": 1
+            }
+          }
+        }
+      }
     },
     {
-      "id": "cvtdq2ps-unimplemented.protected32",
-      "name": "cvtdq2ps-unimplemented",
-      "form": "cvtdq2ps-unimplemented",
+      "id": "cvtdq2ps.register.protected32",
+      "name": "CVTDQ2PS",
+      "form": "cvtdq2ps.register",
       "mode": "protected32",
       "bytes": [
         15,
@@ -68,12 +86,21 @@
         "operandSizeOverride": false,
         "addressSizeOverride": false
       },
-      "expectedErrorCategory": "unsupportedOpcode"
+      "expectedOperation": {
+        "convertPackedDwordToSingle": {
+          "destination": 0,
+          "source": {
+            "register": {
+              "_0": 1
+            }
+          }
+        }
+      }
     },
     {
-      "id": "cvtdq2ps-unimplemented.real16",
-      "name": "cvtdq2ps-unimplemented",
-      "form": "cvtdq2ps-unimplemented",
+      "id": "cvtdq2ps.register.real16",
+      "name": "CVTDQ2PS",
+      "form": "cvtdq2ps.register",
       "mode": "real16",
       "bytes": [
         15,
@@ -88,7 +115,16 @@
         "operandSizeOverride": false,
         "addressSizeOverride": false
       },
-      "expectedErrorCategory": "unsupportedOpcode"
+      "expectedOperation": {
+        "convertPackedDwordToSingle": {
+          "destination": 0,
+          "source": {
+            "register": {
+              "_0": 1
+            }
+          }
+        }
+      }
     },
     {
       "id": "cvtps2dq.address-override-memory.long64",
