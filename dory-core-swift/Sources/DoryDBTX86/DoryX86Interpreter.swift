@@ -3778,15 +3778,22 @@ public struct DoryX86Interpreter: Sendable {
         state: &state
       )
     case .scale:
-      let scale = readX87Register(1, state: state).doubleValue.rounded(.towardZero)
-      if scale >= Double(Int.min), scale <= Double(Int.max) {
+      let scale = readX87Register(1, state: state)
+      if scale.isFinite {
+        // Truncate the binary80 operand before narrowing: Double can round a
+        // value just below an integer upward, and Double(Int.max) is 2^63.
+        // A power beyond ±65536 already exceeds the entire binary80 exponent
+        // range, including subnormals. Bound it before host exponent addition.
+        let integer = scale.signedIntegerBits(bitCount: 32, rounding: .towardZero)
+          .map { Int(Int32(bitPattern: UInt32(truncatingIfNeeded: $0))) }
+          ?? (scale.isNegative ? -65536 : 65536)
         writeX87Register(
           0,
-          value: extendedX.scaledByPowerOfTwo(Int(scale)),
+          value: extendedX.scaledByPowerOfTwo(max(-65536, min(65536, integer))),
           state: &state
         )
       } else {
-        writeX87Register(0, value: x * Foundation.pow(2, scale), state: &state)
+        writeX87Register(0, value: x * Foundation.pow(2, scale.doubleValue), state: &state)
       }
     case .sine:
       guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
@@ -3881,8 +3888,10 @@ public struct DoryX86Interpreter: Sendable {
       (dividendDouble / divisorDouble).rounded(nearest ? .toNearestOrEven : .towardZero)
     writeX87Register(0, value: dividendDouble - quotient * divisorDouble, state: &state)
     state.x87StatusWord &= ~UInt16(0x4700)
-    if quotient >= Double(Int64.min), quotient <= Double(Int64.max) {
-      let bits = UInt64(bitPattern: Int64(quotient))
+    // The floating representation of Int64.max rounds to 2^63, which is
+    // outside Int64. Exact conversion also rejects non-finite intermediates.
+    if let integer = Int64(exactly: quotient) {
+      let bits = UInt64(bitPattern: integer)
       if bits & 1 != 0 { state.x87StatusWord |= 0x0200 }
       if bits & 2 != 0 { state.x87StatusWord |= 0x4000 }
       if bits & 4 != 0 { state.x87StatusWord |= 0x0100 }
