@@ -2638,7 +2638,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state: inout DoryX86ArchitecturalState,
     memory: (any DoryX86Memory)? = nil
   ) throws -> DoryARM64ExecutionSummary? {
-    guard maximumInstructions > 0 else { return nil }
+    guard maximumInstructions > 0, !state.rflags.contains(.virtual8086) else { return nil }
     return try lock.withLock {
       chainedExecutionCallCount &+= 1
       chainedRequestedInstructionCount &+= UInt64(maximumInstructions)
@@ -2943,7 +2943,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state: inout DoryX86ArchitecturalState,
     memory: (any DoryX86Memory)?
   ) throws -> ResidentExecution? {
-    guard maximumInstructions > 0 else { return nil }
+    guard maximumInstructions > 0, !state.rflags.contains(.virtual8086) else { return nil }
     return try lock.withLock { () -> ResidentExecution? in
       guard
         let resident = try resolveResident(
@@ -3111,6 +3111,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       instructionBudget: maximumInstructions
     ).translate(bytes, at: guestStart, mode: mode)
     let block = optimization == .optimizing ? optimizer.optimize(translated).block : translated
+    // The native context carries GPRs/RIP/flags, but cannot raise a privileged
+    // instruction fault. Let the interpreter deliver #GP at the original HLT.
+    // Both resident and shared-code lookup keys include this privilege level.
+    if key.privilegeLevel != 0, mode != .real16,
+      case .exit(.halt, _) = block.terminator
+    {
+      return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
+    }
     let compiled = emitter.compile(
       block,
       tier: optimization == .optimizing ? .optimizing : .baseline

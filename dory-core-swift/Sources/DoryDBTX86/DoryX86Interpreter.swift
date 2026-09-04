@@ -145,6 +145,9 @@ public struct DoryX86Interpreter: Sendable {
       case .undefinedInstruction, .unsupportedSystemInstruction:
         return invalidOpcode(at: originalRIP)
       case .halt:
+        guard mode == .real16
+          || (currentPrivilegeLevel(state) == 0 && !state.rflags.contains(.virtual8086))
+        else { return generalProtection(at: originalRIP) }
         state.rip = nextRIP
         return .halted(instruction)
       case .move(let destination, let source):
@@ -2862,6 +2865,7 @@ public struct DoryX86Interpreter: Sendable {
         state.registers.rdx = UInt64(UInt32(truncatingIfNeeded: state.tsc >> 32))
         if includeAuxiliary { state.registers.rcx = UInt64(state.tscAux) }
       case .swapGS:
+        guard mode == .long64 else { return invalidOpcode(at: originalRIP) }
         guard currentPrivilegeLevel(state) == 0 else {
           return generalProtection(at: originalRIP)
         }
