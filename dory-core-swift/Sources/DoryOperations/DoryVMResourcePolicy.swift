@@ -1,5 +1,13 @@
 import Foundation
 
+/// Overflow represents exhausted capacity, never a smaller admissible reservation.
+private func resourceSum(_ values: UInt64...) -> UInt64 {
+    values.reduce(0) { total, value in
+        let sum = total.addingReportingOverflow(value)
+        return sum.overflow ? .max : sum.partialValue
+    }
+}
+
 /// Host capacity captured by the platform layer and supplied to the resource policy.
 ///
 /// The policy intentionally does not read `ProcessInfo`, filesystem state, or any other
@@ -17,6 +25,10 @@ public struct DoryVMHostResources: Codable, Sendable, Equatable {
     public let admittedMemoryBytes: UInt64
     /// Free-storage capacity already reserved for other VM disks.
     public let reservedStorageBytes: UInt64
+    /// Container-engine CPU already committed on this host, counted against the same pool.
+    public let engineAdmittedVirtualCPUCount: UInt64
+    /// Container-engine memory already committed on this host.
+    public let engineAdmittedMemoryBytes: UInt64
 
     public init(
         logicalCPUCount: UInt64,
@@ -24,7 +36,9 @@ public struct DoryVMHostResources: Codable, Sendable, Equatable {
         freeStorageBytes: UInt64,
         admittedVirtualCPUCount: UInt64 = 0,
         admittedMemoryBytes: UInt64 = 0,
-        reservedStorageBytes: UInt64 = 0
+        reservedStorageBytes: UInt64 = 0,
+        engineAdmittedVirtualCPUCount: UInt64 = 0,
+        engineAdmittedMemoryBytes: UInt64 = 0
     ) {
         self.logicalCPUCount = logicalCPUCount
         self.physicalMemoryBytes = physicalMemoryBytes
@@ -32,6 +46,8 @@ public struct DoryVMHostResources: Codable, Sendable, Equatable {
         self.admittedVirtualCPUCount = admittedVirtualCPUCount
         self.admittedMemoryBytes = admittedMemoryBytes
         self.reservedStorageBytes = reservedStorageBytes
+        self.engineAdmittedVirtualCPUCount = engineAdmittedVirtualCPUCount
+        self.engineAdmittedMemoryBytes = engineAdmittedMemoryBytes
     }
 
     /// Compatibility bridge for callers of the initial admission API. The old "committed" name
@@ -65,6 +81,8 @@ public struct DoryVMHostResources: Codable, Sendable, Equatable {
         case committedVirtualCPUCount
         case committedMemoryBytes
         case reservedStorageBytes
+        case engineAdmittedVirtualCPUCount
+        case engineAdmittedMemoryBytes
     }
 
     public init(from decoder: Decoder) throws {
@@ -84,6 +102,14 @@ public struct DoryVMHostResources: Codable, Sendable, Equatable {
             UInt64.self,
             forKey: .reservedStorageBytes
         ) ?? 0
+        engineAdmittedVirtualCPUCount = try container.decodeIfPresent(
+            UInt64.self,
+            forKey: .engineAdmittedVirtualCPUCount
+        ) ?? 0
+        engineAdmittedMemoryBytes = try container.decodeIfPresent(
+            UInt64.self,
+            forKey: .engineAdmittedMemoryBytes
+        ) ?? 0
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -94,19 +120,186 @@ public struct DoryVMHostResources: Codable, Sendable, Equatable {
         try container.encode(admittedVirtualCPUCount, forKey: .admittedVirtualCPUCount)
         try container.encode(admittedMemoryBytes, forKey: .admittedMemoryBytes)
         try container.encode(reservedStorageBytes, forKey: .reservedStorageBytes)
+        // Keep historical ledger hashes stable when no engine reservation was recorded.
+        if engineAdmittedVirtualCPUCount != 0 {
+            try container.encode(engineAdmittedVirtualCPUCount, forKey: .engineAdmittedVirtualCPUCount)
+        }
+        if engineAdmittedMemoryBytes != 0 {
+            try container.encode(engineAdmittedMemoryBytes, forKey: .engineAdmittedMemoryBytes)
+        }
+    }
+
+    public var totalAdmittedVirtualCPUCount: UInt64 {
+        resourceSum(admittedVirtualCPUCount, engineAdmittedVirtualCPUCount)
+    }
+
+    public var totalAdmittedMemoryBytes: UInt64 {
+        resourceSum(admittedMemoryBytes, engineAdmittedMemoryBytes)
     }
 }
 
 /// Resources requested for a single virtual machine.
-public struct DoryVMResourceRequest: Codable, Sendable, Equatable {
+public struct DoryVMResourceRequest: Codable, Sendable, Equatable, Hashable {
     public let virtualCPUCount: UInt64
     public let memoryBytes: UInt64
     public let diskBytes: UInt64
+    /// DBT translation caches, counted in addition to guest RAM for x86 guests.
+    public let translationCacheBytes: UInt64
+    /// Isolated renderer-worker reservation.
+    public let rendererBytes: UInt64
+    /// Filesystem/renderer helper process overhead.
+    public let workerOverheadBytes: UInt64
+    /// Disk staging reservation during import/install.
+    public let stagingBytes: UInt64
 
-    public init(virtualCPUCount: UInt64, memoryBytes: UInt64, diskBytes: UInt64) {
+    public var accountedMemoryBytes: UInt64 {
+        resourceSum(memoryBytes, translationCacheBytes, rendererBytes, workerOverheadBytes)
+    }
+
+    public var accountedStorageBytes: UInt64 {
+        resourceSum(diskBytes, stagingBytes)
+    }
+
+    public init(
+        virtualCPUCount: UInt64,
+        memoryBytes: UInt64,
+        diskBytes: UInt64,
+        translationCacheBytes: UInt64 = 0,
+        rendererBytes: UInt64 = 0,
+        workerOverheadBytes: UInt64 = 0,
+        stagingBytes: UInt64 = 0
+    ) {
         self.virtualCPUCount = virtualCPUCount
         self.memoryBytes = memoryBytes
         self.diskBytes = diskBytes
+        self.translationCacheBytes = translationCacheBytes
+        self.rendererBytes = rendererBytes
+        self.workerOverheadBytes = workerOverheadBytes
+        self.stagingBytes = stagingBytes
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case virtualCPUCount
+        case memoryBytes
+        case diskBytes
+        case translationCacheBytes
+        case rendererBytes
+        case workerOverheadBytes
+        case stagingBytes
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        virtualCPUCount = try container.decode(UInt64.self, forKey: .virtualCPUCount)
+        memoryBytes = try container.decode(UInt64.self, forKey: .memoryBytes)
+        diskBytes = try container.decode(UInt64.self, forKey: .diskBytes)
+        translationCacheBytes = try container.decodeIfPresent(
+            UInt64.self,
+            forKey: .translationCacheBytes
+        ) ?? 0
+        rendererBytes = try container.decodeIfPresent(UInt64.self, forKey: .rendererBytes) ?? 0
+        workerOverheadBytes = try container.decodeIfPresent(
+            UInt64.self,
+            forKey: .workerOverheadBytes
+        ) ?? 0
+        stagingBytes = try container.decodeIfPresent(UInt64.self, forKey: .stagingBytes) ?? 0
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(virtualCPUCount, forKey: .virtualCPUCount)
+        try container.encode(memoryBytes, forKey: .memoryBytes)
+        try container.encode(diskBytes, forKey: .diskBytes)
+        if translationCacheBytes != 0 {
+            try container.encode(translationCacheBytes, forKey: .translationCacheBytes)
+        }
+        if rendererBytes != 0 {
+            try container.encode(rendererBytes, forKey: .rendererBytes)
+        }
+        if workerOverheadBytes != 0 {
+            try container.encode(workerOverheadBytes, forKey: .workerOverheadBytes)
+        }
+        if stagingBytes != 0 {
+            try container.encode(stagingBytes, forKey: .stagingBytes)
+        }
+    }
+}
+
+/// One deterministic accounting rule shared by definition migration, native workspace creation,
+/// admission, and runner-envelope construction. The constants mirror the production bounds of the
+/// processes that consume them: DoryDBT's executable cache is capped at 128 MiB, the isolated
+/// renderer caps live scanout leases at 512 MiB, and one filesystem worker can retain roughly
+/// 48 MiB in aggregate request/response and directory-cursor data. The additional 16 MiB covers
+/// its bounded node/handle tables and control plumbing.
+public enum DoryVMProductionResourceBudget {
+    public static let translatedCodeCacheBytes: UInt64 = 128 * 1_024 * 1_024
+    public static let isolatedRendererScanoutBytes: UInt64 = 512 * 1_024 * 1_024
+    public static let filesystemWorkerBytes: UInt64 = 64 * 1_024 * 1_024
+    public static let rendererWorkerOverheadBytes: UInt64 = 64 * 1_024 * 1_024
+    public static let displayBufferCount: UInt64 = 3
+
+    /// Recompute runtime overhead after changing device intent, retaining the guest's capacity
+    /// and installation staging requirements. Admission and the runner use this same policy.
+    public static func make(for definition: DoryVirtualMachineDefinition) -> DoryVMResourceRequest {
+        make(
+            guest: definition.guest,
+            graphics: definition.graphics,
+            displays: definition.displays,
+            shareCount: definition.shares.count,
+            virtualCPUCount: definition.resources.virtualCPUCount,
+            memoryBytes: definition.resources.memoryBytes,
+            diskBytes: definition.resources.diskBytes,
+            stagingBytes: definition.resources.stagingBytes
+        )
+    }
+
+    public static func make(
+        guest: DoryGuestPlatform,
+        graphics: DoryVMGraphicsPolicy,
+        displays: [DoryVMDisplayConfiguration],
+        shareCount: Int,
+        virtualCPUCount: UInt64,
+        memoryBytes: UInt64,
+        diskBytes: UInt64,
+        stagingBytes: UInt64 = 0
+    ) -> DoryVMResourceRequest {
+        let selectedGraphics = graphics.acceptableLevels.first ?? .none
+        let displayBytes = displays.reduce(UInt64(0)) { total, display in
+            guard display.enabled else { return total }
+            let width = UInt64(display.widthPixels)
+            let height = UInt64(display.heightPixels)
+            let pixels = saturatedProduct(width, height)
+            let bytes = saturatedProduct(
+                saturatedProduct(pixels, 4),
+                displayBufferCount
+            )
+            return resourceSum(total, bytes)
+        }
+        let usesIsolatedLinuxRenderer = guest.family == .linux
+            && (selectedGraphics == .hostAcceleratedDisplay
+                || selectedGraphics == .hardwareAccelerated3D)
+        let rendererBytes = usesIsolatedLinuxRenderer
+            ? max(displayBytes, isolatedRendererScanoutBytes)
+            : displayBytes
+        var workerBytes: UInt64 = shareCount > 0 ? filesystemWorkerBytes : 0
+        if usesIsolatedLinuxRenderer {
+            workerBytes = resourceSum(workerBytes, rendererWorkerOverheadBytes)
+        }
+        return DoryVMResourceRequest(
+            virtualCPUCount: virtualCPUCount,
+            memoryBytes: memoryBytes,
+            diskBytes: diskBytes,
+            translationCacheBytes: guest.architecture == .x86_64
+                ? translatedCodeCacheBytes : 0,
+            rendererBytes: rendererBytes,
+            workerOverheadBytes: workerBytes,
+            stagingBytes: stagingBytes
+        )
+    }
+
+    private static func saturatedProduct(_ lhs: UInt64, _ rhs: UInt64) -> UInt64 {
+        let result = lhs.multipliedReportingOverflow(by: rhs)
+        return result.overflow ? .max : result.partialValue
     }
 }
 
@@ -303,12 +496,12 @@ public enum DoryVMResourcePolicy {
         let maximum = DoryVMResourceRequest(
             virtualCPUCount: availableCapacity(
                 total: host.logicalCPUCount,
-                allocated: host.admittedVirtualCPUCount,
+                allocated: host.totalAdmittedVirtualCPUCount,
                 reserve: reserve.logicalCPUCount
             ),
             memoryBytes: availableCapacity(
                 total: host.physicalMemoryBytes,
-                allocated: host.admittedMemoryBytes,
+                allocated: host.totalAdmittedMemoryBytes,
                 reserve: reserve.memoryBytes
             ),
             diskBytes: availableCapacity(
@@ -363,7 +556,7 @@ public enum DoryVMResourcePolicy {
         appendIssues(
             resource: .cpu,
             hostCapacity: host.logicalCPUCount,
-            allocated: host.admittedVirtualCPUCount,
+            allocated: host.totalAdmittedVirtualCPUCount,
             overCapacityCode: .hostAdmissionExceedsCapacity,
             requested: request.virtualCPUCount,
             guidance: recommendation.virtualCPUCount,
@@ -372,9 +565,10 @@ public enum DoryVMResourcePolicy {
         appendIssues(
             resource: .memory,
             hostCapacity: host.physicalMemoryBytes,
-            allocated: host.admittedMemoryBytes,
+            allocated: host.totalAdmittedMemoryBytes,
             overCapacityCode: .hostAdmissionExceedsCapacity,
             requested: request.memoryBytes,
+            accounted: request.accountedMemoryBytes,
             guidance: recommendation.memoryBytes,
             to: &issues
         )
@@ -384,6 +578,7 @@ public enum DoryVMResourcePolicy {
             allocated: host.reservedStorageBytes,
             overCapacityCode: .storageReservationExceedsCapacity,
             requested: request.diskBytes,
+            accounted: request.accountedStorageBytes,
             guidance: recommendation.diskBytes,
             to: &issues
         )
@@ -430,7 +625,14 @@ public enum DoryVMResourcePolicy {
         DoryVMResourceRequest(
             virtualCPUCount: max(lhs.virtualCPUCount, rhs.virtualCPUCount),
             memoryBytes: max(lhs.memoryBytes, rhs.memoryBytes),
-            diskBytes: max(lhs.diskBytes, rhs.diskBytes)
+            diskBytes: max(lhs.diskBytes, rhs.diskBytes),
+            translationCacheBytes: max(
+                lhs.translationCacheBytes,
+                rhs.translationCacheBytes
+            ),
+            rendererBytes: max(lhs.rendererBytes, rhs.rendererBytes),
+            workerOverheadBytes: max(lhs.workerOverheadBytes, rhs.workerOverheadBytes),
+            stagingBytes: max(lhs.stagingBytes, rhs.stagingBytes)
         )
     }
 
@@ -530,6 +732,7 @@ public enum DoryVMResourcePolicy {
         allocated: UInt64,
         overCapacityCode: DoryVMResourceValidationCode,
         requested: UInt64,
+        accounted: UInt64? = nil,
         guidance: DoryVMResourceGuidance,
         to issues: inout [DoryVMResourceValidationIssue]
     ) {
@@ -581,12 +784,13 @@ public enum DoryVMResourcePolicy {
             ))
         }
 
-        if requested > guidance.maximum {
+        let reservation = accounted ?? requested
+        if reservation > guidance.maximum {
             issues.append(DoryVMResourceValidationIssue(
                 code: .requestExceedsHostSafeMaximum,
                 severity: .error,
                 resource: resource,
-                actual: requested,
+                actual: reservation,
                 threshold: guidance.maximum
             ))
         }

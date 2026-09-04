@@ -377,6 +377,95 @@ struct DoryVMResourcePolicyTests {
         guidance(minimum * gibibyte, recommended * gibibyte, maximum * gibibyte)
     }
 
+    @Test("container-engine admission and translator overhead count against host capacity")
+    func engineAndOverheadAdmission() {
+        let host = DoryVMHostResources(
+            logicalCPUCount: 12,
+            physicalMemoryBytes: 32 * gibibyte,
+            freeStorageBytes: 500 * gibibyte,
+            engineAdmittedVirtualCPUCount: 6,
+            engineAdmittedMemoryBytes: 6 * gibibyte
+        )
+        let request = DoryVMResourceRequest(
+            virtualCPUCount: 4,
+            memoryBytes: 8 * gibibyte,
+            diskBytes: 64 * gibibyte,
+            translationCacheBytes: 2 * gibibyte,
+            rendererBytes: 1 * gibibyte,
+            workerOverheadBytes: 512 * 1_024 * 1_024,
+            stagingBytes: 4 * gibibyte
+        )
+        let withoutEngine = DoryVMResourcePolicy.recommend(
+            host: DoryVMHostResources(
+                logicalCPUCount: 12,
+                physicalMemoryBytes: 32 * gibibyte,
+                freeStorageBytes: 500 * gibibyte
+            ),
+            workload: .desktop
+        )
+        let withEngine = DoryVMResourcePolicy.recommend(host: host, workload: .desktop)
+        let result = DoryVMResourcePolicy.assess(
+            host: host,
+            workload: .desktop,
+            request: request
+        )
+
+        #expect(withoutEngine.virtualCPUCount.maximum == 9)
+        #expect(withEngine.virtualCPUCount.maximum == 3)
+        #expect(request.accountedMemoryBytes == 8 * gibibyte + 2 * gibibyte + gibibyte + 512 * 1_024 * 1_024)
+        #expect(result.issues.contains(where: { $0.resource == .cpu }))
+    }
+
+    @Test("production budget derives actual DBT renderer worker and staging bounds")
+    func productionBudget() {
+        let budget = DoryVMProductionResourceBudget.make(
+            guest: DoryGuestPlatform(family: .linux, architecture: .x86_64),
+            graphics: DoryVMGraphicsPolicy(acceptableLevels: [.hardwareAccelerated3D]),
+            displays: [DoryVMDisplayConfiguration(widthPixels: 1_920, heightPixels: 1_080)],
+            shareCount: 2,
+            virtualCPUCount: 4,
+            memoryBytes: 8 * gibibyte,
+            diskBytes: 64 * gibibyte,
+            stagingBytes: 2 * gibibyte
+        )
+
+        #expect(budget.translationCacheBytes == 128 * 1_024 * 1_024)
+        #expect(budget.rendererBytes == 512 * 1_024 * 1_024)
+        #expect(budget.workerOverheadBytes == 128 * 1_024 * 1_024)
+        #expect(budget.stagingBytes == 2 * gibibyte)
+        #expect(budget.accountedMemoryBytes == 8 * gibibyte + 768 * 1_024 * 1_024)
+    }
+
+    @Test("overflow cannot wrap an exhausted host or request into available capacity")
+    func overflowFailsClosed() {
+        let host = DoryVMHostResources(
+            logicalCPUCount: 12, physicalMemoryBytes: 32 * gibibyte,
+            freeStorageBytes: 500 * gibibyte,
+            admittedVirtualCPUCount: .max, admittedMemoryBytes: .max,
+            engineAdmittedVirtualCPUCount: 1, engineAdmittedMemoryBytes: 1
+        )
+        #expect(host.totalAdmittedVirtualCPUCount == .max)
+        #expect(host.totalAdmittedMemoryBytes == .max)
+        let request = DoryVMResourceRequest(
+            virtualCPUCount: 2, memoryBytes: .max, diskBytes: .max,
+            translationCacheBytes: 1, rendererBytes: 1, workerOverheadBytes: 1, stagingBytes: 1
+        )
+        #expect(request.accountedMemoryBytes == .max)
+        #expect(request.accountedStorageBytes == .max)
+        let result = DoryVMResourcePolicy.assess(host: host, workload: .desktop, request: request)
+        #expect(result.issues.contains { $0.severity == .error && $0.resource == .memory })
+        #expect(result.issues.contains { $0.severity == .error && $0.resource == .storage })
+    }
+
+    @Test("zero engine commitments preserve historical canonical host encoding")
+    func historicalHostEncoding() throws {
+        let data = Data(#"{"admittedMemoryBytes":0,"admittedVirtualCPUCount":0,"freeStorageBytes":4096,"logicalCPUCount":8,"physicalMemoryBytes":1024,"reservedStorageBytes":0}"#.utf8)
+        let host = try JSONDecoder().decode(DoryVMHostResources.self, from: data)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        #expect(try encoder.encode(host) == data)
+    }
+
     private func issue(
         _ code: DoryVMResourceValidationCode,
         _ resource: DoryVMResourceDimension,
