@@ -415,6 +415,52 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         }
     }
 
+    @Test("production restart preflight retains running admission and cannot authorize spawn")
+    func restartPreflightPreservesProductionAdmission() throws {
+        let fixture = try ProductionTrustFixture()
+        defer { fixture.cleanup() }
+        guard case let .ready(context) = fixture.resolve(),
+              let provider = context.inventory as? any DoryDaemonVirtualMachinePreSpawnAuthorizationProviding else {
+            Issue.record("Expected production pre-spawn authority")
+            return
+        }
+        var request = try fixture.makeBoundStartRequest()
+        let ledger = DoryVirtualMachineResourceAdmissionLedger(
+            root: fixture.machineConfiguration.stateDirectory + "/.resource-admissions"
+        )
+        let lease = try #require(ledger.snapshot().leases.first)
+        let running = try ledger.markRunning(
+            leaseID: lease.leaseID, plan: request.resolvedPlan, hostFacts: fixture.host.resources,
+            expectedLeaseRevision: lease.leaseRevision
+        )
+        let recordURL = URL(fileURLWithPath: ledger.root + "/resource-admissions.json")
+        let before = try Data(contentsOf: recordURL)
+        #expect(throws: DoryDaemonProductionTrustInventoryError.self) {
+            _ = try context.inventory.startInventory(for: request)
+        }
+        request = DoryDaemonVirtualMachineStartInventoryRequest(
+            resolvedPlan: request.resolvedPlan, purpose: .restartPreflight
+        )
+        let inventory = try context.inventory.startInventory(for: request)
+        #expect(inventory.resourceAdmission == running.evidence)
+        let preflight = try provider.preSpawnAuthorization(for: request)
+        try preflight.authorizeRestartPreflight()
+        #expect(throws: DoryDaemonVirtualMachinePreSpawnAuthorizationError.alreadyConsumed) {
+            try preflight.authorizeRestartPreflight()
+        }
+        let attemptedLaunch = try provider.preSpawnAuthorization(for: request)
+        #expect(throws: DoryDaemonVirtualMachinePreSpawnAuthorizationError.revalidationFailed) {
+            try attemptedLaunch.authorize()
+        }
+        #expect(try Data(contentsOf: recordURL) == before)
+        _ = try ledger.markStopped(leaseID: running.leaseID, expectedLeaseRevision: running.leaseRevision)
+        let stoppedBytes = try Data(contentsOf: recordURL)
+        #expect(throws: DoryDaemonProductionTrustInventoryError.self) {
+            _ = try context.inventory.startInventory(for: request)
+        }
+        #expect(try Data(contentsOf: recordURL) == stoppedBytes)
+    }
+
     @Test("mutable storage changed after planning is rejected before spawn")
     func changedStorageFailsPreSpawnAuthorization() throws {
         let fixture = try ProductionTrustFixture()
@@ -662,6 +708,24 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(try context.planning.resourceLedger.snapshot().leases.first {
             $0.binding.machineID == "qualified-headless"
         }?.state == .running)
+        for paused in [false, true] {
+            if paused { _ = try context.machineManager.pause(id: "qualified-headless") }
+            let previousPID = try #require(context.machineManager.status(id: "qualified-headless")?.pid)
+            let operationID = UUID()
+            let replacement = try context.machineManager.restart(id: "qualified-headless", operationID: operationID)
+            #expect(replacement.state == .running)
+            #expect(replacement.pid != previousPID)
+            #expect(try context.planning.plans.read(id: "qualified-headless") == plan)
+            let retained = try #require(context.planning.resourceLedger.snapshot().leases.first {
+                $0.binding.machineID == "qualified-headless"
+            })
+            #expect(retained.leaseID == plan.resourceAdmission?.admissionIdentity)
+            #expect(retained.state == .running)
+            let replay = try context.machineManager.restart(id: "qualified-headless", operationID: operationID)
+            #expect(replay.pid == replacement.pid)
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            #expect(try journal.read(operationID).state.status == .completed)
+        }
         let stopped = try context.machineManager.stop(id: "qualified-headless")
         #expect(stopped.state == .stopped)
         #expect(try context.planning.resourceLedger.snapshot().leases.first {
@@ -689,10 +753,755 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         }
     }
 
-    @Test("activated production graph runs the portable EFI install and cold-boot path")
-    func activatedGraphRunsPortableEFILifecycle() throws {
+    @Test("configuration update has one caller journal through stop and replacement planning", arguments: ["created", "stopped", "running", "paused"])
+    func configurationUpdateOwnsPlanning(sourceState: String) throws {
         try withProductionIntegrationTestStack {
-            let fixture = try ProductionTrustFixture(helperLifetimeSeconds: 2)
+            let fixture = try ProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { Issue.record("Expected production activation"); return }
+            let id = "configuration-update"
+            let service = DorydService(
+                socketPath: fixture.root.appendingPathComponent("doryd.sock").path,
+                machineManager: context.machineManager,
+                productionPlanningController: context.planningController
+            )
+            try createUpdateFixture(id: id, fixture: fixture, service: service)
+            if sourceState != "created" { _ = try context.machineManager.start(id: id) }
+            if sourceState == "stopped" { _ = try context.machineManager.stop(id: id) }
+            if sourceState == "paused" { _ = try context.machineManager.pause(id: id) }
+            let original = try context.planning.plans.read(id: id)
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            let before = try journal.list().count
+            let operationID = UUID()
+            let request: NSDictionary = ["memoryMB": UInt64(3_072), "operationID": operationID.uuidString.lowercased()]
+            let result = LockedPlanningCreateReply()
+            service.machineUpdate(id, config: request) { result.set(ok: $0, body: $1, message: $2) }
+            #expect(result.value.ok, Comment(rawValue: result.value.message))
+            let status = try #require(context.machineManager.status(id: id))
+            #expect(status.state == .stopped)
+            #expect(status.pid == nil)
+            #expect(status.runtimeIdentity.mode == .resolvedPlan)
+            let replacement = try context.planning.plans.read(id: id)
+            #expect(replacement.planRevision == original.planRevision + 1)
+            #expect(replacement.definitionSHA256 != original.definitionSHA256)
+            #expect(try journal.list().count == before + 1)
+            #expect(try journal.read(operationID).state.status == .completed)
+            do {
+                let lease = try journal.acquire(operationID)
+                let operation = try lease.readWorkspaceLifecycleOperation()
+                #expect(operation.kind == .updating)
+                #expect(operation.source.state.rawValue == sourceState)
+                let update = try DoryMachineConfigurationUpdateJournal.read(from: lease)
+                #expect(try update.targetConfiguration.memoryMB == 3_072)
+                #expect(update.requiresResolvedPlan)
+            }
+            let replay = LockedPlanningCreateReply()
+            service.machineUpdate(id, config: request) { replay.set(ok: $0, body: $1, message: $2) }
+            #expect(replay.value.ok, Comment(rawValue: replay.value.message))
+            #expect(try context.planning.plans.read(id: id) == replacement)
+            #expect(try journal.list().count == before + 1)
+            let collision = LockedPlanningCreateReply()
+            service.machineUpdate(id, config: ["memoryMB": UInt64(4_096), "operationID": operationID.uuidString.lowercased()]) {
+                collision.set(ok: $0, body: $1, message: $2)
+            }
+            #expect(!collision.value.ok)
+            #expect(try context.planning.plans.read(id: id) == replacement)
+            let lease = try #require(context.planning.resourceLedger.snapshot().leases.first { $0.binding.machineID == id })
+            #expect(lease.state == .starting)
+            #expect(lease.evidence == replacement.resourceAdmission)
+        }
+    }
+
+    @Test("configuration update recovery finishes partial metadata and final journal publication", arguments: [
+        MachineLifecycleFaultPoint.configurationUpdateBeforeStop,
+        .configurationUpdateAfterMetadata, .configurationUpdateAfterWorkspace,
+        .stopAfterProcessStop, .completionBeforeJournalWrite(.updating),
+    ], [false, true])
+    func configurationUpdateRecovers(point: MachineLifecycleFaultPoint, nativeOnly: Bool) throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try ProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { Issue.record("Expected production activation"); return }
+            let id = "update-recovery"
+            let service = DorydService(
+                socketPath: fixture.root.appendingPathComponent("doryd.sock").path,
+                machineManager: context.machineManager, productionPlanningController: context.planningController
+            )
+            try createUpdateFixture(id: id, fixture: fixture, service: service)
+            if point != .configurationUpdateBeforeStop { _ = try context.machineManager.start(id: id) }
+            let original = try context.planning.plans.read(id: id)
+            let operationID = UUID()
+            let observedFault = ConfigurationUpdateFaultObservation()
+            context.machineManager.installLifecycleFaultInjectorForTesting { observed in
+                if observed == point {
+                    observedFault.record()
+                    throw MachineLifecycleInjectedCrash()
+                }
+            }
+            #expect(throws: (any Error).self) {
+                try context.machineManager.update(
+                    id: id, memoryMB: nativeOnly ? nil : 3_072,
+                    typedSettingsPatch: nativeOnly ? DoryMachineTypedSettingsPatch(guestUsername: .set("builder")) : nil,
+                    operationID: operationID,
+                    productionPlanningController: context.planningController
+                )
+            }
+            try #require(observedFault.wasObserved, "Fault boundary was not reached: \(point), nativeOnly=\(nativeOnly)")
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            do {
+                let lease = try journal.acquire(operationID)
+                let update = try DoryMachineConfigurationUpdateJournal.read(from: lease)
+                if nativeOnly {
+                    #expect(update.sourceConfigurationData == update.targetConfigurationData)
+                    #expect(update.targetNativeDefinition != nil)
+                }
+            }
+            #expect(try journal.read(operationID).state.status != .completed)
+            // A fresh composition reads the exact private operation specification. No physical
+            // guest is booted by this fixture; it verifies helper stop and daemon publication/admission recovery only.
+            let recovery = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            )
+            guard case let .activated(recovered) = recovery else {
+                Issue.record("Expected update recovery at \(point), nativeOnly=\(nativeOnly): \(recovery)"); return
+            }
+            if point == .configurationUpdateBeforeStop || point == .stopAfterProcessStop {
+                #expect(try journal.read(operationID).state.status == .failed)
+                #expect(try recovered.planning.plans.read(id: id) == original)
+            } else {
+                #expect(try journal.read(operationID).state.status == .completed)
+                let replacement = try recovered.planning.plans.read(id: id)
+                #expect(replacement.planRevision == original.planRevision + 1)
+                #expect(recovered.machineManager.status(id: id)?.runtimeIdentity.resolvedPlan == replacement)
+            }
+            #expect(recovered.machineManager.status(id: id)?.state == .stopped)
+        }
+    }
+
+    @Test("missing planning and malformed update UUID are rejected before stopping a helper")
+    func configurationUpdatePreflightRejectsWithoutStop() throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try ProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { Issue.record("Expected production activation"); return }
+            let id = "update-preflight"
+            let service = DorydService(
+                socketPath: fixture.root.appendingPathComponent("doryd.sock").path,
+                machineManager: context.machineManager, productionPlanningController: context.planningController
+            )
+            try createUpdateFixture(id: id, fixture: fixture, service: service)
+            let started = try context.machineManager.start(id: id)
+            let path = fixture.machineConfiguration.stateDirectory + "/" + id + "/machine.json"
+            let original = try Data(contentsOf: URL(fileURLWithPath: path))
+            let missingController = DorydService(socketPath: "/unused", machineManager: context.machineManager)
+            for (target, request) in [
+                (missingController, ["memoryMB": 3_072] as NSDictionary),
+                (service, ["memoryMB": 3_072, "operationID": "invalid"] as NSDictionary),
+            ] {
+                let result = LockedPlanningCreateReply()
+                target.machineUpdate(id, config: request) { result.set(ok: $0, body: $1, message: $2) }
+                #expect(!result.value.ok)
+                #expect(context.machineManager.status(id: id)?.pid == started.pid)
+                #expect(context.machineManager.status(id: id)?.state == .running)
+                #expect(try Data(contentsOf: URL(fileURLWithPath: path)) == original)
+            }
+            _ = try context.machineManager.stop(id: id)
+        }
+    }
+
+    @Test("rejected planning recovers or accepts a new update without stranding the workspace", arguments: [false, true])
+    func configurationUpdateAbortedPlanningCanRetry(aborts: Bool) throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try ProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { Issue.record("Expected production activation"); return }
+            let id = "update-rejected"
+            let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
+                                       productionPlanningController: context.planningController)
+            try createUpdateFixture(id: id, fixture: fixture, service: service)
+            let operationID = UUID()
+            let host = fixture.host
+            fixture.hostState.set(DoryDaemonProductionHostObservation(
+                hardwareModelIdentifier: host.hardwareModelIdentifier,
+                operatingSystemBuild: host.operatingSystemBuild,
+                macOSMajorVersion: host.macOSMajorVersion,
+                virtualizationFrameworkAvailable: host.virtualizationFrameworkAvailable,
+                hypervisorFrameworkAvailable: !aborts, metalAvailable: host.metalAvailable,
+                resources: DoryVMHostResources(logicalCPUCount: 12, physicalMemoryBytes: (aborts ? 32 : 2) * 1_024 * 1_024 * 1_024,
+                                              freeStorageBytes: host.resources.freeStorageBytes)
+            ))
+            #expect(throws: (any Error).self) {
+                try context.machineManager.update(id: id, memoryMB: 3_072, operationID: operationID,
+                                                   productionPlanningController: context.planningController)
+            }
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            if aborts {
+                #expect(try journal.read(operationID).state.status == .failed)
+            } else {
+                #expect(try journal.read(operationID).state.status != .failed)
+                #expect(try journal.read(operationID).state.status != .completed)
+            }
+            #expect(context.machineManager.status(id: id)?.runtimeIdentity.mode == .requiresReplanning)
+            fixture.hostState.set(host)
+            let activation = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            )
+            guard case let .activated(recovered) = activation else {
+                Issue.record("Aborted planning blocked recovery: \(activation)"); return
+            }
+            let replacement = try recovered.machineManager.update(id: id, memoryMB: 4_096,
+                productionPlanningController: recovered.planningController)
+            #expect(replacement.runtimeIdentity.mode == .resolvedPlan)
+            #expect(replacement.state == .stopped)
+        }
+    }
+
+    private func createUpdateFixture(id: String, fixture: ProductionTrustFixture, service: DorydService) throws {
+        let disk = fixture.root.appendingPathComponent("\(id).raw")
+        FileManager.default.createFile(atPath: disk.path, contents: nil, attributes: [.posixPermissions: 0o600])
+        let handle = try FileHandle(forWritingTo: disk)
+        try handle.truncate(atOffset: 16 * 1_024 * 1_024 * 1_024)
+        try handle.synchronize()
+        try handle.close()
+        let result = LockedPlanningCreateReply()
+        service.machineCreate([
+            "id": id, "kernelPath": fixture.directKernelPath, "rootfsPath": disk.path,
+            "displayMode": "headless", "memoryMB": UInt64(2_048), "cpuCount": 2,
+        ]) { result.set(ok: $0, body: $1, message: $2) }
+        #expect(result.value.ok, Comment(rawValue: result.value.message))
+    }
+
+    @Test("desktop update preflight preserves native source authority before artifact staging", arguments: [
+        "valid-source", "missing-plan", "missing-workspace", "missing-kernel", "busy-workspace", "zero-operation",
+    ], ["created", "stopped", "running"])
+    func desktopUpdatePreflightPreservesSource(fault: String, sourceState: String) throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try ProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { Issue.record("Expected production activation"); return }
+            let id = "desktop-preflight"
+            let disk = fixture.root.appendingPathComponent("desktop.raw")
+            FileManager.default.createFile(atPath: disk.path, contents: nil, attributes: [.posixPermissions: 0o600])
+            let handle = try FileHandle(forWritingTo: disk)
+            try handle.truncate(atOffset: 32 * 1_024 * 1_024 * 1_024)
+            try handle.synchronize()
+            try handle.close()
+            let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
+                                       productionPlanningController: context.planningController)
+            let create = LockedPlanningCreateReply()
+            service.machineCreate([
+                "id": id, "kernelPath": fixture.directKernelPath, "rootfsPath": disk.path,
+                "displayMode": "desktop", "memoryMB": UInt64(4_096), "cpuCount": 4,
+                "guestIdentityIntent": ["desktop": ["distributionIdentifier": "ubuntu"]],
+                "desktopGraphicsPreference": "software",
+            ]) { create.set(ok: $0, body: $1, message: $2) }
+            try #require(create.value.ok, Comment(rawValue: create.value.message))
+            defer { try? context.machineManager.delete(id: id) }
+            if sourceState != "created" {
+                _ = try context.machineManager.start(id: id)
+                if sourceState == "stopped" { _ = try context.machineManager.stop(id: id) }
+                else {
+                    _ = try context.machineManager.pause(id: id)
+                    _ = try context.machineManager.resume(id: id)
+                }
+            }
+            let source = try #require(context.machineManager.status(id: id))
+            #expect(source.environment.isEmpty)
+            let observed = ConfigurationUpdateFaultObservation()
+            context.machineManager.installDesktopUpdateArtifactResolver(DesktopPreflightArtifactProbe(observed: observed))
+            let directory = fixture.machineConfiguration.stateDirectory + "/" + id
+            let path: String?
+            switch fault {
+            case "missing-plan": path = directory + "/" + DoryResolvedMachinePlanRepository.recordFileName
+            case "missing-workspace": path = directory + "/" + DoryWorkspaceRepository.recordFileName
+            case "missing-kernel": path = directory + "/kernel"
+            default: path = nil
+            }
+            let previous = try path.map { try Data(contentsOf: URL(fileURLWithPath: $0)) }
+            defer {
+                if let path, let previous {
+                    try? previous.write(to: URL(fileURLWithPath: path))
+                    try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+                }
+            }
+            if let path { try FileManager.default.removeItem(atPath: path) }
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            let competingLock = fault == "busy-workspace" ? try EngineStateDirectoryLock(
+                stateDirectory: journal.root, lockFileName: ".mutation.\(id).lock", readOnly: true
+            ) : nil
+            defer { withExtendedLifetime(competingLock) {} }
+            let before = try installerAuthoritySnapshot(root: fixture.root.path)
+            let operationID = fault == "zero-operation" ? UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)) : UUID()
+            #expect(throws: (any Error).self) {
+                try context.machineManager.updateDesktop(id: id, request: .init(
+                    operationID: operationID, distro: "ubuntu", version: "next+runtime.1",
+                    distributionInstallationName: "ubuntu-installation", runtimeInstallationName: "runtime-installation"
+                ))
+            }
+            #expect(observed.wasObserved == (fault == "valid-source"), "\(fault), \(sourceState)")
+            let after = try #require(context.machineManager.status(id: id))
+            #expect(after.pid == source.pid)
+            #expect(after.state == source.state)
+            #expect(after.readiness == source.readiness)
+            #expect(after.runtimeIdentity == source.runtimeIdentity)
+            #expect(try installerAuthoritySnapshot(root: fixture.root.path) == before)
+        }
+    }
+
+    @Test("installer preflight preserves a live generation and durable authority on rejection", arguments: [
+        "missing-controller", "missing-nvram", "pending-promotion", "missing-plan",
+        "corrupt-plan", "missing-workspace", "missing-installer", "missing-reattach-media", "busy-workspace",
+    ], [false, true])
+    func installerPreflightPreservesSource(fault: String, paused: Bool) throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try ProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { Issue.record("Expected production activation"); return }
+            let id = "installer-preflight"
+            let service = DorydService(
+                socketPath: fixture.root.appendingPathComponent("doryd.sock").path,
+                machineManager: context.machineManager, productionPlanningController: context.planningController
+            )
+            try createPortableEFIFixture(id: id, fixture: fixture, service: service)
+            defer { try? context.machineManager.delete(id: id) }
+            _ = try context.machineManager.start(id: id)
+            let directory = fixture.machineConfiguration.stateDirectory + "/" + id
+            let nvram = directory + "/NVRAM.installer"
+            let machineIdentifier = directory + "/MachineIdentifier"
+            try Data("stable-machine-identifier".utf8).write(to: URL(fileURLWithPath: machineIdentifier))
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: machineIdentifier)
+            try Data("installer-recorded-efi-boot-state".utf8).write(to: URL(fileURLWithPath: nvram))
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: nvram)
+            let attaching = fault == "missing-reattach-media"
+            if attaching {
+                _ = try context.machineManager.transitionInstallerMedia(
+                    id: id, attached: false, productionPlanningController: context.planningController
+                )
+            }
+            // Settle the accepted start and then establish the requested source power state.
+            _ = try context.machineManager.pause(id: id)
+            if !paused { _ = try context.machineManager.resume(id: id) }
+            let original = try #require(context.machineManager.status(id: id))
+            #expect(original.state == (paused ? .paused : .running))
+            let changedPath: String?
+            switch fault {
+            case "missing-nvram": changedPath = nvram
+            case "pending-promotion": changedPath = directory + "/.dory-nvram-promotion-pending-v1"
+            case "missing-plan", "corrupt-plan":
+                changedPath = directory + "/" + DoryResolvedMachinePlanRepository.recordFileName
+            case "missing-workspace": changedPath = directory + "/" + DoryWorkspaceRepository.recordFileName
+            case "missing-installer", "missing-reattach-media": changedPath = directory + "/installer.iso"
+            default: changedPath = nil
+            }
+            let originalBytes = try changedPath.flatMap { path in
+                FileManager.default.fileExists(atPath: path) ? try Data(contentsOf: URL(fileURLWithPath: path)) : nil
+            }
+            defer {
+                if let changedPath {
+                    if let originalBytes {
+                        try? originalBytes.write(to: URL(fileURLWithPath: changedPath))
+                        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: changedPath)
+                    } else { try? FileManager.default.removeItem(atPath: changedPath) }
+                }
+            }
+            if let changedPath {
+                if fault == "pending-promotion" || fault == "corrupt-plan" {
+                    let bytes = fault == "pending-promotion" ? "dory-nvram-promotion-v1\nmachine=\(id)\n" : "{}"
+                    try Data(bytes.utf8).write(to: URL(fileURLWithPath: changedPath))
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: changedPath)
+                } else { try FileManager.default.removeItem(atPath: changedPath) }
+            }
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            let operationIDs = try journal.list().map(\.plan.id)
+            let competingLock = fault == "busy-workspace" ? try EngineStateDirectoryLock(
+                stateDirectory: journal.root, lockFileName: ".mutation.\(id).lock", readOnly: true
+            ) : nil
+            defer { withExtendedLifetime(competingLock) {} }
+            let before = try installerAuthoritySnapshot(root: fixture.root.path)
+            let target = fault == "missing-controller"
+                ? DorydService(socketPath: "/unused", machineManager: context.machineManager) : service
+            let result = LockedPlanningCreateReply()
+            target.machineUpdate(id, config: ["installerMediaAttached": attaching]) {
+                result.set(ok: $0, body: $1, message: $2)
+            }
+            #expect(!result.value.ok, "Preflight must reject \(fault), paused=\(paused)")
+            let after = try #require(context.machineManager.status(id: id))
+            #expect(after.pid == original.pid)
+            #expect(after.state == original.state)
+            #expect(after.readiness == original.readiness)
+            #expect(after.runtimeIdentity == original.runtimeIdentity)
+            #expect(after.installerMediaAttached == original.installerMediaAttached)
+            #expect(try journal.list().map(\.plan.id) == operationIDs)
+            #expect(try installerAuthoritySnapshot(root: fixture.root.path) == before,
+                    "Rejected \(fault) changed durable authority, paused=\(paused)")
+        }
+    }
+
+    private func installerAuthoritySnapshot(root: String) throws -> [String: String] {
+        var snapshot: [String: String] = [:]
+        for relative in FileManager.default.enumerator(atPath: root)?.allObjects as? [String] ?? [] {
+            guard !relative.hasSuffix(".log") else { continue }
+            let path = root + "/" + relative
+            var info = stat()
+            guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { continue }
+            let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: path))
+            defer { try? handle.close() }
+            // Hash every byte of authority files. Sparse guest disks are sampled at both ends;
+            // their inode, permissions, length and modification time are also preserved.
+            var bytes = try handle.read(upToCount: 1_048_576) ?? Data()
+            if info.st_size > 1_048_576 {
+                try handle.seek(toOffset: UInt64(info.st_size) - 1_048_576)
+                bytes.append(try handle.read(upToCount: 1_048_576) ?? Data())
+            }
+            let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            snapshot[relative] = "\(info.st_ino):\(info.st_mode):\(info.st_size):\(info.st_mtimespec.tv_sec):\(info.st_mtimespec.tv_nsec):\(digest)"
+        }
+        return snapshot
+    }
+
+    private func createPortableEFIFixture(id: String, fixture: ProductionTrustFixture, service: DorydService) throws {
+        let installer = fixture.root.appendingPathComponent("\(id).iso").path
+        try portableARM64ISO9660().write(to: URL(fileURLWithPath: installer))
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: installer)
+        let result = LockedPlanningCreateReply()
+        service.machineCreate([
+            "id": id, "kernelPath": "", "rootfsPath": "", "bootMode": "efi", "installerISOPath": installer,
+            "diskSizeBytes": UInt64(32 * 1_024 * 1_024 * 1_024), "displayMode": "desktop",
+            "memoryMB": UInt64(4_096), "cpuCount": 4,
+        ]) { result.set(ok: $0, body: $1, message: $2) }
+        try #require(result.value.ok, Comment(rawValue: result.value.message))
+    }
+
+    @Test("installer publication recovers the same operation after confirmed stop", arguments: [
+        MachineLifecycleFaultPoint.stopAfterProcessStop, .installerAfterFirmwareCheckpoint,
+        .configurationUpdateAfterMetadata, .configurationUpdateAfterWorkspace, .installerAfterPlanning,
+    ], [false, true])
+    func installerPublicationRecovers(point: MachineLifecycleFaultPoint, paused: Bool) throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try ProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { Issue.record("Expected production activation"); return }
+            let id = "installer-recovery"
+            let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
+                                       productionPlanningController: context.planningController)
+            try createPortableEFIFixture(id: id, fixture: fixture, service: service)
+            _ = try context.machineManager.start(id: id)
+            if paused { _ = try context.machineManager.pause(id: id) }
+            for (name, bytes) in [("NVRAM.installer", "original-installer-state"), ("MachineIdentifier", "stable-machine-id")] {
+                let path = fixture.machineConfiguration.stateDirectory + "/" + id + "/" + name
+                try Data(bytes.utf8).write(to: URL(fileURLWithPath: path))
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+            }
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            let before = try journal.list().count
+            let operationID = UUID()
+            let observed = ConfigurationUpdateFaultObservation()
+            context.machineManager.installLifecycleFaultInjectorForTesting { current in
+                if current == point { observed.record(); throw MachineLifecycleInjectedCrash() }
+            }
+            #expect(throws: (any Error).self) {
+                try context.machineManager.transitionInstallerMedia(id: id, attached: false,
+                    operationID: operationID, productionPlanningController: context.planningController)
+            }
+            try #require(observed.wasObserved, "Missing fault \(point), paused=\(paused)")
+            #expect(try journal.read(operationID).state.status != .completed)
+            let activation = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            )
+            guard case let .activated(recovered) = activation else {
+                Issue.record("Installer recovery failed at \(point), paused=\(paused): \(activation)"); return
+            }
+            defer { try? recovered.machineManager.delete(id: id) }
+            let committed = point != .stopAfterProcessStop && point != .installerAfterFirmwareCheckpoint
+            #expect(try journal.read(operationID).state.status == (committed ? .completed : .failed))
+            #expect(recovered.machineManager.status(id: id)?.state == (committed ? .running : .stopped))
+            #expect(recovered.machineManager.status(id: id)?.installerMediaAttached == !committed)
+            #expect(try journal.list().count == before + 1)
+            if committed {
+                #expect(recovered.machineManager.status(id: id)?.failure == nil)
+                let plan = try recovered.planning.plans.read(id: id)
+                #expect(plan.bootMedia.media.kind == .virtualDisk)
+                #expect(recovered.machineManager.status(id: id)?.runtimeIdentity.resolvedPlan == plan)
+            }
+        }
+    }
+
+    @Test("installer reattachment owns publication and optional restart", arguments: ["stopped", "running", "paused"])
+    func installerAttachmentOwnsRestart(sourceState: String) throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try ProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { Issue.record("Expected production activation"); return }
+            let id = "installer-attach"
+            let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
+                                       productionPlanningController: context.planningController)
+            try createPortableEFIFixture(id: id, fixture: fixture, service: service)
+            defer { try? context.machineManager.delete(id: id) }
+            _ = try context.machineManager.start(id: id)
+            let directory = fixture.machineConfiguration.stateDirectory + "/" + id
+            for name in ["NVRAM.installer", "MachineIdentifier"] {
+                let path = directory + "/" + name
+                try Data("original-\(name)".utf8).write(to: URL(fileURLWithPath: path))
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+            }
+            _ = try context.machineManager.transitionInstallerMedia(id: id, attached: false,
+                productionPlanningController: context.planningController)
+            if sourceState == "stopped" { _ = try context.machineManager.stop(id: id) }
+            if sourceState == "paused" { _ = try context.machineManager.pause(id: id) }
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            let before = try journal.list().count
+            let operationID = UUID()
+            let result = try context.machineManager.transitionInstallerMedia(id: id, attached: true,
+                operationID: operationID, productionPlanningController: context.planningController)
+            #expect(result.installerMediaAttached)
+            #expect(result.state == (sourceState == "stopped" ? .stopped : .running))
+            let plan = try context.planning.plans.read(id: id)
+            #expect(plan.bootMedia.media.kind == .installerISO)
+            #expect(result.runtimeIdentity.resolvedPlan == plan)
+            #expect(try journal.list().count == before + 1)
+            #expect(try journal.read(operationID).state.status == .completed)
+            let replay = try context.machineManager.transitionInstallerMedia(id: id, attached: true,
+                operationID: operationID, productionPlanningController: context.planningController)
+            #expect(replay.pid == result.pid)
+            #expect(replay.state == result.state)
+            #expect(try context.planning.plans.read(id: id) == plan)
+            #expect(try journal.list().count == before + 1)
+        }
+    }
+
+    @Test("installer replay before quiescence preserves the original live helper", arguments: [false, true])
+    func installerPreStopReplay(paused: Bool) throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try ProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { Issue.record("Expected production activation"); return }
+            let id = "installer-pre-stop"
+            let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
+                                       productionPlanningController: context.planningController)
+            try createPortableEFIFixture(id: id, fixture: fixture, service: service)
+            defer { try? context.machineManager.delete(id: id) }
+            _ = try context.machineManager.start(id: id)
+            if paused { _ = try context.machineManager.pause(id: id) }
+            let directory = fixture.machineConfiguration.stateDirectory + "/" + id
+            for name in ["NVRAM.installer", "MachineIdentifier"] {
+                let path = directory + "/" + name
+                try Data("original-\(name)".utf8).write(to: URL(fileURLWithPath: path))
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+            }
+            let original = try #require(context.machineManager.status(id: id))
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            let before = try journal.list().count
+            let operationID = UUID()
+            let observed = ConfigurationUpdateFaultObservation()
+            context.machineManager.installLifecycleFaultInjectorForTesting { point in
+                if point == .configurationUpdateBeforeStop { observed.record(); throw MachineLifecycleInjectedCrash() }
+            }
+            #expect(throws: (any Error).self) {
+                try context.machineManager.transitionInstallerMedia(id: id, attached: false,
+                    operationID: operationID, productionPlanningController: context.planningController)
+            }
+            try #require(observed.wasObserved)
+            context.machineManager.installLifecycleFaultInjectorForTesting { _ in }
+            #expect(throws: (any Error).self) {
+                try context.machineManager.transitionInstallerMedia(id: id, attached: false,
+                    operationID: operationID, productionPlanningController: context.planningController)
+            }
+            let result = try #require(context.machineManager.status(id: id))
+            #expect(result.pid == original.pid)
+            #expect(result.state == original.state)
+            #expect(result.runtimeIdentity == original.runtimeIdentity)
+            #expect(result.installerMediaAttached)
+            #expect(result.failure?.recoveryDisposition == .rollbackCompleted)
+            #expect(try journal.list().count == before + 1)
+            #expect(try journal.read(operationID).state.status == .failed)
+        }
+    }
+
+    @Test("installer boot failure restores firmware media and source power in the same operation",
+          arguments: [MachineLifecycleFaultPoint.installerAfterPlanning, .installerAfterFirstBoot],
+          0..<6)
+    func installerRollbackOwnsRecovery(point: MachineLifecycleFaultPoint, scenario: Int) throws {
+        let paused = scenario & 1 != 0
+        let interruptRollback = scenario >= 2
+        let rollbackFault: MachineLifecycleFaultPoint = scenario >= 4
+            ? .configurationUpdateAfterMetadata : .installerAfterRollbackPublication
+        try withProductionIntegrationTestStack {
+            let fixture = try ProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { Issue.record("Expected production activation"); return }
+            let id = "installer-rollback"
+            let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
+                                       productionPlanningController: context.planningController)
+            try createPortableEFIFixture(id: id, fixture: fixture, service: service)
+            _ = try context.machineManager.start(id: id)
+            if paused { _ = try context.machineManager.pause(id: id) }
+            let directory = fixture.machineConfiguration.stateDirectory + "/" + id
+            let originalFirmware = Data("original-installer-state".utf8)
+            for (name, bytes) in [("NVRAM.installer", originalFirmware), ("MachineIdentifier", Data("stable-id".utf8))] {
+                let path = directory + "/" + name
+                try bytes.write(to: URL(fileURLWithPath: path))
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+            }
+            let originalMetadata = try Data(contentsOf: URL(fileURLWithPath: directory + "/machine.json"))
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            let before = try journal.list().count
+            let operationID = UUID()
+            let failure = ConfigurationUpdateFaultObservation()
+            let interruption = ConfigurationUpdateFaultObservation()
+            context.machineManager.installLifecycleFaultInjectorForTesting { current in
+                if current == point, failure.recordOnce() {
+                    throw MachineManagerError.persistence("injected first boot failure")
+                }
+                if interruptRollback, failure.wasObserved, current == rollbackFault {
+                    interruption.record()
+                    throw MachineLifecycleInjectedCrash()
+                }
+            }
+            #expect(throws: (any Error).self) {
+                try context.machineManager.transitionInstallerMedia(id: id, attached: false,
+                    operationID: operationID, productionPlanningController: context.planningController)
+            }
+            try #require(failure.wasObserved, "Missing failure at \(point)")
+            let manager: MachineManager
+            let controller: any DoryDaemonVirtualMachineProductionPlanningControlling
+            if interruptRollback {
+                try #require(interruption.wasObserved, "Rollback did not reach durable source publication")
+                #expect(try journal.read(operationID).state.status == .rollingBack)
+                // The source helper is stopped at this boundary. Fresh factory recovery therefore
+                // exercises actual durable inputs without claiming live fixture-helper adoption.
+                let activation = fixture.factory.activate(
+                    store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                    appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+                )
+                guard case let .activated(recovered) = activation else {
+                    Issue.record("Installer rollback recovery failed: \(activation)"); return
+                }
+                manager = recovered.machineManager
+                controller = recovered.planningController
+            } else {
+                manager = context.machineManager
+                controller = context.planningController
+            }
+            defer { try? manager.delete(id: id) }
+            let result = try #require(manager.status(id: id))
+            #expect(result.state == (paused ? .paused : .running))
+            #expect(result.installerMediaAttached)
+            #expect(result.failure?.recoveryDisposition == .rollbackCompleted)
+            let plan = try context.planning.plans.read(id: id)
+            #expect(plan.bootMedia.media.kind == .installerISO)
+            #expect(result.runtimeIdentity.resolvedPlan == plan)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: directory + "/machine.json")) == originalMetadata)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: directory + "/NVRAM.installer")) == originalFirmware)
+            #expect(!FileManager.default.fileExists(atPath: directory + "/NVRAM"))
+            #expect(!FileManager.default.fileExists(atPath: directory + "/.dory-nvram-promotion-pending-v1"))
+            #expect(try journal.list().count == before + 1)
+            #expect(try journal.read(operationID).state.status == .failed)
+            do {
+                let lease = try journal.acquire(operationID)
+                let update = try DoryMachineConfigurationUpdateJournal.read(from: lease)
+                let workspace = try DoryWorkspaceRepository(root: fixture.machineConfiguration.stateDirectory)
+                    .readPersistedRecord(id: id)
+                #expect(workspace.definition == update.installerTransition?.rollbackNativeDefinition)
+            }
+            let leases = try context.planning.resourceLedger.snapshot().leases.filter { $0.binding.machineID == id }
+            #expect(leases.count == 1)
+            #expect(leases.first?.state == .running)
+            #expect(leases.first?.evidence == plan.resourceAdmission)
+            #expect(throws: (any Error).self) {
+                try manager.transitionInstallerMedia(id: id, attached: false,
+                    operationID: operationID, productionPlanningController: controller)
+            }
+            #expect(manager.status(id: id)?.pid == result.pid)
+            #expect(try journal.list().count == before + 1)
+        }
+    }
+
+    @Test("installer first-boot replay finishes the existing helper and journal", arguments: [
+        MachineLifecycleFaultPoint.installerAfterFirstBoot, .completionBeforeJournalWrite(.updating),
+    ])
+    func installerFirstBootReplay(point: MachineLifecycleFaultPoint) throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try ProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { Issue.record("Expected production activation"); return }
+            let id = "installer-replay"
+            let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
+                                       productionPlanningController: context.planningController)
+            try createPortableEFIFixture(id: id, fixture: fixture, service: service)
+            defer { try? context.machineManager.delete(id: id) }
+            _ = try context.machineManager.start(id: id)
+            for name in ["NVRAM.installer", "MachineIdentifier"] {
+                let path = fixture.machineConfiguration.stateDirectory + "/" + id + "/" + name
+                try Data("original-\(name)".utf8).write(to: URL(fileURLWithPath: path))
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+            }
+            let operationID = UUID()
+            let observed = ConfigurationUpdateFaultObservation()
+            context.machineManager.installLifecycleFaultInjectorForTesting { current in
+                if current == point { observed.record(); throw MachineLifecycleInjectedCrash() }
+            }
+            #expect(throws: (any Error).self) {
+                try context.machineManager.transitionInstallerMedia(id: id, attached: false,
+                    operationID: operationID, productionPlanningController: context.planningController)
+            }
+            try #require(observed.wasObserved)
+            let running = try #require(context.machineManager.status(id: id))
+            #expect(running.state == .running)
+            let plan = try context.planning.plans.read(id: id)
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            let count = try journal.list().count
+            context.machineManager.installLifecycleFaultInjectorForTesting { _ in }
+            let replay = try context.machineManager.transitionInstallerMedia(id: id, attached: false,
+                operationID: operationID, productionPlanningController: context.planningController)
+            #expect(replay.state == .running)
+            #expect(replay.pid == running.pid)
+            #expect(replay.failure == nil)
+            #expect(try context.planning.plans.read(id: id) == plan)
+            #expect(try journal.list().count == count)
+            #expect(try journal.read(operationID).state.status == .completed)
+        }
+    }
+
+    @Test("activated production graph runs the portable EFI install and cold-boot path", arguments: [false, true])
+    func activatedGraphRunsPortableEFILifecycle(paused: Bool) throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try ProductionTrustFixture()
             defer { fixture.cleanup() }
             guard case let .activated(context) = fixture.factory.activate(
                 store: fixture.store,
@@ -732,7 +1541,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             }
             #expect(create.value.ok, Comment(rawValue: create.value.message))
             var plan = try context.planning.plans.read(id: "portable-efi")
-            #expect(plan.backend == .appleVirtualizationFramework)
+            #expect(plan.backend == .doryHypervisor)
             #expect(plan.graphics == .software)
             #expect(plan.bootMedia.media.kind == .installerISO)
             #expect(plan.bootMedia.media.source == .userProvided)
@@ -741,6 +1550,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             #expect(started.state == .running)
             #expect(started.installerMediaAttached)
             let installerPID = try #require(started.pid)
+            if paused { _ = try context.machineManager.pause(id: "portable-efi") }
             let machineDirectory = fixture.machineConfiguration.stateDirectory
                 + "/portable-efi"
             for (name, bytes) in [
@@ -755,10 +1565,14 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
                 )
             }
 
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            let resumesBefore = try journal.list().filter { $0.plan.kind == .workspaceResume }.map(\.plan.id)
+            let operationsBefore = try journal.list().count
+            let operationID = UUID()
             let eject = LockedPlanningCreateReply()
             service.machineUpdate(
                 "portable-efi",
-                config: ["installerMediaAttached": false]
+                config: ["installerMediaAttached": false, "operationID": operationID.uuidString.lowercased()]
             ) { ok, body, message in
                 eject.set(ok: ok, body: body, message: message)
             }
@@ -767,11 +1581,38 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             #expect(ejected.state == .running)
             #expect(ejected.pid != nil && ejected.pid != installerPID)
             #expect(!ejected.installerMediaAttached)
+            #expect(try journal.list().filter { $0.plan.kind == .workspaceResume }.map(\.plan.id) == resumesBefore)
+            #expect(try journal.list().count == operationsBefore + 1)
+            #expect(try journal.read(operationID).state.status == .completed)
+            do {
+                let lease = try journal.acquire(operationID)
+                let operation = try lease.readWorkspaceLifecycleOperation()
+                let update = try DoryMachineConfigurationUpdateJournal.read(from: lease)
+                #expect(update.installerTransition?.attached == false)
+                #expect(operation.target.state == .running)
+                #expect(operation.target.runtime == nil)
+                #expect(operation.target.plannedRuntime?.configurationSHA256 == DoryMachineConfigurationUpdateJournal.sha256(update.targetConfigurationData))
+                #expect(try lease.events().filter { $0.stepID.hasPrefix("installer.checkpoint.firmware.") }.count == 1)
+            }
             plan = try context.planning.plans.read(id: "portable-efi")
-            #expect(plan.backend == .appleVirtualizationFramework)
+            #expect(plan.backend == .doryHypervisor)
             #expect(plan.graphics == .software)
             #expect(plan.bootMedia.media.kind == .virtualDisk)
             #expect(plan.bootMedia.media.source == .userProvided)
+            let replay = LockedPlanningCreateReply()
+            service.machineUpdate("portable-efi", config: ["installerMediaAttached": false, "operationID": operationID.uuidString.lowercased()]) {
+                replay.set(ok: $0, body: $1, message: $2)
+            }
+            #expect(replay.value.ok, Comment(rawValue: replay.value.message))
+            #expect(context.machineManager.status(id: "portable-efi")?.pid == ejected.pid)
+            #expect(try journal.list().count == operationsBefore + 1)
+            let collision = LockedPlanningCreateReply()
+            service.machineUpdate("portable-efi", config: ["installerMediaAttached": true, "operationID": operationID.uuidString.lowercased()]) {
+                collision.set(ok: $0, body: $1, message: $2)
+            }
+            #expect(!collision.value.ok)
+            #expect(context.machineManager.status(id: "portable-efi")?.pid == ejected.pid)
+            #expect(try context.planning.plans.read(id: "portable-efi") == plan)
 
             try context.machineManager.delete(id: "portable-efi")
             #expect(try context.planning.resourceLedger.snapshot().leases.contains {
@@ -877,13 +1718,13 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         let preparation = try preparer.preparePlanningTrust(for: request)
         let snapshot = preparation.snapshot(start.resolvedPlan.resourceAdmission!)
 
-        #expect(snapshot.media.reference == start.bootMediaReference)
+        #expect(snapshot.media.reference == start.resolvedPlan.bootMedia.resolverReference)
         #expect(snapshot.backendRuntimes.count == 2)
         #expect(snapshot.runtimeQualifications.count == 2)
         #expect(snapshot.backendRuntime(for: .doryHypervisor) != nil)
     }
 
-    @Test("production trust admits only the structural ARM64 VZ software baseline")
+    @Test("production trust admits only the structural ARM64 DoryARMVirt software baseline")
     func planningPreparationAdmitsPortableARM64ISO() throws {
         let fixture = try ProductionTrustFixture()
         defer { fixture.cleanup() }
@@ -946,7 +1787,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
                     memoryBytes: 4 * 1_024 * 1_024 * 1_024,
                     diskBytes: 32 * 1_024 * 1_024 * 1_024
                 ),
-                devices: .minimumBootable,
+                devices: DoryVirtualMachineDeviceCapabilityRequest(networkInterface: .stable(machineID: "portable-linux")),
                 acceptableGraphics: graphics,
                 virtualHardwareABIVersion: 1
             )
@@ -981,8 +1822,8 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             guest: fixture.guest,
             bootMedia: snapshot.media.media,
             acceptableGraphics: [.software],
-            devices: .minimumBootable,
-            backendPreferences: [.appleVirtualizationFramework],
+            devices: DoryVirtualMachineDeviceCapabilityRequest(networkInterface: .stable(machineID: "portable-linux")),
+            backendPreferences: [.doryHypervisor],
             backendPreferencePolicy: .required
         )
         let plannerResult = DoryAppleSiliconDaemonVirtualMachineCapabilityPlanner().plan(
@@ -995,7 +1836,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(selected.availability.supportTier == .supported)
         #expect(selected.runtimeQualificationEvidence == nil)
         #expect(selected.bootMediaInspectionEvidence?.catalogManifestEvidence == nil)
-        #expect(runtime.backend == .appleVirtualizationFramework)
+        #expect(runtime.backend == .doryHypervisor)
         #expect(runtime.hostQualification == nil)
         #expect(snapshot.runtimeQualifications.isEmpty)
 
@@ -1006,33 +1847,33 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             planRevision: 1,
             createdAtUnixMilliseconds: 1_700_000_000_000,
             updatedAtUnixMilliseconds: 1_700_000_000_000,
-            backendDescriptor: VirtualizationFrameworkLinuxMachineBackend.backendDescriptor,
+            backendDescriptor: RawHVLinuxMachineBackend.backendDescriptor,
             backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
+            armVirtTopology: resolvedARMVirtTestTopology(devices: selected.request.devices, installerID: "installer"),
             resolverReference: reference,
             launchArtifacts: snapshot.launchArtifacts,
             components: runtime.components,
             resourceAdmission: lease.evidence,
             hostQualification: nil,
+            firmware: runtime.firmware,
+            persistence: snapshot.persistence,
             plannerRequest: plannerRequest,
             plannerResult: plannerResult
         )
         #expect(plan.validate().isEmpty)
+        #expect(plan.firmware == runtime.firmware)
+        #expect(plan.firmware != nil)
         _ = try ledger.bind(
             leaseID: lease.leaseID,
             to: plan,
             expectedLeaseRevision: lease.leaseRevision
         )
         let startRequest = DoryDaemonVirtualMachineStartInventoryRequest(
-            machineID: plan.machineID,
-            definitionRevision: plan.definitionRevision,
-            planRevision: plan.planRevision,
-            bootMediaReference: reference,
-            exactCapabilityRequest: selected.request,
             resolvedPlan: plan
         )
         let startSnapshot = try context.inventory.startInventory(for: startRequest)
         #expect(startSnapshot.exactStartRuntimeQualification == nil)
-        #expect(startSnapshot.backendRuntime(for: .appleVirtualizationFramework)?
+        #expect(startSnapshot.backendRuntime(for: .doryHypervisor)?
             .hostQualification == nil)
         let authorizationProvider = try #require(context.inventory
             as? any DoryDaemonVirtualMachinePreSpawnAuthorizationProviding)
@@ -1043,6 +1884,19 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
                 for: request(graphics: [.hostAcceleratedDisplay])
             )
         }
+
+        let pendingPublication = try preparer.preparePlanningTrust(for: request(graphics: [.software]))
+        let pendingStart = try authorizationProvider.preSpawnAuthorization(for: startRequest)
+        let firmwarePath = try #require(fixture.machineConfiguration.armVirtFirmwareBundlePath)
+        try FileManager.default.removeItem(atPath: firmwarePath)
+        try makeARMVirtFirmwareTestBundle(at: firmwarePath, fill: 0xb6)
+        #expect(throws: (any Error).self) {
+            try pendingPublication.publicationAuthorization.authorize()
+        }
+        #expect(throws: DoryDaemonProductionTrustInventoryError.self) {
+            _ = try context.inventory.startInventory(for: startRequest)
+        }
+        #expect(throws: (any Error).self) { try pendingStart.authorize() }
     }
 
     @Test("publication authorization refreshes immutable host identity but not volatile free bytes")
@@ -1172,6 +2026,28 @@ private func withProductionIntegrationTestStack(
     thread.stackSize = 8 * 1_024 * 1_024
     thread.start()
     try completion.wait()
+}
+
+private struct DesktopPreflightArtifactProbe: DoryDesktopUpdateArtifactResolving {
+    let observed: ConfigurationUpdateFaultObservation
+    func resolve(_ request: DoryDesktopUpdateRequest, guestArchitecture: String) throws -> DoryDesktopUpdateArtifactAuthority {
+        observed.record()
+        throw MachineManagerError.persistence("desktop artifact probe reached")
+    }
+}
+
+private final class ConfigurationUpdateFaultObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var observed = false
+    func record() { lock.withLock { observed = true } }
+    func recordOnce() -> Bool {
+        lock.withLock {
+            guard !observed else { return false }
+            observed = true
+            return true
+        }
+    }
+    var wasObserved: Bool { lock.withLock { observed } }
 }
 
 private final class LockedPlanningCreateReply: @unchecked Sendable {
@@ -1578,9 +2454,12 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             try helperData.write(to: URL(fileURLWithPath: path))
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
         }
+        let firmwarePath = root.appendingPathComponent("armvirt-firmware").path
+        try makeARMVirtFirmwareTestBundle(at: firmwarePath)
         machineConfiguration = MachineManagerConfiguration(
             vmmExecutablePath: vz,
             acceleratedDesktopExecutablePath: raw,
+            armVirtFirmwareBundlePath: firmwarePath,
             stateDirectory: state.path,
             runtimeDirectory: root.appendingPathComponent("runtime").path,
             requiresReadyHandoff: false
@@ -1861,6 +2740,9 @@ private final class ProductionTrustFixture: @unchecked Sendable {
                 virtualHardwareABIVersion: 1,
                 qualifierIdentifier: "dory.catalog-v2.virtual-machine-qualification",
                 qualifierVersion: 1
+            ),
+            persistence: try DoryResolvedMachinePersistence(
+                stateDirectory: machineConfiguration.stateDirectory, machineID: binding.machineID
             )
         )
         #expect(plan.validate().isEmpty)
@@ -1870,11 +2752,6 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             expectedLeaseRevision: lease.leaseRevision
         )
         return DoryDaemonVirtualMachineStartInventoryRequest(
-            machineID: plan.machineID,
-            definitionRevision: plan.definitionRevision,
-            planRevision: plan.planRevision,
-            bootMediaReference: mediaReference,
-            exactCapabilityRequest: capabilityRequest,
             resolvedPlan: plan
         )
     }
@@ -1887,6 +2764,13 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         let signingKeyID = Self.digest(privateKey.publicKey.rawRepresentation)
         let devices = DoryVirtualMachineDeviceCapabilityRequest.minimumBootable
         let desktopDevices = productionTrustDesktopDevices()
+        let managedDesktopDevices = DoryVirtualMachineDeviceCapabilityRequest(
+            networkInterface: .stable(machineID: "desktop-preflight"),
+            displays: [.init(widthPixels: 1_920, heightPixels: 1_080)],
+            audioInput: true, audioOutput: true, keyboard: true, pointer: true,
+            clipboard: true, clipboardPolicy: .legacyDesktop(.bidirectional),
+            clockSynchronization: true, dynamicDisplay: true, gracefulShutdown: true
+        )
         let headlessDevices = DoryVirtualMachineDeviceCapabilityRequest(
             networkInterface: .init(macAddress: "02:00:00:00:00:01"),
             clipboardPolicy: .disabled,
@@ -1924,6 +2808,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
                     ("minimum", devices, DoryGraphicsAccelerationLevel.none),
                     ("headless", headlessDevices, DoryGraphicsAccelerationLevel.none),
                     ("desktop", desktopDevices, .software),
+                    ("managed-desktop", managedDesktopDevices, .software),
                 ] {
                     let qualificationIdentity =
                         "\(component)-\(mediaSuffix)-\(suffix)-qualification"

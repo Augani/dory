@@ -42,6 +42,17 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
         #expect(readiness.planningTransactionAvailable)
     }
 
+    @Test("completed planning history does not replay obsolete desired state during activation")
+    func completedPlanningHistoryDoesNotMutate() throws {
+        let fixture = try CompositionFixture(ids: ["completed-a"])
+        try fixture.interrupt("completed-a", at: .completeJournalPublished)
+        let before = fixture.events.values
+        let context = try readyContext(fixture.factory().resolve())
+        #expect(context.recoveredTransactionIDs.isEmpty)
+        #expect(fixture.events.values.filter { $0.hasPrefix("mutation:") } == before.filter { $0.hasPrefix("mutation:") })
+        #expect(fixture.recovery.requestedIDs.isEmpty)
+    }
+
     @Test("corrupt planning journal prevents readiness")
     func corruptJournalFailsClosed() throws {
         let fixture = try CompositionFixture(ids: ["corrupt-one"])
@@ -401,7 +412,8 @@ private final class CompositionFixture: @unchecked Sendable {
                 )],
                 hostQualification: hostQualification
             )],
-            resourceAdmission: compositionAdmission(resources)
+            resourceAdmission: compositionAdmission(resources),
+            persistence: resolvedPersistenceTestBinding(machineID: definition.identity.id, stateDirectory: root)
         )
         let planning = DoryDaemonVirtualMachinePlanningRequest(
             definition: definition,
@@ -455,7 +467,7 @@ private final class CompositionTrust:
     func startInventory(
         for request: DoryDaemonVirtualMachineStartInventoryRequest
     ) throws -> DoryDaemonVirtualMachineTrustedInventorySnapshot {
-        try #require(snapshots[request.machineID])
+        try #require(snapshots[request.resolvedPlan.machineID])
     }
 }
 
@@ -497,6 +509,7 @@ private final class CompositionMutationAuthority:
     init(events: CompositionEvents) { self.events = events }
 
     func acquirePlanningMutationFence(
+        operationID: UUID,
         machine: DoryMachineConfiguration,
         definition: DoryVirtualMachineDefinition,
         canonicalDefinitionData: Data

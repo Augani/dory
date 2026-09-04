@@ -1,4 +1,6 @@
 import DoryOperations
+import DoryFirmware
+import CryptoKit
 import DoryVMContracts
 import Foundation
 
@@ -6,6 +8,33 @@ public enum DoryResolvedMachinePlanMigrationDisposition: String, Codable, Sendab
     case current
     /// The record can be decoded for migration, but cannot authorize a launch.
     case requiresReplanning = "requires-replanning"
+}
+
+/// Binds the managed persistence root without publishing a user's host path. The existing
+/// artifact authority uses the same canonical-path identity model; moving a workspace requires
+/// replanning. Live directory leases separately reject namespace replacement and unsafe roots.
+public struct DoryResolvedMachinePersistence: Codable, Sendable, Hashable {
+    public let workspaceRootSHA256: String
+    public let layoutVersion: UInt16
+
+    public init(stateDirectory: String, machineID: String) throws {
+        // Foundation's standardizedFileURL can rewrite /private/tmp to /tmp only when the
+        // directory exists. Durable identity must not change as a side effect of existence.
+        let components = stateDirectory.split(separator: "/", omittingEmptySubsequences: false)
+        guard stateDirectory.hasPrefix("/"), stateDirectory != "/",
+              !stateDirectory.contains("\0"),
+              components.dropFirst().allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              DoryResolvedMachinePlan.isSafeIdentifier(machineID) else {
+            throw DoryResolvedMachinePlanConstructionError.invalidPersistenceRoot
+        }
+        workspaceRootSHA256 = SHA256.hash(data: Data((stateDirectory + "/" + machineID).utf8))
+            .map { String(format: "%02x", $0) }.joined()
+        layoutVersion = 1
+    }
+
+    public var isValid: Bool {
+        layoutVersion == 1 && DoryResolvedMachinePlan.isSHA256(workspaceRootSHA256)
+    }
 }
 
 public struct DoryResolvedBackendComponentEvidence: Codable, Sendable, Equatable, Hashable {
@@ -373,7 +402,11 @@ public struct DoryResolvedMachineBackendSelectionEvidence: Codable, Sendable, Eq
                 rejectedCandidates: []
             )
         }
-        if request.backendPreferencePolicy == .required {
+        let changesGraphics = selected.request.graphics != request.acceptableGraphics.first
+        if changesGraphics && !request.graphicsRecovery {
+            throw DoryResolvedMachinePlanConstructionError.fallbackDisallowed
+        }
+        if request.backendPreferencePolicy == .required && !changesGraphics {
             guard fallbackAuthorization == nil else {
                 throw DoryResolvedMachinePlanConstructionError.fallbackAuthorizationInvalid
             }
@@ -437,12 +470,14 @@ public struct DoryResolvedMachineBackendSelectionEvidence: Codable, Sendable, Eq
 }
 
 public enum DoryResolvedMachinePlanConstructionError: Error, Sendable, Equatable {
+    case invalidPersistenceRoot
     case backendDescriptorMismatch
     case capabilityDescriptorInvalid
     case plannerResultInvalid
     case fallbackDisallowed
     case fallbackAuthorizationRequired
     case fallbackAuthorizationInvalid
+    case validationFailed(String)
 }
 
 public enum DoryResolvedMachinePlanValidationCode: String, Codable, Sendable, Hashable {
@@ -478,6 +513,10 @@ public enum DoryResolvedMachinePlanValidationCode: String, Codable, Sendable, Ha
     case fallbackDisallowed = "fallback-disallowed"
     case missingFallbackAuthorization = "missing-fallback-authorization"
     case invalidFallbackAuthorization = "invalid-fallback-authorization"
+    case architectureMismatch = "architecture-mismatch"
+    case platformCompositionMismatch = "platform-composition-mismatch"
+    case invalidFirmwareBinding = "invalid-firmware-binding"
+    case invalidPersistenceBinding = "invalid-persistence-binding"
 }
 
 public struct DoryResolvedMachinePlanValidationIssue: Codable, Sendable, Equatable, Hashable {
@@ -494,7 +533,7 @@ public struct DoryResolvedMachinePlanValidationIssue: Codable, Sendable, Equatab
 /// decision or non-secret audit reference and is replaced whenever any bound evidence changes.
 public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     public static let oldestSupportedSchemaVersion: UInt16 = 1
-    public static let currentSchemaVersion: UInt16 = 5
+    public static let currentSchemaVersion: UInt16 = 6
 
     public var schemaVersion: UInt16
     public var sourceSchemaVersion: UInt16
@@ -525,6 +564,14 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     public var resourceAdmission: DoryResolvedMachineResourceAdmissionEvidence?
     public var hostQualification: DoryResolvedHostQualificationEvidence?
     public var experimentalAuthorization: DoryResolvedExperimentalSupportAuthorization?
+    /// Requested vs detected architecture, host ISA, CPU profile, machine ABI and execution tier.
+    public var architecture: DoryVirtualMachineArchitectureFacts?
+    public var platform: DoryVirtualizationPlatformComposition?
+    public var resources: DoryVMResourceRequest?
+    /// Verified code, initial variable-store, source and ABI identities for the selected UEFI
+    /// bundle. Paths remain daemon-local; a later bundle replacement requires a new plan.
+    public var firmware: DoryFirmwareArtifactManifest?
+    public var persistence: DoryResolvedMachinePersistence?
 
     public init(
         machineID: String,
@@ -550,7 +597,12 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         qualificationEvidence: DoryResolvedMachineQualificationEvidence,
         resourceAdmission: DoryResolvedMachineResourceAdmissionEvidence,
         hostQualification: DoryResolvedHostQualificationEvidence? = nil,
-        experimentalAuthorization: DoryResolvedExperimentalSupportAuthorization? = nil
+        experimentalAuthorization: DoryResolvedExperimentalSupportAuthorization? = nil,
+        architecture: DoryVirtualMachineArchitectureFacts? = nil,
+        platform: DoryVirtualizationPlatformComposition? = nil,
+        resources: DoryVMResourceRequest? = nil,
+        firmware: DoryFirmwareArtifactManifest? = nil,
+        persistence: DoryResolvedMachinePersistence? = nil
     ) {
         schemaVersion = Self.currentSchemaVersion
         sourceSchemaVersion = Self.currentSchemaVersion
@@ -579,6 +631,20 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         self.resourceAdmission = resourceAdmission
         self.hostQualification = hostQualification
         self.experimentalAuthorization = experimentalAuthorization
+        let derived = Self.derivedArchitecture(
+            guest: guest,
+            detectedMediaArchitecture: bootMedia.inspectionEvidence?.detectedArchitecture,
+            hostArchitecture: .arm64
+        )
+        self.architecture = architecture ?? derived.architecture
+        self.platform = platform ?? derived.platform
+        self.resources = resources ?? DoryVMResourceRequest(
+            virtualCPUCount: resourceAdmission.admittedVirtualCPUCount,
+            memoryBytes: resourceAdmission.admittedMemoryBytes,
+            diskBytes: resourceAdmission.admittedStorageBytes
+        )
+        self.firmware = firmware
+        self.persistence = persistence
     }
 
     /// Builds the durable record from the planner-selected capability without allowing the
@@ -600,6 +666,9 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         resourceAdmission: DoryResolvedMachineResourceAdmissionEvidence,
         hostQualification: DoryResolvedHostQualificationEvidence? = nil,
         experimentalAuthorization: DoryResolvedExperimentalSupportAuthorization? = nil,
+        resources: DoryVMResourceRequest? = nil,
+        firmware: DoryFirmwareArtifactManifest? = nil,
+        persistence: DoryResolvedMachinePersistence? = nil,
         plannerRequest: DoryVirtualMachineBackendPlanRequest,
         plannerResult: DoryVirtualMachineBackendPlanResult,
         fallbackAuthorization: DoryResolvedMachineFallbackAuthorization? = nil
@@ -657,10 +726,16 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             ),
             resourceAdmission: resourceAdmission,
             hostQualification: hostQualification,
-            experimentalAuthorization: experimentalAuthorization
+            experimentalAuthorization: experimentalAuthorization,
+            resources: resources,
+            firmware: firmware,
+            persistence: persistence
         )
-        guard validate().isEmpty else {
-            throw DoryResolvedMachinePlanConstructionError.capabilityDescriptorInvalid
+        let issues = validate()
+        guard issues.isEmpty else {
+            throw DoryResolvedMachinePlanConstructionError.validationFailed(
+                issues.map { "\($0.code.rawValue):\($0.field)" }.joined(separator: ",")
+            )
         }
     }
 
@@ -694,6 +769,38 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         case resourceAdmission
         case hostQualification
         case experimentalAuthorization
+        case architecture
+        case platform
+        case resources
+        case firmware
+        case persistence
+    }
+
+    private static func derivedArchitecture(
+        guest: DoryGuestPlatform,
+        detectedMediaArchitecture: DoryGuestArchitecture?,
+        hostArchitecture: DoryHostArchitecture
+    ) -> (
+        architecture: DoryVirtualMachineArchitectureFacts?,
+        platform: DoryVirtualizationPlatformComposition?
+    ) {
+        switch DoryVirtualizationProductPolicy.cell(
+            hostArchitecture: hostArchitecture,
+            guest: guest
+        ) {
+        case let .success(cell):
+            (
+                .resolving(
+                    hostArchitecture: hostArchitecture,
+                    guest: guest,
+                    detectedMediaArchitecture: detectedMediaArchitecture,
+                    cell: cell
+                ),
+                cell.platform
+            )
+        case .failure:
+            (nil, nil)
+        }
     }
 
     public init(from decoder: Decoder) throws {
@@ -756,7 +863,12 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             resourceAdmission = nil
             hostQualification = nil
             experimentalAuthorization = nil
-        case 2, 3, 4, Self.currentSchemaVersion:
+            architecture = nil
+            platform = nil
+            resources = nil
+            firmware = nil
+            persistence = nil
+        case 2, 3, 4, 5, Self.currentSchemaVersion:
             schemaVersion = Self.currentSchemaVersion
             sourceSchemaVersion = persistedSchema
             migrationDisposition = persistedSchema == Self.currentSchemaVersion
@@ -834,6 +946,24 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
                 DoryResolvedExperimentalSupportAuthorization.self,
                 forKey: .experimentalAuthorization
             )
+            let decodedArchitecture = try container.decodeIfPresent(
+                DoryVirtualMachineArchitectureFacts.self,
+                forKey: .architecture
+            )
+            let decodedPlatform = try container.decodeIfPresent(
+                DoryVirtualizationPlatformComposition.self,
+                forKey: .platform
+            )
+            resources = try container.decodeIfPresent(
+                DoryVMResourceRequest.self,
+                forKey: .resources
+            )
+            // Decoding is a trust boundary. Never repair missing or altered authority using
+            // the requested guest label; old schemas remain explicitly non-runnable.
+            architecture = decodedArchitecture
+            platform = decodedPlatform
+            firmware = try container.decodeIfPresent(DoryFirmwareArtifactManifest.self, forKey: .firmware)
+            persistence = try container.decodeIfPresent(DoryResolvedMachinePersistence.self, forKey: .persistence)
         default:
             throw DecodingError.dataCorruptedError(
                 forKey: .schemaVersion,
@@ -875,6 +1005,11 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         try container.encodeIfPresent(resourceAdmission, forKey: .resourceAdmission)
         try container.encodeIfPresent(hostQualification, forKey: .hostQualification)
         try container.encodeIfPresent(experimentalAuthorization, forKey: .experimentalAuthorization)
+        try container.encodeIfPresent(architecture, forKey: .architecture)
+        try container.encodeIfPresent(platform, forKey: .platform)
+        try container.encodeIfPresent(resources, forKey: .resources)
+        try container.encodeIfPresent(firmware, forKey: .firmware)
+        try container.encodeIfPresent(persistence, forKey: .persistence)
     }
 
     public func validate() -> [DoryResolvedMachinePlanValidationIssue] {
@@ -906,6 +1041,43 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         if !Self.isSafeEvidenceIdentifier(backendRuntimeBuildIdentifier) {
             add(.invalidBackendRuntimeBuild, "backendRuntimeBuildIdentifier")
         }
+        if migrationDisposition == .current {
+            if persistence?.isValid != true { add(.invalidPersistenceBinding, "persistence") }
+            if let requiredPlatform = Self.requiredFirmwarePlatform(
+                backend: backend, guest: guest, mediaKind: bootMedia.media.kind
+            ) {
+                if firmware?.platform != requiredPlatform {
+                    add(.invalidFirmwareBinding, "firmware")
+                }
+            } else if firmware != nil {
+                add(.invalidFirmwareBinding, "firmware")
+            }
+            if let architecture,
+               case let .success(cell) = DoryVirtualizationProductPolicy.cell(
+                   hostArchitecture: architecture.hostArchitecture, guest: guest
+               ) {
+                let expected = DoryVirtualMachineArchitectureFacts.resolving(
+                    hostArchitecture: architecture.hostArchitecture,
+                    guest: guest,
+                    detectedMediaArchitecture: bootMedia.inspectionEvidence?.detectedArchitecture,
+                    cell: cell
+                )
+                if architecture != expected
+                    || (architecture.detectedMediaArchitecture != nil
+                        && architecture.detectedMediaArchitecture != guest.architecture) {
+                    add(.architectureMismatch, "architecture")
+                }
+                if platform != cell.platform || backend != cell.backendIdentity {
+                    add(.platformCompositionMismatch, "platform")
+                }
+            } else {
+                add(.architectureMismatch, "architecture")
+            }
+            if let kind = bootMedia.inspectionEvidence?.detectedKind,
+               kind != bootMedia.media.kind {
+                add(.architectureMismatch, "bootMedia.inspectionEvidence.detectedKind")
+            }
+        }
         if virtualHardwareABIVersion == 0 {
             add(.invalidVirtualHardwareABI, "virtualHardwareABIVersion")
         }
@@ -922,6 +1094,41 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         validateSupportAuthorization(into: &issues)
         validateSelectionEvidence(into: &issues)
         return issues
+    }
+
+    /// The single byte representation authenticated by journals, admission leases, persisted
+    /// runtime identities and launch envelopes. In particular, URL slash escaping must not
+    /// depend on which control-plane layer happens to compute the digest.
+    public func canonicalData() throws -> Data {
+        let object = try JSONSerialization.jsonObject(with: JSONEncoder().encode(self))
+        return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
+    }
+
+    public func canonicalSHA256() throws -> String {
+        SHA256.hash(data: try canonicalData()).map { String(format: "%02x", $0) }.joined()
+    }
+
+    /// Projects the persisted selection into the capability evaluator's input. Start inventory
+    /// and evaluation share this projection; neither carries a second mutable selection.
+    public var exactCapabilityRequest: DoryVirtualMachineCapabilityRequest {
+        DoryVirtualMachineCapabilityRequest(
+            guest: guest,
+            bootMedia: bootMedia.media,
+            backend: backend,
+            graphics: graphics,
+            devices: devices,
+            virtualHardwareABIVersion: virtualHardwareABIVersion
+        )
+    }
+
+    static func requiredFirmwarePlatform(
+        backend: DoryVirtualizationBackendIdentity,
+        guest: DoryGuestPlatform,
+        mediaKind: DoryBootMediaKind
+    ) -> DoryFirmwarePlatform? {
+        guard backend == .doryHypervisor, guest.family == .linux,
+              mediaKind == .installerISO || mediaKind == .virtualDisk else { return nil }
+        return guest.architecture == .arm64 ? .armVirtV1 : .pcV1
     }
 
     /// The current resolved Linux VZ implementation uses a file-handle attachment for every
@@ -1261,7 +1468,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     private func validateQualifications(
         into issues: inout [DoryResolvedMachinePlanValidationIssue]
     ) {
-        if backend == .doryHypervisor, graphics != .none {
+        if backend == .doryHypervisor, graphics != .none, !usesPortableLinuxEFIBaseline {
             guard let graphicsEvidence = qualificationEvidence.graphics else {
                 issues.append(DoryResolvedMachinePlanValidationIssue(
                     code: .missingGraphicsQualification,
@@ -1339,6 +1546,11 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         let admittedValuesAreValid = admission.admittedVirtualCPUCount > 0
             && admission.admittedMemoryBytes > 0
             && admission.admittedStorageBytes > 0
+        let resourcesMatch = migrationDisposition != .current || (
+            resources?.virtualCPUCount == admission.admittedVirtualCPUCount
+                && resources?.memoryBytes == admission.admittedMemoryBytes
+                && resources?.diskBytes == admission.admittedStorageBytes
+        )
         let hostValuesAreValid = admission.hostLogicalCPUCount > 0
             && admission.hostPhysicalMemoryBytes > 0
             && admission.hostFreeStorageBytes > 0
@@ -1352,15 +1564,15 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             within: admission.hostPhysicalMemoryBytes,
             admission.existingMemoryCommitmentBytes,
             admission.hostReservedMemoryBytes,
-            admission.admittedMemoryBytes
+            resources?.accountedMemoryBytes ?? admission.admittedMemoryBytes
         )
         let storageFits = Self.sumFits(
             within: admission.hostFreeStorageBytes,
             admission.existingStorageReservationBytes,
             admission.hostReservedStorageBytes,
-            admission.admittedStorageBytes
+            resources?.accountedStorageBytes ?? admission.admittedStorageBytes
         )
-        if !identifiersAreValid || !admittedValuesAreValid || !hostValuesAreValid
+        if !identifiersAreValid || !admittedValuesAreValid || !hostValuesAreValid || !resourcesMatch
             || !cpuFits || !memoryFits || !storageFits {
             issues.append(DoryResolvedMachinePlanValidationIssue(
                 code: .invalidResourceAdmission,
@@ -1393,10 +1605,11 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
 
     /// The only supported plan that intentionally omits exact signed runtime and host
     /// qualification. Its authority comes from immutable ISO inspection (or mutable-disk
-    /// provenance), a verified VZ helper build, and the exact software-only device contract.
+    /// provenance), a verified helper build, and the exact software-only device contract.
     private var usesPortableLinuxEFIBaseline: Bool {
         guard guest == DoryGuestPlatform(family: .linux, architecture: .arm64),
-              backend == .appleVirtualizationFramework,
+              (backend == .doryHypervisor
+                || backend == .appleVirtualizationFramework),
               graphics == .software,
               supportTier == .supported,
               bootMedia.media.source == .userProvided,
@@ -1452,6 +1665,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     private func validateSelectionEvidence(
         into issues: inout [DoryResolvedMachinePlanValidationIssue]
     ) {
+        guard migrationDisposition == .current else { return }
         guard let selection = selectionEvidence else {
             issues.append(DoryResolvedMachinePlanValidationIssue(
                 code: .missingSelectionEvidence,
@@ -1471,6 +1685,13 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
                 field: "selectionEvidence.plannerRequest"
             ))
             return
+        }
+        let changesGraphics = graphics != request.acceptableGraphics.first
+        if changesGraphics && (!request.graphicsRecovery || selection.disposition != .approvedFallback) {
+            issues.append(DoryResolvedMachinePlanValidationIssue(
+                code: .fallbackDisallowed,
+                field: "selectionEvidence.plannerRequest.graphicsRecovery"
+            ))
         }
 
         guard let orderedCandidates = DoryResolvedMachineBackendSelectionEvidence
@@ -1537,7 +1758,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
                 ))
             }
         case .approvedFallback:
-            if request.backendPreferencePolicy == .required {
+            if request.backendPreferencePolicy == .required && !changesGraphics {
                 issues.append(DoryResolvedMachinePlanValidationIssue(
                     code: .fallbackDisallowed,
                     field: "selectionEvidence.disposition"
@@ -1627,6 +1848,8 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
 /// Fresh daemon/resolver output supplied immediately before start. It deliberately duplicates the
 /// launch-critical plan fields so every mismatch can be named rather than hidden behind a Bool.
 public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, Hashable {
+    public var firmware: DoryFirmwareArtifactManifest?
+    public var persistence: DoryResolvedMachinePersistence?
     public var guest: DoryGuestPlatform
     public var backend: DoryVirtualizationBackendIdentity
     public var backendImplementationIdentifier: String
@@ -1658,13 +1881,15 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
         components: [DoryResolvedBackendComponentEvidence],
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         graphics: DoryGraphicsAccelerationLevel,
-        portForwards: [DoryVMPortForward] = [],
+        portForwards: [DoryVMPortForward],
         supportTier: DoryCapabilitySupportTier,
         selectionEvidence: DoryResolvedMachineBackendSelectionEvidence?,
         qualificationEvidence: DoryResolvedMachineQualificationEvidence,
         resourceAdmission: DoryResolvedMachineResourceAdmissionEvidence?,
         hostQualification: DoryResolvedHostQualificationEvidence?,
-        experimentalAuthorization: DoryResolvedExperimentalSupportAuthorization?
+        experimentalAuthorization: DoryResolvedExperimentalSupportAuthorization?,
+        firmware: DoryFirmwareArtifactManifest? = nil,
+        persistence: DoryResolvedMachinePersistence? = nil
     ) {
         self.guest = guest
         self.backend = backend
@@ -1684,9 +1909,13 @@ public struct DoryResolvedMachineRuntimeEvidence: Codable, Sendable, Equatable, 
         self.resourceAdmission = resourceAdmission
         self.hostQualification = hostQualification
         self.experimentalAuthorization = experimentalAuthorization
+        self.firmware = firmware
+        self.persistence = persistence
     }
 
     public init(plan: DoryResolvedMachinePlan) {
+        firmware = plan.firmware
+        persistence = plan.persistence
         guest = plan.guest
         backend = plan.backend
         backendImplementationIdentifier = plan.backendImplementationIdentifier
@@ -1755,6 +1984,8 @@ public enum DoryResolvedMachinePlanRevalidationCode: String, Codable, Sendable, 
     case resourceAdmissionMismatch = "resource-admission-mismatch"
     case hostQualificationMismatch = "host-qualification-mismatch"
     case experimentalAuthorizationMismatch = "experimental-authorization-mismatch"
+    case firmwareMismatch = "firmware-mismatch"
+    case persistenceMismatch = "persistence-mismatch"
 }
 
 public struct DoryResolvedMachinePlanRevalidationIssue: Codable, Sendable, Equatable, Hashable {
@@ -1830,6 +2061,8 @@ public enum DoryResolvedMachinePlanStartValidator {
             field: "definitionSHA256"
         )
         let runtime = input.runtimeEvidence
+        compare(runtime.firmware, plan.firmware, code: .firmwareMismatch, field: "firmware")
+        compare(runtime.persistence, plan.persistence, code: .persistenceMismatch, field: "persistence")
         compare(runtime.guest, plan.guest, code: .guestMismatch, field: "guest")
         compare(runtime.backend, plan.backend, code: .backendMismatch, field: "backend")
         compare(

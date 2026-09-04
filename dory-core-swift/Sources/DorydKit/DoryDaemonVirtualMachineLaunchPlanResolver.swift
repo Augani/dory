@@ -23,10 +23,15 @@ enum DoryDaemonVirtualMachinePreSpawnLaunchAuthority: Sendable, Equatable {
 public final class DoryDaemonVirtualMachinePreSpawnAuthorization: @unchecked Sendable {
     private let lock = NSLock()
     private var consumed = false
+    private let purpose: DoryDaemonVirtualMachineLaunchValidationPurpose
     private let resolveLaunchAuthority:
         @Sendable () throws -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
 
-    init(revalidate: @escaping @Sendable () throws -> Void) {
+    init(
+        purpose: DoryDaemonVirtualMachineLaunchValidationPurpose = .start,
+        revalidate: @escaping @Sendable () throws -> Void
+    ) {
+        self.purpose = purpose
         resolveLaunchAuthority = {
             try revalidate()
             return .noRendererReleaseIdentityRequired
@@ -34,17 +39,21 @@ public final class DoryDaemonVirtualMachinePreSpawnAuthorization: @unchecked Sen
     }
 
     private init(
+        purpose: DoryDaemonVirtualMachineLaunchValidationPurpose,
         resolveLaunchAuthority:
             @escaping @Sendable () throws -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
     ) {
+        self.purpose = purpose
         self.resolveLaunchAuthority = resolveLaunchAuthority
     }
 
     static func resolvingLaunchAuthority(
+        purpose: DoryDaemonVirtualMachineLaunchValidationPurpose = .start,
         _ resolve:
             @escaping @Sendable () throws -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
     ) -> DoryDaemonVirtualMachinePreSpawnAuthorization {
         DoryDaemonVirtualMachinePreSpawnAuthorization(
+            purpose: purpose,
             resolveLaunchAuthority: resolve
         )
     }
@@ -56,6 +65,20 @@ public final class DoryDaemonVirtualMachinePreSpawnAuthorization: @unchecked Sen
     func authorizeResolvedLaunch() throws
         -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
     {
+        try consume(for: .start)
+    }
+
+    func authorizeRestartPreflight() throws {
+        _ = try consume(for: .restartPreflight)
+    }
+
+    func authorizeStoppedPreflight() throws {
+        _ = try consume(for: .stoppedPreflight)
+    }
+
+    private func consume(for expectedPurpose: DoryDaemonVirtualMachineLaunchValidationPurpose) throws
+        -> DoryDaemonVirtualMachinePreSpawnLaunchAuthority
+    {
         lock.lock()
         guard !consumed else {
             lock.unlock()
@@ -63,6 +86,9 @@ public final class DoryDaemonVirtualMachinePreSpawnAuthorization: @unchecked Sen
         }
         consumed = true
         lock.unlock()
+        guard purpose == expectedPurpose else {
+            throw DoryDaemonVirtualMachinePreSpawnAuthorizationError.revalidationFailed
+        }
         do { return try resolveLaunchAuthority() }
         catch {
             throw DoryDaemonVirtualMachinePreSpawnAuthorizationError.revalidationFailed
@@ -133,8 +159,16 @@ public struct DoryDaemonVirtualMachineStartEvidenceCollection: Sendable, Equatab
 
 public protocol DoryDaemonVirtualMachineStartEvidenceCollecting: Sendable {
     func collectFreshEvidence(
-        for plan: DoryResolvedMachinePlan
+        for plan: DoryResolvedMachinePlan,
+        purpose: DoryDaemonVirtualMachineLaunchValidationPurpose
     ) throws -> DoryDaemonVirtualMachineStartEvidenceCollection
+}
+
+extension DoryDaemonVirtualMachineStartEvidenceCollecting {
+    public func collectFreshEvidence(for plan: DoryResolvedMachinePlan) throws
+        -> DoryDaemonVirtualMachineStartEvidenceCollection {
+        try collectFreshEvidence(for: plan, purpose: .start)
+    }
 }
 
 public enum DoryDaemonVirtualMachineStartEvidenceFailureCode: String, Sendable, Equatable {
@@ -179,26 +213,15 @@ public final class DoryDaemonVirtualMachineStartEvidenceCollector:
     }
 
     public func collectFreshEvidence(
-        for plan: DoryResolvedMachinePlan
+        for plan: DoryResolvedMachinePlan,
+        purpose: DoryDaemonVirtualMachineLaunchValidationPurpose
     ) throws -> DoryDaemonVirtualMachineStartEvidenceCollection {
         guard let reference = plan.bootMedia.resolverReference else {
             throw failure(.mediaReferenceUnavailable, "The persisted plan has no media resolver reference.")
         }
-        let persistedRequest = DoryVirtualMachineCapabilityRequest(
-            guest: plan.guest,
-            bootMedia: plan.bootMedia.media,
-            backend: plan.backend,
-            graphics: plan.graphics,
-            devices: plan.devices,
-            virtualHardwareABIVersion: plan.virtualHardwareABIVersion
-        )
         let inventoryRequest = DoryDaemonVirtualMachineStartInventoryRequest(
-            machineID: plan.machineID,
-            definitionRevision: plan.definitionRevision,
-            planRevision: plan.planRevision,
-            bootMediaReference: reference,
-            exactCapabilityRequest: persistedRequest,
-            resolvedPlan: plan
+            resolvedPlan: plan,
+            purpose: purpose
         )
         let snapshot: DoryDaemonVirtualMachineTrustedInventorySnapshot
         do {
@@ -216,14 +239,8 @@ public final class DoryDaemonVirtualMachineStartEvidenceCollector:
         guard let runtime = snapshot.backendRuntime(for: plan.backend) else {
             throw failure(.backendInventoryUnavailable, "Exact backend runtime evidence is unavailable.")
         }
-        let exactRequest = DoryVirtualMachineCapabilityRequest(
-            guest: plan.guest,
-            bootMedia: snapshot.media.media,
-            backend: plan.backend,
-            graphics: plan.graphics,
-            devices: plan.devices,
-            virtualHardwareABIVersion: plan.virtualHardwareABIVersion
-        )
+        var exactRequest = plan.exactCapabilityRequest
+        exactRequest.bootMedia = snapshot.media.media
         let capability = evaluator.evaluate(exactRequest, inventory: snapshot)
         guard capability.schemaVersion
                 == DoryVirtualMachineCapabilityDescriptor.currentSchemaVersion,
@@ -253,6 +270,7 @@ public final class DoryDaemonVirtualMachineStartEvidenceCollector:
             },
             devices: exactRequest.devices,
             graphics: exactRequest.graphics,
+            portForwards: plan.portForwards,
             supportTier: capability.availability.supportTier,
             selectionEvidence: plan.selectionEvidence,
             qualificationEvidence: DoryResolvedMachineQualificationEvidence(
@@ -261,7 +279,9 @@ public final class DoryDaemonVirtualMachineStartEvidenceCollector:
             ),
             resourceAdmission: snapshot.resourceAdmission,
             hostQualification: runtime.hostQualification,
-            experimentalAuthorization: plan.experimentalAuthorization
+            experimentalAuthorization: plan.experimentalAuthorization,
+            firmware: runtime.firmware,
+            persistence: snapshot.persistence
         )
         guard let authorizationProvider = inventory
                 as? any DoryDaemonVirtualMachinePreSpawnAuthorizationProviding else {
@@ -297,21 +317,28 @@ public final class DoryDaemonVirtualMachineStartEvidenceCollector:
 }
 
 public struct DoryDaemonVirtualMachineLaunchPlanRequest: Sendable {
+    public var purpose: DoryDaemonVirtualMachineLaunchValidationPurpose
     public var definition: DoryVirtualMachineDefinition
     /// Fresh canonical sorted-key encoding of `definition`.
     public var canonicalDefinitionData: Data
     public var machine: DoryMachineConfiguration
+    /// Manager-owned workspace root; external boot disks cannot determine persistence ownership.
+    public var persistence: DoryResolvedMachinePersistence
     public var expectedPlanRevision: UInt64
 
     public init(
         definition: DoryVirtualMachineDefinition,
         canonicalDefinitionData: Data,
         machine: DoryMachineConfiguration,
-        expectedPlanRevision: UInt64
+        persistence: DoryResolvedMachinePersistence,
+        expectedPlanRevision: UInt64,
+        purpose: DoryDaemonVirtualMachineLaunchValidationPurpose = .start
     ) {
+        self.purpose = purpose
         self.definition = definition
         self.canonicalDefinitionData = canonicalDefinitionData
         self.machine = machine
+        self.persistence = persistence
         self.expectedPlanRevision = expectedPlanRevision
     }
 }
@@ -398,9 +425,7 @@ public final class DoryDaemonVirtualMachineLaunchPlanResolver:
     public func resolve(
         _ request: DoryDaemonVirtualMachineLaunchPlanRequest
     ) throws -> DoryDaemonVirtualMachineLaunchPlanResolution {
-        guard request.definition.validate().isEmpty else {
-            throw failure(.invalidDefinition, "Workspace definition validation failed.")
-        }
+        try DoryDaemonVirtualMachinePlanningCoordinator.validateProductDefinition(request.definition)
         guard !request.canonicalDefinitionData.isEmpty else {
             throw failure(.emptyDefinitionAuthority, "Fresh definition authority bytes are required.")
         }
@@ -427,6 +452,18 @@ public final class DoryDaemonVirtualMachineLaunchPlanResolver:
         } catch {
             throw failure(.planRepositoryRejected, "The durable plan record could not be read.")
         }
+        guard plan.resources == request.definition.resources else {
+            throw failure(
+                .staleOrMismatchedPlan,
+                "The persisted resource reservation differs from the current definition."
+            )
+        }
+        guard plan.persistence == request.persistence else {
+            throw failure(
+                .staleOrMismatchedPlan,
+                "The persisted plan belongs to a different workspace root. Replan before start."
+            )
+        }
         if plan.backend == .doryHypervisor, plan.guest.architecture == .arm64 {
             guard let topology = plan.armVirtTopology else {
                 throw failure(
@@ -448,7 +485,7 @@ public final class DoryDaemonVirtualMachineLaunchPlanResolver:
             }
         }
         let fresh: DoryDaemonVirtualMachineStartEvidenceCollection
-        do { fresh = try evidenceCollector.collectFreshEvidence(for: plan) }
+        do { fresh = try evidenceCollector.collectFreshEvidence(for: plan, purpose: request.purpose) }
         catch {
             throw failure(.freshEvidenceUnavailable, "Fresh trusted runtime evidence is unavailable.")
         }
@@ -494,7 +531,7 @@ public final class DoryDaemonVirtualMachineLaunchPlanResolver:
         }
         return DoryDaemonVirtualMachineLaunchPlanResolution(
             resolvedPlan: plan,
-            resolvedPlanSHA256: DoryDaemonVirtualMachinePlanningCoordinator.planSHA256(plan),
+            resolvedPlanSHA256: try plan.canonicalSHA256(),
             revalidation: revalidation,
             backendPlan: backendPlan,
             preSpawnAuthorization: fresh.preSpawnAuthorization

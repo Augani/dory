@@ -301,6 +301,7 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
             definition: fixture.definition,
             canonicalDefinitionData: fixture.canonicalDefinition,
             machine: fixture.machine,
+            persistence: resolvedPersistenceTestBinding(machineID: fixture.machine.id),
             expectedPlanRevision: planned.resolvedPlan.planRevision
         ))
 
@@ -309,6 +310,85 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
         #expect(resolved.resolvedPlanSHA256 == planned.resolvedPlanSHA256)
         #expect(resolved.backendPlan.backend.identity == planned.resolvedPlan.backend)
         #expect(collector.collectionCount == 1)
+    }
+
+    @Test("changed overhead reservation rejects before collecting launch evidence")
+    func changedOverheadReservationRejectsBeforeInventory() throws {
+        let fixture = try Fixture()
+        let planned = try fixture.coordinator.resolveAndPersist(fixture.planningRequest())
+        let collector = FixtureEvidenceCollector(collection: DoryDaemonVirtualMachineStartEvidenceCollection(
+            capability: planned.plannerResult.selectedDescriptor!,
+            runtimeEvidence: DoryResolvedMachineRuntimeEvidence(plan: planned.resolvedPlan)
+        ))
+        let resolver = DoryDaemonVirtualMachineLaunchPlanResolver(
+            registry: fixture.registry,
+            plans: fixture.store,
+            evidenceCollector: collector
+        )
+        var definition = fixture.definition
+        definition.resources = DoryVMResourceRequest(
+            virtualCPUCount: definition.resources.virtualCPUCount,
+            memoryBytes: definition.resources.memoryBytes,
+            diskBytes: definition.resources.diskBytes,
+            workerOverheadBytes: 64 * 1_024 * 1_024
+        )
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        do {
+            _ = try resolver.resolve(DoryDaemonVirtualMachineLaunchPlanRequest(
+                definition: definition,
+                canonicalDefinitionData: try encoder.encode(definition),
+                machine: fixture.machine,
+                persistence: resolvedPersistenceTestBinding(machineID: fixture.machine.id),
+                expectedPlanRevision: planned.resolvedPlan.planRevision
+            ))
+            Issue.record("Expected changed reservation to be rejected")
+        } catch let failure as DoryDaemonVirtualMachineLaunchPlanFailure {
+            #expect(failure.code == .staleOrMismatchedPlan)
+        }
+        #expect(collector.collectionCount == 0)
+    }
+
+    @Test("production evidence collection preserves exact forwarded ports for launch and preflight",
+          arguments: [DoryDaemonVirtualMachineLaunchValidationPurpose.start,
+                      .restartPreflight, .stoppedPreflight])
+    func productionCollectorPreservesForwardedPorts(
+        purpose: DoryDaemonVirtualMachineLaunchValidationPurpose
+    ) throws {
+        let fixture = try Fixture()
+        let planned = try fixture.coordinator.resolveAndPersist(fixture.planningRequest())
+        #expect(!planned.resolvedPlan.portForwards.isEmpty)
+        let collector = DoryDaemonVirtualMachineStartEvidenceCollector(
+            registry: fixture.registry,
+            inventory: fixture.inventory,
+            evaluator: FixtureExactCapabilityEvaluator(capability: fixture.capability)
+        )
+        let resolver = DoryDaemonVirtualMachineLaunchPlanResolver(
+            registry: fixture.registry,
+            plans: fixture.store,
+            evidenceCollector: collector
+        )
+        let resolved = try resolver.resolve(DoryDaemonVirtualMachineLaunchPlanRequest(
+            definition: fixture.definition,
+            canonicalDefinitionData: fixture.canonicalDefinition,
+            machine: fixture.machine,
+            persistence: resolvedPersistenceTestBinding(machineID: fixture.machine.id),
+            expectedPlanRevision: planned.resolvedPlan.planRevision,
+            purpose: purpose
+        ))
+
+        #expect(resolved.revalidation.mayStart)
+        #expect(resolved.resolvedPlanSHA256 == planned.resolvedPlanSHA256)
+        #expect(resolved.backendPlan.portForwards == fixture.definition.portForwards)
+        let authorization = try #require(resolved.preSpawnAuthorization)
+        switch purpose {
+        case .start: try authorization.authorize()
+        case .restartPreflight: try authorization.authorizeRestartPreflight()
+        case .stoppedPreflight: try authorization.authorizeStoppedPreflight()
+        }
+        #expect(throws: DoryDaemonVirtualMachinePreSpawnAuthorizationError.alreadyConsumed) {
+            try authorization.authorize()
+        }
     }
 
     @Test("fresh evidence mismatch rejects before backend plan mapping")
@@ -331,6 +411,7 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
                 definition: fixture.definition,
                 canonicalDefinitionData: fixture.canonicalDefinition,
                 machine: fixture.machine,
+                persistence: resolvedPersistenceTestBinding(machineID: fixture.machine.id),
                 expectedPlanRevision: planned.resolvedPlan.planRevision
             ))
             Issue.record("Expected fresh evidence rejection")
@@ -364,6 +445,7 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
                 definition: fixture.definition,
                 canonicalDefinitionData: fixture.canonicalDefinition,
                 machine: fixture.machine,
+                persistence: resolvedPersistenceTestBinding(machineID: fixture.machine.id),
                 expectedPlanRevision: planned.resolvedPlan.planRevision
             ))
         }
@@ -382,12 +464,45 @@ struct DoryDaemonVirtualMachineRuntimePlanningTests {
                 definition: fixture.definition,
                 canonicalDefinitionData: fixture.canonicalDefinition,
                 machine: fixture.machine,
+                persistence: resolvedPersistenceTestBinding(machineID: fixture.machine.id),
                 expectedPlanRevision: 1
             ))
             Issue.record("Expected missing plan rejection")
         } catch let failure as DoryDaemonVirtualMachineLaunchPlanFailure {
             #expect(failure.code == .planNotFound)
         }
+    }
+
+    @Test("unsupported product cells fail before inventory mutation")
+    func unsupportedProductCellNeverTouchesInventory() throws {
+        let fixture = try Fixture()
+        var definition = fixture.definition
+        definition.guest = DoryGuestPlatform(family: .windows, architecture: .arm64)
+        definition.translationConsent = .notRequired
+        let canonical = DoryDaemonVirtualMachinePlanningCoordinator.canonicalDefinitionData(
+            definition
+        )
+        let inventory = CountingInventory(snapshot: fixture.inventory.snapshot)
+        let coordinator = DoryDaemonVirtualMachinePlanningCoordinator(
+            registry: fixture.registry,
+            inventory: inventory,
+            plans: FixturePlanStore()
+        )
+        do {
+            _ = try coordinator.resolveAndPersist(
+                DoryDaemonVirtualMachinePlanningRequest(
+                    definition: definition,
+                    canonicalDefinitionData: canonical,
+                    machine: fixture.machine,
+                    publication: .create
+                )
+            )
+            Issue.record("Expected unsupported product cell rejection")
+        } catch let failure as DoryDaemonVirtualMachinePlanningFailure {
+            #expect(failure.code == .unsupportedProductCell)
+        }
+        #expect(inventory.planningCalls == 0)
+        #expect(inventory.startCalls == 0)
     }
 }
 
@@ -553,7 +668,8 @@ private final class Fixture {
                 )],
                 hostQualification: hostQualification()
             )],
-            resourceAdmission: admission
+            resourceAdmission: admission,
+            persistence: resolvedPersistenceTestBinding(machineID: definition.identity.id)
         )
         inventory = FixtureInventory(snapshot: snapshot)
         registry = try BackendRegistry(backends: [RawHVLinuxMachineBackend(
@@ -686,7 +802,10 @@ private struct SubstitutingBackend: MachineBackend {
     }
 }
 
-private struct FixtureInventory: DoryDaemonVirtualMachineTrustInventory {
+private struct FixtureInventory:
+    DoryDaemonVirtualMachineTrustInventory,
+    DoryDaemonVirtualMachinePreSpawnAuthorizationProviding
+{
     let snapshot: DoryDaemonVirtualMachineTrustedInventorySnapshot
 
     func planningInventory(
@@ -696,6 +815,54 @@ private struct FixtureInventory: DoryDaemonVirtualMachineTrustInventory {
     func startInventory(
         for request: DoryDaemonVirtualMachineStartInventoryRequest
     ) throws -> DoryDaemonVirtualMachineTrustedInventorySnapshot { snapshot }
+
+    func preSpawnAuthorization(
+        for request: DoryDaemonVirtualMachineStartInventoryRequest
+    ) throws -> DoryDaemonVirtualMachinePreSpawnAuthorization {
+        DoryDaemonVirtualMachinePreSpawnAuthorization(purpose: request.purpose) {}
+    }
+}
+
+private struct FixtureExactCapabilityEvaluator:
+    DoryDaemonVirtualMachineExactCapabilityEvaluating
+{
+    let capability: DoryVirtualMachineCapabilityDescriptor
+
+    func evaluate(
+        _ request: DoryVirtualMachineCapabilityRequest,
+        inventory: DoryDaemonVirtualMachineTrustedInventorySnapshot
+    ) -> DoryVirtualMachineCapabilityDescriptor {
+        capability
+    }
+}
+
+private final class CountingInventory: DoryDaemonVirtualMachineTrustInventory, @unchecked Sendable {
+    let snapshot: DoryDaemonVirtualMachineTrustedInventorySnapshot
+    private let lock = NSLock()
+    private(set) var planningCalls = 0
+    private(set) var startCalls = 0
+
+    init(snapshot: DoryDaemonVirtualMachineTrustedInventorySnapshot) {
+        self.snapshot = snapshot
+    }
+
+    func planningInventory(
+        for request: DoryDaemonVirtualMachineInventoryRequest
+    ) throws -> DoryDaemonVirtualMachineTrustedInventorySnapshot {
+        lock.lock()
+        planningCalls += 1
+        lock.unlock()
+        return snapshot
+    }
+
+    func startInventory(
+        for request: DoryDaemonVirtualMachineStartInventoryRequest
+    ) throws -> DoryDaemonVirtualMachineTrustedInventorySnapshot {
+        lock.lock()
+        startCalls += 1
+        lock.unlock()
+        return snapshot
+    }
 }
 
 private final class FixturePlanStore: DoryResolvedMachinePlanStoring, @unchecked Sendable {
@@ -739,7 +906,8 @@ private final class FixtureEvidenceCollector:
     var collectionCount: Int { lock.withLock { count } }
 
     func collectFreshEvidence(
-        for plan: DoryResolvedMachinePlan
+        for plan: DoryResolvedMachinePlan,
+        purpose: DoryDaemonVirtualMachineLaunchValidationPurpose
     ) throws -> DoryDaemonVirtualMachineStartEvidenceCollection {
         try lock.withLock {
             count += 1

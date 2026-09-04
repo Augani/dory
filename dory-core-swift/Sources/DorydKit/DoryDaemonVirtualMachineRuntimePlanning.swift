@@ -1,5 +1,6 @@
 import CryptoKit
 import DoryOperations
+import DoryFirmware
 import DoryVMContracts
 import Foundation
 
@@ -50,11 +51,12 @@ public struct DoryDaemonVirtualMachineLaunchArtifactRequirement: Sendable, Equat
 }
 
 public struct DoryDaemonVirtualMachineBackendRuntimeInventory: Sendable, Equatable {
+    public var firmware: DoryFirmwareArtifactManifest?
     public var backend: DoryVirtualizationBackendIdentity
     public var runtimeBuildIdentifier: String
     public var components: [DoryResolvedBackendComponentEvidence]
     /// Exact signed host qualification for managed or accelerated claims. The portable
-    /// user-provided ARM64 EFI VZ/software baseline binds the verified helper build and components
+    /// user-provided ARM64 EFI DoryARMVirt/software baseline binds the verified helper build and components
     /// but intentionally has no distro-specific host qualification.
     public var hostQualification: DoryResolvedHostQualificationEvidence?
 
@@ -62,16 +64,19 @@ public struct DoryDaemonVirtualMachineBackendRuntimeInventory: Sendable, Equatab
         backend: DoryVirtualizationBackendIdentity,
         runtimeBuildIdentifier: String,
         components: [DoryResolvedBackendComponentEvidence],
-        hostQualification: DoryResolvedHostQualificationEvidence? = nil
+        hostQualification: DoryResolvedHostQualificationEvidence? = nil,
+        firmware: DoryFirmwareArtifactManifest? = nil
     ) {
         self.backend = backend
         self.runtimeBuildIdentifier = runtimeBuildIdentifier
         self.components = components
         self.hostQualification = hostQualification
+        self.firmware = firmware
     }
 }
 
 public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
+    public var persistence: DoryResolvedMachinePersistence?
     public var hostFacts: DoryAppleSiliconHostFacts
     public var media: DoryDaemonVirtualMachineResolvedMedia
     public var launchArtifacts: [DoryResolvedMachineLaunchArtifact]
@@ -93,7 +98,8 @@ public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
         runtimeQualifications: [DoryTrustedVirtualMachineRuntimeQualification] = [],
         capabilityQualifications:
             [DoryTrustedVirtualMachineCapabilityQualification] = [],
-        exactStartRuntimeQualification: DoryTrustedVirtualMachineRuntimeQualification? = nil
+        exactStartRuntimeQualification: DoryTrustedVirtualMachineRuntimeQualification? = nil,
+        persistence: DoryResolvedMachinePersistence? = nil
     ) {
         self.hostFacts = hostFacts
         self.media = media
@@ -103,6 +109,7 @@ public struct DoryDaemonVirtualMachineTrustedInventorySnapshot: Sendable {
         self.runtimeQualifications = runtimeQualifications
         self.capabilityQualifications = capabilityQualifications
         self.exactStartRuntimeQualification = exactStartRuntimeQualification
+        self.persistence = persistence
     }
 
     public func backendRuntime(
@@ -167,30 +174,28 @@ public struct DoryDaemonVirtualMachineInventoryRequest: Sendable, Equatable {
     }
 }
 
+/// Daemon-local validation intent. Preflight checks retained or prospective capacity without
+/// authorizing another process; actual launch still requires a starting lease and fresh token.
+public enum DoryDaemonVirtualMachineLaunchValidationPurpose: Sendable, Equatable {
+    case start
+    case restartPreflight
+    case stoppedPreflight
+}
+
 public struct DoryDaemonVirtualMachineStartInventoryRequest: Sendable, Equatable {
-    public var machineID: String
-    public var definitionRevision: UInt64
-    public var planRevision: UInt64
-    public var bootMediaReference: DoryVMResolverReference
-    public var exactCapabilityRequest: DoryVirtualMachineCapabilityRequest
+    public let purpose: DoryDaemonVirtualMachineLaunchValidationPurpose
     /// Exact already-persisted plan. This request is daemon-local and non-Codable; carrying the
     /// plan lets the resource authority verify its one-shot plan binding rather than trusting a
     /// caller-supplied digest or merely matching resource numbers.
-    public var resolvedPlan: DoryResolvedMachinePlan
+    /// Identity, revisions, media and capability intent come only from this immutable value.
+    /// Separate copies would create another request authority that inventory must reconcile.
+    public let resolvedPlan: DoryResolvedMachinePlan
 
     public init(
-        machineID: String,
-        definitionRevision: UInt64,
-        planRevision: UInt64,
-        bootMediaReference: DoryVMResolverReference,
-        exactCapabilityRequest: DoryVirtualMachineCapabilityRequest,
-        resolvedPlan: DoryResolvedMachinePlan
+        resolvedPlan: DoryResolvedMachinePlan,
+        purpose: DoryDaemonVirtualMachineLaunchValidationPurpose = .start
     ) {
-        self.machineID = machineID
-        self.definitionRevision = definitionRevision
-        self.planRevision = planRevision
-        self.bootMediaReference = bootMediaReference
-        self.exactCapabilityRequest = exactCapabilityRequest
+        self.purpose = purpose
         self.resolvedPlan = resolvedPlan
     }
 }
@@ -311,6 +316,8 @@ public enum DoryDaemonVirtualMachinePlanningFailureCode: String, Sendable, Equat
     case planConstructionRejected = "plan-construction-rejected"
     case backendPlanRejected = "backend-plan-rejected"
     case persistenceRejected = "persistence-rejected"
+    case unsupportedProductCell = "unsupported-product-cell"
+    case unsafeBackendMigration = "unsafe-backend-migration"
 }
 
 public struct DoryDaemonVirtualMachinePlanningFailure: Error, Sendable, Equatable {
@@ -351,10 +358,7 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         _ input: DoryDaemonVirtualMachinePlanningRequest
     ) throws -> DoryDaemonVirtualMachinePlanningResult {
         let definition = input.definition
-        let definitionIssues = definition.validate()
-        guard definitionIssues.isEmpty else {
-            throw failure(.invalidDefinition, "Workspace definition validation failed.")
-        }
+        try Self.validateProductDefinition(definition)
         guard !input.canonicalDefinitionData.isEmpty else {
             throw failure(.emptyDefinitionAuthority, "Definition authority bytes are required.")
         }
@@ -422,7 +426,8 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             definition: definition,
             media: snapshot.media.media,
             devices: devices,
-            allowsExperimental: input.experimentalAuthorization != nil
+            allowsExperimental: input.experimentalAuthorization != nil,
+            graphicsRecovery: input.fallbackAuthorization != nil
         )
         let plannerResult = capabilityPlanner.plan(plannerRequest, inventory: snapshot)
         guard plannerResult.failure == nil, let selected = plannerResult.selectedDescriptor else {
@@ -454,8 +459,9 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         }
 
         let timing: (revision: UInt64, created: Int64, updated: Int64)
-        let usesARMVirt = definition.platform?.machineModel == .armVirtV1
+        let usesARMVirt = selected.request.guest.family == .linux
             && selected.request.guest.architecture == .arm64
+            && selected.request.backend == .doryHypervisor
         let previousARMVirtTopology: DoryARMVirtV1Topology?
         switch input.publication {
         case .create:
@@ -466,6 +472,12 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             let current: DoryResolvedMachinePlan
             do { current = try plans.read(id: definition.identity.id) }
             catch { throw failure(.persistenceRejected, "The current resolved plan could not be read.") }
+            if current.backend != selected.request.backend {
+                throw failure(
+                    .unsafeBackendMigration,
+                    "In-place conversion from \(current.backend.rawValue) to \(selected.request.backend.rawValue) is rejected; keep the original plan until a dedicated migration validates the new composition."
+                )
+            }
             guard expected < UInt64.max else {
                 throw failure(.persistenceRejected, "The resolved plan revision is exhausted.")
             }
@@ -514,12 +526,18 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
                 resourceAdmission: snapshot.resourceAdmission,
                 hostQualification: runtime.hostQualification,
                 experimentalAuthorization: input.experimentalAuthorization,
+                resources: definition.resources,
+                firmware: runtime.firmware,
+                persistence: snapshot.persistence,
                 plannerRequest: plannerRequest,
                 plannerResult: plannerResult,
                 fallbackAuthorization: input.fallbackAuthorization
             )
         } catch {
-            throw failure(.planConstructionRejected, "Trusted evidence did not form a valid durable plan.")
+            throw failure(
+                .planConstructionRejected,
+                "Trusted evidence did not form a valid durable plan (\(error))."
+            )
         }
         do {
             switch input.publication {
@@ -534,9 +552,34 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             plannerRequest: plannerRequest,
             plannerResult: plannerResult,
             resolvedPlan: plan,
-            resolvedPlanSHA256: Self.planSHA256(plan),
+            resolvedPlanSHA256: try plan.canonicalSHA256(),
             backendPlan: backendPlan
         )
+    }
+
+    /// Shared read-only preflight, called before artifact publication, journals, or admission.
+    static func validateProductDefinition(
+        _ definition: DoryVirtualMachineDefinition,
+        hostArchitecture: DoryHostArchitecture = .current
+    ) throws {
+        if case let .failure(error) = DoryVirtualizationPlatformResolver.resolve(
+            DoryVirtualizationResolutionRequest(
+                hostArchitecture: hostArchitecture,
+                guest: definition.guest,
+                translationConsent: definition.translationConsent
+            )
+        ) {
+            throw DoryDaemonVirtualMachinePlanningFailure(
+                code: .unsupportedProductCell,
+                message: "Rejected before mutation: \(error.reasonCode.rawValue)."
+            )
+        }
+        guard definition.validate().isEmpty else {
+            throw DoryDaemonVirtualMachinePlanningFailure(
+                code: .invalidDefinition,
+                message: "Workspace definition validation failed."
+            )
+        }
     }
 
     static func primaryBootMedia(
@@ -659,16 +702,18 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
         definition: DoryVirtualMachineDefinition,
         media: DoryBootMedia,
         devices: DoryVirtualMachineDeviceCapabilityRequest,
-        allowsExperimental: Bool
+        allowsExperimental: Bool,
+        graphicsRecovery: Bool
     ) -> DoryVirtualMachineBackendPlanRequest {
         let preferences: [DoryVirtualizationBackendIdentity]? = switch definition.platform?.executionEngine {
-        case .nativeARM64?
-            where media.kind == .installerISO || media.kind == .virtualDisk:
-            [.appleVirtualizationFramework]
         case .nativeARM64?: [.doryHypervisor]
         case .vzMac?: [.appleVirtualizationFramework]
         case .x86ToARM64?: [.doryHypervisor]
-        case nil: nil
+        case nil:
+            DoryVirtualizationProductPolicy.defaultBackends(
+                hostArchitecture: .arm64,
+                guest: definition.guest
+            )
         }
         return DoryVirtualMachineBackendPlanRequest(
             guest: definition.guest,
@@ -677,16 +722,10 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
             devices: devices,
             virtualHardwareABIVersion: definition.virtualHardwareABIVersion,
             backendPreferences: preferences,
-            backendPreferencePolicy: preferences == nil ? .preferred : .required,
-            allowsExperimentalBackends: allowsExperimental
+            backendPreferencePolicy: .required,
+            allowsExperimentalBackends: allowsExperimental,
+            graphicsRecovery: graphicsRecovery
         )
-    }
-
-    static func planSHA256(_ plan: DoryResolvedMachinePlan) -> String {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys]
-        guard let bytes = try? encoder.encode(plan) else { return "" }
-        return sha256(bytes)
     }
 
     public static func canonicalDefinitionData(
