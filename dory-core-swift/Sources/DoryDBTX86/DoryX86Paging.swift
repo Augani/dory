@@ -728,6 +728,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
   }
 
   public func validateRead(at address: UInt64, byteCount: Int) throws {
+    try validateLinearSpan(at: address, byteCount: byteCount)
     guard byteCount > 0 else { return }
     var cursor = address
     var remaining = byteCount
@@ -745,8 +746,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
         throw pagingUnit.normalizeBackingFault(
           error, linearAddress: cursor, access: .read, context: context)
       }
-      cursor &+= UInt64(count)
       remaining -= count
+      if remaining > 0 { cursor += UInt64(count) }
     }
   }
 
@@ -826,7 +827,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
           error, linearAddress: cursor, access: .write, context: context)
       }
       remaining = remaining.dropFirst(count)
-      cursor &+= UInt64(count)
+      if !remaining.isEmpty { cursor += UInt64(count) }
     }
   }
 
@@ -865,6 +866,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {
+    try validateLinearSpan(at: address, byteCount: byteCount)
     guard byteCount > 0 else { return }
     var cursor = address
     var remaining = byteCount
@@ -882,8 +884,8 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
         throw pagingUnit.normalizeBackingFault(
           error, linearAddress: cursor, access: .write, context: context)
       }
-      cursor &+= UInt64(count)
       remaining -= count
+      if remaining > 0 { cursor += UInt64(count) }
     }
   }
 
@@ -898,12 +900,20 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
     allowShortRead: Bool,
     context overrideContext: DoryX86PagingContext? = nil
   ) throws -> [UInt8] {
+    if allowShortRead {
+      guard byteCount >= 0 else {
+        throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+      }
+    } else {
+      try validateLinearSpan(at: address, byteCount: byteCount)
+    }
     guard byteCount > 0 else { return [] }
     let readContext = overrideContext ?? context
     var result: [UInt8] = []
-    result.reserveCapacity(byteCount)
+    result.reserveCapacity(allowShortRead ? min(byteCount, 4_096) : byteCount)
     var cursor = address
     while result.count < byteCount {
+      var consumedByteCount = 0
       do {
         let translation = try pagingUnit.translate(
           linearAddress: cursor, access: access, context: readContext, physicalMemory: physicalMemory)
@@ -920,7 +930,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
                 linearAddress: cursor, access: access, context: readContext)
             }
             result += bytes
-            cursor &+= UInt64(bytes.count)
+            consumedByteCount = bytes.count
           } catch let error as DoryX86MemoryError {
             throw pagingUnit.normalizeBackingFault(
               error, linearAddress: cursor, access: access, context: readContext)
@@ -933,14 +943,36 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
             throw pagingUnit.normalizeBackingFault(
               error, linearAddress: cursor, access: access, context: readContext)
           }
-          cursor &+= UInt64(count)
+          consumedByteCount = count
         }
       } catch {
         if allowShortRead, !result.isEmpty { return result }
         throw error
       }
+      if result.count < byteCount {
+        let nextCursor = cursor.addingReportingOverflow(UInt64(consumedByteCount))
+        guard !nextCursor.overflow else {
+          // A short instruction read may stop at a physical mapping boundary, but it must
+          // never turn a sequential fetch past the final linear byte into a fetch from zero.
+          throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+        }
+        cursor = nextCursor.partialValue
+      }
     }
     return result
+  }
+
+  /// Validates the inclusive linear span before a page walk can set accessed or dirty bits.
+  /// A one-byte access at UInt64.max remains valid; only a non-empty tail past it overflows.
+  private func validateLinearSpan(at address: UInt64, byteCount: Int) throws {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
+    guard byteCount == 0
+      || !address.addingReportingOverflow(UInt64(byteCount - 1)).overflow
+    else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
   }
 }
 
@@ -972,6 +1004,7 @@ extension DoryX86TranslatedMemory: DoryX86RestartableScalarMemory {
 
 extension DoryX86TranslatedMemory: DoryX86CodeGenerationMemory {
   public func codeGeneration(at address: UInt64, byteCount: Int) throws -> UInt64? {
+    try validateLinearSpan(at: address, byteCount: byteCount)
     guard byteCount > 0, let codeGenerationPhysicalMemory else { return nil }
     var cursor = address
     var remaining = byteCount
@@ -992,8 +1025,8 @@ extension DoryX86TranslatedMemory: DoryX86CodeGenerationMemory {
       token &*= 0x0000_0100_0000_01b3
       token ^= physicalGeneration
       token &*= 0x0000_0100_0000_01b3
-      cursor &+= UInt64(count)
       remaining -= count
+      if remaining > 0 { cursor += UInt64(count) }
     }
     token ^= UInt64(byteCount)
     return token
