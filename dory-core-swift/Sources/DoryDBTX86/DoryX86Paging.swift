@@ -5,17 +5,21 @@ public struct DoryX86PagingContext: Sendable, Hashable {
   public let rflags: DoryX86RFLAGS
   public let currentPrivilegeLevel: UInt8
   public let mode: DoryX86ExecutionMode
+  public let isImplicitSupervisorAccess: Bool
 
   public init(
     control: DoryX86ControlState,
     rflags: DoryX86RFLAGS,
     currentPrivilegeLevel: UInt8,
-    mode: DoryX86ExecutionMode
+    mode: DoryX86ExecutionMode,
+    isImplicitSupervisorAccess: Bool = false
   ) {
     self.control = control
     self.rflags = rflags
-    // CPL is fixed in real/virtual-8086 modes, independent of the CS selector low bits.
-    if mode == .real16 {
+    self.isImplicitSupervisorAccess = isImplicitSupervisorAccess
+    // Implicit system-data reads use supervisor paging privileges even in v8086 mode.
+    // Ordinary CPL remains fixed in real/v8086 modes, independent of CS selector low bits.
+    if isImplicitSupervisorAccess || mode == .real16 {
       self.currentPrivilegeLevel = 0
     } else if mode != .long64, control.efer & (1 << 10) == 0,
       rflags.contains(.virtual8086) {
@@ -59,6 +63,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     let cpl: UInt8
     let access: DoryX86MemoryAccessKind
     let alignmentCheck: Bool
+    let isImplicitSupervisorAccess: Bool
     let generation: UInt64
   }
 
@@ -154,6 +159,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       cpl: context.currentPrivilegeLevel,
       access: access,
       alignmentCheck: context.rflags.contains(.alignmentCheck),
+      isImplicitSupervisorAccess: context.isImplicitSupervisorAccess,
       generation: generation
     )
     let recentIndex = recentEntryIndex(access)
@@ -470,7 +476,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       || (access == .instructionFetch && !executable)
       || (supervisor && access == .instructionFetch && smep && user)
       || (supervisor && access != .instructionFetch && smap && user
-        && !context.rflags.contains(.alignmentCheck))
+        && (context.isImplicitSupervisorAccess || !context.rflags.contains(.alignmentCheck)))
     if protectionViolation { throw pageFault(linearAddress, access, context, protection: true) }
   }
 
@@ -622,6 +628,19 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
     try readLinear(at: address, byteCount: byteCount, access: .read, allowShortRead: false)
   }
 
+  /// Intel SDM Vol. 3A §5.6.1: implicit system-data accesses use supervisor paging
+  /// privileges, and SMAP applies even with AC set. Do not change the operand context.
+  func readImplicitSupervisor(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    let supervisorContext = DoryX86PagingContext(
+      control: context.control, rflags: context.rflags, currentPrivilegeLevel: 0,
+      mode: context.mode, isImplicitSupervisorAccess: true
+    )
+    return try readLinear(
+      at: address, byteCount: byteCount, access: .read, allowShortRead: false,
+      context: supervisorContext
+    )
+  }
+
   public func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
     guard [1, 2, 4, 8].contains(byteCount) else {
       throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
@@ -719,16 +738,18 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
     at address: UInt64,
     byteCount: Int,
     access: DoryX86MemoryAccessKind,
-    allowShortRead: Bool
+    allowShortRead: Bool,
+    context overrideContext: DoryX86PagingContext? = nil
   ) throws -> [UInt8] {
     guard byteCount > 0 else { return [] }
+    let readContext = overrideContext ?? context
     var result: [UInt8] = []
     result.reserveCapacity(byteCount)
     var cursor = address
     while result.count < byteCount {
       do {
         let translation = try pagingUnit.translate(
-          linearAddress: cursor, access: access, context: context, physicalMemory: physicalMemory)
+          linearAddress: cursor, access: access, context: readContext, physicalMemory: physicalMemory)
         let count = min(Int(4_096 - (cursor & 0xfff)), byteCount - result.count)
         result += try physicalMemory.read(at: translation.physicalAddress, byteCount: count)
         cursor &+= UInt64(count)

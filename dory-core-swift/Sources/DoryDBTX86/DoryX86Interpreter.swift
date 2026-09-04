@@ -4162,14 +4162,20 @@ public struct DoryX86Interpreter: Sendable {
 
     let taskType = UInt8(truncatingIfNeeded: state.tr.attributes) & 0x0f
     guard taskType == 0x9 || taskType == 0xB, state.tr.limit >= 0x67 else { return false }
-    let mapBaseBytes = try memory.read(at: state.tr.base &+ 0x66, byteCount: 2)
+    func readTaskState(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+      if let translatedMemory = memory as? DoryX86TranslatedMemory {
+        return try translatedMemory.readImplicitSupervisor(at: address, byteCount: byteCount)
+      }
+      return try memory.read(at: address, byteCount: byteCount)
+    }
+    let mapBaseBytes = try readTaskState(at: state.tr.base &+ 0x66, byteCount: 2)
     let mapBase = fromLittleEndian(mapBaseBytes)
     for byteOffset in 0..<width.byteCount {
       let bit = UInt32(port) + UInt32(byteOffset)
       guard bit <= UInt32(UInt16.max) else { return false }
       let bitmapOffset = mapBase + UInt64(bit / 8)
       guard bitmapOffset <= UInt64(state.tr.limit) else { return false }
-      let permissions = try memory.read(at: state.tr.base &+ bitmapOffset, byteCount: 1)[0]
+      let permissions = try readTaskState(at: state.tr.base &+ bitmapOffset, byteCount: 1)[0]
       if permissions & (UInt8(1) << UInt8(bit & 7)) != 0 { return false }
     }
     return true
