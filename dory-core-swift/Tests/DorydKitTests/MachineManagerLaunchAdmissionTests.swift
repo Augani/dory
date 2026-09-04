@@ -257,7 +257,7 @@ final class MachineManagerLaunchAdmissionTests: XCTestCase {
         )
         let starter = LaunchAdmissionProcessStarter()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: root + "/state",
                 baseArguments: ["30"],

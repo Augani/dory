@@ -85,7 +85,8 @@ assert "--package-app" in pc_firmware
 assert "verify_packaged_pc_bundle" in pc_builder
 assert "firmware-manifest.json" not in pc_builder
 assert "firmware-sbom.spdx.json" not in pc_builder
-assert "DEFAULT_VM_QUALIFICATION_BOOTSTRAP=1" in text
+assert "DEFAULT_VM_QUALIFICATION_BOOTSTRAP=1" not in text
+assert "DEFAULT_VM_QUALIFICATION_BOOTSTRAP=0" in text
 assert "DORY_VM_QUALIFICATION_BOOTSTRAP:-$DEFAULT_VM_QUALIFICATION_BOOTSTRAP" in text
 assert "xcodebuild_status=$?" in text
 assert 'echo "xcodebuild_exit=$xcodebuild_status"' in text

@@ -2582,7 +2582,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             canonicalStateRootPath: state
         )
         return MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sh",
                 acceleratedDesktopExecutablePath: "/bin/sh",
                 stateDirectory: state,
@@ -2698,7 +2698,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             runtimeCommand = "exec /bin/sleep 30"
         }
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sh",
                 acceleratedDesktopExecutablePath: acceleratedExecutablePath,
                 stateDirectory: state,

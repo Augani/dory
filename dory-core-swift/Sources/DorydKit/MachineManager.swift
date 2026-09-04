@@ -1196,8 +1196,8 @@ public struct DoryMachineResolvedLaunchIdentity: Sendable, Equatable {
     }
 }
 
-public enum DoryMachineLaunchPolicy: String, Sendable, Equatable {
-    /// Explicit transition mode for machines that predate durable workspace plans.
+enum DoryMachineLaunchPolicy: String, Sendable, Equatable {
+    /// Internal diagnostic fixture mode. Release builds never compose a launch from it.
     case legacyCompatibility
     /// A start is rejected unless the complete persisted-plan trust path is installed.
     case requireResolvedPlan
@@ -1582,11 +1582,52 @@ public final class MachineManager: @unchecked Sendable {
         (@Sendable (_ machineID: String) throws -> Void)?
 #endif
 
-    public init(
+    public convenience init(
         configuration: MachineManagerConfiguration,
+        machineStateBroker: DoryMachineStateBroker? = nil
+    ) {
+        self.init(configuration: configuration, launchPolicy: .perWorkspaceAuthority,
+                  machineStateBroker: machineStateBroker)
+    }
+
+#if DEBUG
+    /// Historical fixtures and explicit local qualification diagnostics may construct legacy
+    /// generations. This constructor and the legacy launch preparation do not exist in Release.
+    convenience init(
+        diagnosticConfiguration configuration: MachineManagerConfiguration,
         launchPolicy: DoryMachineLaunchPolicy = .legacyCompatibility,
         allowsNewMachinesInLegacyCompatibility: Bool = true,
         allowsLegacyCompatibilityLaunches: Bool = true,
+        allowsQualificationBootstrapLaunches: Bool = false,
+        machineStateBroker: DoryMachineStateBroker? = nil,
+        balloonController: any MachineBalloonControlling = UnixMachineBalloonController(),
+        deviceTelemetryController: any MachineDeviceTelemetryControlling = UnixMachineDeviceTelemetryController(),
+        directoryShareController: any MachineDirectoryShareControlling = UnixMachineDirectoryShareController(),
+        usbController: any DoryMachineUSBControlling = UnixDoryMachineUSBController(),
+        vzLifecycleController: any MachineVZLifecycleControlling = UnixMachineVZLifecycleController(),
+        agentConnector: @escaping AgentConnector = { try LocalAgentControl.connect(socketPath: $0) },
+        processStarter: @escaping ProcessStarter = { try $0.start() },
+        processStopper: @escaping ProcessStopper = {
+            $0.stop(timeout: DoryEngineShutdownTiming.hostTerminationSeconds)
+        }
+    ) {
+        self.init(configuration: configuration, launchPolicy: launchPolicy,
+                  allowsNewMachinesInLegacyCompatibility: allowsNewMachinesInLegacyCompatibility,
+                  allowsLegacyCompatibilityLaunches: allowsLegacyCompatibilityLaunches,
+                  allowsQualificationBootstrapLaunches: allowsQualificationBootstrapLaunches,
+                  machineStateBroker: machineStateBroker, balloonController: balloonController,
+                  deviceTelemetryController: deviceTelemetryController,
+                  directoryShareController: directoryShareController, usbController: usbController,
+                  vzLifecycleController: vzLifecycleController, agentConnector: agentConnector,
+                  processStarter: processStarter, processStopper: processStopper)
+    }
+#endif
+
+    init(
+        configuration: MachineManagerConfiguration,
+        launchPolicy: DoryMachineLaunchPolicy,
+        allowsNewMachinesInLegacyCompatibility: Bool = false,
+        allowsLegacyCompatibilityLaunches: Bool = false,
         allowsQualificationBootstrapLaunches: Bool = false,
         machineStateBroker: DoryMachineStateBroker? = nil,
         balloonController: any MachineBalloonControlling = UnixMachineBalloonController(),
@@ -1773,7 +1814,7 @@ public final class MachineManager: @unchecked Sendable {
         recoverInterruptedDesktopUpdates()
     }
 
-    public var configuredLaunchPolicy: DoryMachineLaunchPolicy { launchPolicy }
+    var configuredLaunchPolicy: DoryMachineLaunchPolicy { launchPolicy }
 
     public var managedStateDirectory: String { configuration.stateDirectory }
 
@@ -2685,12 +2726,16 @@ public final class MachineManager: @unchecked Sendable {
     ) throws -> DoryMachineStatus {
         switch launchPolicy {
         case .legacyCompatibility:
+#if DEBUG
             return try startLegacyMachine(
                 id: id,
                 journalLifecycle: journalLifecycle,
                 requestedOperationID: requestedOperationID,
                 expectedDurableIdentity: nil
             )
+#else
+            throw MachineManagerError.persistence("legacy launch is unavailable outside diagnostic builds")
+#endif
         case .requireResolvedPlan:
             guard let infrastructure = resolvedLaunchInfrastructureSnapshot() else {
                 throw MachineManagerError.persistence(
@@ -2738,6 +2783,7 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+#if DEBUG
     private func startLegacyMachine(
         id: String,
         journalLifecycle: Bool,
@@ -2815,6 +2861,8 @@ public final class MachineManager: @unchecked Sendable {
             throw error
         }
     }
+
+#endif
 
     /// Read-only validation shared by a stopped launch and a still-running restart source.
     /// The returned authorization belongs to this check; restart consumes its preflight token
@@ -3973,9 +4021,11 @@ public final class MachineManager: @unchecked Sendable {
 
         let authoritativeMachine = entry.configuration
         try Self.validateProductCell(authoritativeMachine)
+#if DEBUG
         if authority == .legacyCompatibility {
             try prepareLegacyRawHVInstalledLinuxBootIfNeeded(authoritativeMachine)
         }
+#endif
         let authoritativeLegacyData = Self.readPrivateMetadata(
             path: machineConfigPath(id: authoritativeMachine.id)
         )
@@ -3998,7 +4048,7 @@ public final class MachineManager: @unchecked Sendable {
                 let workspace = try workspaceAuthority(
                     machine: authoritativeMachine,
                     authoritativeLegacyData: authoritativeLegacyData,
-                    allowReconciliation: authority == .legacyCompatibility
+                    allowReconciliation: !authority.requiresAuthoritativeDefinition
                 )
                 authoritativeDefinition = workspace.definition
                 runtimeMachine = workspace.runtimeMachine
@@ -4384,6 +4434,11 @@ public final class MachineManager: @unchecked Sendable {
         resolvedPlan: DoryResolvedMachinePlan? = nil,
         qualificationBootstrapDefinition: DoryVirtualMachineDefinition? = nil
     ) throws {
+#if !DEBUG
+        guard launchBinding != nil, resolvedPlan != nil, preSpawnAuthorization != nil else {
+            throw MachineManagerError.persistence("production helper spawn requires exact resolved authority")
+        }
+#endif
         guard preparedMachine.id == authoritativeMachine.id else {
             throw MachineManagerError.persistence("runtime projection belongs to another machine")
         }
@@ -4758,19 +4813,25 @@ public final class MachineManager: @unchecked Sendable {
                     )
                 }
                 }
-            } else if let bootstrapAuthority = try qualificationBootstrapRuntimeAuthority(
-                machine: launchMachine,
-                definition: qualificationBootstrapDefinition,
-                operationID: operationID
-            ) {
-                runtimeLaunchAuthority = bootstrapAuthority.runtime
-                rendererReleaseIdentity = bootstrapAuthority.rendererReleaseIdentity
-                if let graphicsExpectation = bootstrapAuthority.graphicsExpectation {
-                    try qualificationBootstrapHandoffAuthority.publish(graphicsExpectation)
-                }
-                qualificationBootstrapLaunch = true
             } else {
+#if DEBUG
+                if let bootstrapAuthority = try qualificationBootstrapRuntimeAuthority(
+                    machine: launchMachine,
+                    definition: qualificationBootstrapDefinition,
+                    operationID: operationID
+                ) {
+                    runtimeLaunchAuthority = bootstrapAuthority.runtime
+                    rendererReleaseIdentity = bootstrapAuthority.rendererReleaseIdentity
+                    if let graphicsExpectation = bootstrapAuthority.graphicsExpectation {
+                        try qualificationBootstrapHandoffAuthority.publish(graphicsExpectation)
+                    }
+                    qualificationBootstrapLaunch = true
+                } else {
+                    runtimeLaunchAuthority = nil
+                }
+#else
                 runtimeLaunchAuthority = nil
+#endif
             }
             let reconnectIdentity = try resolvedPlan.map { plan in
                 DoryRuntimeReconnectLaunchIdentity.make(
@@ -10721,6 +10782,7 @@ public final class MachineManager: @unchecked Sendable {
         return policy
     }
 
+#if DEBUG
     /// Builds a one-launch, descriptor-backed RawHV authority for the explicit local candidate
     /// build. It reuses the same signed runner/worker graph, immutable renderer bootstrap, sparse
     /// topology, and suspended-child CDHash gate as production. The plan is deliberately transient
@@ -11130,6 +11192,8 @@ public final class MachineManager: @unchecked Sendable {
             )
         )
     }
+
+#endif
 
     private func resolvedDoryPCRuntimeLaunchAuthority(
         machine: DoryMachineConfiguration,
@@ -14841,6 +14905,7 @@ public final class MachineManager: @unchecked Sendable {
         "\(machineStateDirectory(id: id))/Machine.dorymac"
     }
 
+#if DEBUG
     /// Legacy installed-Linux acceleration is the only launch contract that consumes stable
     /// kernel/initrd pathnames. Resolved RawHV launches instead admit the boot bundle into fresh,
     /// immutable descriptor-backed objects at the final spawn boundary.
@@ -14929,6 +14994,8 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
     }
+
+#endif
 
     private func machineFirmwareIdentifierPath(id: String) -> String {
         "\(machineStateDirectory(id: id))/MachineIdentifier"
@@ -21357,7 +21424,9 @@ struct MachineLifecycleInjectedCrash: Error, Sendable {}
 private struct MachineLifecycleJournalCompletionPending: Error, Sendable {}
 
 private enum MachineStartPreparationAuthority: Equatable, Sendable {
+#if DEBUG
     case legacyCompatibility
+#endif
     case resolvedPlan
 
     var requiresAuthoritativeDefinition: Bool {

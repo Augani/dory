@@ -421,7 +421,7 @@ private struct SavedStateMachineFixture {
         acceleratedDesktopExecutablePath: String? = nil
     ) -> MachineManager {
         MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: executable,
                 acceleratedDesktopExecutablePath: acceleratedDesktopExecutablePath,
                 stateDirectory: base + "/state",

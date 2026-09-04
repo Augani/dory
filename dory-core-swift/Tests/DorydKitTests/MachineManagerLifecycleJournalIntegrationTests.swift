@@ -888,7 +888,7 @@ private final class LifecycleFixture {
         if let lifecycleJournalHome {
             configuration.lifecycleJournalHome = lifecycleJournalHome
         }
-        return MachineManager(configuration: configuration)
+        return MachineManager(diagnosticConfiguration: configuration)
     }
 
     @discardableResult

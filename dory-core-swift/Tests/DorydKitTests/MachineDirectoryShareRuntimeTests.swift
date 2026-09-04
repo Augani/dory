@@ -19,7 +19,7 @@ final class MachineDirectoryShareRuntimeTests: XCTestCase {
         )
         let shares = RecordingDirectoryShareController()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: root + "/state",
                 baseArguments: ["30"],
@@ -128,7 +128,7 @@ final class MachineDirectoryShareRuntimeTests: XCTestCase {
         )
         let shares = RecordingDirectoryShareController(rejects: true)
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: root + "/state",
                 baseArguments: ["30"],

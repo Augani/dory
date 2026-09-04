@@ -90,7 +90,7 @@ final class MachineManagerSerialConsoleIntegrationTests: XCTestCase {
             let suffix = "\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
             stateRoot = "/tmp/dory-console-manager-\(suffix)"
             runtimeRoot = "/tmp/dory-console-runtime-\(suffix)"
-            manager = MachineManager(configuration: MachineManagerConfiguration(
+            manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: stateRoot,
                 runtimeDirectory: runtimeRoot,

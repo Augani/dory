@@ -536,7 +536,7 @@ final class HealthReporterTests: XCTestCase {
     func testReportAndDoctorIncludeNonSecretLocalMachineRuntimeEvidence() throws {
         let base = "/tmp/dory-health-machine-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base + "/machines",
             baseArguments: ["30"],

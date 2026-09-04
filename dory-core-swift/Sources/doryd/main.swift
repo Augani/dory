@@ -84,7 +84,9 @@ var productionPlanningController:
     (any DoryDaemonVirtualMachineProductionPlanningControlling)?
 var machineImportEnvironment = DoryMachineImportEnvironment.unverified
 let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { configuration -> MachineManager? in
-    let readiness = DoryDaemonVirtualMachineProductionTrustFactory().activate(
+    let readiness = DoryDaemonVirtualMachineProductionTrustFactory(
+        engineResources: dockerTier == nil ? nil : dorydEnvironment.engineResourceReservation
+    ).activate(
         store: DoryComponentStore(drive: dataDrive),
         machineConfiguration: configuration
     )
@@ -109,41 +111,13 @@ let machineManager = dorydEnvironment.machineManagerConfiguration().flatMap { co
             ))
             return nil
         }
-        // Explicit migration window: no catalog or a signature-verified schema-v1 catalog has no
-        // qualification authority yet. Existing machines retain their labeled compatibility path,
-        // but new machines cannot be created without schema-2 evidence.
+        // Preserve historical account inspection while qualification authority is unavailable.
+        // Public construction requires a persisted plan; the daemon has no bootstrap launch path.
         FileHandle.standardError.write(Data(
-            "doryd: VM launch policy legacyCompatibilityMigrationOnly "
+            "doryd: VM planning authority unavailable; existing machines require qualification "
                 .appending("(\(trustFailure.code.rawValue): \(trustFailure.message))\n").utf8
         ))
-        if dorydEnvironment.vmQualificationBootstrapEnabled {
-            FileHandle.standardError.write(Data(
-                "doryd: VM qualification bootstrap enabled; new machines remain explicitly "
-                    .appending("legacy-compatible and cannot acquire production support authority\n").utf8
-            ))
-        }
-        let bootstrapStateBroker: DoryMachineStateBroker?
-        do {
-            bootstrapStateBroker = dorydEnvironment.vmQualificationBootstrapEnabled
-                ? try DoryMachineStateBroker(
-                    canonicalStateRootPath: configuration.stateDirectory
-                )
-                : nil
-        } catch {
-            FileHandle.standardError.write(Data(
-                "doryd: VM qualification bootstrap state authority unavailable: \(error)\n".utf8
-            ))
-            return nil
-        }
-        let manager = MachineManager(
-            configuration: configuration,
-            launchPolicy: .legacyCompatibility,
-            allowsNewMachinesInLegacyCompatibility:
-                dorydEnvironment.vmQualificationBootstrapEnabled,
-            allowsQualificationBootstrapLaunches:
-                dorydEnvironment.vmQualificationBootstrapEnabled,
-            machineStateBroker: bootstrapStateBroker
-        )
+        let manager = MachineManager(configuration: configuration)
         manager.installDesktopUpdateArtifactResolver(desktopUpdateArtifactResolver)
         return manager
     }

@@ -218,7 +218,7 @@ final class MachineManagerUSBControlTests: XCTestCase {
                 ofItemAtPath: helper
             )
             manager = MachineManager(
-                configuration: MachineManagerConfiguration(
+                diagnosticConfiguration: MachineManagerConfiguration(
                     vmmExecutablePath: "/usr/bin/false",
                     acceleratedDesktopExecutablePath: helper,
                     stateDirectory: root + "/machines",

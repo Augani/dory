@@ -286,7 +286,7 @@ struct MachineManagerWorkspaceProjectionTests {
         state: String,
         architecture: String = "arm64"
     ) -> MachineManager {
-        MachineManager(configuration: MachineManagerConfiguration(
+        MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state,
             passMachineArguments: false,

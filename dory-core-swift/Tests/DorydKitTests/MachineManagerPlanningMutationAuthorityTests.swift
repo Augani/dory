@@ -266,7 +266,7 @@ private final class PlanningMutationFixture: @unchecked Sendable {
         architecture: String = "arm64"
     ) -> MachineManager {
         MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: state,
                 runtimeDirectory: runtime,

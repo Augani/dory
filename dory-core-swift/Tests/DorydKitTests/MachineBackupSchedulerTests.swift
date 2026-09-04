@@ -12,7 +12,7 @@ final class MachineBackupSchedulerTests: XCTestCase {
         let rootfs = base + "/rootfs.ext4"
         try Data("kernel-v1".utf8).write(to: URL(fileURLWithPath: kernel))
         try Data("rootfs-v1".utf8).write(to: URL(fileURLWithPath: rootfs))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base + "/machines",
             baseArguments: ["30"],
@@ -86,7 +86,7 @@ final class MachineBackupSchedulerTests: XCTestCase {
         let rootfs = base + "/rootfs.ext4"
         try Data("kernel-v1".utf8).write(to: URL(fileURLWithPath: kernel))
         try Data("rootfs-v1".utf8).write(to: URL(fileURLWithPath: rootfs))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: base + "/missing-vmm",
             stateDirectory: base + "/machines",
             passMachineArguments: false,

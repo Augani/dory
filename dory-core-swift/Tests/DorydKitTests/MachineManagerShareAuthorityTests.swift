@@ -16,7 +16,7 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
 
         let starter = LockedCounter()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base + "/state",
                 baseArguments: ["30"],
@@ -73,7 +73,7 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
         )
         defer { try? FileManager.default.removeItem(atPath: base) }
 
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: helperPath,
             stateDirectory: base + "/state",
             requiresReadyHandoff: false
@@ -106,7 +106,7 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
     func testFilesystemRootCannotBeShared() {
         let state = temporaryRoot("root")
         defer { try? FileManager.default.removeItem(atPath: state) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state
         ))
@@ -151,7 +151,7 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
             requiresReadyHandoff: false
         )
         do {
-            let creator = MachineManager(configuration: configuration)
+            let creator = MachineManager(diagnosticConfiguration: configuration)
             _ = try creator.create(DoryMachineConfiguration(
                 id: "dev",
                 kernelPath: doryTestKernelPath,
@@ -166,7 +166,7 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
         }
         try FileManager.default.moveItem(atPath: selectedPath, toPath: movedPath)
 
-        let manager = MachineManager(configuration: configuration)
+        let manager = MachineManager(diagnosticConfiguration: configuration)
         _ = try manager.start(id: "dev")
         let rows = try waitForLines(at: argumentsPath)
         let shareFlag = try XCTUnwrap(rows.firstIndex(of: "--share"))
@@ -195,7 +195,7 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let starter = LockedCounter()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base + "/state",
                 requiresReadyHandoff: false
@@ -235,7 +235,7 @@ final class MachineManagerShareAuthorityTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let starter = LockedCounter()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base + "/state",
                 requiresReadyHandoff: false

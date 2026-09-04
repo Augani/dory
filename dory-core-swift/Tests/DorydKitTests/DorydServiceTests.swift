@@ -59,7 +59,7 @@ final class DorydServiceTests: XCTestCase {
     func testMachineUSBXPCIsResolvedOnly() throws {
         let base = FileManager.default.temporaryDirectory
             .appendingPathComponent("doryd-usb-xpc-\(UUID().uuidString)").path
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             passMachineArguments: false,
@@ -1649,7 +1649,7 @@ final class DorydServiceTests: XCTestCase {
     func testBalloonStatusOverXPCIncludesRunningLocalMachines() throws {
         let base = "/tmp/doryd-service-balloon-machine-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -1759,7 +1759,7 @@ final class DorydServiceTests: XCTestCase {
         let base = "/tmp/doryd-service-balloon-reconcile-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let balloon = ServiceRecordingMachineBalloonController()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -2037,7 +2037,7 @@ final class DorydServiceTests: XCTestCase {
 
     func testMachineEventsOverXPCAreOrderedDurableAndSecretFree() throws {
         let base = "/tmp/doryd-service-events-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -2145,7 +2145,7 @@ final class DorydServiceTests: XCTestCase {
         let base = "/tmp/doryd-service-device-telemetry-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let telemetry = ServiceRecordingMachineDeviceTelemetryController()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -2292,7 +2292,7 @@ final class DorydServiceTests: XCTestCase {
 
     func testMachineSerialConsoleOverXPCIsBoundedCursorBasedAndExactShape() throws {
         let base = "/tmp/doryd-service-console-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -2404,7 +2404,7 @@ final class DorydServiceTests: XCTestCase {
 
     func testMachineStatusPublishesStructuredFailureWithoutFreeFormEvidence() throws {
         let base = "/tmp/dsf-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -2465,7 +2465,7 @@ final class DorydServiceTests: XCTestCase {
             ],
             relativeTo: nil
         )
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -2807,7 +2807,7 @@ final class DorydServiceTests: XCTestCase {
 
     func testMachineStatusAndSnapshotExposeOnlySafeTypedDesktopPayloadReceipt() throws {
         let base = "/tmp/doryd-service-desktop-receipt-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -2889,7 +2889,7 @@ final class DorydServiceTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         let sourceRootfs = "\(base)/source.ext4"
         try Data("clone-source".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2940,7 +2940,7 @@ final class DorydServiceTests: XCTestCase {
 
     func testDesktopUpdateRejectsCallerPathsAndRequiresStableComponentGenerations() throws {
         let base = "/tmp/doryd-service-desktop-authority-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -3008,7 +3008,7 @@ final class DorydServiceTests: XCTestCase {
     func testManagedDesktopKernelRefreshRejectsUnboundedCallerAuthority() throws {
         let base = "/tmp/doryd-service-kernel-refresh-\(getpid())-"
             + "\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -3059,7 +3059,7 @@ final class DorydServiceTests: XCTestCase {
 
     func testMachineWritesRequireTypedIntentAndPreserveLegacyEnvironmentFieldLocally() throws {
         let base = "/tmp/doryd-service-typed-write-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -3193,7 +3193,7 @@ final class DorydServiceTests: XCTestCase {
 
     func testMachineCreateAcceptsExactTypedSandboxPolicyAndProjectsSafeStatus() throws {
         let base = "/tmp/doryd-service-sandbox-policy-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -3279,7 +3279,7 @@ final class DorydServiceTests: XCTestCase {
             ofItemAtPath: installer
         )
         let state = base + "/machines"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state,
             baseArguments: ["30"],
@@ -3316,7 +3316,7 @@ final class DorydServiceTests: XCTestCase {
     func testMachineCreateRejectsUnknownGuestArchitectureAtXPCBoundary() throws {
         let base = "/tmp/doryd-service-guest-arch-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             requiresReadyHandoff: false
@@ -3507,7 +3507,7 @@ final class DorydServiceTests: XCTestCase {
     func testMachineExecOverXPCUsesMachineAgent() throws {
         let base = "/tmp/doryd-service-machine-exec-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -3606,7 +3606,7 @@ final class DorydServiceTests: XCTestCase {
             to: URL(fileURLWithPath: staging + "/payload.txt")
         )
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -3985,7 +3985,7 @@ final class DorydServiceTests: XCTestCase {
     func testMachineProvisionOverXPCInstallsRecipeThroughMachineAgent() throws {
         let base = "/tmp/doryd-service-machine-provision-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -4060,7 +4060,7 @@ final class DorydServiceTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let rootfs = "\(base)/rootfs.ext4"
         try Data("rootfs-v1".utf8).write(to: URL(fileURLWithPath: rootfs))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],

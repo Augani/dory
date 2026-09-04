@@ -298,7 +298,7 @@ final class MachineManagerFileTransferTests: XCTestCase {
         )
         XCTAssertTrue(FileManager.default.fileExists(atPath: claimed))
 
-        _ = MachineManager(configuration: MachineManagerConfiguration(
+        _ = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: root.appendingPathComponent("state").path,
             baseArguments: ["30"],
@@ -516,7 +516,7 @@ final class MachineManagerFileTransferTests: XCTestCase {
             blockControlledPull: blockControlledPull
         )
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: stateRoot,
                 baseArguments: ["30"],

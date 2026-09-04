@@ -53,7 +53,7 @@ struct DoryMachineRuntimeIdentityTests {
     @Test("new snapshots bind mutable artifacts and reject later disk tampering")
     func snapshotArtifactTamperingIsRejected() throws {
         let root = "/tmp/dory-runtime-identity-\(UUID().uuidString.lowercased())"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: root,
             baseArguments: ["30"],

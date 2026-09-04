@@ -39,7 +39,7 @@ final class MachineManagerTests: XCTestCase {
             passMachineArguments: false,
             requiresReadyHandoff: false
         )
-        let manager = MachineManager(configuration: configuration)
+        let manager = MachineManager(diagnosticConfiguration: configuration)
         _ = try manager.create(DoryMachineConfiguration(
             id: "linux",
             kernelPath: "",
@@ -179,7 +179,7 @@ final class MachineManagerTests: XCTestCase {
 
     func testCreateStartStopDeleteMachineProcess() throws {
         let base = "/tmp/dory-machine-manager-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -225,7 +225,7 @@ final class MachineManagerTests: XCTestCase {
         try Data("user-root-disk-must-survive".utf8).write(
             to: URL(fileURLWithPath: rootfs)
         )
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state,
             baseArguments: ["30"],
@@ -309,7 +309,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-migration-only-\(getpid())-"
             + "\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -344,7 +344,7 @@ final class MachineManagerTests: XCTestCase {
 
     func testPauseResumePreservesTheRunningHelperAndStopAcceptsPausedMachine() throws {
         let base = "/tmp/dory-machine-pause-resume-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -410,7 +410,7 @@ final class MachineManagerTests: XCTestCase {
         )
         let lifecycle = RecordingMachineVZLifecycleController()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -495,7 +495,7 @@ final class MachineManagerTests: XCTestCase {
         )
         let lifecycle = RecordingMachineVZLifecycleController()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -547,7 +547,7 @@ final class MachineManagerTests: XCTestCase {
         let connector = RecordingMachineAgentConnector()
         let lifecycle = RecordingMachineVZLifecycleController()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -603,7 +603,7 @@ final class MachineManagerTests: XCTestCase {
 
     func testHostPowerControllerDurablyResumesOnlyMachinesItPaused() throws {
         let base = "/tmp/dory-machine-host-power-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -656,7 +656,7 @@ final class MachineManagerTests: XCTestCase {
 
     func testRestartReplacesTheHelperFromRunningAndPausedStates() throws {
         let base = "/tmp/dory-machine-restart-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -708,7 +708,7 @@ final class MachineManagerTests: XCTestCase {
 
         let connector = DesktopUpdateAgentConnector(managedRootfsPath: state + "/dev/rootfs.ext4")
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: state,
                 baseArguments: ["30"],
@@ -822,7 +822,7 @@ final class MachineManagerTests: XCTestCase {
             failsInstall: true
         )
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: state,
                 baseArguments: ["30"],
@@ -906,7 +906,7 @@ final class MachineManagerTests: XCTestCase {
             mutatesStagedBundle: true
         )
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: state,
                 baseArguments: ["30"],
@@ -964,7 +964,7 @@ final class MachineManagerTests: XCTestCase {
             let state = base + "/machines"
             defer { try? FileManager.default.removeItem(atPath: base) }
             do {
-                let manager = MachineManager(configuration: MachineManagerConfiguration(
+                let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
                     vmmExecutablePath: "/bin/sleep",
                     stateDirectory: state,
                     baseArguments: ["30"],
@@ -982,7 +982,7 @@ final class MachineManagerTests: XCTestCase {
                 try journalData.write(to: URL(fileURLWithPath: path))
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
             }
-            let recovered = MachineManager(configuration: MachineManagerConfiguration(
+            let recovered = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: state,
                 baseArguments: ["30"],
@@ -1015,7 +1015,7 @@ final class MachineManagerTests: XCTestCase {
         let digest = String(repeating: "a", count: 64)
         let machinePath = state + "/dev/machine.json"
         do {
-            let manager = MachineManager(configuration: MachineManagerConfiguration(
+            let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: state,
                 baseArguments: ["30"],
@@ -1050,7 +1050,7 @@ final class MachineManagerTests: XCTestCase {
         }
         let authoritativeBytes = try Data(contentsOf: URL(fileURLWithPath: machinePath))
 
-        let recovered = MachineManager(configuration: MachineManagerConfiguration(
+        let recovered = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state,
             baseArguments: ["30"],
@@ -1073,7 +1073,7 @@ final class MachineManagerTests: XCTestCase {
         var tamperedReceipt = testVerifiedDesktopReceipt()
         tamperedReceipt.distributionCatalogSHA256 = String(repeating: "f", count: 64)
         do {
-            let manager = MachineManager(configuration: MachineManagerConfiguration(
+            let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: state,
                 baseArguments: ["30"],
@@ -1109,7 +1109,7 @@ final class MachineManagerTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalPath)
         }
 
-        let recovered = MachineManager(configuration: MachineManagerConfiguration(
+        let recovered = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state,
             baseArguments: ["30"],
@@ -1135,7 +1135,7 @@ final class MachineManagerTests: XCTestCase {
                 var receipt = testVerifiedDesktopReceipt()
                 let kernel = try Data(contentsOf: URL(fileURLWithPath: doryTestKernelPath))
                 receipt.kernelSHA256 = SHA256.hash(data: kernel).map { String(format: "%02x", $0) }.joined()
-                let manager = MachineManager(configuration: configuration)
+                let manager = MachineManager(diagnosticConfiguration: configuration)
                 _ = try manager.create(DoryMachineConfiguration(
                     id: "dev", kernelPath: doryTestKernelPath, rootfsPath: doryTestRootfsPath,
                     displayMode: .desktop, installedDesktopPayloadReceipt: receipt
@@ -1159,7 +1159,7 @@ final class MachineManagerTests: XCTestCase {
                 }
                 let machineBefore = try Data(contentsOf: URL(fileURLWithPath: state + "/dev/machine.json"))
                 let kernelBefore = try Data(contentsOf: URL(fileURLWithPath: state + "/dev/kernel"))
-                let recovered = MachineManager(configuration: configuration)
+                let recovered = MachineManager(diagnosticConfiguration: configuration)
                 let result = try XCTUnwrap(recovered.status(id: "dev"))
                 XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: state + "/dev/machine.json")), machineBefore)
                 XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: state + "/dev/kernel")), kernelBefore)
@@ -1186,7 +1186,7 @@ final class MachineManagerTests: XCTestCase {
                     vmmExecutablePath: "/bin/sleep", stateDirectory: state,
                     baseArguments: ["30"], passMachineArguments: false, requiresReadyHandoff: false
                 )
-                let manager = MachineManager(configuration: configuration)
+                let manager = MachineManager(diagnosticConfiguration: configuration)
                 _ = try manager.create(DoryMachineConfiguration(
                     id: "dev", guestArchitecture: .arm64,
                     kernelPath: doryTestKernelPath, rootfsPath: doryTestRootfsPath,
@@ -1211,7 +1211,7 @@ final class MachineManagerTests: XCTestCase {
                 let journalPath = state + "/dev/desktop-update.json"
                 try journalData.write(to: URL(fileURLWithPath: journalPath))
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalPath)
-                let recovered = MachineManager(configuration: configuration)
+                let recovered = MachineManager(diagnosticConfiguration: configuration)
                 let result = try XCTUnwrap(recovered.status(id: "dev"))
                 if tampered {
                     XCTAssertEqual(result.state, .failed, "schema \(schema)")
@@ -1243,7 +1243,7 @@ final class MachineManagerTests: XCTestCase {
         try Data("kernel-before".utf8).write(to: URL(fileURLWithPath: kernel))
 
         do {
-            let manager = MachineManager(configuration: MachineManagerConfiguration(
+            let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: state,
                 baseArguments: ["30"],
@@ -1291,7 +1291,7 @@ final class MachineManagerTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalPath)
         }
 
-        let recovered = MachineManager(configuration: MachineManagerConfiguration(
+        let recovered = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state,
             baseArguments: ["30"],
@@ -1341,7 +1341,7 @@ final class MachineManagerTests: XCTestCase {
             )
         }
 
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state,
             baseArguments: ["30"],
@@ -1385,7 +1385,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-import-assessment-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let state = base + "/machines"
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state,
             baseArguments: ["30"],
@@ -1455,7 +1455,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-desktop-receipt-conflict-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let state = base + "/machines"
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state,
             baseArguments: ["30"],
@@ -1507,7 +1507,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-desktop-receipt-kernel-mismatch-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let state = base + "/machines"
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state,
             baseArguments: ["30"],
@@ -1564,7 +1564,7 @@ final class MachineManagerTests: XCTestCase {
     func testDesktopUpdateResolverUsesExplicitGuestArchitecture() throws {
         let base = "/tmp/dory-desktop-explicit-architecture-\(UUID().uuidString)"
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let creator = MachineManager(configuration: MachineManagerConfiguration(
+        let creator = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep", stateDirectory: base + "/machines",
             baseArguments: ["30"], passMachineArguments: false, requiresReadyHandoff: false,
             guestArchitecture: "arm64"
@@ -1575,7 +1575,7 @@ final class MachineManagerTests: XCTestCase {
             displayMode: .desktop, environment: ["DORY_DESKTOP_DISTRO": "ubuntu"]
         ))
         // A new daemon's default guest architecture does not change this persisted guest.
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep", stateDirectory: base + "/machines",
             baseArguments: ["30"], passMachineArguments: false, requiresReadyHandoff: false,
             guestArchitecture: "x86_64"
@@ -1595,7 +1595,7 @@ final class MachineManagerTests: XCTestCase {
     func testPortableVerifiedReceiptDistroAdmitsUpdateWithoutLegacyEnvironment() throws {
         let base = "/tmp/dory-machine-portable-receipt-update-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base + "/machines",
             baseArguments: ["30"],
@@ -1650,7 +1650,7 @@ final class MachineManagerTests: XCTestCase {
         let ready = "\(base)/ready"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sh",
             stateDirectory: "\(base)/machines",
             baseArguments: [
@@ -1697,7 +1697,7 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: directoryKernel, withIntermediateDirectories: true)
         XCTAssertEqual(symlink(doryTestRootfsPath, symlinkRootfs), 0)
         XCTAssertEqual(symlink(doryTestKernelPath, symlinkKernel), 0)
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -1732,7 +1732,7 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         try Data("source-disk".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -1769,7 +1769,7 @@ final class MachineManagerTests: XCTestCase {
         let sentinel = "\(base)/sentinel"
         try Data("host-private-data".utf8).write(to: URL(fileURLWithPath: sentinel))
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sentinel)
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -1805,7 +1805,7 @@ final class MachineManagerTests: XCTestCase {
         let sentinel = "\(base)/sentinel"
         try Data("host-private-kernel".utf8).write(to: URL(fileURLWithPath: sentinel))
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: sentinel)
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -1839,7 +1839,7 @@ final class MachineManagerTests: XCTestCase {
         let redirected = "\(base)/redirected"
         try FileManager.default.createDirectory(atPath: redirected, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -1873,7 +1873,7 @@ final class MachineManagerTests: XCTestCase {
             passMachineArguments: false,
             requiresReadyHandoff: false
         )
-        let manager = MachineManager(configuration: configuration)
+        let manager = MachineManager(diagnosticConfiguration: configuration)
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
@@ -1887,7 +1887,7 @@ final class MachineManagerTests: XCTestCase {
         definition.rootfsPath = sentinel
         try JSONEncoder().encode(definition).write(to: URL(fileURLWithPath: definitionPath), options: .atomic)
 
-        let reloaded = MachineManager(configuration: configuration)
+        let reloaded = MachineManager(diagnosticConfiguration: configuration)
         XCTAssertTrue(reloaded.list().isEmpty)
         XCTAssertEqual(try String(contentsOfFile: sentinel, encoding: .utf8), "host-private-data")
     }
@@ -1914,7 +1914,7 @@ final class MachineManagerTests: XCTestCase {
         )
         XCTAssertEqual(symlink(external, "\(machines)/dev"), 0)
 
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: machines,
             baseArguments: ["30"],
@@ -1939,7 +1939,7 @@ final class MachineManagerTests: XCTestCase {
         )
         defer { try? FileManager.default.removeItem(atPath: base) }
 
-        let manager = MachineManager(configuration: configuration)
+        let manager = MachineManager(diagnosticConfiguration: configuration)
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
@@ -1970,7 +1970,7 @@ final class MachineManagerTests: XCTestCase {
                 try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: definitionPath)
             }
 
-            let reloaded = MachineManager(configuration: configuration)
+            let reloaded = MachineManager(diagnosticConfiguration: configuration)
             XCTAssertTrue(reloaded.list().isEmpty, variant)
         }
     }
@@ -1984,7 +1984,7 @@ final class MachineManagerTests: XCTestCase {
             passMachineArguments: false,
             requiresReadyHandoff: false
         )
-        let manager = MachineManager(configuration: configuration)
+        let manager = MachineManager(diagnosticConfiguration: configuration)
         defer {
             try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: base)
             try? FileManager.default.removeItem(atPath: base)
@@ -2006,7 +2006,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(manager.status(id: "dev")?.state, .stopped)
         XCTAssertTrue(FileManager.default.fileExists(atPath: "\(base)/dev/machine.json"))
 
-        let reloaded = MachineManager(configuration: configuration)
+        let reloaded = MachineManager(diagnosticConfiguration: configuration)
         XCTAssertEqual(reloaded.list().map(\.id), ["dev"])
     }
 
@@ -2017,7 +2017,7 @@ final class MachineManagerTests: XCTestCase {
         try Data("stale".utf8).write(to: URL(fileURLWithPath: "\(quarantine)/rootfs.ext4"))
         defer { try? FileManager.default.removeItem(atPath: base) }
 
-        _ = MachineManager(configuration: MachineManagerConfiguration(
+        _ = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -2045,7 +2045,7 @@ final class MachineManagerTests: XCTestCase {
         try Data("partial-restore".utf8).write(to: URL(fileURLWithPath: temporaryRestore))
         defer { try? FileManager.default.removeItem(atPath: base) }
 
-        _ = MachineManager(configuration: MachineManagerConfiguration(
+        _ = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -2064,7 +2064,7 @@ final class MachineManagerTests: XCTestCase {
     func testRejectsDuplicateAndInvalidMachineIDs() throws {
         let base = "/tmp/dory-machine-manager-invalid-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -2101,7 +2101,7 @@ final class MachineManagerTests: XCTestCase {
         let sentinel = "\(abandoned)/keep"
         try Data("keep".utf8).write(to: URL(fileURLWithPath: sentinel))
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -2126,7 +2126,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let sentinel = "\(base)/sentinel"
         try Data("keep".utf8).write(to: URL(fileURLWithPath: sentinel))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2155,7 +2155,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-import-traversal-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2191,7 +2191,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-import-resources-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2225,7 +2225,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-import-architecture-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2265,7 +2265,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-import-low-storage-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2312,7 +2312,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-import-integrity-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2396,7 +2396,7 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         try Data("existing-live-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2462,7 +2462,7 @@ final class MachineManagerTests: XCTestCase {
             ),
             rootfs: Data("portable-rootfs".utf8)
         )
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2482,7 +2482,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let sourceRootfs = "\(base)/base-rootfs.ext4"
         try Data("base-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2524,7 +2524,7 @@ final class MachineManagerTests: XCTestCase {
         let kernel = "\(base)/source-kernel"
         try Data("snapshot-rootfs".utf8).write(to: URL(fileURLWithPath: rootfs))
         try Data("snapshot-kernel".utf8).write(to: URL(fileURLWithPath: kernel))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2563,7 +2563,7 @@ final class MachineManagerTests: XCTestCase {
         let sentinel = "\(base)/sentinel"
         try Data("base-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
         try Data("private-host-data".utf8).write(to: URL(fileURLWithPath: sentinel))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2602,7 +2602,7 @@ final class MachineManagerTests: XCTestCase {
         let externalPath = "\(base)/external-snapshot.json"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2648,7 +2648,7 @@ final class MachineManagerTests: XCTestCase {
         let sentinel = "\(base)/sentinel"
         try Data("base-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
         try Data("private-host-data".utf8).write(to: URL(fileURLWithPath: sentinel))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2692,7 +2692,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let sourceRootfs = "\(base)/base-rootfs.ext4"
         try Data("base-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -2742,7 +2742,7 @@ final class MachineManagerTests: XCTestCase {
         }
         defer { try? FileManager.default.removeItem(atPath: base) }
 
-        _ = MachineManager(configuration: MachineManagerConfiguration(
+        _ = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -2772,7 +2772,7 @@ final class MachineManagerTests: XCTestCase {
             requiresReadyHandoff: false
         )
 
-        let manager = MachineManager(configuration: config)
+        let manager = MachineManager(diagnosticConfiguration: config)
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
@@ -2791,7 +2791,7 @@ final class MachineManagerTests: XCTestCase {
         let perms = (attrs[.posixPermissions] as? NSNumber)?.uint16Value ?? 0
         XCTAssertEqual(perms & 0o777, 0o600)
 
-        let reloaded = MachineManager(configuration: config)
+        let reloaded = MachineManager(diagnosticConfiguration: config)
         let loaded = reloaded.list()
         XCTAssertEqual(loaded.map(\.id), ["dev"])
         XCTAssertEqual(loaded.first?.state, .stopped)
@@ -2824,7 +2824,7 @@ final class MachineManagerTests: XCTestCase {
         """.write(to: URL(fileURLWithPath: helperPath), atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helperPath)
 
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: helperPath,
             stateDirectory: "\(base)/state",
             requiresReadyHandoff: false
@@ -2903,7 +2903,7 @@ final class MachineManagerTests: XCTestCase {
         """.write(to: URL(fileURLWithPath: helperPath), atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helperPath)
 
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: helperPath,
             stateDirectory: "\(base)/state",
             requiresReadyHandoff: false,
@@ -3021,7 +3021,7 @@ final class MachineManagerTests: XCTestCase {
         try definition.write(to: URL(fileURLWithPath: definitionPath))
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: definitionPath)
 
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -3058,7 +3058,7 @@ final class MachineManagerTests: XCTestCase {
         }
         """.utf8).write(to: URL(fileURLWithPath: definitionPath))
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: definitionPath)
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -3121,7 +3121,7 @@ final class MachineManagerTests: XCTestCase {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: definitionPath)
         }
 
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -3145,7 +3145,7 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.createDirectory(atPath: share, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: base) }
         defer { try? FileManager.default.removeItem(atPath: share) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -3204,7 +3204,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let starter = RecordingProcessStarter()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -3248,7 +3248,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let starter = RecordingProcessStarter(failingAttempts: [2])
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -3294,7 +3294,7 @@ final class MachineManagerTests: XCTestCase {
     func testFailedUpdatedHandoffRestoresDefinitionAndWaitsForOriginalMachineReadiness() throws {
         let base = "/tmp/dory-machine-update-handoff-rollback-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -3410,7 +3410,7 @@ final class MachineManagerTests: XCTestCase {
     func testUpdatePersistenceFailurePreservesThePublishedDefinition() throws {
         let base = "/tmp/dory-machine-update-persistence-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -3444,7 +3444,7 @@ final class MachineManagerTests: XCTestCase {
     func testRejectsNonIPv4MachineAddress() throws {
         let base = "/tmp/dory-machine-address-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -3465,7 +3465,7 @@ final class MachineManagerTests: XCTestCase {
     func testMachineResourcesStayWithinAdvertisedContractWithoutMutation() throws {
         let base = "/tmp/dory-machine-resources-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         defer { try? FileManager.default.removeItem(atPath: base) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -3514,7 +3514,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let sourceRootfs = "\(base)/base-rootfs.ext4"
         try Data("base-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -3555,7 +3555,7 @@ final class MachineManagerTests: XCTestCase {
             passMachineArguments: false,
             requiresReadyHandoff: false
         )
-        let manager = MachineManager(configuration: configuration)
+        let manager = MachineManager(diagnosticConfiguration: configuration)
 
         _ = try manager.create(DoryMachineConfiguration(
             id: "ubuntu",
@@ -3588,7 +3588,7 @@ final class MachineManagerTests: XCTestCase {
             installerData
         )
 
-        let reloaded = MachineManager(configuration: configuration)
+        let reloaded = MachineManager(diagnosticConfiguration: configuration)
         XCTAssertEqual(reloaded.list().map(\.id), ["ubuntu"])
         try Data("installed-efi-variables".utf8).write(
             to: URL(fileURLWithPath: "\(state)/ubuntu/NVRAM.installer")
@@ -3636,7 +3636,7 @@ final class MachineManagerTests: XCTestCase {
         )
         try Data("installed-efi-system".utf8).write(to: URL(fileURLWithPath: disk))
         let state = base + "/machines"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: vzHelper,
             acceleratedDesktopExecutablePath: rawHVHelper,
             stateDirectory: state,
@@ -3727,7 +3727,7 @@ final class MachineManagerTests: XCTestCase {
         let starter = RecordingProcessStarter(failingAttempts: [2])
         let state = "\(base)/machines"
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: state,
                 baseArguments: ["30"],
@@ -3793,7 +3793,7 @@ final class MachineManagerTests: XCTestCase {
         try Data("EFI/BOOT/BOOTAA64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
         try Data("disk".utf8).write(to: URL(fileURLWithPath: disk))
         let state = "\(base)/machines"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state,
             baseArguments: ["30"],
@@ -3840,7 +3840,7 @@ final class MachineManagerTests: XCTestCase {
         try Data("blank disk".utf8).write(to: URL(fileURLWithPath: disk))
         let state = base + "/machines"
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: state,
                 baseArguments: ["30"],
@@ -3937,7 +3937,7 @@ final class MachineManagerTests: XCTestCase {
 
         let broker = try DoryMachineStateBroker(canonicalStateRootPath: state)
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/false",
                 acceleratedDesktopExecutablePath: helper,
                 pcFirmwareBundlePath: firmware,
@@ -4052,7 +4052,7 @@ final class MachineManagerTests: XCTestCase {
         try firmwareBundle.write(to: URL(fileURLWithPath: firmware))
 
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/false",
                 acceleratedDesktopExecutablePath: helper,
                 pcFirmwareBundlePath: firmware,
@@ -4168,7 +4168,7 @@ final class MachineManagerTests: XCTestCase {
         let starter = RecordingProcessStarter(failingAttempts: [1])
         let state = base + "/machines"
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: state,
                 baseArguments: ["30"],
@@ -4219,7 +4219,7 @@ final class MachineManagerTests: XCTestCase {
         try installedX86GPTImage().write(to: URL(fileURLWithPath: disk))
         let state = base + "/machines"
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: state,
                 baseArguments: ["30"],
@@ -4310,7 +4310,7 @@ final class MachineManagerTests: XCTestCase {
             passMachineArguments: false,
             requiresReadyHandoff: false
         )
-        let manager = MachineManager(configuration: configuration)
+        let manager = MachineManager(diagnosticConfiguration: configuration)
         _ = try manager.create(DoryMachineConfiguration(
             id: "linux",
             kernelPath: "",
@@ -4335,7 +4335,7 @@ final class MachineManagerTests: XCTestCase {
             )
         }
 
-        let recovered = MachineManager(configuration: configuration)
+        let recovered = MachineManager(diagnosticConfiguration: configuration)
         XCTAssertEqual(recovered.list().map(\.id), ["linux"])
         XCTAssertTrue(try XCTUnwrap(recovered.status(id: "linux")).installerMediaAttached)
         XCTAssertFalse(FileManager.default.fileExists(atPath: installedNVRAM))
@@ -4357,7 +4357,7 @@ final class MachineManagerTests: XCTestCase {
         )
         try writeCompleteFirmwarePromotionMarker(fixture)
 
-        let recovered = MachineManager(configuration: fixture.configuration)
+        let recovered = MachineManager(diagnosticConfiguration: fixture.configuration)
         let status = try XCTUnwrap(recovered.status(id: "linux"))
         XCTAssertEqual(status.state, .stopped)
         XCTAssertFalse(status.installerMediaAttached)
@@ -4380,7 +4380,7 @@ final class MachineManagerTests: XCTestCase {
         try FileManager.default.removeItem(atPath: fixture.installedNVRAM)
         try writeCompleteFirmwarePromotionMarker(fixture)
 
-        let recovered = MachineManager(configuration: fixture.configuration)
+        let recovered = MachineManager(diagnosticConfiguration: fixture.configuration)
         let status = try XCTUnwrap(recovered.status(id: "linux"))
         XCTAssertEqual(status.state, .stopped)
         XCTAssertFalse(status.installerMediaAttached)
@@ -4403,7 +4403,7 @@ final class MachineManagerTests: XCTestCase {
             toPath: fixture.promotionMarker
         )
 
-        let recovered = MachineManager(configuration: fixture.configuration)
+        let recovered = MachineManager(diagnosticConfiguration: fixture.configuration)
         let status = try XCTUnwrap(recovered.status(id: "linux"))
         XCTAssertEqual(status.state, .stopped)
         XCTAssertTrue(status.installerMediaAttached)
@@ -4422,7 +4422,7 @@ final class MachineManagerTests: XCTestCase {
             toPath: fixture.promotionMarker
         )
 
-        let recovered = MachineManager(configuration: fixture.configuration)
+        let recovered = MachineManager(diagnosticConfiguration: fixture.configuration)
         let status = try XCTUnwrap(recovered.status(id: "linux"))
         XCTAssertEqual(status.state, .failed)
         XCTAssertFalse(status.installerMediaAttached)
@@ -4445,7 +4445,7 @@ final class MachineManagerTests: XCTestCase {
         )
         XCTAssertEqual(symlink(markerTarget, fixture.promotionMarker), 0)
 
-        let recovered = MachineManager(configuration: fixture.configuration)
+        let recovered = MachineManager(diagnosticConfiguration: fixture.configuration)
         let status = try XCTUnwrap(recovered.status(id: "linux"))
         XCTAssertEqual(status.state, .failed)
         XCTAssertFalse(status.installerMediaAttached)
@@ -4468,7 +4468,7 @@ final class MachineManagerTests: XCTestCase {
         )
         try Data("installed system".utf8).write(to: URL(fileURLWithPath: disk))
         let state = "\(base)/machines"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state,
             baseArguments: ["30"],
@@ -4560,7 +4560,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let installer = "\(base)/omarchy-x86-only.iso"
         try Data("EFI/BOOT/BOOTX64.EFI".utf8).write(to: URL(fileURLWithPath: installer))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             passMachineArguments: false,
@@ -4596,7 +4596,7 @@ final class MachineManagerTests: XCTestCase {
         let disk = "\(base)/installed-linux.ext4"
         try Data("disk-v1".utf8).write(to: URL(fileURLWithPath: disk))
         let state = "\(base)/machines"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: state,
             baseArguments: ["30"],
@@ -4668,7 +4668,7 @@ final class MachineManagerTests: XCTestCase {
         let kernelV1SHA256 = SHA256.hash(data: Data("kernel-v1".utf8))
             .map { String(format: "%02x", $0) }.joined()
         try FileManager.default.createDirectory(atPath: sharePath, withIntermediateDirectories: true)
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -4845,7 +4845,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let sourceRootfs = "\(base)/base-rootfs.ext4"
         try Data("base-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -4885,7 +4885,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let sourceRootfs = "\(base)/base-rootfs.ext4"
         try Data("base-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -4934,7 +4934,7 @@ final class MachineManagerTests: XCTestCase {
         defer { try? FileManager.default.removeItem(atPath: base) }
         let sourceRootfs = "\(base)/base-rootfs.ext4"
         try Data("base-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "\(base)/missing-dory-vmm",
             stateDirectory: "\(base)/machines",
             passMachineArguments: false,
@@ -4952,7 +4952,7 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(manager.list().map(\.id), ["dev"])
         XCTAssertFalse(FileManager.default.fileExists(atPath: "\(base)/machines/dev-copy"))
 
-        let reloaded = MachineManager(configuration: MachineManagerConfiguration(
+        let reloaded = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "\(base)/missing-dory-vmm",
             stateDirectory: "\(base)/machines",
             passMachineArguments: false,
@@ -4969,7 +4969,7 @@ final class MachineManagerTests: XCTestCase {
         let sourceKernel = "\(base)/kernel"
         try Data("copy-on-write-rootfs".utf8).write(to: URL(fileURLWithPath: sourceRootfs))
         try Data("copy-on-write-kernel".utf8).write(to: URL(fileURLWithPath: sourceKernel))
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: "\(base)/machines",
             baseArguments: ["30"],
@@ -5016,7 +5016,7 @@ final class MachineManagerTests: XCTestCase {
             passMachineArguments: false,
             requiresReadyHandoff: false
         )
-        var manager: MachineManager? = MachineManager(configuration: configuration)
+        var manager: MachineManager? = MachineManager(diagnosticConfiguration: configuration)
         _ = try manager?.create(DoryMachineConfiguration(
             id: "source",
             kernelPath: doryTestKernelPath,
@@ -5057,7 +5057,7 @@ final class MachineManagerTests: XCTestCase {
         )
 
         manager = nil
-        let reloaded = MachineManager(configuration: configuration)
+        let reloaded = MachineManager(diagnosticConfiguration: configuration)
         XCTAssertEqual(reloaded.status(id: "clone")?.cloneReceipt, clone.cloneReceipt)
         XCTAssertEqual(try reloaded.start(id: "clone").state, .running)
         try reloaded.delete(id: "clone")
@@ -5065,7 +5065,7 @@ final class MachineManagerTests: XCTestCase {
 
     func testRequiredHandoffMovesMachineFromStartingToRunning() throws {
         let base = "/tmp/dory-machine-handoff-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -5120,7 +5120,7 @@ final class MachineManagerTests: XCTestCase {
 
     func testRequiredHandoffRejectsDifferentOperationIdentity() throws {
         let base = "/tmp/dory-machine-handoff-operation-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -5156,7 +5156,7 @@ final class MachineManagerTests: XCTestCase {
 
     func testDesktopHandoffUsesDesktopStartupBudget() throws {
         let base = "/tmp/dory-machine-desktop-handoff-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -5204,7 +5204,7 @@ final class MachineManagerTests: XCTestCase {
             stderrTruncated: false
         ))
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -5255,7 +5255,7 @@ final class MachineManagerTests: XCTestCase {
             stderrTruncated: false
         ))
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -5309,7 +5309,7 @@ final class MachineManagerTests: XCTestCase {
             execDelay: 0.2
         )
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -5379,7 +5379,7 @@ final class MachineManagerTests: XCTestCase {
         let durable = "/tmp/dory-machine-durable-\(getpid())-\(String(repeating: "x", count: 70))"
         let runtime = "/tmp/dory-machine-runtime-\(getpid())"
         let id = String(repeating: "m", count: 63)
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: durable,
             runtimeDirectory: runtime,
@@ -5418,7 +5418,7 @@ final class MachineManagerTests: XCTestCase {
 
     func testMachineIDRejectsMoreThanSixtyThreeBytes() throws {
         let base = "/tmp/dory-machine-id-limit-\(getpid())"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/usr/bin/true",
             stateDirectory: base
         ))
@@ -5448,7 +5448,7 @@ final class MachineManagerTests: XCTestCase {
             encoding: .utf8
         )
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: helper)
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: helper,
             stateDirectory: durable,
             runtimeDirectory: runtime,
@@ -5539,7 +5539,7 @@ final class MachineManagerTests: XCTestCase {
         )
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: desktopHelper)
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: fallbackHelper)
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: fallbackHelper,
             acceleratedDesktopExecutablePath: desktopHelper,
             stateDirectory: stateDirectory,
@@ -5698,7 +5698,7 @@ final class MachineManagerTests: XCTestCase {
             toPath: sourceBundle
         )
         let state = base + "/machines"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: fallbackHelper,
             acceleratedDesktopExecutablePath: desktopHelper,
             stateDirectory: state,
@@ -5746,7 +5746,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-clock-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let connector = RecordingMachineAgentConnector()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -5795,7 +5795,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-snapshot-quiesce-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let connector = RecordingMachineAgentConnector()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -5877,7 +5877,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-exec-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let connector = RecordingMachineAgentConnector()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -5948,7 +5948,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-capability-gate-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let connector = RecordingMachineAgentConnector()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -6006,7 +6006,7 @@ final class MachineManagerTests: XCTestCase {
             psiFullAvg10: 0
         ))
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -6070,7 +6070,7 @@ final class MachineManagerTests: XCTestCase {
     func testMemorySnapshotsMarkMachinesWithoutControlSocketAsNotBalloonable() throws {
         let base = "/tmp/dory-machine-memory-no-balloon-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -6123,7 +6123,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         let balloon = RecordingMachineBalloonController()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],
@@ -6214,7 +6214,7 @@ final class MachineManagerTests: XCTestCase {
         ))
         let balloon = RecordingMachineBalloonController()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/false",
                 acceleratedDesktopExecutablePath: helper,
                 stateDirectory: stateDirectory,
@@ -6273,7 +6273,7 @@ final class MachineManagerTests: XCTestCase {
     func testHandoffSocketStartFailureReleasesManagerLock() throws {
         let longComponent = String(repeating: "a", count: 120)
         let base = "/tmp/dory-machine-handoff-long-\(longComponent)"
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/sleep",
             stateDirectory: base,
             baseArguments: ["30"],
@@ -6308,7 +6308,7 @@ final class MachineManagerTests: XCTestCase {
         let base = "/tmp/dory-machine-device-telemetry-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let telemetry = RecordingMachineDeviceTelemetryController()
         let manager = MachineManager(
-            configuration: MachineManagerConfiguration(
+            diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sleep",
                 stateDirectory: base,
                 baseArguments: ["30"],

@@ -15,7 +15,7 @@ struct DoryP01PreflightTests {
             "dory-p01-preflight-\(UUID().uuidString)", isDirectory: true
         )
         defer { try? FileManager.default.removeItem(at: root) }
-        let manager = MachineManager(configuration: MachineManagerConfiguration(
+        let manager = MachineManager(diagnosticConfiguration: MachineManagerConfiguration(
             vmmExecutablePath: "/bin/true", stateDirectory: root.path + "/machines"
         ))
         func tree() -> [String] {
