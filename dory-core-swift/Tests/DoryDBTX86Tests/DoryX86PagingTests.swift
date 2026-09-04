@@ -394,6 +394,45 @@ import Testing
     #expect(try memory.read(at: 0x8FFC, byteCount: 4) == [0x88, 0x77, 0x66, 0x55])
   }
 
+  @Test func translatedWriteValidationDoesNotReadMMIO() throws {
+    let backing = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let linear: UInt64 = 0x0040_0000
+    try installFourLevelMapping(
+      linear: linear, physicalPage: 0x9000, flags: 0x7, memory: backing)
+    let physical = DoryX86PagingWriteValidationMemory(backing: backing, rejectsDeviceWrites: false)
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: physical, pagingUnit: .init(), context: longModeContext(cpl: 3))
+
+    try translated.validateWrite(at: linear + 0x100, byteCount: 8)
+
+    #expect(physical.deviceReadCount == 0)
+    #expect(physical.dataWriteCount == 0)
+    #expect(physical.validatedDataRanges == [0x9100..<0x9108])
+  }
+
+  @Test func rejectedSecondPhysicalPageLeavesCrossPageStoreUnchanged() throws {
+    let backing = DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let linear: UInt64 = 0x0040_0000
+    try installFourLevelMapping(
+      linear: linear, physicalPage: 0x8000, flags: 0x7, memory: backing)
+    try installFourLevelMapping(
+      linear: linear + 0x1000, physicalPage: 0x9000, flags: 0x7, memory: backing)
+    let before: [UInt8] = [0xAA, 0xBB, 0xCC, 0xDD, 0x11, 0x22, 0x33, 0x44]
+    try backing.write(at: 0x8FFC, bytes: before)
+    let physical = DoryX86PagingWriteValidationMemory(backing: backing, rejectsDeviceWrites: true)
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: physical, pagingUnit: .init(), context: longModeContext(cpl: 3))
+
+    #expect(throws: DoryX86PagingWriteValidationMemory.Failure.writeRejected(address: 0x9000, byteCount: 4)) {
+      try translated.writeScalar(at: linear + 0xFFC, value: 0x8877_6655_4433_2211, byteCount: 8)
+    }
+
+    #expect(try backing.read(at: 0x8FFC, byteCount: before.count) == before)
+    #expect(physical.deviceReadCount == 0)
+    #expect(physical.dataWriteCount == 0)
+    #expect(physical.validatedDataRanges == [0x8FFC..<0x9000, 0x9000..<0x9004])
+  }
+
   @Test func walksPAELargePagesAndLegacyPageTables() throws {
     let paeMemory = DoryX86ByteArrayMemory(byteCount: 0x10_000)
     try write64(paeMemory, 0x1000, 0x2000 | 0x1)
@@ -728,5 +767,52 @@ import Testing
     try memory.read(at: address, byteCount: 8).enumerated().reduce(0) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)
     }
+  }
+}
+
+/// The second data page behaves like a device: reads have effects and writes
+/// may be rejected even though reads succeed. Page-table RAM remains ordinary.
+private final class DoryX86PagingWriteValidationMemory: DoryX86Memory, @unchecked Sendable {
+  enum Failure: Error, Equatable {
+    case writeRejected(address: UInt64, byteCount: Int)
+  }
+
+  private let backing: DoryX86ByteArrayMemory
+  private let rejectsDeviceWrites: Bool
+  private(set) var deviceReadCount = 0
+  private(set) var dataWriteCount = 0
+  private(set) var validatedDataRanges: [Range<UInt64>] = []
+
+  init(backing: DoryX86ByteArrayMemory, rejectsDeviceWrites: Bool) {
+    self.backing = backing
+    self.rejectsDeviceWrites = rejectsDeviceWrites
+  }
+
+  func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    try backing.instructionBytes(at: address, maximumCount: maximumCount)
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    let bytes = try backing.read(at: address, byteCount: byteCount)
+    if touchesDevice(address: address, byteCount: byteCount) { deviceReadCount += 1 }
+    return bytes
+  }
+
+  func validateWrite(at address: UInt64, byteCount: Int) throws {
+    try backing.validateWrite(at: address, byteCount: byteCount)
+    if address >= 0x8000 { validatedDataRanges.append(address..<(address + UInt64(byteCount))) }
+    if rejectsDeviceWrites, touchesDevice(address: address, byteCount: byteCount) {
+      throw Failure.writeRejected(address: address, byteCount: byteCount)
+    }
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    try validateWrite(at: address, byteCount: bytes.count)
+    if address >= 0x8000 { dataWriteCount += 1 }
+    try backing.write(at: address, bytes: bytes)
+  }
+
+  private func touchesDevice(address: UInt64, byteCount: Int) -> Bool {
+    byteCount > 0 && address < 0xA000 && address + UInt64(byteCount) > 0x9000
   }
 }

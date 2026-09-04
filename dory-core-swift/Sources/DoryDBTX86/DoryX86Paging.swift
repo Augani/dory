@@ -676,7 +676,7 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
         physicalMemory: physicalMemory
       )
       let count = min(Int(4_096 - (cursor & 0xfff)), remaining)
-      _ = try physicalMemory.read(at: translation.physicalAddress, byteCount: count)
+      try physicalMemory.validateWrite(at: translation.physicalAddress, byteCount: count)
       cursor &+= UInt64(count)
       remaining -= count
     }
