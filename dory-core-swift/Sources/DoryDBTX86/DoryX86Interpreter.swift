@@ -765,19 +765,17 @@ public struct DoryX86Interpreter: Sendable {
           case .divide: lhs.divided(by: rhs, rounding: rounding, precision: precision)
           case .divideReverse: rhs.divided(by: lhs, rounding: rounding, precision: precision)
           }
+        let exceptions = x87ArithmeticExceptions(
+          operation: operation, lhs: lhs, rhs: rhs, result: result)
         if lhs.isUnsupported || rhs.isUnsupported {
           // Intel SDM Vol. 1 §8.5.1.1: consuming an unsupported binary80
           // encoding raises #IA. A masked exception writes real indefinite;
           // an unmasked exception suppresses the destination and any pop.
-          guard recordUnsupportedX87Operand(state: &state.floatingPoint) else { break }
-        } else {
-          updateX87ArithmeticStatus(
-            operation: operation,
-            lhs: lhs,
-            rhs: rhs,
-            result: result,
-            state: &state.floatingPoint
-          )
+          guard recordX87Exceptions(1, state: &state.floatingPoint) else { break }
+        } else if exceptions != 0 {
+          // Numeric exceptions are reported before committing the result. An
+          // unmasked exception suppresses both the destination and any pop.
+          guard recordX87Exceptions(exceptions, state: &state.floatingPoint) else { break }
         }
         writeX87Register(destination, value: result, state: &state.floatingPoint)
         if pop { popX87(state: &state.floatingPoint) }
@@ -793,9 +791,12 @@ public struct DoryX86Interpreter: Sendable {
         if lhs.isUnsupported || rhs.isUnsupported {
           // Unsupported operands raise #IA for FCOM and FUCOM families alike.
           // With #IA unmasked, neither condition codes/EFLAGS nor TOP change.
-          guard recordUnsupportedX87Operand(state: &state.floatingPoint) else { break }
-        } else if relation == .unordered, ordered {
-          state.floatingPoint.x87StatusWord |= 1
+          guard recordX87Exceptions(1, state: &state.floatingPoint) else { break }
+        } else if lhs.isSignalingNaN || rhs.isSignalingNaN
+          || (ordered && (lhs.isNaN || rhs.isNaN)) {
+          // FCOM treats every NaN as invalid; FUCOM treats only signaling NaNs
+          // as invalid. Masked invalid produces the ordinary unordered result.
+          guard recordX87Exceptions(1, state: &state.floatingPoint) else { break }
         }
         if setIntegerFlags {
           state.rflags.remove([.overflow, .sign, .zero, .auxiliaryCarry, .parity, .carry])
@@ -831,11 +832,12 @@ public struct DoryX86Interpreter: Sendable {
           }
           break
         }
+        let testOperand = readX87Register(0, state: state.floatingPoint)
         if operation == .test,
-          readX87Register(0, state: state.floatingPoint).isUnsupported {
-          // FTST has FCOM's unsupported-operand behavior. Its masked response
-          // is unordered; its unmasked response leaves C0/C2/C3 unchanged.
-          if recordUnsupportedX87Operand(state: &state.floatingPoint) {
+          testOperand.isUnsupported || testOperand.isNaN {
+          // FTST has FCOM's invalid-operand behavior. Its masked response is
+          // unordered; its unmasked response leaves C0/C2/C3 unchanged.
+          if recordX87Exceptions(1, state: &state.floatingPoint) {
             setX87ComparisonStatus(.unordered, state: &state.floatingPoint)
           }
           break
@@ -4085,14 +4087,25 @@ public struct DoryX86Interpreter: Sendable {
     writeX87Register(logical, value: DoryX86ExtendedFloat(value), state: &state)
   }
 
-  private func updateX87ArithmeticStatus(
+  private func x87ArithmeticExceptions(
     operation: DoryX87BinaryOperation,
     lhs: DoryX86ExtendedFloat,
     rhs: DoryX86ExtendedFloat,
-    result: DoryX86ExtendedFloat,
-    state: inout DoryX86FloatingPointState
-  ) {
-    if lhs.isNaN || rhs.isNaN { state.x87StatusWord |= 1 }
+    result: DoryX86ExtendedFloat
+  ) -> UInt16 {
+    if lhs.isSignalingNaN || rhs.isSignalingNaN { return 1 }
+    let invalid: Bool =
+      switch operation {
+      case .add:
+        lhs.isInfinite && rhs.isInfinite && lhs.isNegative != rhs.isNegative
+      case .subtract, .subtractReverse:
+        lhs.isInfinite && rhs.isInfinite && lhs.isNegative == rhs.isNegative
+      case .multiply:
+        (lhs.isZero && rhs.isInfinite) || (lhs.isInfinite && rhs.isZero)
+      case .divide, .divideReverse:
+        (lhs.isZero && rhs.isZero) || (lhs.isInfinite && rhs.isInfinite)
+      }
+    if invalid { return 1 }
     let numerator: DoryX86ExtendedFloat
     let denominator: DoryX86ExtendedFloat
     switch operation {
@@ -4101,27 +4114,24 @@ public struct DoryX86Interpreter: Sendable {
     case .divideReverse:
       (numerator, denominator) = (rhs, lhs)
     default:
-      return
+      return 0
     }
     if denominator.isZero {
-      if numerator.isZero || numerator.isNaN {
-        state.x87StatusWord |= 1
-      } else if numerator.isFinite {
-        state.x87StatusWord |= 1 << 2
-      }
+      if numerator.isFinite, !numerator.isZero { return 1 << 2 }
     } else if result.isInfinite, numerator.isFinite, denominator.isFinite {
-      state.x87StatusWord |= 1 << 3
+      return 1 << 3
     }
+    return 0
   }
 
-  /// Records the invalid operation caused specifically by a consumed binary80
-  /// unsupported encoding. Returns whether IM permits the instruction's masked
-  /// response to commit. Publishing also clears C1 and keeps ES/B consistent.
-  private func recordUnsupportedX87Operand(
+  /// Records x87 numeric status before a masked response or suppressed
+  /// unmasked result. Publishing also clears C1 and keeps ES/B consistent.
+  private func recordX87Exceptions(
+    _ flags: UInt16,
     state: inout DoryX86FloatingPointState
   ) -> Bool {
-    DoryX86X87Transfer.publish(flags: 1, roundedUp: false, state: &state)
-    return state.x87ControlWord & 1 != 0
+    DoryX86X87Transfer.publish(flags: flags, roundedUp: false, state: &state)
+    return flags & ~(state.x87ControlWord & 0x3F) == 0
   }
 
   private func executeX87Special(
