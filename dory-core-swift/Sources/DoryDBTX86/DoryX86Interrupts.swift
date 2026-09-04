@@ -991,9 +991,16 @@ public struct DoryX86InterruptDelivery: Sendable {
   ) throws -> UInt64 {
     var offsets: [UInt64] = []
     var next = stack
+    let expandDown = segment.attributes & 0xC == 4
+    let expandDownUpperBound: UInt64 =
+      segment.attributes & 0x4000 == 0 ? 0xFFFF : 0xFFFF_FFFF
     for _ in values {
       next = (next &- UInt64(width.byteCount)) & pointerMask
-      guard next + UInt64(width.byteCount - 1) <= UInt64(segment.limit) else {
+      let end = next &+ UInt64(width.byteCount - 1)
+      let withinSegment = expandDown
+        ? next > UInt64(segment.limit) && end <= expandDownUpperBound
+        : end <= UInt64(segment.limit)
+      guard end >= next, withinSegment else {
         throw failure
       }
       offsets.append(next)

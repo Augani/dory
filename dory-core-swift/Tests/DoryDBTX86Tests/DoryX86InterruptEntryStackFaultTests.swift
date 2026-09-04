@@ -7,6 +7,49 @@ import Testing
 // - inter-privilege stack exhaustion raises #SS(NewSS|EXT);
 // - every IA-32e stack address used by the frame must be canonical.
 @Suite struct DoryX86InterruptEntryStackFaultTests {
+  @Test func expandDownStackAcceptsFrameStrictlyAboveItsLimit() throws {
+    let memory = try expandDownMemory()
+    var state = try expandDownState(stack: 0x2_000C)
+
+    try DoryX86InterruptDelivery().deliver(
+      vector: 0x30,
+      source: .hardwareException,
+      state: &state,
+      physicalMemory: memory,
+      mode: .protected32
+    )
+
+    #expect(state.rip == 0x9000)
+    #expect(state.registers.rsp == 0x2_0000)
+    #expect(try memory.readScalar(at: 0x2_0000, byteCount: 4) == 0x8000)
+    #expect(try memory.readScalar(at: 0x2_0004, byteCount: 4) == 8)
+    #expect(try memory.readScalar(at: 0x2_0008, byteCount: 4) == 0x202)
+  }
+
+  @Test func expandDownStackRejectsFrameAtOrBelowItsLimitBeforeAnyStore() throws {
+    let memory = try expandDownMemory()
+    try memory.write(
+      at: 0xFFFC,
+      bytes: Array(repeating: 0xA5, count: 16)
+    )
+    var state = try expandDownState(stack: 0x1_0008)
+    let beforeState = state
+    let beforeMemory = try memory.read(at: 0xFFFC, byteCount: 16)
+
+    #expect(throws: DoryX86InterruptDeliveryError.stackAddress) {
+      try DoryX86InterruptDelivery().deliver(
+        vector: 0x30,
+        source: .hardwareException,
+        state: &state,
+        physicalMemory: memory,
+        mode: .protected32
+      )
+    }
+
+    #expect(state == beforeState)
+    #expect(try memory.read(at: 0xFFFC, byteCount: 16) == beforeMemory)
+  }
+
   @Test func samePrivilegeStackExhaustionDeliversStackSegmentWithExternalBitOnly() throws {
     let memory = try protectedMemory(
       firstSelector: 0x18,
@@ -109,6 +152,35 @@ import Testing
       memory: memory
     )
     return memory
+  }
+
+  private func expandDownMemory() throws -> DoryX86ByteArrayMemory {
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x30_000)
+    try memory.writeScalar(at: 0x1008, value: 0x00CF_9A00_0000_FFFF, byteCount: 8)
+    try installProtectedGate(
+      vector: 0x30,
+      target: 0x9000,
+      selector: 8,
+      attributes: 0x8E,
+      memory: memory
+    )
+    return memory
+  }
+
+  private func expandDownState(stack: UInt64) throws -> DoryX86ArchitecturalState {
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rsp: stack),
+      rip: 0x8000,
+      rflags: [.reservedOne, .interruptEnable],
+      cs: .init(selector: 8, attributes: 0xC09B, limit: .max),
+      // Present, writable, 32-bit expand-down stack. Valid offsets are
+      // 0x2_0000...0xFFFF_FFFF because the segment limit is 0x1_FFFF.
+      ss: .init(selector: 0x10, attributes: 0x4096, limit: 0x1_FFFF),
+      gdtr: .init(limit: 0x17, base: 0x1000),
+      idtr: .init(limit: 0x7FF, base: 0x2000)
+    )
+    state.control.cr0 |= 1
+    return state
   }
 
   private func protectedState(stack: UInt64) throws -> DoryX86ArchitecturalState {
