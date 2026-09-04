@@ -2,6 +2,7 @@
 """Offline integrity and cleanup tests for the pinned guest fixture preparer."""
 
 import contextlib
+import configparser
 import gzip
 import hashlib
 import importlib.util
@@ -10,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import struct
+import stat
 import subprocess
 import sys
 import tarfile
@@ -403,7 +405,7 @@ class DiagnosticInitramfsTests(unittest.TestCase):
 
 class GlibcDiagnosticTests(unittest.TestCase):
     @staticmethod
-    def elf(interpreter=None, needed=(), soname=None, banner=b""):
+    def elf(interpreter=None, needed=(), soname=None, banner=b"", *, runpath=None, path_tag=29):
         """Small synthetic ELF tables exercise inspection only; never execute these bytes."""
         output = bytearray(2048)
         output[:7] = b"\x7fELF\x02\x01\x01"
@@ -419,6 +421,9 @@ class GlibcDiagnosticTests(unittest.TestCase):
         if soname:
             tags.append((14, len(strings)))
             strings.extend(soname.encode() + b"\0")
+        if runpath is not None:
+            tags.append((path_tag, len(strings)))
+            strings.extend(runpath.encode() + b"\0")
         tags.extend([(5, 0x400400), (10, len(strings)), (0, 0)])
         for index, tag in enumerate(tags):
             struct.pack_into("<qQ", output, 512 + index * 16, *tag)
@@ -580,6 +585,244 @@ class GlibcDiagnosticTests(unittest.TestCase):
         for arguments in cases:
             with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()):
                 self.assertEqual(fixture.main(arguments + ["--glibc-diagnostic-initramfs",
+                    "--cache-directory", str(self.root / "unused-cache")]), 1)
+        self.assertFalse((self.root / "unused-cache").exists())
+
+
+class SystemdDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.directory = self.root / "source"
+        self.directory.mkdir()
+        self.cache_path = self.root / "cache"
+        self.cache_path.mkdir()
+        self.local = {name: (fixture.SYSTEMD_DIAGNOSTIC_DIRECTORY / name).read_bytes()
+                      for name in fixture.SYSTEMD_GUEST_FILES}
+        for name, data in self.local.items():
+            (self.directory / name).write_bytes(data)
+        self.members, self.specs = {}, {}
+        definitions = [(root, GlibcDiagnosticTests.elf("/lib64/loader", ["shared.so"],
+                        banner=b"synthetic-systemd", runpath=fixture.SYSTEMD_RUNPATH))
+                       for root in fixture.SYSTEMD_ROOTS]
+        definitions += [("usr/lib/x86_64-linux-gnu/shared.so", GlibcDiagnosticTests.elf(None, (), "shared.so")),
+                        ("usr/lib/x86_64-linux-gnu/loader", GlibcDiagnosticTests.elf(None, (), "loader"))]
+        for index, (destination, data) in enumerate(definitions):
+            name = "upstream/member-" + str(index)
+            self.members[name] = data
+            self.specs[name] = {"destination": destination, "mode": 0o755, "bytes": len(data),
+                                "sha256": digest(data),
+                                "elf": fixture.elf_dependencies(data, (fixture.SYSTEMD_RUNPATH,))}
+        self.squashfs = b"synthetic systemd extractor input"
+        (self.cache_path / "input.squashfs").write_bytes(self.squashfs)
+        self.artifact = {"id": "synthetic-systemd", "sha256": digest(b"synthetic ISO"),
+                         "filename": "input.iso", "bytes": 13}
+        output = fixture.systemd_diagnostic_cpio(self.local, self.members, self.specs)
+        self.recipe = {"schemaVersion": 1, "kind": "p02-systemd-userspace", "architecture": "x86_64",
+            "artifactID": self.artifact["id"], "sourceSHA256": self.artifact["sha256"],
+            "squashfs": {"member": "casper/input.squashfs", "filename": "input.squashfs",
+                         "bytes": len(self.squashfs), "sha256": digest(self.squashfs)},
+            "entrypoints": list(fixture.SYSTEMD_ROOTS), "allowedRUNPATH": fixture.SYSTEMD_RUNPATH,
+            "members": self.specs, "localFiles": {name: {"bytes": len(data), "sha256": digest(data)}
+                                                   for name, data in self.local.items()},
+            "upstreamIdentities": {"upstream/member-0": "synthetic-systemd"},
+            "outputFilename": "systemd.cpio", "outputBytes": len(output), "outputSHA256": digest(output),
+            "runnerProtocol": {}, "limitations": ["synthetic inspection-only test"]}
+        self.save_recipe()
+
+    def save_recipe(self):
+        (self.directory / "fixture.json").write_text(json.dumps(self.recipe))
+
+    def prepare(self):
+        def extract(descriptor, command, maximum):
+            self.assertEqual(command[:6], ["unsquashfs", "-processors", "1", "-mem", "16M", "-cat"])
+            self.assertEqual(os.read(descriptor, len(self.squashfs)), self.squashfs)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            self.assertEqual(maximum, self.specs[command[-1]]["bytes"])
+            return iter([self.members[command[-1]]])
+        with fixture.Cache(self.cache_path) as cache, mock.patch.object(fixture, "checked_member_chunks", extract):
+            return fixture.prepare_systemd_diagnostic(self.artifact, cache, self.directory)
+
+    def test_runpath_requires_exact_opt_in_and_rejects_rpath_and_loader_tokens(self):
+        data = GlibcDiagnosticTests.elf(runpath=fixture.SYSTEMD_RUNPATH)
+        with self.assertRaisesRegex(fixture.FixtureError, "search-path"):
+            fixture.elf_dependencies(data)
+        self.assertEqual(fixture.elf_dependencies(data, (fixture.SYSTEMD_RUNPATH,))["runpath"],
+                         fixture.SYSTEMD_RUNPATH)
+        for value in ("", "$ORIGIN", "/usr/lib:$ORIGIN", "/usr/lib/../etc", "relative", "/other"):
+            with self.subTest(value=value), self.assertRaises(fixture.FixtureError):
+                fixture.elf_dependencies(GlibcDiagnosticTests.elf(runpath=value), (fixture.SYSTEMD_RUNPATH,))
+        for value in ("$ORIGIN", "/usr/lib:$ORIGIN", "/usr/lib/../etc", "relative"):
+            with self.subTest(explicit_unsafe=value), self.assertRaises(fixture.FixtureError):
+                fixture.elf_dependencies(GlibcDiagnosticTests.elf(runpath=value), (value,))
+        with self.assertRaises(fixture.FixtureError):
+            fixture.elf_dependencies(GlibcDiagnosticTests.elf(runpath=fixture.SYSTEMD_RUNPATH, path_tag=15),
+                                     (fixture.SYSTEMD_RUNPATH,))
+
+    def test_archive_binds_real_init_link_all_runtime_roots_and_deterministic_metadata(self):
+        first = self.prepare()
+        self.assertEqual(first, self.prepare())
+        output = (self.cache_path / first["filename"]).read_bytes()
+        self.assertEqual(output, fixture.systemd_diagnostic_cpio(dict(reversed(list(self.local.items()))),
+            dict(reversed(list(self.members.items()))), dict(reversed(list(self.specs.items())))))
+        # Independent newc reader checks encoded metadata and payloads, not the builder's dictionary.
+        offset, entries, inodes = 0, {}, []
+        while True:
+            self.assertEqual(output[offset:offset + 6], b"070701")
+            fields = [int(output[offset + 6 + i * 8:offset + 14 + i * 8], 16) for i in range(13)]
+            inode, mode, uid, gid, _, mtime, size, _, _, major, minor, namesize, checksum = fields
+            offset += 110
+            name = output[offset:offset + namesize - 1].decode()
+            self.assertEqual(output[offset + namesize - 1], 0)
+            offset = (offset + namesize + 3) & ~3
+            body = output[offset:offset + size]
+            offset = (offset + size + 3) & ~3
+            self.assertEqual((uid, gid, mtime, checksum), (0, 0, 0, 0))
+            inodes.append(inode)
+            if name == "TRAILER!!!":
+                break
+            self.assertNotIn(name, entries)
+            entries[name] = (mode, body, major, minor)
+        self.assertEqual(inodes, list(range(1, len(inodes) + 1)))
+        self.assertEqual(list(entries), sorted(entries))
+        self.assertEqual(entries["init"], (stat.S_IFLNK | 0o777, b"usr/lib/systemd/systemd", 0, 0))
+        for root in fixture.SYSTEMD_ROOTS:
+            self.assertTrue(entries[root][1].startswith(b"\x7fELF"))
+        self.assertEqual(entries["etc/systemd/system/default.target"][1], b"dory-diagnostic.target")
+        self.assertEqual(entries["dev/console"], (stat.S_IFCHR | 0o600, b"", 5, 1))
+        self.assertEqual(len(output) % 512, 0)
+        self.assertFalse(any(output[offset:]))
+        manifest = json.loads((self.cache_path / first["manifestFilename"]).read_text())
+        self.assertEqual(manifest["entrypoints"], list(fixture.SYSTEMD_ROOTS))
+        self.assertEqual(manifest["localFiles"], self.recipe["localFiles"])
+        self.assertEqual(manifest["observedELFDependencies"], {n: s["elf"] for n, s in self.specs.items()})
+        self.assertIn("guest has not executed", manifest["qualification"])
+
+    def test_missing_executor_dependency_or_orphan_elf_rejects(self):
+        for missing in ("upstream/member-1", "upstream/member-4", "upstream/member-5"):
+            members = {n: d for n, d in self.members.items() if n != missing}
+            specs = {n: s for n, s in self.specs.items() if n != missing}
+            with self.subTest(missing=missing), self.assertRaises(fixture.FixtureError):
+                fixture.validate_elf_closure(members, specs, fixture.SYSTEMD_LINKS, fixture.SYSTEMD_ROOTS,
+                                             (fixture.SYSTEMD_RUNPATH,))
+        data = GlibcDiagnosticTests.elf()
+        self.members["orphan"] = data
+        self.specs["orphan"] = {"destination": "usr/lib/orphan", "elf": fixture.elf_dependencies(data)}
+        with self.assertRaisesRegex(fixture.FixtureError, "unreferenced"):
+            fixture.validate_elf_closure(self.members, self.specs, fixture.SYSTEMD_LINKS, fixture.SYSTEMD_ROOTS,
+                                         (fixture.SYSTEMD_RUNPATH,))
+
+    def test_bad_source_pins_paths_modes_and_bounds_never_publish(self):
+        mutations = [lambda r: r.update(sourceSHA256="0" * 64),
+                     lambda r: r.update(allowedRUNPATH="/unreviewed"),
+                     lambda r: r["entrypoints"].pop(),
+                     lambda r: r["members"]["upstream/member-0"].update(sha256="0" * 64),
+                     lambda r: r["members"]["upstream/member-0"].update(destination="../outside"),
+                     lambda r: r["members"]["upstream/member-0"].update(destination="init"),
+                     lambda r: r["members"]["upstream/member-0"].update(destination="usr/lib"),
+                     lambda r: r["members"]["upstream/member-0"].update(mode=0o4755),
+                     lambda r: r["members"]["upstream/member-0"].update(bytes=8 * 1024**2 + 1),
+                     lambda r: r["localFiles"]["workload"].update(sha256="0" * 64),
+                     lambda r: r["localFiles"].update({"../outside": {"bytes": 1, "sha256": "0" * 64}}),
+                     lambda r: r["upstreamIdentities"].update({"upstream/member-0": "incorrect version"})]
+        original = json.dumps(self.recipe)
+        for mutation in mutations:
+            self.recipe = json.loads(original)
+            mutation(self.recipe)
+            self.save_recipe()
+            with self.subTest(recipe=self.recipe), self.assertRaises(fixture.FixtureError):
+                self.prepare()
+            self.assertFalse((self.cache_path / "systemd.cpio").exists())
+        self.assertEqual({p.name for p in self.cache_path.iterdir()}, {"input.squashfs"})
+
+    def test_missing_or_altered_sources_and_failed_extractor_preserve_cache(self):
+        (self.cache_path / "input.squashfs").unlink()
+        with self.assertRaisesRegex(fixture.FixtureError, "missing"):
+            self.prepare()
+        (self.cache_path / "input.squashfs").write_bytes(b"altered")
+        with self.assertRaises(fixture.FixtureError):
+            self.prepare()
+        self.assertEqual((self.cache_path / "input.squashfs").read_bytes(), b"altered")
+        (self.cache_path / "input.squashfs").write_bytes(self.squashfs)
+        self.members["upstream/member-0"] += b"oversized"
+        with self.assertRaisesRegex(fixture.FixtureError, "size or SHA"):
+            self.prepare()
+        with fixture.Cache(self.cache_path) as cache, mock.patch.object(
+                fixture, "checked_member_chunks", side_effect=fixture.FixtureError("extractor failed")):
+            with self.assertRaisesRegex(fixture.FixtureError, "extractor failed"):
+                fixture.prepare_systemd_diagnostic(self.artifact, cache, self.directory)
+        self.assertEqual({p.name for p in self.cache_path.iterdir()}, {"input.squashfs"})
+
+    def test_stale_manifest_rejected_before_output_publication(self):
+        (self.cache_path / "systemd.cpio.manifest.json").write_bytes(b"retain historical provenance")
+        with self.assertRaises(fixture.FixtureError):
+            self.prepare()
+        self.assertFalse((self.cache_path / "systemd.cpio").exists())
+        self.assertEqual((self.cache_path / "systemd.cpio.manifest.json").read_bytes(), b"retain historical provenance")
+
+    def test_pinned_unit_waits_for_successful_oneshot_and_never_bypasses_pid1_shutdown(self):
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.optionxform = str
+        parser.read_string(self.local["dory-diagnostic.service"].decode())
+        self.assertEqual(parser["Service"]["Type"], "oneshot")
+        self.assertEqual(parser["Service"]["RemainAfterExit"], "no")
+        self.assertEqual(parser["Service"]["ExecStart"], "/bin/busybox sh /usr/lib/dory/diagnostic-workload")
+        self.assertEqual(parser["Service"]["ExecStartPost"], "/bin/busybox sh /usr/lib/dory/diagnostic-receipt")
+        self.assertEqual(parser["Unit"]["SuccessAction"], "poweroff")
+        self.assertEqual(parser["Unit"]["FailureAction"], "poweroff")
+        self.assertEqual(parser["Service"]["TimeoutStartSec"], "30s")
+        self.assertEqual(parser["Service"]["StandardOutput"], "tty")
+        self.assertNotIn("SuccessExitStatus", parser["Service"])
+        self.assertNotIn("ExecCondition", parser["Service"])
+        workload = self.local["workload"].decode()
+        self.assertNotIn('"doryPVHBoot":"userspace-ready"', workload)
+        self.assertIn('"$BB" kill -USR1 "$$"', workload)
+        self.assertNotIn('"$BB" kill -USR1 1', workload)
+        self.assertNotIn("/sbin/poweroff", workload + self.local["receipt"].decode())
+        recipe = json.loads((fixture.SYSTEMD_DIAGNOSTIC_DIRECTORY / "fixture.json").read_text())
+        for name, data in self.local.items():
+            self.assertEqual(recipe["localFiles"][name], {"bytes": len(data), "sha256": digest(data)})
+        for name in ("poweroff.target", "systemd-poweroff.service", "shutdown.target", "umount.target", "final.target"):
+            self.assertIn("usr/lib/systemd/system/" + name, recipe["members"])
+
+    def test_receipt_requires_matching_successful_completion_record(self):
+        source = self.local["receipt"].decode()
+        def function(name):
+            return name + "() {\n" + source.split("\n" + name + "() {\n", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
+        # Execute only the pure record-validation and JSON-formatting functions on the host.
+        # No guest context, /proc access, guest commands, service or shutdown operation executes.
+        command = ('run_uuid=$1; INVOCATION_ID=$2; completed_uuid=$3; completed_invocation=$4; '
+                   'completed_pid=$5; passed=$6; failed=$7; extra=$8\n'
+                   + function("validate_completion_record") + function("emit_runner_receipt")
+                   + "validate_completion_record || exit 1\nemit_runner_receipt\n")
+        run_id, invocation = "ddbd0d67-e969-400f-ad8b-1daa5d2290a5", "a" * 32
+        valid = [run_id, invocation, run_id, invocation, "2147483647", "7", "0", ""]
+        result = subprocess.run(["/bin/sh", "-c", command, "receipt-test"] + valid, capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0)
+        receipt = json.loads(result.stdout)
+        recipe = json.loads((fixture.SYSTEMD_DIAGNOSTIC_DIRECTORY / "fixture.json").read_text())
+        self.assertEqual(receipt["workloads"], recipe["runnerProtocol"]["workloads"])
+        self.assertEqual(len(receipt["workloads"]), 8)
+        self.assertEqual(receipt["runID"], run_id)
+        self.assertTrue(receipt["workloadsPassed"])
+        for index, value in ((2, "different-run"), (3, "different-invocation"), (4, "1"), (4, ""),
+                             (4, "bad"), (5, "6"), (6, "1"), (7, "unexpected-token")):
+            arguments = valid.copy()
+            arguments[index] = value
+            result = subprocess.run(["/bin/sh", "-c", command, "receipt-test"] + arguments,
+                                    capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(result.stdout, "")
+
+    def test_cli_systemd_fixture_selection_is_explicit_and_exclusive(self):
+        cases = [["--id", "alpine-virt-3.24.1-x86_64", "--extract"],
+                 ["--id", "ubuntu-server-24.04.4-x86_64"],
+                 ["--id", "ubuntu-server-24.04.4-x86_64", "--extract", "--glibc-diagnostic-initramfs"],
+                 ["--id", "ubuntu-server-24.04.4-x86_64", "--extract", "--diagnostic-initramfs"]]
+        for arguments in cases:
+            with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(fixture.main(arguments + ["--systemd-diagnostic-initramfs",
                     "--cache-directory", str(self.root / "unused-cache")]), 1)
         self.assertFalse((self.root / "unused-cache").exists())
 

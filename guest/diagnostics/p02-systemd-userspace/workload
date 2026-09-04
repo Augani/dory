@@ -1,0 +1,119 @@
+#!/bin/sh
+# Guest-only oneshot main process. This command never emits a successful runner receipt.
+# shellcheck source=guest/diagnostics/p02-systemd-userspace/common
+. /usr/lib/dory/diagnostic-common
+passed=0
+failed=0
+record() {
+    name=$1
+    status=$2
+    detail=$3
+    [ "$status" = pass ] && passed=$((passed + 1))
+    [ "$status" = fail ] && failed=$((failed + 1))
+    printf 'DORY_P02_RESULT {"schemaVersion":1,"kind":"userspace-result","runUUID":"%s","name":"%s","status":"%s","detail":"%s"}\n' \
+        "$run_uuid" "$name" "$status" "$detail"
+}
+
+setup_status=pass
+# PID 1 mounts the API filesystems. Never hide its /run tree with another mount.
+for mount_pair in /proc:proc /sys:sysfs /dev:devtmpfs /run:tmpfs /sys/fs/cgroup:cgroup2; do
+    path=${mount_pair%:*}
+    kind=${mount_pair#*:}
+    # Positional fields belong to awk, not this shell.
+    # shellcheck disable=SC2016
+    "$BB" awk -v path="$path" -v kind="$kind" '$2 == path && $3 == kind { found=1 } END { exit !found }' \
+        /proc/mounts || setup_status=fail
+done
+"$BB" mkdir -p /run/dory || setup_status=fail
+"$BB" mount -t tmpfs -o size=8m tmpfs /run/dory || setup_status=fail
+record bootstrap.filesystems "$setup_status" 'systemd API mounts, unified cgroup and separate bounded workload tmpfs'
+
+architecture=$("$BB" uname -m)
+if [ "$architecture" = x86_64 ] && [ -r /proc/1/stat ]; then
+    record syscall.identity pass 'glibc dynamic loader, uname and systemd PID 1 procfs record'
+else
+    record syscall.identity fail 'unexpected architecture or missing PID 1 procfs record'
+fi
+
+fork_snapshot=parent
+(
+    # This deliberate isolation is one of the checks below.
+    # shellcheck disable=SC2030
+    fork_snapshot=child
+    # The child shell, not this shell, expands its positional arguments and PID.
+    # shellcheck disable=SC2016
+    exec "$BB" sh -c '
+        [ "$1" = "$2" ] || exit 24
+        [ "$$" -gt 1 ] || exit 25
+        printf "%s\n" "$$" > /run/dory/child.pid || exit 26
+        exit 23
+    ' diagnostic-child "$run_uuid" "$run_uuid"
+) &
+child=$!
+wait "$child"
+child_status=$?
+child_pid=
+read -r child_pid < /run/dory/child.pid
+# The subshell's assignment must not affect the parent.
+# shellcheck disable=SC2031
+if [ "$child_status" -eq 23 ] && [ "$child_pid" = "$child" ] && [ "$fork_snapshot" = parent ]; then
+    record process.creation_exec_wait pass 'isolated subshell, glibc BusyBox exec, child PID and wait status'
+else
+    record process.creation_exec_wait fail 'child execution, independent shell variable or wait status differs'
+fi
+
+payload=0123456789abcdef
+iteration=0
+while [ "$iteration" -lt 12 ]; do
+    payload=$payload$payload
+    iteration=$((iteration + 1))
+done
+if [ "${#payload}" -eq 65536 ]; then
+    record memory.allocation_copy pass '65536-byte shell heap string allocated and copied'
+else
+    record memory.allocation_copy fail 'shell heap string size differs'
+fi
+
+signal_seen=no
+trap 'signal_seen=yes' USR1
+"$BB" kill -USR1 "$$"
+if [ "$signal_seen" = yes ]; then
+    record signal.handler_return pass 'USR1 handler delivered to supervised service process and returned'
+else
+    record signal.handler_return fail 'USR1 handler was not observed'
+fi
+trap - USR1
+
+# shellcheck disable=SC2016
+before=$("$BB" awk '{print int($1 * 100)}' /proc/uptime)
+"$BB" sleep 1
+sleep_status=$?
+# shellcheck disable=SC2016
+after=$("$BB" awk '{print int($1 * 100)}' /proc/uptime)
+elapsed=0
+case "$before:$after" in
+    *[!0-9:]*|:*|*:) ;;
+    *) elapsed=$((after - before)) ;;
+esac
+if [ "$sleep_status" -eq 0 ] && [ "$elapsed" -ge 90 ]; then
+    record timer.sleep_elapsed pass 'one-second sleep and monotonic procfs elapsed time'
+else
+    record timer.sleep_elapsed fail 'sleep failed or elapsed time advanced less than 900ms'
+fi
+
+file_status=pass
+printf '%s' "$payload" > /run/dory/data || file_status=fail
+"$BB" cat /run/dory/data > /run/dory/copy || file_status=fail
+"$BB" cmp /run/dory/data /run/dory/copy || file_status=fail
+read_back=$("$BB" cat /run/dory/copy)
+[ "$read_back" = "$payload" ] || file_status=fail
+"$BB" sync || file_status=fail
+record filesystem.write_read_sync "$file_status" 'tmpfs 65536-byte write, separate read/copy, content comparison and sync'
+
+if [ "$passed" -ne 7 ] || [ "$failed" -ne 0 ]; then
+    printf 'DORY_P02_SUMMARY {"schemaVersion":1,"kind":"userspace-summary","runUUID":"%s","status":"fail","passed":%s,"failed":%s}\n' \
+        "$run_uuid" "$passed" "$failed"
+    exit 1
+fi
+printf '%s %s %s %s %s\n' "$run_uuid" "$INVOCATION_ID" "$$" "$passed" "$failed" > /run/dory/completed || exit 1
+exit 0

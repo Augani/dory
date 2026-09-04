@@ -22,6 +22,7 @@ import zlib
 CATALOG = Path(__file__).resolve().parent.parent / "Config/DoryVirtualizationGuestCandidates.json"
 DIAGNOSTIC_DIRECTORY = Path(__file__).resolve().parent.parent / "guest/diagnostics/p02-minimal-userspace"
 GLIBC_DIAGNOSTIC_DIRECTORY = DIAGNOSTIC_DIRECTORY.with_name("p02-glibc-userspace")
+SYSTEMD_DIAGNOSTIC_DIRECTORY = DIAGNOSTIC_DIRECTORY.with_name("p02-systemd-userspace")
 CHUNK_BYTES = 64 * 1024
 MAX_DOWNLOAD_BYTES = 32 * 1024**3
 MAX_MEMBER_BYTES = 512 * 1024**2
@@ -518,7 +519,7 @@ def prepare_diagnostic(artifact, cache, directory=DIAGNOSTIC_DIRECTORY):
             "qualification": manifest["qualification"]}
 
 
-def elf_dependencies(data):
+def elf_dependencies(data, allowed_runpaths=()):
     """Inspect file-backed ELF64 tables without executing an extracted guest program."""
     require(len(data) >= 64 and data[:7] == b"\x7fELF\x02\x01\x01"
             and int.from_bytes(data[18:20], "little") == 62, "not ELF64 little-endian x86-64")
@@ -543,7 +544,7 @@ def elf_dependencies(data):
             interpreter = data[offset:offset + size - 1].decode("ascii")
             require(interpreter.startswith("/"), "ELF interpreter must be absolute")
             safe_member(interpreter[1:])
-    strings, needed_offsets, soname_offset = {}, [], None
+    strings, needed_offsets, soname_offset, runpath = {}, [], None, None
     if dynamic is not None:
         terminated = False
         for offset in range(0, len(dynamic), 16):
@@ -553,13 +554,14 @@ def elf_dependencies(data):
                 break
             if tag == 1:
                 needed_offsets.append(value)
-            elif tag in (5, 10, 14):
+            elif tag in (5, 10, 14, 29):
+                require(tag != 29 or allowed_runpaths, "ELF search-path overrides are unsupported")
                 require(tag not in strings, "duplicate ELF dynamic field")
                 strings[tag] = value
-            elif tag in (15, 29):
+            elif tag == 15:
                 raise FixtureError("ELF search-path overrides are unsupported")
         require(terminated, "unterminated ELF dynamic table")
-        if needed_offsets or 14 in strings:
+        if needed_offsets or 14 in strings or 29 in strings:
             require(5 in strings and 10 in strings and 0 < strings[10] <= len(data),
                     "missing ELF dynamic strings")
             candidates = [offset + strings[5] - address for address, offset, size in loads
@@ -567,29 +569,40 @@ def elf_dependencies(data):
             require(len(candidates) == 1, "ELF strings are not uniquely file-backed")
             table = data[candidates[0]:candidates[0] + strings[10]]
 
-            def name_at(offset):
+            def string_at(offset):
                 require(offset < len(table), "ELF dynamic string offset exceeds table")
                 end = table.find(b"\0", offset)
                 require(end >= offset, "unterminated ELF dynamic string")
-                return safe_name(table[offset:end].decode("ascii"))
+                return table[offset:end].decode("ascii")
 
-            needed_offsets = [name_at(offset) for offset in needed_offsets]
-            soname_offset = name_at(strings[14]) if 14 in strings else None
+            needed_offsets = [safe_name(string_at(offset)) for offset in needed_offsets]
+            soname_offset = safe_name(string_at(strings[14])) if 14 in strings else None
+            if 29 in strings:
+                runpath = string_at(strings[29])
+                require(runpath in allowed_runpaths and runpath.startswith("/"),
+                        "ELF RUNPATH is not explicitly allowed")
+                # A single literal absolute directory only: no loader tokens, relative paths or lists.
+                require("$" not in runpath and ":" not in runpath, "unsafe ELF RUNPATH")
+                safe_member(runpath[1:])
     require(len(set(needed_offsets)) == len(needed_offsets), "duplicate ELF dependency")
-    return {"interpreter": interpreter, "needed": needed_offsets, "soname": soname_offset}
+    return {"interpreter": interpreter, "needed": needed_offsets, "soname": soname_offset,
+            **({"runpath": runpath} if runpath is not None else {})}
 
 
 GLIBC_LINKS = {"bin/sh": "busybox", "lib": "usr/lib", "lib64": "usr/lib/x86_64-linux-gnu"}
 
 
 def validate_glibc_closure(members, specifications):
+    return validate_elf_closure(members, specifications, GLIBC_LINKS, ("bin/busybox", "sbin/poweroff"))
+
+
+def validate_elf_closure(members, specifications, links, roots, allowed_runpaths=()):
     installed, observed = {}, {}
     for member, specification in specifications.items():
         destination = safe_member(specification["destination"])
-        require(destination not in installed and destination not in GLIBC_LINKS,
-                "duplicate glibc guest destination")
+        require(destination not in installed and destination not in links, "duplicate ELF guest destination")
         installed[destination] = member
-        observed[member] = elf_dependencies(members[member])
+        observed[member] = elf_dependencies(members[member], allowed_runpaths)
         require(observed[member] == specification.get("elf"), "ELF dependency pins differ: " + member)
 
     def resolve(path):
@@ -597,12 +610,14 @@ def validate_glibc_closure(members, specifications):
             parts = path.split("/")
             for count in range(1, len(parts) + 1):
                 prefix = "/".join(parts[:count])
-                if prefix in GLIBC_LINKS:
-                    path = "/".join(parts[:count - 1] + [GLIBC_LINKS[prefix]] + parts[count:])
+                if prefix in links:
+                    target = links[prefix]
+                    path = "/".join(([] if target.startswith("/") else parts[:count - 1])
+                                    + [target.lstrip("/")] + parts[count:])
                     break
             else:
                 return installed.get(path)
-        raise FixtureError("glibc guest symlink cycle")
+        raise FixtureError("guest symlink cycle")
 
     edges = {}
     for member, metadata in observed.items():
@@ -612,16 +627,18 @@ def validate_glibc_closure(members, specifications):
             require(dependency is not None, "ELF interpreter is missing from closure")
             dependencies.append(dependency)
         for name in metadata["needed"]:
-            targets = {resolve(directory + "/" + name) for directory in (
-                "lib/x86_64-linux-gnu", "lib", "usr/lib/x86_64-linux-gnu", "usr/lib")}
+            directories = ["lib/x86_64-linux-gnu", "lib", "usr/lib/x86_64-linux-gnu", "usr/lib"]
+            if metadata.get("runpath"):
+                directories.insert(0, metadata["runpath"][1:])
+            targets = {resolve(directory + "/" + name) for directory in directories}
             targets.discard(None)
             require(len(targets) == 1, "ELF dependency is missing or ambiguous: " + name)
             dependency = targets.pop()
             require(observed[dependency]["soname"] == name, "ELF dependency SONAME differs")
             dependencies.append(dependency)
         edges[member] = set(dependencies)
-    pending = [resolve("bin/busybox"), resolve("sbin/poweroff")]
-    require(None not in pending, "glibc workload and shutdown entrypoints are required")
+    pending = [resolve(root) for root in roots]
+    require(None not in pending, "ELF workload and runtime entrypoints are required")
     reached = set()
     while pending:
         member = pending.pop()
@@ -642,6 +659,11 @@ def glibc_diagnostic_cpio(init, members, specifications):
                     "dev/null": (stat.S_IFCHR | 0o666, b"", 1, 3),
                     "dev/zero": (stat.S_IFCHR | 0o666, b"", 1, 5)})
     directories = {"bin", "sbin", "dev", "proc", "run", "sys", "tmp"}
+    return newc_archive(entries, directories)
+
+
+def newc_archive(entries, directories):
+    entries, directories = dict(entries), set(directories)
     for name in list(entries):
         safe_member(name)
         parts = name.split("/")
@@ -758,6 +780,157 @@ def prepare_glibc_diagnostic(artifact, cache, directory=GLIBC_DIAGNOSTIC_DIRECTO
             "qualification": manifest["qualification"]}
 
 
+SYSTEMD_RUNPATH = "/usr/lib/x86_64-linux-gnu/systemd"
+SYSTEMD_ROOTS = ("usr/lib/systemd/systemd", "usr/lib/systemd/systemd-executor",
+                 "usr/lib/systemd/systemd-shutdown", "bin/busybox")
+SYSTEMD_LINKS = {**GLIBC_LINKS, "init": "usr/lib/systemd/systemd",
+    "etc/os-release": "/usr/lib/os-release",
+    "etc/systemd/system/default.target": "dory-diagnostic.target",
+    # libsystemd-core has no RUNPATH of its own. This standard-directory alias also makes its
+    # shared dependency independently resolvable, without relying on a parent's loader order.
+    "usr/lib/x86_64-linux-gnu/libsystemd-shared-255.so": "systemd/libsystemd-shared-255.so"}
+SYSTEMD_GUEST_FILES = {
+    "common": ("usr/lib/dory/diagnostic-common", 0o644),
+    "workload": ("usr/lib/dory/diagnostic-workload", 0o755),
+    "receipt": ("usr/lib/dory/diagnostic-receipt", 0o755),
+    "dory-diagnostic.service": ("etc/systemd/system/dory-diagnostic.service", 0o644),
+    "dory-diagnostic.target": ("etc/systemd/system/dory-diagnostic.target", 0o644),
+    "manager.conf": ("etc/systemd/system.conf", 0o644),
+    "passwd": ("etc/passwd", 0o644), "group": ("etc/group", 0o644),
+    "machine-id": ("etc/machine-id", 0o644)}
+
+
+def systemd_diagnostic_cpio(local_files, members, specifications):
+    require(set(local_files) == set(SYSTEMD_GUEST_FILES), "systemd local file set differs")
+    entries = {name: (stat.S_IFLNK | 0o777, target.encode("ascii"), 0, 0)
+               for name, target in SYSTEMD_LINKS.items()}
+    for name, data in local_files.items():
+        destination, mode = SYSTEMD_GUEST_FILES[name]
+        entries[destination] = (stat.S_IFREG | mode, data, 0, 0)
+    for member, spec in specifications.items():
+        destination = safe_member(spec["destination"])
+        require(destination not in entries, "duplicate systemd guest destination")
+        require(type(spec.get("mode")) is int and spec["mode"] in (0o644, 0o755), "invalid guest file mode")
+        entries[destination] = (stat.S_IFREG | spec["mode"], members[member], 0, 0)
+    for name, major, minor, mode in (("console", 5, 1, 0o600), ("null", 1, 3, 0o666), ("zero", 1, 5, 0o666)):
+        require("dev/" + name not in entries, "duplicate systemd device node")
+        entries["dev/" + name] = (stat.S_IFCHR | mode, b"", major, minor)
+    return newc_archive(entries, {"bin", "sbin", "dev", "proc", "run", "sys", "tmp", "root", "var", "var/log"})
+
+
+def prepare_systemd_diagnostic(artifact, cache, directory=SYSTEMD_DIAGNOSTIC_DIRECTORY):
+    recipe_bytes = read_diagnostic_source(directory / "fixture.json", 128 * 1024)
+    recipe = json.loads(recipe_bytes, object_pairs_hook=unique_object)
+    require(isinstance(recipe, dict) and type(recipe.get("schemaVersion")) is int
+            and recipe.get("schemaVersion") == 1 and recipe.get("kind") == "p02-systemd-userspace"
+            and recipe.get("architecture") == "x86_64", "unsupported systemd diagnostic recipe")
+    require(recipe.get("artifactID") == artifact["id"] and recipe.get("sourceSHA256") == artifact["sha256"],
+            "systemd source must match pinned catalog artifact")
+    source = recipe.get("squashfs")
+    require(isinstance(source, dict), "invalid squashfs recipe")
+    safe_member(source.get("member"))
+    safe_name(source.get("filename"))
+    require(isinstance(source.get("sha256"), str) and SHA256.fullmatch(source["sha256"]), "invalid squashfs SHA")
+    size = bounded_integer(source.get("bytes"), MAX_MEMBER_BYTES, "squashfs byte limit")
+    specs, local_specs = recipe.get("members"), recipe.get("localFiles")
+    require(isinstance(specs, dict) and 1 <= len(specs) <= 40, "invalid systemd member count")
+    require(isinstance(local_specs, dict) and set(local_specs) == set(SYSTEMD_GUEST_FILES),
+            "systemd local file set differs")
+    for name, spec in specs.items():
+        safe_member(name)
+        require(isinstance(spec, dict), "invalid systemd member recipe")
+        safe_member(spec.get("destination"))
+        bounded_integer(spec.get("bytes"), 8 * 1024**2, "systemd member byte limit")
+        require(type(spec.get("mode")) is int and spec["mode"] in (0o644, 0o755), "invalid guest file mode")
+        require(isinstance(spec.get("sha256"), str) and SHA256.fullmatch(spec["sha256"]), "invalid systemd member SHA")
+        require(spec["mode"] == (0o755 if "elf" in spec else 0o644), "systemd member mode differs from type")
+    require(sum(spec["bytes"] for spec in specs.values()) <= 32 * 1024**2, "systemd closure exceeds byte limit")
+    local_files = {}
+    for name, spec in local_specs.items():
+        require(isinstance(spec, dict), "invalid systemd local recipe")
+        length = bounded_integer(spec.get("bytes"), 64 * 1024, "systemd local byte limit", minimum=0)
+        data = read_diagnostic_source(directory / name, 64 * 1024)
+        require(len(data) == length and hashlib.sha256(data).hexdigest() == spec.get("sha256"),
+                "systemd local source size or SHA differs: " + name)
+        local_files[name] = data
+    require(recipe.get("allowedRUNPATH") == SYSTEMD_RUNPATH, "systemd RUNPATH policy differs")
+    require(recipe.get("entrypoints") == list(SYSTEMD_ROOTS), "systemd runtime entrypoints differ")
+    require(isinstance(recipe.get("runnerProtocol"), dict) and isinstance(recipe.get("limitations"), list),
+            "missing systemd acceptance limits")
+    identities = recipe.get("upstreamIdentities")
+    require(isinstance(identities, dict) and identities and set(identities) <= set(specs),
+            "invalid systemd upstream identity")
+    require(all(isinstance(value, str) and 1 <= len(value) <= 1024 for value in identities.values()),
+            "invalid upstream identity text")
+    filename = safe_name(recipe.get("outputFilename"))
+    bounded_integer(recipe.get("outputBytes"), 33 * 1024**2, "systemd output byte limit")
+    require(isinstance(recipe.get("outputSHA256"), str) and SHA256.fullmatch(recipe["outputSHA256"]),
+            "invalid systemd output SHA")
+    descriptor = cache.open_verified(source["filename"], source["sha256"], size, size)
+    if descriptor is None:
+        archive = cache.open_verified(artifact["filename"], artifact["sha256"],
+                                      artifact.get("bytes", MAX_DOWNLOAD_BYTES), artifact.get("bytes"))
+        require(archive is not None, "required cached systemd ISO is missing")
+        try:
+            cache.publish(source["filename"], source["sha256"], size,
+                          tar_member_chunks(archive, source["member"]), size)
+        finally:
+            os.close(archive)
+        descriptor = cache.open_verified(source["filename"], source["sha256"], size, size)
+    require(descriptor is not None, "published squashfs disappeared")
+    members = {}
+    try:
+        for name, spec in specs.items():
+            data = b"".join(checked_member_chunks(descriptor,
+                ["unsquashfs", "-processors", "1", "-mem", "16M", "-cat",
+                 "/dev/fd/" + str(descriptor), name], spec["bytes"]))
+            require(len(data) == spec["bytes"] and hashlib.sha256(data).hexdigest() == spec["sha256"],
+                    "systemd member size or SHA differs: " + name)
+            require(data.startswith(b"\x7fELF") == ("elf" in spec), "systemd member ELF classification differs")
+            members[name] = data
+    finally:
+        os.close(descriptor)
+    elf_specs = {name: spec for name, spec in specs.items() if "elf" in spec}
+    require(1 <= len(elf_specs) <= 32, "invalid systemd ELF count")
+    observed = validate_elf_closure({name: members[name] for name in elf_specs}, elf_specs,
+                                   SYSTEMD_LINKS, SYSTEMD_ROOTS, (SYSTEMD_RUNPATH,))
+    for name, identity in identities.items():
+        require(identity.encode("ascii") in members[name], "actual systemd upstream identity differs: " + name)
+    output = systemd_diagnostic_cpio(local_files, members, specs)
+    output_digest = hashlib.sha256(output).hexdigest()
+    require(len(output) == recipe["outputBytes"] and output_digest == recipe["outputSHA256"],
+            "systemd output size or SHA differs")
+    manifest = {"schemaVersion": 1, "kind": "p02-systemd-userspace-build", "architecture": "x86_64",
+        "qualification": "archive integrity and deterministic construction only; guest has not executed",
+        "sourceArtifactID": artifact["id"], "sourceArtifactSHA256": artifact["sha256"],
+        "squashfs": source, "members": specs, "localFiles": local_specs, "guestLinks": SYSTEMD_LINKS,
+        "entrypoints": list(SYSTEMD_ROOTS), "allowedRUNPATH": SYSTEMD_RUNPATH,
+        "observedELFDependencies": observed, "upstreamIdentities": identities,
+        "recipeSHA256": hashlib.sha256(recipe_bytes).hexdigest(),
+        "builderSHA256": hashlib.sha256(read_diagnostic_source(Path(__file__), 1024**2)).hexdigest(),
+        "outputFilename": filename, "outputSHA256": output_digest, "outputBytes": len(output),
+        "format": "newc; sorted names; uid/gid/mtime zero; sequential inodes; 512-byte padded; uncompressed",
+        "runnerProtocol": recipe["runnerProtocol"], "limitations": recipe["limitations"]}
+    manifest_bytes = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+    manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    manifest_name = filename + ".manifest.json"
+    # Check both existing records before publishing either new record. Preserve mismatched provenance.
+    publications = ((filename, output, output_digest), (manifest_name, manifest_bytes, manifest_digest))
+    missing = []
+    for name, data, digest in publications:
+        existing = cache.open_verified(name, digest, len(data), len(data))
+        if existing is not None:
+            os.close(existing)
+        else:
+            missing.append((name, data, digest))
+    for name, data, digest in missing:
+        cache.publish(name, digest, len(data),
+                      (data[offset:offset + CHUNK_BYTES] for offset in range(0, len(data), CHUNK_BYTES)), len(data))
+    return {"filename": filename, "sha256": output_digest, "bytes": len(output),
+            "manifestFilename": manifest_name, "manifestSHA256": manifest_digest,
+            "qualification": manifest["qualification"]}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path, default=CATALOG)
@@ -771,10 +944,13 @@ def main(argv=None):
                         help="derive the pinned P02 x86-64 BusyBox/musl workload (requires --extract)")
     parser.add_argument("--glibc-diagnostic-initramfs", action="store_true",
                         help="derive the pinned P02 x86-64 BusyBox/glibc workload (requires --extract)")
+    parser.add_argument("--systemd-diagnostic-initramfs", action="store_true",
+                        help="derive pinned P02 x86-64 systemd PID 1 and supervised workloads (requires --extract)")
     arguments = parser.parse_args(argv)
     if arguments.list:
         if (arguments.id or arguments.cache_directory or arguments.verify_only or arguments.extract
-                or arguments.diagnostic_initramfs or arguments.glibc_diagnostic_initramfs):
+                or arguments.diagnostic_initramfs or arguments.glibc_diagnostic_initramfs
+                or arguments.systemd_diagnostic_initramfs):
             parser.error("--list cannot be combined with preparation options")
     elif not arguments.id or arguments.cache_directory is None:
         parser.error("preparation requires explicit --id and --cache-directory")
@@ -786,6 +962,8 @@ def main(argv=None):
         by_id = {artifact["id"]: artifact for artifact in artifacts}
         require(len(set(arguments.id)) == len(arguments.id), "duplicate requested artifact ID")
         require(all(identity in by_id for identity in arguments.id), "unknown requested artifact ID")
+        require(sum((arguments.diagnostic_initramfs, arguments.glibc_diagnostic_initramfs,
+                     arguments.systemd_diagnostic_initramfs)) <= 1, "select only one diagnostic initramfs")
         if arguments.diagnostic_initramfs:
             require(arguments.extract and arguments.id == ["alpine-virt-3.24.1-x86_64"],
                     "diagnostic initramfs requires --extract and only --id alpine-virt-3.24.1-x86_64")
@@ -793,6 +971,9 @@ def main(argv=None):
             require(arguments.extract and not arguments.diagnostic_initramfs
                     and arguments.id == ["ubuntu-server-24.04.4-x86_64"],
                     "glibc diagnostic initramfs requires --extract and only --id ubuntu-server-24.04.4-x86_64")
+        if arguments.systemd_diagnostic_initramfs:
+            require(arguments.extract and arguments.id == ["ubuntu-server-24.04.4-x86_64"],
+                    "systemd diagnostic initramfs requires --extract and only --id ubuntu-server-24.04.4-x86_64")
         results = []
         diagnostic = None
         with Cache(arguments.cache_directory) as cache:
@@ -802,6 +983,8 @@ def main(argv=None):
                 diagnostic = prepare_diagnostic(by_id[arguments.id[0]], cache)
             if arguments.glibc_diagnostic_initramfs:
                 diagnostic = prepare_glibc_diagnostic(by_id[arguments.id[0]], cache)
+            if arguments.systemd_diagnostic_initramfs:
+                diagnostic = prepare_systemd_diagnostic(by_id[arguments.id[0]], cache)
         print(json.dumps({"schemaVersion": 1, "kind": "virtualization-fixture-preparation",
                           "cacheDirectory": str(arguments.cache_directory.absolute()),
                           "qualification": "input integrity only; no guest boot or workload qualification",
