@@ -1362,6 +1362,46 @@ public struct DoryX86Interpreter: Sendable {
         registerBytes.replaceSubrange(0..<16, with: result)
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
+      case .convertPackedSingleToDword(let truncated, let destination, let source):
+        if case .memory(let operand) = source {
+          try validateFloatingPointTransfer(
+            operand, byteCount: 16, write: false, instruction: instruction, state: state)
+          guard effectiveAddress(operand, instruction: instruction, state: state) & 0xF == 0 else {
+            return generalProtection(at: originalRIP)
+          }
+        }
+        let sourceBytes = try readVectorBytes(
+          source, byteCount: 16, instruction: instruction, state: state, memory: executionMemory)
+        var result = [UInt8](repeating: 0, count: 16)
+        var exceptions: UInt32 = 0
+        for lane in 0..<4 {
+          let offset = lane * 4
+          let bits = UInt32(fromLittleEndian(Array(sourceBytes[offset..<offset + 4])))
+          // Vol. 1 §11.5.2.2: DAZ applies before conversion, but these forms
+          // never signal #D. A float32 subnormal is normal after widening to
+          // float64, so preserve its original classification here.
+          let isSubnormal = bits & 0x7F80_0000 == 0 && bits & 0x007F_FFFF != 0
+          let normalizedBits = isSubnormal && state.floatingPoint.mxcsr & (1 << 6) != 0
+            ? bits & 0x8000_0000 : bits
+          let converted = packedDoubleToDwordResult(
+            Double(Float(bitPattern: normalizedBits)).bitPattern,
+            truncated: truncated, mxcsr: state.floatingPoint.mxcsr)
+          replaceLittleEndian(converted.value, in: &result, at: offset)
+          exceptions |= converted.exceptions
+        }
+        let masks = (state.floatingPoint.mxcsr >> 7) & 0x3F
+        // An unmasked pre-computation invalid exception suppresses the packed
+        // operation's post-computation precision phase (Vol. 1 §11.5.3).
+        if exceptions & 1 != 0, masks & 1 == 0 { exceptions &= ~UInt32(1 << 5) }
+        state.floatingPoint.mxcsr |= exceptions
+        if exceptions & ~masks != 0 {
+          if state.control.cr4 & (1 << 10) == 0 { return invalidOpcode(at: originalRIP) }
+          return .exception(.init(kind: .simdFloatingPoint, vector: 19, instructionPointer: originalRIP))
+        }
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        registerBytes.replaceSubrange(0..<16, with: result)
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
       case .convertPackedDwordToDouble(let destination, let source):
         let sourceBytes = try readVectorBytes(
           source, byteCount: 8, instruction: instruction, state: state, memory: executionMemory)
@@ -3356,7 +3396,8 @@ public struct DoryX86Interpreter: Sendable {
       case .loadMXCSR, .storeMXCSR, .moveVector128, .moveVectorScalar, .moveVectorQwordHalf,
         .duplicateVectorScalar, .shufflePackedBytes, .alignPackedBytes, .testPackedBits,
         .extendPackedDwordToQword, .extendPackedByteToQword, .comparePackedQwords,
-        .insertPackedQword, .unpackVector, .convertPackedDoubleToDword, .convertPackedDwordToDouble,
+        .insertPackedQword, .unpackVector, .convertPackedDoubleToDword, .convertPackedSingleToDword,
+        .convertPackedDwordToDouble,
         .packedCompareStringIndex, .moveIntegerToVector, .moveVectorToInteger, .vectorBitwise,
         .vectorFloatingBinary, .scalarCompare, .scalarConvert, .scalarSquareRoot,
         .vectorIntegerBinary, .vectorIntegerShift, .vectorByteShift, .vectorFloatingCompare,

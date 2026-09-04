@@ -77,7 +77,7 @@ enum DoryX86InstructionFeaturePolicy {
       .scalarSquareRoot(let format, _, _), .vectorFloatingCompare(let format, _, _, _),
       .convertIntegerToScalarFloat(let format, _, _), .convertScalarFloatToInteger(let format, _, _, _):
       return profile.supports(floatingFeature(format))
-    case .scalarConvert, .convertPackedDoubleToDword, .convertPackedDwordToDouble,
+    case .scalarConvert, .convertPackedDoubleToDword, .convertPackedSingleToDword, .convertPackedDwordToDouble,
       .moveIntegerToVector, .moveVectorToInteger, .vectorIntegerBinary, .vectorIntegerShift,
       .vectorByteShift, .vectorIntegerInterleave, .vectorIntegerPack:
       return profile.supports(.sse2)

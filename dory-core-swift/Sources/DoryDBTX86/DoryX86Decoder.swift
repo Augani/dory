@@ -1367,6 +1367,22 @@ public struct DoryX86Decoder: Sendable {
           destination: vectorRegister(operands.reg),
           source: vectorOperand(operands.rm)
         )
+      case 0x5B:
+        // Intel SDM Vol. 2A: 66 selects CVTPS2DQ; F3 selects CVTTPS2DQ.
+        // The unprefixed CVTDQ2PS direction is a separate, unsupported operation.
+        let truncated: Bool
+        switch (prefixes.operandSizeOverride, prefixes.repeatPrefix) {
+        case (true, nil): truncated = false
+        case (false, 0xF3): truncated = true
+        default:
+          throw DoryX86DecodeError.unsupportedOpcode(
+            address: address, bytes: cursor.consumedBytes)
+        }
+        let operands = try decodeModRM(
+          cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
+        operation = .convertPackedSingleToDword(
+          truncated: truncated, destination: vectorRegister(operands.reg),
+          source: vectorOperand(operands.rm))
       case 0xC2:
         // CMPSS (F3 0F C2) / CMPSD (F2 0F C2) with immediate predicate
         guard prefixes.operandSizeOverride == false,

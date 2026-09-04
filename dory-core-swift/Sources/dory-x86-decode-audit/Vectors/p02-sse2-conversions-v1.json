@@ -1,0 +1,1697 @@
+{
+  "schemaVersion": 1,
+  "id": "dory.p02.sse2-conversions-v1",
+  "scope": "Bounded static decode corpus for legacy CVTPS2DQ/CVTTPS2DQ: register and representative memory/address-prefix forms in four modes. Includes explicitly unimplemented CVTDQ2PS and rejected F2/LOCK controls. This is not the full SSE2 instruction set and carries no execution, physical-reference or release qualification. Historical p02-isa-v1 and its support catalog are unchanged.",
+  "references": [
+    {
+      "id": "intel-sse2-conversions",
+      "title": "Intel SDM 092 Vol. 2A, CVTPS2DQ pp. 3-225–227 and CVTTPS2DQ pp. 3-249–251",
+      "url": "https://cdrdv2-public.intel.com/922480/253666-092-sdm-vol-2a.pdf"
+    }
+  ],
+  "vectors": [
+    {
+      "id": "cvtdq2ps-unimplemented.long64",
+      "name": "cvtdq2ps-unimplemented",
+      "form": "cvtdq2ps-unimplemented",
+      "mode": "long64",
+      "bytes": [
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false
+      },
+      "expectedErrorCategory": "unsupportedOpcode"
+    },
+    {
+      "id": "cvtdq2ps-unimplemented.protected16",
+      "name": "cvtdq2ps-unimplemented",
+      "form": "cvtdq2ps-unimplemented",
+      "mode": "protected16",
+      "bytes": [
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false
+      },
+      "expectedErrorCategory": "unsupportedOpcode"
+    },
+    {
+      "id": "cvtdq2ps-unimplemented.protected32",
+      "name": "cvtdq2ps-unimplemented",
+      "form": "cvtdq2ps-unimplemented",
+      "mode": "protected32",
+      "bytes": [
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false
+      },
+      "expectedErrorCategory": "unsupportedOpcode"
+    },
+    {
+      "id": "cvtdq2ps-unimplemented.real16",
+      "name": "cvtdq2ps-unimplemented",
+      "form": "cvtdq2ps-unimplemented",
+      "mode": "real16",
+      "bytes": [
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false
+      },
+      "expectedErrorCategory": "unsupportedOpcode"
+    },
+    {
+      "id": "cvtps2dq.address-override-memory.long64",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.address-override-memory",
+      "mode": "long64",
+      "bytes": [
+        103,
+        102,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": true
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 32,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.address-override-memory.protected16",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.address-override-memory",
+      "mode": "protected16",
+      "bytes": [
+        103,
+        102,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": true
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 32,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.address-override-memory.protected32",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.address-override-memory",
+      "mode": "protected32",
+      "bytes": [
+        103,
+        102,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": true
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rbx",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 16,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": false,
+                "index": "rsi"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.address-override-memory.real16",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.address-override-memory",
+      "mode": "real16",
+      "bytes": [
+        103,
+        102,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": true
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 32,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.fs-memory.long64",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.fs-memory",
+      "mode": "long64",
+      "bytes": [
+        100,
+        102,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false,
+        "segmentOverride": 100
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 64,
+                "segment": "fs",
+                "ignoresLegacySegmentBase": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.fs-memory.protected16",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.fs-memory",
+      "mode": "protected16",
+      "bytes": [
+        100,
+        102,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false,
+        "segmentOverride": 100
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rbx",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 16,
+                "segment": "fs",
+                "ignoresLegacySegmentBase": false,
+                "index": "rsi"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.fs-memory.protected32",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.fs-memory",
+      "mode": "protected32",
+      "bytes": [
+        100,
+        102,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false,
+        "segmentOverride": 100
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 32,
+                "segment": "fs",
+                "ignoresLegacySegmentBase": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.fs-memory.real16",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.fs-memory",
+      "mode": "real16",
+      "bytes": [
+        100,
+        102,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false,
+        "segmentOverride": 100
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rbx",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 16,
+                "segment": "fs",
+                "ignoresLegacySegmentBase": false,
+                "index": "rsi"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.lock.long64",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.lock",
+      "mode": "long64",
+      "bytes": [
+        240,
+        102,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": true,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false
+      },
+      "expectedErrorCategory": "invalidEncoding"
+    },
+    {
+      "id": "cvtps2dq.lock.protected16",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.lock",
+      "mode": "protected16",
+      "bytes": [
+        240,
+        102,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": true,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false
+      },
+      "expectedErrorCategory": "invalidEncoding"
+    },
+    {
+      "id": "cvtps2dq.lock.protected32",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.lock",
+      "mode": "protected32",
+      "bytes": [
+        240,
+        102,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": true,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false
+      },
+      "expectedErrorCategory": "invalidEncoding"
+    },
+    {
+      "id": "cvtps2dq.lock.real16",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.lock",
+      "mode": "real16",
+      "bytes": [
+        240,
+        102,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": true,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false
+      },
+      "expectedErrorCategory": "invalidEncoding"
+    },
+    {
+      "id": "cvtps2dq.memory.long64",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.memory",
+      "mode": "long64",
+      "bytes": [
+        102,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 64,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.memory.protected16",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.memory",
+      "mode": "protected16",
+      "bytes": [
+        102,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rbx",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 16,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": false,
+                "index": "rsi"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.memory.protected32",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.memory",
+      "mode": "protected32",
+      "bytes": [
+        102,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 32,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.memory.real16",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.memory",
+      "mode": "real16",
+      "bytes": [
+        102,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rbx",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 16,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": false,
+                "index": "rsi"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.register.long64",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.register",
+      "mode": "long64",
+      "bytes": [
+        102,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "register": {
+              "_0": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.register.protected16",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.register",
+      "mode": "protected16",
+      "bytes": [
+        102,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "register": {
+              "_0": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.register.protected32",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.register",
+      "mode": "protected32",
+      "bytes": [
+        102,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "register": {
+              "_0": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.register.real16",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.register",
+      "mode": "real16",
+      "bytes": [
+        102,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 0,
+          "source": {
+            "register": {
+              "_0": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvtps2dq.rex-register.long64",
+      "name": "CVTPS2DQ",
+      "form": "cvtps2dq.rex-register",
+      "mode": "long64",
+      "bytes": [
+        102,
+        69,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": true,
+        "addressSizeOverride": false,
+        "rex": {
+          "w": false,
+          "r": true,
+          "x": false,
+          "b": true
+        }
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": false,
+          "destination": 8,
+          "source": {
+            "register": {
+              "_0": 9
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.address-override-memory.long64",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.address-override-memory",
+      "mode": "long64",
+      "bytes": [
+        103,
+        243,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": true,
+        "repeatPrefix": 243
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 32,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.address-override-memory.protected16",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.address-override-memory",
+      "mode": "protected16",
+      "bytes": [
+        103,
+        243,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": true,
+        "repeatPrefix": 243
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 32,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.address-override-memory.protected32",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.address-override-memory",
+      "mode": "protected32",
+      "bytes": [
+        103,
+        243,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": true,
+        "repeatPrefix": 243
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rbx",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 16,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": false,
+                "index": "rsi"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.address-override-memory.real16",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.address-override-memory",
+      "mode": "real16",
+      "bytes": [
+        103,
+        243,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": true,
+        "repeatPrefix": 243
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 32,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.fs-memory.long64",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.fs-memory",
+      "mode": "long64",
+      "bytes": [
+        100,
+        243,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243,
+        "segmentOverride": 100
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 64,
+                "segment": "fs",
+                "ignoresLegacySegmentBase": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.fs-memory.protected16",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.fs-memory",
+      "mode": "protected16",
+      "bytes": [
+        100,
+        243,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243,
+        "segmentOverride": 100
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rbx",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 16,
+                "segment": "fs",
+                "ignoresLegacySegmentBase": false,
+                "index": "rsi"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.fs-memory.protected32",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.fs-memory",
+      "mode": "protected32",
+      "bytes": [
+        100,
+        243,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243,
+        "segmentOverride": 100
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 32,
+                "segment": "fs",
+                "ignoresLegacySegmentBase": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.fs-memory.real16",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.fs-memory",
+      "mode": "real16",
+      "bytes": [
+        100,
+        243,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243,
+        "segmentOverride": 100
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rbx",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 16,
+                "segment": "fs",
+                "ignoresLegacySegmentBase": false,
+                "index": "rsi"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.lock.long64",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.lock",
+      "mode": "long64",
+      "bytes": [
+        240,
+        243,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": true,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243
+      },
+      "expectedErrorCategory": "invalidEncoding"
+    },
+    {
+      "id": "cvttps2dq.lock.protected16",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.lock",
+      "mode": "protected16",
+      "bytes": [
+        240,
+        243,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": true,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243
+      },
+      "expectedErrorCategory": "invalidEncoding"
+    },
+    {
+      "id": "cvttps2dq.lock.protected32",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.lock",
+      "mode": "protected32",
+      "bytes": [
+        240,
+        243,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": true,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243
+      },
+      "expectedErrorCategory": "invalidEncoding"
+    },
+    {
+      "id": "cvttps2dq.lock.real16",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.lock",
+      "mode": "real16",
+      "bytes": [
+        240,
+        243,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": true,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243
+      },
+      "expectedErrorCategory": "invalidEncoding"
+    },
+    {
+      "id": "cvttps2dq.memory.long64",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.memory",
+      "mode": "long64",
+      "bytes": [
+        243,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 64,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": true
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.memory.protected16",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.memory",
+      "mode": "protected16",
+      "bytes": [
+        243,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rbx",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 16,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": false,
+                "index": "rsi"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.memory.protected32",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.memory",
+      "mode": "protected32",
+      "bytes": [
+        243,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rax",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 32,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": false
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.memory.real16",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.memory",
+      "mode": "real16",
+      "bytes": [
+        243,
+        15,
+        91,
+        0
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "memory": {
+              "_0": {
+                "base": "rbx",
+                "scale": 1,
+                "displacement": 0,
+                "ripRelative": false,
+                "width": 64,
+                "addressWidth": 16,
+                "segment": "ds",
+                "ignoresLegacySegmentBase": false,
+                "index": "rsi"
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.register.long64",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.register",
+      "mode": "long64",
+      "bytes": [
+        243,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "register": {
+              "_0": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.register.protected16",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.register",
+      "mode": "protected16",
+      "bytes": [
+        243,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "register": {
+              "_0": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.register.protected32",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.register",
+      "mode": "protected32",
+      "bytes": [
+        243,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "register": {
+              "_0": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.register.real16",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.register",
+      "mode": "real16",
+      "bytes": [
+        243,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 243
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 0,
+          "source": {
+            "register": {
+              "_0": 1
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "cvttps2dq.rex-register.long64",
+      "name": "CVTTPS2DQ",
+      "form": "cvttps2dq.rex-register",
+      "mode": "long64",
+      "bytes": [
+        243,
+        69,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "rex": {
+          "w": false,
+          "r": true,
+          "x": false,
+          "b": true
+        },
+        "repeatPrefix": 243
+      },
+      "expectedOperation": {
+        "convertPackedSingleToDword": {
+          "truncated": true,
+          "destination": 8,
+          "source": {
+            "register": {
+              "_0": 9
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "reserved-f2.long64",
+      "name": "reserved-f2",
+      "form": "reserved-f2",
+      "mode": "long64",
+      "bytes": [
+        242,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 242
+      },
+      "expectedErrorCategory": "unsupportedOpcode"
+    },
+    {
+      "id": "reserved-f2.protected16",
+      "name": "reserved-f2",
+      "form": "reserved-f2",
+      "mode": "protected16",
+      "bytes": [
+        242,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 242
+      },
+      "expectedErrorCategory": "unsupportedOpcode"
+    },
+    {
+      "id": "reserved-f2.protected32",
+      "name": "reserved-f2",
+      "form": "reserved-f2",
+      "mode": "protected32",
+      "bytes": [
+        242,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 242
+      },
+      "expectedErrorCategory": "unsupportedOpcode"
+    },
+    {
+      "id": "reserved-f2.real16",
+      "name": "reserved-f2",
+      "form": "reserved-f2",
+      "mode": "real16",
+      "bytes": [
+        242,
+        15,
+        91,
+        193
+      ],
+      "referenceIDs": [
+        "intel-sse2-conversions"
+      ],
+      "expectedPrefixes": {
+        "lock": false,
+        "operandSizeOverride": false,
+        "addressSizeOverride": false,
+        "repeatPrefix": 242
+      },
+      "expectedErrorCategory": "unsupportedOpcode"
+    }
+  ]
+}
