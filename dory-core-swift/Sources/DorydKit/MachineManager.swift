@@ -5324,12 +5324,35 @@ public final class MachineManager: @unchecked Sendable {
         id: String,
         operationID: UUID
     ) throws -> DoryMachineStatus {
-        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
-        defer { mutationLease.release() }
         let durableOperationID = try Self.lifecycleOperationID(
             operationID,
             action: "stop"
         )
+        if let store = lifecycleJournalStore {
+            do {
+                let record = try store.read(durableOperationID)
+                guard record.plan.kind == .workspaceStop,
+                      record.plan.source.id == id, record.plan.target.id == id else {
+                    throw MachineManagerError.persistence("stop operation UUID belongs to another request")
+                }
+                if record.state.status == .completed {
+                    guard let current = status(id: id) else { throw MachineManagerError.unknownMachine(id) }
+                    return current
+                }
+                if record.state.status == .failed {
+                    throw MachineManagerError.persistence("stop operation failed; use a new caller operation")
+                }
+            } catch DoryOperationJournalError.operationNotFound { }
+        }
+        // A compound owner can be waiting in guest I/O while retaining the mutation fence.
+        // Signal its own control token before waiting for that fence. The owner must observe
+        // helper termination before compensation; cancellation never supplies a guest receipt.
+        if let active = activeLifecycleOperation(machineID: id),
+           active.operation.desktopUpdateSpecificationDigest != nil {
+            _ = active.requestCancellation()
+        }
+        let mutationLease = mutationCoordinator.acquire(workspaceID: id)
+        defer { mutationLease.release() }
         try requireNoActivePlanningMutation(id: id)
         try cancelActiveStartLifecycleIfNeeded(id: id, reason: "start.cancelled-by-stop")
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
@@ -8744,6 +8767,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         do {
             staged = try stageDesktopUpdateAuthority(authority, machineID: id)
+            try parent.checkCancellation()
             try advanceLifecycle(parent, through: .quiescing)
 #if DEBUG
             try injectLifecycleFault(.desktopBeforeStop)
@@ -8755,6 +8779,7 @@ public final class MachineManager: @unchecked Sendable {
             _ = try snapshotImplementation(id: id,
                 note: "Automatic last-good snapshot before \(request.distro) \(request.version) desktop update",
                 snapshotID: update.snapshotID, desktopParent: parent)
+            try parent.checkCancellation()
 #if DEBUG
             try injectLifecycleFault(.desktopAfterSnapshot)
 #endif
@@ -8770,16 +8795,21 @@ public final class MachineManager: @unchecked Sendable {
             _ = try startAndWaitUntilReady(id: id, journalLifecycle: false)
             try requireDesktopOwnedHelper(parent, update: update, sourceAllowed: false)
             try parent.lease.publishDesktopCheckpoint(request.operationID, at: .guestMutation)
+            try parent.checkCancellation()
             guard let staged else { throw MachineManagerError.persistence("desktop staging disappeared") }
             let guestStage = "/var/lib/dory/update-" + request.operationID.uuidString.lowercased()
             _ = try requireSuccessfulDesktopUpdateExec(id: id, argv: ["/bin/rm", "-rf", guestStage], stage: "clear guest staging")
             _ = try requireSuccessfulDesktopUpdateExec(id: id, argv: ["/bin/mkdir", "-p", guestStage], stage: "create guest staging")
             _ = try withAgentClient(id: id, requiredCapability: "sync-push") { client in
                 let control = DoryPushControl()
+                try parent.registerPushControl(control)
+                defer { parent.unregisterPushControl(control) }
                 let deadline = DispatchWorkItem { control.cancel() }
                 DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 15 * 60, execute: deadline)
                 defer { deadline.cancel() }
-                return try client.push(localRoot: staged.directory, remoteRoot: guestStage, control: control)
+                let result = try client.push(localRoot: staged.directory, remoteRoot: guestStage, control: control)
+                try parent.checkCancellation()
+                return result
             }
             guard let bundleSHA256 = update.componentAuthority.bundleSHA256,
                   let kernelSHA256 = update.componentAuthority.kernelSHA256 else {
@@ -8827,9 +8857,11 @@ public final class MachineManager: @unchecked Sendable {
             try injectLifecycleFault(.desktopAfterKernel)
 #endif
             try publishDesktopPublication(parent, update: update, publication: publication, rollback: false)
+            try parent.checkCancellation()
             _ = try resolveAndPublishProductionPlan(id: id, operationID: request.operationID, controller: controller)
             let plan = try validateDesktopPlan(parent, update: update, rollback: false)
             try parent.lease.publishDesktopCheckpoint(plan, at: .targetPlan)
+            try parent.checkCancellation()
 #if DEBUG
             try injectLifecycleFault(.desktopAfterPlanning)
 #endif
@@ -9135,6 +9167,7 @@ public final class MachineManager: @unchecked Sendable {
     private func finishDesktopUpdate(
         _ context: MachineLifecycleJournalContext, update: DoryMachineDesktopUpdateJournal
     ) throws -> DoryDesktopUpdateResult {
+        try context.checkCancellation()
         _ = try validateDesktopPlan(context, update: update, rollback: false)
         guard let qualified: DoryMachineDesktopUpdateQualification = try context.lease.desktopCheckpoint(.qualified),
               qualified.operationID == update.request.operationID,
@@ -9157,6 +9190,7 @@ public final class MachineManager: @unchecked Sendable {
             lock.withLock { machines[id]?.state = .stopped }
         }
         var result = try desktopUpdateResult(context, update: update)
+        try context.closeCancellationWindow()
         lock.withLock {
             if var entry = machines[id] { clearFailure(on: &entry); machines[id] = entry }
         }
@@ -9173,6 +9207,9 @@ public final class MachineManager: @unchecked Sendable {
         controller: any DoryDaemonVirtualMachineProductionPlanningControlling
     ) throws {
         let id = update.machineID
+        if context.cancellationRequested {
+            try context.lease.publishDesktopCheckpoint(update.request.operationID, at: .cancellationRequested)
+        }
         if let descriptor = try controller.recoveryDescriptor(for: id),
            !descriptor.isComplete && !descriptor.isAborted {
             throw MachineManagerError.persistence("desktop planning must settle before rollback")
@@ -9284,13 +9321,22 @@ public final class MachineManager: @unchecked Sendable {
         guard status(id: update.machineID)?.state == expected else {
             throw MachineManagerError.persistence("desktop compensation has not restored the original power state")
         }
+        if context.cancellationRequested {
+            try context.lease.publishDesktopCheckpoint(update.request.operationID, at: .cancellationRequested)
+        }
+        let cancellation: UUID? = try context.lease.desktopCheckpoint(.cancellationRequested)
         var state = try context.lease.read().state
         if state.status != .rollingBack {
             state = try context.lease.transition(to: state.phase, status: .rollingBack,
                 expectedRevision: state.revision, stepID: "desktop.rollback-outcome", recoveryAction: "rollback")
         }
-        _ = try context.lease.transition(to: state.phase, status: .failed,
-            expectedRevision: state.revision, stepID: stepID, recoveryAction: "rollback")
+        if cancellation == update.request.operationID {
+            _ = try context.lease.cancelAfterRollback(expectedRevision: state.revision,
+                stepID: "desktop.cancelled-by-stop")
+        } else {
+            _ = try context.lease.transition(to: state.phase, status: .failed,
+                expectedRevision: state.revision, stepID: stepID, recoveryAction: "rollback")
+        }
         let operationID = update.request.operationID.uuidString.lowercased()
         lock.withLock {
             guard var entry = machines[update.machineID] else { return }
@@ -9361,7 +9407,8 @@ public final class MachineManager: @unchecked Sendable {
             machines[update.machineID]?.activeOperationKind = .updating
             machines[update.machineID]?.activeOperationPhase = state.phase
         }
-        if state.status != .rollingBack,
+        let cancellation: UUID? = try context.lease.desktopCheckpoint(.cancellationRequested)
+        if state.status != .rollingBack, cancellation == nil,
            let _: DoryMachineDesktopUpdateQualification = try context.lease.desktopCheckpoint(.qualified) {
             do { return try finishDesktopUpdate(context, update: update) }
             catch {
@@ -13687,13 +13734,21 @@ public final class MachineManager: @unchecked Sendable {
         outputLimitBytes: UInt64 = 1024 * 1024,
         stage: String
     ) throws -> DoryExecResult {
-        let result = try exec(
-            id: id,
-            argv: argv,
-            env: env,
-            timeoutMs: timeoutMs,
-            outputLimitBytes: outputLimitBytes
-        )
+        let result: DoryExecResult
+        if let context = activeLifecycleOperation(machineID: id),
+           context.operation.desktopUpdateSpecificationDigest != nil {
+            let control = DoryExecControl()
+            try context.registerExecControl(control)
+            defer { context.unregisterExecControl(control) }
+            result = try withAgentClient(id: id, requiredCapability: "exec") { client in
+                try client.exec(argv: argv, cwd: "", env: env, timeoutMs: timeoutMs,
+                    outputLimitBytes: outputLimitBytes, control: control)
+            }
+            try context.checkCancellation()
+        } else {
+            result = try exec(id: id, argv: argv, env: env,
+                timeoutMs: timeoutMs, outputLimitBytes: outputLimitBytes)
+        }
         guard result.exitCode == 0, !result.timedOut else {
             let stderr = String(decoding: result.stderr.suffix(4096), as: UTF8.self)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -21271,6 +21326,12 @@ private final class MachineLifecycleJournalContext: @unchecked Sendable {
     let operation: DoryWorkspaceLifecycleOperation
     private(set) var lease: DoryOperationLease!
     private(set) var workspaceLock: EngineStateDirectoryLock?
+    private let cancellationLock = NSLock()
+    private var wasCancellationRequested = false
+    private var cancellationWindowOpen = true
+    private var execControl: DoryExecControl?
+    private var pushControl: DoryPushControl?
+    var cancellationRequested: Bool { cancellationLock.withLock { wasCancellationRequested } }
 
     init(
         operation: DoryWorkspaceLifecycleOperation, lease: DoryOperationLease,
@@ -21285,7 +21346,55 @@ private final class MachineLifecycleJournalContext: @unchecked Sendable {
         lease = nil
         workspaceLock = nil
     }
+
+    @discardableResult
+    func requestCancellation() -> Bool {
+        let controls: (DoryExecControl?, DoryPushControl?)? = cancellationLock.withLock {
+            guard cancellationWindowOpen, operation.cancellationPolicy != .prohibited else { return nil }
+            wasCancellationRequested = true
+            return (execControl, pushControl)
+        }
+        guard let controls else { return false }
+        controls.0?.cancel()
+        controls.1?.cancel()
+        return true
+    }
+
+    func checkCancellation() throws {
+        if cancellationRequested { throw MachineLifecycleCancellationRequested() }
+    }
+
+    func closeCancellationWindow() throws {
+        try cancellationLock.withLock {
+            guard !wasCancellationRequested else { throw MachineLifecycleCancellationRequested() }
+            cancellationWindowOpen = false
+        }
+    }
+
+    func registerExecControl(_ control: DoryExecControl) throws {
+        try cancellationLock.withLock {
+            guard !wasCancellationRequested else { throw MachineLifecycleCancellationRequested() }
+            execControl = control
+        }
+    }
+
+    func unregisterExecControl(_ control: DoryExecControl) {
+        cancellationLock.withLock { if execControl === control { execControl = nil } }
+    }
+
+    func registerPushControl(_ control: DoryPushControl) throws {
+        try cancellationLock.withLock {
+            guard !wasCancellationRequested else { throw MachineLifecycleCancellationRequested() }
+            pushControl = control
+        }
+    }
+
+    func unregisterPushControl(_ control: DoryPushControl) {
+        cancellationLock.withLock { if pushControl === control { pushControl = nil } }
+    }
 }
+
+private struct MachineLifecycleCancellationRequested: Error {}
 
 private final class MachineManagerPlanningMutationRetention: @unchecked Sendable {
     private let stateLock = NSLock()

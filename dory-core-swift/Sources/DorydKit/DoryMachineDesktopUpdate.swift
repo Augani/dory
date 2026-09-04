@@ -137,6 +137,7 @@ struct DoryMachineDesktopUpdateJournal: Codable, Sendable, Equatable {
 }
 
 enum DoryMachineDesktopUpdateCheckpoint: String {
+    case cancellationRequested
     case snapshotIntent = "snapshot-intent"
     case snapshotReady = "snapshot-ready"
     case sourcePlan = "source-plan"

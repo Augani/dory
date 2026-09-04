@@ -2039,6 +2039,106 @@ private struct DesktopPreflightArtifactProbe: DoryDesktopUpdateArtifactResolving
 }
 
 extension DoryDaemonVirtualMachineProductionTrustTests {
+    @Test("public stop cancels blocked desktop apply before authenticated rollback")
+    func productionDesktopControlledCancellation() throws {
+        try withProductionIntegrationTestStack {
+            let harness = try ProductionDesktopUpdateHarness(sourceState: "stopped")
+            defer { harness.agent.releaseControlledApply(); harness.cleanup() }
+            let manager = harness.context.machineManager
+            let oldStopID = try #require(harness.journal.list().first {
+                $0.plan.kind == .workspaceStop && $0.plan.target.id == harness.id
+            }?.plan.id)
+            try harness.drive {
+                _ = try manager.start(id: harness.id)
+                let deadline = Date().addingTimeInterval(15)
+                while manager.status(id: harness.id)?.state != .running {
+                    guard manager.status(id: harness.id)?.state != .failed, Date() < deadline else {
+                        throw MachineManagerError.persistence("cancellation source did not become ready")
+                    }
+                    Thread.sleep(forTimeInterval: 0.01)
+                }
+            }
+            _ = try manager.pause(id: harness.id)
+            let before = try harness.journal.list().count
+            let proof = ProductionDesktopCancellationObservation()
+            manager.installLifecycleFaultInjectorForTesting { point in
+                if point == .desktopAfterRollbackPublication {
+                    proof.observeRollback(diskRestored: try harness.diskPrefix() == harness.sourceDiskPrefix)
+                }
+            }
+            harness.agent.blockControlledApply()
+            let update = ProductionDesktopCompletion<DoryDesktopUpdateResult>()
+            let worker = Thread {
+                update.finish(Result { try manager.updateDesktop(id: harness.id, request: harness.request) })
+            }
+            worker.stackSize = 8 * 1_024 * 1_024
+            worker.start()
+            let deadline = Date().addingTimeInterval(180)
+            while !harness.agent.applyIsWaiting, update.result == nil, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            try #require(harness.agent.applyIsWaiting, "update never reached controlled guest apply")
+            let reconnect = try DoryRuntimeReconnectRecordStore(root: harness.fixture.machineConfiguration.stateDirectory)
+                .read(machineID: harness.id)
+            proof.setBlockedHelper(try #require(reconnect.processIdentity))
+            #expect(try harness.diskPrefix().starts(with: Data("desktop-after".utf8)))
+            #expect(throws: (any Error).self) {
+                _ = try manager.stop(id: harness.id, operationID: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!)
+            }
+            #expect(throws: (any Error).self) {
+                _ = try manager.stop(id: harness.id, operationID: harness.request.operationID)
+            }
+            #expect(!harness.agent.applyWasCancelled)
+            let staleStop = ProductionDesktopCompletion<DoryMachineStatus>()
+            let staleWorker = Thread {
+                staleStop.finish(Result { try manager.stop(id: harness.id, operationID: oldStopID) })
+            }
+            staleWorker.stackSize = 8 * 1_024 * 1_024
+            staleWorker.start()
+            let staleDeadline = Date().addingTimeInterval(1)
+            while staleStop.result == nil, Date() < staleDeadline { Thread.sleep(forTimeInterval: 0.005) }
+            #expect(staleStop.result != nil, "completed stop UUID must resolve before waiting for another mutation")
+            #expect(!harness.agent.applyWasCancelled, "reused stop UUID must not cancel a later desktop update")
+            let stopID = UUID()
+            let stopped = try harness.drive { try manager.stop(id: harness.id, operationID: stopID) }
+            let finished = try #require(update.result, "cancelled desktop update did not finish")
+            if case .success = finished { Issue.record("Cancelled guest apply unexpectedly succeeded") }
+            #expect(harness.agent.applyWasCancelled)
+            #expect(proof.rollbackWasSafe)
+            #expect(stopped.state == .stopped)
+            #expect(stopped.pid == nil)
+            #expect(try harness.diskPrefix() == harness.sourceDiskPrefix)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: harness.managedKernelPath)) == harness.sourceKernel)
+            let updateRecord = try harness.journal.read(harness.request.operationID)
+            #expect(updateRecord.state.status == .failed)
+            #expect(updateRecord.state.result == .cancelled)
+            #expect(try harness.journal.read(stopID).state.status == .completed)
+            #expect(try harness.journal.list().count == before + 2)
+            #expect(try harness.context.planning.resourceLedger.snapshot().leases.first {
+                $0.binding.machineID == harness.id
+            }?.state == .stopped)
+            let events = try String(contentsOf: harness.fixture.root.appendingPathComponent("runtime-events.log"), encoding: .utf8)
+            #expect(events.components(separatedBy: .newlines).contains(
+                harness.request.operationID.uuidString.lowercased() + " paused"),
+                "rollback helper must regain the original paused power state before public stop completes")
+            #expect(harness.agent.applyCount == 1)
+            #expect(harness.agent.controlledPushCount == 1)
+        }
+    }
+}
+
+private final class ProductionDesktopCancellationObservation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var helper: DoryHostProcessIdentity?
+    private var safeRollback = false
+    var rollbackWasSafe: Bool { lock.withLock { safeRollback } }
+    func setBlockedHelper(_ identity: DoryHostProcessIdentity) { lock.withLock { helper = identity } }
+    func observeRollback(diskRestored: Bool) {
+        lock.withLock { safeRollback = diskRestored && helper?.matchesCurrentProcess() == false }
+    }
+}
+
+extension DoryDaemonVirtualMachineProductionTrustTests {
     @Test("production desktop update keeps one root through transfer, planning and replay",
           arguments: ["stopped", "running", "paused"])
     func productionDesktopRootSuccess(sourceState: String) throws {
@@ -2452,7 +2552,10 @@ final class DoryProductionDesktopRuntimeTests: XCTestCase {
         let identity = try DoryRuntimeReconnectLaunchIdentity.decode(
             fileDescriptor: DoryRuntimeReconnectContract.childFileDescriptor)
         let operationID = try XCTUnwrap(UUID(uuidString: identity.operationID))
-        let state = ProductionDesktopExecutionState()
+        let state = ProductionDesktopExecutionState(
+            auditPath: URL(fileURLWithPath: controlSocket).deletingLastPathComponent()
+                .appendingPathComponent("runtime-events.log").path,
+            operationID: identity.operationID)
         let server = VmmLifecycleReceiptServer(
             socketPath: controlSocket, reconnectIdentity: identity,
             executionStateProvider: { state.current }, executionLifecycleHandler: { state.apply($0) })
@@ -2475,9 +2578,21 @@ final class DoryProductionDesktopRuntimeTests: XCTestCase {
 private final class ProductionDesktopExecutionState: @unchecked Sendable {
     private let lock = NSLock()
     private var state: DoryVirtualMachineState = .running
+    private let auditPath: String
+    private let operationID: String
+    init(auditPath: String, operationID: String) {
+        self.auditPath = auditPath
+        self.operationID = operationID
+    }
     var current: DoryVirtualMachineState { lock.withLock { state } }
     func apply(_ action: DoryLifecycleReceiptAction) {
-        lock.withLock { state = action == .preparePause ? .paused : .running }
+        lock.withLock {
+            state = action == .preparePause ? .paused : .running
+            guard let stream = fopen(auditPath, "a") else { return }
+            defer { fclose(stream) }
+            fputs("\(operationID) \(state.rawValue)\n", stream)
+            fflush(stream)
+        }
     }
 }
 
@@ -2504,9 +2619,18 @@ private final class ProductionDesktopAgent: AgentControlClient, @unchecked Senda
     private var applications = 0
     private var pushes = 0
     private var receiptReads = 0
+    private var controlledExecutions = 0
+    private var blockApply = false
+    private var blockedControl: DoryExecControl?
+    private var releaseApply = false
     var applyCount: Int { lock.withLock { applications } }
     var controlledPushCount: Int { lock.withLock { pushes } }
     var receiptReadCount: Int { lock.withLock { receiptReads } }
+    var controlledExecCount: Int { lock.withLock { controlledExecutions } }
+    var applyIsWaiting: Bool { lock.withLock { blockedControl != nil } }
+    var applyWasCancelled: Bool { lock.withLock { blockedControl?.isCancelled == true } }
+    func blockControlledApply() { lock.withLock { blockApply = true } }
+    func releaseControlledApply() { lock.withLock { releaseApply = true } }
     init(failApply: Bool, duplicateReceipt: Bool) {
         self.failApply = failApply
         self.duplicateReceipt = duplicateReceipt
@@ -2529,6 +2653,26 @@ private final class ProductionDesktopAgent: AgentControlClient, @unchecked Senda
         }
         return .init(filesSent: 1, bytesSent: UInt64(payload.count), filesDeleted: 0)
     }
+    func exec(argv: [String], cwd: String, env: [DoryExecEnvironment],
+              timeoutMs: UInt64, outputLimitBytes: UInt64, control: DoryExecControl) throws -> DoryExecResult {
+        lock.withLock { controlledExecutions += 1 }
+        guard !control.isCancelled else { throw DoryExecControlError.cancelledGuestStateUnknown }
+        let result = try exec(argv: argv, cwd: cwd, env: env, timeoutMs: timeoutMs,
+                              outputLimitBytes: outputLimitBytes)
+        if argv.first?.hasSuffix("/apply.sh") == true, lock.withLock({ blockApply }) {
+            lock.withLock { blockedControl = control }
+            let deadline = Date().addingTimeInterval(60)
+            while !control.isCancelled, !lock.withLock({ releaseApply }) {
+                guard Date() < deadline else {
+                    throw MachineManagerError.persistence("controlled apply was never cancelled")
+                }
+                Thread.sleep(forTimeInterval: 0.005)
+            }
+        }
+        guard !control.isCancelled else { throw DoryExecControlError.cancelledGuestStateUnknown }
+        return result
+    }
+
     func exec(argv: [String], cwd: String, env: [DoryExecEnvironment],
               timeoutMs: UInt64, outputLimitBytes: UInt64) throws -> DoryExecResult {
         try? FileHandle.standardError.write(contentsOf: Data("Desktop fixture exec: \(argv.joined(separator: " "))\n".utf8))
