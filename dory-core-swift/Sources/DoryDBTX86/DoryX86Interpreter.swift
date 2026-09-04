@@ -3471,8 +3471,12 @@ public struct DoryX86Interpreter: Sendable {
         guard !return64Bit || DoryX86ArchitecturalState.isCanonical(targetRIP) else {
           return generalProtection(at: originalRIP)
         }
+        // Intel SDM Vol. 2B SYSRET uses the fixed 0x3C7FD7 restore mask:
+        // RF and VM remain clear regardless of their saved R11 values.
+        let sysretFlagMask = DoryX86RFLAGS.architecturallyWritableMask
+          & ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
         let requestedFlags = DoryX86RFLAGS(
-          rawValue: (state.registers.r11 & DoryX86RFLAGS.architecturallyWritableMask) | 2
+          rawValue: (state.registers.r11 & sysretFlagMask) | 2
         )
         guard let validatedFlags = try? requestedFlags.validated() else {
           return generalProtection(at: originalRIP)
