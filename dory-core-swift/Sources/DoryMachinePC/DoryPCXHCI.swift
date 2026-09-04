@@ -265,6 +265,10 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     return Array(image[Int(offset)..<(Int(offset) + byteCount)])
   }
 
+  public func validateBARRead(offset: UInt64, byteCount: Int) throws {
+    try validateAccess(offset: offset, byteCount: byteCount, write: false)
+  }
+
   public func writeBAR(offset: UInt64, bytes: [UInt8]) throws {
     try validateAccess(offset: offset, byteCount: bytes.count, write: true)
     guard !bytes.isEmpty else {

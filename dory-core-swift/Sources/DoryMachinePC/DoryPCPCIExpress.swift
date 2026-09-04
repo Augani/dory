@@ -76,11 +76,26 @@ public protocol DoryPCPCIBARMemoryDevice: AnyObject, Sendable {
   var configurationFunction: DoryPCPCIConfigurationFunction { get }
   var barIndex: Int { get }
   func readBAR(offset: UInt64, byteCount: Int) throws -> [UInt8]
+  func validateBARRead(offset: UInt64, byteCount: Int) throws
   func writeBAR(offset: UInt64, bytes: [UInt8]) throws
   func validateBARWrite(offset: UInt64, byteCount: Int) throws
 }
 
 extension DoryPCPCIBARMemoryDevice {
+  public func validateBARRead(offset: UInt64, byteCount: Int) throws {
+    guard let bar = try configurationFunction.bar(at: barIndex),
+      byteCount > 0,
+      offset <= bar.size,
+      UInt64(byteCount) <= bar.size - offset
+    else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset,
+        byteCount: byteCount,
+        write: false
+      )
+    }
+  }
+
   public func validateBARWrite(offset: UInt64, byteCount: Int) throws {
     guard let bar = try configurationFunction.bar(at: barIndex),
       byteCount > 0,
@@ -791,6 +806,10 @@ public final class DoryPCPCIExpressECAM: DoryPCMMIODevice, @unchecked Sendable {
     return try function.readConfiguration(offset: resolved.register, byteCount: byteCount)
   }
 
+  public func validateRead(offset: UInt64, byteCount: Int) throws {
+    _ = try resolve(offset: offset, byteCount: byteCount)
+  }
+
   public func write(offset: UInt64, bytes: [UInt8]) throws {
     let resolved = try resolve(offset: offset, byteCount: bytes.count)
     try resolved.function?.writeConfiguration(offset: resolved.register, bytes: bytes)
@@ -860,6 +879,11 @@ public final class DoryPCPCIBARWindow: DoryPCMMIODevice, @unchecked Sendable {
   public func read(offset: UInt64, byteCount: Int) throws -> [UInt8] {
     let resolved = try resolve(offset: offset, byteCount: byteCount, write: false)
     return try resolved.device.readBAR(offset: resolved.barOffset, byteCount: byteCount)
+  }
+
+  public func validateRead(offset: UInt64, byteCount: Int) throws {
+    let resolved = try resolve(offset: offset, byteCount: byteCount, write: false)
+    try resolved.device.validateBARRead(offset: resolved.barOffset, byteCount: byteCount)
   }
 
   public func write(offset: UInt64, bytes: [UInt8]) throws {

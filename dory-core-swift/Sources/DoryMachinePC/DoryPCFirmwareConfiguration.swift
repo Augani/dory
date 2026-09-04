@@ -102,6 +102,15 @@ public final class DoryPCFirmwareConfiguration: DoryPCMMIODevice, @unchecked Sen
     return Array(page[start..<(start + byteCount)])
   }
 
+  public func validateRead(offset: UInt64, byteCount: Int) throws {
+    guard byteCount > 0, offset <= self.byteCount,
+      UInt64(byteCount) <= self.byteCount - offset
+    else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset, byteCount: byteCount, write: false)
+    }
+  }
+
   public func write(offset: UInt64, bytes: [UInt8]) throws {
     throw DoryPCPhysicalMemoryError.unsupportedAccess(
       offset: offset, byteCount: bytes.count, write: true)

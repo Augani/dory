@@ -45,6 +45,10 @@ public final class DoryPCUEFIVariableBridgeMMIO: DoryPCMMIODevice, @unchecked Se
     return lock.withLock { Array(storage[range]) }
   }
 
+  public func validateRead(offset: UInt64, byteCount: Int) throws {
+    _ = try checkedRange(offset: offset, byteCount: byteCount, write: false)
+  }
+
   public func write(offset: UInt64, bytes: [UInt8]) throws {
     try validateWrite(offset: offset, byteCount: bytes.count)
     lock.withLock {

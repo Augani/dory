@@ -126,6 +126,20 @@ import Testing
     #expect(memory.writeValidations == 2)
   }
 
+  @Test(arguments: [false, true])
+  func MMIOReadPreflightUsesDeviceValidationWithoutReadingARegister(mmap: Bool) throws {
+    let bus = try DoryPCPhysicalMemoryBus(ram: backing(mmap: mmap))
+    let device = BoundaryMMIO(baseAddress: 0x4000, byteCount: 0x100)
+    try bus.attach(device)
+    for sealed in [false, true] {
+      if sealed { bus.seal() }
+      try bus.validateRead(at: device.baseAddress + 4, byteCount: 4)
+    }
+    #expect(device.reads == 0)
+    #expect(device.readValidations == 2)
+    #expect(device.accesses == 2)
+  }
+
   @Test func defaultReadValidationPreservesCustomReadDenial() throws {
     let memory = BoundaryReadDeniedMemory()
     // A writable custom memory object must not acquire read permission through write validation.
@@ -162,17 +176,24 @@ private final class BoundaryMMIO: DoryPCMMIODevice, @unchecked Sendable {
   let byteCount: UInt64
   let allowsInstructionFetch = true
   private let lock = NSLock()
-  private var count = 0
-  var accesses: Int { lock.withLock { count } }
+  private var counts = (all: 0, reads: 0, readValidations: 0)
+  var accesses: Int { lock.withLock { counts.all } }
+  var reads: Int { lock.withLock { counts.reads } }
+  var readValidations: Int { lock.withLock { counts.readValidations } }
   init(baseAddress: UInt64, byteCount: UInt64) {
     self.baseAddress = baseAddress
     self.byteCount = byteCount
   }
-  private func record() { lock.withLock { count += 1 } }
+  private func record() { lock.withLock { counts.all += 1 } }
+  private func recordRead() { lock.withLock { counts.all += 1; counts.reads += 1 } }
+  private func recordReadValidation() {
+    lock.withLock { counts.all += 1; counts.readValidations += 1 }
+  }
   func read(offset: UInt64, byteCount: Int) throws -> [UInt8] {
-    record()
+    recordRead()
     return Array(repeating: 0x90, count: byteCount)
   }
+  func validateRead(offset: UInt64, byteCount: Int) throws { recordReadValidation() }
   func readRestartableScalar(offset: UInt64, byteCount: Int) throws -> UInt64? { record(); return 0 }
   func codeGeneration(offset: UInt64, byteCount: Int) throws -> UInt64? { record(); return 0 }
   func write(offset: UInt64, bytes: [UInt8]) throws { record() }

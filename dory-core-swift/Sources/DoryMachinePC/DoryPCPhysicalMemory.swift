@@ -16,6 +16,7 @@ public protocol DoryPCMMIODevice: AnyObject, Sendable {
   var byteCount: UInt64 { get }
   var allowsInstructionFetch: Bool { get }
   func read(offset: UInt64, byteCount: Int) throws -> [UInt8]
+  func validateRead(offset: UInt64, byteCount: Int) throws
   func readRestartableScalar(offset: UInt64, byteCount: Int) throws -> UInt64?
   func codeGeneration(offset: UInt64, byteCount: Int) throws -> UInt64?
   func write(offset: UInt64, bytes: [UInt8]) throws
@@ -32,6 +33,16 @@ extension DoryPCMMIODevice {
 
   /// Returns a scalar only when reading the range is side-effect free and safe to replay.
   public func readRestartableScalar(offset: UInt64, byteCount: Int) throws -> UInt64? { nil }
+
+  /// Validates a read without invoking a device register's read side effects. Devices whose
+  /// readable ranges are narrower than their mapping must override this admission check.
+  public func validateRead(offset: UInt64, byteCount: Int) throws {
+    guard byteCount > 0, offset <= self.byteCount, UInt64(byteCount) <= self.byteCount - offset
+    else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset, byteCount: byteCount, write: false)
+    }
+  }
 
   public func validateWrite(offset: UInt64, byteCount: Int) throws {
     guard byteCount > 0, offset <= self.byteCount, UInt64(byteCount) <= self.byteCount - offset
@@ -201,6 +212,23 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
     return try ram.read(at: resolved.backingAddress, byteCount: byteCount)
+  }
+
+  public func validateRead(at address: UInt64, byteCount: Int) throws {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
+    guard byteCount > 0 else { return }
+    if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
+      try ram.validateRead(at: resolved.backingAddress, byteCount: byteCount)
+      return
+    }
+    if let resolved = try resolve(address: address, byteCount: byteCount, access: .read) {
+      try resolved.device.validateRead(offset: resolved.offset, byteCount: byteCount)
+      return
+    }
+    let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
+    try ram.validateRead(at: resolved.backingAddress, byteCount: byteCount)
   }
 
   public func codeGeneration(at address: UInt64, byteCount: Int) throws -> UInt64? {
@@ -669,6 +697,13 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
     return littleEndian(value)
   }
 
+  public func validateRead(offset: UInt64, byteCount: Int) throws {
+    guard byteCount == 4, offset & 0xF == 0, offset < self.byteCount else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset, byteCount: byteCount, write: false)
+    }
+  }
+
   public func write(offset: UInt64, bytes: [UInt8]) throws {
     guard bytes.count == 4, offset & 0xF == 0, offset < byteCount else {
       throw DoryPCPhysicalMemoryError.unsupportedAccess(
@@ -787,6 +822,13 @@ public final class DoryPCIOAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
       value = try readWindow(register)
     }
     return littleEndian(value)
+  }
+
+  public func validateRead(offset: UInt64, byteCount: Int) throws {
+    guard byteCount == 4, offset == 0 || offset == 0x10 else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset, byteCount: byteCount, write: false)
+    }
   }
 
   public func write(offset: UInt64, bytes: [UInt8]) throws {

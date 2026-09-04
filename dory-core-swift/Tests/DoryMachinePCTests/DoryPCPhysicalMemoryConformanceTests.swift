@@ -24,6 +24,7 @@ import Testing
             for memory in [ram, bus] as [any DoryX86Memory] {
               #expect(throws: expected) { try memory.read(at: address, byteCount: count) }
               #expect(throws: expected) { try memory.instructionBytes(at: address, maximumCount: count) }
+              #expect(throws: expected) { try memory.validateRead(at: address, byteCount: count) }
               #expect(throws: expected) { try memory.validateWrite(at: address, byteCount: count) }
             }
             for memory in [ram, bus] as [any DoryX86CodeGenerationMemory] {
@@ -100,6 +101,7 @@ import Testing
         for memory in [ram, bus] as [any DoryX86Memory] {
           #expect(try memory.read(at: address, byteCount: 0).isEmpty)
           #expect(try memory.instructionBytes(at: address, maximumCount: 0).isEmpty)
+          try memory.validateRead(at: address, byteCount: 0)
           try memory.validateWrite(at: address, byteCount: 0)
           try memory.write(at: address, bytes: [])
         }

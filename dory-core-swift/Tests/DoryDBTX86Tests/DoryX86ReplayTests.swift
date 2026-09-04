@@ -85,6 +85,48 @@ import Testing
     try recorder.replay(record)
   }
 
+  @Test func recordsAndReplaysReadValidationWithoutMaterializingTheOperand() throws {
+    let memory = try ReplayValidationMemory()
+    let state = try DoryX86ArchitecturalState(
+      registers: .init(rbx: 0x8001),
+      rip: 0x1000,
+      rflags: [.reservedOne, .alignmentCheck],
+      cs: .init(selector: 3, attributes: 0xC0FB, limit: .max),
+      ds: .init(selector: 0x23, attributes: 0xC0F3, limit: .max),
+      ss: .init(selector: 0x23, attributes: 0xC0F3, limit: .max),
+      control: .init(cr0: 0x4_0011, cr4: 1 << 9)
+    )
+    let recorder = DoryX86ReplayRecorder()
+    let record = recorder.recordStep(
+      initialState: state,
+      memory: memory,
+      mode: .protected32
+    )
+
+    #expect(
+      record.result
+        == .exception(
+          .init(
+            kind: .alignmentCheck,
+            vector: 17,
+            errorCode: 0,
+            instructionPointer: 0x1000
+          )))
+    #expect(memory.reads == 0)
+    #expect(memory.readValidations == 1)
+    #expect(
+      record.memoryEvents.contains { event in
+        if case .validateRead(address: 0x8001, byteCount: 4, outcome: .success) = event {
+          return true
+        }
+        return false
+      })
+    let data = try JSONEncoder().encode(record)
+    let decoded = try JSONDecoder().decode(DoryX86ReplayRecord.self, from: data)
+    #expect(decoded == record)
+    try recorder.replay(decoded)
+  }
+
   private func installFourLevelMapping(
     linear: UInt64,
     physicalPage: UInt64,
@@ -114,4 +156,37 @@ private final class ConstantReplayBus: DoryX86IOBus, @unchecked Sendable {
   init(value: UInt32) { self.value = value }
   func read(port: UInt16, width: DoryX86OperandWidth) -> UInt32 { value }
   func write(port: UInt16, value: UInt32, width: DoryX86OperandWidth) {}
+}
+
+private final class ReplayValidationMemory: DoryX86Memory, @unchecked Sendable {
+  private let backing: DoryX86ByteArrayMemory
+  private(set) var reads = 0
+  private(set) var readValidations = 0
+
+  init() throws {
+    backing = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    try backing.write(at: 0x1000, bytes: [0x8B, 0x03])
+  }
+
+  func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
+    try backing.instructionBytes(at: address, maximumCount: maximumCount)
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    reads += 1
+    return try backing.read(at: address, byteCount: byteCount)
+  }
+
+  func validateRead(at address: UInt64, byteCount: Int) throws {
+    readValidations += 1
+    try backing.validateRead(at: address, byteCount: byteCount)
+  }
+
+  func write(at address: UInt64, bytes: [UInt8]) throws {
+    try backing.write(at: address, bytes: bytes)
+  }
+
+  func validateWrite(at address: UInt64, byteCount: Int) throws {
+    try backing.validateWrite(at: address, byteCount: byteCount)
+  }
 }

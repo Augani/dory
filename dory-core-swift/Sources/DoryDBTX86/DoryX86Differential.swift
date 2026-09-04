@@ -226,6 +226,10 @@ private final class DoryX86DifferentialAccess:
     try record { try memory.read(at: address, byteCount: byteCount) }
   }
 
+  func validateRead(at address: UInt64, byteCount: Int) throws {
+    try record { try memory.validateRead(at: address, byteCount: byteCount) }
+  }
+
   func write(at address: UInt64, bytes: [UInt8]) throws {
     try record { try memory.write(at: address, bytes: bytes) }
   }

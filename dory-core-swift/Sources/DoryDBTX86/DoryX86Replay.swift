@@ -12,6 +12,7 @@ public enum DoryX86ReplayMemoryEvent: Codable, Sendable, Hashable {
   case write(address: UInt64, bytes: [UInt8], outcome: DoryX86ReplayMemoryOutcome)
   case validateWrite(address: UInt64, byteCount: Int, outcome: DoryX86ReplayMemoryOutcome)
   case synchronize
+  case validateRead(address: UInt64, byteCount: Int, outcome: DoryX86ReplayMemoryOutcome)
 }
 
 public enum DoryX86ReplayIOOutcome: Codable, Sendable, Hashable {
@@ -152,6 +153,16 @@ private final class DoryX86RecordingMemory: DoryX86Memory, @unchecked Sendable {
     }
   }
 
+  func validateRead(at address: UInt64, byteCount: Int) throws {
+    do {
+      try base.validateRead(at: address, byteCount: byteCount)
+      append(.validateRead(address: address, byteCount: byteCount, outcome: .success))
+    } catch let error as DoryX86MemoryError {
+      append(.validateRead(address: address, byteCount: byteCount, outcome: .failure(error)))
+      throw error
+    }
+  }
+
   func write(at address: UInt64, bytes: [UInt8]) throws {
     do {
       try base.write(at: address, bytes: bytes)
@@ -255,6 +266,22 @@ private final class DoryX86ScriptedMemory: DoryX86Memory, @unchecked Sendable {
       throw DoryX86ReplayError.eventMismatch
     }
     return try bytes(from: outcome)
+  }
+
+  func validateRead(at address: UInt64, byteCount: Int) throws {
+    let event = try take()
+    guard
+      case .validateRead(
+        address: let recordedAddress,
+        byteCount: let recordedByteCount,
+        outcome: let outcome
+      ) = event,
+      recordedAddress == address,
+      recordedByteCount == byteCount
+    else {
+      throw DoryX86ReplayError.eventMismatch
+    }
+    try success(from: outcome)
   }
 
   func write(at address: UInt64, bytes: [UInt8]) throws {

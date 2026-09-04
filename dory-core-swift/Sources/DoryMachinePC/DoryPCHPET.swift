@@ -170,6 +170,10 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
     return littleEndian(value >> UInt64(shift), byteCount: byteCount)
   }
 
+  public func validateRead(offset: UInt64, byteCount: Int) throws {
+    try validateAccess(offset: offset, byteCount: byteCount, write: false)
+  }
+
   public func write(offset: UInt64, bytes: [UInt8]) throws {
     try validateAccess(offset: offset, byteCount: bytes.count, write: true)
     let notifications = lock.withLock {

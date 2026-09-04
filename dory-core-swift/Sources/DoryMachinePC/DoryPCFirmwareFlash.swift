@@ -56,6 +56,15 @@ public final class DoryPCFirmwareFlash: DoryPCMMIODevice, @unchecked Sendable {
     return result
   }
 
+  public func validateRead(offset: UInt64, byteCount: Int) throws {
+    guard byteCount > 0, offset <= self.byteCount,
+      UInt64(byteCount) <= self.byteCount - offset
+    else {
+      throw DoryPCPhysicalMemoryError.unsupportedAccess(
+        offset: offset, byteCount: byteCount, write: false)
+    }
+  }
+
   public func codeGeneration(offset: UInt64, byteCount: Int) throws -> UInt64? {
     guard byteCount > 0, offset <= self.byteCount,
       UInt64(byteCount) <= self.byteCount - offset
