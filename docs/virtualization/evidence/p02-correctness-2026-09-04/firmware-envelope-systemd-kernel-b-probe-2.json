@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "firmware",
+  "issueLabel": "subsystem:firmware",
+  "planItems": [
+    "P02-23"
+  ],
+  "sourceCommit": "99400af11badf095b7fca85680e9c2388db7b60e",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "passed",
+  "scope": "Pinned second-kernel systemd environment executes eight UUID-bound workloads and normal PID1 shutdown with host-observed ACPI S5; narrow musl/glibc/two-kernel/systemd diagnostic checkpoint only.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-2-review.json",
+      "sha256": "3e4f48a718a0e15fe1b33c2e02c470f13c0958ea78091aebc8ae27d63b20f986"
+    }
+  ],
+  "limitations": [
+    "One bounded pinned systemd oneshot environment with exact PID1/cgroup/invocation checks; not a complete installed distribution, journald, udev, login, long-running service or physical-reference qualification.",
+    "Console warnings are preserved: optional autofs4 is absent; run-dory.mount helper exits203/EXEC. The later systemd-shutdown stage explicitly unmounts /run/dory, reports all filesystems unmounted, and reaches ACPI S5.",
+    "Kernel6.18.35 and6.18.36 have different internal symbol layouts but identical PT_LOAD envelopes. No distinct segment-envelope coverage is claimed.",
+    "Source45 guest success does not execute source46; optimized runner and fixture binaries were verified locally and remain reproducible from pinned inputs, not vendored here.",
+    "Experimental host, deterministic guest clock and concurrent work: durations are engineering records; no P14 performance qualification.",
+    "Live negative-cache sites are capped at16 and describe current entries, not cumulative reason totals."
+  ]
+}

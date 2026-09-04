@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-pinned-systemd-userspace-result",
+  "status": "passed",
+  "releaseQualified": false,
+  "implementationCommit": "99400af11badf095b7fca85680e9c2388db7b60e",
+  "sourceBinding": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-45-commit-binding.json",
+    "sha256": "d3a3eeb466acea1f2064f59dbc854e7d19cbd9ee8d300593fb9a631f3f1fe796"
+  },
+  "sourceReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-46.json",
+    "sha256": "eac71bb79fa215c8b5f01041903c24374ed819fedb4d8ef5f8aec5e395826e2b"
+  },
+  "sourceValidation": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/evidence-validation-through-run-46.json",
+    "sha256": "bc473ab206c5e12d31db061d57690ff328646442d1e9104898c04d763ebe1b9b"
+  },
+  "releaseBuild": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-45-receipt.json",
+    "sha256": "8afd8c05b8cfbb09736e03fceb77d9ebe0921f9f93ea271dfe22f518da22cbe3"
+  },
+  "runnerSHA256": "77fa8a69d71b6e2690faa55dfa0d2fbb849a4022f0e32fb079b236636db3f27b",
+  "fixtureSourceCommit": "990229789ba934e415ecdae43874dd82438f0862",
+  "fixturePreparation": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-preparation-review.json",
+    "sha256": "ae90672910673fbaad9909f0660723130f9dc71b90e8500ee40807da0ca55803"
+  },
+  "fixtureExtractionManifest": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-fixture-reproduction-manifest.json",
+    "sha256": "8263644f7d3e8d89fdf9fa50dad34e7317cb1ab6ded6a0ad7c2e2902df07a3c2"
+  },
+  "artifacts": {
+    ".json": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-systemd-kernel-b-probe-2.json",
+      "sha256": "e5dce9ee24c011eda1d0c07d029b1b9eb55f4ca3898e17fd366404345eba1360"
+    },
+    ".log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-systemd-kernel-b-probe-2.log.gz",
+      "sha256": "eea187d33551e72576b07504f3220ffae533b0a85699ac4f5534f7ff93875c41"
+    },
+    ".invocation.json": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-systemd-kernel-b-probe-2.invocation.json",
+      "sha256": "abb42dd5887777e845a291f26c36340c3bc6a290f9614d5561ad45e37617cfcd"
+    },
+    ".exit": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-systemd-kernel-b-probe-2.exit",
+      "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+    }
+  },
+  "completion": {
+    "observedToolSession": 97517,
+    "completionChunk": "17806f",
+    "toolExitCode": 0,
+    "subprocessReturnCode": 0,
+    "observedCompletionUTC": "2026-09-04 16:27:54 UTC"
+  },
+  "acceptedOutcome": {
+    "runID": "a4933b0e-c559-4c41-9703-02cd03cb3e80",
+    "workloads": [
+      "bootstrap.filesystems",
+      "syscall.identity",
+      "process.creation_exec_wait",
+      "memory.allocation_copy",
+      "signal.handler_return",
+      "timer.sleep_elapsed",
+      "filesystem.write_read_sync",
+      "systemd.service_supervision"
+    ],
+    "retiredInstructions": 1102319986,
+    "elapsedNanoseconds": 657178590583,
+    "nativeInstructions": 1014316656,
+    "interpreterInstructions": 88003330,
+    "hostPoweroff": true,
+    "exactTypedReceiptAndIndividualResults": true
+  },
+  "kernel": {
+    "byteCount": 39274336,
+    "elfBuildID": "d838eee071a9f7ddba323742d7dec05a314b6c78",
+    "path": "/tmp/dory-p02-guest-fixtures/alpine-3.23.5-x86_64-vmlinux",
+    "sha256": "ae0dcbf0d699293a29e8c55e4b319e8fe093aa07a18e1902beb41c3e0243c405"
+  },
+  "initrd": {
+    "byteCount": 19935232,
+    "path": "/tmp/dory-p02-systemd-fixture-reproduction-1/x86_64-p02-systemd-userspace-v1.cpio",
+    "sha256": "3365a741cf5dcecd8675eed4da01b2ed31395f56125d026f461c8f48948f196a"
+  },
+  "cpuProfile": "dory.x86_64.intel-compatible-v1",
+  "consoleSystemdVersion": "255.4-1ubuntu8.12",
+  "libcVersion": "2.39-0ubuntu8.7",
+  "jitSample": {
+    "instructionCount": 1102319986,
+    "elapsedNanoseconds": 657177832916,
+    "counterCount": 19,
+    "liveNegativeSiteCount": 16,
+    "scope": "Last completed coarse sample, or normal terminal slice. Timeout/error may retain an older sample. Counters are executor-lifetime totals; negativeEntryCount and the capped hot sites describe only live entries. Site reasons and hit counts are not cumulative reason totals."
+  },
+  "priorFailure": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-host-failure-appendix.json",
+    "sha256": "b5397a9753b233e7f5f988da0858bed0d98c0d1adf24734972857b7bbac0e60e"
+  },
+  "reducedFixGate": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-host-trap-accumulator-reduction-through-run-45.json",
+    "sha256": "b8d6c1cb84d0f886aee3b2402f3d2817a8a84ff110b2c2f515a9490f5a1071a4"
+  },
+  "P02-23Prerequisites": [
+    {
+      "runID": "ca7fbc9e-4ebe-4e9e-b566-6fc54f0a11aa",
+      "workloads": [
+        "bootstrap.filesystems",
+        "syscall.identity",
+        "process.creation_exec_wait",
+        "memory.allocation_copy",
+        "signal.handler_return",
+        "timer.sleep_elapsed",
+        "filesystem.write_read_sync"
+      ],
+      "retiredInstructions": 750370506,
+      "elapsedNanoseconds": 386565194667,
+      "nativeInstructions": 692226935,
+      "interpreterInstructions": 58143571,
+      "hostPoweroff": true,
+      "exactTypedReceiptAndIndividualResults": true,
+      "diagnostic": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-9.json",
+        "sha256": "c28241fbe73fa6ac6aa27a944bed834d378a54231b3566a6b51c2151ee12f1ea"
+      },
+      "libc": "musl",
+      "kernelVersion": "6.18.35",
+      "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+      "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249"
+    },
+    {
+      "runID": "2cfc9eec-7085-4354-98fd-5de31b2fd7be",
+      "workloads": [
+        "bootstrap.filesystems",
+        "syscall.identity",
+        "process.creation_exec_wait",
+        "memory.allocation_copy",
+        "signal.handler_return",
+        "timer.sleep_elapsed",
+        "filesystem.write_read_sync"
+      ],
+      "retiredInstructions": 755832609,
+      "elapsedNanoseconds": 445264365417,
+      "nativeInstructions": 690722964,
+      "interpreterInstructions": 65109645,
+      "hostPoweroff": true,
+      "exactTypedReceiptAndIndividualResults": true,
+      "diagnostic": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-3.json",
+        "sha256": "dc6b4e74bb3e6199f3dc5aeb5f6c89a70682071eb081dc82c116492762e47afc"
+      },
+      "libc": "glibc",
+      "kernelVersion": "6.18.36",
+      "kernelSHA256": "ae0dcbf0d699293a29e8c55e4b319e8fe093aa07a18e1902beb41c3e0243c405",
+      "initrdSHA256": "813de160103ef6179de5d3b6d9271ed8f9883d8c3fa7671a49254f0ec7cb9d24"
+    }
+  ],
+  "identicalKernelPTLOADEnvelopes": true,
+  "retentionTransformations": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-2-retention-transformations.json",
+    "sha256": "8c2f754dfd0223e2571e9939580fd891aec6cad013d3706fffd361e329c9295d"
+  },
+  "limitations": [
+    "One bounded pinned systemd oneshot environment with exact PID1/cgroup/invocation checks; not a complete installed distribution, journald, udev, login, long-running service or physical-reference qualification.",
+    "Console warnings are preserved: optional autofs4 is absent; run-dory.mount helper exits203/EXEC. The later systemd-shutdown stage explicitly unmounts /run/dory, reports all filesystems unmounted, and reaches ACPI S5.",
+    "Kernel6.18.35 and6.18.36 have different internal symbol layouts but identical PT_LOAD envelopes. No distinct segment-envelope coverage is claimed.",
+    "Source45 guest success does not execute source46; optimized runner and fixture binaries were verified locally and remain reproducible from pinned inputs, not vendored here.",
+    "Experimental host, deterministic guest clock and concurrent work: durations are engineering records; no P14 performance qualification.",
+    "Live negative-cache sites are capped at16 and describe current entries, not cumulative reason totals."
+  ]
+}

@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-systemd-userspace-evidence-validation",
+  "review": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-2-review.json",
+    "sha256": "3e4f48a718a0e15fe1b33c2e02c470f13c0958ea78091aebc8ae27d63b20f986"
+  },
+  "newArtifactsVerified": 7,
+  "repositoryReferencesVerified": 16,
+  "envelopeSchemaValidated": true,
+  "source45TrackedBindingVerified": true,
+  "runnerSHA256": "77fa8a69d71b6e2690faa55dfa0d2fbb849a4022f0e32fb079b236636db3f27b",
+  "sourceCommit": "99400af11badf095b7fca85680e9c2388db7b60e",
+  "fixtureSourceFilesVerified": 13,
+  "pinnedArchiveMembersVerified": 34,
+  "guestOnlyServiceSourcesAndInitLinkVerified": true,
+  "receiptAndPrerequisiteChecks": [
+    {
+      "diagnostic": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-systemd-kernel-b-probe-2.json",
+        "sha256": "e5dce9ee24c011eda1d0c07d029b1b9eb55f4ca3898e17fd366404345eba1360"
+      },
+      "runID": "a4933b0e-c559-4c41-9703-02cd03cb3e80",
+      "passedWorkloadCount": 8,
+      "kernelSHA256": "ae0dcbf0d699293a29e8c55e4b319e8fe093aa07a18e1902beb41c3e0243c405",
+      "initrdSHA256": "3365a741cf5dcecd8675eed4da01b2ed31395f56125d026f461c8f48948f196a",
+      "retiredInstructions": 1102319986,
+      "elapsedNanoseconds": 657178590583,
+      "matchingConsoleAndTypedReceipt": true,
+      "hostPoweroff": true
+    },
+    {
+      "diagnostic": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-9.json",
+        "sha256": "c28241fbe73fa6ac6aa27a944bed834d378a54231b3566a6b51c2151ee12f1ea"
+      },
+      "runID": "ca7fbc9e-4ebe-4e9e-b566-6fc54f0a11aa",
+      "passedWorkloadCount": 7,
+      "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+      "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+      "retiredInstructions": 750370506,
+      "elapsedNanoseconds": 386565194667,
+      "matchingConsoleAndTypedReceipt": true,
+      "hostPoweroff": true
+    },
+    {
+      "diagnostic": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-glibc-kernel-b-probe-3.json",
+        "sha256": "dc6b4e74bb3e6199f3dc5aeb5f6c89a70682071eb081dc82c116492762e47afc"
+      },
+      "runID": "2cfc9eec-7085-4354-98fd-5de31b2fd7be",
+      "passedWorkloadCount": 7,
+      "kernelSHA256": "ae0dcbf0d699293a29e8c55e4b319e8fe093aa07a18e1902beb41c3e0243c405",
+      "initrdSHA256": "813de160103ef6179de5d3b6d9271ed8f9883d8c3fa7671a49254f0ec7cb9d24",
+      "retiredInstructions": 755832609,
+      "elapsedNanoseconds": 445264365417,
+      "matchingConsoleAndTypedReceipt": true,
+      "hostPoweroff": true
+    }
+  ],
+  "systemdVersion": "255.4-1ubuntu8.12",
+  "glibcVersion": "2.39-0ubuntu8.7",
+  "warningsPreserved": [
+    "Optional autofs4 module unavailable.",
+    "run-dory.mount helper exits203/EXEC; final systemd-shutdown subsequently unmounts /run/dory and reaches S5."
+  ],
+  "boundedJITSample": {
+    "sampleInstructionCount": 1102319986,
+    "sampleElapsedNanoseconds": 657177832916,
+    "executorCounterCount": 19,
+    "liveSiteCount": 16,
+    "cumulativeReasonCountsClaimed": false
+  },
+  "checkpoint": "P02-23 narrow diagnostic kernelA/musl + kernelB/glibc + pinned systemd service environment accepted; no broader phase or distribution qualification.",
+  "normalization": "No personal paths present in original new probe artifacts; text bytes unchanged, log gzip timestamp normalized.",
+  "qualification": "No new build, VM or source mutation; independent read-only verification of completed run and retained prerequisites."
+}

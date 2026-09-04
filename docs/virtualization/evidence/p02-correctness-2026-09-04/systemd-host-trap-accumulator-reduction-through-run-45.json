@@ -1,0 +1,53 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-guest-discovered-host-trap-reduction",
+  "originalFailureAppendix": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-host-failure-appendix.json",
+    "sha256": "b5397a9753b233e7f5f988da0858bed0d98c0d1adf24734972857b7bbac0e60e"
+  },
+  "originalSourceCommit": "d0e61d7e0f23a43d696fa05d6c6c69bbb5274d41",
+  "failure": "Copied source39 runner terminated with SIGTRAP in signExtendAccumulator; checked UInt32(RAX) narrowing reached brk #1. Empty console log, no diagnostic JSON or accepted guest receipt.",
+  "minimalSyntheticReducer": {
+    "mode": "long64",
+    "instructionBytesHex": "4898",
+    "raxHex": "ffffffffffffffe7",
+    "expectedRAXHex": "ffffffffffffffe7",
+    "basis": "Host helper arguments, exact source and runner disassembly identify CDQE; original guest instruction bytes were not captured."
+  },
+  "correctedSourceCommit": "99400af11badf095b7fca85680e9c2388db7b60e",
+  "implementationPath": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+  "implementationRegion": "signExtendAccumulator(width:intoHighHalf:state:)",
+  "correction": "Read only the architectural low8/16/32 bits using truncatingIfNeeded before sign extension. CWD/CDQ/CQO behavior, flags and unwritten register bits remain covered.",
+  "evidence": [
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86AccumulatorSignExtensionTests.swift",
+      "sha256": "2d4ab369b2e511b02f45d3f65c8a72a24d87f5200b296755b0b48f8b1509c120",
+      "passedMethods": [
+        "systemdCDQEReducerIgnoresAlreadySignExtendedRAXUpperBits",
+        "lowAccumulatorExtensionsHonorWidthsPrefixesAndPreservedUpperBits",
+        "highHalfExtensionsPreserveTheAccumulatorAndUnwrittenRegisterBits",
+        "bothNativeTiersDeclineBeforeEffectsThenInterpreterRetiresExactlyOnce",
+        "lockPrefixRaisesInvalidOpcodeWithoutChangingTheAccumulatorOrHighHalf"
+      ],
+      "run": 45,
+      "sourceOverlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-45-source-overlay.tar.gz",
+        "sha256": "116c5efec504e77efbb5075a5ab80978484a4e1ea0a1be3d2a81590bd7af05f6"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-45.log.gz",
+        "sha256": "30135b424aea7b9eeb5dec22dbe7c4939ac340c14e258d3ac3954d7acaf8f800"
+      }
+    }
+  ],
+  "passedRegressionMethods": 5,
+  "releaseBuildSourceBinding": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-45-commit-binding.json",
+    "sha256": "d3a3eeb466acea1f2064f59dbc854e7d19cbd9ee8d300593fb9a631f3f1fe796"
+  },
+  "limitations": [
+    "Bounded synthetic regression linked to an observed host trap; not a replay of private guest memory.",
+    "Both native tiers decline these forms before effects, then the interpreter retires once; no native implementation claim.",
+    "Five source45 passing methods establish the reduced fix only. No successful subsequent systemd run is claimed."
+  ]
+}

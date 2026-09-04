@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "firmware",
+  "issueLabel": "subsystem:firmware",
+  "planItems": [
+    "P02-23"
+  ],
+  "sourceCommit": "73072d01936f425a4f945f0ff40bb799733d772c",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Bounded source44\u201346 descriptor, paging, interrupt and floating-point admission gates; observed systemd host trap linked to passing source45 accumulator regressions. No new guest acceptance claim.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-46.json",
+      "sha256": "eac71bb79fa215c8b5f01041903c24374ed819fedb4d8ef5f8aec5e395826e2b"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete: physical x86 reference, full CPU/FPU/mode/paging qualification, successful systemd and real IO stress remain open. No checkpoint is newly closed by this receipt.",
+    "Each run reports one disabled physical-reference test and one optional XCTest boot-fixture skip; neither is counted as passed. Overlapping run totals are not summed.",
+    "Selected page-size support and precise descriptor/interrupt regressions do not qualify the entire advertised CPU profile, full paging mechanism or interrupt architecture.",
+    "The systemd host failure remains a failure; five passing accumulator methods validate its bounded synthetic reduction, not a subsequent systemd guest outcome.",
+    "Experimental host and concurrent work; all timings are engineering measurements, not P14 qualification."
+  ]
+}

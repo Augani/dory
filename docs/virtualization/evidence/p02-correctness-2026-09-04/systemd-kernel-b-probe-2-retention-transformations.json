@@ -1,0 +1,49 @@
+{
+  "kind": "p02-evidence-retention-transformations",
+  "artifacts": [
+    {
+      "originalPath": "/tmp/dory-p02-userspace-systemd-kernel-b-probe-2.json",
+      "originalSHA256": "e5dce9ee24c011eda1d0c07d029b1b9eb55f4ca3898e17fd366404345eba1360",
+      "originalBytes": 37484,
+      "normalizedSHA256": "e5dce9ee24c011eda1d0c07d029b1b9eb55f4ca3898e17fd366404345eba1360",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-systemd-kernel-b-probe-2.json",
+        "sha256": "e5dce9ee24c011eda1d0c07d029b1b9eb55f4ca3898e17fd366404345eba1360"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-userspace-systemd-kernel-b-probe-2.log",
+      "originalSHA256": "b269688dae46a597d2e46ced905792785a56970e7bd42d26009eb4a692cde81e",
+      "originalBytes": 467,
+      "normalizedSHA256": "b269688dae46a597d2e46ced905792785a56970e7bd42d26009eb4a692cde81e",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-systemd-kernel-b-probe-2.log.gz",
+        "sha256": "eea187d33551e72576b07504f3220ffae533b0a85699ac4f5534f7ff93875c41"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-userspace-systemd-kernel-b-probe-2.invocation.json",
+      "originalSHA256": "abb42dd5887777e845a291f26c36340c3bc6a290f9614d5561ad45e37617cfcd",
+      "originalBytes": 2007,
+      "normalizedSHA256": "abb42dd5887777e845a291f26c36340c3bc6a290f9614d5561ad45e37617cfcd",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-systemd-kernel-b-probe-2.invocation.json",
+        "sha256": "abb42dd5887777e845a291f26c36340c3bc6a290f9614d5561ad45e37617cfcd"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-userspace-systemd-kernel-b-probe-2.exit",
+      "originalSHA256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "originalBytes": 2,
+      "normalizedSHA256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-systemd-kernel-b-probe-2.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    }
+  ]
+}

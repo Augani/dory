@@ -1,0 +1,185 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-evidence-retention-validation",
+  "reviewSHA256": "eac71bb79fa215c8b5f01041903c24374ed819fedb4d8ef5f8aec5e395826e2b",
+  "newArtifactsBeforeThisValidation": 21,
+  "distinctRepositoryArtifactReferencesVerified": 29,
+  "previousReviewHashVerified": true,
+  "envelopesSchemaValidated": 2,
+  "schemaPath": "Config/DoryVirtualizationEvidence.schema.json",
+  "schemaSHA256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb",
+  "sourceBindings": [
+    {
+      "run": 44,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "3e0ac20f53813535826f24b35d4f4b7e95bedb92",
+      "trackedInputs": 709,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 118,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    },
+    {
+      "run": 45,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "99400af11badf095b7fca85680e9c2388db7b60e",
+      "trackedInputs": 710,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 119,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    },
+    {
+      "run": 46,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "73072d01936f425a4f945f0ff40bb799733d772c",
+      "trackedInputs": 714,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 123,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    }
+  ],
+  "strictLogCountsVerified": true,
+  "logCounts": [
+    {
+      "run": 44,
+      "swiftPassed": 848,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 849,
+      "swiftSuites": 103,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    },
+    {
+      "run": 45,
+      "swiftPassed": 853,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 854,
+      "swiftSuites": 104,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    },
+    {
+      "run": 46,
+      "swiftPassed": 875,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 876,
+      "swiftSuites": 107,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    }
+  ],
+  "componentRegressionSourcesAndPassedLines": [
+    {
+      "commit": "9cc591ff80f8243d38f17ad6edc0882a655a13b0",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86SystemDescriptorCanonicalTests.swift",
+          "sha256": "2233a8141dd7ce0c91f58c99509dd17835c8583f19574f414c3fbb07b978f835",
+          "run": 44,
+          "passedMethods": 3
+        }
+      ]
+    },
+    {
+      "commit": "3e0ac20f53813535826f24b35d4f4b7e95bedb92",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PagingFeatureTests.swift",
+          "sha256": "3cbe658e57aab556d5709ac058571355e61ca66c86336fb3d77e19eb91b5abbe",
+          "run": 44,
+          "passedMethods": 10
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPagingFeatureTests.swift",
+          "sha256": "501c9f0ecaf9c30bc7c3c4dff5bb37becc116223f67e3a8cf7bb67b93de44d73",
+          "run": 44,
+          "passedMethods": 1
+        }
+      ]
+    },
+    {
+      "commit": "99400af11badf095b7fca85680e9c2388db7b60e",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86AccumulatorSignExtensionTests.swift",
+          "sha256": "2d4ab369b2e511b02f45d3f65c8a72a24d87f5200b296755b0b48f8b1509c120",
+          "run": 45,
+          "passedMethods": 5
+        }
+      ]
+    },
+    {
+      "commit": "98e1d0737291fd6c27698aa1c9e3b59878247608",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86LDTLimitTests.swift",
+          "sha256": "8630dba60499a158714e2b11e1b4b4a10993dff42de97883514e06f7407385f9",
+          "run": 46,
+          "passedMethods": 3
+        }
+      ]
+    },
+    {
+      "commit": "e18a8cae467781487b794305ebe87e92c385371a",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86LegacyFloatingPointAdmissionTests.swift",
+          "sha256": "d5bfd6bd9909488043ae0720ab748a8dbefe5d11abaac3fc249e92060ecfff9f",
+          "run": 46,
+          "passedMethods": 8
+        }
+      ]
+    },
+    {
+      "commit": "73072d01936f425a4f945f0ff40bb799733d772c",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ProtectedInterruptPagingTests.swift",
+          "sha256": "2e05ebc6a23152a2588bf4796e0f41e4570d8432e66940998213c2ff0a9355ff",
+          "run": 46,
+          "passedMethods": 11
+        }
+      ]
+    }
+  ],
+  "releaseRunner": {
+    "sourceCommit": "99400af11badf095b7fca85680e9c2388db7b60e",
+    "sha256": "77fa8a69d71b6e2690faa55dfa0d2fbb849a4022f0e32fb079b236636db3f27b",
+    "byteCount": 9165400,
+    "buildExitCode": 0,
+    "buildElapsedSeconds": 58.52,
+    "binaryVerifiedLocallyNotVendored": true
+  },
+  "noUserHomePathsInNewArtifactTextOrMembers": true,
+  "tarOwnerAndTimeNormalizationVerified": true,
+  "pathNormalizedArtifacts": [],
+  "systemdHostTrapReduction": {
+    "existingFailureAppendix": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-host-failure-appendix.json",
+      "sha256": "b5397a9753b233e7f5f988da0858bed0d98c0d1adf24734972857b7bbac0e60e"
+    },
+    "originalSourceCommit": "d0e61d7e0f23a43d696fa05d6c6c69bbb5274d41",
+    "correctedSourceCommit": "99400af11badf095b7fca85680e9c2388db7b60e",
+    "exactHelperChange": "Only the three checked UInt8/16/32 accumulator-source conversions replaced with truncatingIfNeeded.",
+    "originalHelperSHA256": "7f2012b8aeecd40052e17dfbef669756530be315fd76e75c1ba8f523a68be456",
+    "correctedHelperSHA256": "8d6c7ea364d029d3d5ded1ea84641ff158c03803002d742ccd72fcdcead8be30",
+    "syntheticReducerIdentityMatchesFailureAppendix": true,
+    "passedMethods": 5,
+    "testSHA256": "2d4ab369b2e511b02f45d3f65c8a72a24d87f5200b296755b0b48f8b1509c120",
+    "originalFailurePreserved": true,
+    "newGuestOutcomeClaimed": false
+  },
+  "normalizationByThisValidation": "None; all retained inputs read-only.",
+  "qualification": "Source44\u201346, optimized source45 build and existing failure/reduction evidence only. No new build, guest execution, physical reference or full P02/P14 qualification; no checkpoint newly closed."
+}
