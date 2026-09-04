@@ -324,7 +324,8 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
   func addingWithStatus(
     _ rhs: Self,
     rounding: DoryX86FloatingRounding = .nearestEven,
-    precision: Int = 64
+    precision: Int = 64,
+    minimumNormalExponent: Int? = nil
   ) -> DoryX86ExtendedArithmeticResult {
     if isUnsupported || rhs.isUnsupported { return .exact(Self.realIndefinite()) }
     if let nan = propagatedNaN(with: rhs) { return .exact(nan) }
@@ -338,8 +339,14 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       let negative = isNegative == rhs.isNegative ? isNegative : rounding == .down
       return .exact(.init(unsigned: 0, negative: negative))
     }
-    if isZero { return rhs.roundedWithStatus(precision: precision, rounding: rounding) }
-    if rhs.isZero { return roundedWithStatus(precision: precision, rounding: rounding) }
+    if isZero {
+      return rhs.roundedWithStatus(
+        precision: precision, rounding: rounding, minimumNormalExponent: minimumNormalExponent)
+    }
+    if rhs.isZero {
+      return roundedWithStatus(
+        precision: precision, rounding: rounding, minimumNormalExponent: minimumNormalExponent)
+    }
 
     let lhsFirst = exponent >= rhs.exponent
     let larger = lhsFirst ? self : rhs
@@ -365,7 +372,8 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       exponent: larger.exponent,
       negative: negative,
       rounding: rounding,
-      precision: precision
+      precision: precision,
+      minimumNormalExponent: minimumNormalExponent
     )
   }
 
@@ -380,11 +388,14 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
   func subtractingWithStatus(
     _ rhs: Self,
     rounding: DoryX86FloatingRounding = .nearestEven,
-    precision: Int = 64
+    precision: Int = 64,
+    minimumNormalExponent: Int? = nil
   ) -> DoryX86ExtendedArithmeticResult {
     if isUnsupported || rhs.isUnsupported { return .exact(Self.realIndefinite()) }
     if let nan = propagatedNaN(with: rhs) { return .exact(nan) }
-    return addingWithStatus(rhs.negated(), rounding: rounding, precision: precision)
+    return addingWithStatus(
+      rhs.negated(), rounding: rounding, precision: precision,
+      minimumNormalExponent: minimumNormalExponent)
   }
 
   func multiplied(
@@ -398,7 +409,8 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
   func multipliedWithStatus(
     by rhs: Self,
     rounding: DoryX86FloatingRounding = .nearestEven,
-    precision: Int = 64
+    precision: Int = 64,
+    minimumNormalExponent: Int? = nil
   ) -> DoryX86ExtendedArithmeticResult {
     if isUnsupported || rhs.isUnsupported { return .exact(Self.realIndefinite()) }
     if let nan = propagatedNaN(with: rhs) { return .exact(nan) }
@@ -423,7 +435,8 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       exponent: exponent + rhs.exponent + topBit - 126,
       negative: negative,
       rounding: rounding,
-      precision: precision
+      precision: precision,
+      minimumNormalExponent: minimumNormalExponent
     )
   }
 
@@ -438,7 +451,8 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
   func dividedWithStatus(
     by rhs: Self,
     rounding: DoryX86FloatingRounding = .nearestEven,
-    precision: Int = 64
+    precision: Int = 64,
+    minimumNormalExponent: Int? = nil
   ) -> DoryX86ExtendedArithmeticResult {
     if isUnsupported || rhs.isUnsupported { return .exact(Self.realIndefinite()) }
     if let nan = propagatedNaN(with: rhs) { return .exact(nan) }
@@ -476,7 +490,8 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       exponent: exponent - rhs.exponent + quotientExponentAdjustment,
       negative: negative,
       rounding: rounding,
-      precision: precision
+      precision: precision,
+      minimumNormalExponent: minimumNormalExponent
     )
   }
 
@@ -489,7 +504,8 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
 
   private func roundedWithStatus(
     precision: Int,
-    rounding: DoryX86FloatingRounding
+    rounding: DoryX86FloatingRounding,
+    minimumNormalExponent: Int? = nil
   ) -> DoryX86ExtendedArithmeticResult {
     guard kind == .finite, significand != 0, precision < 64 else { return .exact(self) }
     return Self.normalizedWithStatus(
@@ -497,7 +513,8 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       exponent: exponent,
       negative: isNegative,
       rounding: rounding,
-      precision: precision
+      precision: precision,
+      minimumNormalExponent: minimumNormalExponent
     )
   }
 
@@ -778,7 +795,8 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     exponent: Int,
     negative: Bool,
     rounding: DoryX86FloatingRounding,
-    precision: Int
+    precision: Int,
+    minimumNormalExponent: Int? = nil
   ) -> DoryX86ExtendedArithmeticResult {
     var magnitude = magnitudeWithGuardBits
     var resultExponent = exponent
@@ -792,26 +810,48 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       magnitude <<= shift
       resultExponent -= shift
     }
-    // Round once to the guest precision. Rounding first to64bits can erase
-    // the sticky bit and turn a value above a24/53-bit tie into an exact tie.
+    // Round once to the coarser of the guest precision and any bounded
+    // subnormal grid. An intermediate rounding can erase sticky information
+    // and turn a value above the final tie into an exact tie.
     let precision = min(64, max(1, precision))
-    let roundingShift = 3 + 64 - precision
-    let discardedMask = (DoryX86WideUnsigned(1) << roundingShift) - DoryX86WideUnsigned(1)
-    let inexact = magnitude & discardedMask != DoryX86WideUnsigned(0)
-    let truncated = magnitude >> roundingShift
-    var rounded = roundedShiftRight(
+    let representationShift = max(
+      64 - precision,
+      minimumNormalExponent.map { max(0, $0 - resultExponent) } ?? 0
+    )
+    let roundingShift = 3 + representationShift
+    let inexact: Bool
+    let truncated: DoryX86WideUnsigned
+    if roundingShift >= 128 {
+      inexact = magnitude != DoryX86WideUnsigned(0)
+      truncated = DoryX86WideUnsigned(0)
+    } else {
+      let discardedMask =
+        (DoryX86WideUnsigned(1) << roundingShift) - DoryX86WideUnsigned(1)
+      inexact = magnitude & discardedMask != DoryX86WideUnsigned(0)
+      truncated = magnitude >> roundingShift
+    }
+    let rounded = roundedShiftRight(
       magnitude, by: roundingShift, negative: negative, rounding: rounding)
     let roundedUp = inexact && rounded != truncated
-    if rounded >= DoryX86WideUnsigned(1) << precision {
-      rounded >>= 1
-      resultExponent += 1
+    guard rounded != DoryX86WideUnsigned(0) else {
+      return .init(
+        value: .init(kind: .finite, isNegative: negative, exponent: 0, significand: 0),
+        inexact: inexact,
+        roundedUp: roundedUp
+      )
     }
+    let roundedTopBit = 127 - rounded.leadingZeroBitCount
+    let normalizationShift = roundedTopBit - 63
+    let normalized =
+      normalizationShift > 0
+      ? rounded >> normalizationShift
+      : rounded << -normalizationShift
     return .init(
       value: Self(
         kind: .finite,
         isNegative: negative,
-        exponent: resultExponent,
-        significand: rounded.low << UInt64(64 - precision)
+        exponent: resultExponent + representationShift + normalizationShift,
+        significand: normalized.low
       ),
       inexact: inexact,
       roundedUp: roundedUp

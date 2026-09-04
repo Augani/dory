@@ -2,9 +2,9 @@ import Testing
 
 @testable import DoryDBTX86
 
-// Intel SDM Vol. 1 §§8.5.1 and 8.5.2: x87 arithmetic and comparison
-// instructions retire with sticky status, but an unmasked numeric exception
-// suppresses the destination, condition codes, and any requested stack pop.
+// Intel SDM Vol. 1 §§8.5.1–8.5.6: x87 arithmetic and comparison
+// instructions retire with sticky status. Unmasked pre-operation exceptions
+// suppress later effects; post-operation exceptions retain their rounded result.
 @Suite struct DoryX86X87ArithmeticExceptionTests {
   @Test func quietNaNPropagatesWithoutInvalidWhileSignalingNaNHonorsIM() throws {
     let code: [UInt8] = [0xDE, 0xC1]  // FADDP ST(1), ST(0)
@@ -86,16 +86,14 @@ import Testing
     #expect(masked.floatingPoint.x87[1].bytes == roundedThird)
     #expect(masked.floatingPoint.x87StatusWord & 0x0A20 == 0x0A20)
 
-    // Unmasking #P suppresses both the result and FDIVP's pop while retaining
-    // the exception summary and the same C1 rounding indication.
+    // #P is a post-operation exception. Unmasking it still commits the rounded
+    // register result and FDIVP's requested pop before publishing the summary.
     var unmasked = try binaryState(first: three, second: one, controlWord: 0x005F)
-    let originalRegisters = unmasked.floatingPoint.x87
-    let originalTags = unmasked.floatingPoint.x87TagWord
     try retire(&unmasked, code: code)
-    #expect(top(unmasked) == 0)
-    #expect(unmasked.floatingPoint.x87 == originalRegisters)
-    #expect(unmasked.floatingPoint.x87TagWord == originalTags)
-    #expect(unmasked.floatingPoint.x87StatusWord == 0x82A0)
+    #expect(top(unmasked) == 1)
+    #expect(unmasked.floatingPoint.x87[1].bytes == roundedThird)
+    #expect(tag(1, unmasked) == 0)
+    #expect(unmasked.floatingPoint.x87StatusWord == 0x8AA0)
 
     // Truncation is still inexact, but it does not increment the retained
     // significand and therefore clears a previously set C1.

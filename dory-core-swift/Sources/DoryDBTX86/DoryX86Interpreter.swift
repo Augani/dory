@@ -794,21 +794,17 @@ public struct DoryX86Interpreter: Sendable {
           | rhsOperand.exceptions
         let rounding = x87Rounding(state.floatingPoint)
         let precision = x87Precision(state.floatingPoint)
-        let arithmetic: DoryX86ExtendedArithmeticResult =
-          switch operation {
-          case .add: lhs.addingWithStatus(rhs, rounding: rounding, precision: precision)
-          case .multiply:
-            lhs.multipliedWithStatus(by: rhs, rounding: rounding, precision: precision)
-          case .subtract: lhs.subtractingWithStatus(rhs, rounding: rounding, precision: precision)
-          case .subtractReverse:
-            rhs.subtractingWithStatus(lhs, rounding: rounding, precision: precision)
-          case .divide:
-            lhs.dividedWithStatus(by: rhs, rounding: rounding, precision: precision)
-          case .divideReverse:
-            rhs.dividedWithStatus(by: lhs, rounding: rounding, precision: precision)
-          }
-        var exceptions = x87ArithmeticExceptions(
-          operation: operation, lhs: lhs, rhs: rhs, result: arithmetic.value)
+        let arithmetic = x87ArithmeticResult(
+          operation: operation,
+          lhs: lhs,
+          rhs: rhs,
+          rounding: rounding,
+          precision: precision
+        )
+        var committedValue = arithmetic.value
+        var roundedUp = arithmetic.roundedUp
+        var exceptions = x87PreOperationExceptions(
+          operation: operation, lhs: lhs, rhs: rhs)
         if lhs.isUnsupported || rhs.isUnsupported || operandExceptions & 1 != 0
           || exceptions & 1 != 0
         {
@@ -832,14 +828,57 @@ public struct DoryX86Interpreter: Sendable {
             break
           }
           exceptions |= denormalExceptions
-          if arithmetic.inexact { exceptions |= 1 << 5 }
-          // Numeric exceptions are reported before committing the result. An
-          // unmasked exception suppresses both the destination and any pop.
-          guard recordX87Exceptions(
-            exceptions, roundedUp: arithmetic.roundedUp, state: &state.floatingPoint
-          ) else { break }
+          let overflow =
+            arithmetic.value.isFinite && !arithmetic.value.isZero
+            && arithmetic.value.exponent > 16_383
+          let underflow =
+            arithmetic.value.isFinite && !arithmetic.value.isZero
+            && arithmetic.value.exponent < -16_382
+          if overflow {
+            // Intel SDM Vol. 1 §§4.9.1.4, 8.5.4, and 8.5.6: overflow always
+            // accompanies #P. Masked #O returns the RC-selected boundary;
+            // unmasked #O stores the PC/RC-rounded result biased by -24,576.
+            exceptions |= (1 << 3) | (1 << 5)
+            if state.floatingPoint.x87ControlWord & (1 << 3) == 0 {
+              committedValue = arithmetic.value.scaledByPowerOfTwo(-24_576)
+            } else {
+              committedValue = DoryX86ExtendedFloat(
+                bytes: arithmetic.value.bytes(rounding: rounding))
+            }
+          } else if underflow {
+            if state.floatingPoint.x87ControlWord & (1 << 4) == 0 {
+              // Unmasked #U is reported for every non-zero tiny result and
+              // stores the PC/RC-rounded value biased by +24,576. #P joins it
+              // only when that unbounded-exponent rounding was inexact.
+              exceptions |= 1 << 4
+              if arithmetic.inexact { exceptions |= 1 << 5 }
+              committedValue = arithmetic.value.scaledByPowerOfTwo(24_576)
+            } else {
+              // With #U masked, round once to the effective subnormal
+              // precision. #U is reported only when the tiny result is also
+              // inexact, and then #P is reported with it.
+              let bounded = x87ArithmeticResult(
+                operation: operation,
+                lhs: lhs,
+                rhs: rhs,
+                rounding: rounding,
+                precision: precision,
+                minimumNormalExponent: -16_382
+              )
+              committedValue = bounded.value
+              roundedUp = bounded.roundedUp
+              if bounded.inexact { exceptions |= (1 << 4) | (1 << 5) }
+            }
+          } else if arithmetic.inexact {
+            exceptions |= 1 << 5
+          }
+          // #O, #U, and #P are post-operation exceptions for an x87 register
+          // destination. The selected result and any requested pop commit even
+          // when a corresponding exception mask is clear.
+          _ = recordX87Exceptions(
+            exceptions, roundedUp: roundedUp, state: &state.floatingPoint)
         }
-        writeX87Register(destination, value: arithmetic.value, state: &state.floatingPoint)
+        writeX87Register(destination, value: committedValue, state: &state.floatingPoint)
         if pop { popX87(state: &state.floatingPoint) }
       case .compareX87(let source, let popCount, let ordered, let setIntegerFlags):
         let rhsOperand = try readX87(
@@ -4293,11 +4332,46 @@ public struct DoryX86Interpreter: Sendable {
     writeX87Register(logical, value: DoryX86ExtendedFloat(value), state: &state)
   }
 
-  private func x87ArithmeticExceptions(
+  private func x87ArithmeticResult(
     operation: DoryX87BinaryOperation,
     lhs: DoryX86ExtendedFloat,
     rhs: DoryX86ExtendedFloat,
-    result: DoryX86ExtendedFloat
+    rounding: DoryX86FloatingRounding,
+    precision: Int,
+    minimumNormalExponent: Int? = nil
+  ) -> DoryX86ExtendedArithmeticResult {
+    switch operation {
+    case .add:
+      lhs.addingWithStatus(
+        rhs, rounding: rounding, precision: precision,
+        minimumNormalExponent: minimumNormalExponent)
+    case .multiply:
+      lhs.multipliedWithStatus(
+        by: rhs, rounding: rounding, precision: precision,
+        minimumNormalExponent: minimumNormalExponent)
+    case .subtract:
+      lhs.subtractingWithStatus(
+        rhs, rounding: rounding, precision: precision,
+        minimumNormalExponent: minimumNormalExponent)
+    case .subtractReverse:
+      rhs.subtractingWithStatus(
+        lhs, rounding: rounding, precision: precision,
+        minimumNormalExponent: minimumNormalExponent)
+    case .divide:
+      lhs.dividedWithStatus(
+        by: rhs, rounding: rounding, precision: precision,
+        minimumNormalExponent: minimumNormalExponent)
+    case .divideReverse:
+      rhs.dividedWithStatus(
+        by: lhs, rounding: rounding, precision: precision,
+        minimumNormalExponent: minimumNormalExponent)
+    }
+  }
+
+  private func x87PreOperationExceptions(
+    operation: DoryX87BinaryOperation,
+    lhs: DoryX86ExtendedFloat,
+    rhs: DoryX86ExtendedFloat
   ) -> UInt16 {
     if lhs.isSignalingNaN || rhs.isSignalingNaN { return 1 }
     let invalid: Bool =
@@ -4324,14 +4398,12 @@ public struct DoryX86Interpreter: Sendable {
     }
     if denominator.isZero {
       if numerator.isFinite, !numerator.isZero { return 1 << 2 }
-    } else if result.isInfinite, numerator.isFinite, denominator.isFinite {
-      return 1 << 3
     }
     return 0
   }
 
-  /// Records x87 numeric status before a masked response or suppressed
-  /// unmasked result. Publishing also clears C1 and keeps ES/B consistent.
+  /// Records x87 numeric status and keeps C1 plus ES/B consistent. The return
+  /// value lets pre-operation exception paths suppress their architectural effects.
   private func recordX87Exceptions(
     _ flags: UInt16,
     roundedUp: Bool = false,
