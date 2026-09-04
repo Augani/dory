@@ -2620,8 +2620,21 @@ final class DorydServiceTests: XCTestCase {
                 && $0.operationID == resumeOperationToken
         })
 
+        let beforeSuspendPID = manager.status(id: "dev")?.pid
+        let beforeSuspendEvents = try manager.flightRecorder(id: "dev", afterSequence: 0).events
+        let invalidSuspend = expectation(description: "machineSuspend invalid operation reply")
+        proxy.machineSuspend("dev", operationID: "456789AB-CDEF-4012-8345-6789ABCDEF01") { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("canonical operation ID"), message)
+            invalidSuspend.fulfill()
+        }
+        wait(for: [invalidSuspend], timeout: 5)
+        XCTAssertEqual(manager.status(id: "dev")?.pid, beforeSuspendPID)
+        XCTAssertEqual(try manager.flightRecorder(id: "dev", afterSequence: 0).events, beforeSuspendEvents)
+
         let suspend = expectation(description: "machineSuspend fail-closed reply")
-        proxy.machineSuspend("dev") { ok, body, message in
+        proxy.machineSuspend("dev", operationID: "456789ab-cdef-4012-8345-6789abcdef01") { ok, body, message in
             XCTAssertFalse(ok)
             XCTAssertTrue(message.contains("durable suspend requires"), message)
             XCTAssertEqual(body.count, 0)

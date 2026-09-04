@@ -6395,7 +6395,7 @@ final class AppStore {
         }
     }
 
-    func suspendMachine(_ machine: Machine) {
+    func suspendMachine(_ machine: Machine, operationID: UUID = UUID()) {
         guard requireDorydMachines(), machine.status == .running || machine.status == .paused else {
             return
         }
@@ -6404,7 +6404,7 @@ final class AppStore {
         Task {
             defer { busyMachines.remove(machine.name) }
             do {
-                _ = try await dorydClient.machineSuspend(machine.name)
+                _ = try await dorydClient.machineSuspend(machine.name, operationID: operationID)
             } catch {
                 actionError = "Could not suspend \(machine.name): \(error)"
             }

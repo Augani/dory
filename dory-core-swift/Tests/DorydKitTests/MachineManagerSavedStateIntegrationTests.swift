@@ -1,5 +1,6 @@
 import Darwin
 import Foundation
+import DoryOperations
 import XCTest
 @testable import DorydKit
 
@@ -99,8 +100,20 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
         let controller = RecordingSavedStateController(exitMarker: fixture.exitMarker)
 
         var firstManager: MachineManager? = fixture.manager(controller: controller)
-        _ = try startAndAcceptHandoff(try XCTUnwrap(firstManager), fixture: fixture)
-        let suspended = try XCTUnwrap(firstManager).suspend(id: fixture.machineID)
+        let running = try startAndAcceptHandoff(try XCTUnwrap(firstManager), fixture: fixture)
+        let journal = try DoryOperationJournalStore(home: fixture.base + "/journal")
+        let startRecord = try XCTUnwrap(try journal.list().first { $0.plan.kind == .workspaceStart })
+        XCTAssertThrowsError(try XCTUnwrap(firstManager).suspend(
+            id: fixture.machineID, operationID: startRecord.plan.id
+        ))
+        XCTAssertThrowsError(try XCTUnwrap(firstManager).suspend(
+            id: fixture.machineID, operationID: UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0))
+        ))
+        XCTAssertEqual(firstManager?.status(id: fixture.machineID)?.pid, running.pid)
+        XCTAssertEqual(controller.saveCount, 0)
+
+        let operationID = UUID()
+        let suspended = try XCTUnwrap(firstManager).suspend(id: fixture.machineID, operationID: operationID)
         XCTAssertEqual(suspended.state, .suspended)
         XCTAssertEqual(controller.saveCount, 1)
         XCTAssertNotNil(suspended.savedState)
@@ -108,12 +121,34 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
         XCTAssertTrue(FileManager.default.fileExists(
             atPath: fixture.savedStatePath
         ))
+        let committed = try journal.read(operationID)
+        XCTAssertEqual(committed.plan.kind, .workspaceSuspend)
+        XCTAssertEqual(committed.state.status, .completed)
+        let operation = try journal.acquire(operationID).readWorkspaceLifecycleOperation()
+        XCTAssertEqual(operation.operationID, operationID)
+        XCTAssertEqual(operation.source.state, .running)
+        XCTAssertEqual(operation.target.state, .suspended)
+        XCTAssertEqual(operation.targetResourceID, DoryMachineSavedStateStore.directoryName)
+        XCTAssertNotNil(operation.targetSnapshotAuthority)
+        let payload = try Data(contentsOf: URL(fileURLWithPath: fixture.savedStatePath))
+        let firstReplay = try XCTUnwrap(firstManager).suspend(id: fixture.machineID, operationID: operationID)
+        XCTAssertEqual(firstReplay.state, .suspended)
+        XCTAssertNil(firstReplay.pid)
+        XCTAssertEqual(controller.saveCount, 1)
+        XCTAssertEqual(try journal.read(operationID), committed)
         firstManager = nil
 
         let recovered = fixture.manager(controller: controller)
         let recoveredStatus = try XCTUnwrap(recovered.status(id: fixture.machineID))
         XCTAssertEqual(recoveredStatus.state, .suspended)
         XCTAssertEqual(recoveredStatus.savedState, suspended.savedState)
+        let recoveredReplay = try recovered.suspend(id: fixture.machineID, operationID: operationID)
+        XCTAssertEqual(recoveredReplay.state, .suspended)
+        XCTAssertNil(recoveredReplay.pid)
+        XCTAssertEqual(controller.saveCount, 1)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: fixture.savedStatePath)), payload)
+        XCTAssertEqual(try journal.list().filter { $0.plan.kind == .workspaceSuspend }.map(\.plan.id), [operationID])
+        XCTAssertThrowsError(try recovered.suspend(id: "another-machine", operationID: operationID))
 
         try? FileManager.default.removeItem(atPath: fixture.exitMarker)
         let result = SavedStateLockedResult<DoryMachineStatus>()
@@ -150,6 +185,16 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
         XCTAssertEqual(replay.pid, restored.pid)
         XCTAssertThrowsError(try recovered.pause(id: fixture.machineID, operationID: restoreOperationID))
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog)), originalArguments)
+        // A lost reply may be retried after a later resume. It must not save or spawn again.
+        let argumentsBeforeReplay = try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog))
+        let afterResumeReplay = try recovered.suspend(id: fixture.machineID, operationID: operationID)
+        XCTAssertEqual(afterResumeReplay.state, .running)
+        XCTAssertEqual(afterResumeReplay.pid, restored.pid)
+        XCTAssertNil(afterResumeReplay.savedState)
+        XCTAssertEqual(controller.saveCount, 1)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog)), argumentsBeforeReplay)
+        XCTAssertEqual(try journal.read(operationID), committed)
+
         _ = try recovered.stop(id: fixture.machineID)
         XCTAssertEqual(try recovered.resume(id: fixture.machineID, operationID: restoreOperationID).state, .stopped)
         XCTAssertNil(recovered.status(id: fixture.machineID)?.pid)

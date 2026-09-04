@@ -6306,9 +6306,16 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
-    public func suspend(id: String) throws -> DoryMachineStatus {
+    public func suspend(
+        id: String,
+        operationID: UUID? = nil
+    ) throws -> DoryMachineStatus {
         let mutationLease = mutationCoordinator.acquire(workspaceID: id)
         defer { mutationLease.release() }
+        let durableOperationID = try Self.lifecycleOperationID(operationID, action: "suspend")
+        if let replay = try replayPowerOperation(
+            id: id, operationID: durableOperationID, expectedKind: .workspaceSuspend
+        ) { return replay }
         try requireNoActivePlanningMutation(id: id)
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
         defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
@@ -6346,6 +6353,7 @@ public final class MachineManager: @unchecked Sendable {
             authoritativeConfigurationData: authoritativeData
         )
         let lifecycle = try beginLifecycleSuspend(
+            operationID: durableOperationID,
             machine: machine,
             runtimeIdentity: runtimeIdentity,
             sourceState: sourceState,
@@ -21468,12 +21476,14 @@ public final class MachineManager: @unchecked Sendable {
     }
 
     private func beginLifecycleSuspend(
+        operationID: UUID,
         machine: DoryMachineConfiguration,
         runtimeIdentity: DoryMachineRuntimeIdentity,
         sourceState: DoryWorkspaceLifecycleState,
         savedStateAuthority: DoryWorkspaceSnapshotAuthority
     ) throws -> MachineLifecycleJournalContext {
         try beginLifecycleOperation(
+            operationID: operationID,
             kind: .suspending,
             source: lifecycleCondition(
                 machine: machine,

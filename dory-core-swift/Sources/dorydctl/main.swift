@@ -1448,8 +1448,9 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         })
     case "suspend":
         let name = try cursor.take("usage: dorydctl machine suspend NAME")
+        let operationID = DoryOperationIdentity.canonical(UUID())
         try emitJSON(try client.withTimeout(atLeast: machineFileMutationTimeout).statusCommand {
-            $0.machineSuspend(name, reply: $1)
+            $0.machineSuspend(name, operationID: operationID, reply: $1)
         })
     case "resume":
         let name = try cursor.take("usage: dorydctl machine resume NAME")

@@ -25,6 +25,7 @@ nonisolated protocol DorydControlXPC {
     func machinePause(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machinePause(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineSuspend(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineSuspend(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineResume(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineResume(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineRestart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -2127,9 +2128,16 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
-    func machineSuspend(_ machineID: String) async throws -> DorydMachineStatus {
+    func machineSuspend(
+        _ machineID: String,
+        operationID: UUID = UUID()
+    ) async throws -> DorydMachineStatus {
         try await withTimeout(atLeast: 15 * 60).statusCommand { proxy, reply in
-            proxy.machineSuspend(machineID, reply: reply)
+            proxy.machineSuspend(
+                machineID,
+                operationID: operationID.uuidString.lowercased(),
+                reply: reply
+            )
         } decode: {
             Self.machineStatus(from: $0)
         }

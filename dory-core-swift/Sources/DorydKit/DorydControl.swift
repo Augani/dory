@@ -25,6 +25,7 @@ import Foundation
     func machinePause(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machinePause(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineSuspend(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineSuspend(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineResume(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineResume(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineRestart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)

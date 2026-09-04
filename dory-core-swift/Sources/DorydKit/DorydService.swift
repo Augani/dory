@@ -769,8 +769,24 @@ public final class DorydService: NSObject, DorydControl {
         _ machineID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
+        machineSuspend(
+            machineID,
+            operationID: DoryOperationIdentity.canonical(UUID()),
+            reply: reply
+        )
+    }
+
+    public func machineSuspend(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let parsedOperationID = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "machine suspend requires a canonical operation ID")
+            return
+        }
         machineControl(machineID, action: "suspend", reply: reply) { manager, id in
-            try manager.suspend(id: id)
+            try manager.suspend(id: id, operationID: parsedOperationID)
         }
     }
 
