@@ -1,0 +1,334 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-correctness-review",
+  "status": "in-progress",
+  "phaseComplete": false,
+  "releaseQualified": false,
+  "sourceCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+  "previousReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-53.json",
+    "sha256": "8eab19ad252974ae0dc67d20eba8325fa43b61998b56213ac4b0cb3c4d605910"
+  },
+  "latestCompletedGuestReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-2-review.json",
+    "sha256": "3e4f48a718a0e15fe1b33c2e02c470f13c0958ea78091aebc8ae27d63b20f986"
+  },
+  "latestIOFailure": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-2-failure-review.json",
+    "sha256": "b4c1b64725129358f580de912680e16a8179181680ff759443804f9c9b2882e9"
+  },
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "testCommand": {
+    "environment": {
+      "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+      "SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH": "1",
+      "DORY_ISA_EVIDENCE_ROOT": "/tmp/dory-p02-inventory-evidence"
+    },
+    "arguments": [
+      "swift",
+      "test",
+      "--package-path",
+      "/tmp/dory-p02-correctness-source-1/dory-core-swift",
+      "--scratch-path",
+      "/tmp/dory-p02-correctness-build-1",
+      "--jobs",
+      "3",
+      "--no-parallel",
+      "--filter",
+      "DoryX86|DoryPC|DoryARM64|PVHBootRunnerTests|PVHJITDiagnosticsTests|PVHStress|ISAInventoryTests|DoryVirtio"
+    ]
+  },
+  "buildMode": "Incremental debug gates and optimized source56 build; no new clean command recorded.",
+  "runs": [
+    {
+      "run": 54,
+      "comparisonCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+      "observedToolSession": 21168,
+      "completionChunk": "c6fd78",
+      "exitCode": 1,
+      "testsExecuted": false,
+      "compileFailure": {
+        "uniqueDiagnostic": "argument 'rcx' must precede argument 'rbx'",
+        "file": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86CompareExchangeWriteTests.swift",
+        "line": 129,
+        "scope": "Repeated compiler diagnostics for one argument-order error; no tests or completed build."
+      },
+      "sourceBinding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-commit-binding.json",
+        "sha256": "8c9a1c77efbf08b9b545ac059469a61f1f2116ed8e03ea5766e5a61359cc3feb"
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-source-manifest.json.gz",
+        "sha256": "e8a5ac00c52ba4245d7e0a86ca51347383b44f79407227d58ec0d02713c6457c"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-source-overlay.tar.gz",
+        "sha256": "4824d6796ebdcd27db7b5e5e795a4dd7902b85b1799b9da760416472101baf90"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54.log.gz",
+        "sha256": "bead17c96a6a883e5c16a754750967d4b58fe7018cfdfedbcef0163d8f5033dd"
+      }
+    },
+    {
+      "run": 55,
+      "comparisonCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+      "observedToolSession": 55752,
+      "completionChunk": "10412a",
+      "exitCode": 1,
+      "buildElapsedSeconds": 15.54,
+      "sourceBinding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-55-commit-binding.json",
+        "sha256": "a6bcb7824aa1aa3e7c8af7cca96509de73c8ea871e9ab72f1678d143eea34b91"
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-55-source-manifest.json.gz",
+        "sha256": "cf639f8781904398ac1922c40c39d470e50c83c03237e2f7fb4d62ec80d71296"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-55-source-overlay.tar.gz",
+        "sha256": "119ea4586d5925e94a3f713584ad7b351d4e7dddafb150ddec448f6635f5676e"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-55.log.gz",
+        "sha256": "4c6d02a473b1a01469ef631203e8d543b35ab387ccd7d7667ba66e58e6be715a"
+      },
+      "swiftTesting": {
+        "reported": 988,
+        "passed": 986,
+        "failed": 1,
+        "disabledPhysicalReference": 1,
+        "suites": 129,
+        "elapsedSeconds": 7.589
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    },
+    {
+      "run": 56,
+      "comparisonCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+      "observedToolSession": 89680,
+      "completionChunk": "607325",
+      "exitCode": 0,
+      "buildElapsedSeconds": 30.77,
+      "sourceBinding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56-commit-binding.json",
+        "sha256": "11b7547c71454bcea3e20d4f6b91c738bbf2c950e5406c5a61db8d5580e224ef"
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56-source-manifest.json.gz",
+        "sha256": "f14afc1447d7f7c77345515e0eed611ce9192faf0579d0b4c7d3e4e161c22b7b"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56-source-overlay.tar.gz",
+        "sha256": "bf72968dca5fb743c7ed29cf02e287755b5a7771ddd346c5a8d5a8e400093b9e"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56.log.gz",
+        "sha256": "70a53287cdcd5698a2e8fcfdfcf86b23a650691f39abfc32bfc51c7c98858c80"
+      },
+      "swiftTesting": {
+        "reported": 989,
+        "passed": 988,
+        "failed": 0,
+        "disabledPhysicalReference": 1,
+        "suites": 129,
+        "elapsedSeconds": 8.118
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    }
+  ],
+  "componentChanges": [
+    {
+      "commit": "3a00a8f4df44443c0ca2033790416b0382a2a3ba",
+      "scope": "Execute SSE2 PSHUFLW/PSHUFHW with selected-half word permutations, unchanged source half and preserved upper YMM state; precise memory/admission checks and native fallback prefix publication.",
+      "regressionEvidence": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PackedWordShuffleTests.swift",
+          "sha256": "93627933caaf33f85ea532c20dc5ff674c4c21b07326c7fc92d2a686e90b896b",
+          "passedMethods": [
+            "mandatoryPrefixesSelectWordHalfWithoutChangingPSHUFD",
+            "everyImmediateSelectsSourceWordsAndPreservesUpperYMM",
+            "memorySourceReadsAllSixteenBytesAndCopiesUnshuffledSourceHalf",
+            "featureAndControlFaultsPrecedeDataAccessAndPreserveState",
+            "memoryAlignmentBoundsAndReadFaultsDoNotPublishDestination",
+            "bothNativeTiersFallBackAndPublishCompletedPrefixExactlyOnce"
+          ],
+          "run": 56,
+          "sourceOverlay": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56-source-overlay.tar.gz",
+            "sha256": "bf72968dca5fb743c7ed29cf02e287755b5a7771ddd346c5a8d5a8e400093b9e"
+          },
+          "log": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56.log.gz",
+            "sha256": "70a53287cdcd5698a2e8fcfdfcf86b23a650691f39abfc32bfc51c7c98858c80"
+          }
+        }
+      ]
+    },
+    {
+      "commit": "07e61696f39901e7634e4b868c797301e1fbc141",
+      "scope": "Perform scalar and pair destination write cycles on mismatch, preflight full writable range and explicit segment/canonical operands before data access.",
+      "regressionEvidence": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86CompareExchangeWriteTests.swift",
+          "sha256": "8732f7156a5ad8da390a6cc87769fca09880a531e71e3466a6997eae6176bfc3",
+          "passedMethods": [
+            "scalarMemoryComparisonsWriteExactlyOnceOnBothOutcomes",
+            "pairMemoryComparisonsWriteOriginalBytesOnMismatchAndOnlyChangeZF",
+            "readableButWriteProtectedDestinationsFaultBeforeReadsOrFlagsOnEitherOutcome",
+            "deniedTailPreflightPreventsPartialWritesAndAccumulatorUpdates",
+            "memoryComparisonsValidateTheWholeUsableSegmentBeforeAnyDataAccess",
+            "noncanonicalMemorySpansFaultBeforeBackingWithTheSelectedSegmentVector",
+            "failedRegisterComparisonPreservesDestinationUpperBitsAndPairAlignmentStaysPrecise"
+          ],
+          "run": 56,
+          "sourceOverlay": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56-source-overlay.tar.gz",
+            "sha256": "bf72968dca5fb743c7ed29cf02e287755b5a7771ddd346c5a8d5a8e400093b9e"
+          },
+          "log": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56.log.gz",
+            "sha256": "70a53287cdcd5698a2e8fcfdfcf86b23a650691f39abfc32bfc51c7c98858c80"
+          }
+        }
+      ]
+    }
+  ],
+  "compareExchangeCorrections": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-56-compare-exchange-corrections.json",
+    "sha256": "83f16fed25cd74064158d56f43c65ae7cc805aef0610df043d0530c8eff4bb74"
+  },
+  "ioGuestShuffleReduction": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io2-shuffle-reduction-through-run-56.json",
+    "sha256": "7cb1189bc0af2718fb5c98771bdeb496ba15b5bbff83bd0b87fc0824b6f5a646"
+  },
+  "releaseBuild": {
+    "sourceCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+    "sourceManifest": "/tmp/dory-p02-correctness-manifest-56.json",
+    "runner": "/tmp/dory-p02-runner-07e61696f-release",
+    "runnerSHA256": "da9589b0591e412228bb3cce407eed839d91df04303a814433d80ae55a9ae966",
+    "runnerBytes": 9168760,
+    "buildLog": "/tmp/dory-p02-release-runner-build-56.log",
+    "buildElapsedSeconds": 56.34,
+    "exitCode": 0,
+    "observedToolSession": 11233,
+    "completionChunk": "ad97a0",
+    "sourceManifestSHA256": "ea9cc66cfc577991ff911feeb8584934591b7a66510c7cf2d65e28fcb51eff96",
+    "buildLogSHA256": "d57d0918b2e516257fb2307f5c3eed72cd131173fc19613c56b1e646f46d13f4",
+    "sourceBinding": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56-commit-binding.json",
+      "sha256": "11b7547c71454bcea3e20d4f6b91c738bbf2c950e5406c5a61db8d5580e224ef"
+    },
+    "receipt": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-56-receipt.json",
+      "sha256": "62e9bd4344eeec172096876b66a5537937e899a9a2e80fe415782d0fffb3ba3c"
+    },
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-build-56.log.gz",
+      "sha256": "02c932063aaf1d6cf3a645bea475b5383d463a37b3a9b29cc5f77f3718d5310f"
+    },
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift build --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 --jobs 3 -c release --product dory-pc-linux-boot-runner",
+    "scope": "Immutable source56 copied runner verified locally; binary not vendored. Optimized build is not a guest acceptance result."
+  },
+  "retentionTransformations": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-56-retention-transformations.json",
+    "sha256": "97f26b8810c43e659b0e3d8e256d78ad4e8c6166b90b78e34ca635b1626c00da"
+  },
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-source-overlay.tar.gz",
+      "sha256": "4824d6796ebdcd27db7b5e5e795a4dd7902b85b1799b9da760416472101baf90"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-commit-binding.json",
+      "sha256": "8c9a1c77efbf08b9b545ac059469a61f1f2116ed8e03ea5766e5a61359cc3feb"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-source-manifest.json.gz",
+      "sha256": "e8a5ac00c52ba4245d7e0a86ca51347383b44f79407227d58ec0d02713c6457c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54.log.gz",
+      "sha256": "bead17c96a6a883e5c16a754750967d4b58fe7018cfdfedbcef0163d8f5033dd"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-55-source-overlay.tar.gz",
+      "sha256": "119ea4586d5925e94a3f713584ad7b351d4e7dddafb150ddec448f6635f5676e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-55-commit-binding.json",
+      "sha256": "a6bcb7824aa1aa3e7c8af7cca96509de73c8ea871e9ab72f1678d143eea34b91"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-55-source-manifest.json.gz",
+      "sha256": "cf639f8781904398ac1922c40c39d470e50c83c03237e2f7fb4d62ec80d71296"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-55.log.gz",
+      "sha256": "4c6d02a473b1a01469ef631203e8d543b35ab387ccd7d7667ba66e58e6be715a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56-source-overlay.tar.gz",
+      "sha256": "bf72968dca5fb743c7ed29cf02e287755b5a7771ddd346c5a8d5a8e400093b9e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56-commit-binding.json",
+      "sha256": "11b7547c71454bcea3e20d4f6b91c738bbf2c950e5406c5a61db8d5580e224ef"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56-source-manifest.json.gz",
+      "sha256": "f14afc1447d7f7c77345515e0eed611ce9192faf0579d0b4c7d3e4e161c22b7b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56.log.gz",
+      "sha256": "70a53287cdcd5698a2e8fcfdfcf86b23a650691f39abfc32bfc51c7c98858c80"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-56-compare-exchange-corrections.json",
+      "sha256": "83f16fed25cd74064158d56f43c65ae7cc805aef0610df043d0530c8eff4bb74"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io2-shuffle-reduction-through-run-56.json",
+      "sha256": "7cb1189bc0af2718fb5c98771bdeb496ba15b5bbff83bd0b87fc0824b6f5a646"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-56-receipt.json",
+      "sha256": "62e9bd4344eeec172096876b66a5537937e899a9a2e80fe415782d0fffb3ba3c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-build-56.log.gz",
+      "sha256": "02c932063aaf1d6cf3a645bea475b5383d463a37b3a9b29cc5f77f3718d5310f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-56-retention-transformations.json",
+      "sha256": "97f26b8810c43e659b0e3d8e256d78ad4e8c6166b90b78e34ca635b1626c00da"
+    }
+  ],
+  "limitations": [
+    "No checkpoint is newly closed. P02 remains incomplete.",
+    "Run54 failed compilation on one test argument-order error and executed no tests; run55 retained four issues in one null-selector method;56 passes the expanded correction.",
+    "Thirteen current component methods comprise six word-shuffle and seven compare-exchange methods; they are not13additional methods beyond every preceding gate.",
+    "One disabled physical-reference method and one optional XCTest boot-fixture skip remain excluded from pass counts; overlapping runs are not summed.",
+    "Only source56 optimized build is added; no new clean command or guest outcome is recorded. IO3 remains outside this evidence.",
+    "Multi-vCPU atomic ordering, broader CPU/FPU/SIMD qualification and effectiveVM follow-up remain open.",
+    "The pure full-span floating-point transfer validator is included as a prerequisite; unrelated environment-transfer work is not in these frozen sources.",
+    "Experimental host with concurrent work; durations are engineering observations, not P14 qualification."
+  ]
+}

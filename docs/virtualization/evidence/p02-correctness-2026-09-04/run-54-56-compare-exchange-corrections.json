@@ -1,0 +1,73 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-compare-exchange-corrections",
+  "comparisonCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+  "compileFailure54": {
+    "source": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-commit-binding.json",
+      "sha256": "8c9a1c77efbf08b9b545ac059469a61f1f2116ed8e03ea5766e5a61359cc3feb"
+    },
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54.log.gz",
+      "sha256": "bead17c96a6a883e5c16a754750967d4b58fe7018cfdfedbcef0163d8f5033dd"
+    },
+    "uniqueDiagnostic": "argument 'rcx' must precede argument 'rbx'",
+    "testsExecuted": false
+  },
+  "syntaxRetry55": {
+    "changedInput": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86CompareExchangeWriteTests.swift",
+    "source54SHA256": "d88ba999ba066d9076a1a4c4295e5c4ee6d26e5795a53d021583172466c7d117",
+    "source55SHA256": "b5ed59fd86775ae1c35f044983bc982f3f5818e9a840ebbfd6c34f6a5f4a1ff9",
+    "singleArgumentOrderReplacement": true,
+    "testExpectationsAndProductSourceUnchanged": true
+  },
+  "runtimeFailure55": {
+    "source": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-55-commit-binding.json",
+      "sha256": "a6bcb7824aa1aa3e7c8af7cca96509de73c8ea871e9ab72f1678d143eea34b91"
+    },
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-55.log.gz",
+      "sha256": "4c6d02a473b1a01469ef631203e8d543b35ab387ccd7d7667ba66e58e6be715a"
+    },
+    "failedMethod": "pairTransfersValidateTheWholeSegmentAndWritableTypeBeforeAnyDataAccess",
+    "issues": 4,
+    "cases": "Null DS and null SS selector: expected segment fault and unchanged state/no data access for each.",
+    "issueLines": [
+      "\udbc2\udc84  Test pairTransfersValidateTheWholeSegmentAndWritableTypeBeforeAnyDataAccess() recorded an issue at DoryX86CompareExchangeWriteTests.swift:92:9: Expectation failed: (result \u2192 .retired(DoryDBTX86.DoryX86DecodedInstruction(address: 4096, bytes: [15, 199, 15], prefixes: DoryDBTX86.DoryX86InstructionPrefixes(lock: false, repeatPrefix: nil, segmentOverride: nil, operandSizeOverride: false, addressSizeOverride: false, rex: nil, vex: nil), operation: DoryDBTX86.DoryX86InstructionOperation.compareExchangePair(destination: DoryDBTX86.DoryX86MemoryOperand(base: Optional(DoryDBTX86.DoryX86GeneralRegister.rdi), index: nil, scale: 1, displacement: 0, ripRelative: false, width: DoryDBTX86.DoryX86OperandWidth.doubleword, addressWidth: DoryDBTX86.DoryX86OperandWidth.doubleword, segment: DoryDBTX86.DoryX86SegmentRegister.ds, ignoresLegacySegmentBase: false), doubleQuadword: false)))) == (.exception(.init(kind: stack ? .stackSegment : .generalProtection,",
+      "\udbc2\udc84  Test pairTransfersValidateTheWholeSegmentAndWritableTypeBeforeAnyDataAccess() recorded an issue at DoryX86CompareExchangeWriteTests.swift:94:9: Expectation failed: (state == before && memory.reads == 0 \u2192 false) && (memory.writes == 0 \u2192 <not evaluated>)",
+      "\udbc2\udc84  Test pairTransfersValidateTheWholeSegmentAndWritableTypeBeforeAnyDataAccess() recorded an issue at DoryX86CompareExchangeWriteTests.swift:92:9: Expectation failed: (result \u2192 .retired(DoryDBTX86.DoryX86DecodedInstruction(address: 4096, bytes: [54, 15, 199, 15], prefixes: DoryDBTX86.DoryX86InstructionPrefixes(lock: false, repeatPrefix: nil, segmentOverride: Optional(54), operandSizeOverride: false, addressSizeOverride: false, rex: nil, vex: nil), operation: DoryDBTX86.DoryX86InstructionOperation.compareExchangePair(destination: DoryDBTX86.DoryX86MemoryOperand(base: Optional(DoryDBTX86.DoryX86GeneralRegister.rdi), index: nil, scale: 1, displacement: 0, ripRelative: false, width: DoryDBTX86.DoryX86OperandWidth.doubleword, addressWidth: DoryDBTX86.DoryX86OperandWidth.doubleword, segment: DoryDBTX86.DoryX86SegmentRegister.ss, ignoresLegacySegmentBase: false), doubleQuadword: false)))) == (.exception(.init(kind: stack ? .stackSegment : .generalProtection,",
+      "\udbc2\udc84  Test pairTransfersValidateTheWholeSegmentAndWritableTypeBeforeAnyDataAccess() recorded an issue at DoryX86CompareExchangeWriteTests.swift:94:9: Expectation failed: (state == before && memory.reads == 0 \u2192 false) && (memory.writes == 0 \u2192 <not evaluated>)"
+    ],
+    "classification": "Product address-validation gap, not a fixture expectation error."
+  },
+  "corrected56": {
+    "source": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56-commit-binding.json",
+      "sha256": "11b7547c71454bcea3e20d4f6b91c738bbf2c950e5406c5a61db8d5580e224ef"
+    },
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56.log.gz",
+      "sha256": "70a53287cdcd5698a2e8fcfdfcf86b23a650691f39abfc32bfc51c7c98858c80"
+    },
+    "changedInputsFrom55": [
+      {
+        "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+        "source55SHA256": "efd19dffeca15b93ea4dfa682785a55a78320072447dc04c18f8e38dc471994a",
+        "source56SHA256": "5416902a59847a9999d8257ad229671d70f14ce3b0f5c19144c85be6fddcf88a"
+      },
+      {
+        "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86CompareExchangeWriteTests.swift",
+        "source55SHA256": "b5ed59fd86775ae1c35f044983bc982f3f5818e9a840ebbfd6c34f6a5f4a1ff9",
+        "source56SHA256": "8732f7156a5ad8da390a6cc87769fca09880a531e71e3466a6997eae6176bfc3"
+      }
+    ],
+    "scope": "Add atomic-only null/present/system segment checks and use the full-span transfer validator before writable preflight. Expand the segment matrix to scalar and pair forms and add canonical/overflow cases.",
+    "testMethods": 7
+  },
+  "limitations": [
+    "No multi-vCPU ordering or physical execution qualification.",
+    "Source56 predicate still tests VM directly; the compatibility-mode effective-VM follow-up is outside this frozen gate.",
+    "The successful gate does not erase the compile failure54 or runtime failure55."
+  ]
+}

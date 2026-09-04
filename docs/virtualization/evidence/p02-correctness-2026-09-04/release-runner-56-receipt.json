@@ -1,0 +1,14 @@
+{
+  "sourceCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+  "sourceManifest": "/tmp/dory-p02-correctness-manifest-56.json",
+  "runner": "/tmp/dory-p02-runner-07e61696f-release",
+  "runnerSHA256": "da9589b0591e412228bb3cce407eed839d91df04303a814433d80ae55a9ae966",
+  "runnerBytes": 9168760,
+  "buildLog": "/tmp/dory-p02-release-runner-build-56.log",
+  "buildElapsedSeconds": 56.34,
+  "exitCode": 0,
+  "observedToolSession": 11233,
+  "completionChunk": "ad97a0",
+  "sourceManifestSHA256": "ea9cc66cfc577991ff911feeb8584934591b7a66510c7cf2d65e28fcb51eff96",
+  "buildLogSHA256": "d57d0918b2e516257fb2307f5c3eed72cd131173fc19613c56b1e646f46d13f4"
+}

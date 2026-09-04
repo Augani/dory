@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-io-guest-word-shuffle-reduction",
+  "guestFailure": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-2-failure-review.json",
+    "sha256": "b4c1b64725129358f580de912680e16a8179181680ff759443804f9c9b2882e9"
+  },
+  "guestFailureValidation": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-2-failure-validation.json",
+    "sha256": "19ad8d7f8d1689001864359a2400d20a4a72fdc17a7c8eab06afed42bd82a0d4"
+  },
+  "failedGuestSourceCommit": "862383b91c2e5b7ef1b6c78ddd17aef60be8a1db",
+  "correctedSourceCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+  "guestInstructionPointer": "0x1003a9f",
+  "pinnedGuestELFSHA256": "72eee711647f609d8f7dac5b87429038d7f2fdb97d7ba6d1240532add7a5f9b5",
+  "instructionBytesHex": "f20f70d200",
+  "instruction": "PSHUFLW xmm2,xmm2,0",
+  "regressionEvidence": [
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PackedWordShuffleTests.swift",
+      "sha256": "93627933caaf33f85ea532c20dc5ff674c4c21b07326c7fc92d2a686e90b896b",
+      "passedMethods": [
+        "mandatoryPrefixesSelectWordHalfWithoutChangingPSHUFD",
+        "everyImmediateSelectsSourceWordsAndPreservesUpperYMM",
+        "memorySourceReadsAllSixteenBytesAndCopiesUnshuffledSourceHalf",
+        "featureAndControlFaultsPrecedeDataAccessAndPreserveState",
+        "memoryAlignmentBoundsAndReadFaultsDoNotPublishDestination",
+        "bothNativeTiersFallBackAndPublishCompletedPrefixExactlyOnce"
+      ],
+      "run": 56,
+      "sourceOverlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56-source-overlay.tar.gz",
+        "sha256": "bf72968dca5fb743c7ed29cf02e287755b5a7771ddd346c5a8d5a8e400093b9e"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56.log.gz",
+        "sha256": "70a53287cdcd5698a2e8fcfdfcf86b23a650691f39abfc32bfc51c7c98858c80"
+      }
+    }
+  ],
+  "coverage": "Six methods cover the exact guest encoding, all256 controls for both word-half forms with same/distinct registers, unchanged half and upperYMM, fullm128 memory reads, precise faults and both native-tier fallbacks.",
+  "actualGuestReplayAccepted": false,
+  "scope": "Bounded instruction reduction and source56 test result only. No outcome from unfinished IO3 is included and P02-25 remains open."
+}

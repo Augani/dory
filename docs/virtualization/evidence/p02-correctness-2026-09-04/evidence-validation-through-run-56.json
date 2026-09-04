@@ -1,0 +1,166 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-evidence-retention-validation",
+  "reviewSHA256": "0546e1b776b53e299942574488b0ca0e850ae8dfe40b1a0062c741a125abab33",
+  "newArtifactsBeforeThisValidation": 20,
+  "distinctRepositoryArtifactReferencesVerified": 22,
+  "previousReviewHashVerified": true,
+  "envelopesSchemaValidated": 2,
+  "schemaPath": "Config/DoryVirtualizationEvidence.schema.json",
+  "schemaSHA256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb",
+  "sourceBindings": [
+    {
+      "run": 54,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+      "trackedInputs": 728,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 140,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+          "frozenSHA256": "efd19dffeca15b93ea4dfa682785a55a78320072447dc04c18f8e38dc471994a",
+          "commitSHA256": "5416902a59847a9999d8257ad229671d70f14ce3b0f5c19144c85be6fddcf88a"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86CompareExchangeWriteTests.swift",
+          "frozenSHA256": "d88ba999ba066d9076a1a4c4295e5c4ee6d26e5795a53d021583172466c7d117",
+          "commitSHA256": "8732f7156a5ad8da390a6cc87769fca09880a531e71e3466a6997eae6176bfc3"
+        }
+      ]
+    },
+    {
+      "run": 55,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+      "trackedInputs": 728,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 140,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+          "frozenSHA256": "efd19dffeca15b93ea4dfa682785a55a78320072447dc04c18f8e38dc471994a",
+          "commitSHA256": "5416902a59847a9999d8257ad229671d70f14ce3b0f5c19144c85be6fddcf88a"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86CompareExchangeWriteTests.swift",
+          "frozenSHA256": "b5ed59fd86775ae1c35f044983bc982f3f5818e9a840ebbfd6c34f6a5f4a1ff9",
+          "commitSHA256": "8732f7156a5ad8da390a6cc87769fca09880a531e71e3466a6997eae6176bfc3"
+        }
+      ]
+    },
+    {
+      "run": 56,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+      "trackedInputs": 728,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 140,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    }
+  ],
+  "strictLogCountsVerified": true,
+  "logCounts": [
+    {
+      "run": 54,
+      "testsExecuted": false,
+      "compileExitCode": 1,
+      "uniqueCompilerDiagnostic": "argument 'rcx' must precede argument 'rbx'"
+    },
+    {
+      "run": 55,
+      "swiftPassed": 986,
+      "swiftFailed": 1,
+      "swiftDisabled": 1,
+      "swiftReported": 988,
+      "swiftSuites": 129,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": [
+        "\udbc2\udc84  Test pairTransfersValidateTheWholeSegmentAndWritableTypeBeforeAnyDataAccess() failed after 0.004 seconds with 4 issues."
+      ]
+    },
+    {
+      "run": 56,
+      "swiftPassed": 988,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 989,
+      "swiftSuites": 129,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    }
+  ],
+  "componentRegressionSourcesAndPassedLines": [
+    {
+      "commit": "3a00a8f4df44443c0ca2033790416b0382a2a3ba",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PackedWordShuffleTests.swift",
+          "sha256": "93627933caaf33f85ea532c20dc5ff674c4c21b07326c7fc92d2a686e90b896b",
+          "run": 56,
+          "passedMethods": 6
+        }
+      ]
+    },
+    {
+      "commit": "07e61696f39901e7634e4b868c797301e1fbc141",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86CompareExchangeWriteTests.swift",
+          "sha256": "8732f7156a5ad8da390a6cc87769fca09880a531e71e3466a6997eae6176bfc3",
+          "run": 56,
+          "passedMethods": 7
+        }
+      ]
+    }
+  ],
+  "latestComponentMethods": 13,
+  "unchangedFilterVerified": true,
+  "compareExchangeCorrection": {
+    "reference": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-56-compare-exchange-corrections.json",
+      "sha256": "83f16fed25cd74064158d56f43c65ae7cc805aef0610df043d0530c8eff4bb74"
+    },
+    "source54CompiledNoTests": true,
+    "singleArgumentOrderingCorrection54to55": true,
+    "productSourceAndExpectationsUnchanged54to55": true,
+    "runtime55FailedMethods": 1,
+    "runtime55FailedCases": 2,
+    "runtime55Issues": 4,
+    "otherElevenComponentMethodsPassed55": true,
+    "source56ChangesTwoFiles": true,
+    "atomicOnlyLegacySegmentAndFullSpanChecksVerified": true,
+    "expandedSevenMethodsPass56": true,
+    "effectiveVMPredicateFollowupExcluded": true
+  },
+  "io2ShuffleReduction": {
+    "reference": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io2-shuffle-reduction-through-run-56.json",
+      "sha256": "7cb1189bc0af2718fb5c98771bdeb496ba15b5bbff83bd0b87fc0824b6f5a646"
+    },
+    "exactRetainedFailureAndPinnedELFBytesMatched": true,
+    "exactGuestVectorInPassingSource56Method": true,
+    "allSixMethodsVerified": true,
+    "guestReplayAcceptanceClaimed": false
+  },
+  "releaseRunner": {
+    "sourceCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+    "sha256": "da9589b0591e412228bb3cce407eed839d91df04303a814433d80ae55a9ae966",
+    "byteCount": 9168760,
+    "buildExitCode": 0,
+    "buildElapsedSeconds": 56.34,
+    "binaryVerifiedLocallyNotVendored": true
+  },
+  "noUserHomePathsInNewArtifactTextOrMembers": true,
+  "tarOwnerAndTimeNormalizationVerified": true,
+  "pathNormalizedArtifacts": [],
+  "normalizationByThisValidation": "None; all retained inputs read-only.",
+  "qualification": "Failed54compile,failed55runtime,successful56source gate andoptimizedbuild only. No new clean, guest execution, physical reference orcheckpoint closure; liveVMpredicate andenvironmentwork excluded."
+}

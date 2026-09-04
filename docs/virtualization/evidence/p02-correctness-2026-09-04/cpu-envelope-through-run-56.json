@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-12",
+    "P02-14",
+    "P02-16"
+  ],
+  "sourceCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Preserved compile54/runtime55 failures, successful56 word-shuffle and compare-exchange regression gate and optimized runner. No new guest acceptance.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-56.json",
+      "sha256": "0546e1b776b53e299942574488b0ca0e850ae8dfe40b1a0062c741a125abab33"
+    }
+  ],
+  "limitations": [
+    "No checkpoint is newly closed. P02 remains incomplete.",
+    "Run54 failed compilation on one test argument-order error and executed no tests; run55 retained four issues in one null-selector method;56 passes the expanded correction.",
+    "Thirteen current component methods comprise six word-shuffle and seven compare-exchange methods; they are not13additional methods beyond every preceding gate.",
+    "One disabled physical-reference method and one optional XCTest boot-fixture skip remain excluded from pass counts; overlapping runs are not summed.",
+    "Only source56 optimized build is added; no new clean command or guest outcome is recorded. IO3 remains outside this evidence.",
+    "Multi-vCPU atomic ordering, broader CPU/FPU/SIMD qualification and effectiveVM follow-up remain open.",
+    "The pure full-span floating-point transfer validator is included as a prerequisite; unrelated environment-transfer work is not in these frozen sources.",
+    "Experimental host with concurrent work; durations are engineering observations, not P14 qualification."
+  ]
+}

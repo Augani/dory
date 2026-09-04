@@ -1,0 +1,123 @@
+{
+  "kind": "p02-evidence-retention-transformations",
+  "artifacts": [
+    {
+      "originalPath": "/tmp/dory-p02-correctness-overlay-54.tar.gz",
+      "originalSHA256": "a7b2b7624f51de57c094170429ccd73c57461e45976ad12cbd8a1ef9bb5aaa45",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-source-overlay.tar.gz",
+        "sha256": "4824d6796ebdcd27db7b5e5e795a4dd7902b85b1799b9da760416472101baf90"
+      },
+      "transformation": "Tar owner/timestamps normalized; member names, modes and bytes unchanged",
+      "memberCount": 140
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-manifest-54.json",
+      "originalSHA256": "1f9c82046f39bb44c8d52f19d43bca7f46b5bb2feae94ceac7f5a8b66d18e8e7",
+      "originalBytes": 144733,
+      "normalizedSHA256": "1f9c82046f39bb44c8d52f19d43bca7f46b5bb2feae94ceac7f5a8b66d18e8e7",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54-source-manifest.json.gz",
+        "sha256": "e8a5ac00c52ba4245d7e0a86ca51347383b44f79407227d58ec0d02713c6457c"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-run-54.log",
+      "originalSHA256": "2fec65e9933f2e20614b1c6165792fb0e05db5884b938325e7890f9cc4a1a80b",
+      "originalBytes": 30035,
+      "normalizedSHA256": "2fec65e9933f2e20614b1c6165792fb0e05db5884b938325e7890f9cc4a1a80b",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-54.log.gz",
+        "sha256": "bead17c96a6a883e5c16a754750967d4b58fe7018cfdfedbcef0163d8f5033dd"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-overlay-55.tar.gz",
+      "originalSHA256": "ab07c1e49a39f9f0f814a619b23e81ba4016c86c669fc040d54d64cde0c35d54",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-55-source-overlay.tar.gz",
+        "sha256": "119ea4586d5925e94a3f713584ad7b351d4e7dddafb150ddec448f6635f5676e"
+      },
+      "transformation": "Tar owner/timestamps normalized; member names, modes and bytes unchanged",
+      "memberCount": 140
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-manifest-55.json",
+      "originalSHA256": "a8012363fd7b738e6e961ed2f6e8e8ec587c84a2368c249b4550c3e1009b95be",
+      "originalBytes": 144733,
+      "normalizedSHA256": "a8012363fd7b738e6e961ed2f6e8e8ec587c84a2368c249b4550c3e1009b95be",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-55-source-manifest.json.gz",
+        "sha256": "cf639f8781904398ac1922c40c39d470e50c83c03237e2f7fb4d62ec80d71296"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-run-55.log",
+      "originalSHA256": "4ce8237c68693ea4050f7f1a2f4e38187c76b8847d104cd834c81b387ba7d857",
+      "originalBytes": 208546,
+      "normalizedSHA256": "4ce8237c68693ea4050f7f1a2f4e38187c76b8847d104cd834c81b387ba7d857",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-55.log.gz",
+        "sha256": "4c6d02a473b1a01469ef631203e8d543b35ab387ccd7d7667ba66e58e6be715a"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-overlay-56.tar.gz",
+      "originalSHA256": "5b30856b4b51cd09b45685e02e718ac91c8fdb832c559d6655d1939c7162db48",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56-source-overlay.tar.gz",
+        "sha256": "bf72968dca5fb743c7ed29cf02e287755b5a7771ddd346c5a8d5a8e400093b9e"
+      },
+      "transformation": "Tar owner/timestamps normalized; member names, modes and bytes unchanged",
+      "memberCount": 140
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-manifest-56.json",
+      "originalSHA256": "ea9cc66cfc577991ff911feeb8584934591b7a66510c7cf2d65e28fcb51eff96",
+      "originalBytes": 144733,
+      "normalizedSHA256": "ea9cc66cfc577991ff911feeb8584934591b7a66510c7cf2d65e28fcb51eff96",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56-source-manifest.json.gz",
+        "sha256": "f14afc1447d7f7c77345515e0eed611ce9192faf0579d0b4c7d3e4e161c22b7b"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-run-56.log",
+      "originalSHA256": "a2d89760e66cb659e4c49720bcb6df3d175ff5739095c6777cc56a79e24ebbf1",
+      "originalBytes": 216713,
+      "normalizedSHA256": "a2d89760e66cb659e4c49720bcb6df3d175ff5739095c6777cc56a79e24ebbf1",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-56.log.gz",
+        "sha256": "70a53287cdcd5698a2e8fcfdfcf86b23a650691f39abfc32bfc51c7c98858c80"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-release-runner-56-receipt.json",
+      "originalSHA256": "62e9bd4344eeec172096876b66a5537937e899a9a2e80fe415782d0fffb3ba3c",
+      "originalBytes": 650,
+      "normalizedSHA256": "62e9bd4344eeec172096876b66a5537937e899a9a2e80fe415782d0fffb3ba3c",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-56-receipt.json",
+        "sha256": "62e9bd4344eeec172096876b66a5537937e899a9a2e80fe415782d0fffb3ba3c"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-release-runner-build-56.log",
+      "originalSHA256": "d57d0918b2e516257fb2307f5c3eed72cd131173fc19613c56b1e646f46d13f4",
+      "originalBytes": 10755,
+      "normalizedSHA256": "d57d0918b2e516257fb2307f5c3eed72cd131173fc19613c56b1e646f46d13f4",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-build-56.log.gz",
+        "sha256": "02c932063aaf1d6cf3a645bea475b5383d463a37b3a9b29cc5f77f3718d5310f"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    }
+  ]
+}
