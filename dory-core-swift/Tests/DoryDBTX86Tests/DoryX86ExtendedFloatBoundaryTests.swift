@@ -131,6 +131,29 @@ import Testing
     #expect(stored.roundedUp && !stored.suppressWriteAndPop)
   }
 
+  @Test func generatedInvalidArithmeticReturnsX87RealIndefinite() {
+    // Intel SDM Vol. 1 §§4.8.3.7 and 8.5.1.2 require a non-NaN invalid
+    // arithmetic operation to produce real indefinite. Its double-extended
+    // encoding is FFFF C000000000000000H, including the negative sign bit.
+    let infinity = value(significand: 0x8000_0000_0000_0000, exponentField: 0x7FFF)
+    let zero = DoryX86ExtendedFloat.zero
+    let invalidResults = [
+      infinity.adding(infinity.negated()),
+      infinity.subtracting(infinity),
+      infinity.multiplied(by: zero),
+      zero.multiplied(by: infinity),
+      infinity.divided(by: infinity),
+      zero.divided(by: zero),
+    ]
+    let realIndefinite: [UInt8] = [0, 0, 0, 0, 0, 0, 0, 0xC0, 0xFF, 0xFF]
+
+    for result in invalidResults {
+      #expect(result.isNaN)
+      #expect(result.isNegative)
+      #expect(result.bytes() == realIndefinite)
+    }
+  }
+
   private func value(significand: UInt64, exponentField: UInt16) -> DoryX86ExtendedFloat {
     let bytes = (0..<8).map { UInt8(truncatingIfNeeded: significand >> ($0 * 8)) }
       + [UInt8(truncatingIfNeeded: exponentField), UInt8(truncatingIfNeeded: exponentField >> 8)]

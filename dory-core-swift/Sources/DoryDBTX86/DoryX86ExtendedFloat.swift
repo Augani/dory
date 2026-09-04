@@ -657,7 +657,7 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
   private static func nan() -> Self {
     .init(
       kind: .nan(0xC000_0000_0000_0000),
-      isNegative: false,
+      isNegative: true,
       exponent: 0,
       significand: 0
     )
