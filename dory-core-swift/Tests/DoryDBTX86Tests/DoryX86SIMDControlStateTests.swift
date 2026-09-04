@@ -74,7 +74,9 @@ import Testing
   @Test func AVXRequiresOSXSAVEAndBothXCR0ComponentsBeforeTSOrDataAccess() throws {
     for bytes in vex {
       for osxsave in [false, true] {
-        for xcr0: UInt64 in [1, 3, 5, 7] where !osxsave || xcr0 != 7 {
+        // XCR0=5 is rejected at snapshot construction because AVX state
+        // depends on SSE state; only architecturally reachable masks belong here.
+        for xcr0: UInt64 in [1, 3, 7] where !osxsave || xcr0 != 7 {
           for ts in [false, true] {
             var state = try state(cr0: 0x13 | (ts ? 8 : 0),
               cr4: (1 << 9) | (osxsave ? 1 << 18 : 0), xcr0: xcr0)

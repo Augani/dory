@@ -68,6 +68,31 @@ import Testing
     }
   }
 
+  @Test func xcr0RejectsAVXWithoutSSEAcrossConstructionAndRestore() throws {
+    for xcr0: UInt64 in [1, 3, 7] {
+      let state = try DoryX86ArchitecturalState(control: .init(xcr0: xcr0))
+      #expect(try JSONDecoder().decode(
+        DoryX86ArchitecturalState.self, from: JSONEncoder().encode(state)) == state)
+    }
+    for xcr0: UInt64 in [0, 2, 4, 5, 8, .max] {
+      #expect(throws: DoryX86StateError.invalidXCR0(xcr0)) {
+        try DoryX86ArchitecturalState(control: .init(xcr0: xcr0))
+      }
+    }
+
+    let encoded = try JSONEncoder().encode(DoryX86ArchitecturalState.reset())
+    var object = try #require(
+      JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    var control = try #require(object["control"] as? [String: Any])
+    control["xcr0"] = 5
+    object["control"] = control
+    let invalidSnapshot = try JSONSerialization.data(withJSONObject: object)
+    #expect(throws: DoryX86StateError.invalidXCR0(5)) {
+      try JSONDecoder().decode(DoryX86ArchitecturalState.self, from: invalidSnapshot)
+    }
+  }
+
   @Test func longModeRejectsNoncanonicalInstructionPointers() throws {
     var control = DoryX86ControlState()
     control.efer = 1 << 10

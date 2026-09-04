@@ -26,7 +26,7 @@ public enum DoryX86StateError: Error, Sendable, Equatable, CustomStringConvertib
     case .invalidVectorRegisterCount(let count):
       "x86 state contains \(count) vector registers; expected 16"
     case .invalidXCR0(let value):
-      "x86 XCR0 contains an unsupported state-component mask: 0x\(String(value, radix: 16))"
+      "x86 XCR0 contains an invalid state-component mask: 0x\(String(value, radix: 16))"
     case .invalidPhysicalAddressBits(let value):
       "x86 physical address width is \(value); expected 32 through 52 bits"
     case .missingLegacyPAEPDPTEs:
@@ -551,7 +551,12 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
     guard Self.isCanonical(rip) || control.efer & (1 << 10) == 0 else {
       throw DoryX86StateError.noncanonicalAddress(rip)
     }
-    guard control.xcr0 & ~0x7 == 0, control.xcr0 & 1 == 1 else {
+    // Intel SDM Vol. 1 §13.3: x87 state is mandatory, and AVX state cannot
+    // be enabled unless SSE state is enabled. Match the XSETBV publication
+    // boundary so a restored snapshot cannot manufacture unreachable XSTATE.
+    guard control.xcr0 & ~0x7 == 0, control.xcr0 & 1 == 1,
+      control.xcr0 & 4 == 0 || control.xcr0 & 2 != 0
+    else {
       throw DoryX86StateError.invalidXCR0(control.xcr0)
     }
     try control.validateLegacyPAEPDPTEs()
