@@ -1,0 +1,158 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-02",
+    "P02-03",
+    "P02-04",
+    "P02-09",
+    "P02-12",
+    "P02-13",
+    "P02-18",
+    "P02-19"
+  ],
+  "sourceCommit": "57f03182c68636f8ddcb8ec025c3bb59427806a2",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Bounded P02 correctness work through run7; passing unit gates plus explicitly failed real-kernel diagnostic probes. This is partial implementation evidence.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-1.log.gz",
+      "sha256": "28f4716527f3e1edaa1c6117623712dc2f568d4c41be93c9364e8e7177d0a089"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-1-source-manifest.json.gz",
+      "sha256": "eb9dbfb6257baed5285f4e6b3bcdeb031d7f06991e0db8be9988a53d287b5b45"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-1-source-overlay.tar.gz",
+      "sha256": "0c639912a27d2b27d193af43cc39f4269ac1ee9bb4bc3b5c011646af90387276"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-2.log.gz",
+      "sha256": "763276fafa4ab08f99c0be0c0e8e5f18e92b201e2619db56d42cdf058ac7160f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-2-source-manifest.json.gz",
+      "sha256": "eaa49b94e10b598bfc9d87c199ac79531e3601a15755a70cebaf734588b8f12e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-2-source-overlay.tar.gz",
+      "sha256": "e8ded07079c5b96eeb546d7d7f71c5cba0ce06ef2b18984697317ae0382bfd9a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-3.log.gz",
+      "sha256": "fae08638d7bfb6a17d0f4ec3faa907c64dbd1b7de52a7cfd28d92f141a984321"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-3-source-manifest.json.gz",
+      "sha256": "21f580cb84f042ec4ffa4ac432dd67dd8431153470feacc76a42d393e42dbd8d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-3-source-overlay.tar.gz",
+      "sha256": "464fa2fa9dbdf3d99bea05f7277ddf9d7a85ef8583f0babbde05cc3237d7d514"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-4.log.gz",
+      "sha256": "125b9d701794a8525987166a72e182a68f6661a9f1b362009ce02e00b638291b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-4-source-manifest.json.gz",
+      "sha256": "0a73eab98f7d92956fe5e99a8728da533d00b321c5e186b8a51e13d428ffcd8b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-4-source-overlay.tar.gz",
+      "sha256": "3db210a296d2cfeec2eb55561a6cb6d519c4ceeb89751724759976e5c6aa236c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-5.log.gz",
+      "sha256": "c137e7d32b32ae0e971ff0ebc8ccfc6833456a78320bba9963b8237cf7e18cf1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-5-source-manifest.json.gz",
+      "sha256": "2e65fcfc7531520af6393f86dc5149d9c730035cd55d7383f58d096a21c91415"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-5-source-overlay.tar.gz",
+      "sha256": "329edbfb700bb30cb8028c752163a9d9042cddcec1e8748c3aed26dc66c496e0"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-6.log.gz",
+      "sha256": "69c3300a6ddd3a01fe4c85ba86368f6ccb72356fd442628df1be98e46848a573"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-6-source-manifest.json.gz",
+      "sha256": "db7a43654b3bc3e35de461b69e2406ca23e65e6173e3ccbd574b4e6159b2643b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-6-source-overlay.tar.gz",
+      "sha256": "81bd5c8c6b4489b944db4b6dbb46e34bf78eb73107ae29331ad0a11ac7f851a2"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-7.log.gz",
+      "sha256": "5fb97b03a5a17a6214c1a30bdfe94fafc3d56f365659b2f5239d6333daa68ca2"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-7-source-manifest.json.gz",
+      "sha256": "7ed42e2afba1c572602991d616b2db6614a18eb450707176d782824070f55771"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-7-source-overlay.tar.gz",
+      "sha256": "0b60bcb8e873d5544c7ce3fbe258a10f5de24ebeded7d53e55b26338cb8d0ace"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-interpreter-probe-1.json",
+      "sha256": "d29e3582491869e711e85c11fd709369b7b778559f43c30f102e3bba39efe2fb"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-interpreter-probe-1-summary.json",
+      "sha256": "da76c2e6c5d69ef5c17a883edf419cac4cb708d9cb8b4a770f25019354f166a7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-baseline-jit-probe-1.json",
+      "sha256": "af9eea9b1f8e07aa7f7a4d8bc816998d2d4ef85cb2c59ed4e25b596c07194b4d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-baseline-jit-probe-1-summary.json",
+      "sha256": "d2701410be536f0275232aac03384b1cb25f72c3ddb749524dd951858224ec8a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-baseline-jit-probe-2.json",
+      "sha256": "0f429caf73695e802208c09840b5c169ecc4eb5f0d1923aa5adfad054249a7fa"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-baseline-jit-probe-2-summary.json",
+      "sha256": "53f0cd0648a48aba9ea8e3187a050c30c6b7cf0fc477998d6f602040af6bc6a4"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/committed-source-verification.json",
+      "sha256": "6cca70d94b62d1d41fd8d55b1b711bb7166efa3863c2ae21ea6a3680a503a538"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-7.json",
+      "sha256": "bac92960ce91dbf9363085a3ffeee6fc999d9b24a610f1f99790172abf51599e"
+    }
+  ],
+  "limitations": [
+    "P02 is not complete. No x86-64-v2/v3, Linux userspace, physical x86 reference, glibc/systemd, stress or release qualification is claimed.",
+    "Optional XCTest boot fixture is absent in these unit gates; it is explicitly skipped. Required mode rejects absence.",
+    "Alpine stock initramfs requires matching installation media and is not the bounded workload fixture. Its three probes failed their acceptance criteria.",
+    "The two one-million-instruction snapshots match all serialized CPU state fields; RAM/device equality was not captured and run UUIDs differ. This is not complete machine parity.",
+    "PAE/PSE/PGE remain unadvertised pending the controls/latched-PDPTE/reserved-bit gates in the paging audit.",
+    "Custom profiles do not qualify XSAVE/AVX execution. ByteArray legacy convenience allocation may trap on host exhaustion; production PC RAM uses throwing mmap.",
+    "P03 and P04 remain pending because the requested phase order is P02, then P03, then P04."
+  ]
+}
