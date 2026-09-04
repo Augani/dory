@@ -14,14 +14,18 @@
 # Then:  scripts/release.sh 1.0.0 42
 set -euo pipefail
 
-# Prefer an explicit DEVELOPER_DIR; otherwise pick up a local Xcode install, else fall back to
-# the Xcode already selected by xcode-select (CI runners set this themselves).
+# Public builds default to the final pinned toolchain. An explicit DEVELOPER_DIR
+# must pass the same public preflight; development builds may select another Xcode.
 if [ -z "${DEVELOPER_DIR:-}" ]; then
-  for app in /Applications/Xcode-26.6.0-Release.Candidate.app \
-             /Applications/Xcode_26.6.app /Applications/Xcode_26.6.0.app \
-             /Applications/Xcode.app /Applications/Xcode-*.app "$HOME"/Applications/Xcode*.app; do
-    [ -x "$app/Contents/Developer/usr/bin/xcodebuild" ] && { export DEVELOPER_DIR="$app/Contents/Developer"; break; }
-  done
+  if [ "${DORY_PUBLIC_RELEASE:-0}" = "1" ]; then
+    export DEVELOPER_DIR=/Applications/Xcode-26.6.app/Contents/Developer
+  else
+    for app in /Applications/Xcode-26.6.app \
+               /Applications/Xcode_26.6.app /Applications/Xcode_26.6.0.app \
+               /Applications/Xcode.app /Applications/Xcode-*.app "$HOME"/Applications/Xcode*.app; do
+      [ -x "$app/Contents/Developer/usr/bin/xcodebuild" ] && { export DEVELOPER_DIR="$app/Contents/Developer"; break; }
+    done
+  fi
 fi
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 REPO_ROOT="$(pwd -P)"
@@ -198,11 +202,17 @@ preflight_macos_floor() {
 
 preflight_public_toolchain() {
   local version
-  version="$(xcodebuild -version)"
-  printf '%s\n' "$version" | grep -Fx 'Xcode 26.6' >/dev/null \
-    || release_error "public releases require the pinned Xcode 26.6 toolchain"
-  printf '%s\n' "$version" | grep -Eq '^Build version 17F(109|113)$' \
-    || release_error "public releases require approved Xcode 26.6 build 17F109 or 17F113"
+  version="$(xcodebuild -version)" \
+    || release_error "cannot inspect the pinned final Xcode 26.6 build 17F113"
+  [ "$version" = "$(printf 'Xcode 26.6\nBuild version 17F113')" ] \
+    || release_error "public releases require final Xcode 26.6 build 17F113"
+  [ "$(uname -m)" = arm64 ] \
+    || release_error "public releases require an Apple Silicon host"
+  python3 "$REPO_ROOT/.github/scripts/verify-release-host-policy.py" \
+    || release_error "public release host policy failed"
+  # Both SDK facts come from xcrun under the same DEVELOPER_DIR used for the build.
+  python3 "$REPO_ROOT/.github/scripts/verify-vz-platform-sdk.py" \
+    || release_error "public release SDK policy failed"
 }
 
 preflight_component_supply_chain() {
