@@ -263,6 +263,8 @@ public struct DoryX86Interpreter: Sendable {
       case .shift(let operation, let destination, let countSource):
         let value = try read(
           destination, instruction: instruction, state: state, memory: executionMemory)
+        try preflightWrite(
+          to: destination, instruction: instruction, state: state, memory: executionMemory)
         let count: UInt8 =
           switch countSource {
           case .immediate(let value): value
@@ -323,6 +325,8 @@ public struct DoryX86Interpreter: Sendable {
           destination, instruction: instruction, state: state, memory: executionMemory)
         let sourceValue = try read(
           source, instruction: instruction, state: state, memory: executionMemory)
+        try preflightWrite(
+          to: destination, instruction: instruction, state: state, memory: executionMemory)
         let count: UInt8 =
           switch countSource {
           case .immediate(let value): value
@@ -6105,7 +6109,8 @@ public struct DoryX86Interpreter: Sendable {
   ) -> UInt64 {
     let bitCount = Int(width.rawValue)
     let countMask: UInt8 = width == .quadword ? 0x3f : 0x1f
-    var count = Int(rawCount & countMask)
+    let maskedCount = Int(rawCount & countMask)
+    var count = maskedCount
     let widthMask = mask(width)
     var result = value & widthMask
     guard count != 0 else { return result }
@@ -6113,10 +6118,13 @@ public struct DoryX86Interpreter: Sendable {
     switch operation {
     case .rotateLeft:
       count %= bitCount
-      guard count != 0 else { return result }
-      result = ((result << count) | (result >> (bitCount - count))) & widthMask
+      // ROL/ROR update CF for a nonzero masked count even when a full
+      // byte/word rotation leaves the destination unchanged (SDM Vol. 2B).
+      if count != 0 {
+        result = ((result << count) | (result >> (bitCount - count))) & widthMask
+      }
       setFlag(.carry, result & 1 != 0, in: &flags)
-      if count == 1 {
+      if maskedCount == 1 {
         setFlag(
           .overflow,
           (result & signBit(width) != 0) != flags.contains(.carry),
@@ -6125,10 +6133,11 @@ public struct DoryX86Interpreter: Sendable {
       }
     case .rotateRight:
       count %= bitCount
-      guard count != 0 else { return result }
-      result = ((result >> count) | (result << (bitCount - count))) & widthMask
+      if count != 0 {
+        result = ((result >> count) | (result << (bitCount - count))) & widthMask
+      }
       setFlag(.carry, result & signBit(width) != 0, in: &flags)
-      if count == 1 {
+      if maskedCount == 1 {
         let topTwo = (result >> UInt64(bitCount - 2)) & 3
         setFlag(.overflow, topTwo == 1 || topTwo == 2, in: &flags)
       }
@@ -6140,7 +6149,7 @@ public struct DoryX86Interpreter: Sendable {
         result = ((result << 1) | (flags.contains(.carry) ? 1 : 0)) & widthMask
         setFlag(.carry, outgoing, in: &flags)
       }
-      if count == 1 {
+      if maskedCount == 1 {
         setFlag(
           .overflow,
           (result & signBit(width) != 0) != flags.contains(.carry),
@@ -6155,7 +6164,7 @@ public struct DoryX86Interpreter: Sendable {
         result = (result >> 1) | (flags.contains(.carry) ? signBit(width) : 0)
         setFlag(.carry, outgoing, in: &flags)
       }
-      if count == 1 {
+      if maskedCount == 1 {
         let topTwo = (result >> UInt64(bitCount - 2)) & 3
         setFlag(.overflow, topTwo == 1 || topTwo == 2, in: &flags)
       }
