@@ -27,6 +27,7 @@ nonisolated protocol DorydControlXPC {
     func machineResume(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineResume(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineRestart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineRestart(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineUpdate(_ machineID: String, config: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineRefreshManagedDesktopKernel(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDisplayPresentationSet(_ machineID: String, presentation: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -1132,26 +1133,12 @@ nonisolated struct DorydMachineFailure: Sendable, Equatable, Hashable {
     var evidenceReferences: [DorydMachineFailureEvidenceReference]
 }
 
-nonisolated enum DorydMachineOperationKind: String, Sendable, Equatable, Hashable {
-    case importing
-    case provisioning
-    case resolving
-    case starting
-    case stopping
-    case pausing
-    case resuming
-    case suspending
-    case restoring
-    case snapshotting
-    case cloning
-    case updating
-    case repairing
-    case deleting
-}
+typealias DorydMachineOperationKind = DoryWorkspaceMutationKind
 
 nonisolated struct DorydMachineOperationSummary: Sendable, Equatable, Hashable {
     var operationID: String
     var kind: DorydMachineOperationKind
+    var phase: DoryOperationPhase? = nil
 }
 
 nonisolated struct DorydMachineStatus: Sendable, Equatable {
@@ -1159,6 +1146,7 @@ nonisolated struct DorydMachineStatus: Sendable, Equatable {
     var guestFamily: String = "linux"
     var guestArchitecture: String? = nil
     var state: String
+    var readiness: DoryVirtualMachineReadiness = .none
     var pid: Int32?
     var lastError: String?
     var failure: DorydMachineFailure? = nil
@@ -2159,9 +2147,9 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
-    func machineRestart(_ machineID: String) async throws -> DorydMachineStatus {
+    func machineRestart(_ machineID: String, operationID: UUID = UUID()) async throws -> DorydMachineStatus {
         try await withTimeout(atLeast: DoryMachineControlTiming.restartSeconds).statusCommand { proxy, reply in
-            proxy.machineRestart(machineID, reply: reply)
+            proxy.machineRestart(machineID, operationID: operationID.uuidString.lowercased(), reply: reply)
         } decode: {
             Self.machineStatus(from: $0)
         }
@@ -2176,9 +2164,11 @@ nonisolated final class DorydClient: @unchecked Sendable {
         shares: [DorydMachineShareConfiguration]? = nil,
         typedSettings: DorydMachineTypedSettings? = nil,
         typedSettingsPatch: DorydMachineTypedSettingsPatch? = nil,
-        installerMediaAttached: Bool? = nil
+        installerMediaAttached: Bool? = nil,
+        operationID: UUID = UUID()
     ) async throws -> DorydMachineStatus {
         var config: [String: Any] = [:]
+        config["operationID"] = operationID.uuidString.lowercased()
         if let memoryMB {
             config["memoryMB"] = memoryMB
         }
@@ -3073,8 +3063,16 @@ nonisolated final class DorydClient: @unchecked Sendable {
     nonisolated private static func machineStatus(from dictionary: NSDictionary) -> DorydMachineStatus? {
         guard let id = dictionary["id"] as? String,
               let state = dictionary["state"] as? String,
+              DoryVirtualMachineState(rawValue: state) != nil,
               let runtimeIdentity = machineRuntimeIdentity(from: dictionary) else {
             return nil
+        }
+        let readiness: DoryVirtualMachineReadiness
+        if let value = dictionary["readiness"] {
+            guard let decoded = decoded(DoryVirtualMachineReadiness.self, from: value) else { return nil }
+            readiness = decoded
+        } else {
+            readiness = .none
         }
         guard let runtimeGraphicsSelection = machineRuntimeGraphicsSelection(
             from: dictionary["runtimeGraphicsSelection"],
@@ -3144,6 +3142,7 @@ nonisolated final class DorydClient: @unchecked Sendable {
             guestFamily: nonEmptyString(dictionary["guestFamily"]) ?? "linux",
             guestArchitecture: nonEmptyString(dictionary["guestArchitecture"]),
             state: state,
+            readiness: readiness,
             pid: int32(dictionary["pid"]),
             lastError: nonEmptyString(dictionary["lastError"]),
             failure: failure.value,
@@ -3515,16 +3514,26 @@ nonisolated final class DorydClient: @unchecked Sendable {
         guard let dictionary = raw as? NSDictionary,
               let rawKeys = dictionary.allKeys as? [String],
               rawKeys.count == dictionary.allKeys.count,
-              Set(rawKeys) == ["operationID", "kind"],
+              Set(rawKeys).isSubset(of: ["operationID", "kind", "phase"]),
+              Set(rawKeys).isSuperset(of: ["operationID", "kind"]),
               let operationID = dictionary["operationID"] as? String,
               isMachineOperationID(operationID),
               let rawKind = dictionary["kind"] as? String,
               let kind = DorydMachineOperationKind(rawValue: rawKind) else {
             return nil
         }
+        let phase: DoryOperationPhase?
+        if let rawPhase = dictionary["phase"] {
+            guard let value = rawPhase as? String,
+                  let decoded = DoryOperationPhase(rawValue: value) else { return nil }
+            phase = decoded
+        } else {
+            phase = nil
+        }
         return ParsedMachineActiveOperation(value: .init(
             operationID: operationID,
-            kind: kind
+            kind: kind,
+            phase: phase
         ))
     }
 
@@ -4953,13 +4962,12 @@ nonisolated final class DorydClient: @unchecked Sendable {
         )
     }
 
-    nonisolated private static let machineEventStates: Set<String> = [
-        "created", "starting", "running", "paused", "suspended", "stopped", "failed",
-    ]
-    nonisolated private static let machineFlightPhases: Set<String> = [
-        "planned", "quiescing", "staging", "verifying", "readyToPublish",
-        "publishing", "validating", "completed",
-    ]
+    nonisolated private static let machineEventStates = Set(
+        DoryVirtualMachineState.allCases.map(\.rawValue)
+    )
+    nonisolated private static let machineFlightPhases = Set(
+        DoryOperationPhase.allCases.map(\.rawValue)
+    )
     nonisolated private static let machineIntegrationHealthStates: Set<String> = [
         "inactive", "missing-tools", "incompatible", "degraded", "compatibility", "healthy",
     ]

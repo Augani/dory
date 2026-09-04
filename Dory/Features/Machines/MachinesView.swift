@@ -130,6 +130,7 @@ private struct MachineCard: View {
     @State private var confirmingToolsRepair = false
     @State private var confirmingInstallerMediaChange = false
     @State private var showingIntegrationHealth = false
+    @State private var showingRuntimeStatus = false
     @State private var showingSerialConsole = false
     @State private var isTransferDropTargeted = false
 
@@ -219,9 +220,10 @@ private struct MachineCard: View {
 
             HStack(spacing: 10) {
                 actionButton(
-                    isRunning ? "stop.fill" : "play.fill",
-                    isRunning ? "Stop" : ((isPaused || isSuspended) ? "Resume" : "Start"),
-                    prominent: !isRunning
+                    [.running, .starting, .installing].contains(machine.status) ? "stop.fill" : "play.fill",
+                    machine.actionLabel,
+                    prominent: !isRunning,
+                    enabled: machine.status.acceptsPrimaryAction
                 ) {
                     store.toggleMachine(machine)
                 }
@@ -725,13 +727,58 @@ private struct MachineCard: View {
     }
 
     private var statusPill: some View {
-        HStack(spacing: 5) {
-            Circle().fill(machine.status.dotColor(p)).frame(width: 6, height: 6)
-            Text(machine.status.label).font(.system(size: 11, weight: .semibold)).foregroundStyle(machine.status.dotColor(p))
+        Button {
+            showingRuntimeStatus.toggle()
+        } label: {
+            HStack(spacing: 5) {
+                Circle().fill(machine.status.dotColor(p)).frame(width: 6, height: 6)
+                Text(machine.status.label)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(machine.status.dotColor(p))
+            }
+            .padding(.horizontal, 8).padding(.vertical, 3)
+            .background(machine.status.badgeBackground(p), in: Capsule())
+            .fixedSize()
         }
-        .padding(.horizontal, 8).padding(.vertical, 3)
-        .background(machine.status.badgeBackground(p), in: Capsule())
-        .fixedSize()
+        .buttonStyle(.plain)
+        .help(machine.readinessDetail)
+        .accessibilityLabel("\(machine.status.label). Show runtime observations")
+        .accessibilityHint(machine.readinessDetail)
+        .popover(isPresented: $showingRuntimeStatus) {
+            runtimeStatusDetails
+        }
+    }
+
+    private var runtimeStatusDetails: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("\(machine.name) · \(machine.status.label)")
+                .font(.headline)
+            if let operation = machine.activeOperation {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(machine.operationProgressLabel ?? operation.kind.rawValue.capitalized)
+                        .font(.subheadline.weight(.semibold))
+                    Text(operation.operationID)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                }
+            }
+            Divider()
+            ForEach(machine.readinessObservations) { observation in
+                HStack {
+                    Text(observation.label)
+                    Spacer()
+                    Label(
+                        observation.observed ? "Observed" : "Not observed",
+                        systemImage: observation.observed ? "checkmark.circle.fill" : "minus.circle"
+                    )
+                    .foregroundStyle(observation.observed ? p.green : p.text3)
+                }
+                .font(.system(size: 12))
+                .accessibilityElement(children: .combine)
+            }
+        }
+        .padding(16)
+        .frame(width: 330)
     }
 
     private func metric(_ label: String, _ value: String) -> some View {
@@ -786,6 +833,8 @@ private struct MachineCard: View {
                 .padding(.vertical, 4)
                 .background(runtimeEvidenceBackground(evidence.tone), in: Capsule())
                 .help(evidence.detail)
+                .accessibilityElement(children: .combine)
+                .accessibilityHint(evidence.detail)
             }
         }
     }

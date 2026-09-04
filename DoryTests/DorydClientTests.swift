@@ -6,6 +6,130 @@ import Testing
 @Suite(.serialized)
 struct DorydClientTests {
     @MainActor
+    @Test func machineStatesAndReadinessSurviveXPCWithoutInventingGuestReadiness() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+        for state in DoryVirtualMachineState.allCases.map(\.rawValue) {
+            if state == "suspended" {
+                _ = try await client.machineSuspend("dev")
+            } else {
+                service.setMachineSavedState("dev", nil)
+            }
+            service.setMachineState("dev", state)
+            let status = try #require((try await client.machineList()).first { $0.id == "dev" })
+            let machine = AppStore.machine(fromDoryd: status)
+            #expect(machine.status.rawValue == state)
+            #expect(machine.readiness == .none)
+        }
+        service.setMachineState("dev", "running")
+        service.setMachineReadiness("dev", [
+            "processAlive": true, "vmStarted": true, "guestBooted": false,
+            "toolsConnected": false, "desktopVisible": false, "workloadReady": false,
+        ])
+        let status = try #require((try await client.machineList()).first { $0.id == "dev" })
+        #expect(status.readiness.processAlive && status.readiness.vmStarted)
+        #expect(!status.readiness.guestBooted && !status.readiness.toolsConnected)
+        #expect(!status.readiness.desktopVisible && !status.readiness.workloadReady)
+        service.setMachineReadiness("dev", ["processAlive": "true"])
+        await #expect(throws: (any Error).self) { _ = try await client.machineList() }
+        service.setMachineReadiness("dev", nil)
+        service.setMachineState("dev", "unknown-runtime-state")
+        await #expect(throws: (any Error).self) { _ = try await client.machineList() }
+    }
+
+    @MainActor
+    @Test func allLifecycleOperationsAndPhasesSurviveStatusAndAppProjection() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+        let operationID = "01234567-89ab-4cde-8fab-0123456789ab"
+
+        for kind in DoryWorkspaceMutationKind.allCases {
+            for phase in DoryOperationPhase.allCases {
+                service.setMachineFailure("dev", nil, activeOperation: [
+                    "operationID": operationID,
+                    "kind": kind.rawValue,
+                    "phase": phase.rawValue,
+                ] as NSDictionary)
+                let status = try #require((try await client.machineList()).first { $0.id == "dev" })
+                let machine = AppStore.machine(fromDoryd: status)
+                #expect(machine.activeOperation?.operationID == operationID)
+                #expect(machine.activeOperation?.kind == kind)
+                #expect(machine.activeOperation?.phase == phase)
+                #expect(machine.runtimeEvidence.first { $0.id == "operation" }?.detail
+                    == "Operation \(operationID)")
+            }
+        }
+    }
+
+    @MainActor
+    @Test func eventAndFlightCursorsAcceptSharedStatesAndRestartProgress() async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService()
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+        let operationID = "01234567-89ab-4cde-8fab-0123456789ab"
+        let base = FakeDorydService.machineEventBatchRow()
+        let event = try #require((base["events"] as? [NSDictionary])?.first)
+        let baseStatus = try #require(event["status"] as? NSDictionary)
+
+        for state in DoryVirtualMachineState.allCases {
+            let status = NSMutableDictionary(dictionary: baseStatus)
+            status["state"] = state.rawValue
+            status["operationID"] = operationID
+            status["operationKind"] = "restarting"
+            let eventRow = NSMutableDictionary(dictionary: event)
+            eventRow["status"] = status
+            let batchRow = NSMutableDictionary(dictionary: base)
+            batchRow["events"] = [eventRow]
+            service.setMachineEventBatch(batchRow)
+            let batch = try await client.machineEvents(afterSequence: 4)
+            #expect(batch.events.first?.status?.state == state.rawValue)
+            #expect(batch.events.first?.status?.operationKind == .restarting)
+
+            for phase in DoryOperationPhase.allCases {
+                service.setMachineFlightRecorderBatch([
+                    "schemaVersion": UInt16(1), "machineID": "dev",
+                    "headSequence": UInt64(1), "snapshotRequired": false,
+                    "events": [[
+                        "schemaVersion": UInt16(1), "sequence": UInt64(1),
+                        "occurredAtUnixMilliseconds": Int64(1_000), "machineID": "dev",
+                        "kind": "operation-phase", "machineState": state.rawValue,
+                        "operationID": operationID, "operationKind": "restarting",
+                        "phase": phase.rawValue, "evidenceReferences": [] as [NSDictionary],
+                    ] as NSDictionary],
+                ])
+                let flight = try await client.machineFlightRecorder(machineID: "dev", afterSequence: 0)
+                #expect(flight.events.first?.machineState == state.rawValue)
+                #expect(flight.events.first?.operationKind == .restarting)
+                #expect(flight.events.first?.phase == phase.rawValue)
+            }
+        }
+        let unknownStatus = NSMutableDictionary(dictionary: baseStatus)
+        unknownStatus["state"] = "future-state"
+        let unknownEvent = NSMutableDictionary(dictionary: event)
+        unknownEvent["status"] = unknownStatus
+        let unknownBatch = NSMutableDictionary(dictionary: base)
+        unknownBatch["events"] = [unknownEvent]
+        service.setMachineEventBatch(unknownBatch)
+        await #expect(throws: DorydClientError.self) {
+            _ = try await client.machineEvents(afterSequence: 4)
+        }
+    }
+
+    @MainActor
     @Test func machineDisplayPresentationRoundTripsExactXPCShape() async throws {
         let listener = NSXPCListener.anonymous()
         let service = FakeDorydService()
@@ -922,6 +1046,7 @@ struct DorydClientTests {
         let activeOperation: NSDictionary = [
             "operationID": operationID,
             "kind": "starting",
+            "phase": "verifying",
         ]
         service.setMachineFailure(
             "dev",
@@ -935,6 +1060,7 @@ struct DorydClientTests {
         #expect(valid.failure?.recoveryDisposition == .retry)
         #expect(valid.failure?.operationID == operationID)
         #expect(valid.activeOperation?.operationID == operationID)
+        #expect(valid.activeOperation?.phase == .verifying)
         #expect(valid.activeOperation?.kind == .starting)
 
         let unknown = validFailure.mutableCopy() as! NSMutableDictionary
@@ -1603,7 +1729,9 @@ struct DorydClientTests {
             service.latestMachineResumeOperationID
                 == resumeOperationID.uuidString.lowercased()
         )
-        let restartedMachine = try await client.machineRestart("dev")
+        let restartOperationID = UUID(uuidString: "3456789a-bcde-4f01-8234-56789abcdef0")!
+        let restartedMachine = try await client.machineRestart("dev", operationID: restartOperationID)
+        #expect(service.latestMachineRestartOperationID == restartOperationID.uuidString.lowercased())
         let machineStats = try await client.machineStats("dev")
         let execResult = try await client.machineExec("dev", argv: ["/bin/sh", "-lc", "cargo --version"])
         let provisionedMachine = try await client.machineProvision("dev", recipe: "rust")
@@ -3178,6 +3306,7 @@ struct DorydClientTests {
         #expect(currentSettings.env.isEmpty)
 
         store.toggleMachine(machine)
+        store.toggleMachine(machine)
         try await waitUntil("machine stop") {
             store.machines.first { $0.name == "dev" }?.status == .stopped
         }
@@ -3191,6 +3320,13 @@ struct DorydClientTests {
         #expect(service.machineStartCount == 1)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
+        let currentIndex = try #require(store.machines.firstIndex { $0.name == "dev" })
+        store.machines[currentIndex].status = .recovering
+        store.toggleMachine(machine)
+        await Task.yield()
+        #expect(!store.isMachineBusy("dev"))
+        #expect(service.machineStopCount == 1)
+        store.machines[currentIndex].status = .running
         store.pauseMachine(machine)
         try await waitUntil("machine pause") {
             store.machines.first { $0.name == "dev" }?.status == .paused
@@ -3219,17 +3355,17 @@ struct DorydClientTests {
         #expect(service.machineResumeCount == 2)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
-        store.restartMachine(machine)
-        try await waitUntil("managed desktop stop-refresh-start restart") {
-            service.machineStopCount == 2
-                && service.machineStartCount == 2
+        let kernelRefreshBeforeRestart = service.latestManagedDesktopKernelRefreshRequest
+        let restartOperationID = UUID()
+        store.restartMachine(machine, operationID: restartOperationID)
+        try await waitUntil("managed desktop durable restart") {
+            service.machineRestartCount == 1
                 && !store.isMachineBusy("dev")
         }
-        #expect(service.machineRestartCount == 0)
-        #expect(
-            service.latestManagedDesktopKernelRefreshRequest?["sourcePath"] as? String
-                == desktopFixture.assets.kernelPath
-        )
+        #expect(service.machineStopCount == 1)
+        #expect(service.machineStartCount == 1)
+        #expect(service.latestMachineRestartOperationID == restartOperationID.uuidString.lowercased())
+        #expect(service.latestManagedDesktopKernelRefreshRequest == kernelRefreshBeforeRestart)
         #expect(store.machines.first { $0.name == "dev" }?.status == .running)
 
         machine = try #require(store.machines.first { $0.name == "dev" })
@@ -3514,6 +3650,24 @@ struct DorydClientTests {
         #expect(store.machineCreated?.name == "vmdev")
         #expect(store.machineCreationLog.contains("Provisioning Rust"))
         #expect(store.machineCreationLog.contains("cargo 1.0"))
+    }
+
+    @Test(arguments: [false, true])
+    func configurationUpdateCarriesStableCallerUUID(installerMedia: Bool) async throws {
+        let listener = NSXPCListener.anonymous()
+        let service = FakeDorydService(socketPath: "/unused")
+        let delegate = FakeDorydListenerDelegate(service: service)
+        listener.delegate = delegate
+        listener.resume()
+        defer { listener.invalidate() }
+        let client = DorydClient(endpoint: listener.endpoint)
+        let operationID = UUID()
+        for _ in 0..<2 {
+            _ = try await client.machineUpdate("dev", memoryMB: installerMedia ? nil : 4096,
+                installerMediaAttached: installerMedia ? false : nil, operationID: operationID)
+            #expect(service.latestMachineUpdateConfig?["operationID"] as? String == operationID.uuidString.lowercased())
+            #expect((service.latestMachineUpdateConfig?["installerMediaAttached"] as? Bool) == (installerMedia ? false : nil))
+        }
     }
 
     @MainActor
@@ -3839,8 +3993,33 @@ struct DorydClientTests {
         #expect(mac.rootfsPath.isEmpty)
         #expect(mac.bootMode == .macOSRestore)
         #expect(mac.macOSRestoreImagePath == "/Downloads/Restore.ipsw")
-        #expect(mac.diskSizeBytes == 96 * 1_024 * 1_024 * 1_024)
+        let diskSizeBytes = try #require(mac.diskSizeBytes)
+        let expectedDiskSize: UInt64 = 96 * 1_024 * 1_024 * 1_024
+        #expect(diskSizeBytes == expectedDiskSize)
+        #expect(mac.xpcDictionary["diskSizeBytes"] as? UInt64 == expectedDiskSize)
         #expect(mac.typedSettings.cameraConfiguration?.enabled == true)
+    }
+
+    @Test(arguments: [MachineBootMode.efi, .macOSRestore])
+    func machineDiskSizeConversionPreservesAbsenceAndRejectsInvalidSizes(bootMode: MachineBootMode) throws {
+        let largestConvertible = Int(UInt64.max / 1_073_741_824)
+        let requests: [(Int?, UInt64?)] = [
+            (nil, nil), (96, 103_079_215_104), (0, 0), (-1, 0),
+            (largestConvertible, UInt64(largestConvertible) * 1_073_741_824),
+            (largestConvertible + 1, 0), (Int.max, 0),
+        ]
+        for (gigabytes, expected) in requests {
+            let configuration = try #require(AppStore.dorydMachineConfiguration(
+                name: "disk-size",
+                settings: MachineSettings(
+                    guestFamily: bootMode == .macOSRestore ? "macos" : "linux",
+                    displayMode: .desktop, bootMode: bootMode, diskSizeGB: gigabytes
+                ),
+                environment: ["DORYD_DISABLE_BUNDLED_MACHINE_ASSETS": "1"]
+            ))
+            #expect(configuration.diskSizeBytes == expected)
+            #expect(configuration.xpcDictionary["diskSizeBytes"] as? UInt64 == expected)
+        }
     }
 
     @Test func nativeMacMachineConfigurationUsesExplicitTypedXPCFields() {
@@ -4869,6 +5048,7 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _machineResumeCount = 0
     private var _latestMachineResumeOperationID: String?
     private var _machineRestartCount = 0
+    private var _latestMachineRestartOperationID: String?
     private var _machineDeleteCount = 0
     private var _machineDeleteOK = true
     private var _machineDeleteMessage = ""
@@ -5081,6 +5261,11 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         return _latestMachineResumeOperationID
     }
 
+    var latestMachineRestartOperationID: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachineRestartOperationID
+    }
+
     var latestMachineDesktopUpdateOperationID: String? {
         lock.lock(); defer { lock.unlock() }
         return _latestMachineDesktopUpdateOperationID
@@ -5205,6 +5390,15 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         }
         current["state"] = state
         machines[machineID] = current.copy() as? NSDictionary
+    }
+
+    func setMachineReadiness(_ machineID: String, _ readiness: NSDictionary?) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let row = machines[machineID]?.mutableCopy() as? NSMutableDictionary else { return }
+        if let readiness { row["readiness"] = readiness }
+        else { row.removeObject(forKey: "readiness") }
+        machines[machineID] = row.copy() as? NSDictionary
     }
 
     func setMachineSavedState(_ machineID: String, _ savedState: Any?) {
@@ -5797,6 +5991,13 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         _latestMachineResumeOperationID = operationID
         lock.unlock()
         machineResume(machineID, reply: reply)
+    }
+
+    func machineRestart(_ machineID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        lock.lock()
+        _latestMachineRestartOperationID = operationID
+        lock.unlock()
+        machineRestart(machineID, reply: reply)
     }
 
     func machineRestart(_ machineID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {

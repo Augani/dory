@@ -5459,17 +5459,7 @@ final class AppStore {
     }
 
     nonisolated static func machine(fromDoryd status: DorydMachineStatus, domainSuffix: String = "dory.local") -> Machine {
-        let runState: RunState
-        switch status.state {
-        case "running":
-            runState = .running
-        case "paused", "starting":
-            runState = .paused
-        case "suspended":
-            runState = .suspended
-        default:
-            runState = .stopped
-        }
+        let runState = DoryVirtualMachineState(rawValue: status.state) ?? .failed
         let detail = [status.agentBuild, status.lastError]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .first { !$0.isEmpty } ?? status.state
@@ -5500,6 +5490,7 @@ final class AppStore {
                 ? "EFI · \(status.guestArchitecture ?? "arm64")"
                 : (isDesktop ? "\(desktopDistro.version) · \(desktopDistro.desktopName)" : detail)),
             status: runState,
+            readiness: status.readiness,
             cpuPercent: 0,
             memoryDisplay: "—",
             ip: status.address ?? Self.machineDNSName(name: status.id, suffix: domainSuffix),
@@ -6329,30 +6320,35 @@ final class AppStore {
 
     func toggleMachine(_ machine: Machine) {
         guard requireDorydMachines() else { return }
+        guard !busyMachines.contains(machine.name) else { return }
         guard let idx = machines.firstIndex(where: { $0.id == machine.id }) else { return }
         let previousState = machines[idx].status
+        guard previousState.acceptsPrimaryAction else { return }
         let name = machine.name
         busyMachines.insert(name)
         Task {
             defer { busyMachines.remove(name) }
             do {
                 switch previousState {
-                case .running:
+                case .running, .starting, .installing:
                     _ = try await dorydClient.machineStop(name)
                 case .paused:
                     _ = try await dorydClient.machineResume(name)
                 case .suspended:
                     _ = try await dorydClient.machineResume(name)
-                case .stopped:
+                case .created, .stopped, .failed:
                     try await refreshManagedDesktopKernelBeforeStart(name)
                     _ = try await dorydClient.machineStart(name)
+                case .absent, .defined, .stopping, .recovering, .deleting:
+                    return
                 }
             } catch {
                 let action = switch previousState {
-                case .running: "stop"
+                case .running, .starting, .installing: "stop"
                 case .paused: "resume"
                 case .suspended: "restore"
-                case .stopped: "start"
+                case .created, .stopped, .failed: "start"
+                case .absent, .defined, .stopping, .recovering, .deleting: "change"
                 }
                 actionError = "Could not \(action) \(name): \(error)"
             }
@@ -6392,7 +6388,7 @@ final class AppStore {
         }
     }
 
-    func restartMachine(_ machine: Machine) {
+    func restartMachine(_ machine: Machine, operationID: UUID = UUID()) {
         guard requireDorydMachines(), machine.status == .running || machine.status == .paused else {
             return
         }
@@ -6401,14 +6397,7 @@ final class AppStore {
         Task {
             defer { busyMachines.remove(machine.name) }
             do {
-                if machine.bootMode == .linuxKernel,
-                   machine.displayMode == .desktop {
-                    _ = try await dorydClient.machineStop(machine.name)
-                    try await refreshManagedDesktopKernelBeforeStart(machine.name)
-                    _ = try await dorydClient.machineStart(machine.name)
-                } else {
-                    _ = try await dorydClient.machineRestart(machine.name)
-                }
+                _ = try await dorydClient.machineRestart(machine.name, operationID: operationID)
             } catch {
                 actionError = "Could not restart \(machine.name): \(error)"
             }
@@ -6719,6 +6708,13 @@ final class AppStore {
         } else {
             cpuCount = settings.cpus ?? 2
         }
+        let diskSizeBytes = settings.diskSizeGB.map { gigabytes -> UInt64 in
+            guard let value = UInt64(exactly: gigabytes) else { return 0 }
+            let bytes = value.multipliedReportingOverflow(by: 1_073_741_824)
+            // Keep an invalid explicit request visible to daemon validation instead of
+            // crashing on overflow or turning a negative size into an omitted default.
+            return bytes.overflow ? 0 : bytes.partialValue
+        }
         return DorydMachineConfiguration(
             id: name,
             guestFamily: settings.guestFamily,
@@ -6730,9 +6726,7 @@ final class AppStore {
             bootMode: settings.bootMode,
             installerISOPath: settings.installerISOPath,
             macOSRestoreImagePath: settings.macOSRestoreImagePath,
-            diskSizeBytes: settings.diskSizeGB.flatMap { UInt64(exactly: $0) }.map {
-                $0 * 1024 * 1024 * 1024
-            },
+            diskSizeBytes: diskSizeBytes,
             memoryMB: memoryMB,
             cpuCount: cpuCount,
             address: address,
@@ -6750,6 +6744,11 @@ final class AppStore {
 
     func createMachine(name: String, recipe: DevRecipe? = nil, settings: MachineSettings = .default) async -> String? {
         let trimmedName = name.trimmingCharacters(in: .whitespaces)
+        guard DoryHostArchitecture.current == .arm64 else {
+            let message = "Dory virtual machines require an Apple Silicon Mac."
+            actionError = message
+            return message
+        }
         guard !trimmedName.isEmpty else { actionError = "Name is required"; return "Name is required" }
         guard trimmedName.utf8.count <= 63 else {
             actionError = "Invalid machine name: use 63 characters or fewer"

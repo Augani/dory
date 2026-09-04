@@ -1,4 +1,4 @@
-import DoryOperations
+public import DoryOperations
 import SwiftUI
 
 enum AppSection: String, CaseIterable, Identifiable, Sendable {
@@ -67,6 +67,52 @@ enum RunState: String, Sendable {
         case .paused: p.amberWeak
         case .suspended: p.accentSoft
         case .stopped: p.pill
+        }
+    }
+}
+
+extension DoryVirtualMachineState {
+    var label: String {
+        switch self {
+        case .absent: "Absent"
+        case .defined, .created: "Created"
+        case .installing: "Installing"
+        case .starting: "Starting"
+        case .running: "Running"
+        case .stopping: "Stopping"
+        case .paused: "Paused"
+        case .suspended: "Suspended"
+        case .recovering: "Recovering"
+        case .stopped: "Stopped"
+        case .failed: "Failed"
+        case .deleting: "Deleting"
+        }
+    }
+
+    var acceptsPrimaryAction: Bool {
+        switch self {
+        case .absent, .defined, .stopping, .recovering, .deleting: false
+        default: true
+        }
+    }
+
+    func dotColor(_ p: DoryPalette) -> Color {
+        switch self {
+        case .running: p.green
+        case .installing, .starting, .stopping, .paused, .recovering, .deleting: p.amber
+        case .suspended: p.accent
+        case .failed: p.red
+        case .absent, .defined, .created, .stopped: p.text3
+        }
+    }
+
+    func badgeBackground(_ p: DoryPalette) -> Color {
+        switch self {
+        case .running: p.greenWeak
+        case .installing, .starting, .stopping, .paused, .recovering, .deleting: p.amberWeak
+        case .suspended: p.accentSoft
+        case .failed: p.redWeak
+        case .absent, .defined, .created, .stopped: p.pill
         }
     }
 }
@@ -287,7 +333,8 @@ struct Machine: Identifiable, Hashable, Sendable {
     var guestFamily: String = "linux"
     var distro: String
     var version: String
-    var status: RunState
+    var status: DoryVirtualMachineState
+    var readiness: DoryVirtualMachineReadiness = .none
     var cpuPercent: Double
     var memoryDisplay: String
     var ip: String
@@ -322,8 +369,40 @@ struct Machine: Identifiable, Hashable, Sendable {
     var id: String { name }
 
     var badgeColor: Color { Color(hex: badgeHex) }
-    var actionLabel: String { status == .running ? "Stop" : "Start" }
+    var actionLabel: String {
+        switch status {
+        case .running, .starting, .installing: "Stop"
+        case .paused: "Resume"
+        case .suspended: "Restore"
+        case .stopping, .recovering, .deleting: status.label
+        case .absent, .defined, .created, .stopped, .failed: "Start"
+        }
+    }
     var isEmulated: Bool { !arch.isEmpty && arch != MachineArch.host.rawValue }
+
+    var readinessDetail: String {
+        readinessObservations.map {
+            "\($0.label): \($0.observed ? "observed" : "not observed")"
+        }.joined(separator: "\n")
+    }
+
+    var readinessObservations: [MachineReadinessObservation] {
+        [
+            .init(id: "process", label: "Process alive", observed: readiness.processAlive),
+            .init(id: "vm", label: "VM started", observed: readiness.vmStarted),
+            .init(id: "guest", label: "Guest booted", observed: readiness.guestBooted),
+            .init(id: "tools", label: "Guest tools connected", observed: readiness.toolsConnected),
+            .init(id: "desktop", label: "Desktop visible", observed: readiness.desktopVisible),
+            .init(id: "workload", label: "Workload ready", observed: readiness.workloadReady),
+        ]
+    }
+
+    var operationProgressLabel: String? {
+        activeOperation.map { operation in
+            [operation.kind.rawValue.capitalized, operation.phase?.displayLabel]
+                .compactMap { $0 }.joined(separator: " · ")
+        }
+    }
 
     var runtimeEvidence: [MachineRuntimeEvidence] {
         var evidence: [MachineRuntimeEvidence] = []
@@ -335,13 +414,14 @@ struct Machine: Identifiable, Hashable, Sendable {
                 tone: .warning,
                 detail: Self.failureDetail(failure)
             ))
-        } else if let activeOperation {
+        }
+        if let activeOperation {
             evidence.append(MachineRuntimeEvidence(
                 id: "operation",
-                label: activeOperation.kind.rawValue.capitalized,
+                label: operationProgressLabel ?? activeOperation.kind.rawValue.capitalized,
                 systemImage: "arrow.triangle.2.circlepath",
                 tone: .standard,
-                detail: "Operation \(activeOperation.operationID.prefix(8))…"
+                detail: "Operation \(activeOperation.operationID)"
             ))
         }
         if recipe == "doryd" {
@@ -601,6 +681,27 @@ struct Machine: Identifiable, Hashable, Sendable {
         case "software": "Software graphics"
         case "none": "No graphics"
         default: "Graphics unknown"
+        }
+    }
+}
+
+struct MachineReadinessObservation: Identifiable, Equatable, Sendable {
+    let id: String
+    let label: String
+    let observed: Bool
+}
+
+extension DoryOperationPhase {
+    var displayLabel: String {
+        switch self {
+        case .planned: "Planned"
+        case .quiescing: "Quiescing"
+        case .staging: "Staging"
+        case .verifying: "Verifying"
+        case .readyToPublish: "Ready to publish"
+        case .publishing: "Publishing"
+        case .validating: "Validating"
+        case .completed: "Completed"
         }
     }
 }
