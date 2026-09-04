@@ -143,6 +143,10 @@ public struct DoryX86Interpreter: Sendable {
       return .exception(fault)
     } catch let exception as DoryX86Exception {
       return .exception(exception)
+    } catch DoryX86DecodeError.instructionTooLong {
+      // Intel SDM Vol. 3A, Event 13 and Table 7-2: length >15 is #GP(0).
+      // Earlier instruction-byte fetch faults have already taken precedence.
+      return generalProtection(at: originalRIP)
     } catch {
       return .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: originalRIP))
     }

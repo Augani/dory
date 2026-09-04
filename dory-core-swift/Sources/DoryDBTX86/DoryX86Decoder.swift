@@ -2878,12 +2878,14 @@ private struct Cursor {
 
   var consumedBytes: [UInt8] { Array(input.prefix(offset)) }
   func peek() -> UInt8? {
-    offset < input.count ? input[input.startIndex + offset] : nil
+    offset < 15 && offset < input.count ? input[input.startIndex + offset] : nil
   }
 
   mutating func readByte() throws -> UInt8 {
-    guard offset < input.count else { throw DoryX86DecodeError.truncated(address: address) }
+    // Once 15 instruction bytes are consumed, even an absent next byte is an
+    // overlength encoding, not a request to fetch byte 16 (Intel SDM Vol. 2A §2.2).
     guard offset < 15 else { throw DoryX86DecodeError.instructionTooLong(address: address) }
+    guard offset < input.count else { throw DoryX86DecodeError.truncated(address: address) }
     defer { offset += 1 }
     return input[input.startIndex + offset]
   }
