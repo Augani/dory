@@ -278,7 +278,7 @@ public struct DoryPCIOAPICRoute: Codable, Sendable, Hashable {
 /// DoryPC-v1 IOAPIC routing core with edge detection and level-triggered remote-IRR behavior.
 public final class DoryPCIOAPIC: @unchecked Sendable {
   private struct PinState {
-    var route = DoryPCIOAPICRoute()
+    var route = DoryPCIOAPICRoute(vector: 0)
     var asserted = false
     var remoteIRR = false
   }

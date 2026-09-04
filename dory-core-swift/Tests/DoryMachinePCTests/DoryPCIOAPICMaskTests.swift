@@ -4,6 +4,23 @@ import Testing
 @testable import DoryMachinePC
 
 @Suite struct DoryPCIOAPICMaskTests {
+  @Test func freshRedirectionEntriesReadBackArchitecturalResetValues() throws {
+    let ram = DoryX86ByteArrayMemory(byteCount: 0x1000)
+    let bus = DoryPCPhysicalMemoryBus(ram: ram)
+    let io = DoryPCIOAPIC()
+    let mmio = DoryPCIOAPICMMIO(ioAPIC: io)
+    try bus.attach(mmio)
+    bus.seal()
+    for pin in 0..<io.pinCount {
+      let low = UInt64(0x10 + pin * 2)
+      try bus.writeScalar(at: mmio.baseAddress, value: low, byteCount: 4)
+      #expect(try bus.readScalar(at: mmio.baseAddress + 0x10, byteCount: 4) == 0x1_0000)
+      try bus.writeScalar(at: mmio.baseAddress, value: low + 1, byteCount: 4)
+      #expect(try bus.readScalar(at: mmio.baseAddress + 0x10, byteCount: 4) == 0)
+      #expect(try io.route(for: pin) == .init(vector: 0, masked: true))
+    }
+  }
+
   @Test func maskedEntriesRetainReservedVectorsWithoutDeliveringInterrupts() throws {
     let local = DoryPCLocalAPIC(apicID: 0)
     try local.configureSpuriousVector(0xFF, softwareEnabled: true)
