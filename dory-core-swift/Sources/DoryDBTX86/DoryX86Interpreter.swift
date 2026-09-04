@@ -2908,7 +2908,7 @@ public struct DoryX86Interpreter: Sendable {
             UInt32(truncatingIfNeeded: state.registers.rcx),
             value: value,
             state: &state,
-            pagingUnit: pagingUnit
+            pagingUnit: pagingUnit ?? translatedMemory?.translationUnit
           )
         else {
           return generalProtection(at: originalRIP)
@@ -4295,9 +4295,10 @@ public struct DoryX86Interpreter: Sendable {
     var reloadPDPTEs = false
     switch index {
     case 0:
-      // CR0.ET has been architecturally fixed at one since the 486. A MOV to
-      // CR0 that supplies zero for ET succeeds and reads back as one.
-      let normalizedValue = value | (1 << 4)
+      // Intel SDM Vol. 2B MOV CR: reserved low bits are ignored, reserved high
+      // bits cause #GP, and ET remains fixed at one after every successful write.
+      guard value >> 32 == 0 else { return false }
+      let normalizedValue = (value & 0xE005_003F) | (1 << 4)
       let paging = normalizedValue & (1 << 31) != 0
       let protectedMode = normalizedValue & 1 != 0
       let cacheDisable = normalizedValue & (1 << 30) != 0
@@ -4306,8 +4307,15 @@ public struct DoryX86Interpreter: Sendable {
         !notWriteThrough || cacheDisable
       else { return false }
       let wasPaging = previous.cr0 & (1 << 31) != 0
+      let longModeActive = previous.efer & (1 << 10) != 0
+      let longCodeSegment = state.cs.attributes & (1 << 13) != 0
+      guard paging || (previous.cr4 & (1 << 17) == 0 && !(longModeActive && longCodeSegment))
+      else { return false }
       if paging, !wasPaging, previous.efer & (1 << 8) != 0 {
-        guard previous.cr4 & (1 << 5) != 0 else { return false }
+        let taskType = state.tr.attributes & 0xF
+        guard profile.supports(.longMode), previous.cr4 & (1 << 5) != 0,
+          !longCodeSegment, taskType != 1, taskType != 3
+        else { return false }
         candidate.efer |= 1 << 10
       } else if !paging {
         candidate.efer &= ~(1 << 10)
@@ -4334,11 +4342,17 @@ public struct DoryX86Interpreter: Sendable {
       reloadPDPTEs = candidate.isLegacyPAEPagingActive
       invalidate = !noFlush
     case 4:
-      var supportedMask: UInt64 =
+      // Engineering mechanisms remain testable while their CPUID qualification is
+      // incomplete; this mask does not advertise PAE/PSE/PGE/PCID/SMEP/SMAP support.
+      var implementedMask: UInt64 =
         (1 << 2) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6) | (1 << 7) | (1 << 8)
         | (1 << 9) | (1 << 10) | (1 << 17) | (1 << 20) | (1 << 21)
-      if profile.supports(.xsave) { supportedMask |= 1 << 18 }
-      guard value & ~supportedMask == 0 else { return false }
+      if profile.supports(.xsave) { implementedMask |= 1 << 18 }
+      guard value & ~implementedMask == 0 else { return false }
+      if value & (1 << 17) != 0 {
+        guard previous.efer & (1 << 10) != 0 else { return false }
+        if previous.cr4 & (1 << 17) == 0, previous.cr3 & 0xFFF != 0 { return false }
+      }
       // IA-32e cannot be left by clearing PAE. Otherwise it could bypass the
       // required CR0 transition and leave the walker in an inconsistent mode.
       guard previous.efer & (1 << 10) == 0 || value & (1 << 5) != 0 else { return false }
@@ -4429,7 +4443,10 @@ public struct DoryX86Interpreter: Sendable {
       guard validPageAttributeTable(value) else { return false }
       state.modelSpecific.pageAttributeTable = value
     case 0xC000_0080:
-      let writableMask: UInt64 = (1 << 0) | (1 << 8) | (1 << 11)
+      var writableMask: UInt64 = 0
+      if profile.supports(.syscall) { writableMask |= 1 << 0 }
+      if profile.supports(.longMode) { writableMask |= 1 << 8 }
+      if profile.supports(.executeDisable) { writableMask |= 1 << 11 }
       guard value & ~(writableMask | (1 << 10)) == 0,
         value & (1 << 10) == state.control.efer & (1 << 10),
         state.control.cr0 & (1 << 31) == 0
