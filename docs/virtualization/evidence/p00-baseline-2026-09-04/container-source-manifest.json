@@ -1,0 +1,3854 @@
+{
+  "root": "/tmp/dory-p00-container-source-1",
+  "sourceCommit": "5fc049c1390901faa2f64236ea108e0dfdab35fc",
+  "files": [
+    {
+      "path": "Config/Dory-Info.plist",
+      "sha256": "07e31362297a770f7a6a1b365778af2d3a8c9a9668bfb3e438a5358e7ee44362"
+    },
+    {
+      "path": "Config/DoryFSWorker-Info.plist",
+      "sha256": "0336cff458a12e6659c32e0162a075cfb019b027e42fdb6a26b001b030817721"
+    },
+    {
+      "path": "Config/DoryHVRunner-Info.plist",
+      "sha256": "12e8fc53525955b00fb8f95d77f030b80d0fe440884a69322d68ab135badeea9"
+    },
+    {
+      "path": "Config/DoryJITProbe.entitlements",
+      "sha256": "49076be9b510cb9de34de5f3b62390f137163c12794c40d76bb5e5ccd61e7e1f"
+    },
+    {
+      "path": "Config/DoryNativeHVSmoke.entitlements",
+      "sha256": "c439c3ffbe9d1b486321de3360bd9f1368024751553ae131aa0490e4e49841dd"
+    },
+    {
+      "path": "Config/DoryRendererProductionTuple.json",
+      "sha256": "13d0ffcff1affe63635f4521a804fc29bf5bb8e74f10eaafa3f5385824e54ebf"
+    },
+    {
+      "path": "Config/DoryRendererWorker-Info.plist",
+      "sha256": "ab1d0431d9a5676df121e0aa416e9ed136bdaff31344b1932c891b21ab26321c"
+    },
+    {
+      "path": "Config/dev.dory.network-helper.plist",
+      "sha256": "a908b6f7204eea8f0d6c6299edfa0d972160e748f601c8dbbdc5633fa456dfb4"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/DoryARMVirtPkg/DoryARMVirt.dsc",
+      "sha256": "a0b5daca498857e4471e7f870c9074367c97cd7c294b5e17c4cb008edfc2f51c"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/DoryARMVirtPkg/DoryARMVirt.fdf",
+      "sha256": "47ebc87cd71a1602132550b5ad82d9bd47eb677e1b4151eaa17f66dfaa2b11e4"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/DoryARMVirtPkg/DoryARMVirtPkg.dec",
+      "sha256": "41f49565be96e583210d6d671e300daa8656b8abccadb0f4d24a8f40babc981f"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/DoryARMVirtPkg/DoryPlatformDxe/DoryPlatformDxe.c",
+      "sha256": "7a6ae711568c788232007144159ceb4b57d7082e102f603338962a6285d35a9b"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/DoryARMVirtPkg/DoryPlatformDxe/DoryPlatformDxe.inf",
+      "sha256": "a670b78c160c674f4a1ea74917739e3917a6bba185aa7f20039c7ce2ff75cafc"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/DoryARMVirtPkg/DoryVariableRuntimeDxe/DoryVariableRuntimeDxe.c",
+      "sha256": "8def6630b11d7268e6807d1b394bcf3d0c6adfedd8fdcc241a0a442ad193201b"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/DoryARMVirtPkg/DoryVariableRuntimeDxe/DoryVariableRuntimeDxe.inf",
+      "sha256": "d6807880a67a0feb55ecfeb52cd4563f66ddb81b3f3ce1ee8546a522ad4f3685"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/DoryARMVirtPkg/Library/DoryPlatformPeiLib/DoryPlatformPeiLib.c",
+      "sha256": "15aefadfb7d397b5ba9bdb617c9dfbbc02c6acbaa5b35cde5a1dfeb44aa07614"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/DoryARMVirtPkg/Library/DoryPlatformPeiLib/DoryPlatformPeiLib.inf",
+      "sha256": "49a68fb946e779fa223c7287aeb23a8d56cb2f49569552e6da25a52318684b0a"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/DoryARMVirtPkg/Library/DoryVirtMemInfoLib/DoryVirtMemInfoLib.c",
+      "sha256": "e38f159740f63581a4e0c21a69cdfd657b3fa14c4eaa36a97a5cba8656b42038"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/DoryARMVirtPkg/Library/DoryVirtMemInfoLib/DoryVirtMemInfoLib.inf",
+      "sha256": "3ac3a5c3845d0c42c7ec02f4b9b8a5edb24ac3f5afcc995fd9fe2b9db7540b56"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/README.md",
+      "sha256": "db6a7dbe24ffaedeeb3c0ce005247f855a6b642116d1da01c165e632d350c316"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/abi.txt",
+      "sha256": "7deed3afff62313ce414ce0dcebb2d123801cde3afbd920406ae6d668f514a04"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/compatibility-matrix.json",
+      "sha256": "672ad164784ae6ba632b4b6002636e89a6f948a7ad25211dd6fd0da2e7e48f1e"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/patches/edk2-reproducible-genfw.patch",
+      "sha256": "a851eb51821cc00cedc6d62e4c4fa1e2e118e58be969ed3e92ef1ff188c5b61e"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/qualification/alpine-3.24-cold-snapshot.json",
+      "sha256": "4280ec48402ccc4927f7325a60324184a4a82801148366054632871d9f4f687a"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/qualification/alpine-3.24-device-baseline.json",
+      "sha256": "fb0812cac3e8b53ac4b5fc8bbe4d3ad65c5ba8ee8a3a3111d164257bf4d60889"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/qualification/alpine-3.24-install-update.json",
+      "sha256": "3401b12125185676be14a3c45acb570b4dad75f913f0d3f8c7fd96fb9a5896e5"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/qualification/alpine-3.24-install.json",
+      "sha256": "2f3a829ab1315e97f902b1622be527ed144246246b60345da4803e33672c006d"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/qualification/alpine-3.24-recovery.json",
+      "sha256": "6f919b56fa9e9a3b6eeb280439df69e0b5692015d3472c01a553d4f7a24fcb76"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/qualification/archboot-2026.08.30-installer-boot.json",
+      "sha256": "6609aee4bac4e82a01df971c76d251967dda81a08ddf316d1aa60bf543ba2b99"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/qualification/debian-13.6-install.json",
+      "sha256": "14d2949f9c34c8a8610be449c4d87742bc21aa09de4c8a8cb1a41583e9770eda"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/qualification/debian-13.6-installer-boot.json",
+      "sha256": "5dd666e523a09c2486016d70f96f43d0158cc77cdab09d8afcde7d9731e8bb08"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/qualification/fedora-44-installer-boot.json",
+      "sha256": "4006f28145cc8014bbe8e1e4a8bebec5f0880bead704f731f5358d4bf6fe7ef1"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/qualification/fedora-coreos-44.20260802.3.1-live-boot.json",
+      "sha256": "dabe3330ab36f697d45d0d91b2db7b5ddef12cdfe9474b040d38e4471f08995e"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/qualification/fedora-workstation-44-live-boot.json",
+      "sha256": "7e34dbf9f2712e25483794ade254b323cc4ae3fd69532212670a71abbf0076e6"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/qualification/opensuse-tumbleweed-20260806-installer-boot.json",
+      "sha256": "d1174e8e3265af7b903d978dfbd9b451cc427d64bd9f1123225440256e26848c"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/source.lock.json",
+      "sha256": "92bb0c54b69d670943d40c6d6b1e9cea3b869271005555c70598cb5555d99248"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/toolchain.lock.json",
+      "sha256": "73b5b15e655f95f244cf7b912f3e4d5bd5208796a76dda14539b0dc9270e1a88"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/DoryMemFd.fdf.inc",
+      "sha256": "5bc8f0645d23e6ef83a646d7e1a9e451c845753f641b724d1482d462f4a5b9b1"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/DoryPC.dsc",
+      "sha256": "8f079a69b5e430e6197ad0ec17bdb974dde05fa6a51ffc592a3fc707fa7a54c8"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/DoryPC.fdf",
+      "sha256": "a52b2aa7832434e8d7e10b0c1a1775c170f05f776da3d12731930a3b5440165f"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/DoryPCPkg.dec",
+      "sha256": "8aa2aa8d796e4a88a17b92b720a6349c8e0a464eef81654201c5c3a96a03842c"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/DoryPlatformDxe/DoryPlatformDxe.c",
+      "sha256": "4ecb8b26798e3c7f77d1cd669a59708d1fef4603a04455ebd17510d9087b89ff"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/DoryPlatformDxe/DoryPlatformDxe.inf",
+      "sha256": "f933ca16559c7d10e22e8234d28a01de4f978802da575eb47be6cd8fe5ecacbf"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/DoryPlatformPei/DoryPlatformPei.c",
+      "sha256": "1c69a8b8ecf1a6ffbc1c1b1c1e25935dd39fbda3548c9b4f3a87c15611db9a44"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/DoryPlatformPei/DoryPlatformPei.inf",
+      "sha256": "4b8e163fe211433e6c9c01761e5e02db928aa854d00f211b866bfc9e5a04805d"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/DoryVariableRuntimeDxe/DoryVariableRuntimeDxe.c",
+      "sha256": "8def6630b11d7268e6807d1b394bcf3d0c6adfedd8fdcc241a0a442ad193201b"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/DoryVariableRuntimeDxe/DoryVariableRuntimeDxe.inf",
+      "sha256": "fc2c1c3a109be392697435423534b5dddf3f29960db94507c19ec625fc3d4c8d"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/Include/DoryPCFirmwareConfiguration.h",
+      "sha256": "7f7d606570386be2ce19c5e6798af49c61a2d431fc25b936a96bdf334b4896d2"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/Library/DoryPciHostBridgeLib/DoryPciHostBridgeLib.c",
+      "sha256": "cb58f21732412e19fe9e8f3e0b9e55c1f2b7e6357522298f19c42e05f6c20417"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/Library/DoryPciHostBridgeLib/DoryPciHostBridgeLib.inf",
+      "sha256": "e71ddc35a8faf703553f5a227e0f6658988a30925d04b1e6d6d488765daabcfb"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/Library/DoryPlatformBootManagerLib/DoryPlatformBootManagerLib.c",
+      "sha256": "2009129377842641002729442f62530cdba11409169718280df20507be666135"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/Library/DoryPlatformBootManagerLib/DoryPlatformBootManagerLib.inf",
+      "sha256": "b586749a97c09cc888975b3d44de13ced65b2e0f283ef420938142419a49a198"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/Library/DoryResetSystemLib/DoryResetSystemLib.c",
+      "sha256": "bb3f727c28a91667fd1440bffd07b93535ab682a81f9ae0128d2dbc720b10680"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/Library/DoryResetSystemLib/DoryResetSystemLib.inf",
+      "sha256": "0e0f3efe365fe50656af34e124e3f0715890967a74ed6679f37f76c4a3a5c1c0"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/Library/DoryTimerLib/DoryTimerLib.c",
+      "sha256": "2c6fa206e7e5f126e46e1269f87dcacd9233837f104b474251df9b7914e61086"
+    },
+    {
+      "path": "Firmware/DoryPC/DoryPCPkg/Library/DoryTimerLib/DoryTimerLib.inf",
+      "sha256": "667848d7812f53a6fd319f4dd074901c6a5db2934b472382674e2e510c1477bb"
+    },
+    {
+      "path": "Firmware/DoryPC/README.md",
+      "sha256": "31684043efa9d3073d42d4c004381229aa25a47d8ebcba5550cc45a75536e013"
+    },
+    {
+      "path": "Firmware/DoryPC/abi.txt",
+      "sha256": "6f49febc7e095b98c1a44d26f105eb76fdc45f23d736aa31aecd69c1b4f2cca6"
+    },
+    {
+      "path": "Firmware/DoryPC/patches/edk2-dory-uncompressed-main-fv.patch",
+      "sha256": "96d4e83a839251d43ef86faf4307969d47bd7b89685e177540202fb23524e336"
+    },
+    {
+      "path": "Firmware/DoryPC/patches/edk2-reproducible-genfw.patch",
+      "sha256": "a851eb51821cc00cedc6d62e4c4fa1e2e118e58be969ed3e92ef1ff188c5b61e"
+    },
+    {
+      "path": "Firmware/DoryPC/source.lock.json",
+      "sha256": "92bb0c54b69d670943d40c6d6b1e9cea3b869271005555c70598cb5555d99248"
+    },
+    {
+      "path": "Firmware/DoryPC/toolchain.lock.json",
+      "sha256": "a29169825dafd7f004fadeb17088ac48bdd25ba80bac93836b2c221ea9174b89"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/.gitignore",
+      "sha256": "99921edb369e12a35a87d768ae481f8c944573626abd4b8f3a1fe78846f30ba7"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/DoryFSWorker.entitlements",
+      "sha256": "d9b06c202956033b01e62b21c727eea89b6a4fd456ef71d420c39f460426b9f3"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/DoryRendererWorker.entitlements",
+      "sha256": "1bd3ba2378a7ab198a127e617b1e9179b82128472f50cb5fcb3ddeaecba13ceb"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Package.swift",
+      "sha256": "aa812dc9d6421d8ee0461be30ee10b8d75a94942c9b370cda78d8d8e6b69fc28"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/README.md",
+      "sha256": "8d9b959cde8d8a0d7f675cc2c1ac5572c07fa0143db80445550b92c11b6a4dec"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryARMVirtQualification/DoryARMVirtCompatibilityMatrix.swift",
+      "sha256": "69825ab3fa3a34ec0539b023230f2906d7935df839e7dcf9a43f047928f7e13d"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryARMVirtQualification/DoryARMVirtQualificationReceipt.swift",
+      "sha256": "10d07e941bd9d092284b1851dce72ab0ff766e4343c4f341b524754e45845449"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryARMVirtQualification/DoryARMVirtTimingCampaign.swift",
+      "sha256": "021edf7d0451114050b625b7e1c1dcf9bcf4f1a2f84b273dad36322e23ab571a"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryARMVirtQualification/DoryConsoleInteractionScript.swift",
+      "sha256": "4b7bfa918ff4e7012dcf75d98f00069146832dbdebb49300ec33b1574400647a"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerContracts/DoryFSWorkerBootstrap.swift",
+      "sha256": "3700411bf32c0fd9f96bde9e612fb72a4b7caae44618f4444b2d77fb97c315c1"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerContracts/DoryFSWorkerCoherence.swift",
+      "sha256": "795f15445c091aab9418713ffc06d177d93ee833b0d852958a0c6a8f3de96e2f"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerContracts/DoryFSWorkerContracts.swift",
+      "sha256": "420846f9cc1b0d925b88add85e1db6fe86fa10c844fc1db9885f298d7ff0b989"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerContracts/DoryFSWorkerXPC.swift",
+      "sha256": "0122815d366b8af4c23b840aebe173b299cb6e0c8926aa6e592d26df13f37821"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerContracts/FuseProtocol.swift",
+      "sha256": "af6ea1091ffbf82bb6263872ca057b70db8d8fe8e66caa219d72077ee2a7b3e7"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerContracts/LittleEndianBytes.swift",
+      "sha256": "f71a39701ee816ee9e0eb6054a8f0861f34681c343fa6a35b6c4e4d80bde6853"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerServiceCore/DoryFSWorkerHostCoherence.swift",
+      "sha256": "9bb0f613a29cfbf19552049e59f49f7004c6a1d4aa8d3374195bc0e537f75916"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerServiceCore/DoryFSWorkerProcessResources.swift",
+      "sha256": "0b63cf05a10d561459e4b3958c063ba991f5bebb1604c833e2e823c4bf0ce198"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerServiceCore/DoryFSWorkerRootAuthority.swift",
+      "sha256": "cf4197c6d9c4688aaa11c23699d5df660a96a725cd63abcbd7d114bcab4bd3b8"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerServiceCore/DoryFSWorkerService.swift",
+      "sha256": "02989d2757819ca260416db8e807425b66a68c7ab60923ec0e9ce65276ee288b"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerServiceCore/FuseResourceLimits.swift",
+      "sha256": "aa7479679fd5b12e94d295cb4524bf27b7b8a0164de236d0d81b53dac915f209"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerServiceCore/FuseServer.swift",
+      "sha256": "0d008a26a0f24fa8a1e51dd3d0a6683fb1a87ad245f898ed8974e3d9a11560e0"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerServiceCore/HostFS.swift",
+      "sha256": "2adea7f084ba3e910d5a83ced479f05f73bbbbdd7e1f316f91e664bc72f8ec45"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryFSWorkerXPCService/DoryFSWorkerMain.swift",
+      "sha256": "05d3ebb03aba936d3ec3b219b59822934ae369e7b1d8545355dcdbd76ca99439"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryGuestMemoryShim/DoryGuestMemoryShim.c",
+      "sha256": "733361cbc6f20d7dab80ea781fab0a57e95fffcfedf9b4ec4fa71d574c88b3f3"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryGuestMemoryShim/include/DoryGuestMemoryShim.h",
+      "sha256": "c67462c40bcd4ea9ff7ba35b1f615e96863c8032b224213a672caec6a3495524"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/ARMVirtFirmwareCodeMemory.swift",
+      "sha256": "0d3823224cc689c5819d1dde5d0bb565bc7d94d4d7c69d84d6d395918a7d5e61"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/ARMVirtUEFIVariableBridgeMMIO.swift",
+      "sha256": "e6ccaf458923e2240b6e230115882eb3f222ca86b62322b4be4320ab18d39ef9"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/AgentChannel.swift",
+      "sha256": "c5637d9197baed52345cab8ae4f84606ee162b58bfe01075c96d7e2441c7a9dd"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/AgentVsockForward.swift",
+      "sha256": "cb4ad8b253b63c31d9d0f69335c3d4791d49393c5bad21b3e69eb42b13d87197"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/BinfmtRegistration.swift",
+      "sha256": "e42a54d4fa3017cff3557f045050ea702e4117a7ae1eee4b5c04e0de0b93ef72"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/BoundedGuestVsockService.swift",
+      "sha256": "20105db8701f59723d0a3dc6ee215718ff079a0cd89c839a09cb970dfa4014d0"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/BoundedVsockSocketListener.swift",
+      "sha256": "412158acb4e9a17938bb9badda49213bf809c26a612fb36504d43a58fad1bbd8"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/CMOSRTC.swift",
+      "sha256": "24b84b12448472db83d63d1650a5fefa88001f1a6f9b5a2b6b0860c9ec26b251"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/ChildProcessTerminator.swift",
+      "sha256": "73e6c3c2472bd947965b99a3e967550c50dbe9cb1dcfd609ee5e1277780788f3"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/DirectIPBridge.swift",
+      "sha256": "1f628b34210e57a0a56ad657d95f716d0549a816c90915a0d40a0e94369bb102"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/DockerSocketBridge.swift",
+      "sha256": "acff8f240f36e177c658e4dbb0dadbfc2b2e759cdb54591803cc68608a365767"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/DoryHostShareCoherenceBridge.swift",
+      "sha256": "2067061167d404f558204844e406d42ad8286813255723923f625a36f4125c07"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/DoryPCVirGLRendererAuthority.swift",
+      "sha256": "6ab72423e86a95be112636c7eb664fbc75b96b607818cb91bc60d6cf12a2c9d7"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/DoryPCVirtioFSPCI.swift",
+      "sha256": "14271ef5f5fdbf02e42e2f971000c8b97deea4ade803b644da448eea4423c42c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/DoryPCVirtioVsockPCI.swift",
+      "sha256": "c7df19539cf7bb151ee5e4b91623d749dfe4bbb6e5c2035e0ca1ffceea98175d"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/DoryRendererWorkerBroker.swift",
+      "sha256": "fe86fdc33a7b5079e7d6252e80fae1d571e5279fbaa43a98321a972291c2895e"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/DoryRendererWorkerSharedMemory.swift",
+      "sha256": "44fd75cbb25c70a271817b400268cc9e3ead80a899fb57e91a1d277a257ac32c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/DoryRendererWorkerVirtioCommandLane.swift",
+      "sha256": "9579b1a765fffd59601b2f7ab83e4a5134ee418fa027e7cc255b716807a333d3"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/DoryRendererWorkerXPCChannel.swift",
+      "sha256": "0cbe2f97dc59ffaab9aa0de809dace2b801ef7249aa1f45be5299607ff42d74f"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/FDT.swift",
+      "sha256": "73b4e748636eca55f822e02d499a6b5c20e1f9c88572e9ae37a85dac7779c4b3"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Fuse/DoryFSWorkerAdmission.swift",
+      "sha256": "7fe0495d88de5cccc2366a73716d207fbd54ffe0a206353d4f571df40d47e4de"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Fuse/DoryFSWorkerBroker.swift",
+      "sha256": "a75adb5225a84f868caa2d68539d497ac4dd4275474d8b7e423bd3a9b9253722"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Fuse/DoryFSWorkerCoherenceSink.swift",
+      "sha256": "390173a85e52ab26933fe0db8e2dd30b2052c24254e40b7885936152b0efc954"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Fuse/DoryFSWorkerXPCChannel.swift",
+      "sha256": "c9975b231b7cf5708e74e5bfe05613774729fea14d1b7ffb511d4870d1f99176"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/GICv3MMIO.swift",
+      "sha256": "8f2d99c15fe7d0b93f0de1a193a08a25b5f505cf73b38dae652017712a1321c0"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/GVProxyDatapathGuard.swift",
+      "sha256": "77c69797fcb4da1a7c7e47f18ae6140bebce96e10e41689bf9942bcfed13cc90"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/GVProxyDesktopLaunchPlan.swift",
+      "sha256": "63fca8e1727ebf04a925ab1e0b9844d1f6a8a9aad644b419102d55870e4341b5"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/GVProxyForwardRegistry.swift",
+      "sha256": "6b49f572803b5de7c549072baf929b9a854e687a1ec2d4258e2abceb7cc7f825"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/GVProxyRuntimePaths.swift",
+      "sha256": "7d33679722496ed58712459bd743dff863b19feaac90eaf203cc92a1b4ce4241"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/GuestDatapathCanary.swift",
+      "sha256": "e63e0be6240835596731c0c88f3335080d68d359b6aa6fb12015a1accc57d047"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/GuestDockerRestartCommand.swift",
+      "sha256": "0f5e00a20f63ddaf4ec98a16bdc3ef839cbcf8f9ce783d32dbdd4b63403e9617"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/GuestExecutionPauseCoordinator.swift",
+      "sha256": "267c8fdcef0a43b071ded9c37d329345e41628bab4a8a79a77cacfec3d66cfb2"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/GuestFSEventBridge.swift",
+      "sha256": "8125ba77a73d3ea7c7d0ac7163cd663694fc3dee12a90f00b150aae7b7e30610"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/GuestMemory.swift",
+      "sha256": "051e07c00d5afb67b9c0f331a1c73628b1e973ec047468d8a3a8a125b243d7b2"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/GuestMemoryReclaimBootCommand.swift",
+      "sha256": "cad2d2b11d44180b3f0de13b03f34fca98e2381aafe0384a346605bab4045f39"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/GuestVsockSocketBridge.swift",
+      "sha256": "3772e5d12d14f8929588926b08b7761494d06ebd8ba07cf066e2eb21e0cd16e0"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/HVError.swift",
+      "sha256": "a1860402f306d123da46bc3b2792130deecf7a1265c752de6ca1c05f023f92e2"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/HostAIBridge.swift",
+      "sha256": "8aab472a743976f3adfe33c753b96733589cacae76d47038f0578cd1f49f2e81"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/HostFileDescriptorLimit.swift",
+      "sha256": "e441ebaa3d54029f3ebd1eefc986d32b4002001fe92429e4fca9dfbf793fed61"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/HostPage.swift",
+      "sha256": "fc5db356494c9efc1bc35a5a1897bd907a00a06a7fcd65fa89f1a6b95248d9bd"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/HostSSHAgentBridge.swift",
+      "sha256": "c455a2e15dd01d6eaf13362840d0b47f304c5630a3770caf0de5bb1b888c098e"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/I8042.swift",
+      "sha256": "e996ef0e02fa7c57d4eae750236e45b12050beb475b0129ba209c1cf985ae0de"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/KernelImage.swift",
+      "sha256": "2354d5aa11b60c48c1e855f8fabe090fb3504dff082b74eced5ee636f0bd5fb0"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/LengthPrefixCodec.swift",
+      "sha256": "4ae2e9383f4caa57237daaf0f7da8fb389031bac481f21d86636eb59109314ee"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/MMIO.swift",
+      "sha256": "d8ceee902e7c9f1136a36e9089bff97c9768321f66982f850415c6d92d8a75f6"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/MPTable.swift",
+      "sha256": "c1a068c87d38693ee1f7a553e9fdf11421a886d13a583d88f4fdd91fbd056bab"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Machine.swift",
+      "sha256": "2d480643e24a68a4cc1f6d5f2d6b048c50f8f8e14e18d2b6cbc63fa05368e58c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/MachineBootPayload.swift",
+      "sha256": "f1c6365431ecf39772026f0035debdc7af5ee47094035efa560781f7c32356cb"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/MachinePortWatcher.swift",
+      "sha256": "36cda519056a0a2d1f4a757ae1d267678325f6539af5b50a91b87ae041f1e822"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/MadviseProbe.swift",
+      "sha256": "931444c8045122ae8661c54a949bf752e22f21a3987b656ef902e7f96d3ed836"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/NativeIPv6NetworkPlan.swift",
+      "sha256": "d1bd42b3c001590a7b566f3a439473d059f53310d476498bf0d63ee6cd19f559"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/PIO.swift",
+      "sha256": "dcceb226635166d4c1559bef0e8c686efa1688917318135136ef2bc3318af1b8"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/PL011.swift",
+      "sha256": "8a02210d02fc15b309d9b3b33928f9017e54c4e4f2512c996986224212caa4e1"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/PL031.swift",
+      "sha256": "7826dea24e69761a6b9c401602bfa97dbe450ba152395a59dbd8817ba74e79c0"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/PVHBoot.swift",
+      "sha256": "a7e98e8c7a87a87d5db5f508ecb256e0ebe681573a9c54312878be9dd082426f"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/PVHLoader.swift",
+      "sha256": "79c76bcfba86b8e1c5343fadcb0a37db4593170adbc56f3f6dc173bd30d193c1"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/PristineRootfs.swift",
+      "sha256": "6b6e7a2080753006e9618b1f439a2c49672dacbb82e85ce3c72c6f05a1af6632"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/PublishedPortForwardPlan.swift",
+      "sha256": "0bce1f16475cdf9922856620f208345659a59b6f397926a06644e6b252321329"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/RawHVMachineRunner.swift",
+      "sha256": "130091366554bc2b9954c62ff234ab5711db13746c108403c0bba74746ef39f9"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Smoke.swift",
+      "sha256": "078070413130464646f942daea855fa26eb726ba4c568df5ff24e6344a6cfb13"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/UART16550.swift",
+      "sha256": "e6ed951d590297856dbd16a85f0b0b3968e0efc135a522b5987ddfc773d89eba"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/UnixSocketHTTPClient.swift",
+      "sha256": "04ef7ea98a05160f8a2dadb21854bc2625157beacf9a6e4ef4bfe26ed48aa4c1"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Usb/HostUsbDevice.swift",
+      "sha256": "208c40db94e794464d56d0021f7d35f91e7e57f9dd79899f1fa62c2133dbbd67"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Usb/UsbControlHandler.swift",
+      "sha256": "53ad460fa877e88ad4e3175c3e7260cd0e7ff701036e22d9d97a047c0f81a568"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Usb/UsbControlServer.swift",
+      "sha256": "bf3dc1a37ea7f906fae6a60432d8ae498aa8e21f47a5a2b4d94ad68a01a48447"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Usb/UsbipBridge.swift",
+      "sha256": "171828839f6784066b939410be5ad2ff18c1e0c178ba7b88280dac5c85c638a9"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Usb/UsbipManager.swift",
+      "sha256": "25ef19ca71ef327b091b9346ecb90876f64b5cec96d987b385504c989e21720d"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Usb/UsbipProtocol.swift",
+      "sha256": "8d5d5089bb5e62cc3980e23c731657c0f2b1ef7ffd9cf84b66011294de7f8fe7"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Usb/UsbipServer.swift",
+      "sha256": "43d600411bb3f7aaf2a2a9758c7b72e320a944fd5bba79fa0df62306765766c5"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Usb/VirtualUVCCamera.swift",
+      "sha256": "5e54b5e06ee4831e361ebe8e33fa98d94cb7d9b11ae4e50a8b2389635d6cf9e9"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VCPU.swift",
+      "sha256": "ab56fa1dbb0154b7e20a2ad920d4576012d64881c73031414ab520f1533d5e33"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VenusModeRequirement.swift",
+      "sha256": "845225d514328ed739679ae8d9435cc7c0cc7b2567c28d0c5f01034bec47e898"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioBalloon.swift",
+      "sha256": "968e729c3b67ea01d24f43c1715c9db0aa7596dcdecdf6ebb6391efb6b92d6c4"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioBlk.swift",
+      "sha256": "e4a693f43120058261c36e094edd0ca03e80545a3a1ca9ef8ccc0b55655d0221"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioFS.swift",
+      "sha256": "5a8384fb7211c6a4027221aa47ced3699f4187ee3f254db2c93801c9a8ee1c52"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioFSNotification.swift",
+      "sha256": "71a5a37df1b3b1c2fa1bb1cf20bd27fbc83d50ec4f49d2618a1439ff93099cd0"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioFSRequestAdmission.swift",
+      "sha256": "415adbadc30345045e03252a656127c78bc12fc8892cf26eb15cf5d70741ed1c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioGPU.swift",
+      "sha256": "485c87bd1a181c584616fa3ad9ac857e2baf45919de95e1cbe2351eb7f772aef"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioInput.swift",
+      "sha256": "3c71324f762a96ca03ea6a491e9a317901c12a6a8a9a4844a70c9ddf18130f45"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioMMIO.swift",
+      "sha256": "5ee2f6c3e3fcc28179616eb29599e23144839ca4513d0ad2be13d57f4d891c33"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioNet.swift",
+      "sha256": "72bc2d8a467dc4e4a5fc6a7671729fd926934e377477d8d72b0247e41ba0ca54"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioRng.swift",
+      "sha256": "b5ad6bff397f508ffd06b8f70cd536613b61e61e6a513e8f8db141529710e29b"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioSound.swift",
+      "sha256": "27b47b04cd09fe10ae24c6618bb2ea2614e4530ef53283195a5c847cda1d776a"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioVsock.swift",
+      "sha256": "c025b5d18d403b5f8e69c34a6ef9a5b4d46c7b2f7d271835c74da279f5f626c6"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Virtqueue.swift",
+      "sha256": "6841aca4bdcc3f88b4e437ac4c6c677f4658778da02296777ba0e7aeaeec3aeb"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VsockServiceAdmission.swift",
+      "sha256": "85e2b7bc2e362a8a48102061e576925e9ab344e1e963a060b4ae26de3141a477"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VsockUnixRelay.swift",
+      "sha256": "a4b78e65330a865475ed8b1549267ba1821493426fa7eeed68c88bf9727898af"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/X86BootPlan.swift",
+      "sha256": "e2640b70bf32f2143aa4bc7a5095996427afba67946e9e14779ec88fd46e70d7"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/X86CPUIDPolicy.swift",
+      "sha256": "da889f3123367f879b22f65641b0e96ff1aafed97511bd7e0e0b1914d9eea979"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/X86InstructionFetch.swift",
+      "sha256": "b82b7fba48eedcf3cd3a3f95fdb6e05d59d3b27b821ccc6522599c73996daa8c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/X86MMIODecoder.swift",
+      "sha256": "470f60e9b1db3a0b12c9dde07a07a3ae690342d0ea60a3bdee72298ddd16a3e8"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/X86MMIOExecutor.swift",
+      "sha256": "6a362f89c7797f2afe95c6fca750aca907ca960c223339b185344f2b2efc6fee"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/X86PageTableWalker.swift",
+      "sha256": "947daf4d01c42db6467b5c82d58c702d31588051428c6915bc73f7eebfc6c8ba"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/X86VMExit.swift",
+      "sha256": "bf7c7ecc87ad4c0eca742f5b861954d3a75c7330f1815b97f484efcbd4a79ac1"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/X86VMExitExecutor.swift",
+      "sha256": "baf38f08e7e5f031054762fa29725b2d71b0d4a7df6e44d5897668cd2cbd95d1"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHVUSBShim/DoryHVUSBShim.m",
+      "sha256": "2d6d26fdad0e63589badd47c8b5b9a095165bd55bca637a7c4bb161f909577a8"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHVUSBShim/include/DoryHVUSBShim.h",
+      "sha256": "c7a12d24c10e803790cb31e8ab180973a979e52a227bf2a36dc28c059aed16dc"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryRendererWorkerContracts/Exports.swift",
+      "sha256": "6674810aa4a385140f90ba89a8c93b287323b83ab08285fdc33ad971de52bcde"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryRendererWorkerMetalTransport/DoryRendererWorkerXPC.swift",
+      "sha256": "9cf38197574ed9e500c5a07a168c79547d703bd80228cc6d910f358baf255b9c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryRendererWorkerServiceCore/DoryRendererWorkerService.swift",
+      "sha256": "77dc560a89b4a96de055a89119638b118931baabcdb32a32b512280482d063a1"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryRendererWorkerServiceCore/DoryRendererWorkerServiceMetrics.swift",
+      "sha256": "94dc00e44fc12b90cc0476860c05567f75370b2b059b70eb741869738b380fcf"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryRendererWorkerVirglBackend/DoryRendererForeignSession.swift",
+      "sha256": "05c58af9620377430315136bd20b4ffe9c454779790c6e31540ed5cd12dcc16c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryRendererWorkerVirglBackend/DoryRendererProductionArtifactVerifier.swift",
+      "sha256": "2a5fe650136a39a427e1a55148244da59cc479c03a8dcdf265436dccab83578d"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryRendererWorkerVirglBackend/DoryRendererWorkerVirglBackend.swift",
+      "sha256": "0e5d23ca406a49b210c07db31f8bcae770408912726f9d1ded7435ba0fd3562c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryRendererWorkerXPCService/DoryRendererWorkerMain.swift",
+      "sha256": "6e1eb951ea507755f4137d42b3c83d55d6157bf048a341dae33f2f6478fc72b3"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryVirglRendererShim/DoryVirglRendererSession.c",
+      "sha256": "8407d59723d420b2b24484e98876bff595a2d7e3a095260bb9b0ab9ae72b8d4d"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryVirglRendererShim/DoryVirglRendererShim.c",
+      "sha256": "649276b522d98397c0b1676a2ff16c4baa53b769c93e6f1373e25fb00b873579"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryVirglRendererShim/include/DoryVirglRendererShim.h",
+      "sha256": "0e08d4728a9b0649efbc4da3940042ebbce7472d1e77834c44ab1e463f942012"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-armvirt-timing-campaign/main.swift",
+      "sha256": "4b1c6c2dd839f049cb9cf9991c3eb6c7d0bf12e748327a1913793fd894ac163d"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-armvirt-uefi-smoke/main.swift",
+      "sha256": "17f53820db4309f3a0077e95e49b2f8547c8ab7248dc77e9705594fa7f07336a"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/ARMVirtUEFIRuntimeAuthority.swift",
+      "sha256": "68bc3b6d6ca078a49d6baa000bc1308ad8c95269eaca300a0f1a094f34859299"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/BoundedSerialConsolePublisher.swift",
+      "sha256": "d81428add71451eee889babd511f42417a9b86fff0b48aba911843d2b84b6c30"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopAudioBackend.swift",
+      "sha256": "165771a663c71d15ba4b2fa623e774fc82884b1d5aac5af1d35fa63dcbd04a3a"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMetalDisplay.swift",
+      "sha256": "159e9b0070aff339646416f732d4d1232717514d9869b700bae17e6b2950a666"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+      "sha256": "63a3adccd56c8a1649cbe7935167e9f8fc5b24ed49ce91c12319c381dd4903b5"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopRendererRuntimeFailure.swift",
+      "sha256": "a4e941a149dee216406bd236fe55f674bf7951c7cb4faa91294cff3c217cdb14"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopRendererWorkerLaunch.swift",
+      "sha256": "0e0ac47e28fe1b6d234e0446af10394d0a8fc3f4924c14671e1ae27096f6cab6"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryMacCameraQualificationCommand.swift",
+      "sha256": "dc19c7854ca94900e7fc25287b7293ae65b6addce6115fa44c8081280b0fd4f4"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCCameraBridge.swift",
+      "sha256": "2ed2898218724f97e45af0bfb5a4dfdee916ce66e41870d11e1ea12e7c823b0f"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCDesktopAdapters.swift",
+      "sha256": "49db42aa74e41864c94e1101975590bace065dc5d4bd08d9b34cdec9aa9b5049"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCFilesystemRuntime.swift",
+      "sha256": "ec7a0e2dc6a25e0dddfcad29a6a21e5ad5687d0b87ac55eea25ed9fd14e1817e"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCGVProxyNetworkBackend.swift",
+      "sha256": "86113d7f956fc1166d88d770b07b9d2c56194f18b5a39bcf3b91a78bc574fb4c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMacAudioBackend.swift",
+      "sha256": "2176871e010caf716ce6898d1919f732367b62cd1d60f1725f7c1933e5b410e9"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+      "sha256": "e995570aa4a988f81bdfa6c729830f5abf1fb5d89517b01edcfc1067805d9bda"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCUEFIRuntimeAuthority.swift",
+      "sha256": "a771b538115ad39386906f9a07ada9e0990c838bf8b840d0deaaa7b7c002b558"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCUSBPassthrough.swift",
+      "sha256": "722c4d30404e1bce7fee6e7a67dabd3f311ebc950c91d52454b592a59faf3e10"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift",
+      "sha256": "37090baeff946595ffc4761e2493b0293922dbcd19a87b661b99fe77b4654c76"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/FileServiceResourcePublisher.swift",
+      "sha256": "f0e2245f8524297fd678d81ee71bd99242a3d17b90b77cdcdc07dd9f4b44b73e"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/PortForwarder.swift",
+      "sha256": "66422772a38e1e2ddb9fecab35e1e610bdc3a2b05203b8ac546c9c495c4bbcd7"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/RawHVSerialConsoleInput.swift",
+      "sha256": "453efc7067af21738002fc752f515909bc3eae506e3bdea56a56ae58e2af2533"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/RawHVVirtualHardwareAttachmentPlan.swift",
+      "sha256": "a09a8e3add8bdf53d9d398c32e0104022fe0e4417a8818cb861c7eadea7972a9"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/RendererBootstrapQualificationCommand.swift",
+      "sha256": "5ea48ffdd0a133415d87390a3102b2f1b95c82b2d11af5da1ccd80306e09207d"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/VirtioFSShareConfiguration.swift",
+      "sha256": "6586678ce16fac41c1e844494a0aa800888b707012f5628f3e07d302b08197f4"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/main.swift",
+      "sha256": "4fc51b7ccd4e059b302cdc2747cf528771117da506cfd2d330cf531dad431475"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryARMVirtQualificationTests/DoryARMVirtCompatibilityMatrixTests.swift",
+      "sha256": "029ff73fc344dc274b2bdc743c76591b60343f7105b7281b19e570a464413250"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryARMVirtQualificationTests/DoryARMVirtQualificationReceiptTests.swift",
+      "sha256": "776089996e8bcf5f04942297d8c8042e3708fd46c6e4aa2dbacd4dc74f474b0a"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryARMVirtQualificationTests/DoryARMVirtTimingCampaignTests.swift",
+      "sha256": "f250b93d10e0b3d44a3637736d2477997ffed51e9a87ddc9f2e02f99423a807b"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryARMVirtQualificationTests/DoryConsoleInteractionScriptTests.swift",
+      "sha256": "ae3c59afd70399f62bc156d5a8b9dbc85ecb73a2fc9e090caf979288809d6507"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryFSWorkerServiceCoreTests/DoryFSWorkerHostCoherenceTests.swift",
+      "sha256": "e06e67af113d30627454bf3187c9eb887e54b7ea28bbd4863c70adad77304f63"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryFSWorkerServiceCoreTests/DoryFSWorkerProcessResourcesTests.swift",
+      "sha256": "d074f18f33b69c9dbf012520eaec606a01be74df515c3fbb8574e4256e3f4abf"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryFSWorkerServiceCoreTests/DoryFSWorkerRootAuthorityTests.swift",
+      "sha256": "230b3b62e6832212f26711ada823a254b047823b63e3bc25639a34874a60691c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryFSWorkerServiceCoreTests/FuseResourceQuotaTests.swift",
+      "sha256": "4c394b610c0acca7c0e7a888417c09b09ecc6e9f7c771451794436d091ce42b3"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryFSWorkerServiceCoreTests/FuseServerTests.swift",
+      "sha256": "2d71eb6b9964072c9eb90efd24ef83f7ad05c2dbdccb0f74b0d6aad7d350b6a4"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryFSWorkerServiceCoreTests/HostFSTests.swift",
+      "sha256": "2e6589e3089b1a257445160a8cf4fc305cd6c909b5d387941d3efc2723a89632"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/ARMVirtFirmwareCodeMemoryTests.swift",
+      "sha256": "2705620ec02cb28a689db2cca2cd41735e1fc51c6ed3eac3ef5605292a9c0522"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/ARMVirtMachineContractTests.swift",
+      "sha256": "ae48e100e382afef7eee9b2086a4754eb832f41c0fbdddb07011782524f36a3d"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/ARMVirtUEFIRuntimeAuthorityTests.swift",
+      "sha256": "be3df9f3bb5471ee59ad3784ddece6f3e46b199b026ec492534cb3a7e3d11939"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/ARMVirtUEFIVariableBridgeMMIOTests.swift",
+      "sha256": "de12da6ea9ba138bae664f1000ec50a4d8685e0c1226715f5c49b315874d2bc5"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/AgentProtocolTests.swift",
+      "sha256": "cc59fc9e504e43612818931d6affa40e2a007024d6061e724a2c18624bc724ea"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/AgentVsockForwardTests.swift",
+      "sha256": "036ba7cd9dae248da1ecb01f00120e376dcc501318a5b3be2c8f0c3e099bdde9"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/BinfmtRegistrationTests.swift",
+      "sha256": "36c029ce8d79a2fade9941d9824e69f788c13f90c0e80e35e5ba1492fabaf7c3"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/BoundedSerialConsolePublisherTests.swift",
+      "sha256": "3bae54ae0ad4c9b2e292b40f7c6bfbabd63bcf971ca44950fcdcd0acf8112ca7"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/ChildProcessTerminatorTests.swift",
+      "sha256": "5b77288b6e9eef5de19c41b66a342cd17451424f11d0bee05fc116fc0b15bab7"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopAudioRecoveryTests.swift",
+      "sha256": "e63cc501ad3088b8d81f4f9b0cd42d732f6d287bde2aa7d6dc02d7440a571f10"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopClipboardPlanTests.swift",
+      "sha256": "d9489aa78c34423e5ef1167f3a7f29dd8336d6449c618e82a1f69c34407a147e"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopDeviceTelemetryTests.swift",
+      "sha256": "e1337d1ff914b9c4a26f2e0ee4dd1ebe2818cf059a58acb9dc3d5f727aade4b6"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopDisplayPlanTests.swift",
+      "sha256": "14da0cf9460e68abe8962fa36ca8959097473594a109f8048b594d643a8ca333"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopGenericGuestShareReadinessTests.swift",
+      "sha256": "7ca6d9f2239833c94002a2f57c00c8c3662fdf79fcd311504253fadf7614561d"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopGuestReadinessBoundaryTests.swift",
+      "sha256": "c4a035af9c4eca7888a3539d1e6633bda388075eabb9b00e503d7b83d12ae1e9"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopKeyboardModifierTests.swift",
+      "sha256": "ee9a1c2261c51938eed959e5d86021aff86dfb58ae56cee59ff1f86435675060"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopNetworkPlanTests.swift",
+      "sha256": "0416af3d3dfae567c62868f5e0234eb930525fd2b8f3a2a84eb1a923229455b3"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopRendererWorkerLaunchTests.swift",
+      "sha256": "5bb345da18684c0be4722c277965851a2fbec640a2906ef5c31dce0179b29837"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopRootDiskAuthorityTests.swift",
+      "sha256": "f5c6c5f7dbb3ac6d23cfd3e411929d537c8abdc64ab37545db89bf6c75b0f33c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopScanoutResourceLifetimeTests.swift",
+      "sha256": "a241861d3b5a0afe8bc61f5a4486aa24333aaa740f2c7ee3d0bd5a525157fcd7"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopScrollEventStateTests.swift",
+      "sha256": "b7090e36769cd7690bba95f58836d1db1a2a6558f79f97f5f7ccf7fd339b469d"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopShutdownPlanTests.swift",
+      "sha256": "a288623d11aa2b3712759df31775e55b6fb3afb423b7e800e5515852085d4f7a"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopSignalEventRelayTests.swift",
+      "sha256": "ae299381375f57639514d0e04f98eb34b51ae080c308993005fe67895ef05f8a"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+      "sha256": "6865612e4dc64324034d85d491d7cc59a5ca480103a81d67891405249e6eef2e"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DirectIPBridgeTests.swift",
+      "sha256": "12027c0cfcf783c33a7dcaf27da1ac391865cee7262c7759df7bb5eab1e336a8"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DockerSocketBridgeTests.swift",
+      "sha256": "84121f7693a997173699af2ecf610c0ed4b2f9e39875df7723d939ae72af75f3"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryFSWorkerBootstrapContractTests.swift",
+      "sha256": "0014a6128b14bea3b3360b09e2281e9d230d91bbb23372b2adcd19ea5db49264"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryFSWorkerBrokerTests.swift",
+      "sha256": "30060b33caf04dbc0f216b14c78b5bf55195b00bf7cfeaa6906bff0d9c92a500"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryFSWorkerCoherenceContractTests.swift",
+      "sha256": "ede325b9e162fe22443e173a89c34a10a29f69df24e73cbfee31fa2e4691a92e"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryFSWorkerCoherenceSinkTests.swift",
+      "sha256": "92fec37546e379c7a82110de84012229aa55ae52eaf69b3e9539cc524ba60a37"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryFSWorkerTestChannel.swift",
+      "sha256": "6a540ec367c0aabb0c86f2673829e2b26b4bfc25e48f57c00a315795c3c4dc37"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryPCDesktopAdapterTests.swift",
+      "sha256": "b3f297b6de14e5a1b2e1f4206e39f3fc58dbbbb256fae2fae4ae1b18d29f96c9"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryPCVirtioVsockPCITests.swift",
+      "sha256": "dce3596b3292d207573f22ebbccff130384c7bc938609feb518837c081ec26d6"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryRendererWorkerBrokerTests.swift",
+      "sha256": "dec97e858569e2dcf78b68e260dd7947929a7ebd4cbf5e0cbea37e3616425e69"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryRendererWorkerSharedMemoryTests.swift",
+      "sha256": "403d765358aaf53133ad7613b88e37f2866874d1404d28d4867efe2efcc86c1d"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/EngineRuntimePolicyTests.swift",
+      "sha256": "8f85646970a083276f915eb60c731361d28e66c1f38b8417eed297a560c837da"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/EngineVsockBridgeLifecycleTests.swift",
+      "sha256": "f232bb7eb1ad1c418d29a67729971a5226310dcae80b7f857f2b6fdb563064a2"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/FuseProtocolTests.swift",
+      "sha256": "2ffe72d04856693f69b2acf582608f9e68a172a011b44adaf994f2e486b010cf"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GVProxyDatapathGuardTests.swift",
+      "sha256": "231ab3796ee0d6fbaad9dfc12a57a0200a78c4852955d740bbc706d5252e5ccf"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GVProxyDesktopLaunchPlanTests.swift",
+      "sha256": "0242a9975c59b959dee299ab744ec1ec27b7805dfd15ae62cc49da7dff64b7a0"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GVProxyForwardRegistryTests.swift",
+      "sha256": "42cc9c30cecb3fee9893770a9f1ae5e662300dee4813bdf290d88c0f887c96f1"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GVProxyRuntimePathsTests.swift",
+      "sha256": "6fbc4fae1cee41477ae4631c3d65986d955e9c36fe2f9a4588b863e0b6cfe9e8"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GuestDatapathCanaryTests.swift",
+      "sha256": "5b3cac929b26f2d7f2863254e5c1931802ab9c171363033226a931393363980f"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GuestExecutionPauseCoordinatorTests.swift",
+      "sha256": "7316207a07d50de13c51720c049908e64c0cca6ab59a237337371c122f7b777f"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GuestFSEventBridgeTests.swift",
+      "sha256": "f11c79783c4c7f8a16005a03862c19b4474ca1de5210f33050575723a50dee4b"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GuestMemoryReclaimBootCommandTests.swift",
+      "sha256": "522974fc15b0f7cc2373f5e9e88c40d63f8a36ff31dc996827c9f441b188ee59"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GuestMemoryReclaimStateTests.swift",
+      "sha256": "c97b21dd4b021bf90a4f1c3b7e5813f441ac6f135abd80229065d58b1cd46365"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GuestMemoryTests.swift",
+      "sha256": "d7ea4beecf67bf0020834303bd0dd66bee8aa418c9360eaf855dc5aff0bba168"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GuestShutdownCommandTests.swift",
+      "sha256": "7d669f454329942f46f375cd232cc96bebb857119ac174a1a111b3df329807fa"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/GuestVsockSocketBridgeLifecycleTests.swift",
+      "sha256": "6780e83ce5c70bb440d7513c4c9020ce7c85f9d37c34c7e7a0d2b96d75928b3e"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/HostFileDescriptorLimitTests.swift",
+      "sha256": "510e202229d2c443e43484da7d1eedbe67980971ac05a4f3c031146b6ed52a9f"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/HostGuestVsockServiceLifecycleTests.swift",
+      "sha256": "edd5a1112add88831a0a5319fd9fe1e3a02c86ff005096af2e0ebd4cc1ed17b5"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/HostPageTests.swift",
+      "sha256": "18921e119eb403780e7f767ebe561c24533495a8628603c266c9e167ed2229b9"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/HostSSHAgentBridgeTests.swift",
+      "sha256": "eb8282bf6cecda8a61e4fe626c7799f2418a8955ff81d62bccc228dec848d30f"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/HostUsbDeviceTests.swift",
+      "sha256": "7432cad33e9e525218ec3b670dd0cdf5b36e68bea0690cadb2fa32fbb37abcc4"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/KernelImageSafetyTests.swift",
+      "sha256": "ea53ad03879aff299810a086fc2a7ebcf34a848c127630c94011b09011466533"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/MPTableTests.swift",
+      "sha256": "3aa2f7fb51d0b1bc2e425ababb1eaf27cd07ed8af5a7954142b17b97ad6d6ce7"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/MachineBootPayloadTests.swift",
+      "sha256": "d6a7cd9b972ab6459fece22dbbd14d8079e0a0e4b59e82c9d2d38c10556a437d"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/MachineHotPathTests.swift",
+      "sha256": "d0d5ec91c4396c6c202850a9bea227a48af95af1388480cdce2737612266ec0c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/MachinePortWatcherTests.swift",
+      "sha256": "c4efe31aabc11fa0a1b8cec32128651dbbd4815e587b10ba6e719df1239289cc"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/NativeIPv6NetworkPlanTests.swift",
+      "sha256": "54dbfdf49abf1b8dfe657926cb46f762af16cbb53ba3076b11e7da28a86fec46"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/PVHBootTests.swift",
+      "sha256": "c14c976b802d96cd26512c2ea9ca8385e3f1cc3dd402e12c79ad24ca56bbb244"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/PVHLoaderTests.swift",
+      "sha256": "7a830297125d8c145ddd543bc01aeb8927c7c1744860fb112026fb6647184d00"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/PublishedPortForwardPlanTests.swift",
+      "sha256": "96839f74dea52c39fed6c118a5afc7444eee2309330b3d873e7253683ac0c894"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/RawHVMachineRunnerTests.swift",
+      "sha256": "efc108d2a4751980a8fd101aea3aa06a97acaf81afd76eab66b66333cfa2781b"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/RawHVSerialConsoleInputTests.swift",
+      "sha256": "6d1d07816fb155f632d86b9b5e704da81f37e92c603928aab5d5c10585ffc594"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/RawHVVirtualHardwareAttachmentPlanTests.swift",
+      "sha256": "8c77e18ca000f83d42089ff3f12cdc196be81ba7676a91947f573c0bf6695c75"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/RootfsPristineRefreshTests.swift",
+      "sha256": "788d8262b7f19f0c080f0cc8d370793f187175cf3276ca27978c00b7770fa61c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/UnixSocketHTTPClientTests.swift",
+      "sha256": "d94d3a045d8a2e37cdcc4455d891414dfe3aba262dfbd8bdae348ed6561ff63c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/UsbControlHardeningTests.swift",
+      "sha256": "923d48e51bc7e61b902d469b0f167fffbf0ab5b8990ff07b1496ac207287cc12"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/UsbipBridgeTests.swift",
+      "sha256": "4c0f10fb3f0af646618c169b653994dd320fba3572982ad63b9e04be180478df"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/UsbipHardeningTests.swift",
+      "sha256": "8ac6b3d77eb97260db6c2a17df02008589af0889b6bb96d81da5d684bd9d8d60"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/UsbipProtocolTests.swift",
+      "sha256": "5c89e447696f037462ae8b0c315b23a2158fdecad47da4f963c72f858ac6c23c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/UsbipServerTests.swift",
+      "sha256": "31d3f1df1b1c9468abb34bf891b9ace5754f03ae1dce171cc846fbfacccc8ac6"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VenusModeRequirementTests.swift",
+      "sha256": "047bd9df537d42965ea218c705d9bc51d221889fb4be4a42e3bcbe2b3581ff71"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirglRendererABITests.swift",
+      "sha256": "a2dcffa7694248361196ea9e0fe36fda4add65a09321412d1ddfa0c23b7434e6"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtioBalloonHardeningTests.swift",
+      "sha256": "be801ab0755385a2ac97c75029a6449597f073e03ea3077759a510629d3ee24c"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtioBlkSafetyTests.swift",
+      "sha256": "f88c9e2b047a65d26a1534e872ee8b590a0d24c7c366ab47b8771974135a8559"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtioFSShareConfigurationTests.swift",
+      "sha256": "b90db558f7118d1ea9fbe248fc8ef28884e2bbc9b48304a25996f2a761c44f9f"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtioFSTests.swift",
+      "sha256": "551d75276a7367ded81fcbc4a9b7bc4bf54a7dd848c25e071dfdb2e58be55047"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtioInputHardeningTests.swift",
+      "sha256": "2b72cf95b041b89aa132735ef0a2e8f8099e8cdf4c97fb16607ad4833c3aeac9"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtioMMIOInterruptTests.swift",
+      "sha256": "501fbf0363bed718d5719622adadd609aa4c44e54c1e14fa55fefca196bdf84a"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtioMMIOSlotOwnershipTests.swift",
+      "sha256": "b814698a6e6d7ababa6c70c1c055dfe29e45fd4bb5c591e177185bfb56ec6b02"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtioNetHardeningTests.swift",
+      "sha256": "c26b2f5464f6e6b1fe0d409da0fd961dbb4243de4f535796ae06e44cf98460db"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtioNetTests.swift",
+      "sha256": "e60cea781cc75fbd2a563211c58e0adb1f7b6bc165b61aa40b1725cc218ed423"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtioRngHardeningTests.swift",
+      "sha256": "3233ed449f33617156822d5fb426eb6cb8f053e043c893c6d12cf45bd7b476ad"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtioSoundHardeningTests.swift",
+      "sha256": "e372c3e8585b371732e5861f82a7ab88f92fedbf02939cf039cc412c155952f7"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtioVsockHardeningTests.swift",
+      "sha256": "e8153c4f5128878bdbda4371f2d3e29e0cda9b9b3610046bdaed0f75a5f6c0b7"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtioVsockTests.swift",
+      "sha256": "22bd387f574dd1145e9ffe8d33f64ec9f1e925042da482b9b75956dc01074381"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtqueueHardeningTests.swift",
+      "sha256": "159986c2a9214530ce65e37dde0a2bfee1f480c07bb1995f5af285175d140e06"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtqueueTests.swift",
+      "sha256": "22d9c410362ebf5fd4c4e388c6f92ee0c1056fb8658cc36751d1e2b4e069005b"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VirtualUVCCameraTests.swift",
+      "sha256": "829e8a1624459b524cda8b1fb5e7b92afc72d37e98bc61e5add8db0cdc2b5020"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/VsockServiceAdmissionTests.swift",
+      "sha256": "3db78000a854be8aebc9ca49b404bac9eb6b54eaf8bfe23bef7336d33837beb0"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/X86BootPlanTests.swift",
+      "sha256": "64524ef2ed40e4736ce65b7abedfddf6721a8592d5a13ffc659a745bc7bc7da0"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/X86CPUIDPolicyTests.swift",
+      "sha256": "78c8ef10942c79a2c89aaf4228dbef43f02df188dea165ca400e1f431dc70894"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/X86InstructionFetchTests.swift",
+      "sha256": "26b56820784be3675cf96e4fc95bb59f922765952b5cc062473a67b19accabbf"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/X86MMIODecoderTests.swift",
+      "sha256": "ba81e935f707edef04f401e55ab6e8e14663816fb5de8c054eeb648d4101156e"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/X86MMIOExecutorTests.swift",
+      "sha256": "a7795fad227d3ba3197b41e70a599393432cd33e46549ded46498db5e834982e"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/X86PIODevicesTests.swift",
+      "sha256": "d0bfadf4cfd27f3bc2d28828cdf151c0b594cbdcb5d39470acc49d7ecc65487e"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/X86PageTableWalkerTests.swift",
+      "sha256": "ec9ee305a93f5359ae7dd73646231887db3635d6ea391f5eed8ce0f7ed503cce"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/X86VMExitExecutorTests.swift",
+      "sha256": "b97866750a8a96407b63d58d5c1460411c34e0ecf27ba7b401d531f2036a2cca"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/X86VMExitTests.swift",
+      "sha256": "1d10c454fc18c8ae4c9b665501fa5b35ce125eaba70526591de5e45115ab1ee0"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryRendererWorkerContractsTests/DoryRendererWorkerContractTests.swift",
+      "sha256": "0b3fc0fc6f73c55c3c60a216340139d813d5c7f9e78b06c0834dafa55f367035"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryRendererWorkerServiceCoreTests/DoryRendererWorkerServiceTests.swift",
+      "sha256": "ab64d4c6d6a85bdc2840382a51029fb4f97bbb373f9ee35dd69edee791caa335"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryRendererWorkerVirglBackendTests/DoryRendererProductionArtifactVerifierTests.swift",
+      "sha256": "8a4c9196b85184606291a454a23def9364ec7c8e07b1d307408bf36b162a43c0"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryRendererWorkerVirglBackendTests/DoryRendererWorkerVirglBackendTests.swift",
+      "sha256": "d6254a857cdabfe5c8f2531187f82c010c7a1e2f5d8e330f5ce7b223098bcd4f"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Tests/DoryRendererWorkerVirglBackendTests/DoryVirglRendererEnvironmentTests.swift",
+      "sha256": "2aacec79d57d3488cd63dbccfaa193dfa46f13a9aaf7ca489bb389dc7f603023"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/dory-armvirt-uefi-smoke.entitlements",
+      "sha256": "c439c3ffbe9d1b486321de3360bd9f1368024751553ae131aa0490e4e49841dd"
+    },
+    {
+      "path": "Packages/ContainerizationEngine/dory-hv.entitlements",
+      "sha256": "62f00c5f02263e870b9208a82d11a4be6faf4b20d63f7f8f3ae6d69b5a4e6018"
+    },
+    {
+      "path": "dory-core-swift/Package.swift",
+      "sha256": "90bd5bec6041daa490f8c5a38951ffaa73daf9efe8586d51bd8b39834aaedd15"
+    },
+    {
+      "path": "dory-core-swift/README.md",
+      "sha256": "202fe933aad02f705037b2c9475edda63f211d896bacf75050e016f43864c40e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCameraBridgeContracts/DoryCameraBridgeV1.swift",
+      "sha256": "9674db0c9d179d342b13344d23c09d3ed32f6bd438fd84e92e3518f08b7e3a1b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/DirectIPBridge.swift",
+      "sha256": "b89a156164f42a7acc98f946c08f068a76ffea73ebdc5d5652f64a244cb82021"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/DoryCore.swift",
+      "sha256": "e32033ddc3dc3a7ad182ec3b6d7334c86b0544d87cce491286a533d763fca46b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/DoryDesktopRuntimeContract.swift",
+      "sha256": "82ec2c8b1b21dbb58bfdfb363fbdf8ac2232f941b197ff783876504901ddf8e3"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/DoryEngineShutdownTiming.swift",
+      "sha256": "265e728007e60ae89151d3d87e51f45e1bb7a0d64e409f63f7c8262a4559b623"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/DoryExecControl.swift",
+      "sha256": "9005f0aea720e4c5049360abea1af4d6c2c2491485c9fd9b7fb88723ca5e8a39"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/DoryNetworkMTU.swift",
+      "sha256": "40447ef4aa6f3c819a042c786104af1b09b2f9478600cfa8a23e3016ba939b63"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/DoryOperationsExport.swift",
+      "sha256": "9e5d44a3b1bc85c1cb008c545c6c4845676b858829791b4aa0bdc073cf05bdf7"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/GuestShutdownCommand.swift",
+      "sha256": "92f7a6f952cdedd10190c92b1ff7c76c617670748fc1426d41806e66e527aa6e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/PublishedPortForwardPlan.swift",
+      "sha256": "831049eb782607dd978d7bb9634a69bc0eeb51f67a7783457005e3c43521208d"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/PublishedPortReconcileProtocol.swift",
+      "sha256": "cf7fec169c858f0f3258be493cfae7a03785159b5ef263e08f9adec1d95a2afa"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/ResolvedPortForwardReconciler.swift",
+      "sha256": "214e8a0cb69a8e7129f737f6a6ceaaf2a7d3ca8393e525b9e26ce7c697582c39"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/SourcePreservingLANPlan.swift",
+      "sha256": "43ee2469d02f293b3b6bd7a8fc44248bf6bb4e68a31da361f4f8045fb252d596"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/SourcePreservingLANXPC.swift",
+      "sha256": "52e497659abf125fc208a773e285043df7a46b0181b92c6d9cf2f79aeddbf36e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+      "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift",
+      "sha256": "43fa86d4d733813e2011ed3f8b5137448223454bb887961e41bb5d93f61cc888"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift",
+      "sha256": "f5336494485a7c4bb43e6e4e0fbceeb7cdaee81f64917ab2f386596697414bb7"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift",
+      "sha256": "c6c0f1f2a0a23f87e7019fc1890a813378d388a7d98c78fdb915d47e57801285"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86ArchitecturalState.swift",
+      "sha256": "e07cae1140916b5d592c6ecf40be68534bcd80447f4b3e60663ee5216adfb44c"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86CPUProfile.swift",
+      "sha256": "8d2c8e64f04dcccd0f4970e5a3d32a4250b5b9ddcaa3807aa86a26982096d013"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Decoder.swift",
+      "sha256": "73cc0fd21d94b9ab79f97a5cbb973950201a2c9b8f43fb7655641590c8f05011"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Differential.swift",
+      "sha256": "1ea234256be65b867df11371d5d3d851256bdea8ad080be754eb517d661c5873"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86ExtendedFloat.swift",
+      "sha256": "d760a87389cc41c8241d8ecdff75c9d6d7d18f54b27e7092017bd7d1d7302706"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86IO.swift",
+      "sha256": "0800cc4a749318bf093d71c2f80b4003e675f5cb0ed1ce96b57283daaed3bb71"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Instruction.swift",
+      "sha256": "8ffa9ae88d4527ba841fcf44f364c9d0dafeec4f306dc57db4fc7c3cfae50891"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+      "sha256": "f4400c360312837ccb16ebe88c7d57e94b953ab5472529d050893008bdb5e75f"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interrupts.swift",
+      "sha256": "5065db204d1ef104d3a853d61902befc0756e92f0af3a2a1c492ebd793982ab1"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Memory.swift",
+      "sha256": "dfd2766e24b8bfd423be869a3ede6789674721a7cddc454a60a0f2af41d104be"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86MmapMemory.swift",
+      "sha256": "e4dc55bb27da7b1e1342adb6a8df661558de3425333fcc05105313c1d6f7f362"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Paging.swift",
+      "sha256": "30f513daa90eabfdd33ddbd62a604e9ece4b55fd165d602bdc08dd4dfe32a3e3"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Replay.swift",
+      "sha256": "518522b0e78c323073f4f90daba3c5e3dee70f4c8ef130479561b585746a322d"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryExecutionContracts/ArchitecturalExecution.swift",
+      "sha256": "a56c56a74f2abff5666c38f084bfa7670b43ca74b5fb1e37cad5d332fdd9e6d6"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryExecutionContracts/CPUExecutionEngine.swift",
+      "sha256": "533c29756dfdc9571df2fd6582440aaa6c0ee9a889e464999eae0c8a001dcf9f"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryExecutionContracts/ExecutionIdentity.swift",
+      "sha256": "009dc2bb7d9ab66573f847da84249c9a6db5c4f7b9cba9e41fa100eef66e1481"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryExecutionContracts/ExecutionLifecycle.swift",
+      "sha256": "b65a71722c49190ac12465a31ab8451cf262476e5c0ea689f15396f4e914af77"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryExecutionContracts/GuestMemory.swift",
+      "sha256": "eca7f50baad1bd979a8cfe69f18d91f14a6201a704f35f522f2885124d1f62d5"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryARMVirtColdSnapshot.swift",
+      "sha256": "64a92640106261fb065e2c34ac862cf02b8fc2f2949c345b809e4f0b4918323e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryARMVirtUEFILaunchPlan.swift",
+      "sha256": "d49d479c71f483519461bbbd3234831bc1c63b629e6f9f4d80b24be6c59b9589"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryFirmwareArtifactManifest.swift",
+      "sha256": "e70e225be2021e1587609e0212607aaf59dc36c530b17206fbe9e980c8192dee"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryFirmwareBundleBuilder.swift",
+      "sha256": "6aed87bea6dd9b2b52ce3ccac3e6e8efe4f9a3c85b23797430824eb1a4b667a1"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryPCUEFIBootVariables.swift",
+      "sha256": "bf9f9fc5aaf28f8cedace6f80425ad86923cd34fa229b4abc37b01cae80154bb"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryPCUEFILaunchPlan.swift",
+      "sha256": "1e15d5380da42513cba5a5d5eda809a9441f302f0b4215052d7ca0504fab7fb6"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryPCUEFIMachine.swift",
+      "sha256": "f83c710379a76dfdab4d94bcef3de60760e91f43b7181176a3ed1b9c9e530102"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryPCUEFIVariableBridgeMMIO.swift",
+      "sha256": "e3cac3e369b484ab8cbdf5f0f036be88f22dc3fde99720f81d43278eb56d2ec7"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryUEFIVariableBridgeV1.swift",
+      "sha256": "ad7f2395e962ea7c95d45863dd24c81065ae85a7283475ba878bc3157cfb60f7"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryUEFIVariableStore.swift",
+      "sha256": "f47b488f7ef1905240c75fdcb4713918714ce5d72838ed9d1bf392714b099ff8"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryUEFIVariableStoreAuthority.swift",
+      "sha256": "91e3994db09d6c52101dc2bbc65d04852a4d2396402b17feb30dbaa58f1831bf"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryUEFIVariableStoreDirectoryDescriptor.swift",
+      "sha256": "0a41f6a125357d25317de7ee1549143bea3937d14c4abb1a687bd4af8c238090"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryUEFIVariableStoreFile.swift",
+      "sha256": "a48b8643fee9d87a5980dfadaf9897b1c9a588783fefc0e061b6c2ec4ad6c24d"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryVerifiedFirmwareArtifacts.swift",
+      "sha256": "dfcf1972759724659c1e72daf7e4d2edabd78d59d70430d326e2862de00361d6"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryHostCamera/DoryMacCameraBackend.swift",
+      "sha256": "03615f1b6c78fe8d4b08240234d8a1e0f956b4e3ccbb0edc342664e9efd00318"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryHostDeviceBroker/DoryHostUSBLeaseBroker.swift",
+      "sha256": "f62f23ced20ab11b33babdd201c13231cda5ad4c16c48afeefe6fa464aef7b1b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryHostDeviceBroker/DoryIOUSBHostTransferCapability.swift",
+      "sha256": "289c584464a8c41f2a17a499183a562af5b796b7d47ef9af558598176f5a6c8b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryHostDeviceBroker/DoryMacIOUSBHostBackend.swift",
+      "sha256": "533ae5ecc133f5a1bcd16aaf953900a42cac69ebebb60e7e2c6fcb87798ec458"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryHostDeviceBroker/DoryPCCameraBridge.swift",
+      "sha256": "7f7554c9bc48f27b2423c356526dfd6a3e4071cea26dbd298e573a5ef6567006"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryJITRuntimeC/DoryJITRuntimeC.c",
+      "sha256": "e47c4f267ad9b7a46e12cee1aad191aae8e1b499de0ae00694156a3da2fd506d"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryJITRuntimeC/include/DoryJITRuntimeC.h",
+      "sha256": "c483bac2661e97fb082eb28fc6839a39f00efb04ed48d32bb7df612a9c1af8d3"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMacGuestCamera/DoryMacGuestCameraClient.swift",
+      "sha256": "bdce6ee39e1ede07547fda68335a7d1fdc25b143334a4413ac9825725a6e5e50"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMacGuestCameraExtensionCore/DoryCameraProvider.swift",
+      "sha256": "3c9b5213b02bdc15e7d84ecf43f91c1b2e9449f91a723b043249a96b46ad807d"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachineARMVirt/DoryARMVirtV1ABI.swift",
+      "sha256": "66345bbf135ebb182762953021976caf90eb082e0e478beac4040e2f25f713e1"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachineARMVirt/DoryARMVirtV1BootState.swift",
+      "sha256": "4a09a8c2b59d03eca1a5c2ed37db0fb1a120852b036ea8330125c3fee6a2442d"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachineARMVirt/DoryARMVirtV1DeviceTree.swift",
+      "sha256": "8ae45a43539ec9e8d830b2bb8aa3199dbe747f93ce7ae6cdfd48711ed2450d62"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachineARMVirt/DoryFlattenedDeviceTreeBuilder.swift",
+      "sha256": "0a8335ae689e81f63c24385c26b67c38a864a09e20cddd5d1bf3fabd08aa8782"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCACPI.swift",
+      "sha256": "9df78f73828a67f4d643c2623337e77d64bfaa63470747a0988b92f13dfa3ba6"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCAPIC.swift",
+      "sha256": "200b998c3814c2864005fb764ef8ba0bbbaed567b8f9a4f4015e3155bd90eea8"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCDirectKernelMachine.swift",
+      "sha256": "7d35ff68ded648d2add4b9c2afdf61f4e6c991ee1485839cca6e42e53e3548a9"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCFirmwareConfiguration.swift",
+      "sha256": "a5a038b405d2c2d82a366b16f8fe88a736efd8c265c157c1684577726835a7f0"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCFirmwareFlash.swift",
+      "sha256": "bda95b5eed90f0974fe3e3e78cfa3679c27f9ea1d5f8fe06804219489d645192"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCHPET.swift",
+      "sha256": "2868feb84c9da6a4ab8f2b00ccc603af24b6a4662cb6e75c77933b0e299bd117"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCLegacyInterrupts.swift",
+      "sha256": "a51cdbf9908918169e361693f811ed33937b1e3b544c1ae337c7228aec6dc9fe"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCMultiprocessor.swift",
+      "sha256": "f462550ee9094b37988b016df547562b1ad1f91d1997fa78742e12719ca37093"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCPCIExpress.swift",
+      "sha256": "2f9b10fb1ae590c78b36d0737ec786e39f13fad96adeaf4406c13ab276f8b72f"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCPVHBoot.swift",
+      "sha256": "83f92b679aad336c0647040b73d0699ebed15c0edfc93804db100f19e2f902cc"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCPVHKernel.swift",
+      "sha256": "b5b0afbf9c391e8b15b2be880da0bc90af920aacae74e2ccd8f874bad99f7553"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCPhysicalMemory.swift",
+      "sha256": "cd128c81827453705703d738501a8012c373dad9414d8a97b17077216f233708"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCPortIO.swift",
+      "sha256": "3fe7d8cde647e4882585024fe5937bdb77403663b2ab7f951e656158637f829e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCPowerController.swift",
+      "sha256": "d50590a8d3d71ec8130175980b067dac5411393e478813a5b3411420500063f6"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCRTC.swift",
+      "sha256": "be865d1653838f49231efaf979c4a415cb643558f83a7f34212bbb9b2326a305"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCSMBIOS.swift",
+      "sha256": "272483099fb2eeaef54ee5c62b8fc8e4c1c949d24ec3e94c7fb016a613222f10"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCUSBDevice.swift",
+      "sha256": "ed9a8071751d50a142323dc75e58cf1bdea1b6b4bf1d521c0d41bcc58f521154"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCUSBHIDDevice.swift",
+      "sha256": "9e08d0b44897b8d44d3456053ff2c7a8335fcd7dfa01fb428c75051cc4ae74d9"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCUSBUVCDevice.swift",
+      "sha256": "bb5add1180dbaa2d7b6b5bac29c55d0c866a49a1a528b3fea022bd83084ebfdc"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCV1ABI.swift",
+      "sha256": "bb499e24dc327eaa96682ebd80ddd2a4b7c8f0c3070da7b397fcf1b82ea101f8"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCVirtioPCI.swift",
+      "sha256": "9c80b0986b2d44ce3f7a1d26fa22aa99450580757f876245954917681e109e25"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCXHCI.swift",
+      "sha256": "94ff277c436fa7d2cf6e2965b72f9740d35aa576ed1af46fe83e570b96d7d89b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryNativeHVArm64/ARM64ArchitecturalState.swift",
+      "sha256": "97f5d0a3a7fa36b611946b96a97b3dc531c7d6eaf8251b96951faf1ee18f3ed1"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryNativeHVArm64/ARM64HypervisorRegisterBank.swift",
+      "sha256": "fbc49f4c5e4991f1b86b5ef3746ec45a886e691295d6ce1d37cc70dc91660b2f"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryNativeHVArm64/NativeHVArm64Engine.swift",
+      "sha256": "2b951428bd90a29cab42984085e19454d8dc240c0ba93a8012cd66f83eecf1a0"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryNativeHVArm64/NativeHVArm64MinimalHarness.swift",
+      "sha256": "eb2fc144fd5c343783ab7626efa4f03fea776c92aa08cddd852e8dedba5516b1"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryNativeHVArm64/NativeHVArm64Smoke.swift",
+      "sha256": "3ab05a9cec679dd5bff0e4f7e2e27b756411b9929c0bb7abff0967c2a181c91f"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryNativeHVArm64/NativeHVError.swift",
+      "sha256": "46404cc8f0a1bba2bb68e4bf927e236bf9c878ebde25942b2c59fb932740b6e5"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DockerDataDisk.swift",
+      "sha256": "c86013da5a1eec604e653f443e7678bdbacc4e89f0224af7b1a485f389efaf38"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryComponents.swift",
+      "sha256": "ac82c4a69585c08cd7fcf5c258c2531315cf8800c8f1ed87b503b16d6f52ca72"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryDataDrive.swift",
+      "sha256": "ec357075d0f63612ba4f4e9ae4f6f1526abf511863708c09720253bdcc14f1d2"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryDataDriveArchive.swift",
+      "sha256": "8c74b09cfa1180e0fc8a9fba39c8e68c0a99e44fe8f0a9b0874f8d4cdfa7dfd8"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryDataDriveSelectionStore.swift",
+      "sha256": "67af291e5a7dc95a0f4a132b89619dbc1203f5ddb3b47478c43bd3b00739d3ba"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryDataDriveTransaction.swift",
+      "sha256": "f53216ad42d448368b3c2f3702bcd32b2156dc05aa06f387e5f61b9e390d5d34"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryDesktopClipboardPolicy.swift",
+      "sha256": "f9afdfca9232d8f50de08901cb7ba69ebb5e9969761b5d2faf55e7255b6fd026"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryDesktopHelperExitStatus.swift",
+      "sha256": "4bad6f6918b65d130f5dee2e46f0a436324be85bdf1685e7fddfe3dc585bd04f"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryDesktopRuntimeContract.swift",
+      "sha256": "b3804ee029d7ca16b8071d2c251ca0d6f94b8880bf7cb026defbdcefaa94ddb4"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryEngineMemoryPolicy.swift",
+      "sha256": "e88266746b2b26ec49cf1e9d05ce15d07b0f64d32870259959ee467b9eb23507"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryGuestIntegrationHealth.swift",
+      "sha256": "67f0bf200bdcb84dd3457b33221ea59ee510da4e9b1ad5c8ffe7e72674381860"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryGuestIntegrationPackage.swift",
+      "sha256": "be315010b76e1d05ce3d0ef2d4d50845d6a2dfa2cbe046fd2a265316b0141459"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryIPv4BridgeNetwork.swift",
+      "sha256": "d12b60fcbfeb6c0967afa77951a6053e68eb306e2b6727aa71278217de15a250"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryInstalledLinuxBootBundle.swift",
+      "sha256": "98163e727138e691b183cbb6a8af8df8ccb77ae5ef1334b5a1e103518c835cf1"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryInstallerISO.swift",
+      "sha256": "853296b087767f0327b568c96589f2ab2f106db5a3070e8345e8a6ad062521a2"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryLinuxInstalledDisk.swift",
+      "sha256": "1d8ce66f8e0566872b0851917f20c056eea23f34c2eca912705914e2115d013f"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryMachineControlTiming.swift",
+      "sha256": "1d089f72eedffca06a38208d64e49d7a6c925dd7386f4d1f1c0b8aca51ec6843"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryMachineDisplayPresentation.swift",
+      "sha256": "eee1c437fa6a177b911daa47175d8bcb684b3cbc021cb198b86ffa0ffc78bc33"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryMachineFileTransferStager.swift",
+      "sha256": "9c19f26c568349497df1750c4263eac77136e1ef695a2ee1f08889ab49b99dad"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryOperationCompleteness.swift",
+      "sha256": "540bbfdcefda190f720c5fb30cb2475aa10f666472f3073ae5011a0163ef6a31"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryOperationEvidence.swift",
+      "sha256": "2ba853f1bde64030287d3dc41453455d339f875e3eb056af2d1c6fd69a359571"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryOperationJournal.swift",
+      "sha256": "2bb3217581da402652517eca88b270a9dceb31313e70489b2d2c7caa9d4347c7"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryOperationJournalFileIO.swift",
+      "sha256": "21fc7f654e6781bd40eba3f0ae49c67bc4805fd127345c191a3cef2201c5a1bc"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryOperationJournalModels.swift",
+      "sha256": "224dbda2f083783619d186ed14c1273ab7d6741384fa2c0f6d3281c1add7f5ae"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryOperationJournalPublication.swift",
+      "sha256": "d326792a3ccf4dee978e545ad6f4820e0843e50836445f51282b4e7c9ef267cc"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryOperationLease.swift",
+      "sha256": "9f793d37a18ee1733ff64c514fba8febc76c34643f3d2ba54522799b2097e6fa"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryOperationPlanner.swift",
+      "sha256": "9569fb5f7ca9503d7ac2686ccc32d178a28bf88eaf1328e152e20fcf341c2ad0"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryOperationPlanningModels.swift",
+      "sha256": "eaf52fe6b45f699a2eb10c970b62ce9bf9eaa11fcc00f9f448a8e33d3191039a"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryOperationSemanticJournal.swift",
+      "sha256": "8c17e95522871eb5fc7c7d5f7895c680b64e8b809ed6f33ed99f767ddcc8e42a"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryOperationSpecification.swift",
+      "sha256": "df1660c1a1612389d6c9227c72a4a2dd05ad470704b23f1b42449d43e5107ac7"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryPCRuntimeLaunchEnvelope.swift",
+      "sha256": "45110c5e6fdaaafa0ddc5e3a338c70064a3b8554caac90dec92afc4986b03db4"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DorySignedComponentCandidateImporter.swift",
+      "sha256": "5a3c0292ccce75c491c480f8c64b5ac0040e2fb1e2eda8c1f937442dd2a2e95d"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryTrustedDirectoryRoot.swift",
+      "sha256": "31d4e5e1a0127a13b110ab298fa1b0de3b4048ee6ce4de34031c10e67dc54b29"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryUpgradeTransaction.swift",
+      "sha256": "acd1cc366ee81fadbe70546c6d79e7da7f7291b4902fec3318201cacdafb634a"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVMResolverReferenceValidation.swift",
+      "sha256": "8448b824d3616bab61d0504d93028013acdd9c14fc82471eb85398aed09e859e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVMResourcePolicy.swift",
+      "sha256": "5474badb59b9bcfe8279a38e149edd907863ad5d9a86ab1c15f1843f5b58b24c"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineArtifactAuthority.swift",
+      "sha256": "da7bae815dc62a7f1482dd0d2f2651dd7e28efbb47c874bd34298ec20d492a4a"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineBackendPlanner.swift",
+      "sha256": "4b9692b4ca33b680a86b83c9cac98459fb7dbf286cdf490e4287bf260c0d09e1"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineCapabilities.swift",
+      "sha256": "a708e82e29e599111fd50005c9965c832fb35393cfcb7accbee6ad9cce91148c"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineDefinition.swift",
+      "sha256": "8f85b14845274d8a2ab24cbb7e3995cfe98b62c4e5a369f4921b8fc9c749cd3b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineGuestIntent.swift",
+      "sha256": "2bd8a99246e6997978f0751279afcab13752d6bd4c3349305fb4cc85a31a952b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineQualificationManifest.swift",
+      "sha256": "17f7bed37d816f796b3300f2232ea61c03205a1cc0bf2771a73f4d484cc26d61"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineSandboxPolicy.swift",
+      "sha256": "d296a18246ae36f7b14079cc0c927f13ed237f25a43230a96ab3bf1e86f5fff5"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineState.swift",
+      "sha256": "99394b3c935607819383f86a44cf3eaf556b08e6d23296679a71941e1e8efc3a"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualizationPlatform.swift",
+      "sha256": "40b97ed571566625246f560f9c99ab403209c3bf689f19e8e8c53c8a0deec6de"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryWorkspaceLifecycleOperation.swift",
+      "sha256": "d09bcd812c06b9737df6b46c511c86a38c610594a85a8ecc2efbe06ee82e72ea"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/EngineStateDirectoryLock.swift",
+      "sha256": "9eacc13867a9d32c6788e2b266394663ca1a2ab90b92ba2dfe0d940a249f1724"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/PrivateRecordFile.swift",
+      "sha256": "21ad62daddfe21a6c83d0897dc60bcd20d78b2bbb5214510f1ac90bd4cd68acc"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/RuntimeLaunchEnvelope.swift",
+      "sha256": "8da078a4a6fa835daa7fc909138a23dbd71767778ea8f49cc909b2e5a8775c9b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryPCQualification/DoryPCUEFITierQualification.swift",
+      "sha256": "775cb25e6bec4944708b18990fe25e75528ea4259282c26d85057aa93b80141b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryPhase0AHostNativeWorkload/counter_loop.S",
+      "sha256": "10e2f439dd6f18a89e52751ddb810b9e1a084defca3a160c0ad9e4082da46f5d"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryPhase0AHostNativeWorkload/include/DoryPhase0AHostNativeWorkload.h",
+      "sha256": "4f66b916710b297d94a44df0dd5fcd7bc0bf2f69505a0f3fbdfa8461e6caf641"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryPhase0AQualification/DeterministicBlockSchedule.swift",
+      "sha256": "b8f85b0ad80e93856b206c03c1ccfe3da3809a095505039990d592a6dd29ba07"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryPhase0AQualification/DeterministicBytePattern.swift",
+      "sha256": "52b157de99323af80d4a9071dbfbc29721c737aecf322ea728a3b6d415e2940a"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryPhase0AQualification/HostQualification.swift",
+      "sha256": "f72bb43752a3374316087ce5ca5877255a45ec6500aaebb48ecbbc763fa6e225"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryPhase0AQualification/MetricSummary.swift",
+      "sha256": "91adab264979fa058e1f51210039c3f16b2d006e81a5ab92fa630a0917b5d71b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryPlatformC/DoryPlatformC.c",
+      "sha256": "e1fe06f490ae62c3c49a67e3a6a74d6f6b3bff9b124e205a04bdbf58cdb8280d"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryPlatformC/include/DoryPlatformC.h",
+      "sha256": "082fa3232c5bf7f0b3c0e8a3f39319953baa51410a5f599051777155e2d2514a"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererBlobMappingLease.swift",
+      "sha256": "212ba89761e96ff83e2c05dc634b3813ae6c5c13f77805e01393a6882e74230e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererCapabilityReceipt.swift",
+      "sha256": "f1507f20e72de4b0f8992ecac1a48cc76b60179c4feb08b2858fd3c9b77e7d60"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererProductionInventory.swift",
+      "sha256": "912dcea041d32cc0e17b06ebe8fa09d1f6e39fe3157ffd5df0351902a271542e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererScanoutLease.swift",
+      "sha256": "53d4885acdf1285a8f20fb06cbd434780ff00573f9be1011e1758be845cf3011"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererSharedTextureScanoutLease.swift",
+      "sha256": "7567a07b5dff73cf84c99abe39c278b3fa13e0d22efdc68e6d013b7d080d6d0b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererWorkerBootstrap.swift",
+      "sha256": "7c205a97a2dfcea6256479f7bcd781a6e38245c7308894440a37b2a19b35ffb2"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererWorkerCommand.swift",
+      "sha256": "26c64678345bf16f24138a561c25860800268e3c4f4d90a2a768c054b1662b7a"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererWorkerIdentity.swift",
+      "sha256": "7506c54c36f35911bb241051873b79ce57fdfc80886c70bafcf1416a7ae48ef1"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererWorkerOperationPayloads.swift",
+      "sha256": "5d09568f48c50dd32602d9e1469adfb8d76121bcd89d110ef696a019bf65443b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererWorkerXPC.swift",
+      "sha256": "e3fcabd3a7151ab0b77a74bebcb541259834ee06283a5472e4d66cc45e4ea8cc"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/LittleEndianBytes.swift",
+      "sha256": "040488fdd62e8777d2005c4d97c007cb30b01f78b721091ed996fe98f73c8bd3"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMContracts/ARMVirtV1Topology.swift",
+      "sha256": "225b57f3ff9c2de9ccb7d90f8594cdfa2f25be4ab4aa41ad2a2f57d44eb99bb6"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMContracts/ARMVirtV1TopologyReconciler.swift",
+      "sha256": "234762ee719348a9b162754cc6613b5aced3a9d9475b62174944a74ea044072c"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMContracts/USBControlV1.swift",
+      "sha256": "4cfd608a69fdc3a347d6e48325d1c9dff68ced4ddb06ab373a8651ab296687b2"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMContracts/USBPhysicalIdentity.swift",
+      "sha256": "f394f37563f821f231a9d64cc3e86da74526a9a7b1a77a7bcdeadb6a9d803e84"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryDesktopApplicationIdentity.swift",
+      "sha256": "1840c9bdb92fcc27ef95ae54798617f4969f7d83050b61febc24ee4d193fa624"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryDesktopClipboardCoordinator.swift",
+      "sha256": "16172c55128356936c8aaae1443212e4ad0bde928dd134af9abf65bf9fb3ac4d"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryHostDisplayPresentation.swift",
+      "sha256": "70e8c0455dfec7c0a9ee6f82867fc996998d38188f624b4495248dbcebe29910"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift",
+      "sha256": "4b140615b45918dafe1d5c4e72499e09b7c3ce7b03039b6df333216873937e67"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMMDesktopApplication.swift",
+      "sha256": "5b7c1d98d08e640a8cd5e47cb491f7250a60a36772a3f121624aa9387261fbe5"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMMGVProxyNetwork.swift",
+      "sha256": "bf502263334407256ad7fea6cb567174f6117cc44279d490d21eade0c48f69cc"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMMGuestDisplayScale.swift",
+      "sha256": "d9b01012dedc4dd8002e92fea98581534d3745db3eb7a2b7312b1fe09736d4f5"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMMHostMicrophoneAccess.swift",
+      "sha256": "aaf96145ac64eb965cce961b029fd2d8396497693a9bc4553255114716a8efa3"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMMPortForwarder.swift",
+      "sha256": "facedbbbfe7bdbef93ddb49f41723c223a537bcf7a854265cb4d4b369c718d00"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMMSerialConsole.swift",
+      "sha256": "955606f0c933889124ce68c99bf4d96d5eecfaacef9e8361aa340938fc4363e7"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacAdapter.swift",
+      "sha256": "c0e17b23a8d883defc98221801fde9469b2d9db4e02bccad42be67b90376d7a0"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacDesktopApplication.swift",
+      "sha256": "6247510582b4c8433bed2ba56a900de091d62e5a5ef1e9a75c21f2fd8ee34515"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacCameraBridge/DoryVZMacCameraBridge.swift",
+      "sha256": "0772e68a285cbfa28cff766d2b5d409a3dad1d06cf2d9a5bc0822a15f1bcfcdf"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacCompatibility/VZMacHostCapabilities.swift",
+      "sha256": "1ee02f8094ec68dee2b7d28d9df74ef4af45907ce71ae7ea95c6f27ef47a9dff"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+      "sha256": "d6531309242ce5b5e7fa5b5a3ef87637f6e81055cebf0b71ad1c66a28309332e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacInstallJournal.swift",
+      "sha256": "c6e342658e0e763298255dfaa4a43ac6fffb7ea8a58d5427d4f9662ff155122b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacMachineBundle.swift",
+      "sha256": "2240d184f7c4ab0cb652d91d9548344e22d10750bfcf454fa35a89d2ffb0c476"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacMachineLease.swift",
+      "sha256": "442fef75a5da3340e5a1c24279abea39acb68ce81111cb5628bfea4f94b03d66"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacPortableBundle.swift",
+      "sha256": "5e63a7a405a1e14b36ac0f54c44a5ba03cf02ac1b6ff4baeb4fc0b11ededf6c9"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacRecovery.swift",
+      "sha256": "17bee200c84b28fbaece047a40355b04cad6551e39d172442cf54e68ec7230e4"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacResourcePlan.swift",
+      "sha256": "e7d269669bbc4868027332a221312cd17118ae825f090cd387d5ee5d4e82e5b5"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacSavedState.swift",
+      "sha256": "c92f8411ff61030c0daded26199b76cebbb992efa507cb53aca0d22b86622e76"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacSharedDirectory.swift",
+      "sha256": "d4048bc1db249994ed7ef8454bfc9e01bcaef704e5b60df791f4658e7141d8d1"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacUSBMassStorage.swift",
+      "sha256": "05339e49342e6f0ae203ea9b63a1bda8c819cdeb54c9d03fcfdfe3715689e0f4"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacSDKInventory/SDKInventory.c",
+      "sha256": "c49ce250e7e325a00aa115931f44883986c936e013bea9d6abccae5ecf398718"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacSDKInventory/include/DoryVZMacSDKInventory.h",
+      "sha256": "ba3059f3451c504319017997bfeb706ef7e66101912861070fa69161ffd601b4"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVirtio/DoryVirtioBlock.swift",
+      "sha256": "1e6dffc3b9d8f21630ee16fb2f2e352de1d10288de86e7d0d971ea38424cb890"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVirtio/DoryVirtioDevice.swift",
+      "sha256": "c4cd89288bfc02adcef69fdc9296f18a2c53569fd9326c3980c041fd74487327"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVirtio/DoryVirtioEntropy.swift",
+      "sha256": "6c47e80ff469b8cc6067f5c5b6ed9f2c7b40162ce77955718212fceda5b15929"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVirtio/DoryVirtioFileBlockStorage.swift",
+      "sha256": "8786f4cca4413cb5b859e0cf7cd602dafe42a8c12e0d1d24ff73e5b379b7b328"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVirtio/DoryVirtioGPU.swift",
+      "sha256": "e4688bff2eafe951c18594629ce2c7d251bc6d092b0227c47740b9d2ad18ab63"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVirtio/DoryVirtioGPUAcceleration.swift",
+      "sha256": "d981e87a29e4984f6a1c69c4ca592cd173ec4cd1c5dee7fe6f301247707732e4"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVirtio/DoryVirtioInput.swift",
+      "sha256": "64ea15585c2bbfa7d8929b69ca4fe6bbc86812128bb20f06fd8898a45b60ef91"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVirtio/DoryVirtioNetwork.swift",
+      "sha256": "9951c8340627f9aecde5daa272ef2987f58a8675fae01fb9f396424cdc1293fc"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVirtio/DoryVirtioSound.swift",
+      "sha256": "1f02ef4e44140e35dff62e07174e96aa749cf579a7e9ed6d183e3d761888d7d4"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVirtio/DoryVirtioSplitQueue.swift",
+      "sha256": "15b18dc8f0a676f616d2eaa6826cdf0c87eace3362a9587a7b526f72962df464"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/AgentControl.swift",
+      "sha256": "9aedf9c340a55b42d8ffb089460098ce2a3bd25c1a24aebb2380f6e07b01cf36"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/AuthorizedNetworkingReconciler.swift",
+      "sha256": "5ff80116126533e6cca19ccabec03afa31bbd9d4097854aca7288f9a2bafdcee"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/BalloonController.swift",
+      "sha256": "a7a5d021523de666ac758f099598aec8a023e50e01fa706ab537f467794cdf2d"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/CorporateConnectivity.swift",
+      "sha256": "4beeccf5eaf9b55e143d89358c3aaf15c74abd05d9f489097ece4e0c74daeaa7"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/CorporateConnectivitySystemChangeMonitor.swift",
+      "sha256": "51282a6aba473f6308be194e167f4abc0120ff2db418f9aac08a92475329a238"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/CustomDomainRouteStore.swift",
+      "sha256": "a34ab1cd26d6f0a49f000ff0d39148b7317a5f0ac3bf42f7c8f5c8b2adf6c1ed"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DataplaneActivityServer.swift",
+      "sha256": "dbe21afff2e47b4217437a791edbe2291143c8d06efec04b7cc02b229e764643"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DockerAPIProbe.swift",
+      "sha256": "04b2d4314a849dca9163fe4802548f184e2fa7e99be1e34ada2e0ac5c4a91d75"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DockerEngineProbe.swift",
+      "sha256": "f16d19111f0c6a482a52189a410e9abb35861e76fb39988f69f622b5dee4ee0c"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DockerTier.swift",
+      "sha256": "50281ad71f78ace7bca6159aa88f0c8c0677791ffa5dce673b0b0891e0325262"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DockerTierStartupPolicy.swift",
+      "sha256": "a2bf241dd9bc5baae8ac584578da406d93e4ae968cfcda86dec9dff20c94642b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DomainRouter.swift",
+      "sha256": "c813705033fdaec818b12f5d205f887615f5f6c19746c039d81acf8c397035cf"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryARMVirtFirmwareBundle.swift",
+      "sha256": "ecd43d7c31d197d29ffdb629fc65c9c89e11dbb0f3d19a63c6486e40b7537c7b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryARMVirtV1TopologyPlanner.swift",
+      "sha256": "6527046ed8289818d0e611270ab90e9e55275470eccdbccf417c4c5a85befc23"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryApplicationLaunchHandoff.swift",
+      "sha256": "9f5c8050cde61d80d2595da4059d56d24dd567a9ae7a642c8e279955e0bdbe68"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryApplicationProcessLauncher.swift",
+      "sha256": "a7c08ac5236d12000afa3461020da2732838cae0b41406c36406862a5a496b48"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDNSServer.swift",
+      "sha256": "e2649625f6762bcc0fa74456f577421db647f5015d58ce564ff658f717770134"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonRendererProductionAuthority.swift",
+      "sha256": "7051df6faf7db2a2177d5374d0c33e5317ed4407d5c5f46e3c182b706a130ca5"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineLaunchPlanResolver.swift",
+      "sha256": "26ec9c4134c58cafcf8acbfa4bdedc00f3d156a12946f86a7c1a6fe5097e6c99"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachinePlanningTransactionCoordinator.swift",
+      "sha256": "29ba5d5eccd1be842ab177856bbf7ff931303c2e87560a6db461c58584c83bbd"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionActivation.swift",
+      "sha256": "396959952cc95ebed61aa2a852d61d9b7a4cac3eb916f05c19fb505b7fdff2b6"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionPlanningComposition.swift",
+      "sha256": "ca35a0a11f30fcd3abf1853d774650536d7cfb8c4b1229e2549008a48e0ea165"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionPlanningController.swift",
+      "sha256": "afab1658d3f85fa09a2d0cc470ff878735247c373246eda1b259b79a41d1cec6"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionTrust.swift",
+      "sha256": "0baa561d788b92724456d9eadd994a584a5ecb2b4578419b90181ce25add64ec"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineRuntimePlanning.swift",
+      "sha256": "e9c7352733e94546c74c4992f85e49a003b7a86a96aeea289a4e6e8c638581fc"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDeviceTelemetry.swift",
+      "sha256": "3571bfd52fb86024523a022d170978448bed9ddb83f25aac49730097ffbe8fd5"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryHTTPProxyServer.swift",
+      "sha256": "6e5d7a703a17c262dec420399748840fd57759eacdb65295e6a27a05efabce76"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryHostUSBDiscovery.swift",
+      "sha256": "834fd7fcc59fcbcc015537ff3623fbb09b80b1a94ed63889e6329eb5b37afacf"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryInstalledDesktopPayloadReceipt.swift",
+      "sha256": "b0d542c6c6a9157ab9bbbfd09a90c7bf3f28c10e8399984cf5c90c92fbb54cc8"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryLinuxVMCalibrationExec.swift",
+      "sha256": "e882e62574276c6af2cf500622219e1a9bcf6920228cc73f59505055b94549b1"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryLinuxVMCalibrationLauncher.swift",
+      "sha256": "24d1dae6e9e075d9bb7226f6f989a12e8858655f60a625a307afadd0ee6a6c54"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryLiveChildCodeIdentity.swift",
+      "sha256": "30210ad0e43ca1678db4390ce2d856e0ed4881122a5d954b58554fa8b11adcb8"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineArtifactProof.swift",
+      "sha256": "3ff5675050e0a92c06c5e68a34171a1bdf8bdba95d5a55253f09783e4f0686a1"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineCloneReceipt.swift",
+      "sha256": "5e5ccbec694d3cc7b85f67d5d7113880b40e4ee5b8567a3d5402eec67dca06c6"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineConfigurationMigration.swift",
+      "sha256": "1e5175246aaf29e0e1884d469ed2a2c58e713de27671c4dd73e1721c8af530a3"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineConfigurationUpdate.swift",
+      "sha256": "7a3021d5629083a913440eee2b91d79c269fdbb3874837a516aa2313fa68bb25"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineCreation.swift",
+      "sha256": "275a129b00efbe09756cff10c25cf4f85700c3cdec93eebdf6dc991a153473e2"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineDesktopUpdate.swift",
+      "sha256": "b3615ebcd623bf220d8346ac9422ae9e58cdba7d436e783d5f2e08f1a22c613b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineDeviceTelemetryMonitor.swift",
+      "sha256": "d075f4a89bd7755ffac01bb1e247c4a9a9c6373f445f337005e526f472dffb78"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineDiagnosticOverride.swift",
+      "sha256": "0b844a2a9913c0729215e17cf51a7e707fce6195737cbaaea327e29b6b0b451c"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineDiagnosticsProjection.swift",
+      "sha256": "3a81beff24f30d843393462738ffd01abade43545091d266c615a2cc908386b9"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineDisplayPresentationStore.swift",
+      "sha256": "276216ca5c015dd366a773caf837a6b5f429f646e69f7b12955a9f65e6e0cb7e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineDisplayPresentationXPC.swift",
+      "sha256": "f1ecb41491ea2136b25d2979f4aa9414112b09e2276eee7c4570c581e0be5517"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineEventStream.swift",
+      "sha256": "af504408bc45ea5ba2f587d91dcac4ce2f8c398d3c4d3c81698cb4a1bd09842e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineFailure.swift",
+      "sha256": "6f9574bf920f2cffb749228396a63b579fb0c90c80cba149fef750781363d10a"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineFileTransfer.swift",
+      "sha256": "e8fae296f9e9340705d53005f440a9581777667ebfbac1a252e65b2434791e95"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineFlightRecorder.swift",
+      "sha256": "61a960d896a9f843a25c9914b046dc468bee2e9396307b72a41c0bd480ebba9d"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineImportAssessment.swift",
+      "sha256": "226d821bf934825199dc98da8ceafbbe7ec72c04274a38f8491703263073d4c4"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineRuntimeIdentity.swift",
+      "sha256": "c084ae63ce3ac43147ce01ffeac404c89771b8a6c7b9c7db2b209b28121c8abc"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineRuntimeIdentityStore.swift",
+      "sha256": "4b11ed98834df7fb23f03b21649ce8138cf6f63f4f7d6edd715f52627b71d211"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineSandboxPolicyWriteAuthority.swift",
+      "sha256": "e883444936aea69e51a56c415a918cf6f833247069929ebdc3e9921036e01f0c"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineSavedState.swift",
+      "sha256": "d995442a12d285b091fad812f96e985255442cc496351b510a0289edbdf49f4e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineSerialConsole.swift",
+      "sha256": "f8b11d318c36d65b8b89efad3e02d0af5a689a3381ee17ca29844e4f2f3efb51"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineSnapshotCreation.swift",
+      "sha256": "ca4c567ba43c6fc25c5ecb84069bfcddfb7e3883685394c01afbae9563d2a814"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineSnapshotRestore.swift",
+      "sha256": "5d4b8819d0bcd60d8b0bd418cfd4481466d684f4ae94805ff4382e139bb52187"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineStart.swift",
+      "sha256": "fe44b9ee90da07ac7b3d260fe5e7d879b1de84eee5efe689238583458a983873"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineStateBroker.swift",
+      "sha256": "7262ac84ddeea4e23880c34e2f61e884df68b00d55c6231d9369a61f915bbc59"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineTypedWriteAuthority.swift",
+      "sha256": "dd53b6b5d014756386321d9c2c99929f6caad8f0621885baa0381cc0810c07e7"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineUSBControl.swift",
+      "sha256": "64966db2306b4ea61c51de79333f68916237b387a0b98c71e19e9d92c4a24c49"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryRendererBootstrapQualification.swift",
+      "sha256": "05dcf769c250ce129bfa4a55966769775a9165791443206047357eeb42ed3228"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryRendererCrashSuppression.swift",
+      "sha256": "21694e2bc8f8944f748be042ae53283b3a0cd9453c2f30b9db2d54df9d5a67c4"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryRendererReleaseIdentity.swift",
+      "sha256": "eea5b75af67db7d85e947213dc0cd2e766313e714b99145795cb8a3811b473dd"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryResolvedMachinePlan.swift",
+      "sha256": "d6b73da6fd7ee33cf54444c3f9ad2170bac2e4075201456609bf735cb67d0678"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryResolvedMachinePlanRepository.swift",
+      "sha256": "395f889529895fce11b111fd9e0dc749eabfa559a8065f2f814715a83ac1a02a"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryRuntimeReconnect.swift",
+      "sha256": "50d2a33c438d4f2b1e549843813c6c0f3d238874249f97bfe852048bd901e442"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DorySocket.swift",
+      "sha256": "e61f8108de2ede2f0c730e4015cf3950a3a9abcffa15006211a8e1afc67b30ef"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryTLSProxyServer.swift",
+      "sha256": "60841376fa8e095974af4baa79320244101acc5bf93eebbd33735338137a9d0e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryVirtualMachineResourceAdmissionLedger.swift",
+      "sha256": "b17bdb2ee8597ef5425e3a08dccea309af75d12f06fb73e9eb3036bca9bc014f"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryWorkspaceRepository.swift",
+      "sha256": "36e6778e68f2fd01d7ae3a47d20a31d3421690e563d2d7740b8798641d9681a8"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DorydConfiguration.swift",
+      "sha256": "838823f1667e8a38e6a77b7a81bed69bcab1ba3b5c480b83fc228b7fafcf6b3d"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DorydControl.swift",
+      "sha256": "113d601097e51c5ccc14f1ef7a31f89853a138c3426639f112be21de648cb278"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DorydLZFSE.swift",
+      "sha256": "6d2cf92ef1a4c52f1a50d5eea5c8b166459a337a75e118186e9a95865994efcd"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DorydService.swift",
+      "sha256": "0d1488e62683b435260e4e178c9d1bc6917d34eb81f0f64f3b4a5dc0b4bdc07c"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DorydXPCSecurity.swift",
+      "sha256": "05d47cbcafe97f6680bb77d55b106f64c090f9250f085ae86b68bd008605c372"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/HealthCommandRunner.swift",
+      "sha256": "16106d69fe55f4a34f2b6cacbc2efb51846796c64ef7206aed044e2198be57ac"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/HealthRegistryProbe.swift",
+      "sha256": "47609b0b04d83ce3532c58e0e459538c0951f111b0c81a3e156cd51e1fd3a8ae"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/HealthReporter.swift",
+      "sha256": "9787c36a5c7c4bca3a31dd216bd184e36caa56f0f869b16b3809154db46c3f0b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/HelperProcessJanitor.swift",
+      "sha256": "c8b93b38c2b19c6a8c295b61bf3128875fe61782f9e9630689d0ba8b40517925"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/HostCLIInstaller.swift",
+      "sha256": "685fffb96508692d391fa30d44de4f157dd9c5dbdcc54ca8a74a5a075c0aed62"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/HostCLIReconciler.swift",
+      "sha256": "eb8f3940a1bbba7ac4dc00c84bcae01dd18bb413f13a7926ebd63ac56caa9edb"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/HostDockerContextManager.swift",
+      "sha256": "17045f1327f491f4d0875e68f4426acdda8de533e3f54fc894014a7049da7809"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/HostWakeCoordinator.swift",
+      "sha256": "20010af6bd2e1b61d76c0f9a6182c2966f6ef1fa70dc3300cdd522987492073a"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/HvProcess.swift",
+      "sha256": "7467b3acd370a3f3c204d0b797f96b90aa790a26e63090e837b263da8c37e75b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/IOKitPowerEventSource.swift",
+      "sha256": "aaa23e2a89a027336e12acb2b736acf27af17e213c1b287e59d1fd274cefacbb"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/IdleController.swift",
+      "sha256": "6dc22c84de1b158fc17d1c5158e9ebfba5d865e725cc664aad8bd9c21a580d36"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/IdlePolicyStore.swift",
+      "sha256": "14072255c406b8ab7a1718e19f5a1024d659cb0881e79b4b07ba8d754c888451"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/IdleSleepScheduler.swift",
+      "sha256": "2d01d88578cce6522b7b1d93f29af8d3fe06a8bbccece951b0e10781af032cd5"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/IncidentWriter.swift",
+      "sha256": "d91c400e502b7c45ac688adce419827f971698627988fb2170beedee0b02ad52"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/InheritedDescriptorSpawn.swift",
+      "sha256": "5a0562dbea4b9d869ef9a3d5c5c215ce162a5d42c3cd07247418e431ea496063"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/KubernetesServiceRouteProvider.swift",
+      "sha256": "070bfdd7f83dd58b721a15f683c223584363f009a07ed1db227b1fcba4d5bbe4"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/LinuxMachineBackendAdapters.swift",
+      "sha256": "1070a4205762e0c0b09a5b372823c23e608c566858f9ba88d60a74c35a7fb081"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/LocalCA.swift",
+      "sha256": "7c1244abe94e5d8da07427f2d647811e08220de56273e98e499db7b024525bc7"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/LoopbackTCPForwarder.swift",
+      "sha256": "b5312dbee9c3738c2c30914508b3e58123ad7f21a7ca0d38d83dd030da71ab77"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/MachineBackend.swift",
+      "sha256": "b7e1809af3c715e80d153c69c823a069e94971d5df66ec5e0d54b483c10c9f93"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/MachineBackupScheduler.swift",
+      "sha256": "313f3c53000e3f0f5c880e8626fc3bc9fc9177b7592451bf43c86509edbf0ad3"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/MachineHostPowerController.swift",
+      "sha256": "bb32a9b4d8e60cae40d93927cc92b64c5d35bc5995985b083f39fe352e97f832"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+      "sha256": "4bcef9805acec6b176fb93c3339e9eec3d2210b007a7c5ef1b052046e7e37616"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/MachineRecipeProvisioner.swift",
+      "sha256": "c6494ab243fbd5c54ebb310a9499db51e18c6eadba36b5cf9480172a843f1111"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/MachineStats.swift",
+      "sha256": "454ec900fafd3adc1f80b503877c25ee0a61977a9a1c3ff3c6e98870ee96153b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/MachineWorkspaceMutationCoordinator.swift",
+      "sha256": "79d04f4b1c48453c4679c0734f3311971b7b292c6ab0016fe2c992cb804ed901"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/NetworkRouteReconciler.swift",
+      "sha256": "bd911a71bc60aaa7d952da55f81a0d57db223ed5212a7a8df4225065be884322"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/NetworkingAuthorizationApplier.swift",
+      "sha256": "4914ce88693aa83a2f813cc231ef47a55d84226793bc86f5712f61a4824f4bbd"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/NetworkingAuthorizationPlan.swift",
+      "sha256": "c92d5982e5333fc3df6b9185dfcb81e5ca61a62263a4bda49847bc5f5f7e3c3f"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/NetworkingController.swift",
+      "sha256": "0a40e512bea8531fde26ad9faaa98d4a6b624f52f321ff33768afab7e5a06a94"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/PortPublisher.swift",
+      "sha256": "80061e0c804e92370fffe57fdafadc6f14fe86618d83038426833f13d166e5f3"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/PrivilegedPortMapping.swift",
+      "sha256": "8557f525a84aabf6d36ca245a1e789015ac9b1864fae7090f58a15dc1a65f4fd"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/PublishedPortRepairClient.swift",
+      "sha256": "9a3f0c4e5d02b24e2e16e41ae6b97d0fb15de2df865781eb24f1d96d06d13bda"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/Readiness.swift",
+      "sha256": "d246ef254479ae08d962de24bb2239f8bcfd5c206935d2c4e706a66cb0a387de"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/RemoteMachineManager.swift",
+      "sha256": "8eb9b94cecede33054bb5a1bee9bdc24b27ef9c49ca6037c028e2383ac1d4f01"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/SandboxTTLReconciler.swift",
+      "sha256": "ed43a6dacdb4c2173a79bc5a2f5dbb0bf9a5c861b6d6381ece685a2550fd83c7"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/SourcePreservingLANPrivilegedController.swift",
+      "sha256": "cda98466bd1abf2487176625bec7450516b26fcc088d3192f5ddbbe54c8224d8"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/SourcePreservingLANPrivilegedDaemon.swift",
+      "sha256": "6b8f6b602e6c79d3020c5ba1d212ad08bee29d1009b7c18d69190331d272e998"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/VmmControl.swift",
+      "sha256": "2f7a601a1a5a56450db3556680460e4c6b30bba1d70a494bd845b36ad46e2254"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/VmmDockerProcess.swift",
+      "sha256": "0b4c36a5ae6f58f211e8041529bfdfe4ae4eddbbd5ab8c79e004b14ac5ee80f3"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/VmmHandoff.swift",
+      "sha256": "a48aef831584ac4dffa2394d5dd03390c3c7b4d31f2d126c192e8f12e29871c8"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-dataplane-proxy/main.swift",
+      "sha256": "65c99947e8fc2c8f72116803d3c6f0a199f1afd19a608c480ebb29ef9e0af6bf"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-firmware-bundler/main.swift",
+      "sha256": "1566ce1729c4cff1b411db81fa759ba40963b2a0e4c39ca52aa6ed8344f1f9fc"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-jit-probe/main.c",
+      "sha256": "66ac0f764034f37815778d9a5b4bce099918362628d0a963b2a27e8cb4773c81"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-linux-calibration/main.swift",
+      "sha256": "f9732c62147bd239f4049cf08969ade83e3fed1c4446a90cbdcfdcb89e3d3dc5"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-macos-camera-extension-service/main.swift",
+      "sha256": "ada36441f2de2c3fb6295a7f79da96a844e275bc48503b98f7cf97d0987e4026"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-native-hv-smoke/main.swift",
+      "sha256": "bb1dc76d23a3e7a7e78ced5987672db913cf01245e934caca32751b996dc2d2e"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-network-helper/main.swift",
+      "sha256": "655f04754c8b4db30481533253d72003eb01558309f8a208b5809044231ef5f9"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-pc-tier-qualification/main.swift",
+      "sha256": "aab787cbac0d2e8d6c1990e35ca72f8b1593d7e3b34ffb2382d2200d24efc418"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-pc-uefi-smoke/main.swift",
+      "sha256": "0938bc78566a648346ae77b2192bd7bed8c614314cf39b5c4cef05526045d36a"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-phase0a-host-probe/main.swift",
+      "sha256": "b7919f303f9be7fd09209e8b9ad4169edca648807738cdc9da9eb13b072d4cab"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-phase0a-hv-calibration/main.swift",
+      "sha256": "b207211599d1ff998bc6ea2ac666aaf85765a540c17b6fe78dff5928adbc6bf0"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-phase0a-hv-throughput/main.swift",
+      "sha256": "11a7210d52b37ef96764bb1769bdf8ebf85c10c3fb1e20422844e46eb26f7323"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-phase0a-network-baseline/main.swift",
+      "sha256": "32ed3088fa8588452b9be2a282f23ab765cdfa545d26d115403955e17922ffe7"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-phase0a-storage-baseline/main.swift",
+      "sha256": "1aa2f27d08f2bb66d95e935f81324b8a451214d66bafffa9adda3c12e032861e"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-vmm/Info.plist",
+      "sha256": "039fe37da13e3aa360c902948582f6e0b44dfd974c921daad87eb46352e8d112"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-vmm/dory-vmm.entitlements",
+      "sha256": "4f9fb96beb70e55e89c97b1f9513b1530c3fe78af3af199ca2833701f2e1c2bf"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-vmm/main.swift",
+      "sha256": "10471c4126406289c2990dbfb4c5954786c4b66a587f7aa2f51692a6acf6e6fc"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-vzmac-camera-qualification/Info.plist",
+      "sha256": "142eb4e5198f179df81462ae3d5073b543d95d2f96bcee3e4790da5d3afc8597"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-vzmac-camera-qualification/main.swift",
+      "sha256": "dc1cd5272f83b1f97323145061fedc51bb24784879c762b9082636b1191d2360"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-vzmac-device-probe/main.swift",
+      "sha256": "25d75adb24b89cdbdd5ff3975b68e5c03e65eabdcbe1bb71b22f9905b5d3c4ff"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-vzmac-qualification/Info.plist",
+      "sha256": "6ed8e4cfe73326442c6165cdb5b5d3bd14d27f01486ad2e0d3b02439fb9ccc2e"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-vzmac-qualification/dory-vzmac-qualification.entitlements",
+      "sha256": "a41f96a41d97a3f665defbadc4507f571a53578c85aa149eb25e19e745dd3036"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-vzmac-qualification/main.swift",
+      "sha256": "aa8e27c32df116f533da3b533a5cc70f60d34d22e8726860079c5b5666609994"
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-x86-decode-audit/main.swift",
+      "sha256": "d3805d244c6cba32ebb6dd963c7d518dbee9affdf9563acabacf192b7310de7b"
+    },
+    {
+      "path": "dory-core-swift/Sources/doryd/main.swift",
+      "sha256": "6c08a3723a903ab1f6945e08c9539cb041a3a8c7439b5fbc05032c4ee9b6ecef"
+    },
+    {
+      "path": "dory-core-swift/Sources/dorydctl/main.swift",
+      "sha256": "c770ba2ac7883b3893813f0528ba98234fa2260ae5fa3c8d203a5460e166b30b"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryCameraBridgeContractsTests/DoryCameraBridgeV1Tests.swift",
+      "sha256": "a564407e356124e239af1f0d57bf3809d27c1d6f8de03e411f52c95bb548c082"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryCoreTests/DoryCoreTests.swift",
+      "sha256": "a87869c8c5a2c86636de2ea0ecfbafea46b088f376b611222b58ef4485801ff8"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryCoreTests/DoryDesktopRuntimeContractTests.swift",
+      "sha256": "cf9e6711e57265585847f4e5977bcfd60335bdf837be2d9219f7e22379471c84"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryCoreTests/DoryEngineShutdownTimingTests.swift",
+      "sha256": "e46e87f9e471f8b5766e651bf36c0d0e24cef5f22b8b89886ea86b1cbea568a3"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryCoreTests/DoryExecControlFFITests.swift",
+      "sha256": "fa38e49c35cf9e1270640efded641991b91e916550098fa4a1816504905d503d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryCoreTests/DoryNetworkMTUTests.swift",
+      "sha256": "29d91340be59c7f3659080349c08b3f9a353d85ed5d80c63f694dd9bbcb6e55e"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryCoreTests/GVProxyQEMUFrameDecoderTests.swift",
+      "sha256": "bea2ddfc067c6fa956743196539a4b8bd048f1ae49db10728bd48046ad3069c2"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryCoreTests/ResolvedPortForwardReconcilerTests.swift",
+      "sha256": "2f8d4a74789cc8e8d94c418b80f4efb8a3cafa9e0095f8ce1489d872350f5749"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryCoreTests/SourcePreservingLANPlanTests.swift",
+      "sha256": "40d4e7845c3ad3a9b8ef8a04268dd5e7d6d50d15bf9a96fc4ea8eef0845b0dab"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift",
+      "sha256": "cda51e64c12418e11de6640866a299a16779024081203ebf29250d7f93a78d88"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ArchitecturalStateTests.swift",
+      "sha256": "e8abcc8a076a6798fd6938e40ccebf1365c2530ad52841c4adb033c59ffc745f"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DecoderTests.swift",
+      "sha256": "0b725ee8b71f113cd2f42c6349ed7ddc7a166ae81f0146af6443a8a6f6ec4eeb"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86DifferentialTests.swift",
+      "sha256": "12844d4a024f9c7bed935d3611cebaa861217216c2c4a65887d33fff2edd4ef0"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ExtendedFloatTests.swift",
+      "sha256": "b866e5f062cd66fec490bcd12ce57954fd6316bc5869658f90963f1a5dfcb3a1"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86IRTests.swift",
+      "sha256": "c5f6f74a09d0679b534a3852d906a4244949c2f98a272e0b69eb8933a700da39"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86InterpreterTests.swift",
+      "sha256": "694881d53ae9633aa892bd2baf986980c95246267246ef99c7d32e016ccb32af"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86InterruptTests.swift",
+      "sha256": "421c6762eb1a74083d4702b7150bed4a14686790aaca7249d542b2b35a6fa4b5"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PagingTests.swift",
+      "sha256": "9bd5aa3a76a12eb591e28263fafad9f382308e97f061c7a14607a06df8e47c99"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ReplayTests.swift",
+      "sha256": "d7de748f7c926177c424e818c1015e7b7a3b845fa861936fcff0567c9bc6370a"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86SSE2ScalarFPTests.swift",
+      "sha256": "6f73fdc93a4591cf86c6f2a561b6a529962648d0d3556ba813d5ffea1eff459b"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86SSE3AndSSE4Tests.swift",
+      "sha256": "2416df017392220d534d35264452f5701061bee9dbbf341299b8a7f0cec9d87c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86VEXTests.swift",
+      "sha256": "277f495ae39cdc0a3313ac2d67a987b256426027681209a09b87950bcf87d7ef"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryExecutionContractsTests/ArchitecturalExecutionContractTests.swift",
+      "sha256": "8e65239fccc818030d832fb1389d479c6f8c101f77df4d72ef834bfe7dc8590a"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryExecutionContractsTests/GuestMemoryContractTests.swift",
+      "sha256": "a59a5c9582e0b45a5175567f6b3e2440416a2bf26c2d1310b9ad01e4be8b8046"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryExecutionContractsTests/SnapshotBarrierContractTests.swift",
+      "sha256": "6697ab008dea13a76db6de46d842d6ccb9be7dd4a62ce088a96524f87bb26591"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryFirmwareTests/DoryARMVirtColdSnapshotTests.swift",
+      "sha256": "ccffa6f264bffc863af04c02ca6b726ea33f1a67123ef3392034a54e95612fa3"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryFirmwareTests/DoryARMVirtUEFILaunchPlanTests.swift",
+      "sha256": "52943a0ecc6cd8fcdf9ca16cf6e25d267236721d4af742fa096ae86cc4f8e56c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryFirmwareTests/DoryFirmwareArtifactManifestTests.swift",
+      "sha256": "6d86782eaeea0ea6eda94f051c443a40d3ae825711f685110b13a61aa9c93f55"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryFirmwareTests/DoryFirmwareBundleBuilderTests.swift",
+      "sha256": "1b80791e6f48f5ddc11fec92b8b0b1dc3561b4b1e7e82ac61c82fb44aeea056a"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryFirmwareTests/DoryPCUEFILaunchPlanTests.swift",
+      "sha256": "fc00f2b26a6f0ecdd4df5ebbc212513405051bd29c20941f1b660ae7920d5de9"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryFirmwareTests/DoryPCUEFIMachineCompositionTests.swift",
+      "sha256": "0d9ab65f99357421aadd714b215f2faa75d2a0839c451510ddaf59b5adef3985"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryFirmwareTests/DoryPCUEFIVariableBridgeMMIOTests.swift",
+      "sha256": "d978a1130e3db72d4fdc1dac25d20f262ec51fd0b483f9b02a4f9796241e1f93"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryFirmwareTests/DoryUEFIVariableBridgeV1Tests.swift",
+      "sha256": "8742d237728d48a5234caf119d9503ebd370ba6ff58e79a541b29bb8af960ce1"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryFirmwareTests/DoryUEFIVariableStoreDirectoryDescriptorTests.swift",
+      "sha256": "263082a7b4de40315fb9be3fda1de21033ec7873c0d175898c5183e4e3c3553a"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryFirmwareTests/DoryUEFIVariableStoreFileTests.swift",
+      "sha256": "6daddf055a15ff64156bfa9cd07e0a9bbcb68cc0f5d962123c9e4d5e9f2e7ff4"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryFirmwareTests/DoryUEFIVariableStoreTests.swift",
+      "sha256": "23baa55787348569436ad0c345ab1c18a6e3809ac789cc60b2e0fd9b8dc3b6aa"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryFirmwareTests/DoryVerifiedFirmwareArtifactsTests.swift",
+      "sha256": "0f2b0b7590aea1bfcaeb7832b7c376c31237b3cf6e00cd40905ca9eac6946b66"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryHostCameraTests/DoryMacCameraBackendTests.swift",
+      "sha256": "fb8e04e0f7c915a158e1b4dda6f06942836201c773cc7c0b1e774b1eda7de24c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryHostDeviceBrokerTests/DoryHostUSBLeaseBrokerTests.swift",
+      "sha256": "014cf7b963b525cf094c5ec3b4ff150d7624b079ed3b1cd329d28cb01da26172"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryHostDeviceBrokerTests/DoryIOUSBHostTransferCapabilityTests.swift",
+      "sha256": "f6ddaa9f32d72842e9bf1e6996b2f264648257a849f5a2894e1733bc5b0eb785"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryHostDeviceBrokerTests/DoryPCCameraBridgeTests.swift",
+      "sha256": "5dd9dd969a48b326a74294b2032ab2e6adddf20ac87b5bc7730b9fdafe24252d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMacGuestCameraExtensionCoreTests/DoryCameraJPEGPixelBufferDecoderTests.swift",
+      "sha256": "28c5402b4af0f76d8188747fe95a54474020017f1c9737c92091d06de9acd1a3"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMacGuestCameraTests/DoryMacGuestCameraClientTests.swift",
+      "sha256": "b424c40804c3d0b836eb7fc9e62b60d9a1ab9eddc2e3c2234c93507bd4c0f160"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachineARMVirtTests/DoryARMVirtV1ABITests.swift",
+      "sha256": "787e562ea8f2db287b214d1b11b0b3c149bca2c0d8a6928cac4a83abf7060fce"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachineARMVirtTests/DoryARMVirtV1BootStateTests.swift",
+      "sha256": "9d4c768929691763372b33bfd8e9d1e7b46ecdd67cc74776c7593cf3c2d33ced"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachineARMVirtTests/DoryARMVirtV1DeviceTreeTests.swift",
+      "sha256": "73d5d92378ecd326dc94773f84f9a10a9520a875bf82de0ce8c356fc7931d898"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCLinuxBootRunner/main.swift",
+      "sha256": "1e3ff6d43e1aa34a33d5ed5a4293a6d54b9d7a47662089d51dfb39a7367bb930"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCACPITests.swift",
+      "sha256": "3841d991b1928a91b5695a347b4572110d0d8df72c6e371391479641fe388fed"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCAPICTests.swift",
+      "sha256": "6b2d674640f08da87ab94644f5726220a6e1ccb16f4e3a1e512a192e2b0496d6"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+      "sha256": "74d596a1340df634240e21cce1f7d1a59d647a4f2bdd727acb2406c9f2459327"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCFirmwareConfigurationTests.swift",
+      "sha256": "e80e1b40745fcc7709062d662f49d73676e3344330e8f40340351b47bbfd2979"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCFirmwareFlashTests.swift",
+      "sha256": "727851fa4c61183bf6d6a710802821b442d5dfbb33f418edf27e94efdc1ccb79"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCHPETTests.swift",
+      "sha256": "f53667ff9c37fc6c43b90748b7eb6f76a04477dc24cd3d6612dc5b78dea8b71b"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCLegacyInterruptTests.swift",
+      "sha256": "f1eb81e3ee2aecb22c25b1bc79b95e93e0b82eb8e7cb9427385326e07c891c25"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCLinuxBootTests.swift",
+      "sha256": "422bfb5f1e5be37106173c320216b6da712889177dc1bde2214e8704ade50dd6"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCMultiprocessorTests.swift",
+      "sha256": "2aeb3a41d58b1f9892ad92e1c908805436900bfb26a8fe2d6cbc4fb680f05b94"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPCIExpressTests.swift",
+      "sha256": "f68b0fe4c587d0fbb407db8f956f29c9d28d7a39730d84ea537e9f555b27193d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPVHBootTests.swift",
+      "sha256": "214524ce5a9d31f286c334338a40e91e3f2129cfabf6fd23929c444238cab750"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPVHKernelTests.swift",
+      "sha256": "f4a84be5fdbb7301a478e7dc147e825da28486625d11432af27d5d2af4b29ad8"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPhysicalMemoryTests.swift",
+      "sha256": "618324df048487188d8459aefb6fc61c79528832fa0c600a96b543946e832e3c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPortIOTests.swift",
+      "sha256": "758a85a8d7247649017c87c2729f4d11f3f8bd55d70857c274a7f2475b998410"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPowerControllerTests.swift",
+      "sha256": "f4c15ca092bc442c34e47c9b6bdc5ff9013973a7f40ef07902c763aaf163faf1"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCRTCTests.swift",
+      "sha256": "a3e76088cd47c98163530c4a02376af6f39dff0be3d08ba76423f9a96f89acad"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCSMBIOSTests.swift",
+      "sha256": "f5058dd2500711a4bd9a3f0e161a9aeed23aee94299ee9f3f7d6d28a2e328cd9"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCUEFIMachineTests.swift",
+      "sha256": "eb44ee3972a9b683d23eff606ebc868f21df479b635bc78a7556f4790f5b04c0"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCUSBDeviceTests.swift",
+      "sha256": "7a65e23658d64207a665b9a80ac651a1935635d0b7738227fe166d817dbf8f28"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCUSBHIDDeviceTests.swift",
+      "sha256": "04f500cabdcea16f76d7539ca02f89b5d8e548cb43804954740fcf20325f8e9b"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCUSBUVCDeviceTests.swift",
+      "sha256": "4f11e23ac60c451b72ef3db2220d34daecb5ec8bdc3a5b8559cec9afdf6a314a"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCV1ABITests.swift",
+      "sha256": "51bcd61ca3c2459413083ed8849a203354ec2b15d21e1cca956aead060929096"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCVirtioBlockPCITests.swift",
+      "sha256": "32f419da54c5ea7b92cc17243afb1ab757fb55dfdc6932e6776f413003f63767"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCVirtioEntropyPCITests.swift",
+      "sha256": "bd146000e4a639a600a087b9e02666412bba553d9fb5d8d9938e6b8d8bc1ef74"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCVirtioGPUPCITests.swift",
+      "sha256": "e0352a79b430c0e2762386a49071f9359bfcea4bfef3aeb76fc948252607da80"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCVirtioInputPCITests.swift",
+      "sha256": "29c917c48d62c1105cd36de3089f9e0a945e3c73d96feafd186d6c1ccdfac58f"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCVirtioNetworkPCITests.swift",
+      "sha256": "10c6f9ef20343afa2522d2caf611a19014b004c32d2075ef719d813a670c1f6b"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCVirtioPCITests.swift",
+      "sha256": "8b279ff56db8363149852cb3a044d3e7fb10a6809731da088beb95bb8e1b076e"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCVirtioSoundPCITests.swift",
+      "sha256": "9297168a7429d88b539445cebce16c6cb164b203676bc2627be8989bbbf1e8e3"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCXHCITests.swift",
+      "sha256": "0df6eda366816a903ab1aa7d6e742cccb508f7c934109e50a60fe9ee27a9d000"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryNativeHVArm64Tests/ARM64ArchitecturalStateTests.swift",
+      "sha256": "6897addd335b34ad92441ed2d6a47f7ef98ff3b41536bc7a22ced58e3f74fb38"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryNativeHVArm64Tests/NativeHVArm64EngineTests.swift",
+      "sha256": "a97add64ae31b65c5168e55f919386bba91d03836903323068ac02bd81433272"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DockerDataDiskTests.swift",
+      "sha256": "4033e3577fd2ab517c4f3ea2c422046546f3e4652572267906073dbc8f6c08f0"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryArtifactBackingOwnershipTests.swift",
+      "sha256": "2122dab3ad05bc30c15992f89839f14707975fcca524b919ed335b079666b8b0"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryComponentsTests.swift",
+      "sha256": "37a6ba40c7aa39ba4ed581fb4bbe827a82533eb2bfa81d3f2611cffcd070566a"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryDataDriveArchiveTests.swift",
+      "sha256": "26597d483d3583dd854697c33f2bded07c94cf0cf5fd08d4e98c0596fed46abb"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryDataDriveSelectionStoreTests.swift",
+      "sha256": "edf11ab9baabf1b819eb04662db372e6f8e03a503bd722b24b890f6f2ac3a0aa"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryDataDriveTests.swift",
+      "sha256": "16b8a40ab441bf786c4eb877893d1d9c06243d197a9703bcb2d50558bbafd148"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryDesktopClipboardPolicyTests.swift",
+      "sha256": "65971b7664628451403d41f379dda65649724e719e0b1314f5391cd43f54be49"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryDesktopHelperExitStatusTests.swift",
+      "sha256": "76b2f0087e46296098ebf83e70410b3a7b0fb65af0696967c05b6b7aef1cfd59"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryDesktopUpdateOperationTests.swift",
+      "sha256": "a4f191efe51aa3bfbc822f3bd54d9a90e42d96d64b00d17f33e12faac7c840f1"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryEngineMemoryPolicyTests.swift",
+      "sha256": "c7ec196b9cb965691fda0a4ff9628e02b36f45267990f4440f45a3a4923199de"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryGuestIntegrationHealthTests.swift",
+      "sha256": "341a05a8089615103ce899857db94e079fa67da18703ce7bdb078abf4f53e0f3"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryGuestIntegrationPackageTests.swift",
+      "sha256": "dc94752fe08d71b8125e64860cf670dd98fd283458e350eb9498ed475a866d2d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryIPv4BridgeNetworkTests.swift",
+      "sha256": "945149db11ec170035555a5a54ae1f0e3b6cd95b658503a3b2510800c2f2c636"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryImmutableArtifactDigestPublicationTests.swift",
+      "sha256": "c11b3e739a23bcbd8679f8c0a7632755d6f7b946ab2f7e61f1d4f8338e938748"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryInstalledLinuxBootBundleStreamingTests.swift",
+      "sha256": "7c2a465b4dd8623cba2f2b668bcf0a1f3e4fe953ec6ba1fa327ab313bd115321"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryInstalledLinuxBootBundleTests.swift",
+      "sha256": "b698b810a902464176c44cc3e75a29b61859483c50356988a8e2d0020964c637"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryInstallerISOTests.swift",
+      "sha256": "c515cc734dc6b5057a3c9ebe16f559b8c1d09eac2ea81408907a814408e1b408"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryMachineControlTimingTests.swift",
+      "sha256": "764d7905db7f5ac63ea3ede9fec85256315689dc1e42167c7d27b0fe748bc810"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryMachineDisplayPresentationTests.swift",
+      "sha256": "e317b554424a9b93f2f3e943ca67afd53c3f8893169213819c70d5f1baef6eb3"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryMachineFileTransferStagerTests.swift",
+      "sha256": "a77b5c06df50a86ebc62c42fa9de26d1f67f84574294d385b5f0dd65ffd10e68"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryNativeMacOSRestoreInspectorTests.swift",
+      "sha256": "990fff9328627adafa33a2d1a2821922c5a48a169f867fb1e033ef522a347860"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryOperationCompletenessTests.swift",
+      "sha256": "5f31cb313ed4f5ac36580f003994383ef55d0783765e655bdff6d8b5fc16eaab"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryOperationEvidenceTests.swift",
+      "sha256": "95447fc8caa41e636a1491f1b470028c29a1794691649ffe276acbcd3bd0f142"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryOperationJournalTests.swift",
+      "sha256": "39b3976542c3f855be434c9db4b0bb173e949084f751bd5f204f79c5dd86a4a0"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryOperationPlannerTests.swift",
+      "sha256": "88faa31a5f7c01716825f72bd3a90355d75eed305940546d1dd8d4d7276249b0"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryPCRuntimeLaunchEnvelopeTests.swift",
+      "sha256": "a1b3bb5a78eb4cb28194a6848fbd8ed27cbccd57f91de575c9d244332a216a58"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DorySignedComponentCandidateImporterTests.swift",
+      "sha256": "21c8802dece757664b698c5a34c3fccdbafeceee32d7c0cc021939de0092fee9"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DorySnapshotCreationOperationTests.swift",
+      "sha256": "cab331be9180028f6120100a26d34442071bc830324f3ea4da9b6c6194e11ebb"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryTrustedDirectoryRootTests.swift",
+      "sha256": "57d467c13c4417b4208bd7565fda11e5a01f7d23623ae5bc43832d3310ca1997"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryUpgradeTransactionTests.swift",
+      "sha256": "18b0fc10fc214fbc09a3c194efbedce8d56d3516b1b054f506fb3323cc7ccdb9"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVMResourcePolicyTests.swift",
+      "sha256": "ff0e7d3d4bfaa393dadbdaa23231a5050818e521cc7bfaeb056909f8651ba735"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualMachineArtifactAuthorityTests.swift",
+      "sha256": "eb0aeba54b7d7a051af92a137a634c082569dc618d8d78ad2c69b3e8c97cc756"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualMachineBackendPlannerTests.swift",
+      "sha256": "71ce941c0c03ff42ea98061a3d85d654583f43ba2467cdbaa7a7126f897ca424"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualMachineCapabilitiesTests.swift",
+      "sha256": "0a121cbfa39a6ab7762c9e613b70b2b700c015934e280dba1711f782fa79afd5"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualMachineDefinitionTests.swift",
+      "sha256": "cb6d0246f49cb6ff56c4dcb7c4a6d1050828ba0dbff30801b378b688af6efb30"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualMachineQualificationManifestTests.swift",
+      "sha256": "b52051c888931d6228aebbf291e94826b36bd67093c369b7b1c496f9b7c5f604"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualizationPlatformResolverTests.swift",
+      "sha256": "deae005c2707e163ac67a1db90ca46049be7978ffde3a5f827a43c434744c812"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualizationProductPolicyTests.swift",
+      "sha256": "b8149b89f7562bdfe8434720d4ba2ff0a90e728cccebfd7c45896ac21a358efb"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryWorkspaceCreationRestoreOperationTests.swift",
+      "sha256": "4d50f9102abd256bf94764e43cbb3e6f141483ac7d412000b3248dc7c38ba884"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryWorkspaceLifecycleOperationTests.swift",
+      "sha256": "b53b1d597beaf3d67ed0d658d2d90922f0e8140b61efaf2fd75b939bad75ce17"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/EngineStateDirectoryLockTests.swift",
+      "sha256": "bf859995bc5386fff7e3d612da62c07a95eb49230137ba78feaef0ebff8fae53"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/OperationPlanningFixtures.swift",
+      "sha256": "b0dfff4de75d25a8a2c764b40b25ca386c101d5f34d13bbf7f61364ba444eae7"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/RuntimeLaunchEnvelopeTests.swift",
+      "sha256": "17c61aac7fce313eabc963813535535d0e09ded64f5e3efcbb0b79493eea6f4f"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryPCQualificationTests/DoryPCUEFITierQualificationTests.swift",
+      "sha256": "1259649e22a7364963463611441e6202320ac0153f885cab5f835e58915f676e"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryPhase0AQualificationTests/DeterministicBlockScheduleTests.swift",
+      "sha256": "fc9b9186424bec2482c480f76f0f9351eef2a5189fe2ef7003044e552adf445c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryPhase0AQualificationTests/DeterministicBytePatternTests.swift",
+      "sha256": "c369f7de86b2c956ccb224d9246f0ec8e10007fcb6e71ede5adb07333cf99054"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryPhase0AQualificationTests/HostQualificationTests.swift",
+      "sha256": "92cac17600e1fecd49cb8f8126fad15beb8dcea22961fd6daa308432e8f74b0b"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryPhase0AQualificationTests/MetricSummaryTests.swift",
+      "sha256": "f6a4f2851f6433341738c182f01b7de7d67a350ad6c1788a7c906ae96bb13e08"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryRendererWorkerWireContractsTests/DoryCodeDirectoryHashTests.swift",
+      "sha256": "05757158ee3df608823acee01522aab47284fec2c2a89e3e2de7e071d20e9765"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryRendererWorkerWireContractsTests/DoryRendererProductionInventoryTests.swift",
+      "sha256": "b8316ff7eb0a2e6323cd72a0898218221e25e938d6421d96ab73c23e7e0113ea"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVMContractsTests/ARMVirtV1TopologyReconcilerTests.swift",
+      "sha256": "330cd175f1eae2cf89c48a2089be9e2547e239eab8214fa1446a141c99de76aa"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVMContractsTests/ARMVirtV1TopologyTests.swift",
+      "sha256": "f73aae0556f578e48cf34dbcd6a4cf039002e6f292c2235c821cd4ee59cec471"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVMContractsTests/DependencyBoundaryTests.swift",
+      "sha256": "4bd3ce613498f34b7d34a86da54d5b179644340449e4d7ad8803cd4fed7acff2"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVMContractsTests/USBControlV1Tests.swift",
+      "sha256": "97378153bfa3d57d570fc86bc396ab35cc8c8fb51afe9fe6343a37e1f45f6dbc"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVMContractsTests/USBPhysicalIdentityTests.swift",
+      "sha256": "92d04ae813509cda5a48858ffe1b32e66c8fd8d274487448749e52726448a724"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVZMacCameraBridgeTests/DoryVZMacCameraSessionTests.swift",
+      "sha256": "94c842df6433eb74bc4ee070046fd090c0b8f7a6e8fc1c6ee9f25e1baea38e21"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVZMacCompatibilityTests/VZMacHostCapabilitiesTests.swift",
+      "sha256": "bceb610f3e2900f1beafcfac4ac362ef5e3ce2821f1678bb3919934abc60c9aa"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVZMacCoreTests/DoryVZMacInstallJournalTests.swift",
+      "sha256": "51d08527bab7625499b2283b5df45223e478308f2f6d42191a3580067161dc6f"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVZMacCoreTests/DoryVZMacMachineLeaseTests.swift",
+      "sha256": "ee3579f8ea8b53b273c57ef63a56013f3e2b382a77bf77c42fc0b89b756b53f4"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVZMacCoreTests/DoryVZMacMachineManifestTests.swift",
+      "sha256": "39576cc360cb00e2cdbfecc3c5c9f86e73fcac63db261af8a9c56fe6f4ac5b95"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVZMacCoreTests/DoryVZMacPortableBundleTests.swift",
+      "sha256": "126e5f4ba89b4818d826a4b825a4eb954efd6f32205e2539b9c62e5a47a25b84"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVZMacCoreTests/DoryVZMacRecoveryTests.swift",
+      "sha256": "a13b7c09033aba1b4f2cac5f4fa6051af19fef1b1a0b7c2df17ae8967e2ec989"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVZMacCoreTests/DoryVZMacResourcePlanTests.swift",
+      "sha256": "8498ca72cfa56e2b3ef20aaaa7c65638660050bfb952216dbe7fcce4877da5a0"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVZMacCoreTests/DoryVZMacSavedStateTests.swift",
+      "sha256": "49314a8bda58d8dd759d7cd9de792b28c87f4a310a69d88c237c5e807a3b35e7"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVZMacCoreTests/DoryVZMacSharedDirectoryTests.swift",
+      "sha256": "8f8cace06a6c27c1be5d0919dc9b1c7979a42f07a906305dec4e17ba7492acee"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVZMacCoreTests/DoryVZMacUSBMassStorageTests.swift",
+      "sha256": "526fac64be9f365b17df13f74518f764d1eb24d55940f2edf02aee7bae6b7ccd"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVZMacSDKInventoryTests/SDKInventoryTests.swift",
+      "sha256": "f12a6c56e6e2c7e26967cd60a7bd845f0fba7c8afcfd72da232a76ec049d0399"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVirtioTests/DoryVirtioBlockTests.swift",
+      "sha256": "6c338a38dab7e668e19051653586727170d193625f57731ab0ac0de82298035d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVirtioTests/DoryVirtioEntropyTests.swift",
+      "sha256": "f3a1fc340254a6c3062388008aa97d6843d9b00254c3aa4d413a88326402a456"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVirtioTests/DoryVirtioFileBlockStorageTests.swift",
+      "sha256": "a02064849a68decc0d03318c9670d3c6884053056f44365ab08cfb58cb615081"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVirtioTests/DoryVirtioGPUTests.swift",
+      "sha256": "90d95059415a177d83e827aff9a90c595a6f8c42b7c03560505a5fe26c08a07f"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVirtioTests/DoryVirtioInputTests.swift",
+      "sha256": "76da35300fe3907afa78f8d3983e1986fd5594c00d9281a991c1f9ae3c9cbcdc"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVirtioTests/DoryVirtioNetworkTests.swift",
+      "sha256": "f5eb716bfa19ecb12dad3112adb958801d011d8834a6303d811bfc10a03c708e"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVirtioTests/DoryVirtioSoundTests.swift",
+      "sha256": "00b5579177ee8870cb0000301a130d8c6009c28436d5af2612513743ba8632d6"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryVirtioTests/DoryVirtioTests.swift",
+      "sha256": "93c6e1eabd2211bc0e61d7b03e6284271540a37b0347b15f30cc17857526a04a"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/AgentControlTests.swift",
+      "sha256": "70c7d136826abdda9678d8fadfe55ee2552d1139f25fae5589741d6311f1262d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/AgentExecCancellationTests.swift",
+      "sha256": "52caa927c7433e9b050ac21077cc75cbecb7fadba7614b2bae272db4f80ae23c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/AuthorizedNetworkingReconcilerTests.swift",
+      "sha256": "6a8a2aaec4bcc151bb530ff14fcc8fbe1f6b324f9a8f5c1bb9a90fc03d490b63"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/BalloonControllerTests.swift",
+      "sha256": "d3d30b276c9065b9f2d622a2b9bfa2416721d936d69d483029ba0f2ff1bb5a62"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/CorporateConnectivityTests.swift",
+      "sha256": "d676bf9b7973b790e81379a956c8ddd224b4a6dbb5d15efcf92fc1eea171ee4c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/CustomDomainRouteStoreTests.swift",
+      "sha256": "dde05122c169b4d9966959df8e4187ea33148199c554b6114eac913c7216c7fe"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DataplaneActivityServerTests.swift",
+      "sha256": "29ece22b9605940397cbd992fc291e535d1167e41c8f0292f6fdf5450dc1eda9"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DockerAPIProbeTests.swift",
+      "sha256": "57eed08d578ead1bee86d105d6bf05a5f2966b768deadbd03670c8ff915f7c85"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DockerTierStartupPolicyTests.swift",
+      "sha256": "e81f11e97ba03b7b44c3be543c2bf46206fd29db6b4006bb458c9ee26bfa24eb"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DockerTierTests.swift",
+      "sha256": "aa26b05021d538e667bd3ae17d1475b062b985c9f5c05e50c111fe4d42e7f78d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DomainRouterTests.swift",
+      "sha256": "bd1261155537f44e22353b906d36ff835db663a5bbf54832f0e587b3fb8b31f4"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryARMVirtFirmwareBundleTests.swift",
+      "sha256": "2ab0b2454392b92d30ac066b4281c3bae9f3c961e8d6bdfa8ea7649a1e615603"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryApplicationLaunchHandoffTests.swift",
+      "sha256": "b6068c20f7b0fdf479638b8e383a5fc85b4e0c1fdcfaf9454d53494774c9f98f"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryControlPlaneArchitectureTests.swift",
+      "sha256": "b6f00b51baaf2feb11a60447192a64fc1c37eef0f7581c653663f0687ba70847"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryDNSServerTests.swift",
+      "sha256": "5be9fed86b1246943c5c601320c1d3aa9c3392778cf8b1eb5e464856c0ab9b03"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachinePlanningTransactionCoordinatorTests.swift",
+      "sha256": "c877bc25b9acb5d572ac38b4ea9bfd74da42dcecdef50cfbf1902c8b36e23e3d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionPlanningCompositionTests.swift",
+      "sha256": "3b48e6bd0ec7f81a52b4b70c1c89010a2b66909d129a356f75cb039d2772d35b"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionPlanningControllerTests.swift",
+      "sha256": "5ec5e7416952899a3223eb6f2966cfe147e29110f5558f217085129fc20a8a6d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift",
+      "sha256": "a6e43f6b87f9ee7afc4ed7e2b418562a9dc8784c7aab81a5d5c9cf110cf165fa"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineRuntimePlanningTests.swift",
+      "sha256": "c50cc82e77ebbd8e0c3a0ef4f559c5d509feff63e15569683be3c2a1b4a07d27"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryDeviceTelemetryTests.swift",
+      "sha256": "8ae0a7336d2498c2c27a0a564b09c2b3d076c788af85300e2af3c71c4bf866cd"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryHTTPProxyServerTests.swift",
+      "sha256": "df888e63afde5acbeabee551157f242e36e51b2269a0d2a1c6e3f7b70a13a44c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryHostUSBDiscoveryTests.swift",
+      "sha256": "dfbee9d9a6bfe95bab30f5079da16f46e28d1d6bf3c84b72e7c6f0ad89405031"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryInstalledDesktopPayloadReceiptTests.swift",
+      "sha256": "73bb9472d7fa23d083bba15c14b48b0082d31f3d63ab063fb94f44288dbdba1d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryLinuxVMCalibrationExecTests.swift",
+      "sha256": "e8ed252baa845b0e16dbdf26a55f7cbeea4001bc17965c87248409fc36fd47d2"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineArtifactProofTests.swift",
+      "sha256": "1e62d117fe5844546a54b2acb7baa1206db7615e7ab124e7e9b9ea88eaee6f50"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineCloneReceiptTests.swift",
+      "sha256": "25cd2825aae0c395ba17e0a7c1717d3bef40ca787675b344c992189e2655cce5"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineConfigurationMigrationTests.swift",
+      "sha256": "7409711ca0d37643a55bf10c96cde79985f21e63ce8efd635743d77c6a879fb0"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineCreationTests.swift",
+      "sha256": "d4fbedbf8fee6189b606a848be58e9c7654deb6bb0d7b7f49d7313421645e8ae"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineDesktopUpdateTests.swift",
+      "sha256": "8be7ef8ee80287a6f13d7bb86b21fa5c40ab7e2e4241aa22daf71e907c398b3d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineDeviceTelemetryMonitorTests.swift",
+      "sha256": "e6eb3e8ef48e75d46626b5a79d20c3158975484748e3a0803a95a849ad6ac60c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineDiagnosticOverrideTests.swift",
+      "sha256": "bb85c2668655903607a6040a31d2e43cacdb392270e345e5dde08a0e40d66a32"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineDiagnosticsProjectionTests.swift",
+      "sha256": "4fa92015b38b9c92d4d6f5516ea8c327e838fd9df5e5ef85a36f4e6b545fc6f7"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineDisplayPresentationStoreTests.swift",
+      "sha256": "b7ef465e94bc93bcf276cb873aa0df16d70682927f3bd6f29bdccbe777aa4ee5"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineEventStreamTests.swift",
+      "sha256": "8f96cc0be08c010d5add4272167356bbac012aa5e7541a9f0790ed26721075cf"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineFailureTests.swift",
+      "sha256": "4516d4d6ccd4b7155ce98c596a00025a909c561774b225ed848d4f3a3cfcc85a"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineFlightRecorderTests.swift",
+      "sha256": "2f3bc0b192b93b732bb1f924a6f128262057318be15f3ecdfab1aef9f2d64c63"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineRuntimeIdentityStoreTests.swift",
+      "sha256": "1dd758fc4a9f4cd34e8055b87a4adf094c8326218589eaa22b174e27fa696576"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineRuntimeIdentityTests.swift",
+      "sha256": "9b661e526fe8ba79b61d2fd95e005acad957bf0034827055f7111c716bbb9a30"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineSandboxPolicyWriteAuthorityTests.swift",
+      "sha256": "5b79500ca19b0803c577ab22dd0864729a1d303c3d956e00c202991f85bae1ac"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineSavedStateTests.swift",
+      "sha256": "2e15fde9bde4dd212f7d0c48a4ebcf5b5bbfdb00bcbf48bbfba18079f722b69c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineSerialConsoleTests.swift",
+      "sha256": "dbe12b8b3cc4ffddc77b26ee6d190fafcf204b80ca7dc7f37f04ffb5f5e9eadc"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineStateBrokerTests.swift",
+      "sha256": "624bf52dd9af8e0f4758e0c407bd2aaf2e521008f91d51e0fbe960c4946ad5aa"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineTypedWriteAuthorityTests.swift",
+      "sha256": "45a3fe8988eb8bab535b31664c84f3c2834effc92188a1c50cdaecbbc6901fb0"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineUSBControlTests.swift",
+      "sha256": "72dc15cbcdeee635ba689bfd524cc8c30c1f605e979ce7299eee782c317f0a79"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryP01PreflightTests.swift",
+      "sha256": "47eb07506b1caaafeda0cd8e38a4aa84200b045d3e4182e1d0659df4bc59cac8"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryPlanningBackingOwnershipTests.swift",
+      "sha256": "5255c3fc7ac13394c1a84a5ec38d1a54b54285868049024f1594bebd9c63a305"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryPlanningImmutablePreflightTests.swift",
+      "sha256": "b45830ccb4cfe887b6832fb4b47e3c2c733db692205c935b664e81cb1730861f"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryProductionSnapshotCreationTests.swift",
+      "sha256": "37a561bf0cb16b06c092734a44af10e64745f5f31d70f92a756a621e628ed783"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryRendererBootstrapQualificationTests.swift",
+      "sha256": "17537b473e9e92a33e81e6ad5571ea2551e60e13d230e4a9a479972b1badfb8c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryRendererCrashSuppressionTests.swift",
+      "sha256": "61b812fbf2d80e44d68cfb68384e6754b5fecc53939c596b09f28fc4509a7f39"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryRendererReleaseIdentityTests.swift",
+      "sha256": "48a13cda8c6ab875ce2646a2f07194230593aeab1f2227475727791a2c448e11"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryResolvedMachineLaunchArtifactFixtures.swift",
+      "sha256": "1da481d67c219cb5ba56daf7c8b0dd768fc1f66f137faf5c618138b899bc4e33"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryResolvedMachinePlanTests.swift",
+      "sha256": "3ff9258880542f62930f2adaa79806aa95a587affaa6b649c223e8a1586c1c5b"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryRuntimeReconnectTests.swift",
+      "sha256": "00b2fe23b49e0c1be2d02ec99a16473e33306c2f3e779c047948883499f40d0d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DorySocketTests.swift",
+      "sha256": "d234c644c17ee9fa809c17dec4a6f4a0f9d70f5bf00138bdab906dc9c5c160b9"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryTLSProxyServerTests.swift",
+      "sha256": "8e53ad979e8eec57ab08073cec0a72dbcf7f1579d1bc6a2cef58c905c6bc1a16"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryVMMKitTests.swift",
+      "sha256": "cb7e22b55f4075863bb6a54844ffa2d3d229da07d600ae0aea866a7a598780d1"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryVMMShimTests.swift",
+      "sha256": "d4bbd139112c47da9020ff65ea6139458a46ff1202b5f6ecf68d94bb4130a966"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryVZMacAdapterTests.swift",
+      "sha256": "8226698efd13a154426386d2af4ab1663443a4d46744c5280fbd84e60f43fa44"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryVZMacDesktopArgumentsTests.swift",
+      "sha256": "f40d85424a9ad524d9cc90018792797cfdd049cfdbb54cb2b1511b253ae33ecc"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryVirtualMachineResourceAdmissionLedgerTests.swift",
+      "sha256": "a0956640aa07c72e0c567b6060463b6a0d730361a29013007e5b541ea11d150a"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryWorkspaceRepositoryTests.swift",
+      "sha256": "283153f9101e1d48127ad536f7dc887083a19e321de5f284584f46cc7753d355"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DorydConfigurationTests.swift",
+      "sha256": "f120aa64f496d8409b873ba1b5a5ba7787986557ef21b1f24854f758398269a3"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DorydServiceTests.swift",
+      "sha256": "f4a4684945e5e339a32b61dca7162ceb0b42ecce72167f3a9ff9715ed8006936"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DorydXPCSecurityTests.swift",
+      "sha256": "19e87edb687257760e3a113bfda011625f6b3e92a3d10484722b5bf742359191"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/HealthReporterTests.swift",
+      "sha256": "d13e92660b98c451ea1b49a00d30d054f3fc7b4d3cedd84fd485a0ac3179cd0d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/HelperProcessJanitorTests.swift",
+      "sha256": "8f2c572d718fe9f6e4bbac87843b5119fc0b9d66a05acfc426da64b55b919c99"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/HostCLIInstallerTests.swift",
+      "sha256": "d8c0c421dd91010dad7f58efa2f514c7b5cc26c28c12681e45a485b217b0717b"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/HostWakeCoordinatorTests.swift",
+      "sha256": "8fe6c81b60576be434a853a536e0c85351ff38605385df83466d0134b328bc90"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/HvProcessTests.swift",
+      "sha256": "d88a64119f9c923278243a719b93a6b88a742de6c0fca84208b6e1ca3f1dd05d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/IdleControllerTests.swift",
+      "sha256": "750a2c9c4736e0c1157e679fba397c13b77ee2a13b3e03f679ecc4304644e4e0"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/IdlePolicyStoreTests.swift",
+      "sha256": "704552639f3e2577b690a90dd0a30a1a4f206b619dfed30b516338dec9848646"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/IdleSleepSchedulerTests.swift",
+      "sha256": "fef224a86c0ab8ef0cb78c03e1ec32732e81bb8a2e12214a047df0cd8bfae332"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/IncidentWriterTests.swift",
+      "sha256": "3cb74f4c8981cafe675e25b309799794bfc512ca8803ee9cdda459788d96e358"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/InheritedDescriptorSpawnerTests.swift",
+      "sha256": "2fd9ec359807cb9633f66146da43ce3776907c5599cb63175e7f567fe770277a"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/KubernetesServiceRouteProviderTests.swift",
+      "sha256": "730c66401670ec7737719a1b720481ec5472da0564d5ea01c162f9ae4c638668"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/LocalCATests.swift",
+      "sha256": "99d0901dbcdb2492cd187b007e9c375a23f39c8ffaeb56e461afb9668c408694"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/LoopbackTCPForwarderTests.swift",
+      "sha256": "a83cffde1eb301e15f23c4495c55e249b5fae560256526e53fd48c7ab3185005"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineBackendTests.swift",
+      "sha256": "4a18c062ce012a0f957c90f5782b261096d4fc9d89b9bd8543859cfa88b80930"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineBackupSchedulerTests.swift",
+      "sha256": "1270021faef0243c7b4d1aba1bb648bfab673c299c2af739706d0a6de6836f90"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineDirectoryShareRuntimeTests.swift",
+      "sha256": "2836006aff2af5ce5dfb0c546f1a4649b9d4aa16c42b5029e340f5b5fd5b4634"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerCreationJournalIntegrationTests.swift",
+      "sha256": "eecabe0a4294a27ee7221529b4907180e4a9ad70bebb4b9c19cd1064dfd630ca"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerFileTransferTests.swift",
+      "sha256": "4ac0f5081ca9f5200494d95bfa932bb7772966a4c474163330f15b8fb06dae7d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerLaunchAdmissionTests.swift",
+      "sha256": "c37ccd74c644389d4031e5be20229e0b3dda3f4b6f9263af238331ad5780f73b"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerLifecycleJournalIntegrationTests.swift",
+      "sha256": "984dad1a1d4a2b8795fd22e8430925a82c575c2e3005f5453b0b1c36d6714f5e"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerNoOpUpdateTests.swift",
+      "sha256": "0bb20f9f5e73130f3def68f3dc6efa6884de94893524b1dd47fc1f565ec75f76"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerPlanningMutationAuthorityTests.swift",
+      "sha256": "a495cb99fbd7142f4783a81dff260695433b935b8ce07f20049ca8101ffb2e45"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerPowerReplayIntegrationTests.swift",
+      "sha256": "36fc83226e6d41ef7578926a3726019411d6947644b38e5f8fab9b3830e0f7b5"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerProductionConstructionTests.swift",
+      "sha256": "47200a8c0bae24d358ff9531b0d75e5bc570bf97a125be714a3d2dba97b05754"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerResolvedPlanIntegrationTests.swift",
+      "sha256": "75d0e8f657f94b7997e133c6cd1171f70a9696b986e81e7d7a691c8892a2b543"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerSavedStateIntegrationTests.swift",
+      "sha256": "17439302e9adb4b3838cd34013db978e473631d8aca016af1628dea6454dda4d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerSerialConsoleIntegrationTests.swift",
+      "sha256": "066c589838af1ec95ae1dafbe037b24eeab4f517212871af4846fe3866c79ad6"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerShareAuthorityTests.swift",
+      "sha256": "14b08ce9e6ab2755704b612655d1179cba779aba6d896d6c25a88d187f1eeeeb"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerStartJournalIntegrationTests.swift",
+      "sha256": "7053adf9608d1608b5b3453d845dcddeb4ed636065e38226db67a7b4bd9ce539"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift",
+      "sha256": "7b8f441ceb342a541805d04508bd9d21d33e422f96c770fae67d4f8e0622227f"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerUSBControlTests.swift",
+      "sha256": "c870503b5ef5e0c46010136878f50cf9af7e41606338b12b3841cd7859f9f7a0"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerWorkspaceProjectionTests.swift",
+      "sha256": "1b0da874afd70e1b4da4ab33d61de16bf4bc51bc9cc62d38ebd644343b28e50f"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineRecipeProvisionerTests.swift",
+      "sha256": "fcaef22d38fa95d3284cf1dfd99b6aec2af10c7a113918d85451de9559bf350f"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineStatsTests.swift",
+      "sha256": "fbf9542c64e860dae23a8742a300e5655f974ba98bf6388c845f9d06a7b6ca00"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineTestFixtures.swift",
+      "sha256": "9af7bf98b513d1e6921bdcc6c409a6cd167992106f437211f1cd76797a75e638"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/MachineWorkspaceMutationCoordinatorTests.swift",
+      "sha256": "4e0fb76811275cb71a2b2465a0373d593eb318e18060d2065af79594f6a05ccd"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/NetworkRouteReconcilerTests.swift",
+      "sha256": "ac2edd4e55db0dbccd42b7e0800df9cc18784c77e46438eb0596b270aa64daa3"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/NetworkingAuthorizationApplierTests.swift",
+      "sha256": "2cfd1187127d1de408b86d15562003174c00d88fdd0b91d8bac89903d204e26d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/NetworkingAuthorizationPlanTests.swift",
+      "sha256": "29804a4b73e8d1d35cea70d5761bfb5dbef98d8c6e208f97e2de1dc527be81bb"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/NetworkingControllerTests.swift",
+      "sha256": "f4ca826cf544a287ea4e3d02344f857c0a2be33be8c0caff40643990aab2502d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/PortPublisherTests.swift",
+      "sha256": "84f1c84f769fa02dd82894ff8417af5951737247836267c62c8e197f46378b2c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/PrivilegedPortMappingTests.swift",
+      "sha256": "4da8f4fb41dddadfa4376ec617a47d36b7ff9e549b855d22aa69eab90b04b77c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/PublishedPortRepairClientTests.swift",
+      "sha256": "6a05d73fb2a65218e3bb25fd0b0bf905cbfa1438075c4d795bbfc324a069575e"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/ReadinessTests.swift",
+      "sha256": "fe55bd18ed409fa870862ea65c07e252bbe106c117935899fd5d7324f962e749"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/RemoteMachineManagerTests.swift",
+      "sha256": "347137b71aa0192e08ff0101a77547e680d281fe78984254c77871407c4246bd"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/RuntimeBootAuthorityIntegrationTests.swift",
+      "sha256": "9655eea30b745b1425605f5e3cd17e6fca8dec387d95772bae394f9cd31326bf"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/RuntimeDiskAuthorityIntegrationTests.swift",
+      "sha256": "8490caf622adad10ad8ba851a277b2c70df1a53600756bfc1feac678b3bf6434"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/RuntimeUEFIAuthorityIntegrationTests.swift",
+      "sha256": "fc842c0a33c3a895fe4f02e718ef8298b78507874bff524dc6e5b27475e80e0c"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/SandboxTTLReconcilerTests.swift",
+      "sha256": "b4fbf71501967a2250b54d9b1fc84460e1c02cbc0b54924656e019bf583289ba"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/SourcePreservingLANPrivilegedControllerTests.swift",
+      "sha256": "d2a0b4af291cf38505ff4bc2ee6e0e2fa39d8477aa8f88ce9c3e613dbecbb5e5"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/VmmDockerProcessTests.swift",
+      "sha256": "0a296ee3d82135657665bf4705fc9720d56bfc20828366e93a0187e6de2c8773"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/VmmHandoffTests.swift",
+      "sha256": "64f6c4de2ceb6370ca5fa63c558963afaf5da68bdef33ea00bde6d4b7fa1caad"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/VmmLifecycleReceiptTests.swift",
+      "sha256": "dea4751c7a4a8eae4387af74250ddc719e8b2fdd5d8588534a4c9b0e25c571d7"
+    },
+    {
+      "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+      "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+      "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+      "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+      "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+      "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+    },
+    {
+      "path": "dory-core-swift/launchd/dev.dory.doryd.plist",
+      "sha256": "f24c9c25d546950a9ae8e2b33e3813203b2495ea37366920764e815c979aa2e0"
+    }
+  ]
+}

@@ -1,0 +1,451 @@
+{
+  "schemaVersion": 1,
+  "sourceManifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/script-rust-source-manifest.json",
+  "environment": {
+    "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "CARGO_NET_OFFLINE": "true",
+    "CARGO_TARGET_DIR": "/tmp/dory-p00-rust-agent-build",
+    "CARGO_BUILD_JOBS": "3",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "runs": [
+    {
+      "name": "test-agent-protocol-consumers",
+      "command": [
+        "bash",
+        "scripts/test-agent-protocol-consumers.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:36.255278+00:00",
+      "runtimeSeconds": 0.884,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-agent-protocol-consumers.log.gz",
+      "logSHA256": "509a8f1f0bc6c3969bbadb445aa5400467ec6fc5763bf27dd234b06289b1f58a",
+      "uncompressedLogSHA256": "1239bb1b624c306121d9f3fa1c591fef32c826d2f2c4ff9f681821bf849c3df9"
+    },
+    {
+      "name": "test-app-update-payload",
+      "command": [
+        "bash",
+        "scripts/test-app-update-payload.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:37.140458+00:00",
+      "runtimeSeconds": 1.87,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-app-update-payload.log.gz",
+      "logSHA256": "3b04e7be69efae3403266c7eb50eae95e4597e20973249028a92fbc0f10fdd8a",
+      "uncompressedLogSHA256": "f95f4bb3e0b460cc0db9329a1f14f67ff9e62d112361d6a64561ad9954ccb6b1"
+    },
+    {
+      "name": "test-benchmark-campaign",
+      "command": [
+        "bash",
+        "scripts/test-benchmark-campaign.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:39.010769+00:00",
+      "runtimeSeconds": 1.696,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-benchmark-campaign.log.gz",
+      "logSHA256": "216338c22108bf5f000d0fef706c253564c2c50d9b5e6bcf4d9b3b21a50fa7c9",
+      "uncompressedLogSHA256": "01776ff24a10c391bf055aad51ea88c80ec95d6a9e45960f75c9fba219c36630"
+    },
+    {
+      "name": "test-benchmark-developer-workflows",
+      "command": [
+        "bash",
+        "scripts/test-benchmark-developer-workflows.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:40.707690+00:00",
+      "runtimeSeconds": 1.134,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-benchmark-developer-workflows.log.gz",
+      "logSHA256": "bbf4916736a4e0f30eccb9c25f47ccbd95e81cc7665956bea9ae2b776f7539ba",
+      "uncompressedLogSHA256": "461e2d2ddbddeb6d90451727b9c97cc19e3235bc647c1a32acc75cb79dd0c698"
+    },
+    {
+      "name": "test-benchmark-external-network",
+      "command": [
+        "bash",
+        "scripts/test-benchmark-external-network.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:41.842622+00:00",
+      "runtimeSeconds": 1.315,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-benchmark-external-network.log.gz",
+      "logSHA256": "ea27efb34b10a156a004657a7577718b1c143233543afa3d3046a131661564b8",
+      "uncompressedLogSHA256": "c539e433b06641aa757f259c34c5610c746aae8ddecd6f324d7f84388ba943b2"
+    },
+    {
+      "name": "test-benchmark-registry-npm",
+      "command": [
+        "bash",
+        "scripts/test-benchmark-registry-npm.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:43.157657+00:00",
+      "runtimeSeconds": 0.004,
+      "exitCode": 127,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-benchmark-registry-npm.log.gz",
+      "logSHA256": "8e35a77ca199c8284562320033b1ec2b99c3590a3fb989bbafb4dc0b6fc9029d",
+      "uncompressedLogSHA256": "8852b48b1080f66b308f635612b45e1f3c43e940aac0858b9839242420ab826d"
+    },
+    {
+      "name": "test-benchmark-user-workflows",
+      "command": [
+        "bash",
+        "scripts/test-benchmark-user-workflows.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:43.162400+00:00",
+      "runtimeSeconds": 0.129,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-benchmark-user-workflows.log.gz",
+      "logSHA256": "e74fd829ad6ad07c7c3d8764fe3be0cbc8ee2ead9e70141b92e448168f7c9f86",
+      "uncompressedLogSHA256": "c9173c0e10795e98f108bba7651f81a414c0e62d8d91679c50819f25e7e9ea77"
+    },
+    {
+      "name": "test-ci-test-support",
+      "command": [
+        "bash",
+        "scripts/test-ci-test-support.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:43.292391+00:00",
+      "runtimeSeconds": 0.049,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-ci-test-support.log.gz",
+      "logSHA256": "c92b5faceeeaf6fc3da00a12e596da735b6d0acdd79ae4a2d792ee2f6873f9c1",
+      "uncompressedLogSHA256": "b318c2113ea120ca3f63dbdf1b58e0c17a50d6f7500dfcbb14908f2426b67428"
+    },
+    {
+      "name": "test-clean-release-source",
+      "command": [
+        "bash",
+        "scripts/test-clean-release-source.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:43.342237+00:00",
+      "runtimeSeconds": 0.811,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-clean-release-source.log.gz",
+      "logSHA256": "25190cef42eacfa924ff28a363fb77eef1954a8a86b8b6136bf3057ff4f014a1",
+      "uncompressedLogSHA256": "a136a8717671d0ed5a95b64a52a61b2fc3713f16fd20d432d9f75273af7451e2"
+    },
+    {
+      "name": "test-clean-xcode-products",
+      "command": [
+        "bash",
+        "scripts/test-clean-xcode-products.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:44.153667+00:00",
+      "runtimeSeconds": 1.389,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-clean-xcode-products.log.gz",
+      "logSHA256": "c6e6acc2877c4a50e8c9cceed745aca28f624c3d7da7da0990d4dc4f10c73252",
+      "uncompressedLogSHA256": "d7ecbc61013e4d082caebbaaba0761c6cb45fff405ddc529408204b0f9f274aa"
+    },
+    {
+      "name": "test-data-drive-capacity",
+      "command": [
+        "bash",
+        "scripts/test-data-drive-capacity.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:45.543250+00:00",
+      "runtimeSeconds": 2.616,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-data-drive-capacity.log.gz",
+      "logSHA256": "ca39c4837a4319b3d0ead1d2729e9a66adca4897595b199cde598a52401bd068",
+      "uncompressedLogSHA256": "da0a63b34e8d491b9d60ec1815d58d433b67eba7b8135905006adad3dad895b0"
+    },
+    {
+      "name": "test-destructive-action-contracts",
+      "command": [
+        "bash",
+        "scripts/test-destructive-action-contracts.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:48.160059+00:00",
+      "runtimeSeconds": 0.816,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-destructive-action-contracts.log.gz",
+      "logSHA256": "4f4b2df43f923c7983ee9213ced212ecb109cefe02df225eacf3ee82adbd9b35",
+      "uncompressedLogSHA256": "90e7f774707f5526efe31b367c9380bc971f6d16b4dbd9626a6db0a1bdee9425"
+    },
+    {
+      "name": "test-dmg-distribution-signing",
+      "command": [
+        "bash",
+        "scripts/test-dmg-distribution-signing.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:48.976541+00:00",
+      "runtimeSeconds": 1.607,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-dmg-distribution-signing.log.gz",
+      "logSHA256": "d8dd0c965770c11bfde85320e567728f5d5749aed33b1e638c59c131f6163394",
+      "uncompressedLogSHA256": "cf3d582d58d2054d3f2df1aaf9b0859fadc1394803172f36461fdcd3d0a3fa18"
+    },
+    {
+      "name": "test-dory-open",
+      "command": [
+        "bash",
+        "scripts/test-dory-open.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:50.584465+00:00",
+      "runtimeSeconds": 0.004,
+      "exitCode": 127,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-dory-open.log.gz",
+      "logSHA256": "35aa1025b8a6d17ba903125c715503fcafe8bf9b8631206961812dec02c01c8a",
+      "uncompressedLogSHA256": "317dc2be275b6d177b517639cb17a52de970b20f89a96870425caa1c5ce6ed81"
+    },
+    {
+      "name": "test-endurance-resource-analysis",
+      "command": [
+        "bash",
+        "scripts/test-endurance-resource-analysis.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:50.589285+00:00",
+      "runtimeSeconds": 0.004,
+      "exitCode": 127,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-endurance-resource-analysis.log.gz",
+      "logSHA256": "aaae82c2bcedf4953a2180e75742cb55613d0dfbb08dbc20ae53ad86bcf1ff26",
+      "uncompressedLogSHA256": "bee613330dce9d25692dc4f89f8a2f8a59324a628007d347838542da8f2bda37"
+    },
+    {
+      "name": "test-guest-build-provenance",
+      "command": [
+        "bash",
+        "scripts/test-guest-build-provenance.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:50.594365+00:00",
+      "runtimeSeconds": 0.004,
+      "exitCode": 127,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-guest-build-provenance.log.gz",
+      "logSHA256": "da033698651c3bddbaf3890951b3dc5b469c98269c71deb6ee3ce0edd121bba5",
+      "uncompressedLogSHA256": "685bcd25dc398e07fa137b913b64d70da2e44c461a175fc6c28696b5ddae7256"
+    },
+    {
+      "name": "test-gvproxy-payload",
+      "command": [
+        "bash",
+        "scripts/test-gvproxy-payload.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:50.598899+00:00",
+      "runtimeSeconds": 1.772,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-gvproxy-payload.log.gz",
+      "logSHA256": "61cf09b142c70116de0b99bf9b3ea6aaa16db2d78519359480139e3cfd690e1b",
+      "uncompressedLogSHA256": "c93844127d7d33409c45feafa8047e24d19f6c57bbcb22e208b8a64dfa48a866"
+    },
+    {
+      "name": "test-host-cli-payload",
+      "command": [
+        "bash",
+        "scripts/test-host-cli-payload.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:52.371850+00:00",
+      "runtimeSeconds": 0.265,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-host-cli-payload.log.gz",
+      "logSHA256": "cc870e061d263eca48102255de257e1e373f4cbaa44a15f3a9151466ec10fd8a",
+      "uncompressedLogSHA256": "60d77a54cb0b4d1740798686564c319fc7a5f2357e4417c51ae29f4e1d34eb42"
+    },
+    {
+      "name": "test-make-dmg",
+      "command": [
+        "bash",
+        "scripts/test-make-dmg.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:52.636952+00:00",
+      "runtimeSeconds": 3.911,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-make-dmg.log.gz",
+      "logSHA256": "ec1612a9cec4bb49f54317de6584e9515f7964af3ee5014384649451dcda4b87",
+      "uncompressedLogSHA256": "471b59d167faef947d8626545d994657751aecae10e6580f6e66c560e21cd89f"
+    },
+    {
+      "name": "test-readiness-offline",
+      "command": [
+        "bash",
+        "scripts/test-readiness-offline.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:56.548628+00:00",
+      "runtimeSeconds": 2.399,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-readiness-offline.log.gz",
+      "logSHA256": "a8be2d7d923c420ce7887832d65ec0ff4549863c154b0907d599e5ee9e02e706",
+      "uncompressedLogSHA256": "e2efdb77548a1d9a44e8098d811f7693b947f9f1d63923f1ac2a4b93c2e4478f"
+    },
+    {
+      "name": "test-security-contracts",
+      "command": [
+        "bash",
+        "scripts/test-security-contracts.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:58.948452+00:00",
+      "runtimeSeconds": 0.376,
+      "exitCode": 1,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-security-contracts.log.gz",
+      "logSHA256": "93e3e60ae9c07bda8bbde3e4102e1c18c77cfa82926505e42cc2341339993a89",
+      "uncompressedLogSHA256": "924e9988dd1770c7d998beaf6aef8dd95709bf5ddcfd2b67f9084c12cf4ebfcf"
+    },
+    {
+      "name": "test-sleep-wake-evidence",
+      "command": [
+        "bash",
+        "scripts/test-sleep-wake-evidence.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:47:59.325206+00:00",
+      "runtimeSeconds": 1.556,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-sleep-wake-evidence.log.gz",
+      "logSHA256": "06d0faade9e879475ed330454e6d7a1d99574dcc525af908cdd8308a6d3f2263",
+      "uncompressedLogSHA256": "f4acca99ec5f12c470c4cbb66bbc294836ab5f701264338d30b7dbbe3f15792a"
+    },
+    {
+      "name": "test-sparkle-distribution-signing",
+      "command": [
+        "bash",
+        "scripts/test-sparkle-distribution-signing.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:48:00.881966+00:00",
+      "runtimeSeconds": 2.535,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-sparkle-distribution-signing.log.gz",
+      "logSHA256": "ca2b7d013186587083ec7955538aaf63231e71ab151a0377775c52dfafbd9213",
+      "uncompressedLogSHA256": "e50816bcfc0e4a292456e9708425fa6a92bf560689ec81190f0b4d20fe90c5f7"
+    },
+    {
+      "name": "test-sparkle-install-evidence",
+      "command": [
+        "bash",
+        "scripts/test-sparkle-install-evidence.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:48:03.417572+00:00",
+      "runtimeSeconds": 0.942,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-sparkle-install-evidence.log.gz",
+      "logSHA256": "7a395997b12d647fbdb215818235b5b28e15a2916f1d77a62aae48ba6eed8b91",
+      "uncompressedLogSHA256": "1e84ff59d78d4d8ab1f722be8365a5dcc1eab2046c918cbf8ad0357479225c0f"
+    },
+    {
+      "name": "test-verify-macos-deployment-targets",
+      "command": [
+        "bash",
+        "scripts/test-verify-macos-deployment-targets.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:48:04.360704+00:00",
+      "runtimeSeconds": 2.233,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-verify-macos-deployment-targets.log.gz",
+      "logSHA256": "0c59f53576228f0c09c17bc559dd44b14ce93bf8e412e3710e2772efa438ea70",
+      "uncompressedLogSHA256": "04b110e2034c0fa1a59497adce0173928d9e67b633da7ef489edd89616206504"
+    },
+    {
+      "name": "test-verify-sparkle-update",
+      "command": [
+        "bash",
+        "scripts/test-verify-sparkle-update.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:48:06.594123+00:00",
+      "runtimeSeconds": 2.773,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-verify-sparkle-update.log.gz",
+      "logSHA256": "5df59a9530a9fa20d4c1742d427e1b3b8b19ebd7070e4ab76522d7f1098894a4",
+      "uncompressedLogSHA256": "3ec2424136a4942f7f06499b97063cdd24f6942faee15605efaddf9f9a819946"
+    },
+    {
+      "name": "test-transfer-helper-image",
+      "command": [
+        "python3",
+        "scripts/test-transfer-helper-image.py"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:48:09.367598+00:00",
+      "runtimeSeconds": 0.062,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-transfer-helper-image.log.gz",
+      "logSHA256": "474fde3df563282bddc47d78ae5e41065919436faa78a474e0a87fe204779cbb",
+      "unittestReportedTests": 4,
+      "uncompressedLogSHA256": "da76aaf31796d917dc07512de437ebab2eaae28dc16164969319f76cae509ee2"
+    },
+    {
+      "name": "test-no-qemu-production",
+      "command": [
+        "python3",
+        ".github/scripts/test-no-qemu-production.py"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:48:09.430381+00:00",
+      "runtimeSeconds": 0.203,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-no-qemu-production.log.gz",
+      "logSHA256": "19ebcbacb788abb49ed9a2bf40739a955d1e9e611f9842b8823a268c6ccec094",
+      "unittestReportedTests": 4,
+      "uncompressedLogSHA256": "0cab0cd846fc2297c176371b7be59acf75910d0c7cb62587322f113d490891c9"
+    },
+    {
+      "name": "test-readiness-gate",
+      "command": [
+        "python3",
+        ".github/scripts/test-readiness-gate.py"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:48:09.633805+00:00",
+      "runtimeSeconds": 0.161,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-readiness-gate.log.gz",
+      "logSHA256": "c0df78ec5a40f28925016aa721bcc5d2fb9eef67af17092c12f027d88dfee3b8",
+      "unittestReportedTests": 5,
+      "uncompressedLogSHA256": "145f09f26015ef554543687f821dffd62523033cf6d171db64f67569e2033ba8"
+    },
+    {
+      "name": "test-ci-umbrella",
+      "command": [
+        "python3",
+        ".github/scripts/test-ci-umbrella.py"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:48:09.795841+00:00",
+      "runtimeSeconds": 0.063,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-ci-umbrella.log.gz",
+      "logSHA256": "e6117360c23fe651b027f05b4b133145aa0297922602cb188bc38b16fe462d20",
+      "unittestReportedTests": 2,
+      "uncompressedLogSHA256": "2f58db688b53165a02896c6e0b7f6900bf09c2ea58b8efa80b96be41568ed800"
+    },
+    {
+      "name": "verify-no-qemu-production",
+      "command": [
+        "python3",
+        ".github/scripts/verify-no-qemu-production.py"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-script-source",
+      "startedUTC": "2026-09-04T10:48:09.859087+00:00",
+      "runtimeSeconds": 0.156,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/verify-no-qemu-production.log.gz",
+      "logSHA256": "3090defeecd2009c949c702b0377f27edc414e435723a3bc6d80448a5bc07509",
+      "uncompressedLogSHA256": "7f8b7b4e67572a1f21e7d3e99868af4fa0e17aedb84fb729f8ef9c03b8995a25"
+    }
+  ]
+}

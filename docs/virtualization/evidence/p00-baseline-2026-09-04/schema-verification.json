@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "kind": "p00-evidence-schema-verification",
+  "validator": "jsonschema 4.26.0",
+  "dialect": "draft2020-12",
+  "schema": {
+    "path": "Config/DoryVirtualizationEvidence.schema.json",
+    "sha256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb"
+  },
+  "validEnvelopes": 11,
+  "rejectedNegativeControls": [
+    "wrong-label",
+    "experimental-release",
+    "skipped-release",
+    "bad-sha",
+    "parent-path",
+    "absolute-path",
+    "unknown-cell"
+  ],
+  "qualification": "Structural integrity only; no runtime or release qualification."
+}

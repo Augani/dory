@@ -1,0 +1,2419 @@
+{
+  "schemaVersion": 1,
+  "kind": "dory.p00.callgraph-removal-inventory",
+  "reviewDate": "2026-09-04",
+  "sourceCommit": "5fc049c1390901faa2f64236ea108e0dfdab35fc",
+  "scope": [
+    "P00-04",
+    "P00-08"
+  ],
+  "method": "Read-only source callsite audit. Edges are verified static calls, data inputs or callbacks, with explicit edge kinds; this is not a runtime trace or whole-program compiler call graph. No boot, workload or release qualification is claimed.",
+  "sourceFiles": [
+    {
+      "path": "Dory/Models/AppStore.swift",
+      "sha256": "159ed37554d28828a20fbc4f01465e8ede0a3fa8e19f1447c77e610f2d103008",
+      "byteCount": 346787,
+      "lineCount": 7668
+    },
+    {
+      "path": "Dory/Runtime/Doryd/DorydClient.swift",
+      "sha256": "95eda7947445113a731b3459dbb5e115e7788a83747628aa1c93719b9448bf8f",
+      "byteCount": 260027,
+      "lineCount": 6123
+    },
+    {
+      "path": "dory-core-swift/Sources/dorydctl/main.swift",
+      "sha256": "c770ba2ac7883b3893813f0528ba98234fa2260ae5fa3c8d203a5460e166b30b",
+      "byteCount": 92809,
+      "lineCount": 2089
+    },
+    {
+      "path": "Dory/Features/Components/ComponentsView.swift",
+      "sha256": "5e58cd1deb9709c0cb62cf95914b3ca97a1c305a2f164923dec1dfe78b94e277",
+      "byteCount": 28080,
+      "lineCount": 633
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryComponents.swift",
+      "sha256": "ac82c4a69585c08cd7fcf5c258c2531315cf8800c8f1ed87b503b16d6f52ca72",
+      "byteCount": 74615,
+      "lineCount": 1766
+    },
+    {
+      "path": "Dory/Runtime/Machines/DesktopMachineAssets.swift",
+      "sha256": "5a368f4e1442d6236499516057363738d41d64f466dc320873938134e9df14d5",
+      "byteCount": 17957,
+      "lineCount": 467
+    },
+    {
+      "path": "dory-core-swift/Sources/doryd/main.swift",
+      "sha256": "6c08a3723a903ab1f6945e08c9539cb041a3a8c7439b5fbc05032c4ee9b6ecef",
+      "byteCount": 24810,
+      "lineCount": 582
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionActivation.swift",
+      "sha256": "396959952cc95ebed61aa2a852d61d9b7a4cac3eb916f05c19fb505b7fdff2b6",
+      "byteCount": 13091,
+      "lineCount": 313
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DorydService.swift",
+      "sha256": "0d1488e62683b435260e4e178c9d1bc6917d34eb81f0f64f3b4a5dc0b4bdc07c",
+      "byteCount": 147913,
+      "lineCount": 3838
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+      "sha256": "4bcef9805acec6b176fb93c3339e9eec3d2210b007a7c5ef1b052046e7e37616",
+      "byteCount": 1135136,
+      "lineCount": 23931
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionPlanningController.swift",
+      "sha256": "afab1658d3f85fa09a2d0cc470ff878735247c373246eda1b259b79a41d1cec6",
+      "byteCount": 23927,
+      "lineCount": 523
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachinePlanningTransactionCoordinator.swift",
+      "sha256": "29ba5d5eccd1be842ab177856bbf7ff931303c2e87560a6db461c58584c83bbd",
+      "byteCount": 78457,
+      "lineCount": 1732
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionTrust.swift",
+      "sha256": "0baa561d788b92724456d9eadd994a584a5ecb2b4578419b90181ce25add64ec",
+      "byteCount": 88421,
+      "lineCount": 1959
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineBackendPlanner.swift",
+      "sha256": "4b9692b4ca33b680a86b83c9cac98459fb7dbf286cdf490e4287bf260c0d09e1",
+      "byteCount": 18804,
+      "lineCount": 423
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineLaunchPlanResolver.swift",
+      "sha256": "26ec9c4134c58cafcf8acbfa4bdedc00f3d156a12946f86a7c1a6fe5097e6c99",
+      "byteCount": 23769,
+      "lineCount": 547
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineRuntimePlanning.swift",
+      "sha256": "e9c7352733e94546c74c4992f85e49a003b7a86a96aeea289a4e6e8c638581fc",
+      "byteCount": 35550,
+      "lineCount": 782
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/LinuxMachineBackendAdapters.swift",
+      "sha256": "1070a4205762e0c0b09a5b372823c23e608c566858f9ba88d60a74c35a7fb081",
+      "byteCount": 27173,
+      "lineCount": 638
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/main.swift",
+      "sha256": "4fc51b7ccd4e059b302cdc2747cf528771117da506cfd2d330cf531dad431475",
+      "byteCount": 44407,
+      "lineCount": 1002
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+      "sha256": "63a3adccd56c8a1649cbe7935167e9f8fc5b24ed49ce91c12319c381dd4903b5",
+      "byteCount": 152830,
+      "lineCount": 3303
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Machine.swift",
+      "sha256": "2d480643e24a68a4cc1f6d5f2d6b048c50f8f8e14e18d2b6cbc63fa05368e58c",
+      "byteCount": 52066,
+      "lineCount": 1406
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+      "sha256": "e995570aa4a988f81bdfa6c729830f5abf1fb5d89517b01edcfc1067805d9bda",
+      "byteCount": 53786,
+      "lineCount": 1132
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCUEFIRuntimeAuthority.swift",
+      "sha256": "a771b538115ad39386906f9a07ada9e0990c838bf8b840d0deaaa7b7c002b558",
+      "byteCount": 8952,
+      "lineCount": 217
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryFirmware/DoryPCUEFIMachine.swift",
+      "sha256": "f83c710379a76dfdab4d94bcef3de60760e91f43b7181176a3ed1b9c9e530102",
+      "byteCount": 8925,
+      "lineCount": 227
+    },
+    {
+      "path": "dory-core-swift/Sources/dory-vmm/main.swift",
+      "sha256": "10471c4126406289c2990dbfb4c5954786c4b66a587f7aa2f51692a6acf6e6fc",
+      "byteCount": 504,
+      "lineCount": 18
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacAdapter.swift",
+      "sha256": "c0e17b23a8d883defc98221801fde9469b2d9db4e02bccad42be67b90376d7a0",
+      "byteCount": 8820,
+      "lineCount": 266
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+      "sha256": "d6531309242ce5b5e7fa5b5a3ef87637f6e81055cebf0b71ad1c66a28309332e",
+      "byteCount": 18002,
+      "lineCount": 433
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacDesktopApplication.swift",
+      "sha256": "6247510582b4c8433bed2ba56a900de091d62e5a5ef1e9a75c21f2fd8ee34515",
+      "byteCount": 34355,
+      "lineCount": 892
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+      "sha256": "f4400c360312837ccb16ebe88c7d57e94b953ab5472529d050893008bdb5e75f",
+      "byteCount": 249477,
+      "lineCount": 6453
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCDirectKernelMachine.swift",
+      "sha256": "7d35ff68ded648d2add4b9c2afdf61f4e6c991ee1485839cca6e42e53e3548a9",
+      "byteCount": 49153,
+      "lineCount": 1257
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86CPUProfile.swift",
+      "sha256": "8d2c8e64f04dcccd0f4970e5a3d32a4250b5b9ddcaa3807aa86a26982096d013",
+      "byteCount": 6090,
+      "lineCount": 190
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCPVHKernel.swift",
+      "sha256": "b5b0afbf9c391e8b15b2be880da0bc90af920aacae74e2ccd8f874bad99f7553",
+      "byteCount": 10719,
+      "lineCount": 280
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCLinuxBootTests.swift",
+      "sha256": "422bfb5f1e5be37106173c320216b6da712889177dc1bde2214e8704ade50dd6",
+      "byteCount": 4654,
+      "lineCount": 99
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCLinuxBootRunner/main.swift",
+      "sha256": "1e3ff6d43e1aa34a33d5ed5a4293a6d54b9d7a47662089d51dfb39a7367bb930",
+      "byteCount": 8913,
+      "lineCount": 192
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualizationProductPolicyTests.swift",
+      "sha256": "b8149b89f7562bdfe8434720d4ba2ff0a90e728cccebfd7c45896ac21a358efb",
+      "byteCount": 4317,
+      "lineCount": 108
+    },
+    {
+      "path": "scripts/test-gvproxy-payload.sh",
+      "sha256": "da6b262ff77e655dba39d15f333afaede1d7edde6c6382c15adeeefc288be9c2",
+      "byteCount": 6090,
+      "lineCount": 142
+    },
+    {
+      "path": "scripts/test-competitor-release-gates.sh",
+      "sha256": "99eb93157dc91406b2a68c85fb4d4b3d96737028064b75b7a6ff41a915fd41da",
+      "byteCount": 120306,
+      "lineCount": 1882
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualizationPlatform.swift",
+      "sha256": "40b97ed571566625246f560f9c99ab403209c3bf689f19e8e8c53c8a0deec6de",
+      "byteCount": 13865,
+      "lineCount": 363
+    },
+    {
+      "path": ".github/workflows/intel-engine.yml",
+      "sha256": "c6495e650f323687c75ce560b1897eeb6dc791924890241063d43f21975cf651",
+      "byteCount": 3510,
+      "lineCount": 99
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift",
+      "sha256": "4b140615b45918dafe1d5c4e72499e09b7c3ce7b03039b6df333216873937e67",
+      "byteCount": 144282,
+      "lineCount": 3382
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryNativeHVArm64/NativeHVArm64Engine.swift",
+      "sha256": "2b951428bd90a29cab42984085e19454d8dc240c0ba93a8012cd66f83eecf1a0",
+      "byteCount": 22411,
+      "lineCount": 662
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/Virtqueue.swift",
+      "sha256": "6841aca4bdcc3f88b4e437ac4c6c677f4658778da02296777ba0e7aeaeec3aeb",
+      "byteCount": 28139,
+      "lineCount": 700
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryVirtio/DoryVirtioSplitQueue.swift",
+      "sha256": "15b18dc8f0a676f616d2eaa6826cdf0c87eace3362a9587a7b526f72962df464",
+      "byteCount": 12977,
+      "lineCount": 378
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioGPU.swift",
+      "sha256": "485c87bd1a181c584616fa3ad9ac857e2baf45919de95e1cbe2351eb7f772aef",
+      "byteCount": 409680,
+      "lineCount": 9348
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/DoryPCVirGLRendererAuthority.swift",
+      "sha256": "6ab72423e86a95be112636c7eb664fbc75b96b607818cb91bc60d6cf12a2c9d7",
+      "byteCount": 26012,
+      "lineCount": 657
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererCapabilityReceipt.swift",
+      "sha256": "f1507f20e72de4b0f8992ecac1a48cc76b60179c4feb08b2858fd3c9b77e7d60",
+      "byteCount": 13204,
+      "lineCount": 296
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryRendererBootstrapQualification.swift",
+      "sha256": "05dcf769c250ce129bfa4a55966769775a9165791443206047357eeb42ed3228",
+      "byteCount": 33875,
+      "lineCount": 749
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCPVHBoot.swift",
+      "sha256": "83f92b679aad336c0647040b73d0699ebed15c0edfc93804db100f19e2f902cc",
+      "byteCount": 8753,
+      "lineCount": 255
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCACPI.swift",
+      "sha256": "9df78f73828a67f4d643c2623337e77d64bfaa63470747a0988b92f13dfa3ba6",
+      "byteCount": 15592,
+      "lineCount": 441
+    },
+    {
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/BinfmtRegistration.swift",
+      "sha256": "e42a54d4fa3017cff3557f045050ea702e4117a7ae1eee4b5c04e0de0b93ef72",
+      "byteCount": 4305,
+      "lineCount": 91
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/DirectIPBridge.swift",
+      "sha256": "b89a156164f42a7acc98f946c08f068a76ffea73ebdc5d5652f64a244cb82021",
+      "byteCount": 29752,
+      "lineCount": 726
+    },
+    {
+      "path": "docs/virtualization/no-qemu-source-debt.json",
+      "sha256": "8a0db9302b27e1db3987eadbc26db5bd70acac229653af75897a8371563da3a2",
+      "byteCount": 2904,
+      "lineCount": 18
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineConfigurationMigration.swift",
+      "sha256": "1e5175246aaf29e0e1884d469ed2a2c58e713de27671c4dd73e1721c8af530a3",
+      "byteCount": 42685,
+      "lineCount": 926
+    },
+    {
+      "path": "dory-core-swift/Package.swift",
+      "sha256": "90bd5bec6041daa490f8c5a38951ffaa73daf9efe8586d51bd8b39834aaedd15",
+      "byteCount": 16831,
+      "lineCount": 523
+    },
+    {
+      "path": "scripts/bundle-engine.sh",
+      "sha256": "ad366d5605e6a150abd4c592a58346f8b09105060fbb9b03e8057a205be21285",
+      "byteCount": 65418,
+      "lineCount": 1449
+    },
+    {
+      "path": "scripts/validate-linux-vm-performance-evidence.py",
+      "sha256": "7fa6af58d7f363671cd03a37afe547f066232412ee9bc9140c60eedc86bbf54f",
+      "byteCount": 25897,
+      "lineCount": 787
+    },
+    {
+      "path": "scripts/fixtures/linux-vm-performance-bundle-schema1/README.md",
+      "sha256": "e8a8ade91a6a215014b6ac3078d4e8d5ab2063452a7c8888324cefdedbf03ecd",
+      "byteCount": 355,
+      "lineCount": 6
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineCapabilities.swift",
+      "sha256": "a708e82e29e599111fd50005c9965c832fb35393cfcb7accbee6ad9cce91148c",
+      "byteCount": 100476,
+      "lineCount": 2263
+    }
+  ],
+  "componentAcquisitionOrder": "Explicit app ComponentsView/DoryComponentInstaller acquisition and user media staging precede daemon planning. Resolver consumes already-installed verified inventory and fails when authority/components are absent. The graph intentionally does not invent a download inside the resolver.",
+  "nodes": [
+    {
+      "id": "app-create",
+      "symbol": "AppStore.createDorydMachine",
+      "role": "App creates typed VM request and invokes daemon transport",
+      "evidence": {
+        "path": "Dory/Models/AppStore.swift",
+        "line": 6795,
+        "anchor": "private func createDorydMachine("
+      }
+    },
+    {
+      "id": "app-client",
+      "symbol": "DorydClient.machineStart / machineCreate",
+      "role": "XPC client retains caller operation UUID",
+      "evidence": {
+        "path": "Dory/Runtime/Doryd/DorydClient.swift",
+        "line": 21,
+        "anchor": "func machineStart("
+      }
+    },
+    {
+      "id": "cli",
+      "symbol": "dorydctl machine create/start",
+      "role": "CLI stages selected media and sends caller UUID",
+      "evidence": {
+        "path": "dory-core-swift/Sources/dorydctl/main.swift",
+        "line": 915,
+        "anchor": "case \"start\":"
+      }
+    },
+    {
+      "id": "component-ui",
+      "symbol": "ComponentsView.install",
+      "role": "Explicit component acquisition precedes launch; no implicit resolver download",
+      "evidence": {
+        "path": "Dory/Features/Components/ComponentsView.swift",
+        "line": 429,
+        "anchor": "private func install(_ id:"
+      }
+    },
+    {
+      "id": "component-installer",
+      "symbol": "DoryComponentInstaller.install",
+      "role": "Downloads pinned catalog assets and calls verified local store",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryOperations/DoryComponents.swift",
+        "line": 1600,
+        "anchor": "let installed = try store.install("
+      }
+    },
+    {
+      "id": "component-store",
+      "symbol": "DoryComponentStore.install / activeAssetPath",
+      "role": "Verifies signed sizes/digests and activates installed component",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryOperations/DoryComponents.swift",
+        "line": 996,
+        "anchor": "try verifyFile(source, bytes: asset.downloadBytes, digest: asset.sha256)"
+      }
+    },
+    {
+      "id": "asset-preparer",
+      "symbol": "DesktopMachineAssetProvisioner.prepare",
+      "role": "Managed Linux creation resolves and stages installed desktop assets",
+      "evidence": {
+        "path": "Dory/Runtime/Machines/DesktopMachineAssets.swift",
+        "line": 89,
+        "anchor": "nonisolated enum DesktopMachineAssetProvisioner"
+      }
+    },
+    {
+      "id": "daemon",
+      "symbol": "doryd main",
+      "role": "Activates one daemon-owned production context",
+      "evidence": {
+        "path": "dory-core-swift/Sources/doryd/main.swift",
+        "line": 89,
+        "anchor": ").activate("
+      }
+    },
+    {
+      "id": "activation",
+      "symbol": "DoryDaemonVirtualMachineProductionTrustFactory.activate",
+      "role": "Verifies trust, creates one MachineManager, composes adapters and planning",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionActivation.swift",
+        "line": 160,
+        "anchor": "let machineManager = MachineManager("
+      }
+    },
+    {
+      "id": "service",
+      "symbol": "DorydService.machineStart",
+      "role": "Validates canonical UUID and calls public manager start",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DorydService.swift",
+        "line": 714,
+        "anchor": "return try manager.start(id: id, operationID: parsedOperationID)"
+      }
+    },
+    {
+      "id": "manager",
+      "symbol": "MachineManager.start",
+      "role": "Owns public operation admission, durable identity and start/recovery",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3120,
+        "anchor": "public func start("
+      }
+    },
+    {
+      "id": "planning",
+      "symbol": "DoryDaemonVirtualMachineProductionPlanningController.resolveReserveAndPublish",
+      "role": "Owns artifact authority before plan transaction",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionPlanningController.swift",
+        "line": 203,
+        "anchor": "public func resolveReserveAndPublish("
+      }
+    },
+    {
+      "id": "transaction",
+      "symbol": "DoryDaemonVirtualMachinePlanningTransactionCoordinator.resolveReserveAndPublish",
+      "role": "Journals planning, verifies fresh inventory, reserves and publishes exact plan",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachinePlanningTransactionCoordinator.swift",
+        "line": 607,
+        "anchor": "public func resolveReserveAndPublish("
+      }
+    },
+    {
+      "id": "trust",
+      "symbol": "DoryDaemonProductionTrustInventory.preparePlanningTrust / startInventory",
+      "role": "Resolves already-installed signed components, host/media/firmware and qualification; never downloads",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionTrust.swift",
+        "line": 561,
+        "anchor": "func preparePlanningTrust("
+      }
+    },
+    {
+      "id": "backend-policy",
+      "symbol": "DoryAppleSiliconVirtualMachineBackendPlanner.plan",
+      "role": "Selects from exactly three product cells and verified capabilities",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineBackendPlanner.swift",
+        "line": 167,
+        "anchor": "public static func plan("
+      }
+    },
+    {
+      "id": "launch-resolver",
+      "symbol": "DoryDaemonVirtualMachineLaunchPlanResolver.resolve",
+      "role": "Revalidates persisted plan and one-use pre-spawn authorization",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineLaunchPlanResolver.swift",
+        "line": 425,
+        "anchor": "public func resolve("
+      }
+    },
+    {
+      "id": "plan-builder",
+      "symbol": "DoryDaemonVirtualMachinePlanningCoordinator.resolveAndPersist",
+      "role": "Constructs exact resolved plan from current inventory and capability policy",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineRuntimePlanning.swift",
+        "line": 465,
+        "anchor": "let plannerResult = capabilityPlanner.plan("
+      }
+    },
+    {
+      "id": "spawn",
+      "symbol": "MachineManager.processConfiguration / HvProcess",
+      "role": "Launches authenticated helper with pinned descriptors and lifecycle handoff",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 5604,
+        "anchor": "let process = HvProcess("
+      }
+    },
+    {
+      "id": "exact-start",
+      "symbol": "MachineManager.startResolvedMachine",
+      "role": "Bridges exact plan to registered adapter and one pending start binding",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3671,
+        "anchor": "private func startResolvedMachine("
+      }
+    },
+    {
+      "id": "backend-adapter",
+      "symbol": "RawHVLinuxMachineBackend / VirtualizationFrameworkLinuxMachineBackend",
+      "role": "Validates cell-specific media/devices then invokes authorized compatibility closure",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/LinuxMachineBackendAdapters.swift",
+        "line": 447,
+        "anchor": "public final class RawHVLinuxMachineBackend:"
+      }
+    },
+    {
+      "id": "launch-binding",
+      "symbol": "MachineManager.performAuthorizedResolvedBackendStart",
+      "role": "Single-use binding leads to authenticated helper launch, no independent legacy planner",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 1943,
+        "anchor": "public func resolvedLaunchCompatibilityOperations("
+      }
+    },
+    {
+      "id": "arm-envelope",
+      "symbol": "RuntimeLaunchEnvelope",
+      "role": "Binds ARM firmware/topology, admitted resources, artifact descriptors and renderer authority",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 5325,
+        "anchor": "let executionResources = RuntimeLaunchEnvelope.ARMVirtExecutionResources.production("
+      }
+    },
+    {
+      "id": "pc-envelope",
+      "symbol": "DoryPCRuntimeLaunchEnvelope",
+      "role": "Binds PC firmware/NVRAM, disks, resources, graphics and exact plan identity",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 13242,
+        "anchor": "private func resolvedDoryPCRuntimeLaunchAuthority("
+      }
+    },
+    {
+      "id": "raw-runner",
+      "symbol": "dory-hv main",
+      "role": "Receives launch handoff and routes immutable ARM or PC envelope",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/main.swift",
+        "line": 569,
+        "anchor": "let authority = try DoryPCUEFIRuntimeAuthority.admit("
+      }
+    },
+    {
+      "id": "arm-desktop",
+      "symbol": "DesktopMode",
+      "role": "Composes ARM machine, devices, worker channels and guest readiness",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 1399,
+        "anchor": "let machine = try Machine(configuration: machineConfiguration)"
+      }
+    },
+    {
+      "id": "arm-machine",
+      "symbol": "DoryHV.Machine",
+      "role": "Production RAM/GIC/vCPU thread and boot owner",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/DoryHV/Machine.swift",
+        "line": 373,
+        "anchor": "public let memory: GuestMemory"
+      }
+    },
+    {
+      "id": "arm-devices",
+      "symbol": "VirtioMMIO / VirtioGPU / VirtioSound / VirtioNet / VirtioFS",
+      "role": "ARM transport and mature raw-HV device cores, isolated renderer worker",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 1487,
+        "anchor": "rendererWorkerCandidate: rendererWorkerLaunch?.commandLane"
+      }
+    },
+    {
+      "id": "arm-readiness",
+      "symbol": "DesktopGuestReadinessBoundary.complete",
+      "role": "Generic frame or worker presentation plus optional tools; managed guest setup then presentation",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 2331,
+        "anchor": "try await DesktopGuestReadinessBoundary.complete("
+      }
+    },
+    {
+      "id": "pc-runtime",
+      "symbol": "DoryPCMode",
+      "role": "Owns PC application loop and descriptor-backed host services",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 54,
+        "anchor": "static func run(_ configuration: Configuration) throws"
+      }
+    },
+    {
+      "id": "pc-machine",
+      "symbol": "DoryPCUEFIRuntimeAuthority.makeMachine \u2192 DoryPCUEFIMachine",
+      "role": "Validates and composes firmware, NVRAM, shared virtio devices and CPU model",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCUEFIRuntimeAuthority.swift",
+        "line": 151,
+        "anchor": "let machine = try DoryPCUEFIMachine("
+      }
+    },
+    {
+      "id": "pc-cpu",
+      "symbol": "DoryPCDirectKernelMachine",
+      "role": "Interpreter or selected ARM64 JIT tier with shared PC interrupt/timer/physical-memory model",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryFirmware/DoryPCUEFIMachine.swift",
+        "line": 179,
+        "anchor": "let machine = try DoryPCDirectKernelMachine("
+      }
+    },
+    {
+      "id": "pc-devices",
+      "symbol": "DoryVirtio / DoryPCVirtioPCI + DoryPCVirtioFS/Vsock adapters",
+      "role": "PC uses shared Swift device cores plus retained raw-HV filesystem/vsock bridges",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 440,
+        "anchor": "let vsockPCI = try DoryPCVirtioVsockPCIDevice("
+      }
+    },
+    {
+      "id": "pc-readiness",
+      "symbol": "ReadyPublisher",
+      "role": "First completed execution slice publishes firmware execution readiness; guest tools are optional",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 400,
+        "anchor": "requiresGuestServices: false"
+      }
+    },
+    {
+      "id": "mac-runner",
+      "symbol": "dory-vmm vzmac",
+      "role": "Dispatches macOS-specific adapter entrypoint",
+      "evidence": {
+        "path": "dory-core-swift/Sources/dory-vmm/main.swift",
+        "line": 10,
+        "anchor": "exit(DoryVZMacDesktopMain.run("
+      }
+    },
+    {
+      "id": "mac-adapter",
+      "symbol": "DoryVZMacAdapter",
+      "role": "Owns VZMac runtime installation/start/pause/resume/suspend transitions",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacAdapter.swift",
+        "line": 111,
+        "anchor": "runtime = try DoryVZMacRuntime("
+      }
+    },
+    {
+      "id": "mac-runtime",
+      "symbol": "DoryVZMacRuntime / DoryVZMacConfigurationBuilder",
+      "role": "Builds VZMacOSBootLoader and VZ CPU/memory/display/storage/network/input/audio/vsock configuration",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+        "line": 240,
+        "anchor": "virtualMachine = VZVirtualMachine(configuration: configuration)"
+      }
+    },
+    {
+      "id": "mac-readiness",
+      "symbol": "DoryVZMacDesktopApplication.publishManagedReadyIfNeeded",
+      "role": "Framework running observation plus managed control socket and handoff",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacDesktopApplication.swift",
+        "line": 431,
+        "anchor": "private func publishManagedReadyIfNeeded()"
+      }
+    },
+    {
+      "id": "handoff",
+      "symbol": "MachineManager.handleHandoff",
+      "role": "Authenticates helper/operation, verifies graphics selection and commits lifecycle readiness",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 19033,
+        "anchor": "private func handleHandoff("
+      }
+    },
+    {
+      "id": "projection",
+      "symbol": "MachineManager status \u2192 DorydClient \u2192 AppStore",
+      "role": "Projects layered readiness without making first helper execution a userspace qualification",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 12557,
+        "anchor": "status.readiness = DoryMachineReadiness("
+      }
+    }
+  ],
+  "edges": [
+    {
+      "from": "app-create",
+      "to": "asset-preparer",
+      "kind": "call",
+      "evidence": {
+        "path": "Dory/Models/AppStore.swift",
+        "line": 6879,
+        "anchor": "desktopAssets = try await desktopMachineAssetPreparer("
+      }
+    },
+    {
+      "from": "app-create",
+      "to": "app-client",
+      "kind": "call",
+      "evidence": {
+        "path": "Dory/Models/AppStore.swift",
+        "line": 6898,
+        "anchor": "_ = try await dorydClient.machineCreate(config, operationID: creationOperationID)"
+      }
+    },
+    {
+      "from": "component-ui",
+      "to": "component-installer",
+      "kind": "call",
+      "evidence": {
+        "path": "Dory/Features/Components/ComponentsView.swift",
+        "line": 461,
+        "anchor": "_ = try await installer.install("
+      }
+    },
+    {
+      "from": "component-installer",
+      "to": "component-store",
+      "kind": "call",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryOperations/DoryComponents.swift",
+        "line": 1600,
+        "anchor": "let installed = try store.install("
+      }
+    },
+    {
+      "from": "component-store",
+      "to": "trust",
+      "kind": "installed-artifact-input",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionTrust.swift",
+        "line": 669,
+        "anchor": "installedComponents: runtime.components"
+      }
+    },
+    {
+      "from": "app-client",
+      "to": "service",
+      "kind": "XPC",
+      "evidence": {
+        "path": "Dory/Runtime/Doryd/DorydClient.swift",
+        "line": 2090,
+        "anchor": "proxy.machineStart("
+      }
+    },
+    {
+      "from": "cli",
+      "to": "service",
+      "kind": "XPC",
+      "evidence": {
+        "path": "dory-core-swift/Sources/dorydctl/main.swift",
+        "line": 1435,
+        "anchor": "$0.machineStart(name, operationID: operationID, reply: $1)"
+      }
+    },
+    {
+      "from": "daemon",
+      "to": "activation",
+      "kind": "call",
+      "evidence": {
+        "path": "dory-core-swift/Sources/doryd/main.swift",
+        "line": 89,
+        "anchor": ").activate("
+      }
+    },
+    {
+      "from": "activation",
+      "to": "manager",
+      "kind": "owns",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionActivation.swift",
+        "line": 160,
+        "anchor": "let machineManager = MachineManager("
+      }
+    },
+    {
+      "from": "activation",
+      "to": "trust",
+      "kind": "call",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionActivation.swift",
+        "line": 135,
+        "anchor": "switch verifiedTrustMaterial("
+      }
+    },
+    {
+      "from": "service",
+      "to": "manager",
+      "kind": "call",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DorydService.swift",
+        "line": 714,
+        "anchor": "return try manager.start(id: id, operationID: parsedOperationID)"
+      }
+    },
+    {
+      "from": "manager",
+      "to": "planning",
+      "kind": "call",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3101,
+        "anchor": "try controller.publishResolvedPlan("
+      }
+    },
+    {
+      "from": "planning",
+      "to": "transaction",
+      "kind": "call",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionPlanningController.swift",
+        "line": 179,
+        "anchor": "coordinator.resolveReserveAndPublish("
+      }
+    },
+    {
+      "from": "transaction",
+      "to": "trust",
+      "kind": "call",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachinePlanningTransactionCoordinator.swift",
+        "line": 719,
+        "anchor": "trust.preparePlanningTrust(for: inventoryRequest)"
+      }
+    },
+    {
+      "from": "transaction",
+      "to": "plan-builder",
+      "kind": "call",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachinePlanningTransactionCoordinator.swift",
+        "line": 1055,
+        "anchor": "result = try coordinator.resolveAndPersist(validated.planning)"
+      }
+    },
+    {
+      "from": "plan-builder",
+      "to": "backend-policy",
+      "kind": "call",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineRuntimePlanning.swift",
+        "line": 231,
+        "anchor": "DoryAppleSiliconVirtualMachineBackendPlanner.plan("
+      }
+    },
+    {
+      "from": "manager",
+      "to": "exact-start",
+      "kind": "call",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3466,
+        "anchor": "return try startResolvedMachine("
+      }
+    },
+    {
+      "from": "exact-start",
+      "to": "launch-resolver",
+      "kind": "call-through-prepareResolvedMachineStart",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3681,
+        "anchor": "let validated = try prepareResolvedMachineStart("
+      }
+    },
+    {
+      "from": "launch-resolver",
+      "to": "trust",
+      "kind": "fresh-evidence-input",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineLaunchPlanResolver.swift",
+        "line": 228,
+        "anchor": "snapshot = try inventory.startInventory("
+      }
+    },
+    {
+      "from": "exact-start",
+      "to": "backend-adapter",
+      "kind": "registered-operation",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3731,
+        "anchor": "let operation = registry.start(MachineBackendStartRequest("
+      }
+    },
+    {
+      "from": "backend-adapter",
+      "to": "launch-binding",
+      "kind": "authorized-callback",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 1951,
+        "anchor": "return try self.performAuthorizedResolvedBackendStart("
+      }
+    },
+    {
+      "from": "launch-binding",
+      "to": "pc-envelope",
+      "kind": "cell-branch",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 5293,
+        "anchor": "runtimeLaunchAuthority = try resolvedDoryPCRuntimeLaunchAuthority("
+      }
+    },
+    {
+      "from": "launch-binding",
+      "to": "arm-envelope",
+      "kind": "cell-branch",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 5325,
+        "anchor": "let executionResources = RuntimeLaunchEnvelope.ARMVirtExecutionResources.production("
+      }
+    },
+    {
+      "from": "launch-binding",
+      "to": "spawn",
+      "kind": "call",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 5573,
+        "anchor": "processLaunch = try self.processConfiguration("
+      }
+    },
+    {
+      "from": "arm-envelope",
+      "to": "spawn",
+      "kind": "argument-authority",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 5579,
+        "anchor": "runtimeLaunchAuthority: runtimeLaunchAuthority,"
+      }
+    },
+    {
+      "from": "pc-envelope",
+      "to": "spawn",
+      "kind": "argument-authority",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 5579,
+        "anchor": "runtimeLaunchAuthority: runtimeLaunchAuthority,"
+      }
+    },
+    {
+      "from": "spawn",
+      "to": "mac-runner",
+      "kind": "process-argument-dispatch",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 15005,
+        "anchor": "\"vzmac\", operation,"
+      }
+    },
+    {
+      "from": "spawn",
+      "to": "raw-runner",
+      "kind": "process-envelope-dispatch",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 14951,
+        "anchor": "resolved Dory launch envelope cannot be omitted from helper arguments"
+      }
+    },
+    {
+      "from": "raw-runner",
+      "to": "pc-runtime",
+      "kind": "call",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/main.swift",
+        "line": 572,
+        "anchor": "try DoryPCMode.run("
+      }
+    },
+    {
+      "from": "raw-runner",
+      "to": "arm-desktop",
+      "kind": "call",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/main.swift",
+        "line": 722,
+        "anchor": "try DesktopMode.run("
+      }
+    },
+    {
+      "from": "arm-desktop",
+      "to": "arm-machine",
+      "kind": "construct",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 1399,
+        "anchor": "let machine = try Machine(configuration: machineConfiguration)"
+      }
+    },
+    {
+      "from": "arm-desktop",
+      "to": "arm-devices",
+      "kind": "construct",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 1482,
+        "anchor": "let gpu = VirtioGPU("
+      }
+    },
+    {
+      "from": "arm-desktop",
+      "to": "arm-readiness",
+      "kind": "call",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 2331,
+        "anchor": "try await DesktopGuestReadinessBoundary.complete("
+      }
+    },
+    {
+      "from": "pc-runtime",
+      "to": "pc-machine",
+      "kind": "construct",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCUEFIRuntimeAuthority.swift",
+        "line": 151,
+        "anchor": "let machine = try DoryPCUEFIMachine("
+      }
+    },
+    {
+      "from": "pc-machine",
+      "to": "pc-cpu",
+      "kind": "construct",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryFirmware/DoryPCUEFIMachine.swift",
+        "line": 179,
+        "anchor": "let machine = try DoryPCDirectKernelMachine("
+      }
+    },
+    {
+      "from": "pc-runtime",
+      "to": "pc-devices",
+      "kind": "construct",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 440,
+        "anchor": "let vsockPCI = try DoryPCVirtioVsockPCIDevice("
+      }
+    },
+    {
+      "from": "pc-runtime",
+      "to": "pc-readiness",
+      "kind": "call",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 806,
+        "anchor": "try readyPublisher.markPresentationReady()"
+      }
+    },
+    {
+      "from": "mac-runner",
+      "to": "mac-adapter",
+      "kind": "construct",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacDesktopApplication.swift",
+        "line": 280,
+        "anchor": "adapter = try DoryVZMacAdapter("
+      }
+    },
+    {
+      "from": "mac-adapter",
+      "to": "mac-runtime",
+      "kind": "construct",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacAdapter.swift",
+        "line": 111,
+        "anchor": "runtime = try DoryVZMacRuntime("
+      }
+    },
+    {
+      "from": "mac-adapter",
+      "to": "mac-readiness",
+      "kind": "observation-callback",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacDesktopApplication.swift",
+        "line": 371,
+        "anchor": "publishManagedReadyIfNeeded()"
+      }
+    },
+    {
+      "from": "arm-readiness",
+      "to": "handoff",
+      "kind": "authenticated-socket-handoff",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 2362,
+        "anchor": "try VmmHandoffClient.send("
+      }
+    },
+    {
+      "from": "pc-readiness",
+      "to": "handoff",
+      "kind": "authenticated-socket-handoff",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 409,
+        "anchor": "try VmmHandoffClient.send("
+      }
+    },
+    {
+      "from": "mac-readiness",
+      "to": "handoff",
+      "kind": "authenticated-socket-handoff",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacDesktopApplication.swift",
+        "line": 454,
+        "anchor": "try VmmHandoffClient.send("
+      }
+    },
+    {
+      "from": "handoff",
+      "to": "projection",
+      "kind": "readiness-state-projection",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 12557,
+        "anchor": "status.readiness = DoryMachineReadiness("
+      }
+    }
+  ],
+  "cells": [
+    {
+      "id": "linux-arm64-native",
+      "host": "arm64",
+      "guest": "linux/arm64",
+      "backendIdentity": "dory-hypervisor",
+      "runnerExecutable": "dory-hv",
+      "path": [
+        "app-create",
+        "app-client",
+        "cli",
+        "daemon",
+        "activation",
+        "service",
+        "manager",
+        "planning",
+        "transaction",
+        "plan-builder",
+        "trust",
+        "backend-policy",
+        "launch-resolver",
+        "exact-start",
+        "backend-adapter",
+        "launch-binding",
+        "arm-envelope",
+        "spawn",
+        "raw-runner",
+        "arm-desktop",
+        "arm-machine",
+        "arm-devices",
+        "arm-readiness",
+        "handoff",
+        "projection"
+      ],
+      "bootModes": [
+        "managed direct Linux kernel",
+        "DoryARMVirt UEFI installer/disk"
+      ],
+      "readinessClaim": "Managed runtime requires guest setup and renderer synchronization when accelerated. Generic media requires graphics frame/presentation; missing tools are recorded separately. These are runtime boundaries, not release workload certification."
+    },
+    {
+      "id": "linux-x86_64-translated",
+      "host": "arm64",
+      "guest": "linux/x86_64",
+      "backendIdentity": "dory-hypervisor",
+      "runnerExecutable": "dory-hv",
+      "path": [
+        "app-create",
+        "app-client",
+        "cli",
+        "daemon",
+        "activation",
+        "service",
+        "manager",
+        "planning",
+        "transaction",
+        "plan-builder",
+        "trust",
+        "backend-policy",
+        "launch-resolver",
+        "exact-start",
+        "backend-adapter",
+        "launch-binding",
+        "pc-envelope",
+        "spawn",
+        "raw-runner",
+        "pc-runtime",
+        "pc-machine",
+        "pc-cpu",
+        "pc-devices",
+        "pc-readiness",
+        "handoff",
+        "projection"
+      ],
+      "bootModes": [
+        "DoryPC UEFI installer/disk"
+      ],
+      "diagnosticOnlyBoot": "DoryPCPVHKernelImage/DoryPCDirectKernelMachine.load is used by engineering tests/boot runner; production RawHV adapter requires UEFI for x86 Linux.",
+      "readinessClaim": "The current runner emits firmware-execution readiness after one run slice, before examining the stop reason. It does not require userspace marker, tools, display frame or poweroff; P02/P05 acceptance must supply independent userspace/workload evidence."
+    },
+    {
+      "id": "macos-arm64-vzmac",
+      "host": "arm64",
+      "guest": "macOS/arm64",
+      "backendIdentity": "apple-virtualization-framework",
+      "runnerExecutable": "dory-vmm vzmac",
+      "path": [
+        "app-create",
+        "app-client",
+        "cli",
+        "daemon",
+        "activation",
+        "service",
+        "manager",
+        "planning",
+        "transaction",
+        "plan-builder",
+        "trust",
+        "backend-policy",
+        "launch-resolver",
+        "exact-start",
+        "backend-adapter",
+        "launch-binding",
+        "spawn",
+        "mac-runner",
+        "mac-adapter",
+        "mac-runtime",
+        "mac-readiness",
+        "handoff",
+        "projection"
+      ],
+      "bootModes": [
+        "compatible Apple IPSW installation/prepared VZMac bundle"
+      ],
+      "readinessClaim": "VZ lifecycle running plus managed authenticated control handoff. Guest tools and actual saved-memory continuation qualification are separate P08 gates."
+    }
+  ],
+  "constructorAndLegacySearches": [
+    {
+      "id": "native-engine-call-sites",
+      "command": [
+        "rg",
+        "-n",
+        "--glob",
+        "*.swift",
+        "DoryNativeHVArm64Engine\\(",
+        "dory-core-swift/Sources",
+        "dory-core-swift/Tests",
+        "Packages/ContainerizationEngine/Sources"
+      ],
+      "exitCode": 0,
+      "scope": "Swift source and tests in listed roots; declaration, comments and test references are classified separately from production call sites",
+      "matches": [
+        {
+          "path": "dory-core-swift/Sources/dory-phase0a-hv-throughput/main.swift",
+          "line": 119,
+          "text": "let engine = try DoryNativeHVArm64Engine(executionGeneration: generation)"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryNativeHVArm64/NativeHVArm64Smoke.swift",
+          "line": 29,
+          "text": "let engine = try DoryNativeHVArm64Engine(executionGeneration: 1)"
+        },
+        {
+          "path": "dory-core-swift/Sources/dory-phase0a-hv-calibration/main.swift",
+          "line": 84,
+          "text": "let engine = try DoryNativeHVArm64Engine(executionGeneration: generation)"
+        }
+      ]
+    },
+    {
+      "id": "pc-renderer-authority-call-sites",
+      "command": [
+        "rg",
+        "-n",
+        "--glob",
+        "*.swift",
+        "DoryPCVirGLRendererAuthority\\(",
+        "dory-core-swift/Sources",
+        "dory-core-swift/Tests",
+        "Packages/ContainerizationEngine/Sources",
+        "Packages/ContainerizationEngine/Tests"
+      ],
+      "exitCode": 0,
+      "scope": "Swift source and tests in listed roots; declaration, comments and test references are classified separately from production call sites",
+      "matches": [
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryRendererWorkerBrokerTests.swift",
+          "line": 495,
+          "text": "let authority = try DoryPCVirGLRendererAuthority("
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryRendererWorkerBrokerTests.swift",
+          "line": 771,
+          "text": "let authority = try DoryPCVirGLRendererAuthority("
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryRendererWorkerBrokerTests.swift",
+          "line": 794,
+          "text": "let authority = try DoryPCVirGLRendererAuthority("
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryRendererWorkerBrokerTests.swift",
+          "line": 812,
+          "text": "let authority = try DoryPCVirGLRendererAuthority("
+        }
+      ]
+    },
+    {
+      "id": "legacy-renderer-argument-sites",
+      "command": [
+        "rg",
+        "-n",
+        "--glob",
+        "*.swift",
+        "renderer:",
+        "Packages/ContainerizationEngine/Sources/DoryHV/VirtioGPU.swift",
+        "Packages/ContainerizationEngine/Sources/dory-hv",
+        "Packages/ContainerizationEngine/Tests/DoryHVTests"
+      ],
+      "exitCode": 0,
+      "scope": "Swift source and tests in listed roots; declaration, comments and test references are classified separately from production call sites",
+      "matches": [
+        {
+          "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioGPU.swift",
+          "line": 39,
+          "text": "/// A host-visible blob mapping produced by the renderer: the host pointer virglrenderer owns (to be"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioGPU.swift",
+          "line": 1162,
+          "text": "private let renderer: VirtioGPURenderer"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioGPU.swift",
+          "line": 1174,
+          "text": "renderer: VirtioGPURenderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioGPU.swift",
+          "line": 2183,
+          "text": "renderer: VirtioGPURenderer? = nil,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioGPU.swift",
+          "line": 2245,
+          "text": "renderer: $0,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 971,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 1001,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 1049,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 1100,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 1178,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 1224,
+          "text": "let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 1258,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 1299,
+          "text": "let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 1472,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 1705,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 1845,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 1957,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 2014,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 2077,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 2133,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 2151,
+          "text": "let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 2175,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 2403,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 2515,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 2623,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 2712,
+          "text": "let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 2852,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 2999,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 3085,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 3177,
+          "text": "renderer: renderer,"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 3231,
+          "text": "let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 3273,
+          "text": "let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift",
+          "line": 3338,
+          "text": "let gpu = VirtioGPU(hostMemoryBase: 0x1_0000_0000, renderer: renderer)"
+        }
+      ]
+    },
+    {
+      "id": "pvh-loader-call-sites",
+      "command": [
+        "rg",
+        "-n",
+        "--glob",
+        "*.swift",
+        "DoryPCPVHKernelImage\\(|\\.load\\(kernel:",
+        "dory-core-swift/Sources/DoryMachinePC",
+        "dory-core-swift/Tests/DoryMachinePCLinuxBootRunner",
+        "dory-core-swift/Tests/DoryMachinePCTests"
+      ],
+      "exitCode": 0,
+      "scope": "Swift source and tests in listed roots; declaration, comments and test references are classified separately from production call sites",
+      "matches": [
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCLinuxBootRunner/main.swift",
+          "line": 19,
+          "text": "try machine.load(kernel: kernelData, commandLine: \"console=ttyS0 earlyprintk=serial,ttyS0,115200 panic=-1 mem=1G\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPowerControllerTests.swift",
+          "line": 51,
+          "text": "try powerOff.load(kernel: makeMinimalELF())"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPowerControllerTests.swift",
+          "line": 60,
+          "text": "try reset.load(kernel: makeMinimalELF())"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCSMBIOSTests.swift",
+          "line": 92,
+          "text": "try machine.load(kernel: makeELF(code: [0xF4]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCDirectKernelMachine.swift",
+          "line": 539,
+          "text": "let kernelImage = try DoryPCPVHKernelImage(data: kernel)"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPVHKernelTests.swift",
+          "line": 9,
+          "text": "let image = try DoryPCPVHKernelImage(data: makeELF(entry: 0x10_0020))"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPVHKernelTests.swift",
+          "line": 24,
+          "text": "_ = try DoryPCPVHKernelImage(data: makeELF(entry: nil))"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPVHKernelTests.swift",
+          "line": 27,
+          "text": "_ = try DoryPCPVHKernelImage(data: makeELF(entry: 1, fileSize: 9, memorySize: 8))"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPVHKernelTests.swift",
+          "line": 32,
+          "text": "let image = try DoryPCPVHKernelImage(data: makeELF(entry: 0x10_0020))"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCACPITests.swift",
+          "line": 111,
+          "text": "try machine.load(kernel: makeMinimalELF(), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 9,
+          "text": "try machine.load(kernel: makeELF(code: [0x90, 0xF4]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 38,
+          "text": "try machine.load(kernel: makeELF(code: code), commandLine: \"console=ttyS0\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 59,
+          "text": "try machine.load(kernel: makeELF(code: [0xF4]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 96,
+          "text": "try budgeted.load(kernel: makeELF(code: [0x90, 0xEB, 0xFD]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 103,
+          "text": "try faulting.load(kernel: makeELF(code: [0x0F, 0x0B]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 126,
+          "text": "try machine.load(kernel: makeELF(code: [0xF4]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 197,
+          "text": "try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 219,
+          "text": "try machine.load(kernel: makeELF(code: [0x0F, 0xA2, 0xEB, 0xFC]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 245,
+          "text": "try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 269,
+          "text": "try machine.load(kernel: makeELF(code: [0xFB, 0xEB, 0xFE]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 359,
+          "text": "try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 401,
+          "text": "try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 452,
+          "text": "try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 487,
+          "text": "try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 586,
+          "text": "try machine.load(kernel: makeELF(code: code), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 615,
+          "text": "try machine.load(kernel: makeELF(code: code), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 680,
+          "text": "try machine.load(kernel: makeELF(code: code), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 713,
+          "text": "try machine.load(kernel: makeELF(code: code), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 763,
+          "text": "try machine.load(kernel: makeELF(code: code), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 806,
+          "text": "try machine.load(kernel: makeELF(code: code), commandLine: \"x\")"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+          "line": 828,
+          "text": "try machine.load(kernel: makeELF(code: [0xFB, 0xF4]), commandLine: \"x\")"
+        }
+      ]
+    }
+  ],
+  "removalInventory": [
+    {
+      "id": "R01",
+      "status": "present-production-and-diagnostic",
+      "replacementOwner": "CPU + PC/firmware",
+      "replacementPhase": "P02",
+      "finding": "Interpreter contains unconditional register/hypercall output; PC machine records a fixed-address function trace without an opt-in bound.",
+      "productionCallSites": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+          "line": 4102,
+          "anchor": "print(\"[XEN] HYPERVISOR hypercall"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCDirectKernelMachine.swift",
+          "line": 823,
+          "anchor": "if traceRIPs.contains(state.rip)"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "No opt-in gate at cited sites; selected interpreter path reaches the output"
+      ],
+      "persistentIdentities": [
+        "No separate persistent format; CPU profile and machine ABI must remain stable"
+      ],
+      "testOnlyUsage": "Kernel boot diagnostics consume functionTraceLog; not a production readiness proof.",
+      "safeReplacementAndProof": "Replace with bounded explicit trace configuration and image/symbol identity; retain minimized failure vectors."
+    },
+    {
+      "id": "R02",
+      "status": "present-false-success",
+      "replacementOwner": "CPU + PC/firmware",
+      "replacementPhase": "P02",
+      "finding": "Global Xen vendor leaves and unsupported hypercalls return success; reservation answers are fixed at 16 GiB and some writes ignore guest faults.",
+      "productionCallSites": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86CPUProfile.swift",
+          "line": 162,
+          "anchor": "case (0x4000_0000, _):"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+          "line": 4222,
+          "anchor": "// Return success for unknown hypercalls"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+          "line": 4138,
+          "anchor": "return 0x400000  // 16GB in pages"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "No explicit Xen capability/profile gate"
+      ],
+      "persistentIdentities": [
+        "dory.x86_64.compat-v1; guest-visible CPUID/hypercall ABI"
+      ],
+      "testOnlyUsage": "PC and DBT tests exercise shared interpreter, so agreement with JIT is not independent proof.",
+      "safeReplacementAndProof": "Non-Xen versioned PVH handoff; unsupported calls must fail architecturally, actual memory answers and all-or-nothing protocol writes."
+    },
+    {
+      "id": "R03",
+      "status": "present-diagnostic-loader",
+      "replacementOwner": "CPU + PC/firmware",
+      "replacementPhase": "P02",
+      "finding": "PVH ELF loader masks physical addresses and also writes alloc sections outside PT_LOAD. Physical entry is not checked against executable segment content.",
+      "productionCallSites": [
+        {
+          "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCPVHKernel.swift",
+          "line": 82,
+          "anchor": "let rawAddress ="
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCPVHKernel.swift",
+          "line": 159,
+          "anchor": "for section in try uncoveredAllocSections()"
+        },
+        {
+          "path": "dory-core-swift/Sources/DorydKit/LinuxMachineBackendAdapters.swift",
+          "line": 483,
+          "anchor": "A translated x86_64 Linux plan requires DoryPC UEFI installer or disk media."
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "Direct-kernel diagnostic entry; current production x86 cell selects UEFI"
+      ],
+      "persistentIdentities": [
+        "ELF/PVH external format; no private relocated-image identity"
+      ],
+      "testOnlyUsage": "See pvh-loader-call-sites and DoryPCPVHKernelTests.",
+      "safeReplacementAndProof": "Checked ELF offsets/segments/notes/entry, BSS and combined placement preflight; multiple real kernels plus malformed input preserves memory."
+    },
+    {
+      "id": "R04",
+      "status": "partially-corrected-fixture-gate-open",
+      "replacementOwner": "QA + CPU/guest",
+      "replacementPhase": "P02",
+      "finding": "Existing Linux boot XCTest now pins kernel/initrd hashes and requires userspace JSON and poweroff. The separate executable at Tests/DoryMachinePCLinuxBootRunner/main.swift still hardcodes /tmp/vmlinux-x86_64, 16 GiB RAM, fixed symbol addresses and a single instruction budget, then only prints the result. Optional XCTest absence still skips; no obtained fixture or boot pass is implied by source.",
+      "productionCallSites": [
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCLinuxBootTests.swift",
+          "line": 10,
+          "anchor": "func testPinnedLinuxReachesUserspaceAndPowersOff()"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCLinuxBootTests.swift",
+          "line": 21,
+          "anchor": "throw XCTSkip(detail)"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCLinuxBootTests.swift",
+          "line": 81,
+          "anchor": "XCTAssertTrue(receiptSeen"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCLinuxBootRunner/main.swift",
+          "line": 5,
+          "anchor": "let kernelPath = \"/tmp/vmlinux-x86_64\""
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "DORY_REQUIRE_X86_PVH_BOOT=1 fails missing inputs",
+        "DORY_TEST_X86_PVH_KERNEL{,_SHA256}, DORY_TEST_X86_PVH_INITRD{,_SHA256}, DORY_TEST_X86_PVH_TIER"
+      ],
+      "persistentIdentities": [
+        "BootReceipt.schemaVersion=1 and doryPVHBoot=userspace-ready"
+      ],
+      "testOnlyUsage": "The current test is an explicit opt-in integration test, not a /tmp auto-pass test.",
+      "safeReplacementAndProof": "Provision pinned reproducible fixtures in required CI, run both interpreter and JIT; scan remaining manual probes independently."
+    },
+    {
+      "id": "R05",
+      "status": "partially-removed-not-name-based-deletion",
+      "replacementOwner": "QA + control/release",
+      "replacementPhase": "P00/P15",
+      "finding": "Structured product-cell and capability behavior tests exist. Tracked dossier-named scripts are absent; source-text assertions remain in shell packaging tests and need behavior replacement individually.",
+      "productionCallSites": [
+        {
+          "path": "dory-core-swift/Tests/DoryOperationsTests/DoryVirtualizationProductPolicyTests.swift",
+          "line": 1,
+          "anchor": "import"
+        },
+        {
+          "path": "scripts/test-gvproxy-payload.sh",
+          "line": 131,
+          "anchor": "GVProxyQEMUFrameDecoder"
+        },
+        {
+          "path": "scripts/test-competitor-release-gates.sh",
+          "line": 423,
+          "anchor": "find_qemu_static"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "No runtime flag; tests and packaging checks"
+      ],
+      "persistentIdentities": [
+        "Backend wire identities and release artifact manifest remain enforced"
+      ],
+      "testOnlyUsage": "git ls-files *dossier* returns no tracked path; shell source snippets are test-only.",
+      "safeReplacementAndProof": "Do not delete truthful gvproxy transport/security checks by name. Replace brittle source matching with behavior and built artifact inventory before removing each assertion."
+    },
+    {
+      "id": "R06",
+      "status": "selection-rejected-residual-identities-and-ci",
+      "replacementOwner": "Control + app + release",
+      "replacementPhase": "P01/P12/P15",
+      "finding": "Typed policy rejects Intel hosts and x86 macOS, but old Intel identity enum cases and a scheduled physical Intel workflow remain.",
+      "productionCallSites": [
+        {
+          "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualizationPlatform.swift",
+          "line": 115,
+          "anchor": "guard hostArchitecture == .arm64 else"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualizationPlatform.swift",
+          "line": 125,
+          "anchor": "case (.macOS, .x86_64):"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualizationPlatform.swift",
+          "line": 163,
+          "anchor": "case intelMacV1 = \"dory.intelmac@1\""
+        },
+        {
+          "path": ".github/workflows/intel-engine.yml",
+          "line": 37,
+          "anchor": "runs-on: [self-hosted, macOS, intel, dory]"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "Product policy always Apple Silicon; Intel workflow dispatch/schedule/push remains"
+      ],
+      "persistentIdentities": [
+        "dory.intelmac@1",
+        "dory.x86_64.intel-mac-v1",
+        "dory.edk2.intelmac@1",
+        "qemu-hvf display compatibility"
+      ],
+      "testOnlyUsage": "Negative typed product-policy tests retain rejection.",
+      "safeReplacementAndProof": "Remove unsupported production options and workflow wiring with explicit safe legacy decode/rejection; preserve x86 Linux guest DBT."
+    },
+    {
+      "id": "R07",
+      "status": "bounded-compatibility-source-still-present",
+      "replacementOwner": "Native VMM + control",
+      "replacementPhase": "P03/P12",
+      "finding": "Generic Virtualization.framework Linux adapter and DoryVMM Linux implementation remain alongside VZMac; three-cell defaults select Dory raw-HV for Linux.",
+      "productionCallSites": [
+        {
+          "path": "dory-core-swift/Sources/DorydKit/LinuxMachineBackendAdapters.swift",
+          "line": 531,
+          "anchor": "public final class VirtualizationFrameworkLinuxMachineBackend"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift",
+          "line": 655,
+          "anchor": "native macOS must launch through the VZMac adapter entry point"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualizationPlatform.swift",
+          "line": 138,
+          "anchor": "[cell.backendIdentity]"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineBackendPlanner.swift",
+          "line": 295,
+          "anchor": "guard descriptor.request.backend == productCell.backendIdentity else"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "Planner requires descriptor.request.backend == productCell.backendIdentity even when caller preferences include VZLinux; legacy low-level adapter remains constructible"
+      ],
+      "persistentIdentities": [
+        "vz backend identity covers both retained compatibility adapter and supported VZMac; distinguish guest family"
+      ],
+      "testOnlyUsage": "DoryVMM and adapter tests still exercise Linux compatibility behavior.",
+      "safeReplacementAndProof": "Retain safe existing-definition migration until tested; remove Linux experiment from normal production composition without damaging VZMac."
+    },
+    {
+      "id": "R08",
+      "status": "disconnected-duplicate-native-owner",
+      "replacementOwner": "Native VMM + firmware",
+      "replacementPhase": "P03",
+      "finding": "Production dory-hv constructs DoryHV.Machine; DoryNativeHVArm64Engine call sites are smoke/calibration/throughput clients, not production launch. Generic engine rejects nonnil deadlines.",
+      "productionCallSites": [
+        {
+          "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+          "line": 1399,
+          "anchor": "let machine = try Machine(configuration: machineConfiguration)"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryNativeHVArm64/NativeHVArm64Engine.swift",
+          "line": 261,
+          "anchor": "guard deadline == nil else"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "#if arch(arm64) platform paths; deadlineNotImplemented remains in generic engine"
+      ],
+      "persistentIdentities": [
+        "dory.native-hv.arm64@1; DoryARMVirt ABI"
+      ],
+      "testOnlyUsage": "See native-engine-call-sites for complete scoped constructor scan.",
+      "safeReplacementAndProof": "Choose one owner and extract/adapter-wrap proven native operations; parity for direct/UEFI boot, vCPU thread teardown, GIC, lifecycle and resources before deleting."
+    },
+    {
+      "id": "R09",
+      "status": "parallel-device-cores-in-real-paths",
+      "replacementOwner": "Devices + storage/network",
+      "replacementPhase": "P04",
+      "finding": "ARM DesktopMode constructs raw VirtioGPU and other DoryHV devices; PC UEFI composes DoryVirtio cores over PCI and retained raw vsock/filesystem adapters.",
+      "productionCallSites": [
+        {
+          "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+          "line": 1482,
+          "anchor": "let gpu = VirtioGPU("
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryFirmware/DoryPCUEFIMachine.swift",
+          "line": 3,
+          "anchor": "import DoryVirtio"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/DoryHV/Virtqueue.swift",
+          "line": 196,
+          "anchor": "public struct VirtqueueChain"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryVirtio/DoryVirtioSplitQueue.swift",
+          "line": 3,
+          "anchor": "public"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "Architecture-specific transports and negotiated device features"
+      ],
+      "persistentIdentities": [
+        "dory.virtio@1; queue/device ABI and snapshot generations"
+      ],
+      "testOnlyUsage": "Both packages contain independent queue/device suites; passing one transport does not qualify the other.",
+      "safeReplacementAndProof": "Inventory vectors across both transports, select mature shared core, preserve feature/reset/DMA/lifecycle behavior and remove superseded implementations."
+    },
+    {
+      "id": "R10",
+      "status": "test-fake-legacy-renderer-seam-present",
+      "replacementOwner": "Graphics + devices",
+      "replacementPhase": "P06",
+      "finding": "VirtioGPU initializer still accepts a pointer-bearing legacy renderer and builds its executor. Production desktop explicitly passes authenticated rendererWorkerCandidate; legacy renderer argument sites are retained in tests.",
+      "productionCallSites": [
+        {
+          "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioGPU.swift",
+          "line": 2183,
+          "anchor": "renderer: VirtioGPURenderer? = nil"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/DoryHV/VirtioGPU.swift",
+          "line": 2244,
+          "anchor": "VirtioGPURendererCommandExecutor("
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+          "line": 1487,
+          "anchor": "rendererWorkerCandidate: rendererWorkerLaunch?.commandLane"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "renderer != nil vs rendererWorkerCandidate; both authorities conflict and become inert",
+        "traceResourceLifecycle is an explicit independent diagnostic flag"
+      ],
+      "persistentIdentities": [
+        "Renderer resource generations/fences; no authority may be fabricated during migration"
+      ],
+      "testOnlyUsage": "See legacy-renderer-argument-sites; production dory-hv directory has no renderer: argument.",
+      "safeReplacementAndProof": "Replace test fakes with worker-channel doubles covering fences, uncertainty, reset and failure; remove executor only after all actual callers migrate."
+    },
+    {
+      "id": "R11",
+      "status": "no-production-constructor-call-site",
+      "replacementOwner": "Graphics + PC/devices",
+      "replacementPhase": "P06",
+      "finding": "DoryPCVirGLRendererAuthority exists, but scoped constructor references are test-only. Current DoryPCMode uses software display and does not supply that authority.",
+      "productionCallSites": [
+        {
+          "path": "Packages/ContainerizationEngine/Sources/DoryHV/DoryPCVirGLRendererAuthority.swift",
+          "line": 98,
+          "anchor": "public final class DoryPCVirGLRendererAuthority"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+          "line": 423,
+          "anchor": "DoryPCSoftwareDisplaySink(mailbox: mailbox)"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "No production selection flag or constructor invocation found in listed source roots"
+      ],
+      "persistentIdentities": [
+        "Shared renderer-worker contracts/candidate identity remain authoritative"
+      ],
+      "testOnlyUsage": "See pc-renderer-authority-call-sites.",
+      "safeReplacementAndProof": "Wire the shared authenticated authority into an admitted PC acceleration path or remove duplicate facade after real GPU completion qualification."
+    },
+    {
+      "id": "R12",
+      "status": "present-fixed-capability-profile",
+      "replacementOwner": "Graphics + guest/security",
+      "replacementPhase": "P06/P13",
+      "finding": "Production receipt admission requires exactly capset IDs [2,4], maximum two capsets, production feature bits and production source tuple. This is an enforced bounded candidate, not general GPU compatibility.",
+      "productionCallSites": [
+        {
+          "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererCapabilityReceipt.swift",
+          "line": 95,
+          "anchor": "public static let maximumCapsets = 2"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryRendererWorkerWireContracts/DoryRendererCapabilityReceipt.swift",
+          "line": 107,
+          "anchor": "&& capsets.map(\\.id) == [2, 4]"
+        },
+        {
+          "path": "dory-core-swift/Sources/DorydKit/DoryRendererBootstrapQualification.swift",
+          "line": 77,
+          "anchor": "sourceTuple == .productionCandidate"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "Signed runtime/bootstrap and producer-fence contract gates"
+      ],
+      "persistentIdentities": [
+        "DoryRendererCapabilityReceipt; source tuple; capset digests; signed kernel/guest identity"
+      ],
+      "testOnlyUsage": "Worker/bootstrap qualification tests include tampering and unsupported profiles.",
+      "safeReplacementAndProof": "Generalize only to typed authenticated profiles with explicit guest synchronization evidence; retain fail-closed behavior for unsupported tuples."
+    },
+    {
+      "id": "R13",
+      "status": "large-owners-partially-extracted",
+      "replacementOwner": "Control + native + desktop",
+      "replacementPhase": "P01/P03/P12",
+      "finding": "Operation-specific MachineManager support files exist, but MachineManager, DesktopMode and DoryHV.Machine still own large cross-cutting lifecycle/control/device responsibilities.",
+      "productionCallSites": [
+        {
+          "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+          "line": 3120,
+          "anchor": "public func start("
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+          "line": 1236,
+          "anchor": "static func run(_ configuration: Configuration) throws"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/DoryHV/Machine.swift",
+          "line": 523,
+          "anchor": "public func loadBootPayload() throws"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "Production lifecycle and platform branches; DEBUG legacy construction is excluded from Release"
+      ],
+      "persistentIdentities": [
+        "VM definition, resolved plan, lifecycle journal and runtime identity must retain single owners"
+      ],
+      "testOnlyUsage": "Public-boundary lifecycle tests are the regression contract; file count/size alone is not correctness evidence.",
+      "safeReplacementAndProof": "Extract bounded operation/device implementations while deleting duplicate logic; avoid another coordinator chain."
+    },
+    {
+      "id": "R14",
+      "status": "repeated-binary-utilities-present",
+      "replacementOwner": "CPU/firmware + devices",
+      "replacementPhase": "P02/P04",
+      "finding": "PC PVH and ACPI each have little-endian append helpers; queue/device decoders have separate checked wire parsing. Shared utility requires matching semantics and limits.",
+      "productionCallSites": [
+        {
+          "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCPVHBoot.swift",
+          "line": 250,
+          "anchor": "private static func append<T: FixedWidthInteger>"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCACPI.swift",
+          "line": 414,
+          "anchor": "private static func append<T: FixedWidthInteger>"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "No feature flag"
+      ],
+      "persistentIdentities": [
+        "PVH, ACPI and Virtio wire formats must not change"
+      ],
+      "testOnlyUsage": "ABI byte fixtures and malformed-input tests are retained.",
+      "safeReplacementAndProof": "Extract only identical checked binary operations; preserve endian/range/alignment rules and errors."
+    },
+    {
+      "id": "R15",
+      "status": "mixed-legacy-runtime-and-standard-transport",
+      "replacementOwner": "Release + network + guest",
+      "replacementPhase": "P13/P15",
+      "finding": "Legacy ARM qemu-user handler remains in BinfmtRegistration; production ARM-host x86 application translation uses a separate handler. gvproxy -listen-qemu/framing is a transport protocol, not whole-VM QEMU execution. Debt records contain stale replacement language.",
+      "productionCallSites": [
+        {
+          "path": "Packages/ContainerizationEngine/Sources/DoryHV/BinfmtRegistration.swift",
+          "line": 17,
+          "anchor": "case .arm64: \"/usr/bin/qemu-aarch64-static\""
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryCore/DirectIPBridge.swift",
+          "line": 237,
+          "anchor": "GVProxyQEMUFrameDecoder"
+        },
+        {
+          "path": "docs/virtualization/no-qemu-source-debt.json",
+          "line": 8,
+          "anchor": "replace the gvproxy named compatibility framing"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "Architecture-selected binfmt handler; gvproxy network backend options"
+      ],
+      "persistentIdentities": [
+        "qemu-hvf decode/rejection identity; gvproxy transport naming; binfmt guest handler names"
+      ],
+      "testOnlyUsage": "GVProxyQEMUFrameDecoderTests exercise required framing, not an emulator dependency.",
+      "safeReplacementAndProof": "Inventory actual built processes/linked binaries; remove obsolete qemu-user/Intel inputs while preserving standards-compatible gvproxy transport and attribution."
+    },
+    {
+      "id": "R16",
+      "status": "migration-and-compatibility-models-retained",
+      "replacementOwner": "Control + storage/app",
+      "replacementPhase": "P01/P10/P12",
+      "finding": "Typed definition/plan/runtime identity coexist with migrated DoryMachineConfiguration. Production per-workspace mode requires resolved plans; legacy start construction is DEBUG-only.",
+      "productionCallSites": [
+        {
+          "path": "dory-core-swift/Sources/DorydKit/DoryMachineConfigurationMigration.swift",
+          "line": 1,
+          "anchor": "import"
+        },
+        {
+          "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+          "line": 3476,
+          "anchor": "case .perWorkspaceAuthority:"
+        },
+        {
+          "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+          "line": 3458,
+          "anchor": "legacy launch is unavailable outside diagnostic builds"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "DEBUG legacy paths; perWorkspaceAuthority vs requireResolvedPlan"
+      ],
+      "persistentIdentities": [
+        "legacy-compatibility",
+        "requires-replanning",
+        "resolved-plan",
+        "migration records and saved-state formats"
+      ],
+      "testOnlyUsage": "P01 migration/recovery/negative artifacts provide contract evidence; no data format should be removed on a source-only inventory.",
+      "safeReplacementAndProof": "Complete one-time migration and retain original definitions; remove only redundant planning/cache transitions after interrupted migration corpus passes."
+    },
+    {
+      "id": "R17",
+      "status": "developer-products-in-package-not-all-shipped",
+      "replacementOwner": "Release + QA",
+      "replacementPhase": "P13/P15",
+      "finding": "Swift package declares smoke, probe, calibration and benchmark executables. App bundler explicitly lists daemon/client/VMM/network helpers; declaration alone is not proof that a probe ships.",
+      "productionCallSites": [
+        {
+          "path": "dory-core-swift/Package.swift",
+          "line": 57,
+          "anchor": ".executable(name: \"dory-jit-probe\""
+        },
+        {
+          "path": "dory-core-swift/Package.swift",
+          "line": 80,
+          "anchor": "name: \"dory-phase0a-hv-throughput\""
+        },
+        {
+          "path": "scripts/bundle-engine.sh",
+          "line": 628,
+          "anchor": "for product in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy; do"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "DORY_BUNDLE_DORYD; DORY_DORYD_HELPER_CONFIGURATION; executable product choice"
+      ],
+      "persistentIdentities": [
+        "Probe receipt schemas retained as developer evidence"
+      ],
+      "testOnlyUsage": "Smoke/qualification clients remain useful reproducible gate tools.",
+      "safeReplacementAndProof": "Classify actual release artifact inventory, isolate developer targets where useful, never remove required qualification tools merely because executable products exist."
+    },
+    {
+      "id": "R18",
+      "status": "evidence-authority-needs-scope-enforcement",
+      "replacementOwner": "QA + release/security",
+      "replacementPhase": "P00/P13/P14",
+      "finding": "Repository contains synthetic schema fixtures and historical qualification receipts. Structural validator prints a structure PASS; that message is explicitly not physical candidate qualification.",
+      "productionCallSites": [
+        {
+          "path": "scripts/validate-linux-vm-performance-evidence.py",
+          "line": 780,
+          "anchor": "Linux VM performance evidence structure: PASS"
+        },
+        {
+          "path": "scripts/fixtures/linux-vm-performance-bundle-schema1/README.md",
+          "line": 1,
+          "anchor": "#"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "Fixture/schema validation vs real candidate bundle validation"
+      ],
+      "persistentIdentities": [
+        "Evidence schemaVersion, candidate/source hashes, signatures and budget identities"
+      ],
+      "testOnlyUsage": "Synthetic fixture suites are validator tests only.",
+      "safeReplacementAndProof": "Retain immutable history with scope and original failures; only commands, exact identities and verified raw artifacts can establish a candidate pass."
+    },
+    {
+      "id": "R19",
+      "status": "policy-rejection-with-residual-vocabulary",
+      "replacementOwner": "Native/macOS + control/app",
+      "replacementPhase": "P08/P12",
+      "finding": "Typed product policy rejects unsupported host/guest tuples. Capability vocabulary still includes unsupported Windows and legacy Intel shapes; native paths must still audit API availability independently.",
+      "productionCallSites": [
+        {
+          "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualizationPlatform.swift",
+          "line": 127,
+          "anchor": "case (.windows, _):"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineCapabilities.swift",
+          "line": 505,
+          "anchor": "case windowsUEFIFirmwareUnavailable"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+          "line": 388,
+          "anchor": "DoryPC bridged networking is not admitted"
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "Exact host/guest/device capability evaluator; no user flag can make an unavailable API implemented"
+      ],
+      "persistentIdentities": [
+        "Legacy family/architecture/model cases for safe decode/rejection"
+      ],
+      "testOnlyUsage": "Negative policy tests are deliberate; runtime availability is a separate host matrix gate.",
+      "safeReplacementAndProof": "Remove dead UI selection and false flags while preserving exact unsupported reasons and legacy import assessment."
+    },
+    {
+      "id": "R20",
+      "status": "optimizations-present-evidence-required",
+      "replacementOwner": "CPU/compiler + performance",
+      "replacementPhase": "P02/P07/P14",
+      "finding": "PC runtime consumes an admitted execution tier, and PC machine has baseline/optimizing JIT selection and instruction accounting. This source inventory does not establish a measured speedup or p95/p99 budget.",
+      "productionCallSites": [
+        {
+          "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCUEFIRuntimeAuthority.swift",
+          "line": 135,
+          "anchor": "let tier: DoryPCExecutionTier = switch"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCDirectKernelMachine.swift",
+          "line": 891,
+          "anchor": "private func selectedJIT("
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCDirectKernelMachine.swift",
+          "line": 926,
+          "anchor": "private func baselineInstructionBudget("
+        }
+      ],
+      "featureFlagsOrEntryConditions": [
+        "Resolved envelope tier; optimizingJITWarmupDispatches; bounded code cache"
+      ],
+      "persistentIdentities": [
+        "Execution tier must not change dory.pc@1 or dory.x86_64.compat-v1"
+      ],
+      "testOnlyUsage": "JIT/interpreter tests may share bugs; independent x86 reference and memory-isolated differential testing remain P02 gates.",
+      "safeReplacementAndProof": "Keep only optimized paths with correct fallback, semantic proof and calibrated workload/resource/tail measurements; disable unsupported feature exposure."
+    }
+  ],
+  "priorityFindings": [
+    "pc-readiness-does-not-prove-userspace",
+    "generic-native-engine-not-production-owner",
+    "pc-renderer-authority-unwired",
+    "xen-unimplemented-success",
+    "pvh-elf-shortcuts"
+  ],
+  "validation": {
+    "requiredRemovalIDs": [
+      "R01",
+      "R02",
+      "R03",
+      "R04",
+      "R05",
+      "R06",
+      "R07",
+      "R08",
+      "R09",
+      "R10",
+      "R11",
+      "R12",
+      "R13",
+      "R14",
+      "R15",
+      "R16",
+      "R17",
+      "R18",
+      "R19",
+      "R20"
+    ],
+    "sourceAnchorsExist": true,
+    "nodeIDsUnique": true,
+    "allEdgesResolve": true,
+    "allThreeCellsRepresented": true
+  },
+  "qualificationLimitations": [
+    "Static source reachability does not establish live guest boot, native saved-state execution, renderer acceleration or release qualification.",
+    "Negative constructor searches cover named Swift source roots and exact constructor spelling; they do not prove arbitrary dynamic symbol absence in a linked binary.",
+    "No P02 source edits or tests were performed; P02 work was paused when P00 became the priority.",
+    "Managed VZMac launch arguments do not forward user shares or --guest-tools; the adapter tools-directory seam and camera bridge do not implement production user shares or a general guest agent. These remain P08/P09/P11 work."
+  ]
+}

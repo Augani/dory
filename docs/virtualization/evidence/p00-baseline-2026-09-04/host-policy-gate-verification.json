@@ -1,0 +1,251 @@
+{
+  "environment": {
+    "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "classification": "experimental: macOS 27 beta and Xcode 26.6 RC; header inspection does not qualify a release build",
+    "host": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A5425a\n",
+    "xcode": "Xcode 26.6\nBuild version 17F109\n"
+  },
+  "expectedNegativeControls": 3,
+  "kind": "dev.dory.p00.host-policy-gate-verification",
+  "pathNormalization": "The shared repository absolute root was replaced with <repository>, and generated fixture directories with <temporary>, in retained commands/output. Source, SDK and binary hashes were not changed.",
+  "publicReleaseEntrypointRegression": {
+    "after": {
+      "command": [
+        "python3",
+        ".github/scripts/test-release-host-policy.py",
+        "-v"
+      ],
+      "durationSeconds": 3.786074,
+      "exitCode": 0,
+      "expectedExitCode": 0,
+      "scope": "Thirteen host-policy methods, including seven source-only public release preflight methods using fake Xcode/host/SDK tools. No candidate build/signing/app process operation.",
+      "sourceFiles": [
+        {
+          "path": "scripts/release.sh",
+          "sha256": "166a888427f278f82f4dcc78e4f9d9f7e2da1996cbeaf4bf440e98affc5ae83c"
+        },
+        {
+          "path": ".github/scripts/test-release-host-policy.py",
+          "sha256": "a4318018d7df475d1baa373ecb239d25382cca65f8f10b3d348b0f2e994981b4"
+        }
+      ],
+      "stderr": "test_beta_unreviewed_final_and_mismatched_tuples_reject (__main__.ReleaseHostPolicyTests) ... ok\ntest_cli_experimental_capture_cannot_pass_a_shell_gate (__main__.ReleaseHostPolicyTests) ... ok\ntest_cli_rejects_beta_without_writing_a_passing_receipt (__main__.ReleaseHostPolicyTests) ... ok\ntest_exact_public_tuple_is_eligible_but_not_qualified (__main__.ReleaseHostPolicyTests) ... ok\ntest_experimental_mode_never_returns_release_eligibility (__main__.ReleaseHostPolicyTests) ... ok\ntest_malformed_facts_reject_even_in_experimental_mode (__main__.ReleaseHostPolicyTests) ... ok\ntest_beta_and_non_apple_silicon_hosts_reject (__main__.ReleaseScriptPreflightTests) ... ok\ntest_development_preflight_does_not_impose_public_policy (__main__.ReleaseScriptPreflightTests) ... ok\ntest_final_toolchain_host_and_sdk_pass_without_qualification (__main__.ReleaseScriptPreflightTests) ... ok\ntest_public_default_selection_uses_final_xcode (__main__.ReleaseScriptPreflightTests) ... ok\ntest_public_entrypoint_invokes_the_host_gate (__main__.ReleaseScriptPreflightTests) ... ok\ntest_rc_and_unreviewed_xcode_builds_reject (__main__.ReleaseScriptPreflightTests) ... ok\ntest_wrong_missing_and_incompatible_sdk_reject (__main__.ReleaseScriptPreflightTests) ... ok\n\n----------------------------------------------------------------------\nRan 13 tests in 3.708s\n\nOK\n",
+      "stdout": ""
+    },
+    "before": {
+      "command": [
+        "python3",
+        ".github/scripts/test-release-host-policy.py",
+        "ReleaseScriptPreflightTests",
+        "-v"
+      ],
+      "durationSeconds": 2.155764,
+      "exitCode": 1,
+      "expectedExitCode": 1,
+      "scope": "Regression before the public shell entrypoint fix; seven source-only fake-tool preflight tests. No candidate build/signing/app process operation.",
+      "sourceFiles": [
+        {
+          "path": "scripts/release.sh",
+          "sha256": "c563f73b3c946df2e59b19ce57563dacc916e8b934392867c118bdeada326fec"
+        },
+        {
+          "path": ".github/scripts/test-release-host-policy.py",
+          "sha256": "a4318018d7df475d1baa373ecb239d25382cca65f8f10b3d348b0f2e994981b4"
+        }
+      ],
+      "stderr": "test_beta_and_non_apple_silicon_hosts_reject (__main__.ReleaseScriptPreflightTests) ... test_development_preflight_does_not_impose_public_policy (__main__.ReleaseScriptPreflightTests) ... ok\ntest_final_toolchain_host_and_sdk_pass_without_qualification (__main__.ReleaseScriptPreflightTests) ... FAIL\ntest_public_default_selection_uses_final_xcode (__main__.ReleaseScriptPreflightTests) ... FAIL\ntest_public_entrypoint_invokes_the_host_gate (__main__.ReleaseScriptPreflightTests) ... FAIL\ntest_rc_and_unreviewed_xcode_builds_reject (__main__.ReleaseScriptPreflightTests) ... test_wrong_missing_and_incompatible_sdk_reject (__main__.ReleaseScriptPreflightTests) ... FAIL\n\n======================================================================\nFAIL: test_beta_and_non_apple_silicon_hosts_reject (__main__.ReleaseScriptPreflightTests) (changes={'DORY_TEST_HOST_VERSION': '27.0', 'DORY_TEST_HOST_BUILD': '26A5425a'})\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<repository>/.github/scripts/test-release-host-policy.py\", line 161, in test_beta_and_non_apple_silicon_hosts_reject\n    self.assertNotEqual(result.returncode, 0)\nAssertionError: 0 == 0\n\n======================================================================\nFAIL: test_beta_and_non_apple_silicon_hosts_reject (__main__.ReleaseScriptPreflightTests) (changes={'DORY_TEST_HOST_ARCH': 'x86_64'})\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<repository>/.github/scripts/test-release-host-policy.py\", line 161, in test_beta_and_non_apple_silicon_hosts_reject\n    self.assertNotEqual(result.returncode, 0)\nAssertionError: 0 == 0\n\n======================================================================\nFAIL: test_final_toolchain_host_and_sdk_pass_without_qualification (__main__.ReleaseScriptPreflightTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<repository>/.github/scripts/test-release-host-policy.py\", line 141, in test_final_toolchain_host_and_sdk_pass_without_qualification\n    self.assertEqual(len(receipts), 2)\nAssertionError: 0 != 2\n\n======================================================================\nFAIL: test_public_default_selection_uses_final_xcode (__main__.ReleaseScriptPreflightTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<repository>/.github/scripts/test-release-host-policy.py\", line 198, in test_public_default_selection_uses_final_xcode\n    self.assertEqual(result.stdout.strip(), \"/Applications/Xcode-26.6.app/Contents/Developer\")\nAssertionError: '/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer' != '/Applications/Xcode-26.6.app/Contents/Developer'\n- /Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer\n?                          --------------------\n+ /Applications/Xcode-26.6.app/Contents/Developer\n\n\n======================================================================\nFAIL: test_public_entrypoint_invokes_the_host_gate (__main__.ReleaseScriptPreflightTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<repository>/.github/scripts/test-release-host-policy.py\", line 184, in test_public_entrypoint_invokes_the_host_gate\n    self.assertIn(\"outside the frozen public release-testing host policy\", result.stderr)\nAssertionError: 'outside the frozen public release-testing host policy' not found in 'release error: public full releases must fail when the advertised Venus renderer is unavailable\\n'\n\n======================================================================\nFAIL: test_rc_and_unreviewed_xcode_builds_reject (__main__.ReleaseScriptPreflightTests) (version='26.6', build='17F109')\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<repository>/.github/scripts/test-release-host-policy.py\", line 151, in test_rc_and_unreviewed_xcode_builds_reject\n    self.assertNotEqual(result.returncode, 0)\nAssertionError: 0 == 0\n\n======================================================================\nFAIL: test_rc_and_unreviewed_xcode_builds_reject (__main__.ReleaseScriptPreflightTests) (version='27.0', build='17F113')\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<repository>/.github/scripts/test-release-host-policy.py\", line 152, in test_rc_and_unreviewed_xcode_builds_reject\n    self.assertIn(\"17F113\", result.stderr)\nAssertionError: '17F113' not found in 'release error: public releases require the pinned Xcode 26.6 toolchain\\n'\n\n======================================================================\nFAIL: test_wrong_missing_and_incompatible_sdk_reject (__main__.ReleaseScriptPreflightTests) (changes={'DORY_TEST_SDK_VERSION': '27.0'})\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<repository>/.github/scripts/test-release-host-policy.py\", line 171, in test_wrong_missing_and_incompatible_sdk_reject\n    self.assertNotEqual(result.returncode, 0)\nAssertionError: 0 == 0\n\n======================================================================\nFAIL: test_wrong_missing_and_incompatible_sdk_reject (__main__.ReleaseScriptPreflightTests) (changes={'DORY_TEST_SDK_PATH': '<temporary>/missing.sdk'})\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<repository>/.github/scripts/test-release-host-policy.py\", line 171, in test_wrong_missing_and_incompatible_sdk_reject\n    self.assertNotEqual(result.returncode, 0)\nAssertionError: 0 == 0\n\n======================================================================\nFAIL: test_wrong_missing_and_incompatible_sdk_reject (__main__.ReleaseScriptPreflightTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<repository>/.github/scripts/test-release-host-policy.py\", line 175, in test_wrong_missing_and_incompatible_sdk_reject\n    self.assertNotEqual(result.returncode, 0)\nAssertionError: 0 == 0\n\n----------------------------------------------------------------------\nRan 7 tests in 2.002s\n\nFAILED (failures=10)\n",
+      "stdout": ""
+    },
+    "counting": "Seven new preflight methods plus the existing six host-policy methods pass in the final run. The earlier six-method run is retained but not counted again; the expected failing before-fix run is regression evidence, not a new product test pass.",
+    "scope": "The tracked local public release entrypoint previously admitted Xcode RC17F109 and omitted public-host/SDK checks. Tests source the script with DORY_RELEASE_SOURCE_ONLY=1 and use fake metadata commands; no app build, signature, candidate qualification or installed-process action occurs.",
+    "shellSyntax": {
+      "command": [
+        "/bin/bash",
+        "-n",
+        "scripts/release.sh"
+      ],
+      "durationSeconds": 0.005713,
+      "exitCode": 0,
+      "expectedExitCode": 0,
+      "stderr": "",
+      "stdout": ""
+    }
+  },
+  "publicSourceCapture": "docs/virtualization/evidence/p00-baseline-2026-09-04/apple-public-release-source-capture.json",
+  "reviewDate": "2026-09-04",
+  "runs": [
+    {
+      "DEVELOPER_DIR": "/nonexistent/dory-p00-sdk-control",
+      "command": [
+        "python3",
+        ".github/scripts/test-vz-platform-sdk.py",
+        "-v"
+      ],
+      "durationSeconds": 0.110326,
+      "exitCode": 0,
+      "expectedExitCode": 0,
+      "scope": "Five fixture tests require no selected SDK, even when DEVELOPER_DIR is unavailable.",
+      "stderr": "test_experimental_sdk_cannot_pass_without_physical_usb_headers (__main__.VZPlatformSDKTests) ... ok\ntest_experimental_usb_requires_explicit_scope_and_authority (__main__.VZPlatformSDKTests) ... ok\ntest_final_sdk_does_not_require_experimental_usb (__main__.VZPlatformSDKTests) ... ok\ntest_missing_or_changed_required_api_fails_closed (__main__.VZPlatformSDKTests) ... ok\ntest_unreviewed_or_malformed_sdk_versions_reject (__main__.VZPlatformSDKTests) ... ok\n\n----------------------------------------------------------------------\nRan 5 tests in 0.037s\n\nOK\n",
+      "stdout": ""
+    },
+    {
+      "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+      "command": [
+        "python3",
+        ".github/scripts/test-vz-platform-sdk.py",
+        "--require-selected-sdk",
+        "VZSelectedSDKTests",
+        "-v"
+      ],
+      "durationSeconds": 0.10451,
+      "exitCode": 0,
+      "expectedExitCode": 0,
+      "scope": "One explicitly selected SDK integration test; actual SDK26.5 in experimental RC toolchain.",
+      "stderr": "test_selected_local_sdk_contract (__main__.VZSelectedSDKTests) ... ok\n\n----------------------------------------------------------------------\nRan 1 test in 0.038s\n\nOK\n",
+      "stdout": ""
+    },
+    {
+      "command": [
+        "python3",
+        ".github/scripts/test-release-host-policy.py",
+        "-v"
+      ],
+      "durationSeconds": 0.063419,
+      "exitCode": 0,
+      "expectedExitCode": 0,
+      "stderr": "test_beta_unreviewed_final_and_mismatched_tuples_reject (__main__.ReleaseHostPolicyTests) ... ok\ntest_cli_experimental_capture_cannot_pass_a_shell_gate (__main__.ReleaseHostPolicyTests) ... ok\ntest_cli_rejects_beta_without_writing_a_passing_receipt (__main__.ReleaseHostPolicyTests) ... ok\ntest_exact_public_tuple_is_eligible_but_not_qualified (__main__.ReleaseHostPolicyTests) ... ok\ntest_experimental_mode_never_returns_release_eligibility (__main__.ReleaseHostPolicyTests) ... ok\ntest_malformed_facts_reject_even_in_experimental_mode (__main__.ReleaseHostPolicyTests) ... ok\n\n----------------------------------------------------------------------\nRan 6 tests in 0.002s\n\nOK\n",
+      "stdout": ""
+    },
+    {
+      "command": [
+        "python3",
+        ".github/scripts/verify-vz-platform-sdk.py",
+        "--output",
+        "<repository>/docs/virtualization/evidence/p00-baseline-2026-09-04/sdk-gate-after.json"
+      ],
+      "durationSeconds": 0.047981,
+      "exitCode": 0,
+      "expectedExitCode": 0,
+      "stderr": "",
+      "stdout": "VZ platform SDK contract: PASS (26.5; <repository>/docs/virtualization/evidence/p00-baseline-2026-09-04/sdk-gate-after.json)\n"
+    },
+    {
+      "command": [
+        "python3",
+        ".github/scripts/verify-release-host-policy.py"
+      ],
+      "durationSeconds": 0.047389,
+      "exitCode": 1,
+      "expectedExitCode": 1,
+      "stderr": "release host policy: FAIL: macOS 27.0 (26A5425a) is outside the frozen public release-testing host policy; record experimental engineering evidence separately or review a policy revision\n",
+      "stdout": ""
+    },
+    {
+      "command": [
+        "python3",
+        ".github/scripts/verify-release-host-policy.py",
+        "--experimental",
+        "--output",
+        "<repository>/docs/virtualization/evidence/p00-baseline-2026-09-04/host-current-experimental.json"
+      ],
+      "durationSeconds": 0.049668,
+      "exitCode": 3,
+      "expectedExitCode": 3,
+      "stderr": "",
+      "stdout": ""
+    },
+    {
+      "check": "bash -n",
+      "exitCode": 0,
+      "job": "release_candidate",
+      "stderr": "",
+      "step": "Select the pinned final Xcode 26.6 release toolchain"
+    },
+    {
+      "check": "bash -n",
+      "exitCode": 0,
+      "job": "release_candidate",
+      "stderr": "",
+      "step": "Bind VZMac paths to the selected final public SDK"
+    },
+    {
+      "check": "bash -n",
+      "exitCode": 0,
+      "job": "release_candidate",
+      "stderr": "",
+      "step": "Record and prove physical Apple-silicon host facts"
+    },
+    {
+      "check": "bash -n",
+      "exitCode": 0,
+      "job": "release_qualification",
+      "stderr": "",
+      "step": "Select the pinned final Xcode 26.6 release toolchain"
+    },
+    {
+      "check": "bash -n",
+      "exitCode": 0,
+      "job": "release_qualification",
+      "stderr": "",
+      "step": "Verify the public release-testing host policy"
+    },
+    {
+      "DEVELOPER_DIR": "/nonexistent/dory-p00-sdk-control",
+      "command": [
+        "python3",
+        ".github/scripts/test-vz-platform-sdk.py",
+        "--require-selected-sdk",
+        "VZSelectedSDKTests",
+        "-v"
+      ],
+      "durationSeconds": 0.074098,
+      "exitCode": 1,
+      "expectedExitCode": 1,
+      "scope": "Required live SDK test fails, without skip, if selected SDK is unavailable.",
+      "stderr": "test_selected_local_sdk_contract (__main__.VZSelectedSDKTests) ... ERROR\n\n======================================================================\nERROR: test_selected_local_sdk_contract (__main__.VZSelectedSDKTests)\n----------------------------------------------------------------------\nTraceback (most recent call last):\n  File \"<repository>/.github/scripts/test-vz-platform-sdk.py\", line 125, in test_selected_local_sdk_contract\n    version = VERIFICATION.command(\"xcrun\", \"--sdk\", \"macosx\", \"--show-sdk-version\")\n  File \"<repository>/.github/scripts/verify-vz-platform-sdk.py\", line 27, in command\n    raise SDKContractFailure(\nvz_sdk_verifier.SDKContractFailure: command failed (xcrun --sdk macosx --show-sdk-version): xcrun: error: missing DEVELOPER_DIR path: /nonexistent/dory-p00-sdk-control\n\n----------------------------------------------------------------------\nRan 1 test in 0.008s\n\nFAILED (errors=1)\n",
+      "stdout": ""
+    }
+  ],
+  "schemaVersion": 1,
+  "scope": "Five SDK fixture tests, one explicitly requested actual SDK test, thirteen host-policy/public release preflight methods, expected required-SDK/current-beta rejection controls, workflow and local release shell syntax. No live guest or candidate release build executed.",
+  "sourceCommitBeforeChanges": "5fc049c1390901faa2f64236ea108e0dfdab35fc",
+  "sourceFiles": [
+    {
+      "path": ".github/scripts/verify-vz-platform-sdk.py",
+      "sha256": "6d4e469aea39def72cfbce871072c0df738721b09c34cb8c2bfb0b58df73a487"
+    },
+    {
+      "path": ".github/scripts/test-vz-platform-sdk.py",
+      "sha256": "fa156ebf8668be1d2b33900d98de1640fbf80cec6479e26ea56d9a2c54c5eff6"
+    },
+    {
+      "path": ".github/scripts/verify-release-host-policy.py",
+      "sha256": "fdb3c72dd42b0a424fd033518e51fe8373af17324a4bec4e32445e8485c358a8"
+    },
+    {
+      "path": ".github/scripts/test-release-host-policy.py",
+      "sha256": "a4318018d7df475d1baa373ecb239d25382cca65f8f10b3d348b0f2e994981b4"
+    },
+    {
+      "path": ".github/workflows/release.yml",
+      "sha256": "7423a4fc3fc634ca538e699d1c98db02fc7668deb518ac6b5811f8419430fa43"
+    },
+    {
+      "path": ".github/workflows/tests.yml",
+      "sha256": "9d96788c6b7ce2d69669c6cd7bc0ce4af5e9688d447df8d60487465984a102fd"
+    },
+    {
+      "path": "scripts/release.sh",
+      "sha256": "166a888427f278f82f4dcc78e4f9d9f7e2da1996cbeaf4bf440e98affc5ae83c"
+    }
+  ],
+  "testsPassed": 19,
+  "testsSkipped": 0,
+  "verifiedPolicy": {
+    "actualFinalBuildPerformed": false,
+    "eligibleReleaseHost": "macOS26.6.2 / 25G83",
+    "pinnedMacOSSDK": "26.5",
+    "pinnedReleaseXcode": "26.6 / 17F113",
+    "runtimeMinimum": "15.0"
+  }
+}

@@ -1,0 +1,542 @@
+{
+  "schemaVersion": 1,
+  "envelopeSchema": "Config/DoryVirtualizationEvidence.schema.json",
+  "entries": [
+    {
+      "schemaVersion": 1,
+      "kind": "dev.dory.virtualization-evidence",
+      "subsystem": "cpu",
+      "issueLabel": "subsystem:cpu",
+      "planItems": [
+        "P00"
+      ],
+      "sourceCommit": "a65187e137b7744a72995fc8306e6dcd4e01c36a",
+      "cells": [
+        "linux-arm64-native",
+        "linux-x86_64-translated",
+        "macos-arm64-vzmac"
+      ],
+      "host": {
+        "architecture": "arm64",
+        "version": "27.0",
+        "build": "26A5425a",
+        "classification": "experimental",
+        "xcodeBuild": "17F109",
+        "sdk": "26.5"
+      },
+      "status": "baseline-recorded",
+      "scope": "Production CPU ownership, feature/boot gaps and conservative capability classification; no x86 userspace boot qualification.",
+      "releaseQualified": false,
+      "artifacts": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/source-baseline.json",
+          "sha256": "d956f980ef2c804aecbc7ed67d75df432075cec2454992a9206e7c83d9527e5a"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+          "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json",
+          "sha256": "9905fedbfff4f41e2e1b9bf93dafa0b8613a72b6d2548c0b45ade74d4f1059f2"
+        }
+      ],
+      "limitations": [
+        "Experimental host and RC toolchain; no final public host or signed release qualification.",
+        "Referenced receipts retain separate executed, failed, skipped and unexecuted scopes; overlapping test counts are not summed."
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "kind": "dev.dory.virtualization-evidence",
+      "subsystem": "native",
+      "issueLabel": "subsystem:native",
+      "planItems": [
+        "P00"
+      ],
+      "sourceCommit": "a65187e137b7744a72995fc8306e6dcd4e01c36a",
+      "cells": [
+        "linux-arm64-native",
+        "linux-x86_64-translated",
+        "macos-arm64-vzmac"
+      ],
+      "host": {
+        "architecture": "arm64",
+        "version": "27.0",
+        "build": "26A5425a",
+        "classification": "experimental",
+        "xcodeBuild": "17F109",
+        "sdk": "26.5"
+      },
+      "status": "baseline-recorded",
+      "scope": "Raw-HV production path and disconnected native execution contract engine mapped; no final minimum-host physical qualification.",
+      "releaseQualified": false,
+      "artifacts": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/source-baseline.json",
+          "sha256": "d956f980ef2c804aecbc7ed67d75df432075cec2454992a9206e7c83d9527e5a"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+          "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json",
+          "sha256": "9905fedbfff4f41e2e1b9bf93dafa0b8613a72b6d2548c0b45ade74d4f1059f2"
+        }
+      ],
+      "limitations": [
+        "Experimental host and RC toolchain; no final public host or signed release qualification.",
+        "Referenced receipts retain separate executed, failed, skipped and unexecuted scopes; overlapping test counts are not summed."
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "kind": "dev.dory.virtualization-evidence",
+      "subsystem": "firmware",
+      "issueLabel": "subsystem:firmware",
+      "planItems": [
+        "P00"
+      ],
+      "sourceCommit": "a65187e137b7744a72995fc8306e6dcd4e01c36a",
+      "cells": [
+        "linux-arm64-native",
+        "linux-x86_64-translated",
+        "macos-arm64-vzmac"
+      ],
+      "host": {
+        "architecture": "arm64",
+        "version": "27.0",
+        "build": "26A5425a",
+        "classification": "experimental",
+        "xcodeBuild": "17F109",
+        "sdk": "26.5"
+      },
+      "status": "baseline-recorded",
+      "scope": "Pinned source/toolchain and exact boot candidates; metadata and input integrity do not prove firmware execution.",
+      "releaseQualified": false,
+      "artifacts": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/source-baseline.json",
+          "sha256": "d956f980ef2c804aecbc7ed67d75df432075cec2454992a9206e7c83d9527e5a"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+          "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json",
+          "sha256": "9905fedbfff4f41e2e1b9bf93dafa0b8613a72b6d2548c0b45ade74d4f1059f2"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-verification.json",
+          "sha256": "1e34e163ac04f5a94a58be2f41424cab7e66339975aca4aeb368094b76fb329b"
+        }
+      ],
+      "limitations": [
+        "Experimental host and RC toolchain; no final public host or signed release qualification.",
+        "Referenced receipts retain separate executed, failed, skipped and unexecuted scopes; overlapping test counts are not summed."
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "kind": "dev.dory.virtualization-evidence",
+      "subsystem": "devices",
+      "issueLabel": "subsystem:devices",
+      "planItems": [
+        "P00"
+      ],
+      "sourceCommit": "a65187e137b7744a72995fc8306e6dcd4e01c36a",
+      "cells": [
+        "linux-arm64-native",
+        "linux-x86_64-translated",
+        "macos-arm64-vzmac"
+      ],
+      "host": {
+        "architecture": "arm64",
+        "version": "27.0",
+        "build": "26A5425a",
+        "classification": "experimental",
+        "xcodeBuild": "17F109",
+        "sdk": "26.5"
+      },
+      "status": "baseline-recorded",
+      "scope": "Production device call sites and capability gaps identified; no per-device semantic or guest workload qualification.",
+      "releaseQualified": false,
+      "artifacts": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/source-baseline.json",
+          "sha256": "d956f980ef2c804aecbc7ed67d75df432075cec2454992a9206e7c83d9527e5a"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+          "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json",
+          "sha256": "9905fedbfff4f41e2e1b9bf93dafa0b8613a72b6d2548c0b45ade74d4f1059f2"
+        }
+      ],
+      "limitations": [
+        "Experimental host and RC toolchain; no final public host or signed release qualification.",
+        "Referenced receipts retain separate executed, failed, skipped and unexecuted scopes; overlapping test counts are not summed."
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "kind": "dev.dory.virtualization-evidence",
+      "subsystem": "graphics",
+      "issueLabel": "subsystem:graphics",
+      "planItems": [
+        "P00"
+      ],
+      "sourceCommit": "a65187e137b7744a72995fc8306e6dcd4e01c36a",
+      "cells": [
+        "linux-arm64-native",
+        "linux-x86_64-translated",
+        "macos-arm64-vzmac"
+      ],
+      "host": {
+        "architecture": "arm64",
+        "version": "27.0",
+        "build": "26A5425a",
+        "classification": "experimental",
+        "xcodeBuild": "17F109",
+        "sdk": "26.5"
+      },
+      "status": "baseline-recorded",
+      "scope": "ARM renderer path and disconnected PC accelerated authority identified; Mac graphics delegates to Apple. Guest graphics applications remain unqualified.",
+      "releaseQualified": false,
+      "artifacts": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/source-baseline.json",
+          "sha256": "d956f980ef2c804aecbc7ed67d75df432075cec2454992a9206e7c83d9527e5a"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+          "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json",
+          "sha256": "9905fedbfff4f41e2e1b9bf93dafa0b8613a72b6d2548c0b45ade74d4f1059f2"
+        }
+      ],
+      "limitations": [
+        "Experimental host and RC toolchain; no final public host or signed release qualification.",
+        "Referenced receipts retain separate executed, failed, skipped and unexecuted scopes; overlapping test counts are not summed."
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "kind": "dev.dory.virtualization-evidence",
+      "subsystem": "macos",
+      "issueLabel": "subsystem:macos",
+      "planItems": [
+        "P00"
+      ],
+      "sourceCommit": "a65187e137b7744a72995fc8306e6dcd4e01c36a",
+      "cells": [
+        "linux-arm64-native",
+        "linux-x86_64-translated",
+        "macos-arm64-vzmac"
+      ],
+      "host": {
+        "architecture": "arm64",
+        "version": "27.0",
+        "build": "26A5425a",
+        "classification": "experimental",
+        "xcodeBuild": "17F109",
+        "sdk": "26.5"
+      },
+      "status": "baseline-recorded",
+      "scope": "VZMac production lifecycle and compatible IPSW discovery mapped. Managed user shares/general guest tools are absent; no physical install or saved-memory continuation claim.",
+      "releaseQualified": false,
+      "artifacts": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/source-baseline.json",
+          "sha256": "d956f980ef2c804aecbc7ed67d75df432075cec2454992a9206e7c83d9527e5a"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+          "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json",
+          "sha256": "9905fedbfff4f41e2e1b9bf93dafa0b8613a72b6d2548c0b45ade74d4f1059f2"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-verification.json",
+          "sha256": "1e34e163ac04f5a94a58be2f41424cab7e66339975aca4aeb368094b76fb329b"
+        }
+      ],
+      "limitations": [
+        "Experimental host and RC toolchain; no final public host or signed release qualification.",
+        "Referenced receipts retain separate executed, failed, skipped and unexecuted scopes; overlapping test counts are not summed."
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "kind": "dev.dory.virtualization-evidence",
+      "subsystem": "control",
+      "issueLabel": "subsystem:control",
+      "planItems": [
+        "P00"
+      ],
+      "sourceCommit": "a65187e137b7744a72995fc8306e6dcd4e01c36a",
+      "cells": [
+        "linux-arm64-native",
+        "linux-x86_64-translated",
+        "macos-arm64-vzmac"
+      ],
+      "host": {
+        "architecture": "arm64",
+        "version": "27.0",
+        "build": "26A5425a",
+        "classification": "experimental",
+        "xcodeBuild": "17F109",
+        "sdk": "26.5"
+      },
+      "status": "baseline-recorded",
+      "scope": "P01 public-operation, source-bound package/app contract evidence and baseline ownership; no physical guest performance claim.",
+      "releaseQualified": false,
+      "artifacts": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/source-baseline.json",
+          "sha256": "d956f980ef2c804aecbc7ed67d75df432075cec2454992a9206e7c83d9527e5a"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+          "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json",
+          "sha256": "9905fedbfff4f41e2e1b9bf93dafa0b8613a72b6d2548c0b45ade74d4f1059f2"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/swift-source-equivalence.json",
+          "sha256": "598fd436e98390725b812791a9114efcf36c3dc03c310d89ec0a22d5d63eaa7d"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/container-run.json",
+          "sha256": "f14a09cfa2456ba1b421edb3fbe11ad518b26bee704ad42dafcf8921ed57a063"
+        }
+      ],
+      "limitations": [
+        "Experimental host and RC toolchain; no final public host or signed release qualification.",
+        "Referenced receipts retain separate executed, failed, skipped and unexecuted scopes; overlapping test counts are not summed."
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "kind": "dev.dory.virtualization-evidence",
+      "subsystem": "storage",
+      "issueLabel": "subsystem:storage",
+      "planItems": [
+        "P00"
+      ],
+      "sourceCommit": "a65187e137b7744a72995fc8306e6dcd4e01c36a",
+      "cells": [
+        "linux-arm64-native",
+        "linux-x86_64-translated",
+        "macos-arm64-vzmac"
+      ],
+      "host": {
+        "architecture": "arm64",
+        "version": "27.0",
+        "build": "26A5425a",
+        "classification": "experimental",
+        "xcodeBuild": "17F109",
+        "sdk": "26.5"
+      },
+      "status": "baseline-recorded",
+      "scope": "Control-plane snapshot/recovery contract evidence and backing call sites; guest durability and power-loss qualification remain open.",
+      "releaseQualified": false,
+      "artifacts": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/source-baseline.json",
+          "sha256": "d956f980ef2c804aecbc7ed67d75df432075cec2454992a9206e7c83d9527e5a"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+          "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json",
+          "sha256": "9905fedbfff4f41e2e1b9bf93dafa0b8613a72b6d2548c0b45ade74d4f1059f2"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/swift-source-equivalence.json",
+          "sha256": "598fd436e98390725b812791a9114efcf36c3dc03c310d89ec0a22d5d63eaa7d"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/container-run.json",
+          "sha256": "f14a09cfa2456ba1b421edb3fbe11ad518b26bee704ad42dafcf8921ed57a063"
+        }
+      ],
+      "limitations": [
+        "Experimental host and RC toolchain; no final public host or signed release qualification.",
+        "Referenced receipts retain separate executed, failed, skipped and unexecuted scopes; overlapping test counts are not summed."
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "kind": "dev.dory.virtualization-evidence",
+      "subsystem": "network",
+      "issueLabel": "subsystem:network",
+      "planItems": [
+        "P00"
+      ],
+      "sourceCommit": "a65187e137b7744a72995fc8306e6dcd4e01c36a",
+      "cells": [
+        "linux-arm64-native",
+        "linux-x86_64-translated",
+        "macos-arm64-vzmac"
+      ],
+      "host": {
+        "architecture": "arm64",
+        "version": "27.0",
+        "build": "26A5425a",
+        "classification": "experimental",
+        "xcodeBuild": "17F109",
+        "sdk": "26.5"
+      },
+      "status": "baseline-recorded",
+      "scope": "Runtime network/share paths and Rust baseline; Linux-only and privileged guest execution excluded from host tests.",
+      "releaseQualified": false,
+      "artifacts": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/source-baseline.json",
+          "sha256": "d956f980ef2c804aecbc7ed67d75df432075cec2454992a9206e7c83d9527e5a"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+          "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json",
+          "sha256": "9905fedbfff4f41e2e1b9bf93dafa0b8613a72b6d2548c0b45ade74d4f1059f2"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/rust-script-baseline.json",
+          "sha256": "188b581ab3521703149b10412d00862cfc117dcb00f685cf94c876ba9af47ca7"
+        }
+      ],
+      "limitations": [
+        "Experimental host and RC toolchain; no final public host or signed release qualification.",
+        "Referenced receipts retain separate executed, failed, skipped and unexecuted scopes; overlapping test counts are not summed."
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "kind": "dev.dory.virtualization-evidence",
+      "subsystem": "guest-tools",
+      "issueLabel": "subsystem:guest-tools",
+      "planItems": [
+        "P00"
+      ],
+      "sourceCommit": "a65187e137b7744a72995fc8306e6dcd4e01c36a",
+      "cells": [
+        "linux-arm64-native",
+        "linux-x86_64-translated",
+        "macos-arm64-vzmac"
+      ],
+      "host": {
+        "architecture": "arm64",
+        "version": "27.0",
+        "build": "26A5425a",
+        "classification": "experimental",
+        "xcodeBuild": "17F109",
+        "sdk": "26.5"
+      },
+      "status": "baseline-recorded",
+      "scope": "Linux agent and packaged tool paths mapped, Mac general guest-agent gap recorded; no cross-version guest workflow qualification.",
+      "releaseQualified": false,
+      "artifacts": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/source-baseline.json",
+          "sha256": "d956f980ef2c804aecbc7ed67d75df432075cec2454992a9206e7c83d9527e5a"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+          "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json",
+          "sha256": "9905fedbfff4f41e2e1b9bf93dafa0b8613a72b6d2548c0b45ade74d4f1059f2"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/rust-script-baseline.json",
+          "sha256": "188b581ab3521703149b10412d00862cfc117dcb00f685cf94c876ba9af47ca7"
+        }
+      ],
+      "limitations": [
+        "Experimental host and RC toolchain; no final public host or signed release qualification.",
+        "Referenced receipts retain separate executed, failed, skipped and unexecuted scopes; overlapping test counts are not summed."
+      ]
+    },
+    {
+      "schemaVersion": 1,
+      "kind": "dev.dory.virtualization-evidence",
+      "subsystem": "qualification",
+      "issueLabel": "subsystem:qualification",
+      "planItems": [
+        "P00"
+      ],
+      "sourceCommit": "a65187e137b7744a72995fc8306e6dcd4e01c36a",
+      "cells": [
+        "linux-arm64-native",
+        "linux-x86_64-translated",
+        "macos-arm64-vzmac"
+      ],
+      "host": {
+        "architecture": "arm64",
+        "version": "27.0",
+        "build": "26A5425a",
+        "classification": "experimental",
+        "xcodeBuild": "17F109",
+        "sdk": "26.5"
+      },
+      "status": "baseline-recorded",
+      "scope": "Reproducible source/input baseline, fail-closed host/SDK gates, test dispositions and uncalibrated performance workloads recorded.",
+      "releaseQualified": false,
+      "artifacts": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/source-baseline.json",
+          "sha256": "d956f980ef2c804aecbc7ed67d75df432075cec2454992a9206e7c83d9527e5a"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+          "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json",
+          "sha256": "9905fedbfff4f41e2e1b9bf93dafa0b8613a72b6d2548c0b45ade74d4f1059f2"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/rust-script-baseline.json",
+          "sha256": "188b581ab3521703149b10412d00862cfc117dcb00f685cf94c876ba9af47ca7"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-verification.json",
+          "sha256": "1e34e163ac04f5a94a58be2f41424cab7e66339975aca4aeb368094b76fb329b"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/host-policy-performance.json",
+          "sha256": "c4370a805a3d84c2c9bae56d6b5b6e716daf0f018bcda4de514876f336608ff5"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/host-policy-gate-verification.json",
+          "sha256": "b9e25e952ba20ef22b8c66974cc065c26b7ea706f67513d4915d51cc8b0a5bb1"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/intel-qemu-source-audit.json",
+          "sha256": "c4991afbfe0583f8eab6846046b6894259aea3dccb69f0aecc5adce9a82e6a89"
+        }
+      ],
+      "limitations": [
+        "Experimental host and RC toolchain; no final public host or signed release qualification.",
+        "Referenced receipts retain separate executed, failed, skipped and unexecuted scopes; overlapping test counts are not summed."
+      ]
+    }
+  ]
+}

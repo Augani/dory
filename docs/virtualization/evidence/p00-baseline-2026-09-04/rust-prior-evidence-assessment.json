@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "previousEvidence": "docs/virtualization/p01-control-plane-review-2026-09-03.json",
+  "previousRun": "historicalRuns[85]",
+  "previousPassedTests": 219,
+  "previousSourceSnapshotID": "c0f3aa89f4452b3c1f84cffaf3f40c3353a5a7515247e72063ee593ef3e607e6",
+  "comparedInputs": 78,
+  "mismatches": [
+    {
+      "path": "dory-core/ffi/src/agent_forward.rs",
+      "p01SHA256": "f615e221e925115de29b3d188d57a072e7e973bfa416ae6c6b901fabf3b3b5c9",
+      "baselineSHA256": "1bdfc6dd9a8c9b68369e70171157bb372d35beb2cc80bd3f4eeef84f3398fd50"
+    },
+    {
+      "path": "dory-core/ffi/src/exec_control.rs",
+      "p01SHA256": null,
+      "baselineSHA256": "9436024a211363627d39bdd4da1ff2b87a7a0912047e85978c129285c08f2943"
+    },
+    {
+      "path": "dory-core/ffi/src/exec_control_tests.rs",
+      "p01SHA256": null,
+      "baselineSHA256": "3c3fdc6f180e00cba28e0dc09dfdd66cc50631979058d06b18bcd36ffe1b4cb7"
+    },
+    {
+      "path": "dory-core/ffi/src/lib.rs",
+      "p01SHA256": "f49255497c7e101b6e10e2e8434d590d6b2e46bbf6224df803937100256098be",
+      "baselineSHA256": "c79cef952981cc70ec0f06264e8601a0c748c814e1eab00c7d66f16c4d13a75a"
+    },
+    {
+      "path": "dory-core/proto/src/mux.rs",
+      "p01SHA256": "bbf2f080e1702848b79e35a00f7f4e2d00b94889de31629abd7f9bc35a5cc773",
+      "baselineSHA256": "e6d2b692b3efecaf3e8f5fafaa3a3aa3adc97a6f63553cb0247b2f2dbb41d55e"
+    }
+  ],
+  "decision": "Do not reuse the prior full Rust result for current code. Run the current complete workspace offline, preserving baseline failures and corrected source receipts."
+}

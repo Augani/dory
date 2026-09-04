@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "kind": "virtualization-fixture-preparation",
+  "cacheDirectory": "/tmp/dory-p00-guest-fixtures",
+  "qualification": "input integrity only; no guest boot or workload qualification",
+  "artifacts": [
+    {
+      "id": "alpine-virt-3.24.1-arm64",
+      "filename": "alpine-virt-3.24.1-aarch64.iso",
+      "sha256": "c81699152db11d2a6dbb7d75348d632fcf5811eff414d7e71876a8bb6d48bc02",
+      "bytes": 92743680,
+      "action": "verified-cache",
+      "extractions": [
+        {
+          "filename": "aarch64-initramfs-virt",
+          "sha256": "fc1aad923040d23bea79f62bef4a8e2481162e89a5c42245903df1a85134a527",
+          "bytes": 10148959,
+          "action": "verified-cache"
+        },
+        {
+          "filename": "aarch64-vmlinuz-virt",
+          "sha256": "47970e0ee0478fe5c60824a89f162d5a353fa29466e5d3bddb0f9c506f1ed756",
+          "bytes": 10351104,
+          "action": "verified-cache"
+        },
+        {
+          "filename": "aarch64-Image",
+          "sha256": "8b216f74e7f89def4604adf69e2345437363aff4819101bb1551c9e83cd35cdd",
+          "bytes": 36110336,
+          "action": "extracted-verified"
+        }
+      ]
+    },
+    {
+      "id": "alpine-virt-3.24.1-x86_64",
+      "filename": "alpine-virt-3.24.1-x86_64.iso",
+      "sha256": "e73a6241bd5f3c5c2d4d38c02cc52c378c0415a7c888bd292066bf36e0f41a39",
+      "bytes": 69206016,
+      "action": "verified-cache",
+      "extractions": [
+        {
+          "filename": "x86_64-initramfs-virt",
+          "sha256": "4caf09640385525632f0a54dfeabd08b5bf5ceeb2b7d63e888fb858b7b3fa006",
+          "bytes": 9828707,
+          "action": "verified-cache"
+        },
+        {
+          "filename": "x86_64-vmlinuz-virt",
+          "sha256": "1e6bf9027720c75c3ed0d79171f21b5791ee40ca9795d07c7c6e04dc5ea2ae90",
+          "bytes": 12575744,
+          "action": "verified-cache"
+        },
+        {
+          "filename": "x86_64-vmlinux",
+          "sha256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+          "bytes": 39274268,
+          "action": "extracted-verified"
+        }
+      ]
+    }
+  ]
+}

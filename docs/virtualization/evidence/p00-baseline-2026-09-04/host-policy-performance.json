@@ -1,0 +1,1033 @@
+{
+  "hostPolicy": {
+    "availabilityAudit": [
+      {
+        "api": "hv_gic_create and GIC register/routing APIs",
+        "guard": "Package deployment target 15.0; daemon supportsRawHV and capability evaluator both require host major >=15. Native contract engine carries @available(macOS 15.0, *).",
+        "minimumMacOS": "15.0",
+        "result": "consistent",
+        "source": "Packages/ContainerizationEngine/Sources/DoryHV/Machine.swift"
+      },
+      {
+        "api": "VZ Mac graphics, audio, keyboard, trackpad",
+        "guard": "Core deployment target14.0 covers required declarations; one display remains explicit.",
+        "minimumMacOS": "12.0 graphics/audio; 13.0 trackpad; 14.0 keyboard",
+        "result": "consistent",
+        "source": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift"
+      },
+      {
+        "api": "VZ save/restore and validateSaveRestoreSupport",
+        "guard": "Core target14.0; runtime still must validate the exact VM configuration, host and saved-state compatibility.",
+        "minimumMacOS": "14.0",
+        "result": "declarations-available-physical-continuation-not-qualified",
+        "source": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift"
+      },
+      {
+        "api": "VZUSBMassStorageDeviceConfiguration / VZXHCIControllerConfiguration",
+        "guard": "Mass-storage request rejects below15.0 and xHCI construction is inside #available(macOS15.0). This is virtual disk-image USB, not physical passthrough.",
+        "minimumMacOS": "13.0 / 15.0",
+        "result": "consistent",
+        "source": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift"
+      },
+      {
+        "api": "VZUSBPassthroughDeviceConfiguration / AccessoryAccess",
+        "guard": "Compile-time SDK/header checks plus @available/#available(macOS27.0); no baseline physical USB claim.",
+        "minimumMacOS": "27.0 experimental",
+        "result": "experimental-only",
+        "source": "dory-core-swift/Sources/dory-vzmac-device-probe/main.swift"
+      },
+      {
+        "after": "Both candidate and qualification jobs pin final Xcode26.6 build17F113; baseline SDK gate inspects that selected SDK26.5. Experimental27 inspection is explicit and cannot qualify release.",
+        "api": "Release SDK selection",
+        "before": "Release used Xcode26.6 RC for building but independently forced macOS27 CommandLineTools headers and called them final.",
+        "result": "fixed",
+        "source": ".github/workflows/release.yml"
+      },
+      {
+        "after": "Exact reviewed public tuple required in release mode; experimental capture has a non-success exit and cannot assert eligibility.",
+        "api": "Release-testing host channel",
+        "before": "Physical host gate checked architecture, HV support and nested-VM exclusion but did not reject beta OS builds.",
+        "result": "fixed-and-current-beta-rejection-verified",
+        "source": ".github/scripts/verify-release-host-policy.py"
+      }
+    ],
+    "buildToolchain": {
+      "channel": "final-public",
+      "finalToolchainBuildQualified": false,
+      "locallyAvailable": false,
+      "minimumBuildHostMacOS": "26.2",
+      "sdk": "macOS 26.5",
+      "xcode": "26.6",
+      "xcodeBuild": "17F113"
+    },
+    "ciContractTesting": {
+      "explicitIntegration": "--require-selected-sdk enables actual SDK inspection; unavailable or wrong selected SDK is a hard failure.",
+      "ordinaryCI": "Five SDK fixture tests do not inspect ambient Xcode/SDK and do not skip.",
+      "release": "The pinned release workflow and scripts/release.sh public preflight unconditionally invoke verify-vz-platform-sdk.py against the same selected SDK that builds the candidate. The local entrypoint also requires exact final Xcode26.6/17F113, an arm64 host and the strict observed public-host verifier; development runs stay separate.",
+      "verifiedNegativeControl": "Fixture tests pass with deliberately unavailable DEVELOPER_DIR; the explicitly required selected-SDK test exits1 in the same environment."
+    },
+    "compatibilityPreservation": {
+      "appAndCoreDeploymentTarget": "14.0",
+      "decision": "Retain the existing macOS 14 app/core/VZ container compatibility path. Its lower compilation target does not qualify the new three-cell product on macOS 14. Do not remove guards or older paths without P03/P08 parity evidence.",
+      "rawHVAndWorkersDeploymentTarget": "15.0"
+    },
+    "decision": "Initial product scope is Apple Silicon only, with final macOS 15.0 as the runtime minimum and final macOS 26.5 SDK as the build baseline.",
+    "experimentalCell": {
+      "hostArchitecture": "arm64",
+      "hostBuild": "26A5425a",
+      "hostOS": "27.0",
+      "installationName": "Xcode-26.6.0-Release.Candidate.app",
+      "physicalUSB": "macOS 27 SDK inspection requires --experimental-usb; not part of the final product baseline.",
+      "scope": "Existing P01/P00 local tests and SDK-header audits only. This beta host and RC toolchain cannot serve as final minimum-host or signed release qualification.",
+      "sdk": "26.5",
+      "xcode": "26.6",
+      "xcodeBuild": "17F109"
+    },
+    "identifier": "dory.three-cell.apple-silicon.macos15.sdk26-5-v1",
+    "officialSources": [
+      {
+        "accessed": "2026-09-04",
+        "fact": "macOS Sequoia 15 was publicly released September 16, 2024.",
+        "id": "apple-sequoia-final",
+        "url": "https://support.apple.com/en-us/121238"
+      },
+      {
+        "accessed": "2026-09-04",
+        "fact": "Direct Apple release listing identifies final Xcode26.6 build17F113 released June25,2026 and final macOS26.6.2 build25G83 released August17,2026. Minimal exact excerpts are retained in apple-public-release-source-capture.json.",
+        "id": "apple-xcode-final",
+        "url": "https://developer.apple.com/news/releases/"
+      },
+      {
+        "accessed": "2026-09-04",
+        "fact": "The current Apple requirements table lists macOSSDK26.5 for Xcode26.6.",
+        "id": "apple-sdk-26.5",
+        "url": "https://developer.apple.com/xcode/system-requirements"
+      },
+      {
+        "accessed": "2026-09-04",
+        "fact": "The current Apple requirements table lists macOS26.2 through26.x as supported build hosts for Xcode26.6, with deployment targets reaching older macOS versions.",
+        "id": "apple-xcode-requirements",
+        "url": "https://developer.apple.com/xcode/system-requirements"
+      },
+      {
+        "accessed": "2026-09-04",
+        "fact": "Hypervisor.framework provides a GICv3 per VM, created after VM initialization and before vCPUs. Exact minimum availability is independently checked in the selected Apple SDK headers.",
+        "id": "apple-gic",
+        "url": "https://developer.apple.com/documentation/hypervisor/hv_gic_create(_:)"
+      }
+    ],
+    "productRuntime": {
+      "architecture": "arm64",
+      "intelHosts": "outside-initial-three-cell-product-scope",
+      "minimumMacOS": "15.0"
+    },
+    "publicSourceCapture": "docs/virtualization/evidence/p00-baseline-2026-09-04/apple-public-release-source-capture.json",
+    "releaseTestingHostPolicy": {
+      "currentHostEvidence": "docs/virtualization/evidence/p00-baseline-2026-09-04/host-current-experimental.json",
+      "eligiblePublicTuples": [
+        {
+          "build": "25G83",
+          "macOS": "26.6.2",
+          "qualificationPerformed": false,
+          "source": "https://developer.apple.com/news/releases/",
+          "sourceCapture": "docs/virtualization/evidence/p00-baseline-2026-09-04/apple-public-release-source-capture.json"
+        }
+      ],
+      "experimentalCapture": "--experimental explicitly emits EXPERIMENTAL, releaseTestingEligible=false and releaseQualified=false; exit3 cannot pass a shell release gate.",
+      "implementation": ".github/scripts/verify-release-host-policy.py",
+      "meaning": "Eligibility permits release testing only. It does not imply a compatible or qualified guest/product matrix. Build-host requirements are separate; minimum-host tests may run an already signed artifact built elsewhere.",
+      "minimumHost15Eligibility": "Pending independently verified exact public 15.0 build tuple. The public 15.0 release date is verified, but the current audit did not obtain a primary-source build identifier. This host is not yet allowlisted; minimum-host qualification remains unperformed.",
+      "rejection": "Any tuple not explicitly reviewed is rejected, including current macOS27.0 build26A5425a and unreviewed suffix-free final-looking builds.",
+      "workflowIntegration": "Strict checks precede release-candidate physical-confirmation publication, long qualification and local scripts/release.sh public preflight. Workflow receipts are retained as artifacts; the local preflight prints host/SDK receipts before build work."
+    },
+    "remainingPhysicalQualification": [
+      "Build the exact source with final Xcode26.6/SDK26.5 on a final supported build host.",
+      "Exercise all declared native/VZ lifecycle paths on physical Apple Silicon running the final macOS15.0 minimum and a current final macOS release.",
+      "Qualify exact compatible guest restore images and runtime saved-state continuation in P08."
+    ],
+    "selectedSDKHeaderEvidence": [
+      {
+        "declaredMacOSVersions": [
+          "15.0"
+        ],
+        "sdkRelativePath": "System/Library/Frameworks/Hypervisor.framework/Headers/hv_gic.h",
+        "sha256": "05caba2da304b657dda9c70c8424420d04195880d968d48a72bb29c85709a5a1"
+      },
+      {
+        "declaredMacOSVersions": [
+          "12.0"
+        ],
+        "sdkRelativePath": "System/Library/Frameworks/Virtualization.framework/Headers/VZMacGraphicsDeviceConfiguration.h",
+        "sha256": "eff7d17ec619bea75fed53542e5f9380f50a8562b03b48e80a627d396a7d315b"
+      },
+      {
+        "declaredMacOSVersions": [
+          "12.0"
+        ],
+        "sdkRelativePath": "System/Library/Frameworks/Virtualization.framework/Headers/VZHostAudioInputStreamSource.h",
+        "sha256": "624ce4d3346906b5b08c7696cb6ee6bba31a5e1230a1b496efa5130e3c8d59ca"
+      },
+      {
+        "declaredMacOSVersions": [
+          "12.0"
+        ],
+        "sdkRelativePath": "System/Library/Frameworks/Virtualization.framework/Headers/VZHostAudioOutputStreamSink.h",
+        "sha256": "5cd998c3945e4da61396663d60c93b3c25f8bd492caffe8124982fef40fecddf"
+      },
+      {
+        "declaredMacOSVersions": [
+          "13.0"
+        ],
+        "sdkRelativePath": "System/Library/Frameworks/Virtualization.framework/Headers/VZMacTrackpadConfiguration.h",
+        "sha256": "87eb292b859b5fcd4e9aebc3fd1b4a770009d28ce9bcb96d41ed0afc5912c1c0"
+      },
+      {
+        "declaredMacOSVersions": [
+          "14.0"
+        ],
+        "sdkRelativePath": "System/Library/Frameworks/Virtualization.framework/Headers/VZMacKeyboardConfiguration.h",
+        "sha256": "4a533bad85a029593f564c9dde7ce5da5b43d6a08458702c5e21c2a521f9769d"
+      },
+      {
+        "declaredMacOSVersions": [
+          "15.0"
+        ],
+        "sdkRelativePath": "System/Library/Frameworks/Virtualization.framework/Headers/VZXHCIControllerConfiguration.h",
+        "sha256": "201774ae992cd5c210efa4417f10b347659b307121f379f768d9775046f30b42"
+      },
+      {
+        "declaredMacOSVersions": [
+          "13.0"
+        ],
+        "sdkRelativePath": "System/Library/Frameworks/Virtualization.framework/Headers/VZUSBMassStorageDeviceConfiguration.h",
+        "sha256": "f456a1a51c23bbd816358bdec0d169882adcf709e27b618e9a40e682a0e947c1"
+      },
+      {
+        "declaredMacOSVersions": [
+          "11.0",
+          "12.0",
+          "13.0",
+          "14.0",
+          "15.0",
+          "26.0"
+        ],
+        "sdkRelativePath": "System/Library/Frameworks/Virtualization.framework/Headers/VZVirtualMachine.h",
+        "sha256": "c0930c82624081b69e967bccafa6cd01e9c3b87eb4e168b9a0bb6b525fa035a9"
+      },
+      {
+        "declaredMacOSVersions": [
+          "11.0",
+          "12.0",
+          "13.0",
+          "14.0",
+          "15.0"
+        ],
+        "sdkRelativePath": "System/Library/Frameworks/Virtualization.framework/Headers/VZVirtualMachineConfiguration.h",
+        "sha256": "9986ada4806b74ee0d4084646778a4c29f8917e72870477ab4ae5cd78f413253"
+      },
+      {
+        "declaredMacOSVersions": [
+          "12.0",
+          "13.0"
+        ],
+        "sdkRelativePath": "System/Library/Frameworks/Virtualization.framework/Headers/VZVirtioFileSystemDeviceConfiguration.h",
+        "sha256": "a6dc5701c425a6c40029ebfdfad8aa3233593e020b86824ab009a211a7eb8bf8"
+      },
+      {
+        "declaredMacOSVersions": [
+          "13.0"
+        ],
+        "sdkRelativePath": "System/Library/Frameworks/Virtualization.framework/Headers/VZSpiceAgentPortAttachment.h",
+        "sha256": "314f6592d686bfac9a3debecc762e16f65e598a1f4f1eb21e2c5c8b64e6e52b4"
+      },
+      {
+        "declaredMacOSVersions": [
+          "11.0",
+          "12.0"
+        ],
+        "sdkRelativePath": "System/Library/Frameworks/Virtualization.framework/Headers/VZDiskImageStorageDeviceAttachment.h",
+        "sha256": "70d1d99ce2f698b04dc4a65f865f0e44d1f65cf501b2f9ae698215c8a478cbb2"
+      }
+    ]
+  },
+  "kind": "dev.dory.p00.host-policy-performance",
+  "performancePolicy": {
+    "calibrated": false,
+    "cellProfiles": [
+      {
+        "diskGiB": 64,
+        "display": "1920x1080 at60Hz",
+        "execution": "native Hypervisor.framework",
+        "guestArchitecture": "arm64",
+        "guestFamily": "linux",
+        "guestRAMGiB": 4,
+        "id": "linux-arm64-native",
+        "machine": "DoryARMVirt",
+        "vCPUs": 2
+      },
+      {
+        "diskGiB": 64,
+        "display": "1920x1080 at60Hz",
+        "execution": "translated Dory DBT",
+        "guestArchitecture": "x86_64",
+        "guestFamily": "linux",
+        "guestRAMGiB": 4,
+        "id": "linux-x86-64-translated",
+        "machine": "DoryPC",
+        "scope": "One-vCPU initial profile; interpreter/baseline-JIT modes are separate results. SMP is a later separately revised P07 profile.",
+        "vCPUs": 1
+      },
+      {
+        "diskGiB": 64,
+        "display": "1920x1080 at60Hz",
+        "execution": "Virtualization.framework",
+        "guestArchitecture": "arm64",
+        "guestFamily": "macos",
+        "guestRAMGiB": 8,
+        "id": "macos-arm64-vz",
+        "machine": "exact VZ hardware-model/machine-identifier bundle",
+        "vCPUs": 2
+      }
+    ],
+    "existingHarnessAudit": [
+      {
+        "path": "scripts/qualify-container-engine-performance.sh",
+        "runForThisAudit": false,
+        "scope": "Destructive dedicated-clean-account container-engine qualification; requires explicit confirmation token and pinned images. Never execute in this user account and never treat as whole-VM evidence."
+      },
+      {
+        "path": "scripts/benchmark.sh",
+        "runForThisAudit": false,
+        "scope": "Historical exploratory container/shared-VM comparison. Mutable default tags and ad-hoc fixtures mean outputs cannot become candidate-bound P14 evidence."
+      },
+      {
+        "path": "dory-core-swift/Sources/dory-phase0a-hv-throughput/main.swift",
+        "runForThisAudit": false,
+        "scope": "Existing verified-counter microbenchmark with matched native/minimal-HV/Dory paths, five rounds, two warmups, twenty samples, <=3 percent overhead and >=95 percent host-native throughput. Probe-client evidence only, not production desktop/workload performance."
+      },
+      {
+        "path": "dory-core-swift/Sources/dory-phase0a-storage-baseline/main.swift",
+        "runForThisAudit": false,
+        "scope": "Host storage baseline collection; not guest durable block-device performance."
+      },
+      {
+        "path": "dory-core-swift/Sources/dory-phase0a-network-baseline/main.swift",
+        "runForThisAudit": false,
+        "scope": "Host/network baseline collection; not automatically the VM NAT/device path."
+      },
+      {
+        "path": "scripts/verify-linux-vm-performance-bundle.py",
+        "runForThisAudit": false,
+        "scope": "Candidate/signature/raw-sample/frozen-budget validator; does not collect measurements."
+      },
+      {
+        "path": "scripts/validate-linux-vm-performance-evidence.py",
+        "runForThisAudit": false,
+        "scope": "Existing schema1 validator enforces ARM64 Linux and rejects provisional qualification. It cannot yet represent translated x86 or Mac results; extend/review the schema under P14 before promoting their evidence."
+      }
+    ],
+    "fixtureIdentityRequirements": [
+      "Before collection, pin guest image/ISO/IPSW and installed-disk manifest, kernel/libc/graphics stack, workload source+binary, compiler/options, firmware/renderer/tools and reference VMM by exact digest/revision.",
+      "Do not measure a mutable :latest container or unversioned npm/apt result.",
+      "A missing required guest, reference, instrumentation or capability is unavailable/fail for that gate, never a zero-duration success."
+    ],
+    "freezeProcedure": [
+      "Collect baseline calibration on the final physical host/resource matrix, with complete correctness and attribution.",
+      "Assign final numeric bounds for every applicable cell/profile and pin the workload list, sampling plan, fixture digests, baseline evidence and independent review.",
+      "Commit a frozen revision before running the candidate; never adjust a threshold simply to pass a failing candidate.",
+      "Any subsequent host/guest/profile/workload/budget change records rationale and invalidates/requalifies affected cells."
+    ],
+    "hostResourceClass": {
+      "concurrentVMs": 1,
+      "minimumPhysicalRAMGiB": 32,
+      "name": "apple-silicon-32g-internal-ssd-1080p60",
+      "otherLoad": "No other benchmark VM, CPU/GPU stress or known bulk I/O; report ambient idle controls.",
+      "power": "AC, low-power mode disabled",
+      "storage": "internal APFS SSD with at least 100 GiB free",
+      "thermalState": "nominal; retain beginning/end state"
+    },
+    "identifier": "dory.p00.three-cell.provisional-budgets-v1",
+    "measurementsPerformed": false,
+    "relationshipToPlan": "P14.B targets remain the governing initial targets. This receipt defines concrete workload boundaries and initial memory/shutdown/reclamation caps before optimization; it does not replace P14 qualification.",
+    "releaseBudgetsFrozen": false,
+    "remainingReleaseGates": [
+      "No P00 three-cell performance samples collected.",
+      "Initial memory/GPU/DBT/shutdown/reclamation limits are uncalibrated engineering choices.",
+      "Required guest and reference fixtures must be pinned before collection.",
+      "macOS/x86 evidence schema and whole-product measurement harnesses remain P14 work."
+    ],
+    "revision": 1,
+    "sampling": {
+      "clocks": "Host monotonic end-to-end intervals, or explicitly calibrated clock domains; never subtract unsynchronized guest and host timestamps.",
+      "independentRounds": 9,
+      "invalidSamples": "Keep failure reasons/raw observations; timeout is a failure, retry never erases an observation.",
+      "runOrder": "balanced randomized/interleaved Dory and reference; record seed and actual order",
+      "summary": "Retain individual samples, round medians and confidence intervals. Duration targets use independent-round medians; tail metrics require the stated per-round sample minima.",
+      "warmup": "two warmups per warm microbenchmark round, recorded and excluded by predeclared policy; cold boot has no warmup substitution"
+    },
+    "state": "provisional",
+    "workloads": [
+      {
+        "budgets": [
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "ux.boot.login-ready.duration",
+            "perCellBounds": {
+              "linux-arm64-native": 30000,
+              "linux-x86-64-translated": 120000,
+              "macos-arm64-vz": 60000
+            },
+            "rationale": "P14.B initial installed-boot targets; guest readiness and display completion are both required.",
+            "state": "provisional",
+            "statistic": "median",
+            "unit": "milliseconds"
+          }
+        ],
+        "cells": [
+          "linux-arm64-native",
+          "linux-x86-64-translated",
+          "macos-arm64-vz"
+        ],
+        "coldState": "Fresh disposable clone of the same pinned installed image, VM stopped; reboot the dedicated host between cold rounds. Record filesystem cache controls; warm rounds are separate.",
+        "definition": "From daemon acceptance of a cold-start request for the stopped installed disk to a guest-authenticated ready marker and first complete usable desktop frame. No installer, first-login setup, disk repair or restored memory.",
+        "id": "installed-cold-boot",
+        "measurementStatus": "not-run",
+        "observedValues": null,
+        "revision": 1,
+        "rounds": 9,
+        "state": "provisional"
+      },
+      {
+        "budgets": [
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "ux.shutdown.duration",
+            "perCellBounds": {
+              "linux-arm64-native": 10000,
+              "linux-x86-64-translated": 30000,
+              "macos-arm64-vz": 15000
+            },
+            "rationale": "Initial engineering usability budget, allowing a larger translated-execution margin; calibrate before candidate judgement.",
+            "state": "provisional",
+            "statistic": "median",
+            "unit": "milliseconds"
+          }
+        ],
+        "cells": [
+          "linux-arm64-native",
+          "linux-x86-64-translated",
+          "macos-arm64-vz"
+        ],
+        "definition": "From guest shutdown acceptance to guest poweroff, durable disk flush completion, helper exits and resource release.",
+        "id": "clean-shutdown",
+        "measurementStatus": "not-run",
+        "observedValues": null,
+        "revision": 1,
+        "rounds": 9,
+        "state": "provisional"
+      },
+      {
+        "budgets": [
+          {
+            "calibrated": false,
+            "direction": "atLeast",
+            "metric": "cpu.micro.host-native-throughput-ratio",
+            "perCellBounds": {
+              "linux-arm64-native": 0.95,
+              "macos-arm64-vz": 0.95
+            },
+            "rationale": "P14.B native microbenchmark target; valid only where host/guest code semantics match.",
+            "state": "provisional",
+            "statistic": "median",
+            "unit": "ratio"
+          },
+          {
+            "calibrated": false,
+            "direction": "atLeast",
+            "metric": "cpu.micro.minimal-native-throughput-ratio",
+            "perCellBounds": {
+              "linux-arm64-native": 0.97,
+              "macos-arm64-vz": 0.97
+            },
+            "rationale": "P14.B maximum native orchestration overhead target.",
+            "state": "provisional",
+            "statistic": "median",
+            "unit": "ratio"
+          }
+        ],
+        "cells": [
+          "linux-arm64-native",
+          "macos-arm64-vz"
+        ],
+        "definition": "Pinned integer, branch and floating-point kernels with verified result digests and equivalent compiler/options in host-native, minimal native HV/VZ and Dory execution contexts.",
+        "id": "native-cpu-micro",
+        "measurementStatus": "not-run",
+        "observedValues": null,
+        "revision": 1,
+        "rounds": 9,
+        "samplesPerRound": 20,
+        "state": "provisional",
+        "warmupsPerRound": 2
+      },
+      {
+        "budgets": [
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "compute.native.reference-elapsed-ratio",
+            "perCellBounds": {
+              "linux-arm64-native": 1.1,
+              "macos-arm64-vz": 1.1
+            },
+            "rationale": "P14.B same-guest native workload overhead target.",
+            "state": "provisional",
+            "statistic": "median",
+            "unit": "ratio"
+          },
+          {
+            "calibrated": false,
+            "direction": "atLeast",
+            "metric": "compute.translated.reference-speedup-geomean",
+            "perCellBounds": {
+              "linux-x86-64-translated": 1.2
+            },
+            "rationale": "P14.B translated ambition only, using identical full-system guest image/resources on the same Apple Silicon host.",
+            "state": "provisional",
+            "statistic": "geometricMeanOfWorkloadMedians",
+            "unit": "ratio"
+          },
+          {
+            "calibrated": false,
+            "direction": "atLeast",
+            "metric": "compute.translated.minimum-key-workload-speedup",
+            "perCellBounds": {
+              "linux-x86-64-translated": 0.9
+            },
+            "rationale": "No translated key workload more than 10 percent slower than its pinned full-system reference.",
+            "state": "provisional",
+            "statistic": "minimum",
+            "unit": "ratio"
+          }
+        ],
+        "cells": [
+          "linux-arm64-native",
+          "linux-x86-64-translated",
+          "macos-arm64-vz"
+        ],
+        "definition": "Build a pinned portable C/C++ source tree without network dependencies, compress/decompress a pinned 256 MiB corpus, and run a pinned language-runtime benchmark. Check build output tests and corpus hashes. Each workload is a separate key metric.",
+        "id": "whole-guest-compute",
+        "measurementStatus": "not-run",
+        "observedValues": null,
+        "referenceRequirement": "A qualified minimal/native same-host reference for native cells; a separately pinned full-system translated reference for x86. Physical x86 is an architectural reference, never a same-host performance denominator.",
+        "revision": 1,
+        "rounds": 9,
+        "state": "provisional"
+      },
+      {
+        "budgets": [
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "display.frame-interval",
+            "perCellBounds": {
+              "linux-arm64-native": 16.7,
+              "linux-x86-64-translated": 16.7,
+              "macos-arm64-vz": 16.7
+            },
+            "rationale": "P14.B 1080p60 target; intentional idle frames are excluded by a predeclared rule.",
+            "state": "provisional",
+            "statistic": "p95",
+            "unit": "milliseconds"
+          },
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "display.frame-interval",
+            "perCellBounds": {
+              "linux-arm64-native": 33.4,
+              "linux-x86-64-translated": 33.4,
+              "macos-arm64-vz": 33.4
+            },
+            "rationale": "P14.B tail target; no estimate from a handful of frames.",
+            "state": "provisional",
+            "statistic": "p99",
+            "unit": "milliseconds"
+          },
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "display.missed-deadline-fraction",
+            "perCellBounds": {
+              "linux-arm64-native": 0.01,
+              "linux-x86-64-translated": 0.01,
+              "macos-arm64-vz": 0.01
+            },
+            "rationale": "P14.B 60 Hz missed-deadline target; timestamp tolerance is fixed before measurement.",
+            "state": "provisional",
+            "statistic": "aggregate",
+            "unit": "ratio"
+          }
+        ],
+        "cells": [
+          "linux-arm64-native",
+          "linux-x86-64-translated",
+          "macos-arm64-vz"
+        ],
+        "definition": "Continuously demanded updates at 1920x1080, fixed scale and 60 Hz: scroll a pinned local document, move/resize windows and render a deterministic verified scene. Retain completed presentation timestamps and renderer-selection evidence.",
+        "id": "desktop-presentation",
+        "measurementStatus": "not-run",
+        "minimumFramesPerRound": 10000,
+        "observedValues": null,
+        "requiredProfile": "Declare and retain the exact effective graphics profile. Software, VirGL2, Venus and VZ Mac graphics results remain separate.",
+        "revision": 1,
+        "rounds": 9,
+        "state": "provisional"
+      },
+      {
+        "budgets": [
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "ux.input-to-visible",
+            "perCellBounds": {
+              "linux-arm64-native": 50,
+              "linux-x86-64-translated": 50,
+              "macos-arm64-vz": 50
+            },
+            "rationale": "P14.B input target, not daemon IPC or guest receipt latency.",
+            "state": "provisional",
+            "statistic": "p95",
+            "unit": "milliseconds"
+          },
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "ux.input-to-visible",
+            "perCellBounds": {
+              "linux-arm64-native": 100,
+              "linux-x86-64-translated": 100,
+              "macos-arm64-vz": 100
+            },
+            "rationale": "P14.B input tail target.",
+            "state": "provisional",
+            "statistic": "p99",
+            "unit": "milliseconds"
+          }
+        ],
+        "cells": [
+          "linux-arm64-native",
+          "linux-x86-64-translated",
+          "macos-arm64-vz"
+        ],
+        "definition": "Inject a timestamped key or pointer event that changes a unique visible guest marker; measure host injection to verified completed presentation of that marker.",
+        "id": "desktop-input",
+        "measurementStatus": "not-run",
+        "minimumEventsPerRound": 1000,
+        "observedValues": null,
+        "revision": 1,
+        "rounds": 9,
+        "state": "provisional"
+      },
+      {
+        "budgets": [
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "ux.resize-to-stable",
+            "perCellBounds": {
+              "linux-arm64-native": 250,
+              "linux-x86-64-translated": 250,
+              "macos-arm64-vz": 250
+            },
+            "rationale": "P14.B normal desktop resize target.",
+            "state": "provisional",
+            "statistic": "p95",
+            "unit": "milliseconds"
+          }
+        ],
+        "cells": [
+          "linux-arm64-native",
+          "linux-x86-64-translated",
+          "macos-arm64-vz"
+        ],
+        "definition": "Drive a fixed alternating size sequence. Measure the final resize event to a nonstale completed frame with the requested guest resolution and scale.",
+        "id": "desktop-resize",
+        "measurementStatus": "not-run",
+        "minimumEventsPerRound": 200,
+        "observedValues": null,
+        "revision": 1,
+        "rounds": 9,
+        "state": "provisional"
+      },
+      {
+        "budgets": [
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "resources.idle.desktop-cpu",
+            "perCellBounds": {
+              "linux-arm64-native": 5,
+              "linux-x86-64-translated": 5,
+              "macos-arm64-vz": 5
+            },
+            "rationale": "P14.B idle desktop target; process CPU is summed, not divided by total host core count.",
+            "state": "provisional",
+            "statistic": "mean",
+            "unit": "percentOfOneHostCore"
+          },
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "resources.idle.headless-cpu",
+            "perCellBounds": {
+              "linux-arm64-native": 2,
+              "linux-x86-64-translated": 2
+            },
+            "rationale": "P14.B headless target; not applicable to a Mac desktop guest.",
+            "state": "provisional",
+            "statistic": "mean",
+            "unit": "percentOfOneHostCore"
+          }
+        ],
+        "cells": [
+          "linux-arm64-native",
+          "linux-x86-64-translated",
+          "macos-arm64-vz"
+        ],
+        "definition": "Leave the guest idle after five minutes of stabilization, with no scheduled benchmark work. Measure attributable CPU over a sixty-second window, retaining all daemon/runner/worker CPU counters.",
+        "id": "idle",
+        "measurementStatus": "not-run",
+        "observedValues": null,
+        "revision": 1,
+        "rounds": 9,
+        "state": "provisional",
+        "windowSeconds": 60
+      },
+      {
+        "budgets": [
+          {
+            "calibrated": false,
+            "direction": "atLeast",
+            "metric": "storage.reference-throughput-ratio",
+            "perCellBounds": {
+              "linux-arm64-native": 0.9,
+              "linux-x86-64-translated": 0.9,
+              "macos-arm64-vz": 0.9
+            },
+            "rationale": "P14.B comparable storage throughput target; exclude guest-cache bandwidth.",
+            "state": "provisional",
+            "statistic": "median",
+            "unit": "ratio"
+          },
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "storage.reference-latency-ratio",
+            "perCellBounds": {
+              "linux-arm64-native": 1.1,
+              "linux-x86-64-translated": 1.1,
+              "macos-arm64-vz": 1.1
+            },
+            "rationale": "P14.B maximum p95 storage regression at matched queue depth.",
+            "state": "provisional",
+            "statistic": "p95",
+            "unit": "ratio"
+          }
+        ],
+        "cells": [
+          "linux-arm64-native",
+          "linux-x86-64-translated",
+          "macos-arm64-vz"
+        ],
+        "correctness": "Readback hashes and durability policy must match; any mismatch fails irrespective of speed.",
+        "definition": "On a disposable 64 GiB virtual disk backed by the same host volume, run a 4 GiB verified sequential read/write corpus and 4 KiB random operations at queue depths 1 and 16. Include 4 KiB writes followed by guest fsync and a final durable flush. Match cache and persistence semantics to the reference.",
+        "id": "durable-storage",
+        "measurementStatus": "not-run",
+        "minimumLatencyOperationsPerRound": 10000,
+        "observedValues": null,
+        "revision": 1,
+        "rounds": 9,
+        "state": "provisional"
+      },
+      {
+        "budgets": [
+          {
+            "calibrated": false,
+            "direction": "atLeast",
+            "metric": "network.reference-throughput-ratio",
+            "perCellBounds": {
+              "linux-arm64-native": 0.9,
+              "linux-x86-64-translated": 0.9,
+              "macos-arm64-vz": 0.9
+            },
+            "rationale": "P14.B comparable network throughput target.",
+            "state": "provisional",
+            "statistic": "median",
+            "unit": "ratio"
+          },
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "network.reference-latency-ratio",
+            "perCellBounds": {
+              "linux-arm64-native": 1.1,
+              "linux-x86-64-translated": 1.1,
+              "macos-arm64-vz": 1.1
+            },
+            "rationale": "P14.B maximum p95 latency regression at matched concurrency.",
+            "state": "provisional",
+            "statistic": "p95",
+            "unit": "ratio"
+          }
+        ],
+        "cells": [
+          "linux-arm64-native",
+          "linux-x86-64-translated",
+          "macos-arm64-vz"
+        ],
+        "definition": "Run guest-to-host and host-to-guest TCP transfer, fixed-size UDP datagrams, and request/reply round trips on a controlled local network path. Pin MTU 1500, concurrency 1 and 4, offload state and endpoint binaries; do not use internet speed as a VMM measure.",
+        "id": "controlled-network",
+        "measurementStatus": "not-run",
+        "minimumLatencyOperationsPerRound": 10000,
+        "observedValues": null,
+        "revision": 1,
+        "rounds": 9,
+        "state": "provisional",
+        "windowSeconds": 60
+      },
+      {
+        "budgets": [
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "resources.host-overhead",
+            "perCellBounds": {
+              "linux-arm64-native": 1024,
+              "linux-x86-64-translated": 2048,
+              "macos-arm64-vz": 1024
+            },
+            "rationale": "New provisional per-profile host overhead caps, excluding separately measured resident guest RAM, GPU allocations and DBT cache; not calibrated results.",
+            "state": "provisional",
+            "statistic": "maximum",
+            "unit": "mebibytes"
+          },
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "resources.graphics-allocations",
+            "perCellBounds": {
+              "linux-arm64-native": 512,
+              "linux-x86-64-translated": 512,
+              "macos-arm64-vz": 512
+            },
+            "rationale": "Provisional 1080p60 profile cap; 4K and multiple displays need separate resource classes.",
+            "state": "provisional",
+            "statistic": "maximum",
+            "unit": "mebibytes"
+          },
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "resources.dbt-code-cache",
+            "perCellBounds": {
+              "linux-x86-64-translated": 256
+            },
+            "rationale": "Provisional translated-code-cache cap, independently attributed.",
+            "state": "provisional",
+            "statistic": "maximum",
+            "unit": "mebibytes"
+          },
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "resources.stop-reclamation",
+            "perCellBounds": {
+              "linux-arm64-native": 10000,
+              "linux-x86-64-translated": 10000,
+              "macos-arm64-vz": 10000
+            },
+            "rationale": "Provisional grace period for owned VM mappings, vCPU threads, workers and handles to return to the pre-launch baseline.",
+            "state": "provisional",
+            "statistic": "maximum",
+            "unit": "milliseconds"
+          }
+        ],
+        "cells": [
+          "linux-arm64-native",
+          "linux-x86-64-translated",
+          "macos-arm64-vz"
+        ],
+        "definition": "Measure the full attributable process set, guest resident memory, graphics allocations and DBT code cache during the fixed compute/desktop/storage workload, then stop. Shared mappings must be deduplicated; if attribution is unavailable, report unavailable.",
+        "id": "memory-and-reclamation",
+        "measurementStatus": "not-run",
+        "observedValues": null,
+        "postStopChecks": [
+          "No live owned vCPU or worker.",
+          "Guest mappings and device grants revoked.",
+          "Owned FD and thread counts return to baseline.",
+          "Retained framework caches are reported explicitly and cannot be called released VM memory."
+        ],
+        "revision": 1,
+        "rounds": 9,
+        "state": "provisional"
+      },
+      {
+        "budgets": [
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "correctness.corruption-errors",
+            "perCellBounds": {
+              "linux-arm64-native": 0,
+              "linux-x86-64-translated": 0,
+              "macos-arm64-vz": 0
+            },
+            "rationale": "P14.B correctness is a prerequisite, not a performance tradeoff.",
+            "state": "provisional",
+            "statistic": "sum",
+            "unit": "count"
+          },
+          {
+            "calibrated": false,
+            "direction": "atMost",
+            "metric": "correctness.unexpected-vm-or-worker-crashes",
+            "perCellBounds": {
+              "linux-arm64-native": 0,
+              "linux-x86-64-translated": 0,
+              "macos-arm64-vz": 0
+            },
+            "rationale": "P14.B reliability target for every required workload.",
+            "state": "provisional",
+            "statistic": "sum",
+            "unit": "count"
+          }
+        ],
+        "cells": [
+          "linux-arm64-native",
+          "linux-x86-64-translated",
+          "macos-arm64-vz"
+        ],
+        "definition": "Every performance sample retains completion, output checksum, expected machine/profile and cleanup results. A retry is a separate observation.",
+        "id": "correctness-and-failure-accounting",
+        "measurementStatus": "not-run",
+        "observedValues": null,
+        "revision": 1,
+        "rounds": 9,
+        "state": "provisional"
+      }
+    ]
+  },
+  "phaseItems": [
+    "P00-05",
+    "P00-12"
+  ],
+  "releaseQualified": false,
+  "reviewDate": "2026-09-04",
+  "schemaVersion": 1,
+  "source": {
+    "auditedFiles": [
+      {
+        "path": "Dory.xcodeproj/project.pbxproj",
+        "sha256": "1a7efbdf2f444b43772b1f379cfa00a36a0543a1250bdc15ca3d7b8893e45f4b"
+      },
+      {
+        "path": "dory-core-swift/Package.swift",
+        "sha256": "90bd5bec6041daa490f8c5a38951ffaa73daf9efe8586d51bd8b39834aaedd15"
+      },
+      {
+        "path": "Packages/ContainerizationEngine/Package.swift",
+        "sha256": "aa812dc9d6421d8ee0461be30ee10b8d75a94942c9b370cda78d8d8e6b69fc28"
+      },
+      {
+        "path": "dory-core-swift/Sources/DorydKit/DorydConfiguration.swift",
+        "sha256": "838823f1667e8a38e6a77b7a81bed69bcab1ba3b5c480b83fc228b7fafcf6b3d"
+      },
+      {
+        "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineCapabilities.swift",
+        "sha256": "a708e82e29e599111fd50005c9965c832fb35393cfcb7accbee6ad9cce91148c"
+      },
+      {
+        "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+        "sha256": "d6531309242ce5b5e7fa5b5a3ef87637f6e81055cebf0b71ad1c66a28309332e"
+      },
+      {
+        "path": "dory-core-swift/Sources/DoryNativeHVArm64/NativeHVArm64Engine.swift",
+        "sha256": "2b951428bd90a29cab42984085e19454d8dc240c0ba93a8012cd66f83eecf1a0"
+      },
+      {
+        "path": "dory-core-swift/Sources/dory-vzmac-device-probe/main.swift",
+        "sha256": "25d75adb24b89cdbdd5ff3975b68e5c03e65eabdcbe1bb71b22f9905b5d3c4ff"
+      },
+      {
+        "path": "dory-core-swift/Sources/DoryVZMacSDKInventory/include/DoryVZMacSDKInventory.h",
+        "sha256": "ba3059f3451c504319017997bfeb706ef7e66101912861070fa69161ffd601b4"
+      },
+      {
+        "path": ".github/scripts/verify-vz-platform-sdk.py",
+        "sha256": "6d4e469aea39def72cfbce871072c0df738721b09c34cb8c2bfb0b58df73a487"
+      },
+      {
+        "path": ".github/scripts/test-vz-platform-sdk.py",
+        "sha256": "fa156ebf8668be1d2b33900d98de1640fbf80cec6479e26ea56d9a2c54c5eff6"
+      },
+      {
+        "path": ".github/workflows/release.yml",
+        "sha256": "7423a4fc3fc634ca538e699d1c98db02fc7668deb518ac6b5811f8419430fa43"
+      },
+      {
+        "path": "scripts/verify-linux-vm-performance-bundle.py",
+        "sha256": "e547bd72b05d2f4731e809e3a86c8f35218278c36713c8a5bb08d5fa08d36f9b"
+      },
+      {
+        "path": "scripts/validate-linux-vm-performance-evidence.py",
+        "sha256": "7fa6af58d7f363671cd03a37afe547f066232412ee9bc9140c60eedc86bbf54f"
+      },
+      {
+        "path": "scripts/qualify-container-engine-performance.sh",
+        "sha256": "fec94c808e7f1a33f2388fa2cf2da65cc0daedcdbfbe0710734a00074758bc85"
+      },
+      {
+        "path": "scripts/benchmark.sh",
+        "sha256": "6ed6e31978d91e0c2a8375ed9ac04a9928313ab7f0f60331df3cbb7431659a8b"
+      },
+      {
+        "path": "dory-core-swift/Sources/dory-phase0a-hv-throughput/main.swift",
+        "sha256": "11a7210d52b37ef96764bb1769bdf8ebf85c10c3fb1e20422844e46eb26f7323"
+      },
+      {
+        "path": "dory-core-swift/Sources/dory-phase0a-storage-baseline/main.swift",
+        "sha256": "1aa2f27d08f2bb66d95e935f81324b8a451214d66bafffa9adda3c12e032861e"
+      },
+      {
+        "path": "dory-core-swift/Sources/dory-phase0a-network-baseline/main.swift",
+        "sha256": "32ed3088fa8588452b9be2a282f23ab765cdfa545d26d115403955e17922ffe7"
+      },
+      {
+        "path": ".github/scripts/verify-release-host-policy.py",
+        "sha256": "fdb3c72dd42b0a424fd033518e51fe8373af17324a4bec4e32445e8485c358a8"
+      },
+      {
+        "path": ".github/scripts/test-release-host-policy.py",
+        "sha256": "a4318018d7df475d1baa373ecb239d25382cca65f8f10b3d348b0f2e994981b4"
+      },
+      {
+        "path": ".github/workflows/tests.yml",
+        "sha256": "9d96788c6b7ce2d69669c6cd7bc0ce4af5e9688d447df8d60487465984a102fd"
+      },
+      {
+        "path": "scripts/release.sh",
+        "sha256": "166a888427f278f82f4dcc78e4f9d9f7e2da1996cbeaf4bf440e98affc5ae83c"
+      }
+    ],
+    "commitAtAudit": "5fc049c1390901faa2f64236ea108e0dfdab35fc"
+  },
+  "status": "policy-defined-and-sdk-contract-tested",
+  "verification": {
+    "receipt": "docs/virtualization/evidence/p00-baseline-2026-09-04/host-policy-gate-verification.json",
+    "result": "19 distinct tests passed with no skips: five SDK fixture tests, one explicitly selected SDK integration test, thirteen public-host/local-release policy tests. Five modified workflow shell steps and scripts/release.sh parsed. Seven new source-only preflight methods first reproduced the missing local gates; final tests reject RC Xcode, beta/Intel hosts, missing/unreviewed SDKs and missing GIC headers. Existing required missing-SDK and current-beta controls failed as expected; experimental capture remains ineligible. No final-Xcode build or guest performance pass claimed.",
+    "sdkAfter": "docs/virtualization/evidence/p00-baseline-2026-09-04/sdk-gate-after.json",
+    "sdkBefore": "docs/virtualization/evidence/p00-baseline-2026-09-04/sdk-gate-before.json"
+  }
+}

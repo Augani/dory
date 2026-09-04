@@ -1,0 +1,64 @@
+{
+  "architecture": "x86_64",
+  "repomdURL": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Server/x86_64/os/repodata/repomd.xml",
+  "repomdSHA256": "579a1c6bc814db46d3e53289c4ffd8ed8cd4ec62a5088e5fb4683c6036ef7685",
+  "primaryURL": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Server/x86_64/os/repodata/c8a5454dad4c1c196941c6028d5ed7e8d2cbb49819a4a577c76bfcadcbf92664-primary.xml.zst",
+  "primarySHA256": "c8a5454dad4c1c196941c6028d5ed7e8d2cbb49819a4a577c76bfcadcbf92664",
+  "packages": [
+    {
+      "name": "glibc",
+      "architecture": "x86_64",
+      "version": {
+        "epoch": "0",
+        "ver": "2.43",
+        "rel": "2.fc44"
+      },
+      "sha256": "90ddf81832ba518f8768264a6944d0b02e030acc7e78aa2ed907d7e77d0a069f",
+      "path": "Packages/g/glibc-2.43-2.fc44.x86_64.rpm"
+    },
+    {
+      "name": "kernel-core",
+      "architecture": "x86_64",
+      "version": {
+        "epoch": "0",
+        "ver": "6.19.10",
+        "rel": "300.fc44"
+      },
+      "sha256": "a69aebcfe61ed91a593926dd008a5178e0a84dff04b3700cf25b4d92032c4b6d",
+      "path": "Packages/k/kernel-core-6.19.10-300.fc44.x86_64.rpm"
+    },
+    {
+      "name": "mesa-dri-drivers",
+      "architecture": "x86_64",
+      "version": {
+        "epoch": "0",
+        "ver": "26.0.3",
+        "rel": "4.fc44"
+      },
+      "sha256": "14c503c070de32eae06e2ab7e2e2b38c3233445755ecb445e0f3c5fd1b92ef6c",
+      "path": "Packages/m/mesa-dri-drivers-26.0.3-4.fc44.x86_64.rpm"
+    },
+    {
+      "name": "mesa-libEGL",
+      "architecture": "x86_64",
+      "version": {
+        "epoch": "0",
+        "ver": "26.0.3",
+        "rel": "4.fc44"
+      },
+      "sha256": "c7d262bdb40f01b712ce88ef196d44372c6fa7840c2c9667ecf534f7447bd5e6",
+      "path": "Packages/m/mesa-libEGL-26.0.3-4.fc44.x86_64.rpm"
+    },
+    {
+      "name": "mesa-libGL",
+      "architecture": "x86_64",
+      "version": {
+        "epoch": "0",
+        "ver": "26.0.3",
+        "rel": "4.fc44"
+      },
+      "sha256": "2a07ee05c6b58949f8f9918ffd7082a0649c116f04eabb632926c786a876fd5e",
+      "path": "Packages/m/mesa-libGL-26.0.3-4.fc44.x86_64.rpm"
+    }
+  ]
+}

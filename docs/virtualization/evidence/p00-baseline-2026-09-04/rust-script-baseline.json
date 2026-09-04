@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "requirements": [
+    "P00-03",
+    "P00-10"
+  ],
+  "kind": "bounded-offline-rust-script-baseline",
+  "sourceManifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-script-rust-source-manifest-2.json",
+  "sourceManifestSHA256": "610c49034b6e5103dac4382d5220bc0933b74d9280758f9b0a43df898cc7ab3d",
+  "sourceEquivalence": "Five frozen source copies were rehashed against their exact manifests. Final Rust and changed security inputs match live source. Concurrent SDK/workflow edits are excluded from these frozen gates and verified by their owning agent.",
+  "ownedCorrections": [
+    {
+      "path": ".github/scripts/test-security-contracts.sh",
+      "beforeSHA256": "a511253f2c8d347b7e23ad8f6984dbed04aa1f4142de098951375ebe888f499b",
+      "afterSHA256": "affe0cb57ab50d1e2e5fd2ec1f3bae54a7ad3453d788eb7b5c1a760a2d89e030"
+    },
+    {
+      "path": "scripts/test-security-contracts.sh",
+      "beforeSHA256": "1f3a9260b24acf91ddcd1729f9a5211c332c472e15a281e06d4953d7f860c892",
+      "afterSHA256": "cc804afd6b90d896902c0963d21540898d6485912be8f39976e2978d6e9e9be9"
+    },
+    {
+      "path": "dory-core/ffi/src/agent_forward.rs",
+      "beforeSHA256": "1bdfc6dd9a8c9b68369e70171157bb372d35beb2cc80bd3f4eeef84f3398fd50",
+      "afterSHA256": "04c9fe730350bd74cf4f3058b7dc63dd67b7adc9288c4f0836addd0ed1733934"
+    },
+    {
+      "path": "dory-core/ffi/src/exec_control_tests.rs",
+      "beforeSHA256": "3c3fdc6f180e00cba28e0dc09dfdd66cc50631979058d06b18bcd36ffe1b4cb7",
+      "afterSHA256": "adc1bfec75418be2c805b747601de7028fb1275a75f225f83ac4973763b70b9f"
+    }
+  ],
+  "focusedPatch": {
+    "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/baseline-script-fixes.patch",
+    "sha256": "4a77f323a947fd7eb8ab327782de6ea0d6efb27024a43d9f180f5778bedee12a"
+  },
+  "rust": {
+    "finalReceipt": "docs/virtualization/evidence/p00-baseline-2026-09-04/final2-rust-runs.json",
+    "tests": {
+      "passed": 224,
+      "failed": 0,
+      "ignored": 0
+    },
+    "format": "passed",
+    "strictClippy": "passed",
+    "runtimeSeconds": {
+      "fmt": 0.375,
+      "clippy": 1.867,
+      "test": 24.049
+    },
+    "priorFullEvidenceNotReused": "Five source inputs changed after the earlier P01 219-test workspace run.",
+    "preservedFindings": [
+      "Initial strict Clippy rejected the new exported exec_controlled argument count. Fixed with a method-local documented lint allowance preserving its UniFFI API.",
+      "A full repeat found a real parallel test-directory collision when SystemTime returned the same value to two threads. The fixture now includes an atomic sequence; final workspace pass retains default parallel test execution."
+    ]
+  },
+  "scripts": {
+    "passedDistinctTrackedEntrypoints": 28,
+    "pythonUnittestReportedTests": 15,
+    "receipts": [
+      "docs/virtualization/evidence/p00-baseline-2026-09-04/scripts-runs.json",
+      "docs/virtualization/evidence/p00-baseline-2026-09-04/final-script-runs.json"
+    ],
+    "preservedFindings": [
+      "Public security test pointed to deleted UsbAttachmentStore.swift; both public and CI entrypoints now check UsbPassthroughAvailability.swift and its actual UI callsite.",
+      "Removed an orphan SANDBOX_THREAT_MODEL.md existence assertion; executable security checks remain. PLAN owns future P13 threat-model work."
+    ],
+    "checkoutLocalTestsAbsentFromInitialTrackedFreeze": [
+      "scripts/test-benchmark-registry-npm.sh",
+      "scripts/test-dory-open.sh",
+      "scripts/test-endurance-resource-analysis.sh",
+      "scripts/test-guest-build-provenance.sh"
+    ],
+    "absentTestMeaning": "Recorded exit127 attempts did not execute tests and are not product failures. The guest provenance test subsequently passed as a supplemental checkout-local observation after exact FEX restoration. Its source remains private/untracked; that observation is excluded from required or reproducible P00 gate counts. The other three local-only tests remain unexecuted."
+  },
+  "guestBuildInputs": {
+    "restorationReceipt": "docs/virtualization/evidence/p00-baseline-2026-09-04/fex-exact-restoration.json",
+    "provenanceReceipt": "docs/virtualization/evidence/p00-baseline-2026-09-04/guest-provenance-runs.json",
+    "result": "Required reproducible evidence: eight original FEX Git blobs and modes restored; four current build pins and three existing source-patch pins verified; all seven public ARM64/amd64 architecture/alias input-fingerprint commands passed.",
+    "meaning": "Repairs inputs required by current ARM64 initfs release job. No Docker/image build, FEX execution, or physical guest qualification.",
+    "supplementalObservation": "The checkout-local scripts/test-guest-build-provenance.sh passed in the frozen local snapshot. It is not a required P00 gate or a portable clean-checkout command, and it is excluded from the 28 tracked offline gate entrypoints and seven required fingerprint commands.",
+    "portableLinkerSetup": "See guest-provenance-runs.json reproduction for a rustc-derived host rust-lld path and private PATH prefix. No fixed home-directory path is required."
+  },
+  "intelQEMUClassification": "docs/virtualization/evidence/p00-baseline-2026-09-04/intel-qemu-source-audit.json",
+  "exclusions": [
+    "No scripts/test.sh all/app/ui or ci-test.sh umbrella invocation: these may stop/clean app test products and conflict with the installed application; parent owns isolated app/package baseline gates.",
+    "No live hostshare/readiness, benchmark purge, guest Docker image build, privileged binfmt registration, clean-account campaign, or shipping artifact audit.",
+    "Cargo host tests do not qualify Linux-only execution. runc-wrapper/tests/sealed_executable_linux.rs is conditionally compiled out on macOS; host output reports0ignored, not a Linux pass.",
+    "RustSec network advisory refresh was not run; this is offline formatting/lint/test evidence, not a current vulnerability audit.",
+    "P00 classifications do not close remaining no-QEMU source debt or claim P13 threat-model completion."
+  ],
+  "installedApp": "1876 Thu Sep  3 11:49:19 2026     /Applications/Dory.app/Contents/MacOS/Dory"
+}

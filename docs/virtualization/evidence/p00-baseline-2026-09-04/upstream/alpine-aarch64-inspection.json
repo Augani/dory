@@ -1,0 +1,25 @@
+{
+  "architecture": "aarch64",
+  "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-virt-3.24.1-aarch64.iso",
+  "sha256": "c81699152db11d2a6dbb7d75348d632fcf5811eff414d7e71876a8bb6d48bc02",
+  "bytes": 92743680,
+  "downloadVerified": true,
+  "bootArtifacts": [
+    {
+      "member": "boot/initramfs-virt",
+      "sha256": "fc1aad923040d23bea79f62bef4a8e2481162e89a5c42245903df1a85134a527",
+      "bytes": 10148959
+    },
+    {
+      "member": "boot/vmlinuz-virt",
+      "sha256": "47970e0ee0478fe5c60824a89f162d5a353fa29466e5d3bddb0f9c506f1ed756",
+      "bytes": 10351104
+    }
+  ],
+  "packageNames": [
+    "apks/aarch64/musl-1.2.6-r2.apk",
+    "apks/aarch64/musl-utils-1.2.6-r2.apk",
+    "boot/initramfs-virt",
+    "boot/vmlinuz-virt"
+  ]
+}

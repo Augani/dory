@@ -1,0 +1,860 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p00.baseline",
+  "reviewDate": "2026-09-04",
+  "phase": "P00",
+  "phaseComplete": true,
+  "completionMeaning": "Baseline, scope, issue map and reproducibility are established. This does not close later implementation or physical/release qualification gates.",
+  "source": {
+    "phaseEntryCommit": "5fc049c1390901faa2f64236ea108e0dfdab35fc",
+    "finalImplementationCommit": "a65187e137b7744a72995fc8306e6dcd4e01c36a",
+    "phaseEntryDirtyPaths": [],
+    "focusedCommits": [
+      "b1f939ee918e40899bbaeb818022af86a9e00634 Keep cancellable FFI checks strict and isolate parallel fixtures",
+      "1aeb862807b0f5b405ba543fe6ffee2e2354368d Update security gates to the active USB authorization path",
+      "6f2d03dbad95f75f63ca1df794db20c2421b7256 Restore pinned FEX inputs required by the guest release build",
+      "34ee9b62169e85a8305783634fe0f2400aa5a34e Pin guest candidates and prepare verified diagnostic boot inputs",
+      "44212fac5b351f44b9d3b9528f8f8120bd90515d Bind release testing to final public host and SDK policies",
+      "40edc0eee6f625338dc4b9dc303bd3597a37ed39 Define a shared subsystem evidence contract",
+      "a65187e137b7744a72995fc8306e6dcd4e01c36a Enforce final host and SDK policy in local public releases"
+    ],
+    "changedFiles": [
+      {
+        "path": ".github/scripts/test-release-host-policy.py",
+        "sha256": "a4318018d7df475d1baa373ecb239d25382cca65f8f10b3d348b0f2e994981b4"
+      },
+      {
+        "path": ".github/scripts/test-security-contracts.sh",
+        "sha256": "affe0cb57ab50d1e2e5fd2ec1f3bae54a7ad3453d788eb7b5c1a760a2d89e030"
+      },
+      {
+        "path": ".github/scripts/test-vz-platform-sdk.py",
+        "sha256": "fa156ebf8668be1d2b33900d98de1640fbf80cec6479e26ea56d9a2c54c5eff6"
+      },
+      {
+        "path": ".github/scripts/verify-release-host-policy.py",
+        "sha256": "fdb3c72dd42b0a424fd033518e51fe8373af17324a4bec4e32445e8485c358a8"
+      },
+      {
+        "path": ".github/scripts/verify-vz-platform-sdk.py",
+        "sha256": "6d4e469aea39def72cfbce871072c0df738721b09c34cb8c2bfb0b58df73a487"
+      },
+      {
+        "path": ".github/workflows/release.yml",
+        "sha256": "7423a4fc3fc634ca538e699d1c98db02fc7668deb518ac6b5811f8419430fa43"
+      },
+      {
+        "path": ".github/workflows/tests.yml",
+        "sha256": "9d96788c6b7ce2d69669c6cd7bc0ce4af5e9688d447df8d60487465984a102fd"
+      },
+      {
+        "path": ".gitignore",
+        "sha256": "62fc89070b20e7eacceddff4cbf5bde4546b9bd931c7e4d8f79397ca3ddc7adb"
+      },
+      {
+        "path": "Config/DoryVirtualizationEvidence.schema.json",
+        "sha256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb"
+      },
+      {
+        "path": "Config/DoryVirtualizationGuestCandidates.json",
+        "sha256": "cf34d3f20d24c4c2e3c306fa6c03e08e8689632ea0d452dacb0cb42f7658a4fb"
+      },
+      {
+        "path": "dory-core/ffi/src/agent_forward.rs",
+        "sha256": "04c9fe730350bd74cf4f3058b7dc63dd67b7adc9288c4f0836addd0ed1733934"
+      },
+      {
+        "path": "dory-core/ffi/src/exec_control_tests.rs",
+        "sha256": "adc1bfec75418be2c805b747601de7028fb1275a75f225f83ac4973763b70b9f"
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/BUILD_PACKAGES.txt",
+        "sha256": "ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1"
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/Dockerfile",
+        "sha256": "f4ee5d098b71627cdc189681c3d94bd6bd9240448c98b02613ed4c12ff1bf63e"
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/Dockerfile.dockerignore",
+        "sha256": "31df65a11a39da4023912866e34bda16430e35a259227f4fbe6eb3d1915d9266"
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/FEX",
+        "sha256": "01921fa471efc53c955b1d6263f7df4ad0f08f082669a3a7adb6f1e1d5ac0c28"
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/FEXServer",
+        "sha256": "bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597"
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/LICENSE.FEX",
+        "sha256": "f34a779f56b36d22b20e1b990d23e583a6a7ca071331925fa46156441c77a1ee"
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/README.md",
+        "sha256": "5daa6d23b15d4206f2f0dc3837747445a14cc643fee7cbd2c83c4f9d9a60bf79"
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/rebuild.sh",
+        "sha256": "6e71f94992e4ac6514ddd70e155b6e5812327ac5bc3acdeda22c424f57c26e15"
+      },
+      {
+        "path": "scripts/prepare-virtualization-fixtures.py",
+        "sha256": "0a46c6e249caf92050b4fd29536b68e0786cd8f8b62b48ce1491489aa048fcdc"
+      },
+      {
+        "path": "scripts/release.sh",
+        "sha256": "166a888427f278f82f4dcc78e4f9d9f7e2da1996cbeaf4bf440e98affc5ae83c"
+      },
+      {
+        "path": "scripts/test-prepare-virtualization-fixtures.py",
+        "sha256": "654fbeb0ee1a94ce2ac8c943074ffdd0208a39be7041d643fb3e2149b6c9459e"
+      },
+      {
+        "path": "scripts/test-security-contracts.sh",
+        "sha256": "cc804afd6b90d896902c0963d21540898d6485912be8f39976e2978d6e9e9be9"
+      }
+    ],
+    "cpuOwner": "Assigned CPU/DBT agent; no rebase or deletion of pre-existing work."
+  },
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "releaseQualified": false,
+  "requirements": {
+    "P00-01": {
+      "complete": true,
+      "evidence": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/source-baseline.json",
+          "sha256": "d956f980ef2c804aecbc7ed67d75df432075cec2454992a9206e7c83d9527e5a"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/swift-source-equivalence.json",
+          "sha256": "598fd436e98390725b812791a9114efcf36c3dc03c310d89ec0a22d5d63eaa7d"
+        }
+      ]
+    },
+    "P00-02": {
+      "complete": true,
+      "evidence": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/container-run.json",
+          "sha256": "f14a09cfa2456ba1b421edb3fbe11ad518b26bee704ad42dafcf8921ed57a063"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/swift-source-equivalence.json",
+          "sha256": "598fd436e98390725b812791a9114efcf36c3dc03c310d89ec0a22d5d63eaa7d"
+        }
+      ]
+    },
+    "P00-03": {
+      "complete": true,
+      "evidence": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/container-run.json",
+          "sha256": "f14a09cfa2456ba1b421edb3fbe11ad518b26bee704ad42dafcf8921ed57a063"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/rust-script-baseline.json",
+          "sha256": "188b581ab3521703149b10412d00862cfc117dcb00f685cf94c876ba9af47ca7"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-verification.json",
+          "sha256": "1e34e163ac04f5a94a58be2f41424cab7e66339975aca4aeb368094b76fb329b"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/host-policy-gate-verification.json",
+          "sha256": "b9e25e952ba20ef22b8c66974cc065c26b7ea706f67513d4915d51cc8b0a5bb1"
+        }
+      ]
+    },
+    "P00-04": {
+      "complete": true,
+      "evidence": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+          "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+        }
+      ]
+    },
+    "P00-05": {
+      "complete": true,
+      "evidence": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/host-policy-performance.json",
+          "sha256": "c4370a805a3d84c2c9bae56d6b5b6e716daf0f018bcda4de514876f336608ff5"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/host-policy-gate-verification.json",
+          "sha256": "b9e25e952ba20ef22b8c66974cc065c26b7ea706f67513d4915d51cc8b0a5bb1"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/apple-public-release-source-capture.json",
+          "sha256": "b78ea5e398bcb41edeaff625af38f5b1f0a1daba2ba290f6927dad311a0fcd28"
+        }
+      ]
+    },
+    "P00-06": {
+      "complete": true,
+      "evidence": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-verification.json",
+          "sha256": "1e34e163ac04f5a94a58be2f41424cab7e66339975aca4aeb368094b76fb329b"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/apple-latest-restore-image.json",
+          "sha256": "9b47e398684e6207afe9e8b5dfe18727157ec5370023e95618671ff7fb8b14e2"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/apple-cdn-metadata.json",
+          "sha256": "0796f11fd9c825f7b1a8c600b52832a64ec085b94b75d6317ef3603ba399a8c6"
+        }
+      ]
+    },
+    "P00-07": {
+      "complete": true,
+      "evidence": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json",
+          "sha256": "9905fedbfff4f41e2e1b9bf93dafa0b8613a72b6d2548c0b45ade74d4f1059f2"
+        }
+      ]
+    },
+    "P00-08": {
+      "complete": true,
+      "evidence": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+          "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+        }
+      ]
+    },
+    "P00-09": {
+      "complete": true,
+      "evidence": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/swift-source-equivalence.json",
+          "sha256": "598fd436e98390725b812791a9114efcf36c3dc03c310d89ec0a22d5d63eaa7d"
+        }
+      ]
+    },
+    "P00-10": {
+      "complete": true,
+      "evidence": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/intel-qemu-source-audit.json",
+          "sha256": "c4991afbfe0583f8eab6846046b6894259aea3dccb69f0aecc5adce9a82e6a89"
+        },
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fex-exact-restoration.json",
+          "sha256": "1c485b71fdd0034cb4d754c95ddc7d9d1b310db4a0977c6460cfa6fa5cb3bcaf"
+        }
+      ]
+    },
+    "P00-11": {
+      "complete": true,
+      "evidence": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/subsystem-evidence.json",
+          "sha256": "c77dfa6d6c7fe0d46b9de3d815e227f7323ca339a4ef4125152c19b33dc599fa"
+        }
+      ]
+    },
+    "P00-12": {
+      "complete": true,
+      "evidence": [
+        {
+          "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/host-policy-performance.json",
+          "sha256": "c4370a805a3d84c2c9bae56d6b5b6e716daf0f018bcda4de514876f336608ff5"
+        }
+      ]
+    }
+  },
+  "guestCandidates": {
+    "path": "Config/DoryVirtualizationGuestCandidates.json",
+    "sha256": "cf34d3f20d24c4c2e3c306fa6c03e08e8689632ea0d452dacb0cb42f7658a4fb"
+  },
+  "guestScope": {
+    "candidates": 7,
+    "linuxFamilies": [
+      "Ubuntu24.04.4",
+      "Fedora44-1.7"
+    ],
+    "diagnostic": "Alpine virt3.24.1 both architectures, verified ISO/member/raw-kernel hashes",
+    "fedora": "Repository/installer metadata is verified. GPT installation is the intended layout, not an observed installed-disk result.",
+    "macos": "26.6.2/25G83 compatible metadata discovery on this experimental host, with official CDN SHA256. IPSW bytes were not downloaded; target-host compatibility and installation remain P08.",
+    "graphics": "Server and diagnostic media have no installed desktop session. Fedora Mesa versions are repository packages; guest GL/Vulkan/Metal qualification remains open."
+  },
+  "testDisposition": {
+    "container": {
+      "passed": 1202,
+      "suites": 141,
+      "testSeconds": 9.635,
+      "elapsedSeconds": 153.018,
+      "receipt": "docs/virtualization/evidence/p00-baseline-2026-09-04/container-run.json"
+    },
+    "core": {
+      "disposition": "Reuse unchanged674 source inputs. Broad run retained its failures, followed by all affected suites passing on final corrected source.",
+      "broadXCTest": {
+        "executed": 1101,
+        "skipped": 2,
+        "failingMethods": 3,
+        "assertionFailures": 4
+      },
+      "broadSwiftTesting": {
+        "executed": 1159,
+        "failingMethods": 3,
+        "issues": 4
+      },
+      "finalFocused": {
+        "xctest": 182,
+        "swiftTesting": 46,
+        "failed": 0,
+        "skipped": 0
+      },
+      "receipt": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-regression-corrections.json"
+    },
+    "app": {
+      "passed": 83,
+      "seconds": 35.518,
+      "currentInputsVerified": 618,
+      "scope": "Copied isolated ad-hoc host; app transport/client contracts. Current daemon source covered separately.",
+      "receipt": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-lifecycle-client-evidence.json"
+    },
+    "rust": {
+      "passed": 224,
+      "failed": 0,
+      "ignored": 0,
+      "strictClippy": "passed",
+      "format": "passed",
+      "receipt": "docs/virtualization/evidence/p00-baseline-2026-09-04/rust-script-baseline.json"
+    },
+    "trackedOfflineScriptEntrypoints": 28,
+    "hostAndSDKTestMethods": 19,
+    "fixturePreparerTests": 15,
+    "originalFailures": "Strict Clippy argument count, parallel Rust fixture collision and stale security-script path corrected; earlier failures remain in raw receipts.",
+    "privateTests": "Four initial attempts lacked checkout-local test sources. One later provenance observation is supplemental and excluded from required gate counts; seven public fingerprint commands and exact Git blob/hash checks are reproducible.",
+    "explicitMediaSkip": "P01 x86 PVH required-media gate failed closed when input was absent; optional mode recorded a skip. New Alpine inputs are pinned but no P02 userspace boot has been claimed.",
+    "excluded": "Destructive clean-account, installed-engine, privileged guest/binfmt, Linux-only host-inapplicable and physical performance/release campaigns were inspected and not run.",
+    "counting": "Overlapping or differently frozen campaigns are not summed into a fictitious full pass."
+  },
+  "evidenceContract": {
+    "path": "Config/DoryVirtualizationEvidence.schema.json",
+    "sha256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb"
+  },
+  "issueLabels": {
+    "cpu": "subsystem:cpu",
+    "native": "subsystem:native",
+    "firmware": "subsystem:firmware",
+    "devices": "subsystem:devices",
+    "graphics": "subsystem:graphics",
+    "macos": "subsystem:macos",
+    "control": "subsystem:control",
+    "storage": "subsystem:storage",
+    "network": "subsystem:network",
+    "guest-tools": "subsystem:guest-tools",
+    "qualification": "subsystem:qualification"
+  },
+  "cellIdentityMapping": {
+    "linux-arm64-native": [
+      "linux-arm64-native",
+      "linux-arm64"
+    ],
+    "linux-x86_64-translated": [
+      "linux-x86_64-translated",
+      "linux-x86-64-translated",
+      "linux-x86_64"
+    ],
+    "macos-arm64-vzmac": [
+      "macos-arm64-vzmac",
+      "macos-arm64-vz",
+      "macos-arm64"
+    ]
+  },
+  "subsystemEvidence": {
+    "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/subsystem-evidence.json",
+    "sha256": "c77dfa6d6c7fe0d46b9de3d815e227f7323ca339a4ef4125152c19b33dc599fa"
+  },
+  "reproduction": "PLAN.md P00 completion section is the single build/gate entry point. Retained machine-local command paths describe historical runs, not required private inputs.",
+  "remainingQualification": [
+    "Final Xcode26.6/17F113 build on public supported host; physical minimum macOS15.0 tuple admission and tests.",
+    "P02 exact userspace PVH boot, CPU semantics and interpreter qualification; P03 ARM native/boot contracts; P04 device correctness.",
+    "P08 real IPSW install, managed Mac guest tools/shares and saved-memory continuation; P09-P15 end-to-end and release qualification.",
+    "Twelve workloads and25 metrics are provisional/unmeasured; calibrate then freeze release budgets before candidate tests."
+  ],
+  "priorEvidence": [
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/campaign.json",
+      "sha256": "c4f42f3879435b2ee1a44112f7f65dd3129a2509f790896eae1fce7eb798cc5d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-regression-corrections.json",
+      "sha256": "613fa0de21a224e7c1b99b6f84fa70ba24e13df93fa520ae06958c79a5a7be98"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-lifecycle-client-evidence.json",
+      "sha256": "0aaf4156e27e40a47f4a7097a6c6f53dcea3c8dcf836be523749d9f31f5d60e6"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/apple-public-release-source-capture.json",
+      "sha256": "b78ea5e398bcb41edeaff625af38f5b1f0a1daba2ba290f6927dad311a0fcd28"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/baseline-script-fixes.patch",
+      "sha256": "4a77f323a947fd7eb8ab327782de6ea0d6efb27024a43d9f180f5778bedee12a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json",
+      "sha256": "eaf323797d00263512db3be8d9419f121b185983edd1cd196c6d5f863de04992"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json",
+      "sha256": "9905fedbfff4f41e2e1b9bf93dafa0b8613a72b6d2548c0b45ade74d4f1059f2"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/container-run.json",
+      "sha256": "f14a09cfa2456ba1b421edb3fbe11ad518b26bee704ad42dafcf8921ed57a063"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/container-source-manifest.json",
+      "sha256": "993b412bfda9e7a46928a2c99f73ed6954c9e69cab99c00c32abbb08ad7c339c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/container-tests.log",
+      "sha256": "816cd308337aae15a9edde93c5019333edbbf07b6e8e3d95d2cb351034f85548"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/corrected-runs.json",
+      "sha256": "0f9b484f07d64a9baeb577ce3d55941825bbc485fabf157b2983af5893c2efeb"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/corrected-rust-clippy.log.gz",
+      "sha256": "3e4a7a5f2e3d2fab0cc20bd743a6592630d0220e97ccf3b3a8339491d73beb18"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/corrected-rust-fmt.log.gz",
+      "sha256": "e64e275c3f954293e972bb9d920c660924c5e1730f9942351682784aeaca08f8"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/corrected-script-rust-source-manifest.json",
+      "sha256": "b1f77df53fadbe7327b552ba5ef85fa6b5f0925996999fdf353da9f953ad1cf1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/corrected-security-script.log.gz",
+      "sha256": "7d2a8919ac4d1d13e47eaed2e3cf07c5c32e4c10b477db0313b97696241636c1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fex-exact-restoration.json",
+      "sha256": "1c485b71fdd0034cb4d754c95ddc7d9d1b310db4a0977c6460cfa6fa5cb3bcaf"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-rust-clippy.log.gz",
+      "sha256": "3d48f003991c5985c8799731f266368a04882faced49bc62cda32a901c1ddd86"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-rust-fmt.log.gz",
+      "sha256": "e64e275c3f954293e972bb9d920c660924c5e1730f9942351682784aeaca08f8"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-rust-runs.json",
+      "sha256": "fdb6ce518df67eff272e9c755df5112ea0f9e51f8cb35bab986c6fda45ef6e04"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-rust-test.log.gz",
+      "sha256": "a4b8bd2e53a5065b1cbeb20d8d5a865d043a928b6c50613922a19e2afa9269ef"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-script-runs.json",
+      "sha256": "cd140f79e1c25d6298ec5a8f2e19e7652a4b8625c2cfbf90bd97592be125fba7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-script-rust-source-manifest-2.json",
+      "sha256": "610c49034b6e5103dac4382d5220bc0933b74d9280758f9b0a43df898cc7ab3d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-script-rust-source-manifest.json",
+      "sha256": "1b25fa79f129794a164f5201ad62848f9ad0b739875c3e0d07f2d1f00aab9508"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-security-script.log.gz",
+      "sha256": "3870817b0d27144d94bc988c33bc341df8cb3bac71ffee68a23d87883443a2c4"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-security-workflow-script.log.gz",
+      "sha256": "52e4932d4055d8180250cb6eaf722088b67e9b7ae9ea0be0459fc5c638d88824"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/final2-rust-clippy.log.gz",
+      "sha256": "bdb842c36ee357868f1bee8d033d6cb1010b65ab72912d1c71fa06414afcb031"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/final2-rust-fmt.log.gz",
+      "sha256": "e64e275c3f954293e972bb9d920c660924c5e1730f9942351682784aeaca08f8"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/final2-rust-runs.json",
+      "sha256": "aceb7d803d166a0d3d0486ab38d2df934d1615668a7be531cb300bbe64af954c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/final2-rust-test.log.gz",
+      "sha256": "853ba2bb846d4b27c801f73fc4e543280df29c1ff58dc2f1fc8bac46954cd40a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-alpine.json",
+      "sha256": "482119799754370779d99554a65a0f170fd32739dee7de518ec3cdd1247e33e2"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-alpine.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-tests.log",
+      "sha256": "ee292bf1fa52f97c16dbd583569a0712bd546520e1beea29cea3851096db92b8"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-verification.json",
+      "sha256": "1e34e163ac04f5a94a58be2f41424cab7e66339975aca4aeb368094b76fb329b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/frozen-input-validation.json",
+      "sha256": "ba6e503c82c34fd9f62d9cde874bf5d4ecb9ae510b67ab04c439bc085b8a477d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/guest-input-fingerprints.json",
+      "sha256": "e402ecce51fb90ba5c782aebe194af4b6f22fbc3a4d9e87587de5f945fbf864d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/guest-provenance-runs.json",
+      "sha256": "8e2abf9a1084887cef6b0252ebc400ae8fb919c34c6899a84c2e9cf68fff53ab"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/guest-provenance-source-manifest.json",
+      "sha256": "bcc07580b4f92eda5019ef2f72a1cce61d9273b67579ba20eac1488c299afd1f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/guest-provenance-tests.log.gz",
+      "sha256": "0e81509e58718d449c2388c4eb19d47db0d8be6b3125ecea275f72b6efda145a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/host-current-experimental.json",
+      "sha256": "2fe8d5e8ed1aef178b01163a88bd6454f41aa80a4edbf0b5840985b92af52585"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/host-policy-gate-verification.json",
+      "sha256": "b9e25e952ba20ef22b8c66974cc065c26b7ea706f67513d4915d51cc8b0a5bb1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/host-policy-performance.json",
+      "sha256": "c4370a805a3d84c2c9bae56d6b5b6e716daf0f018bcda4de514876f336608ff5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/initfs-aarch64.log.gz",
+      "sha256": "a34ba3be249778715904b7b56c46e6a572f398b44957638edf35c949f921cac1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/initfs-amd64.log.gz",
+      "sha256": "c70379249b456a54cf1e4d50d1e21d2c7cc6a42de4808a638e7183bcc8057ed3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/initfs-arm64.log.gz",
+      "sha256": "c90ba8ef70289a7d7689e88af417ac4e2e45c580fdc191f6c0ac830ca6a24138"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/initfs-x86_64.log.gz",
+      "sha256": "6d4fb32a479550d2a5664cc39a36ba57f1e32a6e2167b2b35a8b05c1960bc1f2"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/intel-qemu-source-audit.json",
+      "sha256": "c4991afbfe0583f8eab6846046b6894259aea3dccb69f0aecc5adce9a82e6a89"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/kernel-amd64.log.gz",
+      "sha256": "9d4c2f0e63de2fdefbc92b8be27719b1b14bb0c132b66dec6120bf9469aaa032"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/kernel-arm64.log.gz",
+      "sha256": "7d6db93bdcc80731a9015da4825443cfa9410950b32c2c454938dc7aac071b65"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/kernel-x86_64.log.gz",
+      "sha256": "f49e17e659e36b6e31184ced87b0e1956656cd0252b0eb4abd33ffd5667eb4a8"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/rust-clippy.log.gz",
+      "sha256": "7cbc8984bdc172f005f8c3356fcee1a81d0f9bb02ab2d21ec30f61070275c230"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/rust-fmt.log.gz",
+      "sha256": "e64e275c3f954293e972bb9d920c660924c5e1730f9942351682784aeaca08f8"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/rust-prior-evidence-assessment.json",
+      "sha256": "31357d530ecc829349daad656b853aa6cccdd10927ff5e72aa9e954f61560bb3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/rust-runs.json",
+      "sha256": "8fe984faadcf502ed878ba46ca783678c29c7f24a981d45ffbc05047d9c0d265"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/rust-script-baseline.json",
+      "sha256": "188b581ab3521703149b10412d00862cfc117dcb00f685cf94c876ba9af47ca7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/rust-test.log.gz",
+      "sha256": "e485fa17c84a4bf4d26daf7ee415e9a1bd1025752c01fefa3ee4e0d48473fad2"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/schema-verification.json",
+      "sha256": "fd167125596f220a5e4a49d3b9d6cbd464c81dd15efabf81de0c377cc5371803"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/script-rust-source-manifest.json",
+      "sha256": "62f8dd2f9d2db52c69c9a08f6621407a82084439eda0d6cb86595701dc3616ed"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/scripts-runs.json",
+      "sha256": "44eb55cb910f27b55aa3207f7ac3eb01695760d1b5bfce1be1cff8ba63f29de4"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/sdk-gate-after.json",
+      "sha256": "d5859908148b95ed054f6ce4449fe2e017bc2527eb94a53f5baa4f9f9226da3c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/sdk-gate-before.json",
+      "sha256": "1e719742eba9ba5f93a7498d49ed0d3c8beeabffbbf0cea6b162f79f5f200e81"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/security-script-correction-overlay.json",
+      "sha256": "407b9dcc07078b363e13b87fe5ebd9e4e27c1240bf1ec6614c73815e32eeeeaf"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/source-baseline.json",
+      "sha256": "d956f980ef2c804aecbc7ed67d75df432075cec2454992a9206e7c83d9527e5a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/subsystem-evidence.json",
+      "sha256": "c77dfa6d6c7fe0d46b9de3d815e227f7323ca339a4ef4125152c19b33dc599fa"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/swift-source-equivalence.json",
+      "sha256": "598fd436e98390725b812791a9114efcf36c3dc03c310d89ec0a22d5d63eaa7d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-agent-protocol-consumers.log.gz",
+      "sha256": "509a8f1f0bc6c3969bbadb445aa5400467ec6fc5763bf27dd234b06289b1f58a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-app-update-payload.log.gz",
+      "sha256": "3b04e7be69efae3403266c7eb50eae95e4597e20973249028a92fbc0f10fdd8a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-benchmark-campaign.log.gz",
+      "sha256": "216338c22108bf5f000d0fef706c253564c2c50d9b5e6bcf4d9b3b21a50fa7c9"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-benchmark-developer-workflows.log.gz",
+      "sha256": "bbf4916736a4e0f30eccb9c25f47ccbd95e81cc7665956bea9ae2b776f7539ba"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-benchmark-external-network.log.gz",
+      "sha256": "ea27efb34b10a156a004657a7577718b1c143233543afa3d3046a131661564b8"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-benchmark-registry-npm.log.gz",
+      "sha256": "8e35a77ca199c8284562320033b1ec2b99c3590a3fb989bbafb4dc0b6fc9029d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-benchmark-user-workflows.log.gz",
+      "sha256": "e74fd829ad6ad07c7c3d8764fe3be0cbc8ee2ead9e70141b92e448168f7c9f86"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-ci-test-support.log.gz",
+      "sha256": "c92b5faceeeaf6fc3da00a12e596da735b6d0acdd79ae4a2d792ee2f6873f9c1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-ci-umbrella.log.gz",
+      "sha256": "e6117360c23fe651b027f05b4b133145aa0297922602cb188bc38b16fe462d20"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-clean-release-source.log.gz",
+      "sha256": "25190cef42eacfa924ff28a363fb77eef1954a8a86b8b6136bf3057ff4f014a1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-clean-xcode-products.log.gz",
+      "sha256": "c6e6acc2877c4a50e8c9cceed745aca28f624c3d7da7da0990d4dc4f10c73252"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-data-drive-capacity.log.gz",
+      "sha256": "ca39c4837a4319b3d0ead1d2729e9a66adca4897595b199cde598a52401bd068"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-destructive-action-contracts.log.gz",
+      "sha256": "4f4b2df43f923c7983ee9213ced212ecb109cefe02df225eacf3ee82adbd9b35"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-dmg-distribution-signing.log.gz",
+      "sha256": "d8dd0c965770c11bfde85320e567728f5d5749aed33b1e638c59c131f6163394"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-dory-open.log.gz",
+      "sha256": "35aa1025b8a6d17ba903125c715503fcafe8bf9b8631206961812dec02c01c8a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-endurance-resource-analysis.log.gz",
+      "sha256": "aaae82c2bcedf4953a2180e75742cb55613d0dfbb08dbc20ae53ad86bcf1ff26"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-guest-build-provenance.log.gz",
+      "sha256": "da033698651c3bddbaf3890951b3dc5b469c98269c71deb6ee3ce0edd121bba5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-gvproxy-payload.log.gz",
+      "sha256": "61cf09b142c70116de0b99bf9b3ea6aaa16db2d78519359480139e3cfd690e1b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-host-cli-payload.log.gz",
+      "sha256": "cc870e061d263eca48102255de257e1e373f4cbaa44a15f3a9151466ec10fd8a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-make-dmg.log.gz",
+      "sha256": "ec1612a9cec4bb49f54317de6584e9515f7964af3ee5014384649451dcda4b87"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-no-qemu-production.log.gz",
+      "sha256": "19ebcbacb788abb49ed9a2bf40739a955d1e9e611f9842b8823a268c6ccec094"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-readiness-gate.log.gz",
+      "sha256": "c0df78ec5a40f28925016aa721bcc5d2fb9eef67af17092c12f027d88dfee3b8"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-readiness-offline.log.gz",
+      "sha256": "a8be2d7d923c420ce7887832d65ec0ff4549863c154b0907d599e5ee9e02e706"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-security-contracts.log.gz",
+      "sha256": "93e3e60ae9c07bda8bbde3e4102e1c18c77cfa82926505e42cc2341339993a89"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-sleep-wake-evidence.log.gz",
+      "sha256": "06d0faade9e879475ed330454e6d7a1d99574dcc525af908cdd8308a6d3f2263"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-sparkle-distribution-signing.log.gz",
+      "sha256": "ca2b7d013186587083ec7955538aaf63231e71ab151a0377775c52dfafbd9213"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-sparkle-install-evidence.log.gz",
+      "sha256": "7a395997b12d647fbdb215818235b5b28e15a2916f1d77a62aae48ba6eed8b91"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-transfer-helper-image.log.gz",
+      "sha256": "474fde3df563282bddc47d78ae5e41065919436faa78a474e0a87fe204779cbb"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-verify-macos-deployment-targets.log.gz",
+      "sha256": "0c59f53576228f0c09c17bc559dd44b14ce93bf8e412e3710e2772efa438ea70"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/test-verify-sparkle-update.log.gz",
+      "sha256": "5df59a9530a9fa20d4c1742d427e1b3b8b19ebd7070e4ab76522d7f1098894a4"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/alpine-aarch64-inspection.json",
+      "sha256": "f0088177e2e502c8e4648dfe8ac7dc8d8e19dc25b67317344d24461c309b7364"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/alpine-aarch64-iso-files.txt",
+      "sha256": "9811a9940e5aa3a2de902af10b068baa8e1c7d6d664865aecb6dbf01b1d1b443"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/alpine-virt-3.24.1-aarch64.iso.sha256",
+      "sha256": "3d8575d3f5253207aa7464774f0982135096b44212bdd96ffa279b9f728b915c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/alpine-virt-3.24.1-x86_64.iso.sha256",
+      "sha256": "0b4ece9a3c7bc2f464d133412470f31653b1b9157257c5e3a5f331a593ebb1cd"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/alpine-x86_64-inspection.json",
+      "sha256": "f031851150b1bd682f346369bcb856bdd3a49b2af26f77a7e00ab8340e932dac"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/alpine-x86_64-iso-files.txt",
+      "sha256": "eb28c892688e09cbe1d12748f86e7b6117057ac107f704d93d2637436c225f35"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/apple-cdn-metadata.json",
+      "sha256": "0796f11fd9c825f7b1a8c600b52832a64ec085b94b75d6317ef3603ba399a8c6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/apple-latest-restore-image.json",
+      "sha256": "9b47e398684e6207afe9e8b5dfe18727157ec5370023e95618671ff7fb8b14e2"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-44-aarch64-CHECKSUM",
+      "sha256": "d7fb08f9062bba2fd3b76fde5fe6d5417370132b732c4d8a964a2f13674ec7d4"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-44-aarch64-treeinfo.txt",
+      "sha256": "82bc1f4863d2509adc1b9b70d203dadc2912d4cc8c91df73c448ce26a5db5b1b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-44-x86_64-CHECKSUM",
+      "sha256": "db8ebe72604fc53958feaac965bf7d7739b8ac1aeeb3161d3aee2b1c0a70540f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-44-x86_64-treeinfo.txt",
+      "sha256": "b20f364a1e7e8ded463e2fd51e56704e0f064efce7de8c0eee2c4a4d415d5810"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-aarch64-packages.json",
+      "sha256": "6633a386ee2cf36074f9d55e10f7964485f72d5e2a6f6eff7764c5fbb01ecf3f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-aarch64-repomd.xml",
+      "sha256": "8d52a4e6e765c04111c3948b23419207fc9ab9850ba6b3d82059fbf5aca117a5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-x86_64-packages.json",
+      "sha256": "9336d1dbb4da2929ee4c00fd2c281138234bd7d54d64cfa3f6011f5fc07f9f92"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-x86_64-repomd.xml",
+      "sha256": "579a1c6bc814db46d3e53289c4ffd8ed8cd4ec62a5088e5fb4683c6036ef7685"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fetch-receipt.json",
+      "sha256": "ec1ff28b104c1390940f2f6d3139ee4860017e5a7f6ca8fff97d1a59a6d6c277"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/noble-current-manifest.txt",
+      "sha256": "d3b6a75a8b4c3fbc2676c3936b4a72e73c83887398770d1b8dec8f95c3da844e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/noble-current-sha256.txt",
+      "sha256": "38bb87564a258327745d4c7fc51b2fccc5bd64a2a71dfa5fa39e2f0898906d9a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/ubuntu-24.04.4-amd64.manifest",
+      "sha256": "8ceb1b8d69fdc53b3f397944189fc1aa481a68c305a0093aaec123325fa647d3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/ubuntu-24.04.4-arm64.manifest",
+      "sha256": "4b6a925e8a19e424d4eff2071ae6c12d72d9b10a26e985d9a43f83e44c1b71b1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/verify-no-qemu-production.log.gz",
+      "sha256": "3090defeecd2009c949c702b0377f27edc414e435723a3bc6d80448a5bc07509"
+    }
+  ]
+}

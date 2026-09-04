@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "command": [
+    "swift",
+    "test",
+    "--package-path",
+    "/tmp/dory-p00-container-source-1/Packages/ContainerizationEngine",
+    "--scratch-path",
+    "/tmp/dory-p00-container-build-1",
+    "--jobs",
+    "3",
+    "--no-parallel"
+  ],
+  "exitCode": 0,
+  "elapsedSeconds": 153.018,
+  "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/container-tests.log",
+  "logSHA256": "816cd308337aae15a9edde93c5019333edbbf07b6e8e3d95d2cb351034f85548",
+  "sourceManifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/container-source-manifest.json",
+  "sourceManifestSHA256": "993b412bfda9e7a46928a2c99f73ed6954c9e69cab99c00c32abbb08ad7c339c",
+  "sourceFilesUnchanged": 962,
+  "liveSwiftInputsMatch": 900,
+  "scope": "Current container package and current core dependency source on experimental macOS27 host; no physical guest campaign.",
+  "environment": {
+    "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH": "1"
+  }
+}

@@ -1,0 +1,51 @@
+{
+  "captureScope": "Minimal factual excerpts only; SHA-256 identifies the fetched full HTML response. A rolling page may change after capture.",
+  "kind": "dev.dory.p00.apple-public-release-source-capture",
+  "retrievedAtUTC": "2026-09-04T11:02:40.439643+00:00",
+  "schemaVersion": 1,
+  "sources": [
+    {
+      "exactNormalizedExcerpts": [
+        "macOS 26.6.2 (25G83) August 17, 2026",
+        "Xcode 26.6 (17F113) June 25, 2026",
+        "Xcode 26.6 RC (17F109) June 8, 2026"
+      ],
+      "facts": {
+        "localXcode": {
+          "build": "17F109",
+          "channel": "RC",
+          "version": "26.6"
+        },
+        "publicReleaseHost": {
+          "build": "25G83",
+          "releaseDate": "2026-08-17",
+          "version": "26.6.2"
+        },
+        "publicXcode": {
+          "build": "17F113",
+          "releaseDate": "2026-06-25",
+          "version": "26.6"
+        }
+      },
+      "responseSHA256": "951a24d97d43791a42faf8813e5d12dd55bdf95add13b00499f39c4a2e67900b",
+      "retrieval": "Direct HTTPS fetch, cross-checked against Apple Developer web page",
+      "url": "https://developer.apple.com/news/releases/"
+    },
+    {
+      "facts": {
+        "macOSSDK": "26.5",
+        "supportedBuildHostMajor": "26",
+        "supportedBuildHostMinimum": "26.2",
+        "xcode": "26.6"
+      },
+      "responseSHA256": "9817c9e94d1e04f9dce022b9b7fa29b96a7df094df30484fac7d87f2ad3fdab5",
+      "retrieval": "Direct HTTPS fetch of the Xcode26.6 table row",
+      "url": "https://developer.apple.com/xcode/system-requirements"
+    }
+  ],
+  "supersededSearchIndexSelection": {
+    "oldMacOSTuple": "26.5 / 25F71",
+    "oldXcodeTuple": "26.5 / 17F42",
+    "reason": "These appeared in cached search snippets but were absent from the directly fetched Apple release listing. They are not retained as verified policy authorities."
+  }
+}

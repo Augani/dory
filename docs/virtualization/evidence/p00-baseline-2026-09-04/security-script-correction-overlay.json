@@ -1,0 +1,19 @@
+{
+  "scope": "Historical intermediate USB-script overlay, bound to the corrected frozen source below. These SHA256 values describe the intermediate source before the final orphan-document assertion removal, not the current live source.",
+  "files": [
+    {
+      "path": "scripts/test-security-contracts.sh",
+      "sha256": "125bb29007c295e30ec01a94144037f350e66af769710b50cdc05adcf87642d3"
+    },
+    {
+      "path": "Dory/Net/UsbPassthroughAvailability.swift",
+      "sha256": "fe42fade742f260912dba37f3ca03408afb2517736e98ae32f68f0017a48c6f7"
+    },
+    {
+      "path": "Dory/Features/Settings/UsbDevicesView.swift",
+      "sha256": "43ea243177a4d18e773dec680a9f8b866943158d5ef0995be2bfcd40e81fee99"
+    }
+  ],
+  "frozenSourceManifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/corrected-script-rust-source-manifest.json",
+  "frozenSourceManifestSHA256": "b1f77df53fadbe7327b552ba5ef85fa6b5f0925996999fdf353da9f953ad1cf1"
+}

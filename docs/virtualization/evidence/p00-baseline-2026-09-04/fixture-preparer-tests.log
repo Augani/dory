@@ -1,0 +1,20 @@
+test_altered_existing_cache_is_preserved (__main__.FixturePreparationTests) ... ok
+test_atomic_publication_does_not_replace_concurrent_destination (__main__.FixturePreparationTests) ... ok
+test_bad_existing_extraction_is_not_replaced (__main__.FixturePreparationTests) ... ok
+test_bad_extraction_hash_and_oversized_output_cleanup (__main__.FixturePreparationTests) ... ok
+test_bad_or_oversized_download_leaves_no_published_or_temporary_file (__main__.FixturePreparationTests) ... ok
+test_cli_requires_explicit_selection_and_lists_without_network (__main__.FixturePreparationTests) ... ok
+test_download_verifies_before_publication_and_reuses_cache (__main__.FixturePreparationTests) ... ok
+test_failed_producer_cleans_temporary_file (__main__.FixturePreparationTests) ... ok
+test_invalid_recipes_duplicate_names_and_non_https_urls_reject (__main__.FixturePreparationTests) ... ok
+test_missing_member_and_offset_outside_member_cleanup (__main__.FixturePreparationTests) ... ok
+test_missing_verify_only_input_does_not_download (__main__.FixturePreparationTests) ... ok
+test_raw_extraction_and_pinned_gzip_offset_with_wrapper_trailer (__main__.FixturePreparationTests) ... ok
+test_symlink_and_special_file_cache_inputs_are_rejected (__main__.FixturePreparationTests) ... ok
+test_truncated_gzip_and_decompression_bomb_cleanup (__main__.FixturePreparationTests) ... ok
+test_unsafe_names_and_members_reject_before_cache_creation (__main__.FixturePreparationTests) ... ok
+
+----------------------------------------------------------------------
+Ran 15 tests in 0.070s
+
+OK

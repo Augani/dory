@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "sourceManifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/corrected-script-rust-source-manifest.json",
+  "environment": {
+    "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "CARGO_NET_OFFLINE": "true",
+    "CARGO_TARGET_DIR": "/tmp/dory-p00-rust-agent-build",
+    "CARGO_BUILD_JOBS": "3",
+    "PYTHONDONTWRITEBYTECODE": "1"
+  },
+  "runs": [
+    {
+      "name": "security-script",
+      "command": [
+        "bash",
+        "scripts/test-security-contracts.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-corrected-source",
+      "startedUTC": "2026-09-04T10:51:26.569414+00:00",
+      "runtimeSeconds": 0.437,
+      "exitCode": 1,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/corrected-security-script.log.gz",
+      "logSHA256": "7d2a8919ac4d1d13e47eaed2e3cf07c5c32e4c10b477db0313b97696241636c1",
+      "uncompressedLogSHA256": "35fa1c342681e13f1a577f2ef5dad9a61610ab56070ef44ea649a1fe3b1b89c4"
+    },
+    {
+      "name": "rust-fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-corrected-source/dory-core",
+      "startedUTC": "2026-09-04T10:51:27.006886+00:00",
+      "runtimeSeconds": 0.378,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/corrected-rust-fmt.log.gz",
+      "logSHA256": "e64e275c3f954293e972bb9d920c660924c5e1730f9942351682784aeaca08f8",
+      "uncompressedLogSHA256": "9d2d35462e8bd1beff5604b094ac8c47550fd476945c33203aa5cb13244b64a0"
+    },
+    {
+      "name": "rust-clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-corrected-source/dory-core",
+      "startedUTC": "2026-09-04T10:51:27.385415+00:00",
+      "runtimeSeconds": 1.871,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/corrected-rust-clippy.log.gz",
+      "logSHA256": "3e4a7a5f2e3d2fab0cc20bd743a6592630d0220e97ccf3b3a8339491d73beb18",
+      "uncompressedLogSHA256": "ddaaacfc6aeff0d2b397a11da7d40c5a47f051613a423ebb5a21ad0771ffae6e"
+    }
+  ]
+}

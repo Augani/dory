@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "fingerprints": {
+    "kernel-arm64": "ba3fcc2b6a89b969feb6121b3997b6f52540d11984a9c2a5f9697e9a8ad76ff6",
+    "kernel-amd64": "27ebd7f38aa005ac73889fba3d12a74e17c9a94304c8e911e2c943311271d268",
+    "kernel-x86_64": "27ebd7f38aa005ac73889fba3d12a74e17c9a94304c8e911e2c943311271d268",
+    "initfs-arm64": "3ab2c30c62872aa8c686752a68a22c304ec9a6c81686ceb07a04418f381f0d12",
+    "initfs-aarch64": "3ab2c30c62872aa8c686752a68a22c304ec9a6c81686ceb07a04418f381f0d12",
+    "initfs-amd64": "3ac218d69b0682807b82b52c59514fa62271f20bb640d9ae4ca57ce864efeea3",
+    "initfs-x86_64": "3ac218d69b0682807b82b52c59514fa62271f20bb640d9ae4ca57ce864efeea3"
+  },
+  "aliasesMatch": true,
+  "guestArchitecturesAreDistinct": true,
+  "meaning": "Source provenance hashes only, not image build or physical guest qualification."
+}

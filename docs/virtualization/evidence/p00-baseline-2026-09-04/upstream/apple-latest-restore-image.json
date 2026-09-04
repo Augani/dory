@@ -1,0 +1,9 @@
+{
+  "buildVersion" : "25G83",
+  "minimumCPUCount" : 2,
+  "minimumMemoryBytes" : 4294967296,
+  "operatingSystemVersion" : "26.6.2",
+  "schema" : "dory.vzmac-latest-restore-image@1",
+  "supportedConfigurationAvailable" : true,
+  "url" : "https:\/\/updates.cdn-apple.com\/2026SummerFCS\/fullrestores\/140-75212\/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D\/UniversalMac_26.6.2_25G83_Restore.ipsw"
+}

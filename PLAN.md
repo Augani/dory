@@ -2,11 +2,11 @@
 
 **Reviewed:** 2026-09-03; implementation verification updated 2026-09-04.
 
-**Baseline:** commit `78375a12e`, including the working-tree changes present at the start of this review.
+**Original review baseline:** commit `78375a12e`, including the working-tree changes present at the start of that review. **Completed P00 baseline:** source `a65187e13`, with exact phase-entry state, focused fixes and retained evidence in the [P00 receipt](docs/virtualization/p00-baseline-2026-09-04.json).
 
 **Purpose:** the single implementation plan for the team. This replaces the previous project roadmaps, architecture proposals, research plans, and narrative progress ledgers.
 
-**Original review boundary:** documentation consolidation and obsolete document-only check removal. The subsequent implementation campaign is recorded under P01 and in its linked engineering receipt; physical guest and release qualification remain open.
+**Original review boundary:** documentation consolidation and obsolete document-only check removal. Subsequent baseline and implementation campaigns are recorded under P00/P01 and their linked engineering receipts; physical guest and release qualification remain open.
 
 **Jump to:** [current audit](#2-what-exists-today-evidence-based-audit) · [code removal programme](#4-remove-replace-retain-the-code-cleanup-programme) · [phase order and owners](#5-delivery-order-and-team-ownership) · [module/interface map](#6-concrete-module-and-interface-work-map) · [final completion checklist](#10-final-completion-checklist).
 
@@ -197,20 +197,70 @@ Staff by expertise, not package count. At minimum assign distinct accountability
 
 **Deliverable:** one reproducible source baseline, one three-cell scope, a validated issue map, and a safe removal inventory.
 
-- [ ] **P00-01** Record the exact source commit plus current uncommitted changes, submodule/dependency revisions, selected Xcode/SDK, host OS/build, signing mode and guest artifact hashes. Reconcile the existing CPU work with its owner before rebasing or deleting anything.
+- [x] **P00-01** Record the exact source commit plus current uncommitted changes, submodule/dependency revisions, selected Xcode/SDK, host OS/build, signing mode and guest artifact hashes. Reconcile the existing CPU work with its owner before rebasing or deleting anything.
 - [x] **P00-02** Rebuild the Swift package test products from a clean task-specific build location; fix the missing/incompatible cached-test-product setup. Do not treat `--skip-build` discovery failure as a runtime failure or a test pass.
-- [ ] **P00-03** Run the appropriate existing package, app, Rust and script suites. Capture failures, skips and runtime; separate pre-existing failures from new regressions. Inspect test entrypoints before running destructive/clean-account campaigns.
-- [ ] **P00-04** Produce a real call graph for app/CLI → daemon → resolver → component acquisition → runner → CPU/machine/devices → guest readiness for each of the three cells. Mark code that has no production call site.
-- [ ] **P00-05** Freeze the initial host policy: Apple Silicon only; select a final public macOS/SDK minimum supported by required APIs. Keep beta-only evidence in its own experimental cell. Audit availability guards rather than assuming a successful build means runtime availability.
-- [ ] **P00-06** Define exact initial guest candidates: two distinct general-purpose Linux families for ARM64 and x86_64, a small reproducible diagnostic Linux fixture for each, and supported compatible macOS IPSW builds. Pin downloads by hash and record architecture, boot layout, guest kernel, libc and graphics stack.
-- [ ] **P00-07** Make a capability matrix for CPU, boot, disk, network, shares, graphics API, display, input, audio, clipboard, guest tools, suspend, snapshots and recovery. Give each cell `absent`, `implemented`, `integration-tested` or `release-qualified` status with an evidence pointer.
-- [ ] **P00-08** Inventory obsolete source against R01–R20: production call sites, feature flags, persistent identities, test-only usage and replacement owner. Start with false-success behavior and disconnected duplicate implementations.
+- [x] **P00-03** Run the appropriate existing package, app, Rust and script suites. Capture failures, skips and runtime; separate pre-existing failures from new regressions. Inspect test entrypoints before running destructive/clean-account campaigns.
+- [x] **P00-04** Produce a real call graph for app/CLI → daemon → resolver → component acquisition → runner → CPU/machine/devices → guest readiness for each of the three cells. Mark code that has no production call site.
+- [x] **P00-05** Freeze the initial host policy: Apple Silicon only; select a final public macOS/SDK minimum supported by required APIs. Keep beta-only evidence in its own experimental cell. Audit availability guards rather than assuming a successful build means runtime availability.
+- [x] **P00-06** Define exact initial guest candidates: two distinct general-purpose Linux families for ARM64 and x86_64, a small reproducible diagnostic Linux fixture for each, and supported compatible macOS IPSW builds. Pin downloads by hash and record architecture, boot layout, guest kernel, libc and graphics stack.
+- [x] **P00-07** Make a capability matrix for CPU, boot, disk, network, shares, graphics API, display, input, audio, clipboard, guest tools, suspend, snapshots and recovery. Give each cell `absent`, `implemented`, `integration-tested` or `release-qualified` status with an evidence pointer.
+- [x] **P00-08** Inventory obsolete source against R01–R20: production call sites, feature flags, persistent identities, test-only usage and replacement owner. Start with false-success behavior and disconnected duplicate implementations.
 - [x] **P00-09** Add behavior/structured-contract coverage for backend selection and qualification policy that the deleted documentation-only checks never proved. The obsolete dossier checker and public-document assertions were removed in this cleanup; retain existing runtime checks and close the behavioral coverage gaps explicitly.
-- [ ] **P00-10** Inspect `.github/workflows/intel-engine.yml`, guest QEMU-builder inputs, legacy binfmt handlers and no-QEMU debt entries. Separate x86 guest artifacts still needed from unsupported Intel-host or QEMU-runtime machinery.
-- [ ] **P00-11** Choose one issue label and evidence schema per subsystem; keep API/ABI decisions here. Keep unresolved interface proposals and decisions in this file, with linked team issues where useful. Do not create additional design/architecture documents.
-- [ ] **P00-12** Define performance workloads and provisional budgets before optimization. Freeze release budgets after baseline calibration and before testing the candidate. Record any later changes with rationale and requalify affected cells.
+- [x] **P00-10** Inspect `.github/workflows/intel-engine.yml`, guest QEMU-builder inputs, legacy binfmt handlers and no-QEMU debt entries. Separate x86 guest artifacts still needed from unsupported Intel-host or QEMU-runtime machinery.
+- [x] **P00-11** Choose one issue label and evidence schema per subsystem; keep API/ABI decisions here. Keep unresolved interface proposals and decisions in this file, with linked team issues where useful. Do not create additional design/architecture documents.
+- [x] **P00-12** Define performance workloads and provisional budgets before optimization. Freeze release budgets after baseline calibration and before testing the candidate. Record any later changes with rationale and requalify affected cells.
 
 **Exit:** a new team member can build and identify the true implementation status without relying on old plans, local `/tmp` files or an engineer's private environment. No silent test skips in a required gate.
+
+### P00 completion and reproducible entry point — 2026-09-04
+
+P00 is complete at implementation commit `a65187e13`. The [baseline receipt](docs/virtualization/p00-baseline-2026-09-04.json) binds the clean phase-entry commit `5fc049c139`, dependency locks, source changes, host/signing facts, guest candidates, test dispositions and retained artifacts. Existing CPU work was preserved and reconciled with the assigned CPU/DBT owner; no rebase or deletion occurred. The next implementation order remains **P02 → P03 → P04**, with parallel work inside each phase.
+
+The [call graph and R01–R20 inventory](docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json) contain 39 nodes, 44 source-anchored edges and replacement ownership. The [42-entry capability matrix](docs/virtualization/evidence/p00-baseline-2026-09-04/capability-matrix.json) records all 14 capabilities for all three cells. None is release-qualified. In particular, the newer native contract engine and PC accelerated-renderer authority lack production callers; PC readiness currently proves firmware execution rather than userspace; managed Mac user shares and a general guest agent remain absent. Those gaps belong to their implementation phases, not to baseline completion.
+
+**Host/API decision:** Apple Silicon only; final macOS **15.0** is the three-cell runtime floor, and final **Xcode 26.6 (17F113), SDK 26.5** is the build baseline. The initial public release-testing host tuple is **macOS 26.6.2 (25G83)**. Existing app/core deployment targets remain 14.0 for older compatibility paths; raw-HV targets/availability guards require 15.0. GIC, Mac graphics/input/audio, save/restore and virtual USB declarations/guards are audited in the [host-policy receipt](docs/virtualization/evidence/p00-baseline-2026-09-04/host-policy-performance.json). Physical USB APIs from macOS 27 are experimental. The local macOS 27 beta / Xcode 17F109 RC evidence cannot qualify a public release. A final-toolchain build and physical minimum-host coverage remain required; the exact 15.0 test-host build tuple still needs primary-source verification before allowlisting.
+
+**Guest decision:** [the candidate catalog](Config/DoryVirtualizationGuestCandidates.json) pins Ubuntu 24.04.4 and Fedora Server 44-1.7 for both ARM64 and x86_64, Alpine virt 3.24.1 diagnostic media for both, and macOS 26.6.2/25G83 IPSW. Exact SHA-256, kernel/libc/graphics metadata, boot layout and upstream receipts are recorded per artifact. Both Alpine ISOs and all six derived boot files were hash-verified. Fedora metadata defines installer inputs; GPT installed disks are an intended contract, not a completed installation. Mac compatibility discovery ran on the experimental host, and the IPSW hash came from Apple's CDN metadata; a physical install on each target host remains P08. Server/diagnostic media do not establish an accelerated desktop, and diagnostic kernel inputs do not establish P02/P03 userspace boot.
+
+| Baseline verification | Result and limits |
+|---|---|
+| Core Swift | Broad frozen regression retained 1,101 XCTest / 1,159 Swift Testing results and their failures. All affected suites subsequently passed: 182 XCTest + 46 Swift tests, zero failures/skips. All 674 final inputs still match. Separately frozen heavy public-operation campaigns remain linked in P01. |
+| Container package | Fresh task-specific build: 1,202 tests in 141 suites passed; 153.018 seconds including build. |
+| App | 83 isolated client/transport tests passed in 35.518 seconds; all 618 relevant app/project/container inputs still match. Installed Dory was not stopped or replaced. |
+| Rust | 224 tests, zero failures/ignored; formatting and strict Clippy pass. Fixed an exported-method lint failure and a parallel fixture-directory collision. Linux-only execution is not claimed. |
+| Scripts and inputs | 28 distinct tracked offline entrypoints, 19 host/SDK test methods and 15 fixture-preparer tests pass. Stale USB security assertions were fixed. Eight exact FEX files required by release guest builds were restored from Git and verified against current pins; seven public input fingerprints pass. |
+| Exclusions | Required missing media fails closed; the optional historical PVH skip remains explicit. Private checkout-only test attempts and one supplemental provenance run are excluded from required reproducible gate counts. Destructive clean-account, installed-engine and physical performance/release campaigns were not run. |
+
+A clean checkout can build and run the baseline contract suites with the committed locks. Use Rust `1.95.0` from `rust-toolchain.toml`, Python 3.10 or newer, the protobuf `protoc` compiler (observed here: `libprotoc 33.0`), and the selected full Xcode on a supported build host. The final public toolchain is selected policy; this campaign's actual build receipts are explicitly RC/beta engineering evidence. The clone example assumes the reviewed commits have been shared; local review can use a clean detached worktree at the same commit. These commits have not been pushed by this task.
+
+```sh
+git clone https://github.com/Augani/dory.git Dory
+cd Dory
+git checkout "$(git log --diff-filter=A --format=%H -- docs/virtualization/p00-baseline-2026-09-04.json)"
+export DEVELOPER_DIR=/Applications/Xcode-26.6.app/Contents/Developer
+brew install protobuf
+bash scripts/build-dory-ffi-xcframework.sh
+p00_build_root="$(mktemp -d -t dory-p00-build)"
+SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=1 swift test --package-path dory-core-swift --scratch-path "$p00_build_root/core" --jobs 3 --no-parallel --filter 'DoryVirtualMachineBackendPlannerTests|VirtualMachineCapabilitiesTests|DoryVirtualMachineQualificationManifestTests|DoryResolvedMachinePlanTests'
+SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=1 swift test --package-path Packages/ContainerizationEngine --scratch-path "$p00_build_root/container" --jobs 3 --no-parallel
+cargo test --manifest-path dory-core/Cargo.toml --workspace --locked
+python3 .github/scripts/test-vz-platform-sdk.py --require-selected-sdk
+python3 .github/scripts/test-release-host-policy.py
+python3 scripts/test-prepare-virtualization-fixtures.py
+```
+
+The checkout command selects the commit that first added the P00 receipt, retaining both the implementation and its evidence; its exact implementation parent is recorded inside that receipt. The FFI builder regenerates ignored bindings/frameworks from committed Rust sources; do not copy an engineer's generated artifacts as a new source baseline. Keep each frozen source checkout paired with a unique SwiftPM scratch location. The core filter above is a reproducible contract entry point, not a replacement for the broader recorded suites. Release additionally requires `verify-release-host-policy.py` against the actual host; unit fixtures do not authorize it. App build/test commands, exact filters, source manifests, raw failure logs and isolated-host signing facts are retained in the linked P01 receipts. Inspect destructive entrypoints before selecting additional campaigns.
+
+Fetch only explicitly selected guest inputs into a new cache. This command downloads the two small pinned diagnostic ISOs and derives bounded, verified kernel/initramfs files; it does not boot a guest. Add `--verify-only` to require cached input bytes without network access; missing or mismatched inputs fail.
+
+```sh
+p00_fixture_cache="$(mktemp -d -t dory-p00-fixtures)"
+python3 scripts/prepare-virtualization-fixtures.py --id alpine-virt-3.24.1-arm64 --id alpine-virt-3.24.1-x86_64 --cache-directory "$p00_fixture_cache" --extract
+```
+
+**Issue/evidence decision:** every subsystem uses the common versioned [evidence envelope schema](Config/DoryVirtualizationEvidence.schema.json), with one canonical issue label: `subsystem:cpu`, `subsystem:native`, `subsystem:firmware`, `subsystem:devices`, `subsystem:graphics`, `subsystem:macos`, `subsystem:control`, `subsystem:storage`, `subsystem:network`, `subsystem:guest-tools`, or `subsystem:qualification`. The [11 subsystem envelopes](docs/virtualization/evidence/p00-baseline-2026-09-04/subsystem-evidence.json) bind source, host class, scope and hashed receipts; historical receipt formats remain immutable artifacts. Canonical cells are `linux-arm64-native`, `linux-x86_64-translated`, and `macos-arm64-vzmac`; legacy evidence aliases are mapped explicitly in the baseline index. Schema validity cannot promote a skipped/experimental result into release qualification. Keep unresolved API/ABI changes in the owning PLAN task; no separate architecture document or external issue was created.
+
+**Performance decision:** the [provisional workload policy](docs/virtualization/evidence/p00-baseline-2026-09-04/host-policy-performance.json) defines 12 workloads, 25 metrics, resource profiles, measurement boundaries and sampling controls before optimization. No performance measurements or frozen release budgets are claimed. P14 must calibrate on the final physical matrix, commit numeric release bounds before candidate testing, and record/requalify any later changes.
 
 <a id="phase-p01"></a>
 

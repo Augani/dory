@@ -165,6 +165,7 @@ docs/
 !/docs/virtualization/evidence/p01-parallel-review-2026-09-04/
 !/docs/virtualization/evidence/p01-compound-review-2026-09-04/
 !/docs/virtualization/evidence/p00-baseline-2026-09-04/
+!/docs/virtualization/evidence/p00-baseline-2026-09-04/*.log
 !/docs/architecture-gates/
 /docs/architecture-gates/*
 !/docs/architecture-gates/virtiofs-worker-xpc.json

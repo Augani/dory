@@ -1,0 +1,10 @@
+{
+  "url": "https://updates.cdn-apple.com/2026SummerFCS/fullrestores/140-75212/A2A24B94-1FC1-45A3-93F7-C51B02AF1F4D/UniversalMac_26.6.2_25G83_Restore.ipsw",
+  "apiEvidence": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/apple-latest-restore-image.json",
+  "sha256": "885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95",
+  "contentLength": 19772231540,
+  "lastModified": "Thu, 13 Aug 2026 22:11:09 GMT",
+  "source": "Apple HTTPS CDN x-amz-meta-digest-sha256 header; image bytes are verified against this pin on download.",
+  "downloadAttempted": false,
+  "hostCompatibility": "VZ latestSupported reports compatible configuration on current experimental macOS27 arm64 host. Every target host must independently load and validate supported configuration before prepare."
+}

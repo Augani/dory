@@ -1,0 +1,58 @@
+[
+  {
+    "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/alpine-virt-3.24.1-x86_64.iso.sha256",
+    "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/x86_64/alpine-virt-3.24.1-x86_64.iso.sha256",
+    "exitCode": 0,
+    "sha256": "0b4ece9a3c7bc2f464d133412470f31653b1b9157257c5e3a5f331a593ebb1cd",
+    "error": null
+  },
+  {
+    "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/alpine-virt-3.24.1-aarch64.iso.sha256",
+    "url": "https://dl-cdn.alpinelinux.org/alpine/v3.24/releases/aarch64/alpine-virt-3.24.1-aarch64.iso.sha256",
+    "exitCode": 0,
+    "sha256": "3d8575d3f5253207aa7464774f0982135096b44212bdd96ffa279b9f728b915c",
+    "error": null
+  },
+  {
+    "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-44-x86_64-CHECKSUM",
+    "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Server/x86_64/iso/Fedora-Server-44-1.7-x86_64-CHECKSUM",
+    "exitCode": 0,
+    "sha256": "db8ebe72604fc53958feaac965bf7d7739b8ac1aeeb3161d3aee2b1c0a70540f",
+    "error": null
+  },
+  {
+    "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-44-aarch64-CHECKSUM",
+    "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Server/aarch64/iso/Fedora-Server-44-1.7-aarch64-CHECKSUM",
+    "exitCode": 0,
+    "sha256": "d7fb08f9062bba2fd3b76fde5fe6d5417370132b732c4d8a964a2f13674ec7d4",
+    "error": null
+  },
+  {
+    "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-44-x86_64-treeinfo.txt",
+    "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Server/x86_64/os/.treeinfo",
+    "exitCode": 0,
+    "sha256": "b20f364a1e7e8ded463e2fd51e56704e0f064efce7de8c0eee2c4a4d415d5810",
+    "error": null
+  },
+  {
+    "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/fedora-44-aarch64-treeinfo.txt",
+    "url": "https://download.fedoraproject.org/pub/fedora/linux/releases/44/Server/aarch64/os/.treeinfo",
+    "exitCode": 0,
+    "sha256": "82bc1f4863d2509adc1b9b70d203dadc2912d4cc8c91df73c448ce26a5db5b1b",
+    "error": null
+  },
+  {
+    "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/ubuntu-24.04.4-amd64.manifest",
+    "url": "https://releases.ubuntu.com/24.04.4/ubuntu-24.04.4-live-server-amd64.manifest",
+    "exitCode": 0,
+    "sha256": "8ceb1b8d69fdc53b3f397944189fc1aa481a68c305a0093aaec123325fa647d3",
+    "error": null
+  },
+  {
+    "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/upstream/ubuntu-24.04.4-arm64.manifest",
+    "url": "https://cdimage.ubuntu.com/releases/24.04.4/release/ubuntu-24.04.4-live-server-arm64.manifest",
+    "exitCode": 0,
+    "sha256": "4b6a925e8a19e424d4eff2071ae6c12d72d9b10a26e985d9a43f83e44c1b71b1",
+    "error": null
+  }
+]

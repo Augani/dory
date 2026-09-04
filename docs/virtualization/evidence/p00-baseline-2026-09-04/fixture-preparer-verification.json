@@ -1,0 +1,80 @@
+{
+  "schemaVersion": 1,
+  "kind": "dory.p00.fixture-preparer-verification",
+  "reviewDate": "2026-09-04",
+  "sourceCommitBeforeIntegration": "1aeb862807b0f5b405ba543fe6ffee2e2354368d",
+  "sourceFiles": [
+    {
+      "path": "scripts/prepare-virtualization-fixtures.py",
+      "sha256": "0a46c6e249caf92050b4fd29536b68e0786cd8f8b62b48ce1491489aa048fcdc",
+      "bytes": 16757
+    },
+    {
+      "path": "scripts/test-prepare-virtualization-fixtures.py",
+      "sha256": "654fbeb0ee1a94ce2ac8c943074ffdd0208a39be7041d643fb3e2149b6c9459e",
+      "bytes": 13068
+    },
+    {
+      "path": "Config/DoryVirtualizationGuestCandidates.json",
+      "sha256": "cf34d3f20d24c4c2e3c306fa6c03e08e8689632ea0d452dacb0cb42f7658a4fb",
+      "bytes": 9472
+    }
+  ],
+  "runs": [
+    {
+      "command": [
+        "python3",
+        "scripts/test-prepare-virtualization-fixtures.py"
+      ],
+      "exitCode": 0,
+      "testCount": 15,
+      "testRuntimeSeconds": 0.07,
+      "networkAccess": false,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-tests.log",
+      "logSHA256": "ee292bf1fa52f97c16dbd583569a0712bd546520e1beea29cea3851096db92b8"
+    },
+    {
+      "command": [
+        "python3",
+        "scripts/prepare-virtualization-fixtures.py",
+        "--id",
+        "alpine-virt-3.24.1-arm64",
+        "--id",
+        "alpine-virt-3.24.1-x86_64",
+        "--cache-directory",
+        "/tmp/dory-p00-guest-fixtures",
+        "--verify-only",
+        "--extract"
+      ],
+      "exitCode": 0,
+      "networkAccess": false,
+      "result": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-alpine.json",
+      "stderr": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-alpine.log"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-tests.log",
+      "sha256": "ee292bf1fa52f97c16dbd583569a0712bd546520e1beea29cea3851096db92b8",
+      "bytes": 1563
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-alpine.json",
+      "sha256": "482119799754370779d99554a65a0f170fd32739dee7de518ec3cdd1247e33e2",
+      "bytes": 2108
+    },
+    {
+      "path": "docs/virtualization/evidence/p00-baseline-2026-09-04/fixture-preparer-alpine.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0
+    }
+  ],
+  "scope": "Verifies reproducible integrity/derivation of pinned input bytes. Four previously extracted Alpine members were reverified; two raw kernels were newly extracted through the pinned gzip recipes. This is not guest boot, userspace, workload, API or release qualification.",
+  "streamingLimits": {
+    "chunkBytes": 65536,
+    "maximumDownloadBytes": 34359738368,
+    "maximumArchiveMemberBytes": 536870912,
+    "maximumArchiveExtractionSeconds": 180
+  },
+  "publication": "Private temporary output, bounded stream and SHA-256 verification before atomic no-replace hard-link publication; existing mismatched cache objects fail and remain untouched."
+}

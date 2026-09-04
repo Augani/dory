@@ -1,0 +1,340 @@
+{
+  "schemaVersion": 1,
+  "phaseRequirement": "P00-10",
+  "sourceManifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/script-rust-source-manifest.json",
+  "classification": [
+    {
+      "classification": "required-x86-guest-artifacts",
+      "finding": "amd64/x86_64 selects guest vmlinux+bzImage, x86 guest configuration, pinned amd64 userland and x86_64-unknown-linux-musl guest agent/runc. These are guest ISA artifacts; retaining them does not require a macOS Intel-host product or QEMU runtime. The Docker kernel build platform selects linux/amd64 but delegates execution to the explicit selected Docker endpoint; this audit did not execute a guest build.",
+      "disposition": "Retain amd64 guest source/build/provenance inputs for DoryPC/DBT qualification.",
+      "sourceFiles": [
+        {
+          "path": "guest/kernel/build.sh",
+          "sha256": "fbd8af0f1a2bdbc1717704dcaaa537e8834d9a85e25e23b480f5c2f606521c39"
+        },
+        {
+          "path": "guest/kernel/dory-x86.config",
+          "sha256": "1b6a1d41f88698c74e87e7caa3cd05360c356e58ccf112008824f5c02b946e33"
+        },
+        {
+          "path": "guest/kernel/input-fingerprint.sh",
+          "sha256": "e192c3f4c1221e4502ad3f2e62f9efd6e4fdc9013833c1f55c74816ac8470d0e"
+        },
+        {
+          "path": "guest/kernel/verify-build.sh",
+          "sha256": "32d31b9df5ecb9b67a96e65919919e560b73689d6df5200f853395b37bdcb3c4"
+        },
+        {
+          "path": "guest/initfs/build.sh",
+          "sha256": "0682c23ac3264e1e98080e28f37703f2044e87787b020926db0665a6e0ffe762"
+        },
+        {
+          "path": "guest/initfs/PINS",
+          "sha256": "8f56200773d30586e1b2f63d5000ed87045ff01746b780e22f8ee73e36bbc9d7"
+        },
+        {
+          "path": "guest/initfs/input-fingerprint.sh",
+          "sha256": "2cf8f2bd3a08dc92ef5ae00539b455d49bbddd0d3a6994d105536117aae2e022"
+        },
+        {
+          "path": "guest/initfs/verify-build.sh",
+          "sha256": "0d9a35b80b6f65db7c9d5d730a8150a58cac70abd06d9f258dcd9bf0cfcdc0bc"
+        }
+      ]
+    },
+    {
+      "classification": "unsupported-intel-host-campaign",
+      "finding": "Roadmap-only scheduled/manual/feat-fix job runs on self-hosted macOS intel dory, checks physical x86_64/HVF/nontranslated/nonvirtualized host, builds an x86_64 helper, and runs readiness. Its header excludes unqualified Intel artifacts from public releases. It is not the guest amd64 artifact builder.",
+      "disposition": "Keep outside public Apple-silicon release claims; no hardware campaign run here.",
+      "sourceFiles": [
+        {
+          "path": ".github/workflows/intel-engine.yml",
+          "sha256": "c6495e650f323687c75ce560b1897eeb6dc791924890241063d43f21975cf651"
+        }
+      ]
+    },
+    {
+      "classification": "unused-qemu-builder-seeds",
+      "finding": "Only cloud-init seeds remain: disposable probe powers itself off; Docker seed creates an isolated passwordless-sudo builder account and installs docker.io. Repository source references to qemu-builder are confined to these seeds; no tracked caller launches them. They are neither shipping runtime dependencies nor qualification evidence.",
+      "disposition": "Legacy development inputs, eligible for later removal after confirming external local consumers; do not execute during baseline.",
+      "sourceFiles": [
+        {
+          "path": "guest/qemu-builder/probe/meta-data",
+          "sha256": "046ed94fd6206a098b0d85194d346d15773e039ed11ed89fc7ff4eb7e68dbf94"
+        },
+        {
+          "path": "guest/qemu-builder/probe/user-data",
+          "sha256": "1df94cf5f356296b95dcc1ae5193cacd1a335a28622ca6ebd0ca1eda1c0d9475"
+        },
+        {
+          "path": "guest/qemu-builder/docker/meta-data",
+          "sha256": "900ca30dfe41fcd901d8a22501a57c56c8c536aa207fb26b13e6dc363e35773e"
+        },
+        {
+          "path": "guest/qemu-builder/docker/user-data",
+          "sha256": "0de342d0a94e692955e30c39c5ca914b694cecd462567db2d79725f50f84c0c5"
+        }
+      ]
+    },
+    {
+      "classification": "application-translation-not-whole-guest",
+      "finding": "Apple-silicon nonnative amd64 selects FEX-x86_64 and removes old qemu-x86_64 registration; missing FEX fails closed. Reverse arm64-on-Intel branch retains qemu-aarch64-static and a pinned privileged binfmt installer fallback, with no production caller to dockerFallbackCommand. Desktop Rosetta is a separate plan-authorized ARM64 Linux application mechanism. None implements whole x86 guest execution.",
+      "disposition": "Retain explicit application translation boundary; reverse Intel-host QEMU handler remains inventoried source debt, not approved product support.",
+      "sourceFiles": [
+        {
+          "path": "Packages/ContainerizationEngine/Sources/DoryHV/BinfmtRegistration.swift",
+          "sha256": "e42a54d4fa3017cff3557f045050ea702e4117a7ae1eee4b5c04e0de0b93ef72"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift",
+          "sha256": "37090baeff946595ffc4761e2493b0293922dbcd19a87b661b99fe77b4654c76"
+        },
+        {
+          "path": "guest/initfs/init",
+          "sha256": "721126da444324b3ba73fdea043802898411fba61a1bb8c245811b49e9e63fd7"
+        },
+        {
+          "path": "guest/desktop/rootfs-overlay/usr/lib/dory/configure-intel-translation",
+          "sha256": "e9d3c9b53ad8b6184244326682c055cf48a15db7adcd75216b5c185ffc1ff5df"
+        }
+      ]
+    },
+    {
+      "classification": "compatibility-wire-naming",
+      "finding": "GVProxyQEMUFrameDecoder and -listen-qemu name Ethernet framing/socket compatibility with gvproxy. These paths do not launch qemu-system or qemu-img. The names remain removal debt because the artifact scanner rejects all QEMU identity strings.",
+      "disposition": "No claim of debt removal or shipping artifact qualification; preserve framing behavior until a coordinated protocol migration.",
+      "sourceFiles": [
+        {
+          "path": "dory-core-swift/Sources/DoryCore/DirectIPBridge.swift",
+          "sha256": "b89a156164f42a7acc98f946c08f068a76ffea73ebdc5d5652f64a244cb82021"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift",
+          "sha256": "37090baeff946595ffc4761e2493b0293922dbcd19a87b661b99fe77b4654c76"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMMGVProxyNetwork.swift",
+          "sha256": "bf502263334407256ad7fea6cb567174f6117cc44279d490d21eade0c48f69cc"
+        }
+      ]
+    }
+  ],
+  "externalTrackedQEMUBuilderReferences": [],
+  "debtEntries": [
+    {
+      "category": "persisted-identity",
+      "path": "Dory/Models/Models.swift",
+      "maximumOccurrences": 1,
+      "disposition": "legacy decode/display only; remove production selection in Phase 0B",
+      "observedOccurrences": 1,
+      "sha256": "9c54b8140c9409dfbaf8fe1c32ae3475f0cc5a301bceacf75e4dd786e2e26f1e"
+    },
+    {
+      "category": "executable-or-helper",
+      "path": "Packages/ContainerizationEngine/Sources/DoryHV/BinfmtRegistration.swift",
+      "maximumOccurrences": 4,
+      "disposition": "retire under the separate application-translation decision; never use for a whole guest",
+      "observedOccurrences": 4,
+      "sha256": "e42a54d4fa3017cff3557f045050ea702e4117a7ae1eee4b5c04e0de0b93ef72"
+    },
+    {
+      "category": "control-protocol",
+      "path": "Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift",
+      "maximumOccurrences": 1,
+      "disposition": "replace the gvproxy named compatibility port with Dory framing in Phase 0B",
+      "observedOccurrences": 1,
+      "sha256": "37090baeff946595ffc4761e2493b0293922dbcd19a87b661b99fe77b4654c76"
+    },
+    {
+      "category": "control-protocol",
+      "path": "dory-core-swift/Sources/DoryCore/DirectIPBridge.swift",
+      "maximumOccurrences": 8,
+      "disposition": "replace the gvproxy named compatibility framing with Dory framing in Phase 0B",
+      "observedOccurrences": 8,
+      "sha256": "b89a156164f42a7acc98f946c08f068a76ffea73ebdc5d5652f64a244cb82021"
+    },
+    {
+      "category": "persisted-identity",
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineBackendPlanner.swift",
+      "maximumOccurrences": 1,
+      "disposition": "remove disabled experimental Windows planning in Phase 0B",
+      "observedOccurrences": 0,
+      "sha256": "4b9692b4ca33b680a86b83c9cac98459fb7dbf286cdf490e4287bf260c0d09e1"
+    },
+    {
+      "category": "persisted-identity",
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineCapabilities.swift",
+      "maximumOccurrences": 12,
+      "disposition": "make decode-only, migrate or reject, then remove production selection in Phase 0B",
+      "observedOccurrences": 11,
+      "sha256": "a708e82e29e599111fd50005c9965c832fb35393cfcb7accbee6ad9cce91148c"
+    },
+    {
+      "category": "persisted-identity",
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineQualificationManifest.swift",
+      "maximumOccurrences": 1,
+      "disposition": "remove legacy qualification vocabulary in Phase 0B",
+      "observedOccurrences": 1,
+      "sha256": "17f7bed37d816f796b3300f2232ea61c03205a1cc0bf2771a73f4d484cc26d61"
+    },
+    {
+      "category": "control-protocol",
+      "path": "dory-core-swift/Sources/DoryVMMKit/DoryVMMGVProxyNetwork.swift",
+      "maximumOccurrences": 1,
+      "disposition": "replace the gvproxy named compatibility port with Dory framing in Phase 0B",
+      "observedOccurrences": 1,
+      "sha256": "bf502263334407256ad7fea6cb567174f6117cc44279d490d21eade0c48f69cc"
+    },
+    {
+      "category": "persisted-identity",
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionActivation.swift",
+      "maximumOccurrences": 1,
+      "disposition": "remove disabled experimental Windows activation in Phase 0B",
+      "observedOccurrences": 1,
+      "sha256": "396959952cc95ebed61aa2a852d61d9b7a4cac3eb916f05c19fb505b7fdff2b6"
+    },
+    {
+      "category": "persisted-identity",
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionTrust.swift",
+      "maximumOccurrences": 3,
+      "disposition": "retain rejection only until legacy decoder migration is complete",
+      "observedOccurrences": 3,
+      "sha256": "0baa561d788b92724456d9eadd994a584a5ecb2b4578419b90181ce25add64ec"
+    },
+    {
+      "category": "persisted-identity",
+      "path": "dory-core-swift/Sources/DorydKit/DoryResolvedMachinePlan.swift",
+      "maximumOccurrences": 1,
+      "disposition": "remove disabled experimental Windows resolution in Phase 0B",
+      "observedOccurrences": 1,
+      "sha256": "d6b73da6fd7ee33cf54444c3f9ad2170bac2e4075201456609bf735cb67d0678"
+    },
+    {
+      "category": "persisted-identity",
+      "path": "scripts/build-components.py",
+      "maximumOccurrences": 1,
+      "disposition": "remove legacy qualification-manifest acceptance in Phase 0B",
+      "observedOccurrences": 1,
+      "sha256": "3d5ddbf973a83ce750216391967a2c9357378beedccd9c1531b43a38abc0e820"
+    }
+  ],
+  "observedDebtOccurrences": 33,
+  "limitations": [
+    "Source classification only; no Intel-host hardware run, guest image build, privileged binfmt registration, network download, or shipping artifact scan.",
+    "The source auditor excludes guest seed/input directories and accepts bounded existing debt; a passing source ceiling is not a no-QEMU shipping-artifact qualification."
+  ],
+  "arm64InitfsBuilderInputAvailability": {
+    "requiredBy": "guest/initfs/input-fingerprint.sh",
+    "inputs": [
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/Dockerfile",
+        "available": false
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/Dockerfile.dockerignore",
+        "available": false
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/FEX",
+        "available": false
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/FEXServer",
+        "available": false
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/BUILD_PACKAGES.txt",
+        "available": false
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/LICENSE.FEX",
+        "available": false
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/README.md",
+        "available": false
+      },
+      {
+        "path": "guest/initfs/vendor/fex-2607-dory1/rebuild.sh",
+        "available": false
+      },
+      {
+        "path": "patches/fex-container-fd-isolation.patch",
+        "available": true,
+        "sha256": "374eb59a207c0356f548295552f235c0eeadcdbac360a64b01535933a1af8f8a"
+      },
+      {
+        "path": "patches/fex-processor-id-stack-fix.patch",
+        "available": true,
+        "sha256": "e1da91d76caf48ed30183486abcc9a0eb768d28fd5d041a8b4cbe1c7b75df35c"
+      },
+      {
+        "path": "patches/fex-restore-complete-signal-context.patch",
+        "available": true,
+        "sha256": "e405db087203d5f22d50b54820b6a2120d013c0cdd33d1db343f4fac4c1d1e22"
+      }
+    ],
+    "meaning": "All eight vendored FEX build/binary inputs are absent; three source patches are present. This prevents rebuilding/provenance-verifying the current ARM64 initfs from this checkout. No missing input was synthesized and no binary identity was relabeled.",
+    "recoverableGitObjects": {
+      "removedByCommit": "b9358883ae603bd76c9c4f9d1afe343673637751",
+      "sourceCommit": "a746bf639de0db795f0d188e0e04869294a15cff",
+      "entries": [
+        {
+          "path": "guest/initfs/vendor/fex-2607-dory1/BUILD_PACKAGES.txt",
+          "gitObject": "2c5eceb4cf9a42dd1b29182300b9cbefeede3f65",
+          "bytes": 6977,
+          "sha256": "ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1"
+        },
+        {
+          "path": "guest/initfs/vendor/fex-2607-dory1/Dockerfile",
+          "gitObject": "e497f0569eecf59c70eaf0c055615fc10f1020f5",
+          "bytes": 2506,
+          "sha256": "f4ee5d098b71627cdc189681c3d94bd6bd9240448c98b02613ed4c12ff1bf63e"
+        },
+        {
+          "path": "guest/initfs/vendor/fex-2607-dory1/Dockerfile.dockerignore",
+          "gitObject": "fba19ae7bc290883f51c9d84e79ba9ed97c78f61",
+          "bytes": 19,
+          "sha256": "31df65a11a39da4023912866e34bda16430e35a259227f4fbe6eb3d1915d9266"
+        },
+        {
+          "path": "guest/initfs/vendor/fex-2607-dory1/FEX",
+          "gitObject": "8a8872d00e044a5ae0c56eff1285f830d24c9607",
+          "bytes": 6469104,
+          "sha256": "01921fa471efc53c955b1d6263f7df4ad0f08f082669a3a7adb6f1e1d5ac0c28"
+        },
+        {
+          "path": "guest/initfs/vendor/fex-2607-dory1/FEXServer",
+          "gitObject": "ad16ab15cf0807c2b5e874ffd2a09f36c1f79d2f",
+          "bytes": 1840024,
+          "sha256": "bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597"
+        },
+        {
+          "path": "guest/initfs/vendor/fex-2607-dory1/LICENSE.FEX",
+          "gitObject": "cdb4f90b34cd30c0e0fd88108481c1fe61f66e57",
+          "bytes": 1094,
+          "sha256": "f34a779f56b36d22b20e1b990d23e583a6a7ca071331925fa46156441c77a1ee"
+        },
+        {
+          "path": "guest/initfs/vendor/fex-2607-dory1/README.md",
+          "gitObject": "013c65ea4f9ef4834fc26014597b47ffb5ec22c2",
+          "bytes": 5533,
+          "sha256": "5daa6d23b15d4206f2f0dc3837747445a14cc643fee7cbd2c83c4f9d9a60bf79"
+        },
+        {
+          "path": "guest/initfs/vendor/fex-2607-dory1/rebuild.sh",
+          "gitObject": "c088742397df34d8e5b14ad0fafa6dca6c4c0022",
+          "bytes": 4427,
+          "sha256": "6e71f94992e4ac6514ddd70e155b6e5812327ac5bc3acdeda22c424f57c26e15"
+        }
+      ],
+      "meaning": "Exact original blobs are locally recoverable without a network fetch. All current install_fex pinned SHA256 values for FEX,FEXServer,BUILD_PACKAGES.txt and LICENSE.FEX match these historical blobs. No files restored during this read-only audit."
+    },
+    "observedState": "Before exact restoration",
+    "resolution": {
+      "currentState": "All eight exact historical files restored; three current patches already match their pins.",
+      "receipt": "docs/virtualization/evidence/p00-baseline-2026-09-04/fex-exact-restoration.json",
+      "checks": "Both architecture input fingerprints and the existing offline guest provenance tests passed."
+    }
+  }
+}

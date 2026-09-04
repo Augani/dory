@@ -1,0 +1,34 @@
+{
+  "schemaVersion": 1,
+  "sourceManifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-script-rust-source-manifest.json",
+  "runs": [
+    {
+      "name": "security-script",
+      "command": [
+        "bash",
+        "scripts/test-security-contracts.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-final-source",
+      "startedUTC": "2026-09-04T10:52:57.717278+00:00",
+      "runtimeSeconds": 0.368,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-security-script.log.gz",
+      "logSHA256": "3870817b0d27144d94bc988c33bc341df8cb3bac71ffee68a23d87883443a2c4",
+      "uncompressedLogSHA256": "cb1ddf74ce64183fe7264077298cdb12cf4290dd6a44ff37297fef37ad43e69b"
+    },
+    {
+      "name": "security-workflow-script",
+      "command": [
+        "bash",
+        ".github/scripts/test-security-contracts.sh"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-final-source",
+      "startedUTC": "2026-09-04T10:52:58.085713+00:00",
+      "runtimeSeconds": 0.345,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-security-workflow-script.log.gz",
+      "logSHA256": "52e4932d4055d8180250cb6eaf722088b67e9b7ae9ea0be0459fc5c638d88824",
+      "uncompressedLogSHA256": "f841fcfb524261ae822bbd5f9d726a5ea3e2a04f71b479547791c231d8b13d23"
+    }
+  ]
+}

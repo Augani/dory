@@ -1,0 +1,19 @@
+{
+  "command": [
+    "python3",
+    "<repository>/.github/scripts/verify-vz-platform-sdk.py",
+    "--sdk",
+    "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.5.sdk",
+    "--sdk-version",
+    "26.5"
+  ],
+  "date": "2026-09-04",
+  "exitCode": 1,
+  "kind": "dev.dory.p00.sdk-gate-before",
+  "pathNormalization": "The shared repository absolute root was replaced with <repository> in retained commands/output. Source, SDK and binary hashes were not changed.",
+  "schemaVersion": 1,
+  "scope": "Existing gate incorrectly rejected final SDK 26.5 solely because macOS 27 USB headers were required.",
+  "sourceSHA256": "de811958be4b0a99bc5982d3a64049619c8edb6a446a9cd761ea8ac803293316",
+  "stderr": "VZ platform SDK contract: FAIL: selected SDK 26.5 predates the required final macOS 27 USB API contract\n",
+  "stdout": ""
+}

@@ -1,0 +1,161 @@
+{
+  "schemaVersion": 1,
+  "kind": "reproducible-source-baseline",
+  "phase": "P00",
+  "sourceCommit": "5fc049c1390901faa2f64236ea108e0dfdab35fc",
+  "sourceTree": "d6a9e51cb2358a26190c68e7335b33b2c5240030",
+  "uncommittedChangesAtPhaseEntry": [],
+  "submoduleRevisions": {
+    "command": [
+      "git",
+      "submodule",
+      "status"
+    ],
+    "exitCode": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  "dependencyLocks": [
+    {
+      "path": "Config/DoryRendererProductionTuple.json",
+      "sha256": "13d0ffcff1affe63635f4521a804fc29bf5bb8e74f10eaafa3f5385824e54ebf"
+    },
+    {
+      "path": "Dory.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved",
+      "sha256": "b43d0eeb680bcf3db0af6c2841add8d6ba7d006e64a302ebf323b61e25e521b3"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/source.lock.json",
+      "sha256": "92bb0c54b69d670943d40c6d6b1e9cea3b869271005555c70598cb5555d99248"
+    },
+    {
+      "path": "Firmware/DoryARMVirt/toolchain.lock.json",
+      "sha256": "73b5b15e655f95f244cf7b912f3e4d5bd5208796a76dda14539b0dc9270e1a88"
+    },
+    {
+      "path": "Firmware/DoryPC/source.lock.json",
+      "sha256": "92bb0c54b69d670943d40c6d6b1e9cea3b869271005555c70598cb5555d99248"
+    },
+    {
+      "path": "Firmware/DoryPC/toolchain.lock.json",
+      "sha256": "a29169825dafd7f004fadeb17088ac48bdd25ba80bac93836b2c221ea9174b89"
+    },
+    {
+      "path": "creative/dory-0.3.2-launch/package-lock.json",
+      "sha256": "5e8c5f74b53e5d9c507f87fc9ee0403223854c36f8be2ec0e12f234a88e298eb"
+    },
+    {
+      "path": "dory-core/Cargo.lock",
+      "sha256": "015646eeb635c76666cb0b725537945a1045ae993a8d80322cdec8faf38e8b5f"
+    },
+    {
+      "path": "guest/desktop/PINS",
+      "sha256": "7b8aea3d9d47558a6b0a01565daa9fb5f462d674d615b5a7503155729b395ce4"
+    },
+    {
+      "path": "guest/initfs/PINS",
+      "sha256": "8f56200773d30586e1b2f63d5000ed87045ff01746b780e22f8ee73e36bbc9d7"
+    },
+    {
+      "path": "guest/kernel/PINS",
+      "sha256": "472f9f7028b10e56d3003050a370c8e6bfd6580186d461aa01663fa9c6332b2e"
+    },
+    {
+      "path": "guest/mesa/PINS",
+      "sha256": "939aaef3df4cc8aef46e12f8e576973e985627f96138f3d0b96231d04edc6b0e"
+    },
+    {
+      "path": "rust-toolchain.toml",
+      "sha256": "4e0815c636c41dc830d61ace3855dc1ceaf456fd0801133e3f9caf9f2b59a231"
+    },
+    {
+      "path": "website/package-lock.json",
+      "sha256": "f71e112094afe972496ddbdfe0808da5fc135190637302378cdd04a51d58691d"
+    }
+  ],
+  "host": {
+    "command": [
+      "sw_vers"
+    ],
+    "exitCode": 0,
+    "stdout": "ProductName:\t\tmacOS\nProductVersion:\t\t27.0\nBuildVersion:\t\t26A5425a",
+    "stderr": ""
+  },
+  "architecture": {
+    "command": [
+      "uname",
+      "-m"
+    ],
+    "exitCode": 0,
+    "stdout": "arm64",
+    "stderr": ""
+  },
+  "selectedDeveloperDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+  "selectedXcode": {
+    "command": [
+      "xcodebuild",
+      "-version"
+    ],
+    "exitCode": 0,
+    "stdout": "Xcode 26.6\nBuild version 17F109",
+    "stderr": ""
+  },
+  "sdk": {
+    "command": [
+      "xcrun",
+      "--sdk",
+      "macosx",
+      "--show-sdk-version"
+    ],
+    "exitCode": 0,
+    "stdout": "26.5",
+    "stderr": ""
+  },
+  "swift": {
+    "command": [
+      "swift",
+      "--version"
+    ],
+    "exitCode": 0,
+    "stdout": "Apple Swift version 6.3.3 (swiftlang-6.3.3.1.1 clang-2100.1.1.101)\nTarget: arm64-apple-macosx28.0",
+    "stderr": "swift-driver version: 1.148.6"
+  },
+  "python": "3.10.13",
+  "installedAppSignature": {
+    "command": [
+      "codesign",
+      "-dvvv",
+      "/Applications/Dory.app"
+    ],
+    "exitCode": 0,
+    "stdout": "",
+    "stderr": "Executable=/Applications/Dory.app/Contents/MacOS/Dory\nIdentifier=com.pythonxi.Dory\nFormat=app bundle with Mach-O thin (arm64)\nCodeDirectory v=20500 size=117181 flags=0x10000(runtime) hashes=3651+7 location=embedded\nHash type=sha256 size=32\nCandidateCDHash sha256=205c2408e9903aee6c559c56907ce26b58734bcb\nCandidateCDHashFull sha256=205c2408e9903aee6c559c56907ce26b58734bcb1373dc409884bcb8245301f4\nHash choices=sha256\nCMSDigest=205c2408e9903aee6c559c56907ce26b58734bcb1373dc409884bcb8245301f4\nCMSDigestType=2\nCDHash=205c2408e9903aee6c559c56907ce26b58734bcb\nSignature size=4781\nAuthority=Apple Development: Augustus Otu (HJ9WPU4XH6)\nAuthority=Apple Worldwide Developer Relations Certification Authority\nAuthority=Apple Root CA\nSigned Time=1 Sep 2026 at 7:16:21\u202fPM\nInfo.plist entries=36\nTeamIdentifier=864H636QW4\nRuntime Version=26.5.0\nSealed Resources version=2 rules=13 files=47\nInternal requirements count=1 size=180\nTotal signatures=1\nChosen signature=1"
+  },
+  "signingMode": "P01 app tests use a copied Debug host with an independent bundle identifier and ad-hoc signature; installed app signature is recorded separately. No release notarization is inferred.",
+  "cpuOwnership": {
+    "originalWorkPreserved": true,
+    "noRebaseOrDeletion": true,
+    "workReviewedAt": "5fc049c1390901faa2f64236ea108e0dfdab35fc",
+    "authorization": "User requested implementation review/fixes, then ordered P00 before P02/P03/P04. CPU owner is the assigned CPU/DBT agent; parent serializes commits.",
+    "preliminaryP02Audit": "Findings only; both CPU and loader agents confirmed zero source edits or builds before P00 reprioritization."
+  },
+  "reproduce": {
+    "checkout": [
+      "git clone https://github.com/Augani/dory.git Dory",
+      "cd Dory",
+      "git checkout 5fc049c1390901faa2f64236ea108e0dfdab35fc"
+    ],
+    "dependencyPolicy": "Use committed Package.resolved, Cargo.lock, builder/source locks and guest PINS; never substitute a floating revision.",
+    "scope": "Historical phase-entry source. Use the final P00 implementation commit in the baseline index for repaired build inputs, gates and fixture preparation."
+  },
+  "evidenceClassification": "experimental beta-host engineering baseline; final host policy is recorded separately",
+  "protobufCompilerObservedAtClosure": {
+    "command": [
+      "protoc",
+      "--version"
+    ],
+    "exitCode": 0,
+    "stdout": "libprotoc 33.0",
+    "meaning": "Required build prerequisite: dory-core/pb/build.rs invokes prost_build::compile_protos. Install protobuf as CI does; record the selected compiler version for new build receipts."
+  }
+}

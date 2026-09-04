@@ -1,0 +1,78 @@
+diff --git a/.github/scripts/test-security-contracts.sh b/.github/scripts/test-security-contracts.sh
+--- a/.github/scripts/test-security-contracts.sh
++++ b/.github/scripts/test-security-contracts.sh
+@@ -48,9 +48,12 @@
+   'status.state == "running"' \
+   'status.runtimeIdentity.backend == "dory-hypervisor"' \
+   'status.runtimeIdentity.authorizesRemovableUSBHotplug'; do
+-  grep -F "$usb_ui_contract" Dory/Net/UsbAttachmentStore.swift >/dev/null \
++  grep -F "$usb_ui_contract" Dory/Net/UsbPassthroughAvailability.swift >/dev/null \
+     || fail "USB passthrough UI lost fail-closed runtime contract: $usb_ui_contract"
+ done
++grep -F 'UsbPassthroughAvailability.attachSupported(for: selectedMachine)' \
++  Dory/Features/Settings/UsbDevicesView.swift >/dev/null \
++  || fail "USB passthrough UI no longer uses signed-plan availability"
+ grep -F 'public func machineUSBAttach(' \
+   dory-core-swift/Sources/DorydKit/DorydService.swift >/dev/null \
+   || fail "doryd lost the authenticated USB attach RPC"
+diff --git a/scripts/test-security-contracts.sh b/scripts/test-security-contracts.sh
+--- a/scripts/test-security-contracts.sh
++++ b/scripts/test-security-contracts.sh
+@@ -84,8 +84,11 @@
+ # USB passthrough is now implemented end to end. Keep its UI availability bound to the signed
+ # raw-hypervisor plan, and keep daemon admission bound to the live guest capability handshake.
+ grep -F 'status.runtimeIdentity.authorizesRemovableUSBHotplug' \
+-  Dory/Net/UsbAttachmentStore.swift >/dev/null \
++  Dory/Net/UsbPassthroughAvailability.swift >/dev/null \
+   || fail "USB passthrough UI lost signed-plan authorization"
++grep -F 'UsbPassthroughAvailability.attachSupported(for: selectedMachine)' \
++  Dory/Features/Settings/UsbDevicesView.swift >/dev/null \
++  || fail "USB passthrough UI no longer uses signed-plan availability"
+ grep -F 'supportsAgentCapability(' \
+   dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
+   || fail "USB passthrough daemon lost live guest capability admission"
+@@ -121,7 +124,6 @@
+   || fail "sandbox VMM does not fail closed for ambient SSH-agent forwarding"
+ grep -F -- '--env-json-stdin' dory-core-swift/Sources/dorydctl/main.swift scripts/dory >/dev/null \
+   || fail "ephemeral sandbox secrets can no longer avoid process argv"
+-[ -s SANDBOX_THREAT_MODEL.md ] || fail "sandbox threat model is missing"
+ [ -x scripts/sandbox-security-gate.sh ] || fail "inside-VM sandbox security gate is missing"
+ 
+ echo "security contracts: PASS"
+diff --git a/dory-core/ffi/src/agent_forward.rs b/dory-core/ffi/src/agent_forward.rs
+--- a/dory-core/ffi/src/agent_forward.rs
++++ b/dory-core/ffi/src/agent_forward.rs
+@@ -450,6 +450,9 @@
+ 
+     /// Interrupt only this host wait. The owner must stop and observe the VM before rollback;
+     /// abandoning a mux response is never proof that a guest command has stopped executing.
++    // Keep the exported UniFFI signature aligned with exec_with_input plus its cancellation
++    // control; grouping arguments here would change the generated cross-language API.
++    #[allow(clippy::too_many_arguments)]
+     pub fn exec_controlled(
+         &self,
+         argv: Vec<String>,
+diff --git a/dory-core/ffi/src/exec_control_tests.rs b/dory-core/ffi/src/exec_control_tests.rs
+--- a/dory-core/ffi/src/exec_control_tests.rs
++++ b/dory-core/ffi/src/exec_control_tests.rs
+@@ -2,6 +2,7 @@
+ use crate::exec_control::new_exec_control;
+ use std::os::fd::IntoRawFd;
+ use std::path::{Path, PathBuf};
++use std::sync::atomic::{AtomicU64, Ordering};
+ use std::sync::mpsc;
+ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+ 
+@@ -14,9 +15,11 @@
+ 
+ impl Fixture {
+     fn new() -> Self {
++        static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
+         let root = std::env::temp_dir().join(format!(
+-            "dory-exec-control-{}-{}",
++            "dory-exec-control-{}-{}-{}",
+             std::process::id(),
++            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed),
+             SystemTime::now()
+                 .duration_since(UNIX_EPOCH)
+                 .unwrap()

@@ -1,0 +1,546 @@
+{
+  "schemaVersion": 1,
+  "kind": "capability-baseline",
+  "sourceCommit": "5fc049c1390901faa2f64236ea108e0dfdab35fc",
+  "statusDefinitions": {
+    "absent": "No production implementation for the stated capability in this cell.",
+    "implemented": "A connected source path exists; this is not proof of end-to-end correctness.",
+    "integration-tested": "The stated bounded production composition has executed with retained evidence; limits are explicit.",
+    "release-qualified": "Exact final host/guest/runtime tuples pass full release gates; no cell currently has this status."
+  },
+  "cells": [
+    {
+      "cell": "linux-arm64-native",
+      "capability": "cpu",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/DoryHV/Machine.swift",
+        "line": 373,
+        "anchor": "public let memory: GuestMemory"
+      },
+      "meaning": "Production Hypervisor.framework vCPU owner is DoryHV.Machine; the newer native engine is a probe client.",
+      "qualificationOwner": "P03"
+    },
+    {
+      "cell": "linux-arm64-native",
+      "capability": "boot",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 2331,
+        "anchor": "try await DesktopGuestReadinessBoundary.complete("
+      },
+      "meaning": "Managed direct boot and ARMVirt UEFI compose into the production runner; stock install/reboot is not qualified.",
+      "qualificationOwner": "P05"
+    },
+    {
+      "cell": "linux-arm64-native",
+      "capability": "disk",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 1399,
+        "anchor": "let machine = try Machine(configuration: machineConfiguration)"
+      },
+      "meaning": "Managed disk identities and backing/transport code are connected; host durability and guest filesystem workload qualification remain open.",
+      "qualificationOwner": "P04/P10"
+    },
+    {
+      "cell": "linux-arm64-native",
+      "capability": "network",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 1399,
+        "anchor": "let machine = try Machine(configuration: machineConfiguration)"
+      },
+      "meaning": "Connected bounded host networking; Mac builder currently installs NAT. Isolation/policy variants and guest I/O durability need cell-specific qualification.",
+      "qualificationOwner": "P11"
+    },
+    {
+      "cell": "linux-arm64-native",
+      "capability": "shares",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 1399,
+        "anchor": "let machine = try Machine(configuration: machineConfiguration)"
+      },
+      "meaning": "ARM/PC use the isolated filesystem worker with conservative zero-cache/non-DAX behavior; Mac uses granted VZ shared directories. Full coherence/performance remains P11.",
+      "qualificationOwner": "P11"
+    },
+    {
+      "cell": "linux-arm64-native",
+      "capability": "graphics-api",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 1487,
+        "anchor": "rendererWorkerCandidate: rendererWorkerLaunch?.commandLane"
+      },
+      "meaning": "VirGL2/ANGLE/Metal and Venus/MoltenVK/Metal worker paths exist on managed ARM; exact stock-media application API qualification remains open.",
+      "qualificationOwner": "P06"
+    },
+    {
+      "cell": "linux-arm64-native",
+      "capability": "display",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 1399,
+        "anchor": "let machine = try Machine(configuration: machineConfiguration)"
+      },
+      "meaning": "Connected host presentation path; output is software display on PC. A frame or view does not establish GPU API acceleration.",
+      "qualificationOwner": "P06/P09"
+    },
+    {
+      "cell": "linux-arm64-native",
+      "capability": "input",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 1399,
+        "anchor": "let machine = try Machine(configuration: machineConfiguration)"
+      },
+      "meaning": "Host keyboard/pointer plumbing is connected; release/focus/overflow/resynchronization guest vectors remain open.",
+      "qualificationOwner": "P04/P09"
+    },
+    {
+      "cell": "linux-arm64-native",
+      "capability": "audio",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 1399,
+        "anchor": "let machine = try Machine(configuration: machineConfiguration)"
+      },
+      "meaning": "Host audio backends are connected for each cell; device semantics, latency, loss and per-VM permission/policy qualification remain open.",
+      "qualificationOwner": "P04/P09"
+    },
+    {
+      "cell": "linux-arm64-native",
+      "capability": "clipboard",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 1399,
+        "anchor": "let machine = try Machine(configuration: machineConfiguration)"
+      },
+      "meaning": "Linux coordinator requires explicit policy and guest helper capabilities; Mac has SPICE clipboard wiring. Formats, lifecycle and requested-policy parity remain unqualified.",
+      "qualificationOwner": "P09"
+    },
+    {
+      "cell": "linux-arm64-native",
+      "capability": "guest-tools",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DesktopMode.swift",
+        "line": 1399,
+        "anchor": "let machine = try Machine(configuration: machineConfiguration)"
+      },
+      "meaning": "Authenticated agent/vsock/control paths and packaging exist; cross-version guest installation and everyday workflows remain open.",
+      "qualificationOwner": "P09"
+    },
+    {
+      "cell": "linux-arm64-native",
+      "capability": "suspend",
+      "status": "absent",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3120,
+        "anchor": "public func start("
+      },
+      "meaning": "Public durable suspend requires Apple Virtualization with VZ control; raw-HV/DBT pause is not durable memory suspend.",
+      "qualificationOwner": "P10"
+    },
+    {
+      "cell": "linux-arm64-native",
+      "capability": "snapshots",
+      "status": "integration-tested",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3120,
+        "anchor": "public func start("
+      },
+      "meaning": "Public cold file-snapshot/restore and authenticated helper recovery passed P01 signed controlled-helper campaigns; this does not establish physical guest memory continuation or application consistency.",
+      "qualificationOwner": "P10",
+      "integrationEvidence": "docs/virtualization/evidence/p01-compound-review-2026-09-04/campaign.json"
+    },
+    {
+      "cell": "linux-arm64-native",
+      "capability": "recovery",
+      "status": "integration-tested",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3120,
+        "anchor": "public func start("
+      },
+      "meaning": "Public cold file-snapshot/restore and authenticated helper recovery passed P01 signed controlled-helper campaigns; this does not establish physical guest memory continuation or application consistency.",
+      "qualificationOwner": "P01/P10",
+      "integrationEvidence": "docs/virtualization/evidence/p01-compound-review-2026-09-04/campaign.json"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "cpu",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryFirmware/DoryPCUEFIMachine.swift",
+        "line": 179,
+        "anchor": "let machine = try DoryPCDirectKernelMachine("
+      },
+      "meaning": "Interpreter and baseline JIT exist; false Xen facilities and unqualified feature semantics remain P02 findings. Serial vCPU scheduling is not parallel SMP throughput.",
+      "qualificationOwner": "P02"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "boot",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 400,
+        "anchor": "requiresGuestServices: false"
+      },
+      "meaning": "PVH/UEFI paths exist. First-slice firmware readiness is not userspace readiness; pinned userspace boot has not passed.",
+      "qualificationOwner": "P05"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "disk",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 54,
+        "anchor": "static func run(_ configuration: Configuration) throws"
+      },
+      "meaning": "Managed disk identities and backing/transport code are connected; host durability and guest filesystem workload qualification remain open.",
+      "qualificationOwner": "P04/P10"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "network",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 54,
+        "anchor": "static func run(_ configuration: Configuration) throws"
+      },
+      "meaning": "Connected bounded host networking; Mac builder currently installs NAT. Isolation/policy variants and guest I/O durability need cell-specific qualification.",
+      "qualificationOwner": "P11"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "shares",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 54,
+        "anchor": "static func run(_ configuration: Configuration) throws"
+      },
+      "meaning": "ARM/PC use the isolated filesystem worker with conservative zero-cache/non-DAX behavior; Mac uses granted VZ shared directories. Full coherence/performance remains P11.",
+      "qualificationOwner": "P11"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "graphics-api",
+      "status": "absent",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 54,
+        "anchor": "static func run(_ configuration: Configuration) throws"
+      },
+      "meaning": "Production DoryPCMode rejects accelerated graphics. Disconnected renderer authority is not implementation of a production GPU API.",
+      "qualificationOwner": "P06"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "display",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 54,
+        "anchor": "static func run(_ configuration: Configuration) throws"
+      },
+      "meaning": "Connected host presentation path; output is software display on PC. A frame or view does not establish GPU API acceleration.",
+      "qualificationOwner": "P06/P09"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "input",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 54,
+        "anchor": "static func run(_ configuration: Configuration) throws"
+      },
+      "meaning": "Host keyboard/pointer plumbing is connected; release/focus/overflow/resynchronization guest vectors remain open.",
+      "qualificationOwner": "P04/P09"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "audio",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 54,
+        "anchor": "static func run(_ configuration: Configuration) throws"
+      },
+      "meaning": "Host audio backends are connected for each cell; device semantics, latency, loss and per-VM permission/policy qualification remain open.",
+      "qualificationOwner": "P04/P09"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "clipboard",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 54,
+        "anchor": "static func run(_ configuration: Configuration) throws"
+      },
+      "meaning": "Linux coordinator requires explicit policy and guest helper capabilities; Mac has SPICE clipboard wiring. Formats, lifecycle and requested-policy parity remain unqualified.",
+      "qualificationOwner": "P09"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "guest-tools",
+      "status": "implemented",
+      "evidence": {
+        "path": "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+        "line": 54,
+        "anchor": "static func run(_ configuration: Configuration) throws"
+      },
+      "meaning": "Authenticated agent/vsock/control paths and packaging exist; cross-version guest installation and everyday workflows remain open.",
+      "qualificationOwner": "P09"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "suspend",
+      "status": "absent",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3120,
+        "anchor": "public func start("
+      },
+      "meaning": "Public durable suspend requires Apple Virtualization with VZ control; raw-HV/DBT pause is not durable memory suspend.",
+      "qualificationOwner": "P10"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "snapshots",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3120,
+        "anchor": "public func start("
+      },
+      "meaning": "Shared manager operation implementation exists; per-cell physical guest recovery/snapshot completion remains unqualified.",
+      "qualificationOwner": "P10"
+    },
+    {
+      "cell": "linux-x86_64-translated",
+      "capability": "recovery",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3120,
+        "anchor": "public func start("
+      },
+      "meaning": "Shared manager operation implementation exists; per-cell physical guest recovery/snapshot completion remains unqualified.",
+      "qualificationOwner": "P01/P10"
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "cpu",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+        "line": 240,
+        "anchor": "virtualMachine = VZVirtualMachine(configuration: configuration)"
+      },
+      "meaning": "Apple Virtualization.framework owns Mac execution; physical guest baseline remains unqualified.",
+      "qualificationOwner": "P08"
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "boot",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacDesktopApplication.swift",
+        "line": 431,
+        "anchor": "private func publishManagedReadyIfNeeded()"
+      },
+      "meaning": "IPSW prepare/install/run pipeline exists; current evidence establishes compatible metadata discovery only.",
+      "qualificationOwner": "P08"
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "disk",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+        "line": 240,
+        "anchor": "virtualMachine = VZVirtualMachine(configuration: configuration)"
+      },
+      "meaning": "Managed disk identities and backing/transport code are connected; host durability and guest filesystem workload qualification remain open.",
+      "qualificationOwner": "P08"
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "network",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+        "line": 240,
+        "anchor": "virtualMachine = VZVirtualMachine(configuration: configuration)"
+      },
+      "meaning": "Connected bounded host networking; Mac builder currently installs NAT. Isolation/policy variants and guest I/O durability need cell-specific qualification.",
+      "qualificationOwner": "P08"
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "shares",
+      "status": "absent",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 15004,
+        "anchor": "var arguments = baseArguments + ["
+      },
+      "meaning": "Managed Mac launch supplies no user shares or --guest-tools. The diagnostic adapter can map a read-only tools URL, but this is not a connected production user-share feature.",
+      "qualificationOwner": "P08",
+      "additionalEvidence": [
+        {
+          "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacAdapter.swift",
+          "line": 105,
+          "anchor": "let shares = try configuration.guestToolsURL.map {"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+          "line": 241,
+          "anchor": "cameraBridge"
+        }
+      ]
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "graphics-api",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+        "line": 240,
+        "anchor": "virtualMachine = VZVirtualMachine(configuration: configuration)"
+      },
+      "meaning": "VZMacGraphicsDeviceConfiguration exposes Apple Mac graphics; guest Metal application results remain open.",
+      "qualificationOwner": "P08"
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "display",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+        "line": 240,
+        "anchor": "virtualMachine = VZVirtualMachine(configuration: configuration)"
+      },
+      "meaning": "Connected host presentation path; output is software display on PC. A frame or view does not establish GPU API acceleration.",
+      "qualificationOwner": "P08"
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "input",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+        "line": 240,
+        "anchor": "virtualMachine = VZVirtualMachine(configuration: configuration)"
+      },
+      "meaning": "Host keyboard/pointer plumbing is connected; release/focus/overflow/resynchronization guest vectors remain open.",
+      "qualificationOwner": "P08"
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "audio",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+        "line": 240,
+        "anchor": "virtualMachine = VZVirtualMachine(configuration: configuration)"
+      },
+      "meaning": "Host audio backends are connected for each cell; device semantics, latency, loss and per-VM permission/policy qualification remain open.",
+      "qualificationOwner": "P08"
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "clipboard",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+        "line": 240,
+        "anchor": "virtualMachine = VZVirtualMachine(configuration: configuration)"
+      },
+      "meaning": "Linux coordinator requires explicit policy and guest helper capabilities; Mac has SPICE clipboard wiring. Formats, lifecycle and requested-policy parity remain unqualified.",
+      "qualificationOwner": "P08"
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "guest-tools",
+      "status": "absent",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 15004,
+        "anchor": "var arguments = baseArguments + ["
+      },
+      "meaning": "The managed Mac launch does not provision a general guest agent/tools service. A camera bridge and packaged tool components exist, but do not establish guest-tools readiness or installation.",
+      "qualificationOwner": "P08",
+      "additionalEvidence": [
+        {
+          "path": "dory-core-swift/Sources/DoryVMMKit/DoryVZMacAdapter.swift",
+          "line": 105,
+          "anchor": "let shares = try configuration.guestToolsURL.map {"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryVZMacCore/DoryVZMacConfigurationBuilder.swift",
+          "line": 241,
+          "anchor": "cameraBridge"
+        }
+      ]
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "suspend",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3120,
+        "anchor": "public func start("
+      },
+      "meaning": "Daemon admission/journaling and VZ saved-state calls exist. Native saved-memory execution after guest writes still needs P08 continuation authority and physical validation.",
+      "qualificationOwner": "P08"
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "snapshots",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3120,
+        "anchor": "public func start("
+      },
+      "meaning": "Shared manager operation implementation exists; per-cell physical guest recovery/snapshot completion remains unqualified.",
+      "qualificationOwner": "P08"
+    },
+    {
+      "cell": "macos-arm64-vzmac",
+      "capability": "recovery",
+      "status": "implemented",
+      "evidence": {
+        "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+        "line": 3120,
+        "anchor": "public func start("
+      },
+      "meaning": "Shared manager operation implementation exists; per-cell physical guest recovery/snapshot completion remains unqualified.",
+      "qualificationOwner": "P08"
+    }
+  ],
+  "releaseQualifiedCells": 0,
+  "testIsolation": "Controlled helper/contract evidence is identified separately from physical guest execution.",
+  "callgraph": "docs/virtualization/evidence/p00-baseline-2026-09-04/callgraph-removal-inventory.json"
+}

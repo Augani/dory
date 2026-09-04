@@ -1,0 +1,163 @@
+{
+  "schemaVersion": 1,
+  "sourceManifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/guest-provenance-source-manifest.json",
+  "linker": {
+    "sha256": "96df7b3559f741be99cc2047cfaff84eeb5367dc9268a87c22ac9d376d98c60b",
+    "pathTemplate": "${P00_RUST_SYSROOT}/lib/rustlib/${P00_RUST_HOST_TRIPLE}/bin/rust-lld",
+    "substitution": "Set P00_RUST_SYSROOT from rustc --print sysroot and P00_RUST_HOST_TRIPLE from the host field of rustc --version --verbose, using the committed rust-toolchain.toml. The SHA256 records the actual host linker used by this run, not a fabricated linker."
+  },
+  "environment": {
+    "PATHPrefix": "/tmp/dory-p00-guest-provenance-bin",
+    "CARGO_NET_OFFLINE": "true",
+    "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer"
+  },
+  "runs": [
+    {
+      "name": "kernel-arm64",
+      "command": [
+        "bash",
+        "guest/kernel/input-fingerprint.sh",
+        "arm64"
+      ],
+      "cwd": "/tmp/dory-p00-guest-provenance-source",
+      "startedUTC": "2026-09-04T10:59:33.835488+00:00",
+      "runtimeSeconds": 0.207,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/kernel-arm64.log.gz",
+      "logSHA256": "7d6db93bdcc80731a9015da4825443cfa9410950b32c2c454938dc7aac071b65",
+      "uncompressedLogSHA256": "a36937c25026cf731a9928ed320f3b2cf04680e57d288f8a640aa7aa2fbfbbed",
+      "scope": "required public source fingerprint",
+      "includedInRequiredP00GateCount": true
+    },
+    {
+      "name": "kernel-amd64",
+      "command": [
+        "bash",
+        "guest/kernel/input-fingerprint.sh",
+        "amd64"
+      ],
+      "cwd": "/tmp/dory-p00-guest-provenance-source",
+      "startedUTC": "2026-09-04T10:59:34.042839+00:00",
+      "runtimeSeconds": 0.188,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/kernel-amd64.log.gz",
+      "logSHA256": "9d4c2f0e63de2fdefbc92b8be27719b1b14bb0c132b66dec6120bf9469aaa032",
+      "uncompressedLogSHA256": "fa39c9fe393aff6600a2e9a5eeb5640fb779bb7a2e964477247364af941e9e76",
+      "scope": "required public source fingerprint",
+      "includedInRequiredP00GateCount": true
+    },
+    {
+      "name": "kernel-x86_64",
+      "command": [
+        "bash",
+        "guest/kernel/input-fingerprint.sh",
+        "x86_64"
+      ],
+      "cwd": "/tmp/dory-p00-guest-provenance-source",
+      "startedUTC": "2026-09-04T10:59:34.231411+00:00",
+      "runtimeSeconds": 0.184,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/kernel-x86_64.log.gz",
+      "logSHA256": "f49e17e659e36b6e31184ced87b0e1956656cd0252b0eb4abd33ffd5667eb4a8",
+      "uncompressedLogSHA256": "041fa2702e53204326a6148ef9b6486dcabfc3809e2c2597aee562155d400780",
+      "scope": "required public source fingerprint",
+      "includedInRequiredP00GateCount": true
+    },
+    {
+      "name": "initfs-arm64",
+      "command": [
+        "bash",
+        "guest/initfs/input-fingerprint.sh",
+        "arm64"
+      ],
+      "cwd": "/tmp/dory-p00-guest-provenance-source",
+      "startedUTC": "2026-09-04T10:59:34.415827+00:00",
+      "runtimeSeconds": 1.216,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/initfs-arm64.log.gz",
+      "logSHA256": "c90ba8ef70289a7d7689e88af417ac4e2e45c580fdc191f6c0ac830ca6a24138",
+      "uncompressedLogSHA256": "13f029997a73e731d400b8198e64727221554fe921cfed9605eca34ba5ebd8d2",
+      "scope": "required public source fingerprint",
+      "includedInRequiredP00GateCount": true
+    },
+    {
+      "name": "initfs-aarch64",
+      "command": [
+        "bash",
+        "guest/initfs/input-fingerprint.sh",
+        "aarch64"
+      ],
+      "cwd": "/tmp/dory-p00-guest-provenance-source",
+      "startedUTC": "2026-09-04T10:59:35.632037+00:00",
+      "runtimeSeconds": 1.16,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/initfs-aarch64.log.gz",
+      "logSHA256": "a34ba3be249778715904b7b56c46e6a572f398b44957638edf35c949f921cac1",
+      "uncompressedLogSHA256": "300e3a7bc12e8c9707afe066a0069d90d688cf13dc9000de25f3e3e3e741d585",
+      "scope": "required public source fingerprint",
+      "includedInRequiredP00GateCount": true
+    },
+    {
+      "name": "initfs-amd64",
+      "command": [
+        "bash",
+        "guest/initfs/input-fingerprint.sh",
+        "amd64"
+      ],
+      "cwd": "/tmp/dory-p00-guest-provenance-source",
+      "startedUTC": "2026-09-04T10:59:36.791800+00:00",
+      "runtimeSeconds": 1.016,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/initfs-amd64.log.gz",
+      "logSHA256": "c70379249b456a54cf1e4d50d1e21d2c7cc6a42de4808a638e7183bcc8057ed3",
+      "uncompressedLogSHA256": "615113649e094ba627ffef76b8fa2fbb3595265fec2d91acfdb1226f8d98ab99",
+      "scope": "required public source fingerprint",
+      "includedInRequiredP00GateCount": true
+    },
+    {
+      "name": "initfs-x86_64",
+      "command": [
+        "bash",
+        "guest/initfs/input-fingerprint.sh",
+        "x86_64"
+      ],
+      "cwd": "/tmp/dory-p00-guest-provenance-source",
+      "startedUTC": "2026-09-04T10:59:37.807904+00:00",
+      "runtimeSeconds": 1.01,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/initfs-x86_64.log.gz",
+      "logSHA256": "6d4fb32a479550d2a5664cc39a36ba57f1e32a6e2167b2b35a8b05c1960bc1f2",
+      "uncompressedLogSHA256": "6d017cdd2a71a803d14fc35b7f3d36ee8589842d055f2cdc96a4350cfbc749e8",
+      "scope": "required public source fingerprint",
+      "includedInRequiredP00GateCount": true
+    },
+    {
+      "name": "guest-provenance-tests",
+      "command": [
+        "bash",
+        "scripts/test-guest-build-provenance.sh"
+      ],
+      "cwd": "/tmp/dory-p00-guest-provenance-source",
+      "startedUTC": "2026-09-04T10:59:38.818763+00:00",
+      "runtimeSeconds": 12.966,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/guest-provenance-tests.log.gz",
+      "logSHA256": "0e81509e58718d449c2388c4eb19d47db0d8be6b3125ecea275f72b6efda145a",
+      "uncompressedLogSHA256": "86c7dab8d439cf1c249c93d07307149aedbee8dfc7466450caf3418815cd6aaf",
+      "scope": "supplemental checkout-local observation; source untracked",
+      "includedInRequiredP00GateCount": false
+    }
+  ],
+  "scope": "The seven public guest/kernel/input-fingerprint.sh and guest/initfs/input-fingerprint.sh commands are the required reproducible source-provenance gate. scripts/test-guest-build-provenance.sh is a supplemental checkout-local observation only; it remains untracked and is excluded from required/reproducible P00 gate counts.",
+  "reproduction": {
+    "scope": "Run only the seven required input-fingerprint commands from a checkout containing the exact restored vendor files and source manifests. The recorded cwd and PATHPrefix are historical scratch locations; substitute your checkout and a newly allocated private directory.",
+    "setupCommands": [
+      "P00_RUST_SYSROOT=\"$(rustc --print sysroot)\"",
+      "P00_RUST_HOST_TRIPLE=\"$(rustc --version --verbose | sed -n 's/^host: //p')\"",
+      "P00_LINKER_BIN=\"$(mktemp -d)\"",
+      "ln -s \"$P00_RUST_SYSROOT/lib/rustlib/$P00_RUST_HOST_TRIPLE/bin/rust-lld\" \"$P00_LINKER_BIN/rust-lld\"",
+      "export PATH=\"$P00_LINKER_BIN:$PATH\""
+    ],
+    "cleanup": "Remove only the rust-lld symlink and private P00_LINKER_BIN directory allocated for this reproduction after the fingerprint commands finish."
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "sourceManifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-script-rust-source-manifest.json",
+  "environment": {
+    "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "CARGO_NET_OFFLINE": "true",
+    "CARGO_TARGET_DIR": "/tmp/dory-p00-rust-agent-build",
+    "CARGO_BUILD_JOBS": "3"
+  },
+  "runs": [
+    {
+      "name": "fmt",
+      "command": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--",
+        "--check"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-final-source/dory-core",
+      "startedUTC": "2026-09-04T10:54:34.094718+00:00",
+      "runtimeSeconds": 0.245,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-rust-fmt.log.gz",
+      "logSHA256": "e64e275c3f954293e972bb9d920c660924c5e1730f9942351682784aeaca08f8",
+      "uncompressedLogSHA256": "9d2d35462e8bd1beff5604b094ac8c47550fd476945c33203aa5cb13244b64a0"
+    },
+    {
+      "name": "clippy",
+      "command": [
+        "cargo",
+        "clippy",
+        "--workspace",
+        "--all-targets",
+        "--locked",
+        "--offline",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-final-source/dory-core",
+      "startedUTC": "2026-09-04T10:54:34.340470+00:00",
+      "runtimeSeconds": 0.39,
+      "exitCode": 0,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-rust-clippy.log.gz",
+      "logSHA256": "3d48f003991c5985c8799731f266368a04882faced49bc62cda32a901c1ddd86",
+      "uncompressedLogSHA256": "6430bc3ab2a6a0c9f7f8f924e1ea9f236f4b64a7de4a9087d1d4a7bbb4c19865"
+    },
+    {
+      "name": "test",
+      "command": [
+        "cargo",
+        "test",
+        "--workspace",
+        "--locked",
+        "--offline"
+      ],
+      "cwd": "/tmp/dory-p00-baseline-final-source/dory-core",
+      "startedUTC": "2026-09-04T10:54:34.730868+00:00",
+      "runtimeSeconds": 18.816,
+      "exitCode": 101,
+      "log": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-rust-test.log.gz",
+      "logSHA256": "a4b8bd2e53a5065b1cbeb20d8d5a865d043a928b6c50613922a19e2afa9269ef",
+      "tests": {
+        "passed": 142,
+        "failed": 1,
+        "ignored": 0
+      },
+      "uncompressedLogSHA256": "909acc9a61fe9f5034a09d25cb041b828035c0ddeb98c28690c6d86ad4a615c2"
+    }
+  ]
+}

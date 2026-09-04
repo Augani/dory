@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "restoredFromCommit": "a746bf639de0db795f0d188e0e04869294a15cff",
+  "deletedByCommit": "b9358883ae603bd76c9c4f9d1afe343673637751",
+  "restoredFiles": [
+    {
+      "path": "guest/initfs/vendor/fex-2607-dory1/BUILD_PACKAGES.txt",
+      "gitObject": "2c5eceb4cf9a42dd1b29182300b9cbefeede3f65",
+      "gitMode": "100644",
+      "bytes": 6977,
+      "sha256": "ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1"
+    },
+    {
+      "path": "guest/initfs/vendor/fex-2607-dory1/Dockerfile",
+      "gitObject": "e497f0569eecf59c70eaf0c055615fc10f1020f5",
+      "gitMode": "100644",
+      "bytes": 2506,
+      "sha256": "f4ee5d098b71627cdc189681c3d94bd6bd9240448c98b02613ed4c12ff1bf63e"
+    },
+    {
+      "path": "guest/initfs/vendor/fex-2607-dory1/Dockerfile.dockerignore",
+      "gitObject": "fba19ae7bc290883f51c9d84e79ba9ed97c78f61",
+      "gitMode": "100644",
+      "bytes": 19,
+      "sha256": "31df65a11a39da4023912866e34bda16430e35a259227f4fbe6eb3d1915d9266"
+    },
+    {
+      "path": "guest/initfs/vendor/fex-2607-dory1/FEX",
+      "gitObject": "8a8872d00e044a5ae0c56eff1285f830d24c9607",
+      "gitMode": "100755",
+      "bytes": 6469104,
+      "sha256": "01921fa471efc53c955b1d6263f7df4ad0f08f082669a3a7adb6f1e1d5ac0c28"
+    },
+    {
+      "path": "guest/initfs/vendor/fex-2607-dory1/FEXServer",
+      "gitObject": "ad16ab15cf0807c2b5e874ffd2a09f36c1f79d2f",
+      "gitMode": "100755",
+      "bytes": 1840024,
+      "sha256": "bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597"
+    },
+    {
+      "path": "guest/initfs/vendor/fex-2607-dory1/LICENSE.FEX",
+      "gitObject": "cdb4f90b34cd30c0e0fd88108481c1fe61f66e57",
+      "gitMode": "100644",
+      "bytes": 1094,
+      "sha256": "f34a779f56b36d22b20e1b990d23e583a6a7ca071331925fa46156441c77a1ee"
+    },
+    {
+      "path": "guest/initfs/vendor/fex-2607-dory1/README.md",
+      "gitObject": "013c65ea4f9ef4834fc26014597b47ffb5ec22c2",
+      "gitMode": "100644",
+      "bytes": 5533,
+      "sha256": "5daa6d23b15d4206f2f0dc3837747445a14cc643fee7cbd2c83c4f9d9a60bf79"
+    },
+    {
+      "path": "guest/initfs/vendor/fex-2607-dory1/rebuild.sh",
+      "gitObject": "c088742397df34d8e5b14ad0fafa6dca6c4c0022",
+      "gitMode": "100755",
+      "bytes": 4427,
+      "sha256": "6e71f94992e4ac6514ddd70e155b6e5812327ac5bc3acdeda22c424f57c26e15"
+    }
+  ],
+  "existingPatchVerification": [
+    {
+      "path": "patches/fex-container-fd-isolation.patch",
+      "sha256": "374eb59a207c0356f548295552f235c0eeadcdbac360a64b01535933a1af8f8a",
+      "matchesRestoredRecipe": true,
+      "restored": false
+    },
+    {
+      "path": "patches/fex-processor-id-stack-fix.patch",
+      "sha256": "e1da91d76caf48ed30183486abcc9a0eb768d28fd5d041a8b4cbe1c7b75df35c",
+      "matchesRestoredRecipe": true,
+      "restored": false
+    },
+    {
+      "path": "patches/fex-restore-complete-signal-context.patch",
+      "sha256": "e405db087203d5f22d50b54820b6a2120d013c0cdd33d1db343f4fac4c1d1e22",
+      "matchesRestoredRecipe": true,
+      "restored": false
+    }
+  ],
+  "scope": "Exact original source/license/recipe and binary blobs restored from local Git objects because current ARM64 guest initfs release path requires these pinned inputs. No fetched/rebuilt/relabelled binary, and no guest or Docker execution.",
+  "currentBuildPinVerification": [
+    {
+      "path": "guest/initfs/vendor/fex-2607-dory1/BUILD_PACKAGES.txt",
+      "expectedSHA256": "ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1",
+      "matches": true
+    },
+    {
+      "path": "guest/initfs/vendor/fex-2607-dory1/FEX",
+      "expectedSHA256": "01921fa471efc53c955b1d6263f7df4ad0f08f082669a3a7adb6f1e1d5ac0c28",
+      "matches": true
+    },
+    {
+      "path": "guest/initfs/vendor/fex-2607-dory1/FEXServer",
+      "expectedSHA256": "bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597",
+      "matches": true
+    },
+    {
+      "path": "guest/initfs/vendor/fex-2607-dory1/LICENSE.FEX",
+      "expectedSHA256": "f34a779f56b36d22b20e1b990d23e583a6a7ca071331925fa46156441c77a1ee",
+      "matches": true
+    }
+  ],
+  "verificationReceipt": "docs/virtualization/evidence/p00-baseline-2026-09-04/guest-provenance-runs.json",
+  "allRestoredBytesAndModesMatchGitObjects": true
+}

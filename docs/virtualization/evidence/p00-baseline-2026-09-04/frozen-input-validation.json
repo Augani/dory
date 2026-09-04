@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "snapshots": [
+    {
+      "manifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/script-rust-source-manifest.json",
+      "files": 1823,
+      "changedFrozenFiles": []
+    },
+    {
+      "manifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/corrected-script-rust-source-manifest.json",
+      "files": 1823,
+      "changedFrozenFiles": []
+    },
+    {
+      "manifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-script-rust-source-manifest.json",
+      "files": 1823,
+      "changedFrozenFiles": []
+    },
+    {
+      "manifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/final-script-rust-source-manifest-2.json",
+      "files": 1823,
+      "changedFrozenFiles": []
+    },
+    {
+      "manifest": "docs/virtualization/evidence/p00-baseline-2026-09-04/guest-provenance-source-manifest.json",
+      "files": 1832,
+      "changedFrozenFiles": []
+    }
+  ],
+  "installedApp": "1876 Thu Sep  3 11:49:19 2026     /Applications/Dory.app/Contents/MacOS/Dory"
+}
