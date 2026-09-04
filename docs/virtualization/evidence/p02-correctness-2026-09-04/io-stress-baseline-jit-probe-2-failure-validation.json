@@ -1,0 +1,74 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-io-stress-failure-evidence-validation",
+  "review": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-2-failure-review.json",
+    "sha256": "b4c1b64725129358f580de912680e16a8179181680ff759443804f9c9b2882e9"
+  },
+  "artifactsVerified": 7,
+  "repositoryReferencesVerified": 13,
+  "envelopeSchemaValidated": true,
+  "sourceCommit": "862383b91c2e5b7ef1b6c78ddd17aef60be8a1db",
+  "source50BindingAndCopiedRunnerVerified": true,
+  "fixtureCommit": "731967f5a6202034b59f145afa992d6f9f6e31c8",
+  "guestInputsVerifiedLocally": true,
+  "previousProbeCommandComparison": {
+    "changedArgumentIndexes": [
+      0,
+      20,
+      22,
+      34
+    ],
+    "scope": "Only copied runner, fresh UUID, diagnostic output and fresh disk directory differ; guest inputs/profile/budgets unchanged. Several implementation changes separate source43 and50."
+  },
+  "outcome": {
+    "exitCode": 1,
+    "passed": false,
+    "reason": "missing-guest-receipt"
+  },
+  "guestReceiptSeen": false,
+  "acceptedWorkloads": 0,
+  "individualGuestBlockResultVerified": true,
+  "hostPoweroffObserved": true,
+  "retiredInstructions": 808516588,
+  "elapsedNanoseconds": 455070306834,
+  "blockCounters": {
+    "capacityBytes": 33554432,
+    "discardRequests": 0,
+    "filePath": "/tmp/dory-p02-userspace-io-stress-baseline-jit-probe-2.disk/virtio-block.raw",
+    "flushRequests": 8,
+    "readBytes": 1052672,
+    "readRequests": 174,
+    "reopenedAndVerified": false,
+    "runID": "2fb5d847-1aeb-4e05-be58-faf6a44f2910",
+    "writeBytes": 1048576,
+    "writeRequests": 256,
+    "writeZeroesRequests": 0,
+    "zeroedBytes": 0
+  },
+  "networkCounters": {
+    "acceptedBytes": 0,
+    "acceptedFrames": 0,
+    "deliveredReplies": 0,
+    "ignoredFrames": 1,
+    "queuedReplies": 0,
+    "runID": "2fb5d847-1aeb-4e05-be58-faf6a44f2910",
+    "timingScope": "Duration comes from the guest workload result; this backend does not independently measure guest time.",
+    "verified": false
+  },
+  "posthocDiskInspection": {
+    "sha256": "76bd9e65ceb57130ed0219d147eeda658b47432b7329122fd19e1a3640375c81",
+    "regionSHA256": "dbb71d178d43f63f39dd9b0fb5fc30fb366ada39e3b8763e41338b892c098cd6",
+    "patternMatched": true,
+    "scope": "Separate read-only verification; runner reopenedAndVerified remainsfalse and global acceptance failed."
+  },
+  "pinnedELFTrapAddressMappingVerified": true,
+  "instructionBytesHex": "f20f70d200",
+  "guestOutputGateFailureVerified": true,
+  "lastCompletedSliceVerified": true,
+  "jitSampleInstructionCount": 808516588,
+  "liveNegativeCacheSiteCount": 16,
+  "checkpoint": "P02-25 remains open; block progress and S5 do not replace full receipt/network acceptance.",
+  "normalization": "Original probe text has no personal paths; retained text unchanged and gzip timestamp normalized.",
+  "qualification": "Independent read-only retention verification only; no new guest run, build, source mutation, physical device or performance qualification."
+}

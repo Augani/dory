@@ -1,0 +1,197 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-io-stress-guest-failure",
+  "status": "failed",
+  "releaseQualified": false,
+  "implementationCommit": "862383b91c2e5b7ef1b6c78ddd17aef60be8a1db",
+  "sourceBinding": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-commit-binding.json",
+    "sha256": "2d76852ae1d6cb9bb42dab3a45c67e31cf5eb4ed6bdfe4ec5d93791237789b87"
+  },
+  "sourceReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-50.json",
+    "sha256": "6e9d25fa5a2f0606f31709755b72bdc7f3c32612ddedf834a7ca65a87fe4ac13"
+  },
+  "sourceValidation": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/evidence-validation-through-run-50.json",
+    "sha256": "3ac7ad035cc902ec0a4aa28d815bcc015c7d243bfb647ca58c823890d8d5c6b3"
+  },
+  "releaseRunner": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-50-receipt.json",
+    "sha256": "13a4130c3491964908b50c46da93bf9289bde150d891fc45fafc1513cc13c709"
+  },
+  "runnerSHA256": "53484152cc6ab1f8bce276d87bc65af5172b48a96ca9516460d430ecae779257",
+  "fixtureSourceCommit": "731967f5a6202034b59f145afa992d6f9f6e31c8",
+  "fixturePreparation": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-v1-fixture-preparation-review.json",
+    "sha256": "4adbf5fdfdc65e46c2ab63bb17e205bb591e19c357ef07c5b1028bfe87f0eb48"
+  },
+  "previousFailure": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-1-failure-review.json",
+    "sha256": "c276904b52445b96c553a9825398e54aef83499782169eada7fef9565bb8a414"
+  },
+  "eventIndexCandidateReduction": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-available-event-reduction-through-run-50.json",
+    "sha256": "e29abf7daf6c283e57140440b06e9ea27e087814a3988a46def8923bbe1c2f1e"
+  },
+  "artifacts": {
+    ".json": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-io-stress-baseline-jit-probe-2.json",
+      "sha256": "7f71cc42b8bc1861a2928d62dc66b87744600fef4d07d91979d0585dad769274"
+    },
+    ".invocation.json": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-io-stress-baseline-jit-probe-2.invocation.json",
+      "sha256": "52fa5e68b0f3110be9790f14df2ed30df23a7825215b65582f4fe94ec48a4fad"
+    },
+    ".exit": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-io-stress-baseline-jit-probe-2.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    ".log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-io-stress-baseline-jit-probe-2.log.gz",
+      "sha256": "e12abfc028545dad4331a4542be28d24c4faa5ee54bf00aff6143ab34aee3e34"
+    }
+  },
+  "completion": {
+    "observedToolSession": 27090,
+    "completionChunk": "073530",
+    "toolExitCode": 1,
+    "subprocessReturnCode": 1
+  },
+  "outcome": {
+    "exitCode": 1,
+    "passed": false,
+    "reason": "missing-guest-receipt"
+  },
+  "runID": "2fb5d847-1aeb-4e05-be58-faf6a44f2910",
+  "retiredInstructions": 808516588,
+  "elapsedNanoseconds": 455070306834,
+  "executionStatistics": {
+    "baselineJITBlocks": 265033759,
+    "baselineJITInstructions": 742930394,
+    "interpreterInstructions": 65586194,
+    "optimizingJITBlocks": 0,
+    "optimizingJITInstructions": 0
+  },
+  "declaredWorkloads": [
+    "io.block_flush_reopen",
+    "io.ethernet_frame_roundtrip"
+  ],
+  "individualGuestResults": [
+    {
+      "schemaVersion": 1,
+      "kind": "userspace-result",
+      "runUUID": "2fb5d847-1aeb-4e05-be58-faf6a44f2910",
+      "name": "io.block_flush_reopen",
+      "status": "pass",
+      "detail": "validated_within_fixed_limits",
+      "sourceSHA256": "420f9bb6b699dc8043d76568f8076254fd799e39ee85a181f9a771c81e711dcc",
+      "frames": 0,
+      "frameBytes": 1024,
+      "networkBytes": 0,
+      "elapsedNanoseconds": 0,
+      "blockRounds": 8,
+      "blockOffset": 1048576,
+      "blockBytes": 131072
+    }
+  ],
+  "acceptedWorkloads": [],
+  "guestReceiptSeen": false,
+  "hostPoweroffObserved": true,
+  "lastCompletedSlice": {
+    "elapsedNanoseconds": 455069580792,
+    "instructionCount": 588,
+    "nearestSymbol": {
+      "name": "acpi_os_write_port",
+      "offset": 40,
+      "symbolAddress": 18446744071588573680
+    },
+    "reason": "powered-off",
+    "rip": 18446744071588573720,
+    "totalInstructions": 808516588
+  },
+  "guestOutputGateErrors": [
+    {
+      "schemaVersion": 1,
+      "name": "stress.output_gate",
+      "status": "fail",
+      "runUUID": null
+    }
+  ],
+  "hostIOCounters": {
+    "block": {
+      "capacityBytes": 33554432,
+      "discardRequests": 0,
+      "filePath": "/tmp/dory-p02-userspace-io-stress-baseline-jit-probe-2.disk/virtio-block.raw",
+      "flushRequests": 8,
+      "readBytes": 1052672,
+      "readRequests": 174,
+      "reopenedAndVerified": false,
+      "runID": "2fb5d847-1aeb-4e05-be58-faf6a44f2910",
+      "writeBytes": 1048576,
+      "writeRequests": 256,
+      "writeZeroesRequests": 0,
+      "zeroedBytes": 0
+    },
+    "network": {
+      "acceptedBytes": 0,
+      "acceptedFrames": 0,
+      "deliveredReplies": 0,
+      "ignoredFrames": 1,
+      "queuedReplies": 0,
+      "runID": "2fb5d847-1aeb-4e05-be58-faf6a44f2910",
+      "timingScope": "Duration comes from the guest workload result; this backend does not independently measure guest time.",
+      "verified": false
+    }
+  },
+  "posthocDiskInspection": {
+    "path": "/tmp/dory-p02-userspace-io-stress-baseline-jit-probe-2.disk/virtio-block.raw",
+    "bytes": 33554432,
+    "sha256": "76bd9e65ceb57130ed0219d147eeda658b47432b7329122fd19e1a3640375c81",
+    "regionOffset": 1048576,
+    "regionBytes": 131072,
+    "regionSHA256": "dbb71d178d43f63f39dd9b0fb5fc30fb366ada39e3b8763e41338b892c098cd6",
+    "patternMatched": true,
+    "readOnlyNoFollowDescriptor": true,
+    "scope": "Separate read-only descriptor reopened after the failed powered-off run; path/inode/size stable during inspection. This is post-hoc synthetic-file evidence, not the runner acceptance path, crash durability or physical storage qualification. Binary not vendored."
+  },
+  "guestTrapInputIdentity": {
+    "consoleTrap": "[   78.357961] traps: p02-userspace-i[427] trap invalid opcode ip:1003a9f sp:7ffc95b313f0 error:0 in p02-userspace-io-stress[2a9f,1002000+9000]",
+    "guestInstructionPointer": "0x1003a9f",
+    "archiveSHA256": "cbd5f9a8716052abfe710da732b70e6a2e8b038c7603387e943787b051578a35",
+    "member": "bin/p02-userspace-io-stress",
+    "memberArchiveOffset": 804996,
+    "elfSHA256": "72eee711647f609d8f7dac5b87429038d7f2fdb97d7ba6d1240532add7a5f9b5",
+    "elfBytes": 40712,
+    "loadSegment": {
+      "virtualAddress": 16787808,
+      "fileOffset": 6496,
+      "fileBytes": 33007,
+      "flags": 5
+    },
+    "instructionFileOffset": 10911,
+    "instructionBytesHex": "f20f70d200",
+    "instruction": "PSHUFLW xmm2,xmm2,0",
+    "sourceBuildDigest": "420f9bb6b699dc8043d76568f8076254fd799e39ee85a181f9a771c81e711dcc",
+    "scope": "Guest kernel reports invalid opcode at this IP; exact pinned input ELF maps that address to the listed bytes. No guest memory capture or new decoder execution was performed. Product reduction is separate and not yet claimed validated."
+  },
+  "jitSample": {
+    "instructionCount": 808516588,
+    "elapsedNanoseconds": 455069582042,
+    "counterCount": 19,
+    "liveSites": 16,
+    "scope": "Last completed coarse sample, or normal terminal slice. Timeout/error may retain an older sample. Counters are executor-lifetime totals; negativeEntryCount and the capped hot sites describe only live entries. Site reasons and hit counts are not cumulative reason totals."
+  },
+  "retentionTransformations": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-2-retention-transformations.json",
+    "sha256": "6caa1e26ff4b1106dc15d85f935d15cdb503fa362f120cb8582316947b2bb062"
+  },
+  "limitations": [
+    "The overall result is failure: no accepted whole guest receipt or network workload result exists, despite host-observed poweroff.",
+    "The guest reports eight block rounds and host records eight flush callbacks, but runner reopenedAndVerified remains false because the global receipt gate failed. Separate post-hoc region matching is not full runner durability acceptance.",
+    "Network recorded zero accepted frames and one ignored frame; the ignored frame does not establish its protocol, source or cause.",
+    "Source50 differs from source43 in several CPU changes and EVENT_IDX. Block progress is directly observed; attributing the earlier stall solely to EVENT_IDX remains an inference supported by a bounded reducer.",
+    "The reported invalid-opcode location maps to PSHUFLW in the exact pinned input ELF. No new corrected instruction tests or successful guest replay are included here.",
+    "Synthetic file and virtual Ethernet only; no physical storage, external network, reference-hardware or P14 performance qualification. JIT sites are capped live records, not cumulative reason totals."
+  ]
+}

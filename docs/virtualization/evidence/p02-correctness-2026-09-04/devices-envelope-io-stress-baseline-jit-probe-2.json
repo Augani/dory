@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "devices",
+  "issueLabel": "subsystem:devices",
+  "planItems": [
+    "P02-25"
+  ],
+  "sourceCommit": "862383b91c2e5b7ef1b6c78ddd17aef60be8a1db",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "failed",
+  "scope": "Second isolated block/network probe: guest eight block rounds and eight host flushes precede a guest invalid opcode; no full receipt or network acceptance. Poweroff is observed; completion reopen flag remains false.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-2-failure-review.json",
+      "sha256": "b4c1b64725129358f580de912680e16a8179181680ff759443804f9c9b2882e9"
+    }
+  ],
+  "limitations": [
+    "The overall result is failure: no accepted whole guest receipt or network workload result exists, despite host-observed poweroff.",
+    "The guest reports eight block rounds and host records eight flush callbacks, but runner reopenedAndVerified remains false because the global receipt gate failed. Separate post-hoc region matching is not full runner durability acceptance.",
+    "Network recorded zero accepted frames and one ignored frame; the ignored frame does not establish its protocol, source or cause.",
+    "Source50 differs from source43 in several CPU changes and EVENT_IDX. Block progress is directly observed; attributing the earlier stall solely to EVENT_IDX remains an inference supported by a bounded reducer.",
+    "The reported invalid-opcode location maps to PSHUFLW in the exact pinned input ELF. No new corrected instruction tests or successful guest replay are included here.",
+    "Synthetic file and virtual Ethernet only; no physical storage, external network, reference-hardware or P14 performance qualification. JIT sites are capped live records, not cumulative reason totals."
+  ]
+}
