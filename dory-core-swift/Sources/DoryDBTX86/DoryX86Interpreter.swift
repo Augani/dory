@@ -4229,13 +4229,14 @@ public struct DoryX86Interpreter: Sendable {
       return true
     case 3:
       let pcidEnabled = state.control.cr4 & (1 << 17) != 0
-      let allowedLowMask: UInt64 = pcidEnabled ? 0xfff : 0x18
       let noFlush = value & (1 << 63) != 0
+      // Low CR3 bits are a PCID, cache controls, ignored bits, or part of a
+      // legacy PAE 32-byte root. They are never an alignment fault; the walker
+      // selects the address bits appropriate to the active paging mode.
       let addressMask = ((UInt64(1) << profile.physicalAddressBits) - 1) & ~0xfff
       let storedValue = value & ~(1 << 63)
       guard !noFlush || pcidEnabled,
-        storedValue & ~addressMask & ~allowedLowMask == 0,
-        storedValue & 0xfff & ~allowedLowMask == 0
+        storedValue & ~addressMask & ~UInt64(0xfff) == 0
       else { return false }
       state.control.cr3 = storedValue
       if !noFlush { pagingUnit?.invalidateAll() }

@@ -82,10 +82,17 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 
   public func invalidate(linearAddress: UInt64) {
     lock.lock()
-    let linearPage = linearAddress >> 12
-    entries = entries.filter { $0.key.linearPage != linearPage }
-    for index in recentEntries.indices where recentEntries[index]?.key.linearPage == linearPage {
-      recentEntries[index] = nil
+    // A large translation may occupy several 4 KiB cache slots. INVLPG must remove
+    // every slot belonging to the large page, including the hot lookup entries.
+    func containsAddress(_ key: TLBKey, _ value: TLBValue) -> Bool {
+      let pageMask = ~(value.pageSize - 1)
+      return (key.linearPage << 12) & pageMask == linearAddress & pageMask
+    }
+    entries = entries.filter { !containsAddress($0.key, $0.value) }
+    for index in recentEntries.indices {
+      if let entry = recentEntries[index], containsAddress(entry.key, entry.value) {
+        recentEntries[index] = nil
+      }
     }
     lock.unlock()
   }
@@ -239,10 +246,12 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       user = user && entry & (1 << 2) != 0
       writable = writable && entry & (1 << 1) != 0
       executable = executable && entry & (1 << 63) == 0
-      let huge = entry & (1 << 7) != 0
-      if huge && level < 1 {
+      let bit7 = entry & (1 << 7) != 0
+      if bit7 && level == 0 {
         throw pageFault(linearAddress, access, context, protection: true, reserved: true)
       }
+      // Bit 7 is PS in a PDPTE/PDE, but PAT in a 4 KiB PTE.
+      let huge = bit7 && (level == 1 || level == 2)
       let isLeaf = level == 3 || huge
       let pageSize: UInt64 = huge ? (level == 1 ? 1 << 30 : 1 << 21) : 1 << 12
       if isLeaf {
@@ -297,7 +306,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     let indices = [
       (linearAddress >> 30) & 0x3, (linearAddress >> 21) & 0x1ff, (linearAddress >> 12) & 0x1ff,
     ]
-    var table = context.control.cr3 & physicalAddressMask & ~0x1f
+    // Legacy PAE uses CR3[31:5], unlike IA-32e's 4 KiB-aligned root.
+    var table = context.control.cr3 & 0xffff_ffe0
     var user = true
     var writable = true
     var executable = true
@@ -310,9 +320,13 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
         throw pageFault(linearAddress, access, context, protection: false)
       }
       try validate64BitEntry(entry, linearAddress: linearAddress, access: access, context: context)
-      user = user && entry & (1 << 2) != 0
-      writable = writable && entry & (1 << 1) != 0
-      executable = executable && entry & (1 << 63) == 0
+      if level != 0 {
+        // A legacy PAE PDPTE has no R/W, U/S, NX or accessed flag. Its
+        // reserved bits must eventually be checked when the PDPTEs are loaded.
+        user = user && entry & (1 << 2) != 0
+        writable = writable && entry & (1 << 1) != 0
+        executable = executable && entry & (1 << 63) == 0
+      }
       let huge = level == 1 && entry & (1 << 7) != 0
       let isLeaf = level == 2 || huge
       let pageSize: UInt64 = huge ? 1 << 21 : 1 << 12
@@ -345,7 +359,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
           executable: executable
         )
       }
-      if entry & (1 << 5) == 0 {
+      if level != 0, entry & (1 << 5) == 0 {
         entry |= 1 << 5
         try writeUInt64(entry, at: entryAddress, physicalMemory: physicalMemory)
       }
@@ -374,10 +388,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       directory |= 1 << 5
       try writeUInt32(directory, at: directoryAddress, physicalMemory: physicalMemory)
     }
-    if directory & (1 << 7) != 0 {
-      guard context.control.cr4 & (1 << 4) != 0 else {
-        throw pageFault(linearAddress, access, context, protection: true, reserved: true)
-      }
+    // With PSE clear, bit 7 is ignored and the PDE still points to a page table.
+    if context.control.cr4 & (1 << 4) != 0, directory & (1 << 7) != 0 {
       let pageSize: UInt64 = 1 << 22
       let addressField = UInt64(directory) & 0xffc0_0000
       try enforcePermissions(
@@ -476,7 +488,9 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     if access == .write { code |= 1 << 1 }
     if context.currentPrivilegeLevel == 3 { code |= 1 << 2 }
     if reserved { code |= 1 << 3 }
-    if access == .instructionFetch { code |= 1 << 4 }
+    let reportsInstructionFetch = context.control.cr4 & (1 << 20) != 0
+      || (context.control.cr4 & (1 << 5) != 0 && context.control.efer & (1 << 11) != 0)
+    if access == .instructionFetch, reportsInstructionFetch { code |= 1 << 4 }
     return code
   }
 
