@@ -6,10 +6,27 @@ import DoryRendererWorkerWireContracts
 import DoryVMContracts
 import Foundation
 import Testing
+import XCTest
 @testable import DorydKit
 
 @Suite("MachineManager resolved-plan launch integration", .serialized)
 struct MachineManagerResolvedPlanIntegrationTests {
+    @Test("preflight tokens cannot authorize helper spawn", arguments: [
+        DoryDaemonVirtualMachineLaunchValidationPurpose.restartPreflight, .stoppedPreflight,
+    ])
+    func preflightTokenCannotLaunch(purpose: DoryDaemonVirtualMachineLaunchValidationPurpose) throws {
+        let wrongUse = DoryDaemonVirtualMachinePreSpawnAuthorization(purpose: purpose, revalidate: {})
+        #expect(throws: DoryDaemonVirtualMachinePreSpawnAuthorizationError.revalidationFailed) {
+            try wrongUse.authorizeResolvedLaunch()
+        }
+        let preflight = DoryDaemonVirtualMachinePreSpawnAuthorization(purpose: purpose, revalidate: {})
+        if purpose == .stoppedPreflight { try preflight.authorizeStoppedPreflight() }
+        else { try preflight.authorizeRestartPreflight() }
+        #expect(throws: DoryDaemonVirtualMachinePreSpawnAuthorizationError.alreadyConsumed) {
+            try preflight.authorizeResolvedLaunch()
+        }
+    }
+
     @Test("single-use renderer identity binds only the resolved RawHV hardware-3D launch")
     func rendererIdentityBindsExactResolvedLaunch() throws {
         let identity = try rendererReleaseIdentityFixture()
@@ -107,6 +124,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 .filter { $0.operationKind == DoryWorkspaceMutationKind.starting.rawValue }
             #expect(!startEvents.isEmpty)
             #expect(startEvents.allSatisfy { $0.operationID == requestedOperationToken })
+            let journals = try DoryOperationJournalStore(home: state + "/.lifecycle-journal").list()
+            #expect(journals.filter { $0.plan.kind == .workspaceStart }.map(\.plan.id) == [requestedOperationID])
+            #expect(!journals.contains { $0.plan.kind == .workspaceResolve })
             let service = DorydService(
                 socketPath: state + "/service.sock",
                 machineManager: manager
@@ -494,8 +514,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
             "resolved-usb-control",
             requiresReadyHandoff: true,
             useShortStatePath: true,
+            authenticatedRuntime: true,
             usbController: usb
-        ) { manager, starter, _ in
+        ) { manager, starter, state in
             let plans = MutablePlanStore()
             let operations = manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)
             let registry = try rawRegistry(operations: operations)
@@ -525,7 +546,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                     agentProtocolVersion: DoryCore.protocolVersion(),
                     agentCapabilities: [DoryAgentCapability(id: "usb-vhci", version: 1)],
                     agentSocketPath: "/run/dory-agent.sock",
-                    controlSocketPath: "/run/dory-control.sock",
+                    controlSocketPath: try authenticatedControlSocket(state: state),
                     graphicsSelection: selection
                 ),
                 fileDescriptors: []
@@ -561,8 +582,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
             "resolved-clock-sync",
             requiresReadyHandoff: true,
             useShortStatePath: true,
+            authenticatedRuntime: true,
             agentConnector: clock.connect(socketPath:)
-        ) { manager, starter, _ in
+        ) { manager, starter, state in
             let plans = MutablePlanStore()
             let operations = manager.resolvedLaunchCompatibilityOperations(
                 for: .doryHypervisor
@@ -596,7 +618,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                         DoryAgentCapability(id: "clock-sync", version: 1),
                     ],
                     agentSocketPath: "/run/dory-agent.sock",
-                    controlSocketPath: "/run/dory-control.sock",
+                    controlSocketPath: try authenticatedControlSocket(state: state),
                     graphicsSelection: selection
                 ),
                 fileDescriptors: []
@@ -622,8 +644,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
         try withHarness(
             "resolved-graphics-receipt",
             requiresReadyHandoff: true,
-            useShortStatePath: true
-        ) { manager, starter, _ in
+            useShortStatePath: true,
+            authenticatedRuntime: true
+        ) { manager, starter, state in
             let plans = MutablePlanStore()
             let operations = manager.resolvedLaunchCompatibilityOperations(
                 for: .doryHypervisor
@@ -648,7 +671,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                     machineID: "dev",
                     operationID: starting.activeOperationID,
                     agentBuild: "dory-agent/missing-graphics-receipt",
-                    controlSocketPath: "/run/dory-control.sock"
+                    controlSocketPath: try authenticatedControlSocket(state: state)
                 ),
                 fileDescriptors: []
             )
@@ -661,6 +684,376 @@ struct MachineManagerResolvedPlanIntegrationTests {
             #expect(failed.runtimeGraphicsSelection == nil)
             #expect(failed.lastError?.contains("graphics selection") == true)
             #expect(starter.count == 1)
+        }
+    }
+
+    @Test("replacement manager preserves authenticated paused execution without spawning")
+    func replacementManagerPreservesPausedRuntime() throws {
+        try withHarness(
+            "paused-reconnect",
+            requiresReadyHandoff: true,
+            useShortStatePath: true,
+            authenticatedRuntime: true
+        ) { manager, starter, state in
+            let plans = MutablePlanStore()
+            let resolver = ClosureLaunchResolver { request in
+                let resolution = try exactResolution(request: request)
+                plans.set(resolution.resolvedPlan)
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: rawRegistry(operations: manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)),
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+            let starting = try manager.start(id: "dev")
+            let control = try authenticatedControlSocket(state: state)
+            try sendVmmHandoff(
+                path: try #require(starting.handoffSocketPath),
+                ready: VmmReadyMessage(
+                    machineID: "dev",
+                    operationID: starting.activeOperationID,
+                    controlSocketPath: control,
+                    graphicsSelection: try graphicsSelection(
+                        plan: plans.read(id: "dev"),
+                        operationID: try #require(starting.activeOperationID)
+                    )
+                ),
+                fileDescriptors: []
+            )
+            let deadline = Date().addingTimeInterval(5)
+            while manager.status(id: "dev")?.state == .starting, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            #expect(try manager.pause(id: "dev").state == .paused)
+            let launchIdentity = try DoryRuntimeReconnectRecordStore(root: state)
+                .read(machineID: "dev").launchIdentity
+            let before = try VmmControlClient.authenticateRuntime(
+                socketPath: control, launchIdentity: launchIdentity
+            )
+            #expect(before.runtimeState == .paused)
+
+            // The replacement reads only the durable workspace and the live helper challenge.
+            // The first manager remains retained here to avoid its graceful deinit stop hook;
+            // daemon SIGKILL qualification is a separate process-level campaign.
+            let replacementStarter = CountingProcessStarter()
+            let replacement = MachineManager(
+                configuration: MachineManagerConfiguration(
+                    vmmExecutablePath: "/bin/sh",
+                    stateDirectory: state,
+                    requiresReadyHandoff: true
+                ),
+                launchPolicy: .requireResolvedPlan,
+                machineStateBroker: try DoryMachineStateBroker(canonicalStateRootPath: state),
+                processStarter: { try replacementStarter.start($0) }
+            )
+            defer { replacement.stopAll() }
+            try replacement.installResolvedLaunchInfrastructure(
+                registry: rawRegistry(operations: replacement.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)),
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+            #expect(replacement.status(id: "dev")?.state == .paused)
+            #expect(replacementStarter.count == 0)
+            #expect(starter.count == 1)
+            #expect(try replacement.resume(id: "dev").state == .running)
+            let after = try VmmControlClient.authenticateRuntime(
+                socketPath: control, launchIdentity: launchIdentity
+            )
+            #expect(after.identity == before.identity)
+            #expect(after.runtimeState == .running)
+            #expect(try replacement.stop(id: "dev").state == .stopped)
+            #expect(!before.identity.matchesCurrentProcess())
+        }
+    }
+
+    @Test("daemon death preserves helper generation and refreshes guest readiness",
+          arguments: [false, true], [false, true])
+    func daemonDeathRecoversRuntime(paused: Bool, incompatibleAgent: Bool) throws {
+        let state = "/private/tmp/dory-r-\(UUID().uuidString)"
+        let daemon = Process()
+        daemon.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        daemon.arguments = [
+            "xctest", "-XCTest", "DorydKitTests.DoryRuntimeReconnectTests/testDaemonSubprocessOwner",
+            Bundle(for: DoryRuntimeReconnectTests.self).bundlePath,
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["DORY_RECONNECT_DAEMON_ROOT"] = state
+        environment["DORY_RECONNECT_DAEMON_PAUSED"] = paused ? "1" : "0"
+        daemon.environment = environment
+        daemon.standardOutput = FileHandle.nullDevice
+        daemon.standardError = FileHandle.nullDevice
+        try daemon.run()
+        defer {
+            if daemon.isRunning { _ = kill(daemon.processIdentifier, SIGKILL) }
+            daemon.waitUntilExit()
+            if let record = try? DoryRuntimeReconnectRecordStore(root: state).read(machineID: "dev"),
+               let identity = record.processIdentity, identity.matchesCurrentProcess() {
+                _ = kill(identity.processIdentifier, SIGKILL)
+            }
+            try? FileManager.default.removeItem(atPath: state)
+        }
+        let deadline = Date().addingTimeInterval(10)
+        while !FileManager.default.fileExists(atPath: state + "/daemon-ready"),
+              daemon.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        try #require(FileManager.default.fileExists(atPath: state + "/daemon-ready"))
+        let original = try DoryRuntimeReconnectRecordStore(root: state).read(machineID: "dev")
+        let process = try #require(original.processIdentity)
+        _ = kill(daemon.processIdentifier, SIGKILL)
+        daemon.waitUntilExit()
+        #expect(daemon.terminationReason == .uncaughtSignal)
+        #expect(process.matchesCurrentProcess())
+
+        let starter = CountingProcessStarter()
+        let permitAgentConnection = DispatchSemaphore(value: 0)
+        defer { permitAgentConnection.signal() }
+        let agent = ResolvedClockSyncRecorder(
+            advertisedInfo: DoryAgentInfo(
+                protocolVersion: DoryCore.protocolVersion() + (incompatibleAgent ? 1 : 0),
+                kernel: "Linux reconnect fixture",
+                agentBuild: "dory-agent/fresh-reconnect",
+                uptimeSeconds: 10,
+                capabilities: [DoryAgentCapability(id: "exec", version: 1)]
+            ),
+            execOutput: "2: eth0 inet 192.168.64.12/24 scope global eth0\n"
+        )
+        let manager = MachineManager(
+            configuration: MachineManagerConfiguration(
+                vmmExecutablePath: "/bin/sh", stateDirectory: state, requiresReadyHandoff: true
+            ),
+            launchPolicy: .requireResolvedPlan,
+            machineStateBroker: try DoryMachineStateBroker(canonicalStateRootPath: state),
+            agentConnector: { path in
+                guard permitAgentConnection.wait(timeout: .now() + 5) == .success else {
+                    throw ResolvedLaunchLifecycleFixtureError.prepublicationFailure
+                }
+                permitAgentConnection.signal()
+                return try agent.connect(socketPath: path)
+            },
+            processStarter: { try starter.start($0) }
+        )
+        defer { manager.stopAll() }
+        let plans = DoryResolvedMachinePlanRepository(root: state)
+        let resolver = ClosureLaunchResolver { _ in
+            throw ResolvedLaunchLifecycleFixtureError.prepublicationFailure
+        }
+        let ledger = DoryVirtualMachineResourceAdmissionLedger(root: state + "/admission")
+        try manager.installResolvedLaunchInfrastructure(
+            registry: rawRegistry(operations: manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)),
+            resolver: resolver,
+            plans: plans,
+            expectedPlanRevision: { _ in 1 },
+            productionPlanningController: RejectingPlanningRecorder(),
+            resourceAdmissionLedger: ledger
+        )
+        #expect(manager.status(id: "dev")?.state == (paused ? .paused : .running))
+        #expect(manager.status(id: "dev")?.pid == process.processIdentifier)
+        #expect(starter.count == 0)
+        #expect(resolver.callCount == 0)
+        #expect(try ledger.snapshot().leases.first?.state == .running)
+        #expect(manager.status(id: "dev")?.readiness.toolsConnected == false)
+        #expect(manager.status(id: "dev")?.readiness.desktopVisible == false)
+        #expect(manager.status(id: "dev")?.readiness.workloadReady == false)
+        #expect(manager.status(id: "dev")?.runtimeAddress == nil)
+        if paused { #expect(try manager.resume(id: "dev").state == .running) }
+        permitAgentConnection.signal()
+        let refreshedDeadline = Date().addingTimeInterval(5)
+        while Date() < refreshedDeadline {
+            if incompatibleAgent, agent.infoCalls > 0 { break }
+            if !incompatibleAgent, manager.status(id: "dev")?.runtimeAddress != nil { break }
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        #expect(agent.infoCalls == 1)
+        let refreshed = try #require(manager.status(id: "dev"))
+        #expect(refreshed.readiness.toolsConnected == !incompatibleAgent)
+        #expect(!refreshed.readiness.workloadReady)
+        #expect(!refreshed.readiness.desktopVisible)
+        #expect(refreshed.runtimeAddress == (incompatibleAgent ? nil : "192.168.64.12"))
+        #expect(try manager.stop(id: "dev").state == .stopped)
+        #expect(try ledger.snapshot().leases.first?.state == .stopped)
+        #expect(!process.matchesCurrentProcess())
+        #expect(try DoryRuntimeReconnectRecordStore(root: state).liveRecords().isEmpty)
+    }
+
+    private static let restartFixtureOperationID = UUID(uuidString: "e27d789b-362b-4ba9-8b4b-e0692d2f306c")!
+
+    @Test("restart journal survives daemon death at each process handoff boundary",
+          arguments: ["before-stop", "after-stop", "after-ready"], [false, true])
+    func restartDaemonDeathRecoversOneOperation(boundary: String, paused: Bool) throws {
+        let state = "/private/tmp/dory-r-\(UUID().uuidString)"
+        let daemon = Process()
+        daemon.executableURL = URL(fileURLWithPath: "/usr/bin/xcrun")
+        daemon.arguments = [
+            "xctest", "-XCTest", "DorydKitTests.DoryRuntimeReconnectTests/testDaemonSubprocessOwner",
+            Bundle(for: DoryRuntimeReconnectTests.self).bundlePath,
+        ]
+        var environment = ProcessInfo.processInfo.environment
+        environment["DORY_RECONNECT_DAEMON_ROOT"] = state
+        environment["DORY_RECONNECT_DAEMON_PAUSED"] = paused ? "1" : "0"
+        environment["DORY_RECONNECT_RESTART_BOUNDARY"] = boundary
+        daemon.environment = environment
+        daemon.standardOutput = FileHandle.nullDevice
+        daemon.standardError = FileHandle.nullDevice
+        try daemon.run()
+        defer {
+            if daemon.isRunning { _ = kill(daemon.processIdentifier, SIGKILL) }
+            daemon.waitUntilExit()
+            if let record = try? DoryRuntimeReconnectRecordStore(root: state).read(machineID: "dev"),
+               let identity = record.processIdentity, identity.matchesCurrentProcess() {
+                _ = kill(identity.processIdentifier, SIGKILL)
+            }
+            try? FileManager.default.removeItem(atPath: state)
+        }
+        let deadline = Date().addingTimeInterval(15)
+        while !FileManager.default.fileExists(atPath: state + "/daemon-ready"),
+              daemon.isRunning, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        try #require(FileManager.default.fileExists(atPath: state + "/daemon-ready"), "restart fixture did not reach \(boundary)")
+        let source = try JSONDecoder().decode(DoryRuntimeReconnectRecord.self, from: Data(contentsOf: URL(fileURLWithPath: state + "/restart-source.json")))
+        let sourceProcess = try #require(source.processIdentity)
+        let survivor = try? DoryRuntimeReconnectRecordStore(root: state).read(machineID: "dev")
+        _ = kill(daemon.processIdentifier, SIGKILL)
+        daemon.waitUntilExit()
+        #expect(daemon.terminationReason == .uncaughtSignal)
+        #expect(sourceProcess.matchesCurrentProcess() == (boundary == "before-stop"))
+
+        let starter = CountingProcessStarter()
+        let resolver = ClosureLaunchResolver { _ in throw ResolvedLaunchLifecycleFixtureError.prepublicationFailure }
+        let planning = RejectingPlanningRecorder()
+        let ledger = DoryVirtualMachineResourceAdmissionLedger(root: state + "/admission")
+        let before = try #require(ledger.snapshot().leases.first)
+        let manager = MachineManager(
+            configuration: .init(vmmExecutablePath: "/bin/sh", stateDirectory: state, requiresReadyHandoff: true),
+            launchPolicy: .requireResolvedPlan,
+            machineStateBroker: try DoryMachineStateBroker(canonicalStateRootPath: state),
+            processStarter: { try starter.start($0) }
+        )
+        defer { manager.stopAll() }
+        let journal = try DoryOperationJournalStore(home: state + "/.lifecycle-journal")
+        #expect(try journal.read(Self.restartFixtureOperationID).state.status == .running)
+        try manager.installResolvedLaunchInfrastructure(
+            registry: rawRegistry(operations: manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)),
+            resolver: resolver, plans: DoryResolvedMachinePlanRepository(root: state),
+            expectedPlanRevision: { _ in 1 }, productionPlanningController: planning,
+            resourceAdmissionLedger: ledger
+        )
+        let status = try #require(manager.status(id: "dev"))
+        let recovered = try journal.read(Self.restartFixtureOperationID)
+        let operation = try journal.acquire(Self.restartFixtureOperationID).readWorkspaceLifecycleOperation()
+        #expect(operation.sourceRuntimeOperationID == DoryOperationIdentity.parseCanonical(source.launchIdentity.operationID))
+        #expect(operation.source.runtime == operation.target.runtime)
+        #expect(operation.admissionLeaseID == before.leaseID)
+        #expect(recovered.state.status == (boundary == "after-ready" ? .completed : .failed))
+        #expect(status.state == (boundary == "after-stop" ? .stopped : (boundary == "before-stop" && paused ? .paused : .running)))
+        #expect(status.pid == (boundary == "after-stop" ? nil : survivor?.processIdentity?.processIdentifier))
+        let after = try #require(ledger.snapshot().leases.first)
+        #expect(after.leaseID == before.leaseID)
+        #expect(after.resources == before.resources)
+        #expect(after.state == (boundary == "after-stop" ? .stopped : .running))
+        #expect(starter.count == 0)
+        #expect(resolver.callCount == 0)
+        #expect(planning.machineIDs.isEmpty)
+        if boundary == "after-ready" {
+            #expect(try manager.restart(id: "dev", operationID: Self.restartFixtureOperationID).pid == status.pid)
+        } else {
+            #expect(throws: (any Error).self) { _ = try manager.restart(id: "dev", operationID: Self.restartFixtureOperationID) }
+        }
+        if boundary != "after-stop" { #expect(try manager.stop(id: "dev").state == .stopped) }
+        #expect(try ledger.snapshot().leases.count == 1)
+        #expect(try ledger.snapshot().leases.first?.state == .stopped)
+        #expect(starter.count == 0)
+    }
+
+    /// Invoked only in an xctest subprocess which the owning test kills without Swift teardown.
+    func runDaemonReconnectFixture(state: String, paused: Bool, restartBoundary: String? = nil) throws {
+        try withHarness(
+            "daemon-generation",
+            stateDirectoryOverride: state,
+            admittedDesktopFixture: true,
+            requiresReadyHandoff: true,
+            useShortStatePath: true,
+            authenticatedRuntime: true
+        ) { manager, _, state in
+            let plans = DoryResolvedMachinePlanRepository(root: state)
+            let ledger = DoryVirtualMachineResourceAdmissionLedger(root: state + "/admission")
+            let resolver = ClosureLaunchResolver { request in
+                if let existing = try? plans.read(id: "dev") {
+                    return try exactResolution(request: request, admissionEvidence: existing.resourceAdmission)
+                }
+                let reserved = try ledger.reserveStarting(
+                    binding: .init(
+                        machineID: "dev", definitionRevision: request.definition.lifecycle.revision,
+                        definitionSHA256: SHA256.hash(data: request.canonicalDefinitionData).map { String(format: "%02x", $0) }.joined(),
+                        plannedPlanRevision: request.expectedPlanRevision
+                    ),
+                    hostFacts: .init(logicalCPUCount: 12, physicalMemoryBytes: 32 * 1_073_741_824, freeStorageBytes: 512 * 1_073_741_824),
+                    workload: .desktop, resources: request.definition.resources
+                )
+                let resolution = try exactResolution(request: request, admissionEvidence: reserved.evidence)
+                _ = try ledger.bind(leaseID: reserved.leaseID, to: resolution.resolvedPlan, expectedLeaseRevision: reserved.leaseRevision)
+                try plans.create(resolution.resolvedPlan)
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: rawRegistry(operations: manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)),
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 },
+                productionPlanningController: RejectingPlanningRecorder(),
+                resourceAdmissionLedger: ledger
+            )
+            let starting = try manager.start(id: "dev")
+            try sendVmmHandoff(
+                path: try #require(starting.handoffSocketPath),
+                ready: VmmReadyMessage(
+                    machineID: "dev", operationID: starting.activeOperationID,
+                    agentBuild: "dory-agent/previous-daemon",
+                    agentProtocolVersion: DoryCore.protocolVersion(),
+                    agentSocketPath: "/run/dory-agent.sock",
+                    controlSocketPath: try authenticatedControlSocket(state: state),
+                    graphicsSelection: try graphicsSelection(
+                        plan: plans.read(id: "dev"), operationID: try #require(starting.activeOperationID)
+                    ),
+                    guestBooted: true, toolsConnected: true,
+                    desktopVisible: true, workloadReady: true
+                ), fileDescriptors: []
+            )
+            let deadline = Date().addingTimeInterval(5)
+            while manager.status(id: "dev")?.state == .starting, Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            try #require(manager.status(id: "dev")?.state == .running)
+            if paused { _ = try manager.pause(id: "dev") }
+            if let restartBoundary {
+                let source = try DoryRuntimeReconnectRecordStore(root: state).read(machineID: "dev")
+                try JSONEncoder().encode(source).write(to: URL(fileURLWithPath: state + "/restart-source.json"))
+                manager.installLifecycleFaultInjectorForTesting { point in
+                    let matches = (restartBoundary == "before-stop" && point == .restartBeforeStop)
+                        || (restartBoundary == "after-stop" && point == .stopAfterProcessStop)
+                        || (restartBoundary == "after-ready" && point == .completionBeforeJournalWrite(.restarting))
+                    if matches {
+                        try Data("ready".utf8).write(to: URL(fileURLWithPath: state + "/daemon-ready"))
+                        while true { Darwin.pause() }
+                    }
+                }
+                let restart = try manager.restart(id: "dev", operationID: Self.restartFixtureOperationID)
+                try sendVmmHandoff(
+                    path: try #require(restart.handoffSocketPath),
+                    ready: .init(
+                        machineID: "dev", operationID: restart.activeOperationID,
+                        controlSocketPath: try authenticatedControlSocket(state: state),
+                        graphicsSelection: try graphicsSelection(plan: plans.read(id: "dev"), operationID: try #require(restart.activeOperationID))
+                    ), fileDescriptors: []
+                )
+                while true { Darwin.pause() }
+            }
+            try Data("ready".utf8).write(to: URL(fileURLWithPath: state + "/daemon-ready"))
+            while true { Darwin.pause() }
         }
     }
 
@@ -1030,6 +1423,179 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    @Test("restart preflight rejection preserves the live source and durable metadata", arguments: [
+        "missing-plan", "missing-revision", "stale-definition", "tampered-digest",
+        "rejected-evidence", "adapter-mismatch", "missing-authorization", "rejected-authorization",
+        "changed-plan", "missing-artifact", "stale-projection", "changed-metadata",
+    ], [false, true])
+    func rejectedRestartPreservesSource(scenario: String, paused: Bool) throws {
+        try withHarness("restart-preflight-\(scenario)") { manager, starter, state in
+            let plans = MutablePlanStore()
+            let baseline = MutablePlanStore()
+            let resolver = ClosureLaunchResolver { request in
+                var resolution = try exactResolution(request: request)
+                guard (try? baseline.read(id: "dev")) != nil else {
+                    baseline.set(resolution.resolvedPlan)
+                    plans.set(resolution.resolvedPlan)
+                    return resolution
+                }
+                switch scenario {
+                case "missing-plan":
+                    throw DoryDaemonVirtualMachineLaunchPlanFailure(code: .planNotFound, message: "missing restart plan")
+                case "stale-definition":
+                    resolution.resolvedPlan.definitionRevision += 1
+                    resolution.resolvedPlanSHA256 = try planSHA256(resolution.resolvedPlan)
+                case "tampered-digest":
+                    resolution.resolvedPlanSHA256 = digest("9")
+                case "rejected-evidence":
+                    resolution.revalidation = .init(state: .rejected, issues: [
+                        .init(code: .componentEvidenceMismatch, field: "components"),
+                    ])
+                case "adapter-mismatch":
+                    resolution.backendPlan.machine.memoryMB += 1_024
+                case "missing-authorization":
+                    resolution.preSpawnAuthorization = nil
+                case "rejected-authorization":
+                    resolution.preSpawnAuthorization = .init(purpose: request.purpose, revalidate: {
+                        throw DoryDaemonVirtualMachinePreSpawnAuthorizationError.revalidationFailed
+                    })
+                case "changed-plan":
+                    resolution.resolvedPlan.createdAtUnixMilliseconds += 1
+                    resolution.resolvedPlanSHA256 = try planSHA256(resolution.resolvedPlan)
+                    plans.set(resolution.resolvedPlan)
+                default:
+                    break
+                }
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: try rawRegistry(operations: manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)),
+                resolver: resolver, plans: plans,
+                expectedPlanRevision: { _ in
+                    scenario == "missing-revision" && (try? baseline.read(id: "dev")) != nil ? nil : 1
+                }
+            )
+            _ = try manager.start(id: "dev")
+            if paused { _ = try manager.pause(id: "dev") }
+            let before = try #require(manager.status(id: "dev"))
+            let pid = try #require(before.pid)
+            let workspacePath = state + "/dev/" + DoryWorkspaceRepository.recordFileName
+            switch scenario {
+            case "missing-artifact":
+                try FileManager.default.moveItem(atPath: state + "/dev/kernel", toPath: state + "/dev/kernel-retained")
+            case "stale-projection":
+                try Data("invalid workspace projection".utf8).write(to: URL(fileURLWithPath: workspacePath))
+            case "changed-metadata":
+                let path = state + "/dev/machine.json"
+                var machine = try JSONDecoder().decode(DoryMachineConfiguration.self, from: Data(contentsOf: URL(fileURLWithPath: path)))
+                machine.memoryMB += 1_024
+                try DoryMachineConfigurationMigrationBridge.encodeLegacy(machine).write(to: URL(fileURLWithPath: path))
+            default:
+                break
+            }
+            let metadata = try restartAuthoritySnapshot(state: state)
+            let operationID = UUID()
+            #expect(throws: (any Error).self) { _ = try manager.restart(id: "dev", operationID: operationID) }
+            let after = try #require(manager.status(id: "dev"))
+            #expect(after.state == before.state)
+            #expect(after.pid == pid)
+            #expect(kill(pid, 0) == 0)
+            #expect(after.runtimeIdentity == before.runtimeIdentity)
+            #expect(after.readiness == before.readiness)
+            #expect(after.activeOperationID == nil)
+            #expect(starter.count == 1)
+            let afterFiles = try restartAuthoritySnapshot(state: state)
+            let changedFiles = Set(afterFiles.keys).union(metadata.keys).filter { afterFiles[$0] != metadata[$0] }.sorted()
+            #expect(afterFiles == metadata, Comment(rawValue: "Changed files: \(changedFiles.joined(separator: ", "))"))
+            let journals = try DoryOperationJournalStore(home: state + "/.lifecycle-journal").list()
+            #expect(!journals.contains { $0.plan.id == operationID || $0.plan.kind == .workspaceRestart })
+        }
+    }
+
+    @Test("late resolved preflight cannot recreate a removed workspace projection", arguments: [false, true])
+    func latePreflightDoesNotReconcile(restarting: Bool) throws {
+        try withHarness("late-preflight-projection") { manager, starter, state in
+            let plans = MutablePlanStore()
+            let workspacePath = state + "/dev/" + DoryWorkspaceRepository.recordFileName
+            let resolver = ClosureLaunchResolver { request in
+                let resolution = try exactResolution(request: request)
+                let removeProjection = !restarting || (try? plans.read(id: "dev")) != nil
+                plans.set(resolution.resolvedPlan)
+                if removeProjection { try FileManager.default.removeItem(atPath: workspacePath) }
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: try rawRegistry(operations: manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)),
+                resolver: resolver, plans: plans, expectedPlanRevision: { _ in 1 }
+            )
+            if restarting { _ = try manager.start(id: "dev") }
+            let before = try #require(manager.status(id: "dev"))
+            #expect(throws: MachineManagerError.self) {
+                if restarting { _ = try manager.restart(id: "dev") }
+                else { _ = try manager.start(id: "dev") }
+            }
+            #expect(!FileManager.default.fileExists(atPath: workspacePath))
+            #expect(manager.status(id: "dev")?.state == before.state)
+            #expect(manager.status(id: "dev")?.pid == before.pid)
+            #expect(starter.count == (restarting ? 1 : 0))
+        }
+    }
+
+    @Test("restart rechecks media authority after stopping the source")
+    func restartRevalidatesAfterStop() throws {
+        try withHarness("restart-preflight-stop-boundary") { manager, starter, state in
+            let plans = MutablePlanStore()
+            let media = state + "/resolved-media"
+            let original = Data("qualified media".utf8)
+            try original.write(to: URL(fileURLWithPath: media))
+            let resolver = ClosureLaunchResolver { request in
+                let resolution = try exactResolution(request: request, preSpawnRevalidation: {
+                    guard try Data(contentsOf: URL(fileURLWithPath: media)) == original else {
+                        throw DoryDaemonVirtualMachinePreSpawnAuthorizationError.revalidationFailed
+                    }
+                })
+                plans.set(resolution.resolvedPlan)
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: try rawRegistry(operations: manager.resolvedLaunchCompatibilityOperations(for: .doryHypervisor)),
+                resolver: resolver, plans: plans, expectedPlanRevision: { _ in 1 }
+            )
+            let running = try manager.start(id: "dev")
+            let pid = try #require(running.pid)
+            manager.installLifecycleFaultInjectorForTesting { point in
+                if point == .stopAfterProcessStop {
+                    try Data("changed while stopping".utf8).write(to: URL(fileURLWithPath: media))
+                }
+            }
+            defer { manager.installLifecycleFaultInjectorForTesting { _ in } }
+            let operationID = UUID()
+            #expect(throws: MachineManagerError.self) { _ = try manager.restart(id: "dev", operationID: operationID) }
+            #expect(starter.count == 1)
+            #expect(kill(pid, 0) == -1 && errno == ESRCH)
+            #expect(manager.status(id: "dev")?.pid == nil)
+            #expect(manager.status(id: "dev")?.activeOperationID == nil)
+            let journals = try DoryOperationJournalStore(home: state + "/.lifecycle-journal").list()
+            let restart = try #require(journals.first { $0.plan.id == operationID })
+            #expect(restart.plan.kind == .workspaceRestart)
+            #expect(restart.state.status == .failed)
+            #expect(journals.filter { $0.plan.kind == .workspaceStart }.count == 1)
+            #expect(!journals.contains { $0.plan.kind == .workspaceStop })
+        }
+    }
+
+    private func restartAuthoritySnapshot(state: String) throws -> [String: String] {
+        var snapshot: [String: String] = [:]
+        for relative in FileManager.default.enumerator(atPath: state)?.allObjects as? [String] ?? [] {
+            guard !relative.hasSuffix(".log") else { continue }
+            let path = state + "/" + relative
+            var info = stat()
+            guard lstat(path, &info) == 0, info.st_mode & S_IFMT == S_IFREG else { continue }
+            snapshot[relative] = "\(info.st_ino):\(info.st_mode):\(info.st_mtimespec.tv_sec):\(info.st_mtimespec.tv_nsec):\(try fileSHA256(path: path))"
+        }
+        return snapshot
+    }
+
     @Test("machine metadata mutation during evidence collection is rejected before spawn")
     func authorityTOCTOUIsRejected() throws {
         try withHarness("authority-toctou") { manager, starter, state in
@@ -1323,8 +1889,10 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
-    @Test("native typed settings persist outside machine environment")
-    func nativeTypedSettingsAreWorkspaceAuthority() throws {
+    @Test("native typed settings and resource budgets survive update, clone and restore", arguments: [
+        DoryDesktopGraphicsPreference.virgl, .software,
+    ])
+    func nativeTypedSettingsAreWorkspaceAuthority(graphics: DoryOperations.DoryDesktopGraphicsPreference) throws {
         let state = try makeState("native-typed-settings")
         defer { try? FileManager.default.removeItem(atPath: state) }
         let manager = makeManager(state: state, policy: .perWorkspaceAuthority)
@@ -1348,10 +1916,12 @@ struct MachineManagerResolvedPlanIntegrationTests {
                     files: .bidirectional
                 )),
                 runtimePreference: .set(.accelerated),
-                graphicsPreference: .set(.virgl),
+                graphicsPreference: .set(graphics),
+                networkMode: .set(.isolated),
                 portForwards: .set([
                     DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
-                ])
+                ]),
+                cameraEnabled: .set(true)
             )
         )
         #expect(created.environment.isEmpty)
@@ -1377,11 +1947,21 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(createdRecord.definition.guestIdentityIntent.account?.username == "developer")
         #expect(createdRecord.definition.platform == .arm64LinuxV1)
         #expect(createdRecord.definition.boot.devices.first?.kind == .linuxKernel)
-        #expect(created.typedSettings?.graphicsPreference == .virgl)
-        #expect(createdRecord.definition.graphics.acceptableLevels == [.hostAcceleratedDisplay])
+        let expectedGraphics: DoryGraphicsAccelerationLevel = graphics == .software
+            ? .software : .hostAcceleratedDisplay
+        #expect(created.typedSettings?.graphicsPreference == graphics)
+        #expect(createdRecord.definition.graphics.acceptableLevels == [expectedGraphics])
+        #expect(createdRecord.definition.networkMode == .isolated)
+        #expect(createdRecord.definition.resources == DoryVMProductionResourceBudget.make(for: createdRecord.definition))
+        if graphics == .software {
+            #expect(createdRecord.definition.resources.rendererBytes == 1_920 * 1_080 * 4 * 3)
+            #expect(createdRecord.definition.resources.workerOverheadBytes == 0)
+        }
         #expect(createdRecord.definition.portForwards == [
             DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
         ])
+        _ = try manager.update(id: "typed")
+        #expect(try repository.readPersistedRecord(id: "typed") == createdRecord)
         let snapshot = try manager.snapshot(id: "typed", snapshotID: "typed-baseline")
         #expect(snapshot.typedSettings == created.typedSettings)
 
@@ -1404,6 +1984,11 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(updatedRecord.definition.guestIdentityIntent.desktop?.distributionIdentifier
             == "ubuntu")
         #expect(updatedRecord.definition.graphics.acceptableLevels == [.hardwareAccelerated3D])
+        #expect(updatedRecord.definition.portForwards == createdRecord.definition.portForwards)
+        #expect(updatedRecord.definition.networkMode == createdRecord.definition.networkMode)
+        #expect(updatedRecord.definition.camera == createdRecord.definition.camera)
+        #expect(updatedRecord.definition.resources.rendererBytes == DoryVMProductionResourceBudget.isolatedRendererScanoutBytes)
+        #expect(updatedRecord.definition.resources.workerOverheadBytes == DoryVMProductionResourceBudget.rendererWorkerOverheadBytes)
         _ = try manager.update(id: "typed")
         #expect(try repository.readPersistedRecord(id: "typed").definition.lifecycle.revision == 2)
 
@@ -1417,6 +2002,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
         let cloneRecord = try repository.readPersistedRecord(id: "typed-clone")
         #expect(cloneRecord.legacyConfigurationSHA256 == nil)
         #expect(cloneRecord.definition.guestIdentityIntent.account?.username == "developer")
+        #expect(cloneRecord.definition.resources == createdRecord.definition.resources)
+        #expect(cloneRecord.definition.portForwards == createdRecord.definition.portForwards)
+        #expect(cloneRecord.definition.camera == createdRecord.definition.camera)
 
         var snapshotWithLegacyEnvironment = snapshot
         snapshotWithLegacyEnvironment.environment = ["SHOULD_NOT_PERSIST": "opaque-secret"]
@@ -1434,7 +2022,10 @@ struct MachineManagerResolvedPlanIntegrationTests {
         let restoredRecord = try repository.readPersistedRecord(id: "typed")
         #expect(restoredRecord.definition.lifecycle.revision == 3)
         #expect(restoredRecord.definition.guestIdentityIntent.account?.username == "developer")
-        #expect(restoredRecord.definition.graphics.acceptableLevels == [.hostAcceleratedDisplay])
+        #expect(restoredRecord.definition.graphics.acceptableLevels == [expectedGraphics])
+        #expect(restoredRecord.definition.resources == createdRecord.definition.resources)
+        #expect(restoredRecord.definition.portForwards == createdRecord.definition.portForwards)
+        #expect(restoredRecord.definition.camera == createdRecord.definition.camera)
 
         let restarted = makeManager(state: state, policy: .perWorkspaceAuthority)
         let restartedStatus = try #require(restarted.status(id: "typed"))
@@ -1657,7 +2248,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(changed.status(id: "legacy")?.runtimeIdentity.invalidationReason == .planRecoveryFailed)
     }
 
-    @Test("per-workspace policy dispatches legacy and resolved identities independently")
+    @Test("per-workspace policy requires every legacy identity to be planned before launch")
     func perWorkspaceMixedAuthorityAndRestart() throws {
         let state = try makeState("per-workspace-mixed")
         defer { try? FileManager.default.removeItem(atPath: state) }
@@ -1696,16 +2287,37 @@ struct MachineManagerResolvedPlanIntegrationTests {
         #expect(restarted.status(id: "legacy")?.runtimeIdentity.mode == .legacyCompatibility)
         #expect(restarted.status(id: "planned")?.runtimeIdentity == plannedIdentity)
 
-        #expect(try restarted.start(id: "legacy").state == .running)
-        _ = try restarted.stop(id: "legacy")
+        #expect(throws: MachineManagerError.self) {
+            _ = try restarted.start(id: "legacy")
+        }
+        #expect(starter.count == 0)
         #expect(try restarted.start(id: "planned").state == .running)
         #expect(resolver.callCount == 1)
-        #expect(starter.count == 2)
+        #expect(starter.count == 1)
         _ = try restarted.stop(id: "planned")
 
         let secondRestart = makeManager(state: state, policy: .perWorkspaceAuthority)
         #expect(secondRestart.status(id: "legacy")?.runtimeIdentity.mode == .legacyCompatibility)
         #expect(secondRestart.status(id: "planned")?.runtimeIdentity == plannedIdentity)
+    }
+
+    @Test("legacy workspace planning reaches the unified production transaction")
+    func perWorkspaceLegacyIdentityCanBePlanned() throws {
+        let state = try makeState("legacy-production-planning")
+        defer { try? FileManager.default.removeItem(atPath: state) }
+        let legacyManager = makeManager(state: state, policy: .legacyCompatibility)
+        _ = try createMachine(id: "legacy", manager: legacyManager)
+
+        let migrated = makeManager(state: state, policy: .perWorkspaceAuthority)
+        let controller = RejectingPlanningRecorder()
+        #expect(throws: MachineManagerError.self) {
+            _ = try migrated.resolveAndPublishProductionPlan(
+                id: "legacy",
+                controller: controller
+            )
+        }
+        #expect(controller.machineIDs == ["legacy"])
+        #expect(migrated.status(id: "legacy")?.runtimeIdentity.mode == .legacyCompatibility)
     }
 
     @Test("missing or changed resolved authority never falls back to legacy")
@@ -2020,6 +2632,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             definition: definition,
             canonicalDefinitionData: definitionData,
             machine: machine,
+            persistence: try DoryResolvedMachinePersistence(stateDirectory: state, machineID: machineID),
             expectedPlanRevision: 1
         ))
         plans.set(resolution.resolvedPlan)
@@ -2037,11 +2650,14 @@ struct MachineManagerResolvedPlanIntegrationTests {
 
     private func withHarness(
         _ label: String,
+        stateDirectoryOverride: String? = nil,
+        admittedDesktopFixture: Bool = false,
         launchPolicy: DoryMachineLaunchPolicy = .requireResolvedPlan,
         acceleratedExecutablePath: String? = "/bin/sh",
         passMachineArguments: Bool = true,
         requiresReadyHandoff: Bool = false,
         useShortStatePath: Bool = false,
+        authenticatedRuntime: Bool = false,
         injectStateBroker: Bool = true,
         initialEnvironment: [String: String] = [:],
         usbController: any DoryMachineUSBControlling = UnixDoryMachineUSBController(),
@@ -2054,9 +2670,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
         },
         _ body: (MachineManager, CountingProcessStarter, String) throws -> Void
     ) throws {
-        let state = useShortStatePath
+        let state = stateDirectoryOverride ?? (useShortStatePath
             ? "/private/tmp/dory-r-\(UUID().uuidString)"
-            : "/private/tmp/dory-resolved-start-\(label)-\(UUID().uuidString)"
+            : "/private/tmp/dory-resolved-start-\(label)-\(UUID().uuidString)")
         try FileManager.default.createDirectory(
             atPath: state,
             withIntermediateDirectories: false,
@@ -2066,14 +2682,29 @@ struct MachineManagerResolvedPlanIntegrationTests {
         let stateBroker = injectStateBroker
             ? try DoryMachineStateBroker(canonicalStateRootPath: state)
             : nil
+        let runtimeCommand: String
+        if authenticatedRuntime {
+            func shellQuote(_ value: String) -> String {
+                "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            }
+            let developerDirectory = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
+                .map { "DEVELOPER_DIR=" + shellQuote($0) + " " } ?? ""
+            runtimeCommand = developerDirectory
+                + "DORY_RECONNECT_TEST_SOCKET=" + shellQuote(state + "/control.sock")
+                + " DORY_RECONNECT_TEST_FD=20 exec /usr/bin/xcrun xctest -XCTest "
+                + "DorydKitTests.DoryRuntimeReconnectTests/testReconnectSubprocessServer "
+                + shellQuote(Bundle(for: DoryRuntimeReconnectTests.self).bundlePath)
+        } else {
+            runtimeCommand = "exec /bin/sleep 30"
+        }
         let manager = MachineManager(
             configuration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sh",
                 acceleratedDesktopExecutablePath: acceleratedExecutablePath,
                 stateDirectory: state,
-                baseArguments: ["-c", "exec /bin/sleep 30", "dory-test-runtime"],
+                baseArguments: ["-c", runtimeCommand, "dory-test-runtime"],
                 acceleratedDesktopBaseArguments: [
-                    "-c", "exec /bin/sleep 30", "dory-test-runtime",
+                    "-c", runtimeCommand, "dory-test-runtime",
                 ],
                 passMachineArguments: passMachineArguments,
                 requiresReadyHandoff: requiresReadyHandoff
@@ -2086,20 +2717,57 @@ struct MachineManagerResolvedPlanIntegrationTests {
             processStopper: processStopper
         )
         defer {
-            _ = try? manager.stop(id: "dev")
-            _ = try? manager.delete(id: "dev")
-            _ = try? FileManager.default.removeItem(atPath: state)
+            // The daemon-death parent owns this directory and needs failure evidence if its
+            // child exits before reaching the requested crash boundary.
+            if ProcessInfo.processInfo.environment["DORY_RECONNECT_DAEMON_ROOT"] != state {
+                _ = try? manager.stop(id: "dev")
+                _ = try? manager.delete(id: "dev")
+                _ = try? FileManager.default.removeItem(atPath: state)
+            }
+        }
+        let rootfsPath: String
+        if admittedDesktopFixture {
+            rootfsPath = state + "/fixture-rootfs.ext4"
+            try Data(contentsOf: URL(fileURLWithPath: doryTestRootfsPath)).write(to: URL(fileURLWithPath: rootfsPath))
+            let disk = try FileHandle(forWritingTo: URL(fileURLWithPath: rootfsPath))
+            try disk.truncate(atOffset: 32 * 1_073_741_824)
+            try disk.close()
+        } else {
+            rootfsPath = doryTestRootfsPath
         }
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
-            rootfsPath: doryTestRootfsPath,
-            memoryMB: 2_048,
+            rootfsPath: rootfsPath,
+            memoryMB: admittedDesktopFixture ? 4_096 : 2_048,
             cpuCount: 2,
             displayMode: .desktop,
             environment: initialEnvironment
         ))
         try body(manager, starter, state)
+    }
+
+    private func authenticatedControlSocket(state: String) throws -> String {
+        let socket = state + "/control.sock"
+        let identity = try DoryRuntimeReconnectRecordStore(root: state).read(machineID: "dev").launchIdentity
+        let deadline = Date().addingTimeInterval(3)
+        while true {
+            do {
+                _ = try VmmControlClient.authenticateRuntime(socketPath: socket, launchIdentity: identity)
+                return socket
+            } catch {
+                if Date() >= deadline {
+                    let files = FileManager.default.enumerator(atPath: state)?.allObjects as? [String] ?? []
+                    let logs = files.filter { $0.hasSuffix(".log") }.compactMap {
+                        try? String(contentsOfFile: state + "/" + $0, encoding: .utf8)
+                    }.joined(separator: "\n")
+                    throw NSError(domain: "AuthenticatedRuntimeFixture", code: 1, userInfo: [
+                        NSLocalizedDescriptionKey: "\(error); runtime output: \(logs)",
+                    ])
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
     }
 
     private func installExactRawHVInfrastructure(
@@ -2164,6 +2832,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         request: DoryDaemonVirtualMachineLaunchPlanRequest,
         componentSHA256: String? = nil,
         bootArtifactSHA256: String? = nil,
+        admissionEvidence: DoryResolvedMachineResourceAdmissionEvidence? = nil,
         preSpawnRevalidation: @escaping @Sendable () throws -> Void = {}
     ) throws -> DoryDaemonVirtualMachineLaunchPlanResolution {
         let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(
@@ -2256,7 +2925,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                         request.definition.virtualHardwareABIVersion
                 )
             ),
-            resourceAdmission: resourceAdmission(
+            resourceAdmission: admissionEvidence ?? resourceAdmission(
                 machine: request.machine,
                 diskBytes: request.definition.resources.diskBytes
             ),
@@ -2270,7 +2939,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 virtualHardwareABIVersion: request.definition.virtualHardwareABIVersion,
                 qualifierIdentifier: "dory-host-qualifier",
                 qualifierVersion: 1
-            )
+            ),
+            resources: request.definition.resources,
+            persistence: request.persistence
         )
         let validationIssues = plan.validate()
         guard validationIssues.isEmpty else {
@@ -2316,6 +2987,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 portForwards: request.definition.portForwards
             ),
             preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization(
+                purpose: request.purpose,
                 revalidate: preSpawnRevalidation
             )
         )
@@ -2519,8 +3191,20 @@ private final class ControlledMachineProcessStopper: @unchecked Sendable {
 private final class ResolvedClockSyncRecorder: AgentControlClient, @unchecked Sendable {
     private let lock = NSLock()
     private var recordedSyncs: [Int64] = []
+    private var recordedInfoCalls = 0
+    private let advertisedInfo: DoryAgentInfo
+    private let execOutput: String
+
+    init(advertisedInfo: DoryAgentInfo = DoryAgentInfo(
+        protocolVersion: DoryCore.protocolVersion(), kernel: "Linux test",
+        agentBuild: "dory-agent/resolved-clock-test", uptimeSeconds: 1
+    ), execOutput: String = "") {
+        self.advertisedInfo = advertisedInfo
+        self.execOutput = execOutput
+    }
 
     var syncs: [Int64] { lock.withLock { recordedSyncs } }
+    var infoCalls: Int { lock.withLock { recordedInfoCalls } }
 
     func connect(socketPath: String) throws -> any AgentControlClient {
         #expect(socketPath == "/run/dory-agent.sock")
@@ -2528,12 +3212,8 @@ private final class ResolvedClockSyncRecorder: AgentControlClient, @unchecked Se
     }
 
     func info() throws -> DoryAgentInfo {
-        DoryAgentInfo(
-            protocolVersion: DoryCore.protocolVersion(),
-            kernel: "Linux test",
-            agentBuild: "dory-agent/resolved-clock-test",
-            uptimeSeconds: 1
-        )
+        lock.withLock { recordedInfoCalls += 1 }
+        return advertisedInfo
     }
 
     func clockSync(hostEpochNs: Int64) throws -> Bool {
@@ -2563,7 +3243,7 @@ private final class ResolvedClockSyncRecorder: AgentControlClient, @unchecked Se
     ) throws -> DoryExecResult {
         DoryExecResult(
             exitCode: 0,
-            stdout: Data(),
+            stdout: Data(execOutput.utf8),
             stderr: Data(),
             timedOut: false,
             stdoutTruncated: false,
@@ -2630,4 +3310,32 @@ private final class MutablePlanStore: DoryResolvedMachinePlanStoring, @unchecked
         }
         return plan
     }
+}
+
+private final class RejectingPlanningRecorder:
+    DoryDaemonVirtualMachineProductionPlanningControlling,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var recordedMachineIDs: [String] = []
+
+    var machineIDs: [String] { lock.withLock { recordedMachineIDs } }
+
+    func authorityRevision(for reference: DoryVMResolverReference) throws -> UInt64? {
+        _ = reference
+        return nil
+    }
+
+    func publishResolvedPlan(
+        _ request: DoryDaemonVirtualMachinePlanningTransactionRequest,
+        artifacts: [DoryDaemonVirtualMachinePlanningArtifactPublication]
+    ) throws {
+        _ = artifacts
+        lock.withLock {
+            recordedMachineIDs.append(request.planning.machine.id)
+        }
+        throw PlanningRejected()
+    }
+
+    private struct PlanningRejected: Error {}
 }

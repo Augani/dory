@@ -1,10 +1,12 @@
 import CryptoKit
+import DoryCore
 @testable import DorydKit
 import DoryOperations
 import DoryRendererWorkerWireContracts
 import DoryVMContracts
 import Foundation
 import Testing
+import XCTest
 
 @Suite("Production VM trust composition")
 struct DoryDaemonVirtualMachineProductionTrustTests {
@@ -2036,6 +2038,544 @@ private struct DesktopPreflightArtifactProbe: DoryDesktopUpdateArtifactResolving
     }
 }
 
+extension DoryDaemonVirtualMachineProductionTrustTests {
+    @Test("production desktop update keeps one root through transfer, planning and replay",
+          arguments: ["stopped", "running", "paused"])
+    func productionDesktopRootSuccess(sourceState: String) throws {
+        try withProductionIntegrationTestStack {
+            let harness = try ProductionDesktopUpdateHarness(sourceState: sourceState)
+            defer { harness.cleanup() }
+            let manager = harness.context.machineManager
+            let before = try harness.journal.list().count
+            let result = try harness.drive {
+                try manager.updateDesktop(id: harness.id, request: harness.request)
+            }
+            #expect(result.operationID == harness.request.operationID.uuidString.lowercased())
+            #expect(result.status.state.rawValue == sourceState)
+            #expect(result.inputSHA256 == ProductionDesktopAgent.inputSHA256)
+            #expect(harness.agent.applyCount == 1)
+            #expect(harness.agent.controlledPushCount == 1)
+            #expect(try harness.diskPrefix().starts(with: Data("desktop-after".utf8)))
+            #expect(try Data(contentsOf: URL(fileURLWithPath: harness.managedKernelPath))
+                == Data("desktop-kernel-after".utf8))
+            #expect(try harness.journal.list().count == before + 1)
+            let operation = try harness.journal.read(harness.request.operationID)
+            #expect(operation.plan.kind == .workspaceUpdate)
+            #expect(operation.state.status == .completed)
+            #expect(operation.state.result == .succeeded)
+            let workspace = try DoryWorkspaceRepository(root: harness.fixture.machineConfiguration.stateDirectory)
+                .readPersistedRecord(id: harness.id)
+            #expect(workspace.definition.lifecycle.revision == harness.sourceWorkspace.definition.lifecycle.revision + 1)
+            #expect(result.status.shares == harness.source.shares)
+            #expect(result.status.environment.isEmpty)
+            let plan = try harness.context.planning.plans.read(id: harness.id)
+            #expect(plan == result.status.runtimeIdentity.resolvedPlan)
+            let sourcePlan = try #require(harness.source.runtimeIdentity.resolvedPlan)
+            #expect(plan.planRevision > sourcePlan.planRevision)
+            #expect(try harness.context.planning.resourceLedger.snapshot().leases.first {
+                $0.binding.machineID == harness.id
+            }?.state == (sourceState == "stopped" ? .stopped : .running))
+            let replay = try manager.updateDesktop(id: harness.id, request: harness.request)
+            #expect(replay == result)
+            #expect(harness.agent.applyCount == 1)
+            #expect(harness.agent.controlledPushCount == 1)
+            #expect(try harness.context.planning.plans.read(id: harness.id) == plan)
+            #expect(try harness.journal.list().count == before + 1)
+            var conflicting = harness.request
+            conflicting.version = "different+runtime.1"
+            #expect(throws: (any Error).self) {
+                try manager.updateDesktop(id: harness.id, request: conflicting)
+            }
+            #expect(manager.status(id: harness.id)?.pid == replay.status.pid)
+            if sourceState == "running" {
+                let stopID = UUID()
+                _ = try manager.stop(id: harness.id, operationID: stopID)
+                let persisted = try DoryWorkspaceRepository(root: harness.fixture.machineConfiguration.stateDirectory)
+                    .readPersistedRecord(id: harness.id)
+                let digest = try DoryMachineDesktopUpdateJournal.digest(persisted.definition)
+                do {
+                    let lease = try harness.journal.acquire(stopID)
+                    let stopped = try lease.readWorkspaceLifecycleOperation()
+                    #expect(stopped.kind == .stopping)
+                    for condition in [stopped.source, stopped.target] {
+                        #expect(condition.definitionRevision == persisted.definition.lifecycle.revision)
+                        #expect(condition.configurationAuthority?.canonicalDefinitionSHA256 == digest)
+                    }
+                }
+                #expect(persisted.definition == workspace.definition)
+                #expect(result.status.state == .running)
+                #expect(replay.status.state == .running)
+                #expect(try harness.journal.list().count == before + 2)
+            }
+        }
+    }
+
+    @Test("production desktop apply failure restores source under its root operation",
+          arguments: ["apply-failure", "duplicate-receipt"], ["stopped", "running", "paused"])
+    func productionDesktopRootRollback(failureMode: String, sourceState: String) throws {
+        try withProductionIntegrationTestStack {
+            let harness = try ProductionDesktopUpdateHarness(sourceState: sourceState,
+                failApply: failureMode == "apply-failure", duplicateReceipt: failureMode == "duplicate-receipt")
+            defer { harness.cleanup() }
+            let manager = harness.context.machineManager
+            let before = try harness.journal.list().count
+            #expect(throws: (any Error).self) {
+                try harness.drive { try manager.updateDesktop(id: harness.id, request: harness.request) }
+            }
+            #expect(harness.agent.applyCount == 1)
+            #expect(harness.agent.controlledPushCount == 1)
+            #expect(harness.agent.receiptReadCount == (failureMode == "duplicate-receipt" ? 1 : 0))
+            let restored = try #require(manager.status(id: harness.id))
+            #expect(restored.state.rawValue == sourceState)
+            #expect(restored.failure?.recoveryDisposition == .rollbackCompleted)
+            #expect(try harness.diskPrefix() == harness.sourceDiskPrefix)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: harness.managedKernelPath)) == harness.sourceKernel)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: harness.directory + "/machine.json"))
+                == harness.sourceConfigurationData)
+            #expect(restored.shares == harness.source.shares)
+            #expect(try harness.journal.list().count == before + 1)
+            #expect(try harness.journal.read(harness.request.operationID).state.result == .failed)
+            let workspace = try DoryWorkspaceRepository(root: harness.fixture.machineConfiguration.stateDirectory)
+                .readPersistedRecord(id: harness.id)
+            #expect(workspace.definition.lifecycle.revision == harness.sourceWorkspace.definition.lifecycle.revision + 1)
+            #expect(try harness.context.planning.plans.read(id: harness.id) == restored.runtimeIdentity.resolvedPlan)
+            #expect(try harness.context.planning.resourceLedger.snapshot().leases.first {
+                $0.binding.machineID == harness.id
+            }?.state == (sourceState == "stopped" ? .stopped : .running))
+        }
+    }
+
+    @Test("qualified desktop completion retry keeps its target plan and helper generation",
+          arguments: ["stopped", "running", "paused"])
+    func productionDesktopRootCompletionReplay(sourceState: String) throws {
+        try withProductionIntegrationTestStack {
+            let harness = try ProductionDesktopUpdateHarness(sourceState: sourceState)
+            defer { harness.cleanup() }
+            let manager = harness.context.machineManager
+            let before = try harness.journal.list().count
+            let observed = ConfigurationUpdateFaultObservation()
+            manager.installLifecycleFaultInjectorForTesting { point in
+                if point == .completionBeforeJournalWrite(.updating), observed.recordOnce() {
+                    throw MachineLifecycleInjectedCrash()
+                }
+            }
+            #expect(throws: (any Error).self) {
+                try harness.drive { try manager.updateDesktop(id: harness.id, request: harness.request) }
+            }
+            try #require(observed.wasObserved)
+            #expect(try harness.journal.read(harness.request.operationID).state.status != .completed)
+            let qualified = try #require(manager.status(id: harness.id))
+            let qualifiedPlan = try harness.context.planning.plans.read(id: harness.id)
+            manager.installLifecycleFaultInjectorForTesting { _ in }
+            let replay = try harness.drive { try manager.updateDesktop(id: harness.id, request: harness.request) }
+            #expect(replay.status.state.rawValue == sourceState)
+            #expect(replay.status.pid == qualified.pid)
+            #expect(replay.inputSHA256 == ProductionDesktopAgent.inputSHA256)
+            #expect(harness.agent.applyCount == 1)
+            #expect(harness.agent.controlledPushCount == 1)
+            #expect(try harness.context.planning.plans.read(id: harness.id) == qualifiedPlan)
+            #expect(try harness.journal.list().count == before + 1)
+            #expect(try harness.journal.read(harness.request.operationID).state.status == .completed)
+            #expect(try harness.context.planning.resourceLedger.snapshot().leases.first {
+                $0.binding.machineID == harness.id
+            }?.state == (sourceState == "stopped" ? .stopped : .running))
+        }
+    }
+
+    @Test("interrupted desktop compensation reuses its recorded source publication",
+          arguments: [MachineLifecycleFaultPoint.desktopAfterMetadata, .desktopAfterRollbackPublication],
+          ["stopped", "paused"])
+    func productionDesktopRootInterruptedRollback(point: MachineLifecycleFaultPoint, sourceState: String) throws {
+        try withProductionIntegrationTestStack {
+            let harness = try ProductionDesktopUpdateHarness(sourceState: sourceState, failApply: true)
+            defer { harness.cleanup() }
+            let before = try harness.journal.list().count
+            let observed = ConfigurationUpdateFaultObservation()
+            harness.context.machineManager.installLifecycleFaultInjectorForTesting { current in
+                if current == point, observed.recordOnce() { throw MachineLifecycleInjectedCrash() }
+            }
+            #expect(throws: (any Error).self) {
+                try harness.drive { try harness.context.machineManager.updateDesktop(id: harness.id, request: harness.request) }
+            }
+            try #require(observed.wasObserved)
+            #expect(try harness.journal.read(harness.request.operationID).state.status == .rollingBack)
+            let activation = harness.fixture.factory.activate(
+                store: harness.fixture.store, machineConfiguration: harness.fixture.machineConfiguration,
+                appVersion: harness.fixture.appVersion, publicKey: harness.fixture.publicKey,
+                expectedArchitecture: "arm64")
+            guard case .activated(let recovered) = activation else {
+                Issue.record("Desktop compensation recovery failed: \(activation)"); return
+            }
+            defer { try? recovered.machineManager.delete(id: harness.id) }
+            let restored = try #require(recovered.machineManager.status(id: harness.id))
+            #expect(restored.state.rawValue == sourceState)
+            #expect(restored.failure?.recoveryDisposition == .rollbackCompleted)
+            #expect(try harness.diskPrefix() == harness.sourceDiskPrefix)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: harness.managedKernelPath)) == harness.sourceKernel)
+            #expect(try Data(contentsOf: URL(fileURLWithPath: harness.directory + "/machine.json"))
+                == harness.sourceConfigurationData)
+            let workspace = try DoryWorkspaceRepository(root: harness.fixture.machineConfiguration.stateDirectory)
+                .readPersistedRecord(id: harness.id)
+            #expect(workspace.definition.lifecycle.revision == harness.sourceWorkspace.definition.lifecycle.revision + 1)
+            #expect(try recovered.planning.plans.read(id: harness.id) == restored.runtimeIdentity.resolvedPlan)
+            #expect(try recovered.planning.resourceLedger.snapshot().leases.first {
+                $0.binding.machineID == harness.id
+            }?.state == (sourceState == "stopped" ? .stopped : .running))
+            #expect(harness.agent.applyCount == 1)
+            #expect(harness.agent.controlledPushCount == 1)
+            #expect(try harness.journal.list().count == before + 1)
+            #expect(try harness.journal.read(harness.request.operationID).state.status == .failed)
+        }
+    }
+
+    @Test("fresh production activation recovers the desktop root from its durable checkpoint",
+          arguments: ProductionDesktopRecoveryCase.all)
+    func productionDesktopRootFaultRecovery(scenario: ProductionDesktopRecoveryCase) throws {
+        try withProductionIntegrationTestStack {
+            let harness = try ProductionDesktopUpdateHarness(sourceState: scenario.sourceState)
+            defer { harness.cleanup() }
+            let before = try harness.journal.list().count
+            let observed = ConfigurationUpdateFaultObservation()
+            harness.context.machineManager.installLifecycleFaultInjectorForTesting { point in
+                if point == scenario.point, observed.recordOnce() { throw MachineLifecycleInjectedCrash() }
+            }
+            #expect(throws: (any Error).self) {
+                try harness.drive { try harness.context.machineManager.updateDesktop(id: harness.id, request: harness.request) }
+            }
+            try #require(observed.wasObserved, "Missing durable boundary \(scenario.point)")
+            let activation = harness.fixture.factory.activate(
+                store: harness.fixture.store, machineConfiguration: harness.fixture.machineConfiguration,
+                appVersion: harness.fixture.appVersion, publicKey: harness.fixture.publicKey,
+                expectedArchitecture: "arm64")
+            guard case .activated(let recovered) = activation else {
+                Issue.record("Desktop recovery activation failed: \(activation)"); return
+            }
+            defer { try? recovered.machineManager.delete(id: harness.id) }
+            let result = try #require(recovered.machineManager.status(id: harness.id))
+            #expect(result.state.rawValue == scenario.sourceState)
+            #expect(result.shares == harness.source.shares)
+            #expect(try harness.journal.list().count == before + 1)
+            let operation = try harness.journal.read(harness.request.operationID)
+            #expect(operation.state.status == (scenario.qualified ? .completed : .failed))
+            #expect(operation.state.result == (scenario.qualified ? .succeeded : .failed))
+            #expect(try recovered.planning.plans.read(id: harness.id) == result.runtimeIdentity.resolvedPlan)
+            #expect(try recovered.planning.resourceLedger.snapshot().leases.first {
+                $0.binding.machineID == harness.id
+            }?.state == (scenario.sourceState == "stopped" ? .stopped : .running))
+            if scenario.qualified {
+                #expect(try harness.diskPrefix().starts(with: Data("desktop-after".utf8)))
+                #expect(harness.agent.applyCount == 1)
+                let replay = try recovered.machineManager.updateDesktop(id: harness.id, request: harness.request)
+                #expect(replay.status.pid == result.pid)
+                #expect(harness.agent.applyCount == 1)
+            } else {
+                #expect(result.failure?.recoveryDisposition == .rollbackCompleted)
+                #expect(try harness.diskPrefix() == harness.sourceDiskPrefix)
+                #expect(try Data(contentsOf: URL(fileURLWithPath: harness.managedKernelPath)) == harness.sourceKernel)
+                #expect(try Data(contentsOf: URL(fileURLWithPath: harness.directory + "/machine.json"))
+                    == harness.sourceConfigurationData)
+                #expect(throws: (any Error).self) {
+                    try recovered.machineManager.updateDesktop(id: harness.id, request: harness.request)
+                }
+            }
+            if scenario.point == .snapshotAfterRootfs {
+                #expect(try recovered.machineManager.listSnapshots(machineID: harness.id).isEmpty)
+                let snapshotID = "du-" + harness.request.operationID.uuidString.lowercased()
+                for suffix in ["ext4", "kernel", "json"] {
+                    #expect(!FileManager.default.fileExists(atPath: harness.directory + "/snapshots/" + snapshotID + "." + suffix))
+                }
+            }
+            #expect(try harness.journal.list().count == before + 1)
+        }
+    }
+
+}
+
+struct ProductionDesktopRecoveryCase: Sendable {
+    let point: MachineLifecycleFaultPoint
+    let sourceState: String
+    var qualified: Bool { point == .desktopAfterQualification }
+    static let all: [Self] = [
+        .init(point: .desktopBeforeStop, sourceState: "running"),
+        .init(point: .desktopBeforeStop, sourceState: "paused"),
+        .init(point: .snapshotAfterRootfs, sourceState: "stopped"),
+        .init(point: .snapshotAfterRootfs, sourceState: "running"),
+        .init(point: .snapshotAfterRootfs, sourceState: "paused"),
+        .init(point: .desktopAfterSnapshot, sourceState: "stopped"),
+        .init(point: .desktopAfterGuestApply, sourceState: "running"),
+        .init(point: .desktopAfterKernel, sourceState: "paused"),
+        .init(point: .desktopAfterMetadata, sourceState: "stopped"),
+        .init(point: .desktopAfterWorkspace, sourceState: "running"),
+        .init(point: .desktopAfterPlanning, sourceState: "paused"),
+        .init(point: .desktopAfterQualification, sourceState: "stopped"),
+        .init(point: .desktopAfterQualification, sourceState: "running"),
+        .init(point: .desktopAfterQualification, sourceState: "paused"),
+    ]
+}
+
+private final class ProductionDesktopUpdateHarness: @unchecked Sendable {
+    let id = "desktop-root"
+    let fixture: ProductionTrustFixture
+    let context: DoryDaemonVirtualMachineProductionActivationContext
+    let agent: ProductionDesktopAgent
+    let request: DoryDesktopUpdateRequest
+    let journal: DoryOperationJournalStore
+    let source: DoryMachineStatus
+    let sourceWorkspace: DoryWorkspaceRepositoryRecord
+    let sourceConfigurationData: Data
+    let sourceDiskPrefix: Data
+    let sourceKernel: Data
+    var directory: String { fixture.machineConfiguration.stateDirectory + "/" + id }
+    var managedKernelPath: String { directory + "/kernel" }
+
+    init(sourceState: String, failApply: Bool = false, duplicateReceipt: Bool = false) throws {
+        let id = "desktop-root"
+        let agent = ProductionDesktopAgent(failApply: failApply, duplicateReceipt: duplicateReceipt)
+        self.agent = agent
+        let fixture = try ProductionTrustFixture(authenticatedRuntime: true, agentConnector: { _ in agent })
+        self.fixture = fixture
+        var initialized = false
+        var activatedManager: MachineManager?
+        defer {
+            if !initialized {
+                activatedManager?.stopAll()
+                try? activatedManager?.delete(id: id)
+                fixture.cleanup()
+            }
+        }
+        guard case .activated(let context) = fixture.factory.activate(
+            store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+            appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+        ) else { throw MachineManagerError.persistence("desktop production fixture activation failed") }
+        self.context = context
+        activatedManager = context.machineManager
+        let disk = fixture.root.appendingPathComponent("desktop.raw")
+        try Data("desktop-before".utf8).write(to: disk)
+        let diskHandle = try FileHandle(forWritingTo: disk)
+        try diskHandle.truncate(atOffset: 32 * 1_024 * 1_024 * 1_024)
+        try diskHandle.close()
+        let reply = LockedPlanningCreateReply()
+        let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
+                                   productionPlanningController: context.planningController)
+        service.machineCreate([
+            "id": id, "kernelPath": fixture.directKernelPath, "rootfsPath": disk.path,
+            "displayMode": "desktop", "memoryMB": UInt64(4_096), "cpuCount": 4,
+            "guestIdentityIntent": ["desktop": ["distributionIdentifier": "ubuntu"]],
+            "desktopGraphicsPreference": "software",
+        ]) { reply.set(ok: $0, body: $1, message: $2) }
+        guard reply.value.ok else { throw MachineManagerError.persistence(reply.value.message) }
+        let directory = fixture.machineConfiguration.stateDirectory + "/" + id
+        agent.setDiskPath(directory + "/rootfs.ext4")
+        request = .init(operationID: UUID(), distro: "ubuntu", version: "next+runtime.1",
+                        distributionInstallationName: "ubuntu-installation", runtimeInstallationName: "runtime-installation")
+        let bundle = fixture.root.appendingPathComponent("desktop-update.tar")
+        let kernel = fixture.root.appendingPathComponent("desktop-update-kernel")
+        try Data("desktop-update-bundle".utf8).write(to: bundle)
+        try Data("desktop-kernel-after".utf8).write(to: kernel)
+        context.machineManager.installDesktopUpdateArtifactResolver(ProductionDesktopArtifactResolver(
+            bundlePath: bundle.path, kernelPath: kernel.path))
+        _ = try Self.drive {
+            _ = try context.machineManager.start(id: "desktop-root")
+            let deadline = Date().addingTimeInterval(15)
+            while let status = context.machineManager.status(id: "desktop-root"), status.state != .running {
+                if status.state == .failed || Date() > deadline {
+                    throw MachineManagerError.persistence(status.lastError ?? "desktop source did not become ready")
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+        }
+        // Verify the activation graph retained the supplied connector before hashing a full disk.
+        _ = try context.machineManager.exec(id: id, argv: ["/usr/bin/true"])
+        if sourceState == "stopped" { _ = try context.machineManager.stop(id: id) }
+        else {
+            _ = try context.machineManager.pause(id: id)
+            if sourceState == "running" { _ = try context.machineManager.resume(id: id) }
+        }
+        context.machineManager.installLifecycleFaultInjectorForTesting { point in
+            try? FileHandle.standardError.write(contentsOf: Data("Desktop fixture boundary: \(point)\n".utf8))
+        }
+        source = try #require(context.machineManager.status(id: id))
+        sourceWorkspace = try DoryWorkspaceRepository(root: fixture.machineConfiguration.stateDirectory).readPersistedRecord(id: id)
+        sourceConfigurationData = try Data(contentsOf: URL(fileURLWithPath: directory + "/machine.json"))
+        sourceKernel = try Data(contentsOf: URL(fileURLWithPath: directory + "/kernel"))
+        let input = try FileHandle(forReadingFrom: URL(fileURLWithPath: directory + "/rootfs.ext4"))
+        sourceDiskPrefix = try input.read(upToCount: 64) ?? Data()
+        try input.close()
+        journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+        initialized = true
+    }
+
+    func cleanup() {
+        do { try context.machineManager.delete(id: id) }
+        catch { context.machineManager.stopAll() }
+        fixture.cleanup()
+    }
+
+    func diskPrefix() throws -> Data {
+        let input = try FileHandle(forReadingFrom: URL(fileURLWithPath: directory + "/rootfs.ext4"))
+        defer { try? input.close() }
+        return try input.read(upToCount: 64) ?? Data()
+    }
+
+    func drive<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) throws -> T {
+        try Self.drive(operation)
+    }
+
+    private static func drive<T: Sendable>(
+        _ operation: @escaping @Sendable () throws -> T
+    ) throws -> T {
+        let completion = ProductionDesktopCompletion<T>()
+        let thread = Thread {
+            let result = Result { try operation() }
+            if case .failure(let error) = result {
+                try? FileHandle.standardError.write(contentsOf: Data("Desktop fixture operation failed: \(error)\n".utf8))
+            }
+            completion.finish(result)
+        }
+        thread.stackSize = 8 * 1_024 * 1_024
+        thread.start()
+        let deadline = Date().addingTimeInterval(300)
+        while completion.result == nil, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        return try #require(completion.result, "desktop operation did not finish").get()
+    }
+}
+
+/// A subprocess fixture for production trust tests. It authenticates the inherited launch
+/// identity and sends real lifecycle receipts; it does not boot or qualify a physical guest.
+final class DoryProductionDesktopRuntimeTests: XCTestCase {
+    func testAuthenticatedDesktopRuntimeServer() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let controlSocket = environment["DORY_DESKTOP_TEST_CONTROL_SOCKET"] else { return }
+        let handoffSocket = try XCTUnwrap(environment["DORY_DESKTOP_TEST_HANDOFF_SOCKET"])
+        let identity = try DoryRuntimeReconnectLaunchIdentity.decode(
+            fileDescriptor: DoryRuntimeReconnectContract.childFileDescriptor)
+        let operationID = try XCTUnwrap(UUID(uuidString: identity.operationID))
+        let state = ProductionDesktopExecutionState()
+        let server = VmmLifecycleReceiptServer(
+            socketPath: controlSocket, reconnectIdentity: identity,
+            executionStateProvider: { state.current }, executionLifecycleHandler: { state.apply($0) })
+        try server.start()
+        defer { server.stop() }
+        try sendVmmHandoff(path: handoffSocket, ready: .init(
+            machineID: identity.machineID, operationID: identity.operationID,
+            agentBuild: ProductionDesktopAgent.build, agentProtocolVersion: DoryCore.protocolVersion(),
+            agentCapabilities: ProductionDesktopAgent.capabilities,
+            agentSocketPath: "/run/dory-desktop-agent.sock", controlSocketPath: controlSocket,
+            graphicsSelection: .resolvedSoftware(operationID: operationID,
+                resolvedPlanSHA256: identity.resolvedPlanSHA256, planRevision: identity.planRevision),
+            guestBooted: true, toolsConnected: true
+        ), fileDescriptors: [])
+        _ = signal(SIGTERM, SIG_DFL)
+        while true { pause() }
+    }
+}
+
+private final class ProductionDesktopExecutionState: @unchecked Sendable {
+    private let lock = NSLock()
+    private var state: DoryVirtualMachineState = .running
+    var current: DoryVirtualMachineState { lock.withLock { state } }
+    func apply(_ action: DoryLifecycleReceiptAction) {
+        lock.withLock { state = action == .preparePause ? .paused : .running }
+    }
+}
+
+private final class ProductionDesktopCompletion<T: Sendable>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Result<T, Error>?
+    var result: Result<T, Error>? { lock.withLock { value } }
+    func finish(_ value: Result<T, Error>) { lock.withLock { self.value = value } }
+}
+
+private final class ProductionDesktopAgent: AgentControlClient, @unchecked Sendable {
+    static let build = "dory-agent/production-desktop-test"
+    static let inputSHA256 = String(repeating: "a", count: 64)
+    static let capabilities = [
+        DoryAgentCapability(id: "clock-sync", version: 1),
+        DoryAgentCapability(id: "exec", version: 1),
+        DoryAgentCapability(id: "sync-push", version: 2),
+    ]
+    private let lock = NSLock()
+    private let failApply: Bool
+    private let duplicateReceipt: Bool
+    private var diskPath = ""
+    private var transferredSHA256 = ""
+    private var applications = 0
+    private var pushes = 0
+    private var receiptReads = 0
+    var applyCount: Int { lock.withLock { applications } }
+    var controlledPushCount: Int { lock.withLock { pushes } }
+    var receiptReadCount: Int { lock.withLock { receiptReads } }
+    init(failApply: Bool, duplicateReceipt: Bool) {
+        self.failApply = failApply
+        self.duplicateReceipt = duplicateReceipt
+    }
+    func setDiskPath(_ path: String) { lock.withLock { diskPath = path } }
+    func info() throws -> DoryAgentInfo {
+        .init(protocolVersion: DoryCore.protocolVersion(), kernel: "Linux desktop fixture",
+              agentBuild: Self.build, uptimeSeconds: 1, capabilities: Self.capabilities)
+    }
+    func clockSync(hostEpochNs: Int64) throws -> Bool { true }
+    func portsWatch() throws -> DoryPortsSnapshot { .init(ports: [], added: [], removed: []) }
+    func telemetry() throws -> DoryTelemetry {
+        .init(memTotalKB: 4_194_304, memAvailableKB: 2_097_152, psiSomeAvg10: 0, psiFullAvg10: 0)
+    }
+    func push(localRoot: String, remoteRoot: String, control: DoryPushControl) throws -> DoryPushStats {
+        let payload = try Data(contentsOf: URL(fileURLWithPath: localRoot + "/payload.tar"))
+        lock.withLock {
+            pushes += 1
+            transferredSHA256 = SHA256.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        }
+        return .init(filesSent: 1, bytesSent: UInt64(payload.count), filesDeleted: 0)
+    }
+    func exec(argv: [String], cwd: String, env: [DoryExecEnvironment],
+              timeoutMs: UInt64, outputLimitBytes: UInt64) throws -> DoryExecResult {
+        try? FileHandle.standardError.write(contentsOf: Data("Desktop fixture exec: \(argv.joined(separator: " "))\n".utf8))
+        var output = "ok\n"
+        var code: Int32 = 0
+        if argv.first == "/usr/bin/sha256sum" {
+            output = lock.withLock { transferredSHA256 } + "  payload.tar\n"
+        } else if argv == ["/bin/cat", "/var/lib/dory/desktop-update.env"] {
+            lock.withLock { receiptReads += 1 }
+            output = "schema=1\ndistro=ubuntu\nversion=next+runtime.1\nversion=conflicting\ninput_sha256=\(Self.inputSHA256)\n"
+        } else if argv.first?.hasSuffix("/apply.sh") == true {
+            let path = lock.withLock { applications += 1; return diskPath }
+            let disk = try FileHandle(forWritingTo: URL(fileURLWithPath: path))
+            try disk.write(contentsOf: Data("desktop-after".utf8))
+            try disk.synchronize()
+            try disk.close()
+            if failApply { code = 42 }
+            output = duplicateReceipt ? "package output without final fingerprint\n"
+                : "Dory desktop update applied: ubuntu next+runtime.1 \(Self.inputSHA256)\n"
+        }
+        return .init(exitCode: code, stdout: Data(output.utf8), stderr: Data(),
+                     timedOut: false, stdoutTruncated: false, stderrTruncated: false)
+    }
+    func close() {}
+}
+
+private struct ProductionDesktopArtifactResolver: DoryDesktopUpdateArtifactResolving {
+    let bundlePath: String
+    let kernelPath: String
+    func resolve(_ request: DoryDesktopUpdateRequest, guestArchitecture: String) throws -> DoryDesktopUpdateArtifactAuthority {
+        guard guestArchitecture == "arm64" else { throw MachineManagerError.persistence("desktop fixture ISA differs") }
+        let bundle = try Data(contentsOf: URL(fileURLWithPath: bundlePath))
+        let kernel = try Data(contentsOf: URL(fileURLWithPath: kernelPath))
+        func digest(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+        return .init(receipt: .verifiedUpdate(
+            distributionIdentifier: request.distro, releaseVersion: request.version,
+            inputSHA256: String(repeating: "0", count: 64), bundleSHA256: digest(bundle),
+            distributionComponentIdentifier: "desktop-ubuntu", distributionInstallationName: request.distributionInstallationName,
+            distributionCatalogSHA256: String(repeating: "b", count: 64),
+            bundleAssetIdentifier: "dory-desktop-ubuntu-update-arm64.tar",
+            runtimeComponentIdentifier: "linux-desktop", runtimeInstallationName: request.runtimeInstallationName,
+            runtimeCatalogSHA256: String(repeating: "c", count: 64),
+            kernelAssetIdentifier: "dory-desktop-kernel-arm64.lzfse", kernelSHA256: digest(kernel)
+        ), bundlePath: bundlePath, bundleByteCount: UInt64(bundle.count), kernelPath: kernelPath, kernelByteCount: UInt64(kernel.count))
+    }
+}
+
 private final class ConfigurationUpdateFaultObservation: @unchecked Sendable {
     private let lock = NSLock()
     private var observed = false
@@ -2392,6 +2932,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
     let mediaDigest: String
     let directKernelPath: String
     let directKernelDigest: String
+    let desktopUpdateKernelDigest: String?
     let mediaReference = DoryVMResolverReference(
         namespace: "artifact",
         identifier: "qualified-linux-boot"
@@ -2429,18 +2970,43 @@ private final class ProductionTrustFixture: @unchecked Sendable {
         planningTransactionAvailable: Bool = true,
         trustFloorDirectorySyncFails: Bool = false,
         trustFloorActivationState: ProductionTrustFloorActivationState? = nil,
-        helperLifetimeSeconds: UInt = 30
+        helperLifetimeSeconds: UInt = 30,
+        authenticatedRuntime: Bool = false,
+        agentConnector: @escaping MachineManager.AgentConnector = {
+            try LocalAgentControl.connect(socketPath: $0)
+        }
     ) throws {
-        let helperData = Data("#!/bin/sh\nexec /bin/sleep \(helperLifetimeSeconds)\n".utf8)
+        let fixtureRoot = URL(fileURLWithPath: "/Users/Shared", isDirectory: true).appendingPathComponent(
+            "\(authenticatedRuntime ? "dory-du" : "dory-production-trust")-\(UUID().uuidString)", isDirectory: true
+        )
+        let helperData: Data
+        if authenticatedRuntime {
+            func quote(_ value: String) -> String {
+                "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
+            }
+            let developer = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
+                .map { "export DEVELOPER_DIR=" + quote($0) + "\n" } ?? ""
+            helperData = Data(("""
+            #!/bin/sh
+            \(developer)export DORY_DESKTOP_TEST_CONTROL_SOCKET=\(quote(fixtureRoot.appendingPathComponent("control.sock").path))
+            while [ "$#" -gt 0 ]; do
+                case "$1" in
+                    --handoff-sock) shift; export DORY_DESKTOP_TEST_HANDOFF_SOCKET="$1" ;;
+                esac
+                shift
+            done
+            exec /usr/bin/xcrun xctest -XCTest DorydKitTests.DoryProductionDesktopRuntimeTests/testAuthenticatedDesktopRuntimeServer \(quote(Bundle(for: DoryProductionDesktopRuntimeTests.self).bundlePath))
+
+            """).utf8)
+        } else {
+            helperData = Data("#!/bin/sh\nexec /bin/sleep \(helperLifetimeSeconds)\n".utf8)
+        }
         helperDigest = Self.digest(helperData)
         hostState = ProductionHostState(host)
         // The production broker deliberately rejects symlinked ancestors and group/world-
         // writable user-owned ancestors. `/Users/Shared` is a root-owned sticky directory, which
         // is the primitive's explicit safe temporary-fixture exception.
-        root = URL(fileURLWithPath: "/Users/Shared", isDirectory: true).appendingPathComponent(
-            "dory-production-trust-\(UUID().uuidString)",
-            isDirectory: true
-        )
+        root = fixtureRoot
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         drive = try DoryDataDrive(home: root.path)
         try drive.prepare()
@@ -2462,7 +3028,7 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             armVirtFirmwareBundlePath: firmwarePath,
             stateDirectory: state.path,
             runtimeDirectory: root.appendingPathComponent("runtime").path,
-            requiresReadyHandoff: false
+            requiresReadyHandoff: authenticatedRuntime
         )
         runtimeBuildIdentifier = "sha256:\(helperDigest)"
         mediaPath = root.appendingPathComponent("qualified-linux.boot").path
@@ -2486,6 +3052,8 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             ofItemAtPath: directKernelPath
         )
         directKernelDigest = try DoryComponentCatalogVerifier.fileDigest(directKernelPath)
+        desktopUpdateKernelDigest = authenticatedRuntime
+            ? Self.digest(Data("desktop-kernel-after".utf8)) : nil
         storagePath = root.appendingPathComponent("qualified-linux.raw").path
         try Data(repeating: 0x5a, count: 4_096).write(
             to: URL(fileURLWithPath: storagePath)
@@ -2558,7 +3126,8 @@ private final class ProductionTrustFixture: @unchecked Sendable {
             synchronizeTrustFloorDirectory: { descriptor in
                 !trustFloorDirectorySyncFails && fsync(descriptor) == 0
             },
-            trustFloorActivator: floorActivator
+            trustFloorActivator: floorActivator,
+            agentConnector: agentConnector
         )
     }
 
@@ -2792,10 +3361,13 @@ private final class ProductionTrustFixture: @unchecked Sendable {
              VirtualizationFrameworkLinuxMachineBackend.backendDescriptor.implementationIdentifier,
              "dory-vmm"),
         ]
-        let media = [
+        var media = [
             (DoryBootMediaKind.installedLinuxBootBundle, mediaDigest, "bundle"),
             (DoryBootMediaKind.linuxKernel, directKernelDigest, "kernel"),
         ]
+        if let desktopUpdateKernelDigest {
+            media.append((.linuxKernel, desktopUpdateKernelDigest, "desktop-update-kernel"))
+        }
         let candidateBinding = DoryVirtualMachineQualificationCandidateBinding(
             componentCandidateInventorySHA256: String(repeating: "c", count: 64),
             sbomSHA256: String(repeating: "3", count: 64)

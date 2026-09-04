@@ -169,6 +169,8 @@ public final class DoryDaemonVirtualMachineProductionPlanningCompositionFactory:
         backends: [any MachineBackend],
         qualificationAuthority: DoryVerifiedVirtualMachineQualificationAuthority,
         runtimes: [DoryDaemonVerifiedBackendRuntime],
+        armVirtFirmwareBundlePath: String? = nil,
+        pcFirmwareBundlePath: String? = nil,
         runtimeVerifier: @escaping DoryDaemonVirtualMachineProductionTrustFactory.RuntimeVerifier,
         hostProbe: @escaping DoryDaemonVirtualMachineProductionTrustFactory.HostProbe,
         rendererReleaseIdentityProvider:
@@ -202,6 +204,8 @@ public final class DoryDaemonVirtualMachineProductionPlanningCompositionFactory:
                     artifactAuthority: artifactAuthority,
                     resourceLedger: resourceLedger,
                     stateDirectory: stateDirectory,
+                    armVirtFirmwareBundlePath: armVirtFirmwareBundlePath,
+                    pcFirmwareBundlePath: pcFirmwareBundlePath,
                     runtimeSpecifications: specifications,
                     runtimeVerifier: runtimeVerifier,
                     hostProbe: hostProbe,
@@ -311,6 +315,10 @@ public final class DoryDaemonVirtualMachineProductionPlanningCompositionFactory:
                             "The durable planning recovery descriptor failed validation."
                         )
                     }
+                    // Terminal journals are history, not live mutation requests. The manager
+                    // verifies the current plan and any unfinished parent lifecycle after helper
+                    // authentication; replaying old desired state here blocks legitimate updates.
+                    if descriptor.isComplete || descriptor.isAborted { continue }
                     let request: DoryDaemonVirtualMachinePlanningTransactionRequest
                     do {
                         guard let recoveredRequest = try recoveryProvider.recoveryRequest(

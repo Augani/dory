@@ -8,6 +8,56 @@ import Foundation
 import XCTest
 
 final class RuntimeUEFIAuthorityIntegrationTests: XCTestCase {
+    func testDifferentValidFirmwareIsRejectedBeforeVariableStateMutation() throws {
+        for platform in DoryFirmwarePlatform.allCases {
+            let fixture = try makeFixture(includeInstaller: false, platform: platform)
+            defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+            defer { try? FileManager.default.removeItem(atPath: fixture.firmwareDirectory) }
+            let different = try resolvedFirmwareTestArtifacts(platform: platform, fill: 0xb6).manifest
+            XCTAssertThrowsError(try fixture.lease.withBorrowedDescriptor { descriptor in
+                if platform == .armVirtV1 {
+                    let admitted = try MachineManager.admitResolvedARMVirtUEFIResources(
+                        machineDirectoryDescriptor: descriptor,
+                        machineDirectoryGeneration: fixture.lease.generation,
+                        expectedDiskCapacityBytes: UInt64(fixture.disk.count),
+                        firmwareBundlePath: fixture.firmwareDirectory,
+                        expectedFirmwareManifest: different,
+                        topology: fixture.topology,
+                        mediaKind: .virtualDisk,
+                        expectedInstallerSHA256: nil
+                    )
+                    admitted.close()
+                } else {
+                    let admitted = try MachineManager.admitResolvedDoryPCUEFIResources(
+                        machineDirectoryDescriptor: descriptor,
+                        machineDirectoryGeneration: fixture.lease.generation,
+                        expectedDiskCapacityBytes: UInt64(fixture.disk.count),
+                        firmwareBundlePath: fixture.firmwareDirectory,
+                        expectedFirmwareManifest: different,
+                        systemDiskLogicalID: DoryVirtualDeviceID.derived(
+                            namespace: .systemDisk, stableID: "root-disk"
+                        ),
+                        installerMediaLogicalID: nil,
+                        mediaKind: .virtualDisk,
+                        expectedInstallerSHA256: nil
+                    )
+                    admitted.close()
+                }
+            }) { error in
+                XCTAssertTrue("\(error)".contains("firmware differs from the persisted plan"))
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.directory + "/uefi-variables"))
+            let disk = try fixture.lease.withBorrowedDescriptor { descriptor in
+                try MachineManager.admitResolvedRawHVSystemDisk(
+                    machineDirectoryDescriptor: descriptor,
+                    machineDirectoryGeneration: fixture.lease.generation,
+                    expectedCapacityBytes: UInt64(fixture.disk.count)
+                )
+            }
+            disk.authority.close()
+        }
+    }
+
     func testPCInstallerAdmissionPinsFixedPCIPlanAndPlatform() throws {
         let fixture = try makeFixture(includeInstaller: true, platform: .pcV1)
         defer { try? FileManager.default.removeItem(atPath: fixture.root) }
@@ -27,6 +77,7 @@ final class RuntimeUEFIAuthorityIntegrationTests: XCTestCase {
                 machineDirectoryGeneration: fixture.lease.generation,
                 expectedDiskCapacityBytes: UInt64(fixture.disk.count),
                 firmwareBundlePath: fixture.firmwareDirectory,
+                expectedFirmwareManifest: fixture.manifest,
                 systemDiskLogicalID: systemID,
                 installerMediaLogicalID: installerID,
                 mediaKind: .installerISO,
@@ -69,6 +120,7 @@ final class RuntimeUEFIAuthorityIntegrationTests: XCTestCase {
                 machineDirectoryGeneration: fixture.lease.generation,
                 expectedDiskCapacityBytes: UInt64(fixture.disk.count),
                 firmwareBundlePath: fixture.firmwareDirectory,
+                expectedFirmwareManifest: fixture.manifest,
                 systemDiskLogicalID: try DoryVirtualDeviceID.derived(
                     namespace: .systemDisk,
                     stableID: "root-disk"
@@ -102,6 +154,7 @@ final class RuntimeUEFIAuthorityIntegrationTests: XCTestCase {
                 machineDirectoryGeneration: fixture.lease.generation,
                 expectedDiskCapacityBytes: UInt64(fixture.disk.count),
                 firmwareBundlePath: fixture.firmwareDirectory,
+                expectedFirmwareManifest: fixture.manifest,
                 topology: fixture.topology,
                 mediaKind: .installerISO,
                 expectedInstallerSHA256: digest(fixture.installer!)
@@ -164,6 +217,7 @@ final class RuntimeUEFIAuthorityIntegrationTests: XCTestCase {
                 machineDirectoryGeneration: fixture.lease.generation,
                 expectedDiskCapacityBytes: UInt64(fixture.disk.count),
                 firmwareBundlePath: fixture.firmwareDirectory,
+                expectedFirmwareManifest: fixture.manifest,
                 topology: fixture.topology,
                 mediaKind: .virtualDisk,
                 expectedInstallerSHA256: nil

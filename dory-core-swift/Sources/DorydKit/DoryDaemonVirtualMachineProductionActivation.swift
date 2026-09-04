@@ -160,7 +160,8 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
         let machineManager = MachineManager(
             configuration: machineConfiguration,
             launchPolicy: .perWorkspaceAuthority,
-            machineStateBroker: machineStateBroker
+            machineStateBroker: machineStateBroker,
+            agentConnector: agentConnector
         )
         do {
             try machineManager.installRendererCrashSuppressionStore(
@@ -212,6 +213,8 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
             backends: backends,
             qualificationAuthority: material.authority,
             runtimes: material.runtimes,
+            armVirtFirmwareBundlePath: machineConfiguration.armVirtFirmwareBundlePath,
+            pcFirmwareBundlePath: machineConfiguration.pcFirmwareBundlePath,
             runtimeVerifier: material.runtimeVerifier,
             hostProbe: material.hostProbe,
             rendererReleaseIdentityProvider:
@@ -265,6 +268,15 @@ extension DoryDaemonVirtualMachineProductionTrustFactory {
             return unavailableActivation(
                 .trustFloorActivationRejected,
                 "Recovered launch infrastructure was installed, but the trust floor could not be durably advanced."
+            )
+        }
+
+        do {
+            try machineManager.completeRecoveredInstallerOperations()
+        } catch {
+            return unavailableActivation(
+                .installationRejected,
+                "Installer lifecycle recovery could not complete under the activated trust floor."
             )
         }
 

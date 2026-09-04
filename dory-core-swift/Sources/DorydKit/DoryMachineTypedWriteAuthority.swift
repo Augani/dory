@@ -33,6 +33,8 @@ public enum DoryMachineTypedSettingUpdate<Value: Sendable & Equatable>: Sendable
     }
 }
 
+extension DoryMachineTypedSettingUpdate: Codable where Value: Codable {}
+
 public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Hashable {
     public var guestIdentityIntent: DoryVMGuestIdentityIntent
     public var clipboardPolicy: DoryVMClipboardPolicy?
@@ -348,7 +350,7 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
 /// Native workspaces apply this patch directly to their versioned definition. Legacy workspaces
 /// back-project only the explicitly owned compatibility keys. Public callers never provide the
 /// persisted environment dictionary, and unchanged legacy fields retain their exact bytes.
-public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
+public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
     public var guestUsername: DoryMachineTypedSettingUpdate<String>
     public var guestNumericUserID: DoryMachineTypedSettingUpdate<UInt32>
     public var desktopDistributionIdentifier: DoryMachineTypedSettingUpdate<String>
@@ -909,12 +911,9 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
         case .unchanged:
             break
         case .clear, .set(.automatic):
-            definition.graphics = DoryVMGraphicsPolicy(
-                acceptableLevels: [
-                    .hardwareAccelerated3D,
-                    .hostAcceleratedDisplay,
-                    .software,
-                ]
+            definition.graphics = DoryVMGraphicsPolicy(acceptableLevels:
+                definition.guest.family == .macOS ? [.hostAcceleratedDisplay]
+                    : [.hardwareAccelerated3D, .hostAcceleratedDisplay, .software]
             )
         case .set(.virgl):
             definition.graphics = DoryVMGraphicsPolicy(
@@ -926,6 +925,9 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable {
             )
         case .set(.software):
             definition.graphics = DoryVMGraphicsPolicy(acceptableLevels: [.software])
+        }
+        if graphicsPreference.isChanged {
+            definition.resources = DoryVMProductionResourceBudget.make(for: definition)
         }
         switch networkMode {
         case .unchanged:

@@ -768,7 +768,19 @@ public final class DorydService: NSObject, DorydControl {
             return
         }
         machineControl(machineID, action: "start", reply: reply) { manager, id in
-            try manager.start(id: id, operationID: parsedOperationID)
+            if manager.configuredLaunchPolicy == .perWorkspaceAuthority,
+               manager.status(id: id)?.runtimeIdentity.mode != .resolvedPlan {
+                guard let productionPlanningController else {
+                    throw MachineManagerError.persistence(
+                        "production planning controller is not configured"
+                    )
+                }
+                _ = try manager.resolveAndPublishProductionPlan(
+                    id: id,
+                    controller: productionPlanningController
+                )
+            }
+            return try manager.start(id: id, operationID: parsedOperationID)
         }
     }
 
@@ -860,8 +872,20 @@ public final class DorydService: NSObject, DorydControl {
         _ machineID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
+        machineRestart(machineID, operationID: DoryOperationIdentity.canonical(UUID()), reply: reply)
+    }
+
+    public func machineRestart(
+        _ machineID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let parsedOperationID = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "machine restart requires a canonical operation ID")
+            return
+        }
         machineControl(machineID, action: "restart", reply: reply) { manager, id in
-            try manager.restart(id: id)
+            try manager.restart(id: id, operationID: parsedOperationID)
         }
     }
 
@@ -876,6 +900,16 @@ public final class DorydService: NSObject, DorydControl {
         }
         do {
             let update = try MachineUpdateRequest(xpcDictionary: config)
+            let operationID: UUID
+            if let raw = config["operationID"] {
+                guard let value = raw as? String,
+                      let parsed = DoryOperationIdentity.parseCanonical(value) else {
+                    throw XPCRemoteConfigError.invalid("operationID")
+                }
+                operationID = parsed
+            } else {
+                operationID = UUID()
+            }
             let status: DoryMachineStatus
             if let attached = update.installerMediaAttached {
                 guard update.containsOnlyInstallerMediaMutation else {
@@ -886,10 +920,15 @@ public final class DorydService: NSObject, DorydControl {
                 status = try machineManager.transitionInstallerMedia(
                     id: machineID,
                     attached: attached,
+                    operationID: operationID,
                     productionPlanningController: productionPlanningController
                 )
             } else {
-                var updated = try machineManager.update(
+                if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority,
+                   productionPlanningController == nil {
+                    throw MachineManagerError.persistence("production planning controller is not configured")
+                }
+                status = try machineManager.update(
                     id: machineID,
                     memoryMB: update.memoryMB,
                     cpuCount: update.cpuCount,
@@ -898,20 +937,10 @@ public final class DorydService: NSObject, DorydControl {
                     shares: update.shares,
                     updatesShares: update.updatesShares,
                     typedSettingsPatch: update.typedSettings.isEmpty
-                        ? nil : update.typedSettings
+                        ? nil : update.typedSettings,
+                    operationID: operationID,
+                    productionPlanningController: productionPlanningController
                 )
-                if machineManager.configuredLaunchPolicy == .perWorkspaceAuthority {
-                    guard let productionPlanningController else {
-                        throw MachineManagerError.persistence(
-                            "production planning controller is not configured"
-                        )
-                    }
-                    updated = try machineManager.resolveAndPublishProductionPlan(
-                        id: machineID,
-                        controller: productionPlanningController
-                    )
-                }
-                status = updated
             }
             incidentWriter?.record(type: "machine.update", detail: machineID)
             reply(true, status.xpcDictionary, "")
@@ -1597,7 +1626,39 @@ public final class DorydService: NSObject, DorydControl {
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
         machineControl("\(machineID)/\(snapshotID)", action: "clone_snapshot", reply: reply) { manager, _ in
-            try manager.cloneSnapshot(machineID: machineID, snapshotID: snapshotID, newID: newID)
+            var cloned = false
+            do {
+                var status = try manager.cloneSnapshot(
+                    machineID: machineID,
+                    snapshotID: snapshotID,
+                    newID: newID
+                )
+                cloned = true
+                if manager.configuredLaunchPolicy == .perWorkspaceAuthority {
+                    guard let productionPlanningController else {
+                        throw MachineManagerError.persistence(
+                            "production planning controller is not configured"
+                        )
+                    }
+                    status = try manager.resolveAndPublishProductionPlan(
+                        id: newID,
+                        controller: productionPlanningController
+                    )
+                }
+                return status
+            } catch {
+                let original = error
+                if cloned {
+                    do {
+                        try manager.delete(id: newID)
+                    } catch {
+                        throw MachineManagerError.persistence(
+                            "\(original); failed to remove incomplete clone \(newID): \(error)"
+                        )
+                    }
+                }
+                throw original
+            }
         }
     }
 
@@ -3096,6 +3157,14 @@ private extension DoryMachineStatus {
             "guestFamily": guestFamily.rawValue,
             "state": state.rawValue,
             "lastError": lastError ?? "",
+            "readiness": [
+                "processAlive": readiness.processAlive,
+                "vmStarted": readiness.vmStarted,
+                "guestBooted": readiness.guestBooted,
+                "toolsConnected": readiness.toolsConnected,
+                "desktopVisible": readiness.desktopVisible,
+                "workloadReady": readiness.workloadReady,
+            ],
         ]
         if let guestArchitecture {
             dictionary["guestArchitecture"] = guestArchitecture.rawValue
@@ -3107,10 +3176,12 @@ private extension DoryMachineStatus {
             dictionary["failure"] = failure.xpcDictionary
         }
         if let activeOperationID, let activeOperationKind {
-            dictionary["activeOperation"] = [
+            var operation: [String: Any] = [
                 "operationID": activeOperationID,
                 "kind": activeOperationKind,
-            ] as NSDictionary
+            ]
+            if let activeOperationPhase { operation["phase"] = activeOperationPhase.rawValue }
+            dictionary["activeOperation"] = operation as NSDictionary
         }
         dictionary["flightRecorder"] = [
             "headSequence": flightRecorderHeadSequence,

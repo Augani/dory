@@ -6,6 +6,72 @@ import Foundation
 import XCTest
 
 final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
+    func testRestartUsesOneJournalAndReplaysTheCallerIdentityWithoutRespawning() throws {
+        let fixture = try LifecycleFixture(name: #function)
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        defer { manager.stopAll() }
+        _ = try fixture.createMachine(manager)
+        let first = try manager.start(id: fixture.machineID)
+        let count = try fixture.records().count
+        let operationID = UUID()
+        let restarted = try manager.restart(id: fixture.machineID, operationID: operationID)
+        XCTAssertEqual(restarted.state, .running)
+        XCTAssertNotEqual(restarted.pid, first.pid)
+        let records = try fixture.records()
+        XCTAssertEqual(records.count, count + 1)
+        let record = try XCTUnwrap(records.first { $0.plan.id == operationID })
+        XCTAssertEqual(record.plan.kind, .workspaceRestart)
+        XCTAssertEqual(record.state.status, .completed)
+        let operation = try fixture.store.acquire(operationID).readWorkspaceLifecycleOperation()
+        XCTAssertEqual(operation.kind, .restarting)
+        XCTAssertEqual(operation.source.state, .running)
+        XCTAssertEqual(operation.target.state, .running)
+        XCTAssertEqual(operation.idempotencyKey, operationID.uuidString.lowercased())
+        XCTAssertEqual(operation.source.runtime, operation.target.runtime)
+        XCTAssertEqual(try manager.restart(id: fixture.machineID, operationID: operationID).pid, restarted.pid)
+        XCTAssertEqual(try fixture.records().count, records.count)
+        XCTAssertThrowsError(try manager.restart(id: fixture.machineID, operationID: firstOperationID(records)))
+        XCTAssertEqual(manager.status(id: fixture.machineID)?.pid, restarted.pid)
+    }
+
+    private func firstOperationID(_ records: [DoryOperationRecord]) throws -> UUID {
+        try XCTUnwrap(records.first { $0.plan.kind == .workspaceStart }).plan.id
+    }
+
+    func testRestartKeepsItsJournalUntilTargetReadinessAndAllowsIdempotentPolling() throws {
+        let fixture = try LifecycleFixture(name: #function, requiresReadyHandoff: true)
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        defer { manager.stopAll() }
+        _ = try fixture.createMachine(manager)
+        let starting = try manager.start(id: fixture.machineID)
+        try sendVmmHandoff(
+            path: try XCTUnwrap(starting.handoffSocketPath),
+            ready: .init(machineID: fixture.machineID, operationID: starting.activeOperationID),
+            fileDescriptors: []
+        )
+        _ = try waitForState(manager, id: fixture.machineID, state: .running)
+        let operationID = UUID()
+        let count = try fixture.records().count
+        let restarting = try manager.restart(id: fixture.machineID, operationID: operationID)
+        XCTAssertEqual(restarting.state, .starting)
+        XCTAssertEqual(restarting.activeOperationKind, "restarting")
+        XCTAssertEqual(restarting.activeOperationID, operationID.uuidString.lowercased())
+        XCTAssertEqual(try fixture.records().count, count + 1)
+        XCTAssertEqual(try fixture.store.read(operationID).state.status, .running)
+        XCTAssertEqual(try manager.restart(id: fixture.machineID, operationID: operationID).pid, restarting.pid)
+        XCTAssertThrowsError(try manager.restart(id: fixture.machineID))
+        try sendVmmHandoff(
+            path: try XCTUnwrap(restarting.handoffSocketPath),
+            ready: .init(machineID: fixture.machineID, operationID: restarting.activeOperationID),
+            fileDescriptors: []
+        )
+        _ = try waitForJournal(fixture, kind: .workspaceRestart, status: .completed)
+        _ = try waitForState(manager, id: fixture.machineID, state: .running)
+        XCTAssertNil(manager.status(id: fixture.machineID)?.activeOperationID)
+    }
+
     func testFlightRecorderCapturesLifecycleAndSurvivesRestartAndDeletion() throws {
         let fixture = try LifecycleFixture(name: #function)
         defer { fixture.cleanup() }
@@ -94,6 +160,11 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
         )
         XCTAssertEqual(pending.plan.kind, .workspaceStart)
         XCTAssertEqual(pending.state.status, .running)
+        XCTAssertEqual(try fixture.records().filter { $0.plan.kind == .workspaceStart }.count, 1)
+        XCTAssertFalse(try fixture.records().contains { $0.plan.kind == .workspaceResolve })
+        XCTAssertTrue(starting.readiness.processAlive)
+        XCTAssertFalse(starting.readiness.vmStarted)
+        XCTAssertFalse(starting.readiness.guestBooted)
 
         let competingStore = try DoryOperationJournalStore(home: fixture.journal)
         XCTAssertThrowsError(
@@ -123,7 +194,12 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
             ),
             fileDescriptors: []
         )
-        XCTAssertEqual(try waitForState(manager, id: fixture.machineID, state: .running).state, .running)
+        let running = try waitForState(manager, id: fixture.machineID, state: .running)
+        XCTAssertEqual(running.state, .running)
+        XCTAssertTrue(running.readiness.vmStarted)
+        XCTAssertFalse(running.readiness.guestBooted)
+        XCTAssertFalse(running.readiness.desktopVisible)
+        XCTAssertFalse(running.readiness.workloadReady)
         XCTAssertNil(manager.status(id: fixture.machineID)?.activeOperationID)
         let completed = try waitForJournal(
             fixture,
@@ -133,6 +209,7 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
         let lease = try fixture.store.acquire(completed.plan.id)
         let operation = try lease.readWorkspaceLifecycleOperation()
         XCTAssertEqual(operation.kind, .starting)
+        XCTAssertEqual(operation.idempotencyKey, completed.plan.id.uuidString.lowercased())
         XCTAssertEqual(operation.source.runtime?.policy, .legacyCompatibility)
         XCTAssertEqual(operation.source.runtime?.authorizationState, .legacyCompatibility)
         XCTAssertEqual(operation.target.runtime?.policy, .legacyCompatibility)
@@ -141,6 +218,37 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
             operation.target.runtime?.virtualHardwareABIVersion,
             DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion
         )
+    }
+
+    func testStopCancelsPendingStartWithDistinctDurableResults() throws {
+        let fixture = try LifecycleFixture(name: #function, requiresReadyHandoff: true)
+        defer { fixture.cleanup() }
+        let manager = fixture.makeManager()
+        _ = try fixture.createMachine(manager)
+
+        let starting = try manager.start(id: fixture.machineID)
+        let startOperationID = try XCTUnwrap(starting.activeOperationID)
+        let stopOperationID = UUID()
+
+        let stopped = try manager.stop(
+            id: fixture.machineID,
+            operationID: stopOperationID
+        )
+
+        XCTAssertEqual(stopped.state, .stopped)
+        XCTAssertNil(stopped.failure)
+        XCTAssertNil(stopped.activeOperationID)
+        let records = try fixture.records()
+        let startRecords = records.filter { $0.plan.kind == .workspaceStart }
+        let stopRecords = records.filter { $0.plan.kind == .workspaceStop }
+        XCTAssertEqual(startRecords.count, 1)
+        XCTAssertEqual(stopRecords.count, 1)
+        XCTAssertEqual(startRecords[0].plan.id.uuidString.lowercased(), startOperationID)
+        XCTAssertEqual(startRecords[0].state.status, .failed)
+        XCTAssertEqual(startRecords[0].state.result, .cancelled)
+        XCTAssertEqual(stopRecords[0].plan.id, stopOperationID)
+        XCTAssertEqual(stopRecords[0].state.status, .completed)
+        XCTAssertEqual(stopRecords[0].state.result, .succeeded)
     }
 
     func testAgentReadinessWaiterObservesButNeverFinalizesStartJournal() throws {
@@ -345,20 +453,23 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
         XCTAssertThrowsError(try XCTUnwrap(manager).start(id: fixture.machineID)) { error in
             XCTAssertTrue(error is MachineLifecycleInjectedCrash)
         }
-        XCTAssertEqual(try XCTUnwrap(manager).status(id: fixture.machineID)?.state, .created)
+        XCTAssertEqual(try XCTUnwrap(manager).status(id: fixture.machineID)?.state, .starting)
         XCTAssertEqual(
             try fixture.records().filter {
-                $0.plan.kind == .workspaceResolve && $0.state.status == .running
+                $0.plan.kind == .workspaceStart && $0.state.status == .running
             }.count,
             1
         )
-        XCTAssertFalse(try fixture.records().contains { $0.plan.kind == .workspaceStart })
+        let interrupted = try XCTUnwrap(try fixture.records().first { $0.plan.kind == .workspaceStart })
+        XCTAssertEqual(interrupted.state.phase, .staging)
+        XCTAssertFalse(try fixture.records().contains { $0.plan.kind == .workspaceResolve })
         manager = nil
 
         let recovered = fixture.makeManager()
         XCTAssertEqual(recovered.status(id: fixture.machineID)?.state, .stopped)
-        _ = try waitForJournal(fixture, kind: .workspaceResolve, status: .completed)
-        XCTAssertFalse(try fixture.records().contains { $0.plan.kind == .workspaceStart })
+        let recoveredOperation = try waitForJournal(fixture, kind: .workspaceStart, status: .failed)
+        XCTAssertEqual(recoveredOperation.plan.id, interrupted.plan.id)
+        XCTAssertFalse(try fixture.records().contains { $0.plan.kind == .workspaceResolve })
     }
 
     func testReadinessCompletionWriteFailureKeepsRunningTargetAndNonterminalJournal() throws {
@@ -536,7 +647,7 @@ final class MachineManagerLifecycleJournalIntegrationTests: XCTestCase {
             machineID: fixture.machineID,
             snapshotID: "target"
         )
-        XCTAssertEqual(restored.state, .created)
+        XCTAssertEqual(restored.state, .recovering)
         XCTAssertEqual(
             try String(contentsOfFile: managedDisk, encoding: .utf8),
             "snapshot-target"

@@ -405,7 +405,9 @@ final class MachineManagerTests: XCTestCase {
 
     func testLifecycleOperationsRequireExactGuestAndHelperReceipts() throws {
         let base = "/tmp/dory-machine-lifecycle-receipts-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
-        let connector = RecordingMachineAgentConnector()
+        let connector = RecordingMachineAgentConnector(
+            advertisedCapabilities: Self.agentCapabilities("lifecycle-receipt")
+        )
         let lifecycle = RecordingMachineVZLifecycleController()
         let manager = MachineManager(
             configuration: MachineManagerConfiguration(
@@ -991,6 +993,18 @@ final class MachineManagerTests: XCTestCase {
             XCTAssertEqual(status.state, .failed)
             XCTAssertTrue(status.lastError?.contains("recovery is required") == true)
             XCTAssertTrue(FileManager.default.fileExists(atPath: state + "/dev/desktop-update.json"))
+            let disk = try Data(contentsOf: URL(fileURLWithPath: state + "/dev/rootfs.ext4"))
+            let journalBefore = try Data(contentsOf: URL(fileURLWithPath: state + "/dev/desktop-update.json"))
+            XCTAssertThrowsError(try recovered.start(id: "dev"))
+            XCTAssertThrowsError(try recovered.update(id: "dev", memoryMB: 2_048))
+            XCTAssertThrowsError(try recovered.updateDesktop(id: "dev", request: .init(
+                distro: "ubuntu", version: "next+runtime.1",
+                distributionInstallationName: "ubuntu-installation", runtimeInstallationName: "runtime-installation"
+            )))
+            XCTAssertEqual(recovered.status(id: "dev")?.state, .failed)
+            XCTAssertNil(recovered.status(id: "dev")?.pid)
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: state + "/dev/rootfs.ext4")), disk)
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: state + "/dev/desktop-update.json")), journalBefore)
         }
     }
 
@@ -1106,6 +1120,115 @@ final class MachineManagerTests: XCTestCase {
         XCTAssertEqual(status.state, .failed)
         XCTAssertTrue(status.lastError?.contains("committed component evidence") == true)
         XCTAssertTrue(FileManager.default.fileExists(atPath: state + "/dev/desktop-update.json"))
+    }
+
+    func testCommittedDesktopRecoveryVerifiesKernelBeforeCleanup() throws {
+        for schema in [2, 3] {
+            for changedKernel in [false, true] {
+                let base = "/tmp/dory-desktop-committed-kernel-\(UUID().uuidString)"
+                let state = base + "/machines"
+                defer { try? FileManager.default.removeItem(atPath: base) }
+                let configuration = MachineManagerConfiguration(
+                    vmmExecutablePath: "/bin/sleep", stateDirectory: state,
+                    baseArguments: ["30"], passMachineArguments: false, requiresReadyHandoff: false
+                )
+                var receipt = testVerifiedDesktopReceipt()
+                let kernel = try Data(contentsOf: URL(fileURLWithPath: doryTestKernelPath))
+                receipt.kernelSHA256 = SHA256.hash(data: kernel).map { String(format: "%02x", $0) }.joined()
+                let manager = MachineManager(configuration: configuration)
+                _ = try manager.create(DoryMachineConfiguration(
+                    id: "dev", kernelPath: doryTestKernelPath, rootfsPath: doryTestRootfsPath,
+                    displayMode: .desktop, installedDesktopPayloadReceipt: receipt
+                ))
+                var authority = receipt
+                authority.inputSHA256 = String(repeating: "0", count: 64)
+                var journal: [String: Any] = [
+                    "schema": schema, "machineID": "dev", "snapshotID": "last-good",
+                    "distro": receipt.distributionIdentifier, "version": receipt.releaseVersion,
+                    "originalWasRunning": false, "stage": "committed",
+                    "sourceConfigurationSHA256": String(repeating: "f", count: 64),
+                    "updateAuthority": try JSONSerialization.jsonObject(with: JSONEncoder().encode(authority)),
+                ]
+                if schema == 3 { journal["operationID"] = UUID().uuidString.lowercased() }
+                let journalData = try JSONSerialization.data(withJSONObject: journal, options: [.sortedKeys])
+                let journalPath = state + "/dev/desktop-update.json"
+                try journalData.write(to: URL(fileURLWithPath: journalPath))
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalPath)
+                if changedKernel {
+                    try Data("changed-after-commit".utf8).write(to: URL(fileURLWithPath: state + "/dev/kernel"))
+                }
+                let machineBefore = try Data(contentsOf: URL(fileURLWithPath: state + "/dev/machine.json"))
+                let kernelBefore = try Data(contentsOf: URL(fileURLWithPath: state + "/dev/kernel"))
+                let recovered = MachineManager(configuration: configuration)
+                let result = try XCTUnwrap(recovered.status(id: "dev"))
+                XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: state + "/dev/machine.json")), machineBefore)
+                XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: state + "/dev/kernel")), kernelBefore)
+                if changedKernel {
+                    XCTAssertEqual(result.state, .failed)
+                    XCTAssertEqual(result.failure?.recoveryDisposition, .repair)
+                    XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: journalPath)), journalData)
+                    XCTAssertThrowsError(try recovered.start(id: "dev"))
+                } else {
+                    XCTAssertEqual(result.state, .stopped)
+                    XCTAssertFalse(FileManager.default.fileExists(atPath: journalPath))
+                }
+            }
+        }
+    }
+
+    func testReceiptDesktopJournalRecoveryValidatesSourceForBothSchemas() throws {
+        for schema in [2, 3] {
+            for tampered in [false, true] {
+                let base = "/tmp/dory-desktop-source-authority-\(UUID().uuidString)"
+                let state = base + "/machines"
+                defer { try? FileManager.default.removeItem(atPath: base) }
+                let configuration = MachineManagerConfiguration(
+                    vmmExecutablePath: "/bin/sleep", stateDirectory: state,
+                    baseArguments: ["30"], passMachineArguments: false, requiresReadyHandoff: false
+                )
+                let manager = MachineManager(configuration: configuration)
+                _ = try manager.create(DoryMachineConfiguration(
+                    id: "dev", guestArchitecture: .arm64,
+                    kernelPath: doryTestKernelPath, rootfsPath: doryTestRootfsPath,
+                    displayMode: .desktop, environment: ["DORY_DESKTOP_DISTRO": "ubuntu", "PRESERVE": "yes"]
+                ))
+                let snapshot = try manager.snapshot(id: "dev", snapshotID: "last-good")
+                let source = try Data(contentsOf: URL(fileURLWithPath: state + "/dev/machine.json"))
+                let sourceDigest = SHA256.hash(data: source).map { String(format: "%02x", $0) }.joined()
+                let originalDisk = try Data(contentsOf: URL(fileURLWithPath: snapshot.rootfsPath))
+                let changedDisk = Data("interrupted-desktop-update".utf8)
+                try changedDisk.write(to: URL(fileURLWithPath: state + "/dev/rootfs.ext4"))
+                let receipt = testVerifiedDesktopReceipt()
+                var journal: [String: Any] = [
+                    "schema": schema, "machineID": "dev", "snapshotID": "last-good",
+                    "distro": receipt.distributionIdentifier, "version": receipt.releaseVersion,
+                    "originalWasRunning": false, "stage": "installing",
+                    "sourceConfigurationSHA256": tampered ? String(repeating: "f", count: 64) : sourceDigest,
+                    "updateAuthority": try JSONSerialization.jsonObject(with: JSONEncoder().encode(receipt)),
+                ]
+                if schema == 3 { journal["operationID"] = UUID().uuidString.lowercased() }
+                let journalData = try JSONSerialization.data(withJSONObject: journal, options: [.sortedKeys])
+                let journalPath = state + "/dev/desktop-update.json"
+                try journalData.write(to: URL(fileURLWithPath: journalPath))
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: journalPath)
+                let recovered = MachineManager(configuration: configuration)
+                let result = try XCTUnwrap(recovered.status(id: "dev"))
+                if tampered {
+                    XCTAssertEqual(result.state, .failed, "schema \(schema)")
+                    XCTAssertEqual(result.failure?.recoveryDisposition, .repair)
+                    XCTAssertTrue(result.lastError?.contains("last-good snapshot") == true)
+                    XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: journalPath)), journalData)
+                    XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: state + "/dev/rootfs.ext4")), changedDisk)
+                    XCTAssertThrowsError(try recovered.start(id: "dev"))
+                } else {
+                    XCTAssertEqual(result.state, .stopped, "schema \(schema)")
+                    XCTAssertEqual(result.failure?.recoveryDisposition, .rollbackCompleted)
+                    XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: state + "/dev/rootfs.ext4")), originalDisk)
+                    XCTAssertFalse(FileManager.default.fileExists(atPath: journalPath))
+                    XCTAssertEqual(result.environment["PRESERVE"], "yes")
+                }
+            }
+        }
     }
 
     func testManagerStartupRollsBackInterruptedDesktopUpdateJournal() throws {
@@ -1436,6 +1559,37 @@ final class MachineManagerTests: XCTestCase {
             .legacySnapshotMigration
         )
         XCTAssertNil(imported.installedDesktopPayloadReceipt?.bundleSHA256)
+    }
+
+    func testDesktopUpdateResolverUsesExplicitGuestArchitecture() throws {
+        let base = "/tmp/dory-desktop-explicit-architecture-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: base) }
+        let creator = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep", stateDirectory: base + "/machines",
+            baseArguments: ["30"], passMachineArguments: false, requiresReadyHandoff: false,
+            guestArchitecture: "arm64"
+        ))
+        _ = try creator.create(DoryMachineConfiguration(
+            id: "dev", guestArchitecture: .arm64,
+            kernelPath: doryTestKernelPath, rootfsPath: doryTestRootfsPath,
+            displayMode: .desktop, environment: ["DORY_DESKTOP_DISTRO": "ubuntu"]
+        ))
+        // A new daemon's default guest architecture does not change this persisted guest.
+        let manager = MachineManager(configuration: MachineManagerConfiguration(
+            vmmExecutablePath: "/bin/sleep", stateDirectory: base + "/machines",
+            baseArguments: ["30"], passMachineArguments: false, requiresReadyHandoff: false,
+            guestArchitecture: "x86_64"
+        ))
+        manager.installDesktopUpdateArtifactResolver(RejectingDesktopUpdateArtifactResolver(includeArchitecture: true))
+        let before = try Data(contentsOf: URL(fileURLWithPath: base + "/machines/dev/machine.json"))
+        XCTAssertThrowsError(try manager.updateDesktop(id: "dev", request: .init(
+            distro: "ubuntu", version: "next+runtime.1",
+            distributionInstallationName: "ubuntu-installation", runtimeInstallationName: "runtime-installation"
+        ))) { error in
+            XCTAssertTrue(String(describing: error).contains("resolver reached arm64"))
+        }
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: base + "/machines/dev/machine.json")), before)
+        XCTAssertNil(manager.status(id: "dev")?.pid)
     }
 
     func testPortableVerifiedReceiptDistroAdmitsUpdateWithoutLegacyEnvironment() throws {
@@ -3147,7 +3301,6 @@ final class MachineManagerTests: XCTestCase {
             passMachineArguments: false,
             requiresReadyHandoff: true
         ))
-        defer { try? manager.delete(id: "dev") }
         _ = try manager.create(DoryMachineConfiguration(
             id: "dev",
             kernelPath: doryTestKernelPath,
@@ -3169,13 +3322,40 @@ final class MachineManagerTests: XCTestCase {
 
         let updateFinished = expectation(description: "machine update finished")
         let updateResult = LockedResult<DoryMachineStatus>()
+        defer {
+            if updateResult.value == nil {
+                let deadline = Date().addingTimeInterval(3)
+                while Date() < deadline, updateResult.value == nil {
+                    if let pending = manager.status(id: "dev"),
+                       let path = pending.handoffSocketPath,
+                       let operationID = pending.activeOperationID {
+                        try? sendVmmHandoff(
+                            path: path,
+                            ready: VmmReadyMessage(
+                                machineID: "dev",
+                                operationID: operationID
+                            ),
+                            fileDescriptors: []
+                        )
+                    }
+                    Thread.sleep(forTimeInterval: 0.01)
+                }
+                _ = XCTWaiter.wait(for: [updateFinished], timeout: 3)
+            }
+            if updateResult.value != nil {
+                try? manager.delete(id: "dev")
+            }
+        }
         DispatchQueue.global(qos: .userInitiated).async {
             updateResult.store(Result { try manager.update(id: "dev", memoryMB: 4096) })
             updateFinished.fulfill()
         }
 
         let updatedStarting = try waitForMachineStatus(manager, id: "dev", timeout: 10) {
-            $0.state == .starting && $0.memoryMB == 4096
+            $0.state == .starting
+                && $0.memoryMB == 4096
+                && $0.handoffSocketPath != nil
+                && $0.activeOperationID != nil
         }
         let updatedOperationID = try XCTUnwrap(updatedStarting.activeOperationID)
         try sendVmmHandoff(
@@ -3190,6 +3370,7 @@ final class MachineManagerTests: XCTestCase {
         let restoredStarting = try waitForMachineStatus(manager, id: "dev", timeout: 10) {
             $0.state == .starting
                 && $0.memoryMB == 2048
+                && $0.handoffSocketPath != nil
                 && $0.activeOperationID != nil
                 && $0.activeOperationID != updatedOperationID
         }
@@ -4048,7 +4229,6 @@ final class MachineManagerTests: XCTestCase {
             ),
             allowsQualificationBootstrapLaunches: true
         )
-        defer { try? manager.delete(id: "linux") }
         _ = try manager.create(DoryMachineConfiguration(
             id: "linux",
             kernelPath: "",
@@ -4066,6 +4246,26 @@ final class MachineManagerTests: XCTestCase {
 
         let transitionFinished = expectation(description: "installer transition finished")
         let transitionResult = LockedResult<DoryMachineStatus>()
+        defer {
+            // If an assertion throws before the normal handoff, unblock the transition before
+            // deleting. Waiting on delete while that transition owns the workspace mutation
+            // authority deadlocks the test process and hides the original failure.
+            if transitionResult.value == nil,
+               let pending = manager.status(id: "linux"),
+               let path = pending.handoffSocketPath,
+               let operationID = pending.activeOperationID {
+                try? sendVmmHandoff(
+                    path: path,
+                    ready: VmmReadyMessage(
+                        machineID: "linux",
+                        operationID: operationID
+                    ),
+                    fileDescriptors: []
+                )
+                _ = XCTWaiter.wait(for: [transitionFinished], timeout: 3)
+            }
+            try? manager.delete(id: "linux")
+        }
         DispatchQueue.global(qos: .userInitiated).async {
             transitionResult.store(Result {
                 try manager.transitionInstallerMedia(id: "linux", attached: false)
@@ -4074,7 +4274,10 @@ final class MachineManagerTests: XCTestCase {
         }
 
         let starting = try waitForMachineStatus(manager, id: "linux", timeout: 10) {
-            $0.state == .starting && !$0.installerMediaAttached
+            $0.state == .starting
+                && !$0.installerMediaAttached
+                && $0.handoffSocketPath != nil
+                && $0.activeOperationID != nil
         }
         try sendVmmHandoff(
             path: try XCTUnwrap(starting.handoffSocketPath),
@@ -6542,6 +6745,7 @@ private final class RecordingMachineAgentConnector: @unchecked Sendable {
     private let execResult: DoryExecResult
     private let execDelay: TimeInterval
     private let mismatchedLifecycleAction: DoryLifecycleReceiptAction?
+    let advertisedCapabilities: [DoryAgentCapability]
 
     init(
         telemetry: DoryTelemetry = DoryTelemetry(memTotalKB: 1, memAvailableKB: 1, psiSomeAvg10: 0, psiFullAvg10: 0),
@@ -6554,12 +6758,14 @@ private final class RecordingMachineAgentConnector: @unchecked Sendable {
             stderrTruncated: false
         ),
         execDelay: TimeInterval = 0,
-        mismatchedLifecycleAction: DoryLifecycleReceiptAction? = nil
+        mismatchedLifecycleAction: DoryLifecycleReceiptAction? = nil,
+        advertisedCapabilities: [DoryAgentCapability] = []
     ) {
         self.telemetry = telemetry
         self.execResult = execResult
         self.execDelay = execDelay
         self.mismatchedLifecycleAction = mismatchedLifecycleAction
+        self.advertisedCapabilities = advertisedCapabilities
     }
 
     struct Exec: Equatable {
@@ -6690,7 +6896,10 @@ private final class RecordingMachineAgentClient: AgentControlClient, @unchecked 
     }
 
     func info() throws -> DoryAgentInfo {
-        DoryAgentInfo(protocolVersion: 1, kernel: "Linux test", agentBuild: "dory-agent/test", uptimeSeconds: 1)
+        DoryAgentInfo(
+            protocolVersion: 1, kernel: "Linux test", agentBuild: "dory-agent/test",
+            uptimeSeconds: 1, capabilities: recorder.advertisedCapabilities
+        )
     }
 
     func clockSync(hostEpochNs: Int64) throws -> Bool {
@@ -6856,11 +7065,12 @@ private func testVerifiedDesktopReceipt() -> DoryInstalledDesktopPayloadReceipt 
 }
 
 private struct RejectingDesktopUpdateArtifactResolver: DoryDesktopUpdateArtifactResolving {
+    var includeArchitecture = false
     func resolve(
         _ request: DoryDesktopUpdateRequest,
         guestArchitecture: String
     ) throws -> DoryDesktopUpdateArtifactAuthority {
-        throw MachineManagerError.persistence("resolver reached")
+        throw MachineManagerError.persistence("resolver reached" + (includeArchitecture ? " " + guestArchitecture : ""))
     }
 }
 

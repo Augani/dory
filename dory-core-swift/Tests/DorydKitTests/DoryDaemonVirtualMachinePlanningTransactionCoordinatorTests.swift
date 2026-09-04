@@ -216,6 +216,7 @@ struct DoryDaemonVirtualMachinePlanningTransactionCoordinatorTests {
         )
         let replacement = replaceFixture.replacementDefinition()
         let replacementRequest = replaceFixture.request(
+            operationID: UUID(),
             definition: replacement,
             workspacePublication: .replace(expectedRevision: 1),
             planPublication: .replace(expectedPlanRevision: 1)
@@ -458,6 +459,7 @@ struct DoryDaemonVirtualMachinePlanningTransactionCoordinatorTests {
 }
 
 private final class TransactionFixture: @unchecked Sendable {
+    let operationID = UUID()
     let root: String
     let definition: DoryVirtualMachineDefinition
     let machine: DoryMachineConfiguration
@@ -603,7 +605,8 @@ private final class TransactionFixture: @unchecked Sendable {
                 )],
                 hostQualification: transactionHostQualification()
             )],
-            resourceAdmission: transactionDummyAdmission(requested)
+            resourceAdmission: transactionDummyAdmission(requested),
+            persistence: resolvedPersistenceTestBinding(machineID: definition.identity.id, stateDirectory: root)
         )
         trust = TransactionTrust(
             hostResources: resources,
@@ -643,6 +646,7 @@ private final class TransactionFixture: @unchecked Sendable {
     deinit { try? FileManager.default.removeItem(atPath: root) }
 
     func request(
+        operationID requestedOperationID: UUID? = nil,
         definition requestedDefinition: DoryVirtualMachineDefinition? = nil,
         workspacePublication: DoryDaemonVirtualMachineWorkspacePublication = .create,
         planPublication: DoryDaemonVirtualMachinePlanPublication = .create,
@@ -650,6 +654,7 @@ private final class TransactionFixture: @unchecked Sendable {
     ) -> DoryDaemonVirtualMachinePlanningTransactionRequest {
         let requestedDefinition = requestedDefinition ?? definition
         return DoryDaemonVirtualMachinePlanningTransactionRequest(
+            operationID: requestedOperationID ?? operationID,
             planning: DoryDaemonVirtualMachinePlanningRequest(
                 definition: requestedDefinition,
                 canonicalDefinitionData: DoryDaemonVirtualMachinePlanningCoordinator
@@ -796,6 +801,7 @@ private final class TransactionMutationAuthority:
     }
 
     func acquirePlanningMutationFence(
+        operationID: UUID,
         machine: DoryMachineConfiguration,
         definition: DoryVirtualMachineDefinition,
         canonicalDefinitionData: Data

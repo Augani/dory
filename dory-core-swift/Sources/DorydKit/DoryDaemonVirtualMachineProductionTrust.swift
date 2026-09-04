@@ -1350,12 +1350,14 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
     private let planningTransactionAvailable: @Sendable () -> Bool
     private let synchronizeTrustFloorDirectory: DirectorySynchronizer
     private let trustFloorActivator: TrustFloorActivator
+    let agentConnector: MachineManager.AgentConnector
 
     /// Compiled into and covered by the daemon's code signature. Production catalog compatibility
     /// must not trust an environment override or a mutable outer Info.plist.
     public static let compiledDaemonVersion = "0.4.6"
 
     public init(engineResources: DoryVMResourceRequest? = nil) {
+        agentConnector = { try LocalAgentControl.connect(socketPath: $0) }
         authorityResolver = { store, publicKey, architecture, appVersion in
             try DoryVirtualMachineQualificationAuthorityResolver.resolve(
                 store: store,
@@ -1408,7 +1410,10 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
                 DoryCurrentTaskRendererReleaseIdentityProvider(),
         planningTransactionAvailable: @escaping @Sendable () -> Bool = { false },
         synchronizeTrustFloorDirectory: @escaping DirectorySynchronizer = { fsync($0) == 0 },
-        trustFloorActivator: TrustFloorActivator? = nil
+        trustFloorActivator: TrustFloorActivator? = nil,
+        agentConnector: @escaping MachineManager.AgentConnector = {
+            try LocalAgentControl.connect(socketPath: $0)
+        }
     ) {
         self.authorityResolver = authorityResolver
         self.runtimeVerifier = runtimeVerifier
@@ -1417,6 +1422,7 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
         self.rendererReleaseIdentityProvider = rendererReleaseIdentityProvider
         self.planningTransactionAvailable = planningTransactionAvailable
         self.synchronizeTrustFloorDirectory = synchronizeTrustFloorDirectory
+        self.agentConnector = agentConnector
         self.trustFloorActivator = trustFloorActivator ?? {
             stateDirectory, authority, synchronizeDirectory in
             try DoryDaemonVirtualMachineProductionTrustFloor.activate(
@@ -1513,7 +1519,8 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
             )
             let manager = MachineManager(
                 configuration: machineConfiguration,
-                launchPolicy: .requireResolvedPlan
+                launchPolicy: .requireResolvedPlan,
+                agentConnector: agentConnector
             )
             let backends: [any MachineBackend] = runtimes.map { runtime in
                 switch runtime.descriptor.identity {

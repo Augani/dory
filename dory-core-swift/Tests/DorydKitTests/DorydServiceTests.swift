@@ -2629,14 +2629,38 @@ final class DorydServiceTests: XCTestCase {
         }
         wait(for: [suspend], timeout: 5)
 
+        let invalidRestart = expectation(description: "machineRestart rejects noncanonical identity")
+        let beforeRestartPID = manager.status(id: "dev")?.pid
+        proxy.machineRestart("dev", operationID: "NOT-A-UUID") { ok, body, message in
+            XCTAssertFalse(ok)
+            XCTAssertEqual(body.count, 0)
+            XCTAssertTrue(message.contains("canonical operation ID"), message)
+            invalidRestart.fulfill()
+        }
+        wait(for: [invalidRestart], timeout: 5)
+        XCTAssertEqual(manager.status(id: "dev")?.pid, beforeRestartPID)
+
+        let restartOperationToken = "456789ab-cdef-4012-8345-6789abcdef01"
         let restart = expectation(description: "machineRestart reply")
-        proxy.machineRestart("dev") { ok, body, message in
+        proxy.machineRestart("dev", operationID: restartOperationToken) { ok, body, message in
             XCTAssertTrue(ok, message)
             XCTAssertEqual(body["state"] as? String, "running")
             XCTAssertNotNil(body["pid"])
             restart.fulfill()
         }
         wait(for: [restart], timeout: 5)
+        let restartedPID = manager.status(id: "dev")?.pid
+        let replay = expectation(description: "machineRestart replays the same operation")
+        proxy.machineRestart("dev", operationID: restartOperationToken) { ok, body, message in
+            XCTAssertTrue(ok, message)
+            XCTAssertEqual((body["pid"] as? NSNumber)?.int32Value, restartedPID)
+            replay.fulfill()
+        }
+        wait(for: [replay], timeout: 5)
+        XCTAssertEqual(try manager.flightRecorder(id: "dev", afterSequence: 0).events.filter {
+            $0.kind == .operationStarted && $0.operationKind == "restarting"
+                && $0.operationID == restartOperationToken
+        }.count, 1)
 
         let list = expectation(description: "machineList reply")
         proxy.machineList { body, message in
@@ -3418,16 +3442,22 @@ final class DorydServiceTests: XCTestCase {
         )
         XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
 
-        let managedRootfs = base + "/planned/rootfs.ext4"
+        // A controller that reports neither commit nor durable abort leaves this update pending.
+        // It must block further mutations of this workspace until recovery resolves its outcome.
+        XCTAssertThrowsError(try manager.snapshot(id: "planned", snapshotID: "pending-update"))
+        _ = try manager.create(DoryMachineConfiguration(
+            id: "restorable", kernelPath: doryTestKernelPath, rootfsPath: doryTestRootfsPath
+        ))
+        let managedRootfs = base + "/restorable/rootfs.ext4"
         let snapshotBytes = try Data(contentsOf: URL(fileURLWithPath: managedRootfs))
         XCTAssertFalse(snapshotBytes.isEmpty)
-        _ = try manager.snapshot(id: "planned", snapshotID: "before-restore")
+        _ = try manager.snapshot(id: "restorable", snapshotID: "before-restore")
         var mutatedBytes = snapshotBytes
         mutatedBytes[mutatedBytes.startIndex] ^= 0xff
         try mutatedBytes.write(to: URL(fileURLWithPath: managedRootfs))
 
         let restoreReply = expectation(description: "production restore planning rejection")
-        service.machineRestoreSnapshot("planned", snapshotID: "before-restore") {
+        service.machineRestoreSnapshot("restorable", snapshotID: "before-restore") {
             ok, _, message in
             XCTAssertFalse(ok)
             XCTAssertTrue(message.contains("production planning failed closed"), message)
@@ -3437,15 +3467,41 @@ final class DorydServiceTests: XCTestCase {
         XCTAssertEqual(controller.captures.count, 3)
         XCTAssertEqual(
             controller.captures.last?.request.planning.definition.identity.id,
-            "planned"
+            "restorable"
         )
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: managedRootfs)), snapshotBytes)
-        XCTAssertEqual(manager.status(id: "planned")?.state, .created)
-        XCTAssertEqual(manager.status(id: "planned")?.runtimeIdentity.mode, .requiresReplanning)
+        XCTAssertEqual(manager.status(id: "restorable")?.state, .created)
+        XCTAssertEqual(manager.status(id: "restorable")?.runtimeIdentity.mode, .requiresReplanning)
         XCTAssertEqual(
-            manager.status(id: "planned")?.runtimeIdentity.invalidationReason,
+            manager.status(id: "restorable")?.runtimeIdentity.invalidationReason,
             .restoredSnapshot
         )
+
+        let startReply = expectation(description: "production start planning rejection")
+        service.machineStart("restorable") { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("production planning failed closed"), message)
+            startReply.fulfill()
+        }
+        wait(for: [startReply], timeout: 5)
+        XCTAssertEqual(controller.captures.count, 4)
+        XCTAssertEqual(manager.status(id: "restorable")?.state, .created)
+
+        let cloneReply = expectation(description: "production clone planning rejection")
+        service.machineCloneSnapshot(
+            "restorable",
+            snapshotID: "before-restore",
+            newID: "planned-clone"
+        ) { ok, _, message in
+            XCTAssertFalse(ok)
+            XCTAssertTrue(message.contains("production planning failed closed"), message)
+            cloneReply.fulfill()
+        }
+        wait(for: [cloneReply], timeout: 5)
+        XCTAssertEqual(controller.captures.count, 5)
+        XCTAssertEqual(controller.captures.last?.request.planning.machine.id, "planned-clone")
+        XCTAssertNil(manager.status(id: "planned-clone"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: base + "/planned-clone"))
     }
 
     func testMachineExecOverXPCUsesMachineAgent() throws {

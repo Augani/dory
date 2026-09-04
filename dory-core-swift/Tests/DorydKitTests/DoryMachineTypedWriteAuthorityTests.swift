@@ -5,6 +5,16 @@ import Testing
 
 @Suite("Typed machine write authority")
 struct DoryMachineTypedWriteAuthorityTests {
+    @Test("private update recovery preserves unchanged, set, and clear intents")
+    func recoveryEncodingPreservesPatchIntent() throws {
+        for intent in [DoryMachineTypedSettingUpdate<String>.unchanged, .set("builder"), .clear] {
+            let patch = DoryMachineTypedSettingsPatch(guestUsername: intent, guestNumericUserID: .set(1000),
+                                                      clipboardPolicy: .clear, audioInputEnabled: .set(false))
+            let data = try JSONEncoder().encode(patch)
+            #expect(try JSONDecoder().decode(DoryMachineTypedSettingsPatch.self, from: data) == patch)
+        }
+    }
+
     @Test("typed wire round trip is exact and contains no raw environment")
     func wireRoundTrip() throws {
         let source = DoryMachineTypedSettingsPatch(
