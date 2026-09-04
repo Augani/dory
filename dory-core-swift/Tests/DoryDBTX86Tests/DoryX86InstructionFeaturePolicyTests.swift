@@ -119,29 +119,44 @@ import Testing
       [0xC4, 0xE2, 0xF1, 0xF7, 0x03], // SHLX memory operand
       [0xC4, 0xE2, 0xF2, 0xF7, 0x03], // SARX memory operand
       [0xC4, 0xE2, 0xF3, 0xF7, 0x03], // SHRX memory operand
-      [0xC5, 0xFB, 0x93, 0xC8],       // KMOVD, no modeled K-register state
     ] {
       let instruction = try decoder.decode(bytes, at: 0x1000, mode: .long64)
       #expect(!DoryX86InstructionFeaturePolicy.permits(instruction, profile: all))
       try expectPreciseInvalidOpcode(bytes, profile: all)
       try expectPreciseInvalidOpcode(bytes, profile: .compatibleV1)
     }
+    // The operation model has no K-register state, so the decoder must not
+    // manufacture an XMM move for KMOVD.
+    #expect(throws: DoryX86DecodeError.self) {
+      try decoder.decode([0xC5, 0xFB, 0x93, 0xC8], at: 0x1000, mode: .long64)
+    }
   }
 
   @Test func unqualifiedVEXAliasesRemainRejectedEvenWithEveryRepresentedFeature() throws {
     let all = profile(adding: Set(DoryX86Feature.allCases))
+    // These byte strings used to decode as a different represented operation.
+    // Reject them at decode rather than relying on a later profile policy.
     for bytes: [UInt8] in [
       [0xC5, 0xFC, 0x77],       // VZEROALL cannot execute as VZEROUPPER.
       [0xC5, 0xF9, 0xE2, 0xC8], // VPSRAD cannot execute as a per-lane variable shift.
-      [0xC5, 0xF9, 0x73, 0xD0, 1], // Packed immediate-shift operand roles remain uncorrected.
       [0xC5, 0xFA, 0x10, 0xC8], // VMOVSS cannot execute as full-width move.
-      [0xC5, 0xF9, 0x10, 0x03], // VMOVUPD cannot acquire an alignment requirement.
-      [0xC5, 0xFA, 0x6F, 0x03], // VMOVDQU cannot acquire an alignment requirement.
       [0xC4, 0xE2, 0x79, 0x78, 0xC8], // VPBROADCASTB cannot broadcast dwords.
       [0xC4, 0xE2, 0x7D, 0x5A, 0xC8], // VBROADCASTI128 requires memory, never an XMM source.
-      [0xC5, 0xFB, 0x2C, 0xC8], // Scalar-to-integer conversion has reversed operand roles.
-      [0xC5, 0xF8, 0xAE, 0x13], // VLDMXCSR reserved bits are not validated yet.
       [0xC5, 0xF9, 0xFA, 0xC8], // VPSUBD cannot execute as byte subtraction.
+    ] {
+      #expect(throws: DoryX86DecodeError.self) {
+        try decoder.decode(bytes, at: 0x1000, mode: .long64)
+      }
+    }
+
+    // These encodings now decode with the right shape, but their execution
+    // remains deliberately outside every advertised profile.
+    for bytes: [UInt8] in [
+      [0xC5, 0xF9, 0x73, 0xD0, 1], // VPSRLQ destination/source roles are represented.
+      [0xC5, 0xF9, 0x10, 0x03], // VMOVUPD is an unaligned full-vector move.
+      [0xC5, 0xFA, 0x6F, 0x03], // VMOVDQU is an unaligned full-vector move.
+      [0xC5, 0xFB, 0x2C, 0xC8], // VCVTTSD2SI register operands have architectural roles.
+      [0xC5, 0xF8, 0xAE, 0x13], // VLDMXCSR still needs reserved-value execution checks.
     ] {
       let instruction = try decoder.decode(bytes, at: 0x1000, mode: .long64)
       #expect(!DoryX86InstructionFeaturePolicy.permits(instruction, profile: all))

@@ -2170,6 +2170,21 @@ public struct DoryX86Decoder: Sendable {
     return false
   }
 
+  private func isRegister(_ operand: DoryX86Operand) -> Bool {
+    if case .register = operand { return true }
+    return false
+  }
+
+  private func requireVEXEncoding(
+    _ condition: Bool,
+    cursor: Cursor,
+    detail: String
+  ) throws {
+    guard condition else {
+      throw DoryX86DecodeError.invalidEncoding(address: cursor.address, detail: detail)
+    }
+  }
+
   private func decodeSystemRegisterModRM(
     cursor: inout Cursor,
     prefixes: DoryX86InstructionPrefixes,
@@ -2317,18 +2332,24 @@ public struct DoryX86Decoder: Sendable {
   ) throws -> DoryX86InstructionOperation {
     switch opcode {
     case 0x10, 0x11:
-      // VMOVUPS (pp=00) / VMOVSS (pp=F3) / VMOVSD (pp=F2) / VMOVAPS (pp=66)
+      // VMOVUPS (pp=00) / VMOVUPD (pp=66). The scalar forms need merge
+      // semantics that vexMoveVector does not represent.
+      try requireVEXEncoding(
+        vex.pp <= 1 && vex.vvvv == 0, cursor: cursor,
+        detail: "VEX 0F 10/11 requires no/F66 prefix and reserved vvvv")
       let isLoad = opcode == 0x10
-      let aligned = vex.pp == 1  // 66 -> aligned
       let operands = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
       let destination = vectorOperand(isLoad ? operands.reg : operands.rm)
       let source = vectorOperand(isLoad ? operands.rm : operands.reg)
       return .vexMoveVector(
         destination: destination, source: source,
-        length: length, requiresAlignment: aligned)
+        length: length, requiresAlignment: false)
     case 0x28, 0x29:
-      // VMOVAPS (pp=66, aligned)
+      // VMOVAPS (pp=00) / VMOVAPD (pp=66), both aligned.
+      try requireVEXEncoding(
+        vex.pp <= 1 && vex.vvvv == 0, cursor: cursor,
+        detail: "VEX 0F 28/29 requires no/F66 prefix and reserved vvvv")
       let isLoad = opcode == 0x28
       let operands = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
@@ -2339,6 +2360,9 @@ public struct DoryX86Decoder: Sendable {
         length: length, requiresAlignment: true)
     case 0x57:
       // VXORPS (pp=00) / VXORPD (pp=66)
+      try requireVEXEncoding(
+        vex.pp <= 1, cursor: cursor,
+        detail: "VEX 0F 57 requires no or F66 mandatory prefix")
       let operands = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
       return .vexVectorBinary(
@@ -2347,6 +2371,9 @@ public struct DoryX86Decoder: Sendable {
         length: length)
     case 0x54, 0x55, 0x56:
       // VANDPS/VANDNPS/VORPS (pp=00) / VANDPD/VANDNPD/VORPD (pp=66)
+      try requireVEXEncoding(
+        vex.pp <= 1, cursor: cursor,
+        detail: "VEX 0F 54-56 requires no or F66 mandatory prefix")
       let operands = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
       let op: DoryX86VectorBitwiseOperation =
@@ -2361,14 +2388,9 @@ public struct DoryX86Decoder: Sendable {
         length: length)
     case 0x58, 0x59, 0x5C, 0x5D, 0x5E, 0x5F:
       // VADDSS/SD, VMULSS/SD, VSUBSS/SD, VMINSS/SD, VDIVSS/SD, VMAXSS/SD
-      let format: DoryX86VectorFloatingFormat =
-        switch vex.pp {
-        case 1: .packedDouble    // 66 -> packed double (but scalar for these)
-        case 2: .scalarSingle    // F3
-        case 3: .scalarDouble    // F2
-        default: .packedSingle   // no prefix
-        }
-      // For scalar forms (F2/F3), use scalar format; for packed (66/none), use packed
+      try requireVEXEncoding(
+        vex.pp <= 1 || !vex.largeVector, cursor: cursor,
+        detail: "scalar VEX floating operations require L=0")
       let actualFormat: DoryX86VectorFloatingFormat =
         vex.pp == 3 ? .scalarDouble : (vex.pp == 2 ? .scalarSingle : (vex.pp == 1 ? .packedDouble : .packedSingle))
       let operands = try decodeModRM(
@@ -2389,7 +2411,10 @@ public struct DoryX86Decoder: Sendable {
         length: length)
     case 0x2E, 0x2F:
       // VUCOMISS/COMISS (pp=00) / VUCOMISD/COMISD (pp=66)
-      // These are 2-operand (reg, rm), vvvv must be 0
+      // These are 2-operand (reg, rm), vvvv must be reserved and L must be 0.
+      try requireVEXEncoding(
+        vex.pp <= 1 && !vex.largeVector && vex.vvvv == 0, cursor: cursor,
+        detail: "VEX COMIS/UCOMIS requires no/F66 prefix, L=0 and reserved vvvv")
       let operands = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
       return .vexCompareScalar(
@@ -2399,6 +2424,9 @@ public struct DoryX86Decoder: Sendable {
         source: vectorOperand(operands.rm))
     case 0x64, 0x65, 0x66, 0x74, 0x76:
       // VPCMPGTB (64) / VPCMPGTW (65) / VPCMPGTD (66) / VPCMPEQB (74) / VPCMPEQD (76)
+      try requireVEXEncoding(
+        vex.pp == 1, cursor: cursor,
+        detail: "VEX packed integer compare requires F66 mandatory prefix")
       let operands = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
       let laneWidth: DoryX86VectorLaneWidth =
@@ -2416,6 +2444,9 @@ public struct DoryX86Decoder: Sendable {
         length: length)
     case 0xFC, 0xFD, 0xFE:
       // VPADDB (FC) / VPADDW (FD) / VPADDD (FE)
+      try requireVEXEncoding(
+        vex.pp == 1, cursor: cursor,
+        detail: "VEX packed integer add requires F66 mandatory prefix")
       let operands = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
       let laneWidth: DoryX86VectorLaneWidth =
@@ -2431,6 +2462,9 @@ public struct DoryX86Decoder: Sendable {
         length: length)
     case 0xDB, 0xDF, 0xEB, 0xEF:
       // VPAND (DB) / VPANDN (DF) / VPOR (EB) / VPXOR (EF)
+      try requireVEXEncoding(
+        vex.pp == 1, cursor: cursor,
+        detail: "VEX packed integer bitwise operation requires F66 mandatory prefix")
       let operands = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
       let op: DoryX86VectorBitwiseOperation =
@@ -2444,39 +2478,28 @@ public struct DoryX86Decoder: Sendable {
         op, destination: vectorRegister(operands.reg),
         firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
         length: length)
-    case 0xDA, 0xE2, 0xE3, 0xEA:
-      // VPMINUB (DA) / VPSRLVD (E2) / VPSRAVD (E3) / VPMINSW (EA)
-      // For now, decode DA and EA as packed min, E2/E3 as variable shifts
+    case 0xDA, 0xEA:
+      // VPMINUB (DA) / VPMINSW (EA)
+      try requireVEXEncoding(
+        vex.pp == 1, cursor: cursor,
+        detail: "VEX packed minimum requires F66 mandatory prefix")
       let operands = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-      switch opcode {
-      case 0xDA:
-        return .vexPackedMinMax(
-          signed: false, minimum: true, laneWidth: .byte,
-          destination: vectorRegister(operands.reg),
-          firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
-          length: length)
-      case 0xEA:
-        return .vexPackedMinMax(
-          signed: true, minimum: true, laneWidth: .word,
-          destination: vectorRegister(operands.reg),
-          firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
-          length: length)
-      default:
-        // VPSRLVD/VPSRAVD: variable shift by packed count
-        return .vexVariableShift(
-          arithmetic: opcode == 0xE3,
-          laneWidth: .doubleword,
-          destination: vectorRegister(operands.reg),
-          firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
-          length: length)
-      }
-    case 0xD8, 0xD9, 0xFA, 0xFB:
-      // VPSUBUSB (D8) / VPSUBUSW (D9) / VPSUBB (FA) / VPSUBW (FB)
+      return .vexPackedMinMax(
+        signed: opcode == 0xEA, minimum: true,
+        laneWidth: opcode == 0xDA ? .byte : .word,
+        destination: vectorRegister(operands.reg),
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
+    case 0xD8, 0xD9, 0xF8, 0xF9:
+      // VPSUBUSB (D8) / VPSUBUSW (D9) / VPSUBB (F8) / VPSUBW (F9)
+      try requireVEXEncoding(
+        vex.pp == 1, cursor: cursor,
+        detail: "VEX packed integer subtract requires F66 mandatory prefix")
       let operands = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
       let laneWidth: DoryX86VectorLaneWidth =
-        (opcode == 0xD8 || opcode == 0xFA) ? .byte : .word
+        (opcode == 0xD8 || opcode == 0xF8) ? .byte : .word
       let saturating = opcode == 0xD8 || opcode == 0xD9
       let unsigned = opcode == 0xD8 || opcode == 0xD9
       return .vexSubPackedIntegers(
@@ -2486,6 +2509,9 @@ public struct DoryX86Decoder: Sendable {
         length: length)
     case 0x5A:
       // VCVTSD2SS (F2) / VCVTSS2SD (F3)
+      try requireVEXEncoding(
+        (vex.pp == 2 || vex.pp == 3) && !vex.largeVector, cursor: cursor,
+        detail: "VEX scalar conversion requires F3/F2 mandatory prefix and L=0")
       let direction: DoryX86ScalarConvertDirection =
         vex.pp == 3 ? .doubleToSingle : .singleToDouble
       let operands = try decodeModRM(
@@ -2496,16 +2522,26 @@ public struct DoryX86Decoder: Sendable {
         firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm))
     case 0x2C, 0x2D:
       // VCVTTSD2SI (2C, F2) / VCVTSD2SI (2D, F2) / VCVTTSS2SI (2C, F3) / VCVTSS2SI (2D, F3)
+      try requireVEXEncoding(
+        (vex.pp == 2 || vex.pp == 3) && !vex.largeVector && vex.vvvv == 0,
+        cursor: cursor,
+        detail: "VEX scalar-to-integer conversion requires F3/F2, L=0 and reserved vvvv")
       let operands = try decodeModRM(
         cursor: &cursor, width: vex.w ? .quadword : .doubleword,
         prefixes: prefixes, mode: mode)
+      try requireVEXEncoding(
+        isRegister(operands.rm), cursor: cursor,
+        detail: "VEX scalar-to-integer memory source is not represented")
       return .vexConvertScalarToInteger(
         truncated: opcode == 0x2C,
         doublePrecision: vex.pp == 3,
-        destination: operands.rm,
-        source: vectorRegister(operands.reg))
+        destination: operands.reg,
+        source: vectorRegister(operands.rm))
     case 0x14:
       // VUNPCKLPS (pp=00) / VUNPCKLPD (pp=66)
+      try requireVEXEncoding(
+        vex.pp <= 1, cursor: cursor,
+        detail: "VEX UNPCKL requires no or F66 mandatory prefix")
       let operands = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
       return .vexUnpackLow(
@@ -2515,6 +2551,9 @@ public struct DoryX86Decoder: Sendable {
         length: length)
     case 0x15:
       // VUNPCKHPS (pp=00) / VUNPCKHPD (pp=66)
+      try requireVEXEncoding(
+        vex.pp <= 1, cursor: cursor,
+        detail: "VEX UNPCKH requires no or F66 mandatory prefix")
       let operands = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
       return .vexUnpackHigh(
@@ -2523,9 +2562,15 @@ public struct DoryX86Decoder: Sendable {
         firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
         length: length)
     case 0xAE:
-      // VLDMXCSR/VSTMXCSR (pp=66, group 2/3): load/store MXCSR from memory.
+      // VLDMXCSR/VSTMXCSR (pp=00, group 2/3): load/store MXCSR from memory.
+      try requireVEXEncoding(
+        vex.pp == 0 && !vex.largeVector && vex.vvvv == 0, cursor: cursor,
+        detail: "VEX LDMXCSR/STMXCSR requires no prefix, L=0 and reserved vvvv")
       let operands = try decodeModRM(
         cursor: &cursor, width: .doubleword, prefixes: prefixes, mode: mode)
+      try requireVEXEncoding(
+        isMemory(operands.rm), cursor: cursor,
+        detail: "VEX LDMXCSR/STMXCSR requires a memory operand")
       switch operands.group {
       case 2:
         return .vexLoadMXCSR(source: operands.rm)
@@ -2535,17 +2580,11 @@ public struct DoryX86Decoder: Sendable {
         throw DoryX86DecodeError.unsupportedOpcode(
           address: cursor.address, bytes: cursor.consumedBytes)
       }
-    case 0x93:
-      // KMOVD (C5 FB 93): move between mask register and GPR/vector.
-      // For now, decode as a no-op mask move since Dory doesn't model AVX-512
-      // mask registers — treat as a move of the low 32 bits.
-      let operands = try decodeModRM(
-        cursor: &cursor, width: .doubleword, prefixes: prefixes, mode: mode)
-      return .vexMaskMove(
-        destination: vectorRegister(operands.reg),
-        source: operands.rm)
     case 0x6E:
       // VMOVD/VMOVQ (register from integer): 66 0F 6E, W=1 for VMOVQ
+      try requireVEXEncoding(
+        vex.pp == 1 && !vex.largeVector && vex.vvvv == 0, cursor: cursor,
+        detail: "VEX MOVD/MOVQ requires F66, L=0 and reserved vvvv")
       let operands = try decodeModRM(
         cursor: &cursor, width: vex.w ? .quadword : .doubleword,
         prefixes: prefixes, mode: mode)
@@ -2554,6 +2593,9 @@ public struct DoryX86Decoder: Sendable {
         source: operands.rm, quadword: vex.w)
     case 0x7E:
       // VMOVD/VMOVQ (integer from register): 66 0F 7E, W=1 for VMOVQ
+      try requireVEXEncoding(
+        vex.pp == 1 && !vex.largeVector && vex.vvvv == 0, cursor: cursor,
+        detail: "VEX MOVD/MOVQ requires F66, L=0 and reserved vvvv")
       let operands = try decodeModRM(
         cursor: &cursor, width: vex.w ? .quadword : .doubleword,
         prefixes: prefixes, mode: mode)
@@ -2561,78 +2603,74 @@ public struct DoryX86Decoder: Sendable {
         destination: operands.rm, source: vectorRegister(operands.reg),
         quadword: vex.w)
     case 0x6F:
-      // VMOVDQA (pp=66, aligned) — load form: reg <- rm
+      // VMOVDQA (pp=66, aligned) / VMOVDQU (pp=F3, unaligned), load form.
+      try requireVEXEncoding(
+        (vex.pp == 1 || vex.pp == 2) && vex.vvvv == 0, cursor: cursor,
+        detail: "VEX 0F 6F requires F66/F3 mandatory prefix and reserved vvvv")
       let operands6F = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
       return .vexMoveVector(
         destination: vectorOperand(operands6F.reg),
         source: vectorOperand(operands6F.rm),
-        length: length, requiresAlignment: true)
+        length: length, requiresAlignment: vex.pp == 1)
     case 0x7F:
-      // VMOVDQA (pp=66, aligned) — store form: rm <- reg
+      // VMOVDQA (pp=66, aligned) / VMOVDQU (pp=F3, unaligned), store form.
+      try requireVEXEncoding(
+        (vex.pp == 1 || vex.pp == 2) && vex.vvvv == 0, cursor: cursor,
+        detail: "VEX 0F 7F requires F66/F3 mandatory prefix and reserved vvvv")
       let operands7F = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
       return .vexMoveVector(
         destination: vectorOperand(operands7F.rm),
         source: vectorOperand(operands7F.reg),
-        length: length, requiresAlignment: true)
-    case 0x73:
-      // VPSRLQ/VPSLLQ/VPSRAD (pp=66): packed shift by immediate.
-      // ModRM reg field selects the operation: /2 = VPSRLQ, /6 = VPSLLQ, /4 = VPSRAD
-      let operands73 = try decodeModRM(
+        length: length, requiresAlignment: vex.pp == 1)
+    case 0x72, 0x73:
+      // VEX packed shift by immediate. ModRM.reg selects the operation while
+      // vvvv is the destination and ModRM.rm is the source register.
+      try requireVEXEncoding(
+        vex.pp == 1, cursor: cursor,
+        detail: "VEX packed immediate shift requires F66 mandatory prefix")
+      let operands = try decodeModRM(
         cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-      let immediate = try cursor.readByte()
+      try requireVEXEncoding(
+        isRegister(operands.rm), cursor: cursor,
+        detail: "VEX packed immediate shift requires ModRM.mod=3")
       let shiftOperation: DoryX86VectorShiftOperation
-      switch operands73.group {
-      case 2: shiftOperation = .logicalRight
-      case 4: shiftOperation = .arithmeticRight
-      case 6: shiftOperation = .logicalLeft
+      switch (opcode, operands.group) {
+      case (_, 2): shiftOperation = .logicalRight
+      case (0x72, 4): shiftOperation = .arithmeticRight
+      case (_, 6): shiftOperation = .logicalLeft
       default:
         throw DoryX86DecodeError.invalidEncoding(
           address: cursor.address,
-          detail: "VEX 0F 73 group \(operands73.group) is not a valid packed shift")
+          detail: "VEX 0F \(String(opcode, radix: 16)) group \(operands.group) is not a represented packed shift")
       }
+      let immediate = try cursor.readByte()
       return .vexVectorShiftImmediate(
         operation: shiftOperation,
-        destination: vectorRegister(operands73.reg),
-        source: vex.vvvv,
+        destination: vex.vvvv,
+        source: vectorRegister(operands.rm),
         immediate: immediate,
-        laneWidth: .quadword,
-        length: length)
-    case 0x74:
-      // VPCMPEQB (pp=66)
-      let operands = try decodeModRM(
-        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-      return .vexComparePackedBytes(
-        destination: vectorRegister(operands.reg),
-        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        laneWidth: opcode == 0x72 ? .doubleword : .quadword,
         length: length)
     case 0x77:
-      // VZEROUPPER / VZEROALL (L=0 -> VZEROUPPER, L=1 -> VZEROALL)
+      // VZEROUPPER. VZEROALL has different architectural effects and is not represented.
+      try requireVEXEncoding(
+        vex.pp == 0 && !vex.largeVector && vex.vvvv == 0, cursor: cursor,
+        detail: "VZEROUPPER requires no prefix, L=0 and reserved vvvv")
       return .vexZeroUpper
     case 0xD7:
-      // VPMOVMSKB (pp=66): GPR width depends on VEX.W.
-      let gprWidth: DoryX86OperandWidth = vex.w ? .quadword : .doubleword
+      // VPMOVMSKB (pp=66): the destination is a 32-bit GPR; W is ignored.
+      try requireVEXEncoding(
+        vex.pp == 1 && vex.vvvv == 0, cursor: cursor,
+        detail: "VPMOVMSKB requires F66 mandatory prefix and reserved vvvv")
       let operands = try decodeModRM(
-        cursor: &cursor, width: gprWidth, prefixes: prefixes, mode: mode)
+        cursor: &cursor, width: .doubleword, prefixes: prefixes, mode: mode)
+      try requireVEXEncoding(
+        isRegister(operands.rm), cursor: cursor,
+        detail: "VPMOVMSKB requires ModRM.mod=3")
       return .vexMoveMaskToInteger(
         destination: operands.reg, source: vectorRegister(operands.rm),
-        length: length)
-    case 0xEB:
-      // VPOR (pp=66)
-      let operands = try decodeModRM(
-        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-      return .vexVectorBinary(
-        .or, destination: vectorRegister(operands.reg),
-        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
-        length: length)
-    case 0xEF:
-      // VPXOR (pp=66)
-      let operands = try decodeModRM(
-        cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-      return .vexVectorBinary(
-        .xor, destination: vectorRegister(operands.reg),
-        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
         length: length)
     default:
       throw DoryX86DecodeError.unsupportedOpcode(
@@ -2649,9 +2687,12 @@ public struct DoryX86Decoder: Sendable {
     mode: DoryX86ExecutionMode,
     length: DoryX86VectorLength
   ) throws -> DoryX86InstructionOperation {
-    // BMI1 flagless shifts (SHRX/SARX/SHLX) use opcode F7 with pp selecting
+    // BMI2 flagless shifts (SHRX/SARX/SHLX) use opcode F7 with pp selecting
     // the direction. These operate on GPRs, not vector registers.
     if opcode == 0xF7 {
+      try requireVEXEncoding(
+        !vex.largeVector && vex.pp != 0, cursor: cursor,
+        detail: "BMI2 flagless shift requires L=0 and F66/F3/F2 mandatory prefix")
       let gprWidth: DoryX86OperandWidth = vex.w ? .quadword : .doubleword
       let operands = try decodeModRM(
         cursor: &cursor, width: gprWidth, prefixes: prefixes, mode: mode)
@@ -2663,7 +2704,7 @@ public struct DoryX86Decoder: Sendable {
       default:
         throw DoryX86DecodeError.invalidEncoding(
           address: cursor.address,
-          detail: "BMI1 shift requires 66/F3/F2 mandatory prefix")
+          detail: "BMI2 shift requires 66/F3/F2 mandatory prefix")
       }
       // vvvv encodes the count register; reg is destination, rm is source.
       let countRegister = register(Int(vex.vvvv), extensionBit: false)
@@ -2689,29 +2730,49 @@ public struct DoryX86Decoder: Sendable {
         length: length)
     case 0x18:
       // VBROADCASTSS
+      try requireVEXEncoding(
+        !vex.w && vex.vvvv == 0, cursor: cursor,
+        detail: "VBROADCASTSS requires W=0 and reserved vvvv")
       return .vexBroadcast(
         destination: vectorRegister(operands.reg),
         source: vectorOperand(operands.rm), mode: .single32, length: length)
     case 0x19:
       // VBROADCASTSD (requires L=1)
+      try requireVEXEncoding(
+        !vex.w && vex.vvvv == 0 && vex.largeVector, cursor: cursor,
+        detail: "VBROADCASTSD requires W=0, L=1 and reserved vvvv")
       return .vexBroadcast(
         destination: vectorRegister(operands.reg),
         source: vectorOperand(operands.rm), mode: .double64, length: length)
     case 0x1A:
       // VBROADCASTF128 (requires L=1)
+      try requireVEXEncoding(
+        !vex.w && vex.vvvv == 0 && vex.largeVector && isMemory(operands.rm),
+        cursor: cursor,
+        detail: "VBROADCASTF128 requires W=0, L=1, reserved vvvv and memory source")
       return .vexBroadcast(
         destination: vectorRegister(operands.reg),
         source: vectorOperand(operands.rm), mode: .packed128, length: length)
     case 0x5A:
       // VBROADCASTI128 (requires L=1)
+      try requireVEXEncoding(
+        !vex.w && vex.vvvv == 0 && vex.largeVector && isMemory(operands.rm),
+        cursor: cursor,
+        detail: "VBROADCASTI128 requires W=0, L=1, reserved vvvv and memory source")
       return .vexBroadcast(
         destination: vectorRegister(operands.reg),
         source: vectorOperand(operands.rm), mode: .packed128, length: length)
-    case 0x78:
-      // VPBROADCASTB
-      return .vexBroadcast(
+    case 0x45, 0x46:
+      // VPSRLVD / VPSRAVD
+      try requireVEXEncoding(
+        !vex.w, cursor: cursor,
+        detail: "VEX per-lane dword shift requires W=0")
+      return .vexVariableShift(
+        arithmetic: opcode == 0x46,
+        laneWidth: .doubleword,
         destination: vectorRegister(operands.reg),
-        source: vectorOperand(operands.rm), mode: .single32, length: length)
+        firstSource: vex.vvvv, secondSource: vectorOperand(operands.rm),
+        length: length)
     default:
       throw DoryX86DecodeError.unsupportedOpcode(
         address: cursor.address, bytes: cursor.consumedBytes)
