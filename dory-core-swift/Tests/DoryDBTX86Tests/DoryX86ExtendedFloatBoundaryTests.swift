@@ -197,6 +197,42 @@ import Testing
     #expect(smallQuiet.divided(by: largeQuiet).bytes() == largeQuietBytes)
   }
 
+  @Test func unsupportedBinary80OperandsStayDistinctAndProduceRealIndefinite() {
+    // Intel SDM Vol. 1 §8.2.2 and Table 8-10: a nonzero exponent with
+    // explicit integer bit J=0 is unsupported, including exponent 7FFF.
+    // Arithmetic on either encoding returns real indefinite when #IA is masked.
+    let unsupportedNormalExponent = binary80Encoding(
+      significand: 0x4000_0000_0000_1234, signAndExponent: 0x3FFF)
+    let unsupportedAllOnesExponent = binary80Encoding(
+      significand: 0x4000_0000_0000_5678, signAndExponent: 0xFFFF)
+    let quietNaN = DoryX86ExtendedFloat(bytes: binary80Encoding(
+      significand: 0xC000_0000_0000_0001, signAndExponent: 0x7FFF))
+    let realIndefinite = binary80Encoding(
+      significand: 0xC000_0000_0000_0000, signAndExponent: 0xFFFF)
+
+    for encoding in [unsupportedNormalExponent, unsupportedAllOnesExponent] {
+      let unsupported = DoryX86ExtendedFloat(bytes: encoding)
+      #expect(unsupported.isUnsupported)
+      #expect(!unsupported.isFinite && !unsupported.isInfinite && !unsupported.isNaN)
+      #expect(!unsupported.isSignalingNaN)
+      #expect(unsupported.bytes() == encoding)
+      #expect(unsupported.compared(to: .one) == nil)
+      #expect(unsupported.signedIntegerBits(bitCount: 64, rounding: .nearestEven) == nil)
+      #expect(unsupported.float32Bits() == 0xFFC0_0000)
+      #expect(unsupported.float64Bits() == 0xFFF8_0000_0000_0000)
+
+      for result in [
+        unsupported.adding(.one),
+        DoryX86ExtendedFloat.one.subtracting(unsupported),
+        unsupported.multiplied(by: .one),
+        DoryX86ExtendedFloat.one.divided(by: unsupported),
+        quietNaN.adding(unsupported),
+      ] {
+        #expect(result.bytes() == realIndefinite)
+      }
+    }
+  }
+
   private func value(significand: UInt64, exponentField: UInt16) -> DoryX86ExtendedFloat {
     .init(bytes: binary80Encoding(significand: significand, signAndExponent: exponentField))
   }

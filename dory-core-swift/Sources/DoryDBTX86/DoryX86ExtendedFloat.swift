@@ -108,6 +108,7 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     case finite
     case infinity
     case nan(UInt64)
+    case unsupported(significand: UInt64, exponentField: UInt16)
   }
 
   private let kind: Kind
@@ -131,6 +132,10 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     guard case .nan(let significand) = kind else { return false }
     return significand & 0x4000_0000_0000_0000 == 0
   }
+  var isUnsupported: Bool {
+    if case .unsupported = kind { return true }
+    return false
+  }
   var isSubnormal: Bool { kind == .finite && significand != 0 && exponent < -16_382 }
 
   init(bytes: [UInt8]) {
@@ -151,6 +156,10 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       let shift = rawSignificand.leadingZeroBitCount
       exponent = -16_382 - shift
       significand = rawSignificand << UInt64(shift)
+    case _ where rawSignificand & 0x8000_0000_0000_0000 == 0:
+      kind = .unsupported(significand: rawSignificand, exponentField: UInt16(exponentField))
+      exponent = 0
+      significand = 0
     case 0x7FFF where rawSignificand == 0x8000_0000_0000_0000:
       kind = .infinity
       exponent = 0
@@ -253,6 +262,9 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     case .nan(let significand):
       rawSignificand = significand | 0x8000_0000_0000_0000
       exponentField = 0x7FFF
+    case .unsupported(let significand, let storedExponent):
+      rawSignificand = significand
+      exponentField = storedExponent
     case .finite where significand == 0:
       rawSignificand = 0
       exponentField = 0
@@ -296,6 +308,7 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     rounding: DoryX86FloatingRounding = .nearestEven,
     precision: Int = 64
   ) -> Self {
+    if isUnsupported || rhs.isUnsupported { return Self.realIndefinite() }
     if let nan = propagatedNaN(with: rhs) { return nan }
     if isInfinite || rhs.isInfinite {
       if isInfinite, rhs.isInfinite, isNegative != rhs.isNegative {
@@ -343,6 +356,7 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     rounding: DoryX86FloatingRounding = .nearestEven,
     precision: Int = 64
   ) -> Self {
+    if isUnsupported || rhs.isUnsupported { return Self.realIndefinite() }
     if let nan = propagatedNaN(with: rhs) { return nan }
     return adding(rhs.negated(), rounding: rounding, precision: precision)
   }
@@ -352,6 +366,7 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     rounding: DoryX86FloatingRounding = .nearestEven,
     precision: Int = 64
   ) -> Self {
+    if isUnsupported || rhs.isUnsupported { return Self.realIndefinite() }
     if let nan = propagatedNaN(with: rhs) { return nan }
     if (isZero && rhs.isInfinite) || (isInfinite && rhs.isZero) {
       return Self.realIndefinite()
@@ -381,6 +396,7 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     rounding: DoryX86FloatingRounding = .nearestEven,
     precision: Int = 64
   ) -> Self {
+    if isUnsupported || rhs.isUnsupported { return Self.realIndefinite() }
     if let nan = propagatedNaN(with: rhs) { return nan }
     if (isZero && rhs.isZero) || (isInfinite && rhs.isInfinite) {
       return Self.realIndefinite()
@@ -530,7 +546,7 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
   }
 
   func compared(to rhs: Self) -> ComparisonResult? {
-    if isNaN || rhs.isNaN { return nil }
+    if isNaN || rhs.isNaN || isUnsupported || rhs.isUnsupported { return nil }
     if isZero, rhs.isZero { return .orderedSame }
     if isNegative != rhs.isNegative { return isNegative ? .orderedAscending : .orderedDescending }
     let magnitude: ComparisonResult
@@ -568,6 +584,11 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
         inexact: false, tiny: false, overflow: false, roundedUp: false)
     case .nan:
       return .init(bits: sign | maximumExponentField << UInt64(fractionBits)
+        | UInt64(1) << UInt64(fractionBits - 1),
+        inexact: false, tiny: false, overflow: false, roundedUp: false)
+    case .unsupported:
+      return .init(bits: UInt64(1) << UInt64(exponentBits + fractionBits)
+        | maximumExponentField << UInt64(fractionBits)
         | UInt64(1) << UInt64(fractionBits - 1),
         inexact: false, tiny: false, overflow: false, roundedUp: false)
     case .finite where significand == 0:

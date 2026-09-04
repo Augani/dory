@@ -59,6 +59,38 @@ import Testing
     #expect(memory.reads == 0 && memory.writes == 0)
   }
 
+  @Test func everyUnsupportedEncodingGetsSpecialTagAndInvalidNarrowingResponse() {
+    // J=0 is unsupported for every nonzero exponent. This includes the
+    // exponent-all-ones form that must not be classified as a NaN.
+    let encodings = [
+      binary80(significand: 0, exponent: 0x3FFF),
+      binary80(significand: 0x4000_0000_0000_1234, exponent: 0x3FFF),
+      binary80(significand: 0, exponent: 0x7FFF, negative: true),
+      binary80(significand: 0x4000_0000_0000_5678, exponent: 0x7FFF, negative: true),
+    ]
+    for encoding in encodings {
+      #expect(DoryX86X87Transfer.binary80Class(encoding) == .unsupported)
+      let loaded = DoryX86X87Transfer.load(bytes: encoding, format: .extended80)
+      #expect(loaded.bytes == encoding && loaded.tag == 2 && loaded.flags == 0)
+      let registerLoaded = DoryX86X87Transfer.registerLoad(bytes: encoding)
+      #expect(registerLoaded.bytes == encoding && registerLoaded.tag == 2)
+
+      let extendedStore = DoryX86X87Transfer.store(
+        bytes: encoding, format: .extended80, truncate: false, controlWord: 0x037E)
+      #expect(extendedStore.bytes == encoding && extendedStore.flags == 0)
+      #expect(!extendedStore.suppressWriteAndPop)
+
+      let masked = DoryX86X87Transfer.store(
+        bytes: encoding, format: .float32, truncate: false, controlWord: 0x037F)
+      #expect(masked.bytes == [0, 0, 0xC0, 0xFF] && masked.flags == 1)
+      #expect(!masked.suppressWriteAndPop)
+      let unmasked = DoryX86X87Transfer.store(
+        bytes: encoding, format: .float32, truncate: false, controlWord: 0x037E)
+      #expect(unmasked.bytes.isEmpty && unmasked.flags == 1)
+      #expect(unmasked.suppressWriteAndPop)
+    }
+  }
+
   @Test func signalingFloatLoadsQuietOnlyWhenInvalidIsMasked() throws {
     let forms: [([UInt8], [UInt8], [UInt8])] = [
       ([0xD9, 0x00], littleEndian(0x7F80_0001, count: 4),
