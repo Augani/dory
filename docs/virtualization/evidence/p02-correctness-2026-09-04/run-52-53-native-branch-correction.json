@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-native-branch-regression-correction",
+  "failedRun": 52,
+  "correctedRun": 53,
+  "comparisonCommit": "ba98c71671cc3a044dc51708a93036dfd4f47a77",
+  "source52": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-52-commit-binding.json",
+    "sha256": "4fcaf150132e1842e0403b523370f0e0541ec5a6edeb4f10c2d7777e13833134"
+  },
+  "source53": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-53-commit-binding.json",
+    "sha256": "003032a2d681860776b48b030ff21f43e33ca75c4e06bb819578dbd229ec34ca"
+  },
+  "changedInputs": [
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift",
+      "run52SHA256": "0366113abc6eb1218c7ef85d5cb43c25c1ec42400b99bdd3465cb43a9c123251",
+      "run53SHA256": "b448d905d63a8c8ae24dc3208198181e9539c38d58aaaee1b60f322011672446"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift",
+      "run52SHA256": "8513d8a417abaf43e0996611ba309ca67d09d65abcc87f3d8574292f775ffa7a",
+      "run53SHA256": "b79db6341dee16a2acb4066d398e01f4f456affcbd28697515570c8bf4a80a5e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86InstructionFeaturePolicy.swift",
+      "run52SHA256": "7d7a2624fb09d5e8d179b93f179f18ba50f65fa31124f4082923c9318718acde",
+      "run53SHA256": "4be30b0669d1a9a2005b49ce4536ac68a4d3efb7720e14578afe1ec19b99dde4"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+      "run52SHA256": "708fc357855962a4bc16357e257573bcb5a215c6ba81b47b6a10bfa0e0bde332",
+      "run53SHA256": "53249e43e2935358f90596f8d6142226f0e0edecda0c7cb8cd68886ac05a80e6"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCDirectKernelMachine.swift",
+      "run52SHA256": "919971144558e43a371fb14e20eec9c29df8cf6cb2213a257bea62c74498216f",
+      "run53SHA256": "a51b0d280cc5600ea4ae51a8b4d6257d29845d62f291e77eb08f12f1192af00a"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86IRTests.swift",
+      "run52SHA256": "5d97466b95ec901f07d03157becc33cb54a338706c148ebb32f0f2a3047a3b53",
+      "run53SHA256": "c5f6f74a09d0679b534a3852d906a4244949c2f98a272e0b69eb8933a700da39"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86IntegerFeaturePolicyTests.swift",
+      "run52SHA256": null,
+      "run53SHA256": "c1c321f189fe87df172f765e38e027ae0a5a979ff5da40d252032e3434024da4"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86NearTransferTests.swift",
+      "run52SHA256": "d30239db486b3f64154d924383ceff01bc3f104bc7de1304f9492e1f6c02e121",
+      "run53SHA256": "f315f9254cfa79a9cee0743ac1e663bbdc0626c5af099939773c02cc63c751c6"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCIntegerFeaturePolicyTests.swift",
+      "run52SHA256": null,
+      "run53SHA256": "0ec6a3d532fbdc36c73c24b9c4166305ea46b1c3dbf0c6e720911b7cb5670c22"
+    }
+  ],
+  "failedMethods": [
+    {
+      "method": "soleRunnableJITProcessorUsesTheAdaptive4096InstructionQuantum",
+      "issues": 9
+    },
+    {
+      "method": "twoRunnableProcessorsRetainThe64InstructionFairnessQuantum",
+      "issues": 4
+    },
+    {
+      "method": "adaptiveJITQuantumStillStopsAtTheAcceptedAPICTimerDeadline",
+      "issues": 3
+    },
+    {
+      "method": "optimizingJITPromotesRepeatedDispatchesAfterBoundedWarmup",
+      "issues": 4
+    },
+    {
+      "method": "selectedPhysicalWidthReachesBothJITsAndRunPreservesTheLoadedPDPTEs",
+      "issues": 4
+    },
+    {
+      "method": "selectedProfileControlsMachineFetchDiagnosticsAndBothNativeTiers",
+      "issues": 2
+    }
+  ],
+  "issues": 26,
+  "unchangedFailingTestSources": [
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift",
+      "sha256": "12ac672d46846e74e2058c8f7deabc9559983a869a7e58b7e4a25139990b1d23"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPAEExecutionBoundaryTests.swift",
+      "sha256": "0eb746dd92aa55e9ff3168a62b5f10adbffd9675eb32c4af714de56c7f1b32de"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPagingFeatureTests.swift",
+      "sha256": "501c9f0ecaf9c30bc7c3c4dff5bb37becc116223f67e3a8cf7bb67b93de44d73"
+    }
+  ],
+  "allSevenNewNearTestsPassedInFailedRun": true,
+  "failedRunNearTestMethods": [
+    "legacyCallsAndReturnsUseOperandWidthIndependentlyOfStackAddressSize",
+    "wordCallWrapsTargetAndReturnAddressBeforeLegacyLimitChecks",
+    "doublewordTransferInSixteenBitCodePreservesHighEIPOnSubsequentFetch",
+    "legacyTargetLimitsFaultAtTheTransferWithoutPublishingStackOrCounterEffects",
+    "indirectStackOperandUsesTheOriginalStackPointerAndFullWritePreflight",
+    "longRelativeBranchesIgnore66ForDisplacementAndCallReturnWidth",
+    "nonLongDirectBranchesUseTheInterpreterForSegmentAndWidthChecks"
+  ],
+  "classification": "Implementation regression: blanket non-long direct-branch fallback defeated existing native execution/quantum/promotion expectations. This was not a fixture-only failure.",
+  "correctedScope": "Keep 16-bit direct branches in interpreter; restore flat protected32 direct branches with operand-width target masks and per-entry CS base/limit checks before cached or new native execution. Original protected32 IR test restored; six previously failing methods pass unchanged.",
+  "concurrentAddedScope": "Source53 also adds selected integer feature-policy implementation and six CPU plus one PC-machine methods. Two new test inputs and seven changed existing inputs distinguish52from53.",
+  "jmp16ReferenceScope": "Mask-before-limit is corroborated by authored Bochs JMP_Jw source, not physical execution; Intel JMP pseudo-order discrepancy is not separately hardware-qualified.",
+  "jmp16AuthoredReference": "https://github.com/bochs-emu/Bochs/blob/master/bochs/cpu/ctrl_xfer16.cc#L266-L278",
+  "limitations": [
+    "No physical reference or full segmentation/control-flow qualification.",
+    "Long64 RET operand overrides and broader CET/far/call-gate behavior are not qualified by these near-transfer tests.",
+    "This record includes no optimized runner or guest execution."
+  ]
+}

@@ -1,0 +1,74 @@
+{
+  "kind": "p02-frozen-source-binding",
+  "run": 52,
+  "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+  "comparisonCommit": "ba98c71671cc3a044dc51708a93036dfd4f47a77",
+  "totalInputs": 730,
+  "trackedInputs": 724,
+  "ignoredFFIInputs": [
+    {
+      "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+      "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+    },
+    {
+      "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+      "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+      "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+      "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+      "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+      "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+    }
+  ],
+  "overlayMemberCount": 136,
+  "basePlusOverlayMatchesEveryTrackedInput": true,
+  "trackedDifferences": [
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift",
+      "frozenSHA256": "0366113abc6eb1218c7ef85d5cb43c25c1ec42400b99bdd3465cb43a9c123251",
+      "commitSHA256": "b448d905d63a8c8ae24dc3208198181e9539c38d58aaaee1b60f322011672446"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift",
+      "frozenSHA256": "8513d8a417abaf43e0996611ba309ca67d09d65abcc87f3d8574292f775ffa7a",
+      "commitSHA256": "b79db6341dee16a2acb4066d398e01f4f456affcbd28697515570c8bf4a80a5e"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86InstructionFeaturePolicy.swift",
+      "frozenSHA256": "7d7a2624fb09d5e8d179b93f179f18ba50f65fa31124f4082923c9318718acde",
+      "commitSHA256": "4be30b0669d1a9a2005b49ce4536ac68a4d3efb7720e14578afe1ec19b99dde4"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+      "frozenSHA256": "708fc357855962a4bc16357e257573bcb5a215c6ba81b47b6a10bfa0e0bde332",
+      "commitSHA256": "53249e43e2935358f90596f8d6142226f0e0edecda0c7cb8cd68886ac05a80e6"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCDirectKernelMachine.swift",
+      "frozenSHA256": "919971144558e43a371fb14e20eec9c29df8cf6cb2213a257bea62c74498216f",
+      "commitSHA256": "a51b0d280cc5600ea4ae51a8b4d6257d29845d62f291e77eb08f12f1192af00a"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86IRTests.swift",
+      "frozenSHA256": "5d97466b95ec901f07d03157becc33cb54a338706c148ebb32f0f2a3047a3b53",
+      "commitSHA256": "c5f6f74a09d0679b534a3852d906a4244949c2f98a272e0b69eb8933a700da39"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86NearTransferTests.swift",
+      "frozenSHA256": "d30239db486b3f64154d924383ceff01bc3f104bc7de1304f9492e1f6c02e121",
+      "commitSHA256": "f315f9254cfa79a9cee0743ac1e663bbdc0626c5af099939773c02cc63c751c6"
+    }
+  ],
+  "allTrackedInputsMatchComparisonCommit": false
+}
