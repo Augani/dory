@@ -308,7 +308,12 @@ public final class DoryPCIOAPIC: @unchecked Sendable {
   public func seal() { lock.withLock { isSealed = true } }
 
   public func configure(pin: Int, route: DoryPCIOAPICRoute) throws {
-    try validate(pin: pin, vector: route.vector)
+    guard pins.indices.contains(pin) else { throw DoryPCAPICError.invalidPin(pin) }
+    // A masked redirection entry cannot deliver an interrupt. Software may clear its vector
+    // while masking the pin, then assign a deliverable vector before enabling the route.
+    guard route.masked || route.vector >= 0x10 else {
+      throw DoryPCAPICError.invalidVector(route.vector)
+    }
     let delivery: (DoryPCLocalAPIC, UInt8)? = lock.withLock {
       pins[pin].route = route
       guard route.levelTriggered, !route.masked, pins[pin].asserted, !pins[pin].remoteIRR,
@@ -372,8 +377,4 @@ public final class DoryPCIOAPIC: @unchecked Sendable {
     return lock.withLock { pins[pin].route }
   }
 
-  private func validate(pin: Int, vector: UInt8) throws {
-    guard pins.indices.contains(pin) else { throw DoryPCAPICError.invalidPin(pin) }
-    guard vector >= 0x10 else { throw DoryPCAPICError.invalidVector(vector) }
-  }
 }
