@@ -306,6 +306,8 @@ public struct DoryX86ModelSpecificRegisterState: Codable, Sendable, Hashable {
   public var fsBase: UInt64
   public var gsBase: UInt64
   public var kernelGSBase: UInt64
+  /// Writable high DWORD of IA32_BIOS_SIGN_ID; no microcode update is installed.
+  public var biosUpdateSignature: UInt32
 
   public init(
     apicBase: UInt64 = 0xfee0_0900,
@@ -319,7 +321,8 @@ public struct DoryX86ModelSpecificRegisterState: Codable, Sendable, Hashable {
     syscallFlagMask: UInt64 = 0,
     fsBase: UInt64 = 0,
     gsBase: UInt64 = 0,
-    kernelGSBase: UInt64 = 0
+    kernelGSBase: UInt64 = 0,
+    biosUpdateSignature: UInt32 = 0
   ) {
     self.apicBase = apicBase
     self.systemEnterCS = systemEnterCS
@@ -333,6 +336,31 @@ public struct DoryX86ModelSpecificRegisterState: Codable, Sendable, Hashable {
     self.fsBase = fsBase
     self.gsBase = gsBase
     self.kernelGSBase = kernelGSBase
+    self.biosUpdateSignature = biosUpdateSignature
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case apicBase, systemEnterCS, systemEnterStackPointer, systemEnterInstructionPointer
+    case pageAttributeTable, star, longStar, compatibilityStar, syscallFlagMask
+    case fsBase, gsBase, kernelGSBase, biosUpdateSignature
+  }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    try self.init(
+      apicBase: values.decode(UInt64.self, forKey: .apicBase),
+      systemEnterCS: values.decode(UInt64.self, forKey: .systemEnterCS),
+      systemEnterStackPointer: values.decode(UInt64.self, forKey: .systemEnterStackPointer),
+      systemEnterInstructionPointer: values.decode(UInt64.self, forKey: .systemEnterInstructionPointer),
+      pageAttributeTable: values.decode(UInt64.self, forKey: .pageAttributeTable),
+      star: values.decode(UInt64.self, forKey: .star),
+      longStar: values.decode(UInt64.self, forKey: .longStar),
+      compatibilityStar: values.decode(UInt64.self, forKey: .compatibilityStar),
+      syscallFlagMask: values.decode(UInt64.self, forKey: .syscallFlagMask),
+      fsBase: values.decode(UInt64.self, forKey: .fsBase),
+      gsBase: values.decode(UInt64.self, forKey: .gsBase),
+      kernelGSBase: values.decode(UInt64.self, forKey: .kernelGSBase),
+      biosUpdateSignature: values.decodeIfPresent(UInt32.self, forKey: .biosUpdateSignature) ?? 0)
   }
 }
 

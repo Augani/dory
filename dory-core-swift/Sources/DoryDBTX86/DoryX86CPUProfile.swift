@@ -46,8 +46,16 @@ public struct DoryX86CPUIDResult: Codable, Sendable, Hashable {
   }
 }
 
+/// Guest architectural identity, separate from any hypervisor ABI or host CPU.
+public enum DoryX86CPUIdentity: String, Codable, Sendable, Hashable {
+  case legacyDoryV1
+  /// Synthetic family 6/model 0/stepping 0; does not name an Intel hardware SKU.
+  case intelCompatibleV1
+}
+
 public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
   public static let compatibleV1Identifier = "dory.x86_64.compat-v1"
+  public static let intelCompatibleV1Identifier = "dory.x86_64.intel-compatible-v1"
   public static let maximumBasicCPUIDLeaf: UInt32 = 0xD
   public static let maximumExtendedCPUIDLeaf: UInt32 = 0x8000_0008
 
@@ -56,19 +64,37 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
   public let physicalAddressBits: UInt8
   public let linearAddressBits: UInt8
   public let virtualTSCFrequencyHz: UInt64
+  public let identity: DoryX86CPUIdentity
 
   public init(
     identifier: String,
     features: Set<DoryX86Feature>,
     physicalAddressBits: UInt8,
     linearAddressBits: UInt8,
-    virtualTSCFrequencyHz: UInt64
+    virtualTSCFrequencyHz: UInt64,
+    identity: DoryX86CPUIdentity = .legacyDoryV1
   ) {
     self.identifier = identifier
     self.features = features
     self.physicalAddressBits = physicalAddressBits
     self.linearAddressBits = linearAddressBits
     self.virtualTSCFrequencyHz = virtualTSCFrequencyHz
+    self.identity = identity
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case identifier, features, physicalAddressBits, linearAddressBits, virtualTSCFrequencyHz, identity
+  }
+
+  public init(from decoder: Decoder) throws {
+    let values = try decoder.container(keyedBy: CodingKeys.self)
+    try self.init(
+      identifier: values.decode(String.self, forKey: .identifier),
+      features: values.decode(Set<DoryX86Feature>.self, forKey: .features),
+      physicalAddressBits: values.decode(UInt8.self, forKey: .physicalAddressBits),
+      linearAddressBits: values.decode(UInt8.self, forKey: .linearAddressBits),
+      virtualTSCFrequencyHz: values.decode(UInt64.self, forKey: .virtualTSCFrequencyHz),
+      identity: values.decodeIfPresent(DoryX86CPUIdentity.self, forKey: .identity) ?? .legacyDoryV1)
   }
 
   /// Engineering candidate, not a qualified Linux or x86-64-v2 baseline. PAE/PSE/PGE
@@ -85,6 +111,19 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     linearAddressBits: 48,
     virtualTSCFrequencyHz: 1_000_000_000
   )
+
+  /// Explicit engineering candidate for software that selects architectural
+  /// semantics by vendor. Keeps v1's conservative capabilities and clock contract.
+  /// Model zero selects no named modern microarchitecture or implicit invariant TSC.
+  /// Intel SDM 092 Vol. 1 §21.3 defines vendor/signature field encoding; this is a
+  /// Dory emulation identity, not a qualified Intel processor or Linux baseline.
+  public static let intelCompatibleV1 = Self(
+    identifier: intelCompatibleV1Identifier,
+    features: compatibleV1.features,
+    physicalAddressBits: compatibleV1.physicalAddressBits,
+    linearAddressBits: compatibleV1.linearAddressBits,
+    virtualTSCFrequencyHz: compatibleV1.virtualTSCFrequencyHz,
+    identity: .intelCompatibleV1)
 
   public func supports(_ feature: DoryX86Feature) -> Bool {
     guard features.contains(feature) else { return false }
@@ -112,6 +151,11 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     let logicalCount = min(255, max(1, logicalProcessorCount))
     switch (leaf, subleaf) {
     case (0, _):
+      if identity == .intelCompatibleV1 {
+        // Architectural EBX, EDX, ECX order spells "GenuineIntel".
+        return .init(eax: Self.maximumBasicCPUIDLeaf,
+          ebx: 0x756E_6547, ecx: 0x6C65_746E, edx: 0x4965_6E69)
+      }
       // "DoryDoryDory" in architectural EBX, EDX, ECX order.
       return .init(
         eax: Self.maximumBasicCPUIDLeaf,
@@ -143,7 +187,7 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       set(.sse2, bit: 26, in: &edx)
       if logicalCount > 1 { edx |= 1 << 28 }
       return .init(
-        eax: 0x0006_0f00,
+        eax: identity == .intelCompatibleV1 ? 0x0000_0600 : 0x0006_0f00,
         ebx: (supports(.clflush) ? 8 << 8 : 0)
           | UInt32(logicalCount) << 16 | (processorID & 0xFF) << 24,
         ecx: ecx,

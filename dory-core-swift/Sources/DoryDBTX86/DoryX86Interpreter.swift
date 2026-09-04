@@ -2954,6 +2954,7 @@ public struct DoryX86Interpreter: Sendable {
           : try load(&state)
         if task { state.tr = loaded } else { state.ldtr = loaded }
       case .readModelSpecificRegister:
+        guard profile.supports(.msr) else { return invalidOpcode(at: originalRIP) }
         guard currentPrivilegeLevel(state, mode: mode) == 0,
           let value = readModelSpecificRegister(
             UInt32(truncatingIfNeeded: state.registers.rcx),
@@ -2965,6 +2966,7 @@ public struct DoryX86Interpreter: Sendable {
         state.registers.rax = UInt64(UInt32(truncatingIfNeeded: value))
         state.registers.rdx = UInt64(UInt32(truncatingIfNeeded: value >> 32))
       case .writeModelSpecificRegister:
+        guard profile.supports(.msr) else { return invalidOpcode(at: originalRIP) }
         let value =
           UInt64(UInt32(truncatingIfNeeded: state.registers.rax))
           | UInt64(UInt32(truncatingIfNeeded: state.registers.rdx)) << 32
@@ -4583,6 +4585,9 @@ public struct DoryX86Interpreter: Sendable {
     case 0x10: state.tsc
     case 0x17: 0  // IA32_PLATFORM_ID: Dory's single virtual platform is ID zero.
     case 0x1B: state.modelSpecific.apicBase
+    case 0x8B:
+      profile.identity == .intelCompatibleV1
+        ? UInt64(state.modelSpecific.biosUpdateSignature) << 32 : nil
     case 0x174: state.modelSpecific.systemEnterCS
     case 0x175: state.modelSpecific.systemEnterStackPointer
     case 0x176: state.modelSpecific.systemEnterInstructionPointer
@@ -4612,6 +4617,13 @@ public struct DoryX86Interpreter: Sendable {
     case 0x1B:
       guard value & 0xfff & ~0x900 == 0 else { return false }
       state.modelSpecific.apicBase = value
+    case 0x8B:
+      // SDM 092 Vol. 3A §12.11.7: high DWORD is R/W, low DWORD reserved.
+      // With no loaded update CPUID leaves the signature unchanged. A guest's
+      // write-zero/CPUID.1/read sequence therefore truthfully returns zero.
+      guard profile.identity == .intelCompatibleV1, UInt32(truncatingIfNeeded: value) == 0
+      else { return false }
+      state.modelSpecific.biosUpdateSignature = UInt32(truncatingIfNeeded: value >> 32)
     case 0x174:
       state.modelSpecific.systemEnterCS = value & 0xffff
     case 0x175:
