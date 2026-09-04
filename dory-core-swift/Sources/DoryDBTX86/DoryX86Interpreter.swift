@@ -146,7 +146,7 @@ public struct DoryX86Interpreter: Sendable {
         return invalidOpcode(at: originalRIP)
       case .halt:
         guard mode == .real16
-          || (currentPrivilegeLevel(state) == 0 && !state.rflags.contains(.virtual8086))
+          || (currentPrivilegeLevel(state, mode: mode) == 0 && !state.rflags.contains(.virtual8086))
         else { return generalProtection(at: originalRIP) }
         state.rip = nextRIP
         return .halted(instruction)
@@ -2478,14 +2478,14 @@ public struct DoryX86Interpreter: Sendable {
         state.registers.rcx = UInt64(result.ecx)
         state.registers.rdx = UInt64(result.edx)
       case .readControlRegister(let index, let destination):
-        guard currentPrivilegeLevel(state) == 0,
+        guard currentPrivilegeLevel(state, mode: mode) == 0,
           let value = readControlRegister(index, state: state)
         else {
           return generalProtection(at: originalRIP)
         }
         state.registers[destination] = value
       case .writeControlRegister(let index, let source):
-        guard currentPrivilegeLevel(state) == 0,
+        guard currentPrivilegeLevel(state, mode: mode) == 0,
           writeControlRegister(
             index,
             value: state.registers[source],
@@ -2496,7 +2496,7 @@ public struct DoryX86Interpreter: Sendable {
           return generalProtection(at: originalRIP)
         }
       case .readDebugRegister(let index, let destination):
-        guard currentPrivilegeLevel(state) == 0 else {
+        guard currentPrivilegeLevel(state, mode: mode) == 0 else {
           return generalProtection(at: originalRIP)
         }
         guard let value = readDebugRegister(index, state: state) else {
@@ -2504,7 +2504,7 @@ public struct DoryX86Interpreter: Sendable {
         }
         state.registers[destination] = value
       case .writeDebugRegister(let index, let source):
-        guard currentPrivilegeLevel(state) == 0 else {
+        guard currentPrivilegeLevel(state, mode: mode) == 0 else {
           return generalProtection(at: originalRIP)
         }
         guard writeDebugRegister(index, value: state.registers[source], state: &state) else {
@@ -2527,7 +2527,7 @@ public struct DoryX86Interpreter: Sendable {
           UInt64(UInt32(truncatingIfNeeded: state.registers.rax))
           | UInt64(UInt32(truncatingIfNeeded: state.registers.rdx)) << 32
         let supportedMask: UInt64 = profile.supports(.avx) ? 0x7 : 0x3
-        guard currentPrivilegeLevel(state) == 0,
+        guard currentPrivilegeLevel(state, mode: mode) == 0,
           UInt32(truncatingIfNeeded: state.registers.rcx) == 0,
           value & ~supportedMask == 0,
           value & 1 == 1,
@@ -2537,20 +2537,20 @@ public struct DoryX86Interpreter: Sendable {
         }
         state.control.xcr0 = value
       case .invalidateCaches:
-        guard currentPrivilegeLevel(state) == 0 else {
+        guard currentPrivilegeLevel(state, mode: mode) == 0 else {
           return generalProtection(at: originalRIP)
         }
       // The interpreter has no guest-visible data or instruction cache. Every load and store
       // already observes coherent memory, so INVD/WBINVD complete after their privilege check.
       case .invalidatePage(let operand):
-        guard currentPrivilegeLevel(state) == 0 else {
+        guard currentPrivilegeLevel(state, mode: mode) == 0 else {
           return generalProtection(at: originalRIP)
         }
         pagingUnit?.invalidate(
           linearAddress: effectiveAddress(operand, instruction: instruction, state: state)
         )
       case .descriptorTable(let table, let load, let address):
-        if load, currentPrivilegeLevel(state) != 0 {
+        if load, currentPrivilegeLevel(state, mode: mode) != 0 {
           return generalProtection(at: originalRIP)
         }
         let linearAddress = effectiveAddress(address, instruction: instruction, state: state)
@@ -2786,7 +2786,7 @@ public struct DoryX86Interpreter: Sendable {
         nextRIP = target & mask(width)
       case .machineStatusWord(let load, let operand):
         if load {
-          guard currentPrivilegeLevel(state) == 0 else {
+          guard currentPrivilegeLevel(state, mode: mode) == 0 else {
             return generalProtection(at: originalRIP)
           }
           let requested = try read(
@@ -2810,12 +2810,12 @@ public struct DoryX86Interpreter: Sendable {
         // its versioned memory map in start_info; an unsupported call must fault.
         return invalidOpcode(at: originalRIP)
       case .clearTaskSwitched:
-        guard currentPrivilegeLevel(state) == 0 else {
+        guard currentPrivilegeLevel(state, mode: mode) == 0 else {
           return generalProtection(at: originalRIP)
         }
         state.control.cr0 &= ~(1 << 3)
       case .storeSystemSegment(let task, let destination):
-        guard state.control.cr4 & (1 << 11) == 0 || currentPrivilegeLevel(state) == 0 else {
+        guard state.control.cr4 & (1 << 11) == 0 || currentPrivilegeLevel(state, mode: mode) == 0 else {
           return generalProtection(at: originalRIP)
         }
         try write(
@@ -2826,7 +2826,7 @@ public struct DoryX86Interpreter: Sendable {
           memory: executionMemory
         )
       case .loadSystemSegment(let task, let source):
-        guard currentPrivilegeLevel(state) == 0 else {
+        guard currentPrivilegeLevel(state, mode: mode) == 0 else {
           return generalProtection(at: originalRIP)
         }
         let selector = UInt16(
@@ -2843,7 +2843,7 @@ public struct DoryX86Interpreter: Sendable {
         else { return generalProtection(at: originalRIP) }
         if task { state.tr = loaded } else { state.ldtr = loaded }
       case .readModelSpecificRegister:
-        guard currentPrivilegeLevel(state) == 0,
+        guard currentPrivilegeLevel(state, mode: mode) == 0,
           let value = readModelSpecificRegister(
             UInt32(truncatingIfNeeded: state.registers.rcx),
             state: state
@@ -2857,7 +2857,7 @@ public struct DoryX86Interpreter: Sendable {
         let value =
           UInt64(UInt32(truncatingIfNeeded: state.registers.rax))
           | UInt64(UInt32(truncatingIfNeeded: state.registers.rdx)) << 32
-        guard currentPrivilegeLevel(state) == 0,
+        guard currentPrivilegeLevel(state, mode: mode) == 0,
           writeModelSpecificRegister(
             UInt32(truncatingIfNeeded: state.registers.rcx),
             value: value,
@@ -2871,7 +2871,7 @@ public struct DoryX86Interpreter: Sendable {
         guard profile.supports(.tsc), !includeAuxiliary || profile.supports(.rdtscp) else {
           return invalidOpcode(at: originalRIP)
         }
-        guard currentPrivilegeLevel(state) == 0 || state.control.cr4 & (1 << 2) == 0 else {
+        guard currentPrivilegeLevel(state, mode: mode) == 0 || state.control.cr4 & (1 << 2) == 0 else {
           return generalProtection(at: originalRIP)
         }
         state.registers.rax = UInt64(UInt32(truncatingIfNeeded: state.tsc))
@@ -2879,7 +2879,7 @@ public struct DoryX86Interpreter: Sendable {
         if includeAuxiliary { state.registers.rcx = UInt64(state.tscAux) }
       case .swapGS:
         guard mode == .long64 else { return invalidOpcode(at: originalRIP) }
-        guard currentPrivilegeLevel(state) == 0 else {
+        guard currentPrivilegeLevel(state, mode: mode) == 0 else {
           return generalProtection(at: originalRIP)
         }
         state.modelSpecific.gsBase = state.gs.base
@@ -2934,7 +2934,7 @@ public struct DoryX86Interpreter: Sendable {
         let raw = stackRead.value
         var requested = DoryX86RFLAGS(
           rawValue: (raw & DoryX86RFLAGS.architecturallyWritableMask) | 2)
-        if currentPrivilegeLevel(state) > UInt8((state.rflags.rawValue >> 12) & 3) {
+        if currentPrivilegeLevel(state, mode: mode) > UInt8((state.rflags.rawValue >> 12) & 3) {
           setFlag(.interruptEnable, state.rflags.contains(.interruptEnable), in: &requested)
         }
         guard let validated = try? requested.validated() else {
@@ -3008,7 +3008,7 @@ public struct DoryX86Interpreter: Sendable {
         }
         let systemSelector = UInt16(truncatingIfNeeded: state.modelSpecific.systemEnterCS) & 0xfffc
         guard mode != .real16, state.control.cr0 & 1 != 0, systemSelector != 0,
-          currentPrivilegeLevel(state) == 0
+          currentPrivilegeLevel(state, mode: mode) == 0
         else { return generalProtection(at: originalRIP) }
         let targetRIP = return64Bit
           ? state.registers.rdx
@@ -3038,7 +3038,7 @@ public struct DoryX86Interpreter: Sendable {
         )
         nextRIP = targetRIP
       case .setInterruptsEnabled(let enabled):
-        let currentPrivilege = UInt64(state.cs.selector & 3)
+        let currentPrivilege = UInt64(currentPrivilegeLevel(state, mode: mode))
         let ioPrivilege = (state.rflags.rawValue >> 12) & 3
         guard currentPrivilege <= ioPrivilege else {
           return .exception(
@@ -3074,7 +3074,7 @@ public struct DoryX86Interpreter: Sendable {
       case .sysret:
         guard profile.supports(.syscall),
           mode == .long64,
-          currentPrivilegeLevel(state) == 0,
+          currentPrivilegeLevel(state, mode: mode) == 0,
           state.control.efer & 1 != 0,
           DoryX86ArchitecturalState.isCanonical(state.registers.rcx)
         else {
@@ -4106,8 +4106,15 @@ public struct DoryX86Interpreter: Sendable {
     return UInt64(bitPattern: signed)
   }
 
-  private func currentPrivilegeLevel(_ state: DoryX86ArchitecturalState) -> UInt8 {
-    UInt8(state.cs.selector & 3)
+  private func currentPrivilegeLevel(
+    _ state: DoryX86ArchitecturalState,
+    mode: DoryX86ExecutionMode
+  ) -> UInt8 {
+    if mode == .real16 { return 0 }
+    // VM selects CPL 3 only outside IA-32e mode; selector low bits are not privilege in v8086.
+    if mode != .long64, state.control.efer & (1 << 10) == 0,
+      state.rflags.contains(.virtual8086) { return 3 }
+    return UInt8(state.cs.selector & 3)
   }
 
   private func ioPort(
@@ -4129,9 +4136,12 @@ public struct DoryX86Interpreter: Sendable {
   ) throws -> Bool {
     guard width != .quadword else { return false }
     if mode == .real16 { return true }
-    let privilege = currentPrivilegeLevel(state)
+    let privilege = currentPrivilegeLevel(state, mode: mode)
     let ioPrivilege = UInt8((state.rflags.rawValue >> 12) & 3)
-    if privilege <= ioPrivilege { return true }
+    let virtual8086 = mode != .long64 && state.control.efer & (1 << 10) == 0
+      && state.rflags.contains(.virtual8086)
+    // Virtual-8086 I/O always consults the TSS bitmap, including at IOPL 3 (Intel IN/OUT).
+    if !virtual8086, privilege <= ioPrivilege { return true }
 
     let taskType = UInt8(truncatingIfNeeded: state.tr.attributes) & 0x0f
     guard taskType == 0x9 || taskType == 0xB, state.tr.limit >= 0x67 else { return false }
@@ -5517,7 +5527,7 @@ public struct DoryX86Interpreter: Sendable {
     }
     if selector & 0xfffc == 0 {
       if register == .ss {
-        let current = currentPrivilegeLevel(state)
+        let current = currentPrivilegeLevel(state, mode: mode)
         let requested = UInt8(selector & 3)
         // Intel permits a null SS selector only in 64-bit mode when CPL is below 3 and its
         // RPL equals CPL. Linux uses MOV SS, 0 while establishing each 64-bit CPU.
@@ -5540,7 +5550,7 @@ public struct DoryX86Interpreter: Sendable {
     let executable = type & 8 != 0
     guard register == .cs ? executable : (!executable || type & 2 != 0) else { return nil }
     let privilege = UInt8((access >> 5) & 3)
-    let current = UInt8(state.cs.selector & 3)
+    let current = currentPrivilegeLevel(state, mode: mode)
     guard register == .cs ? privilege == current : max(current, UInt8(selector & 3)) <= privilege
     else { return nil }
     var base = (raw >> 16) & 0xffff
@@ -5601,7 +5611,7 @@ public struct DoryX86Interpreter: Sendable {
     let conformingCode = codeOrData && type & 0x0c == 0x0c
     if !conformingCode {
       let dpl = (access >> 5) & 3
-      let cpl = currentPrivilegeLevel(state)
+      let cpl = currentPrivilegeLevel(state, mode: mode)
       let rpl = UInt8(selector & 3)
       guard cpl <= dpl, rpl <= dpl else { return nil }
     }

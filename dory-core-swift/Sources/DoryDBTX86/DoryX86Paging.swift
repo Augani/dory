@@ -14,7 +14,15 @@ public struct DoryX86PagingContext: Sendable, Hashable {
   ) {
     self.control = control
     self.rflags = rflags
-    self.currentPrivilegeLevel = currentPrivilegeLevel & 3
+    // CPL is fixed in real/virtual-8086 modes, independent of the CS selector low bits.
+    if mode == .real16 {
+      self.currentPrivilegeLevel = 0
+    } else if mode != .long64, control.efer & (1 << 10) == 0,
+      rflags.contains(.virtual8086) {
+      self.currentPrivilegeLevel = 3
+    } else {
+      self.currentPrivilegeLevel = currentPrivilegeLevel & 3
+    }
     self.mode = mode
   }
 
