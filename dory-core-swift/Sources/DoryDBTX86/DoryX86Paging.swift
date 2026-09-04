@@ -641,6 +641,14 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory, 
     )
   }
 
+  /// A separate view keeps implicit descriptor reads and busy-bit writes under
+  /// supervisor/SMAP rules without changing the explicit instruction operand's context.
+  func implicitSupervisorMemory() -> DoryX86TranslatedMemory {
+    .init(physicalMemory: physicalMemory, pagingUnit: pagingUnit,
+      context: .init(control: context.control, rflags: context.rflags,
+        currentPrivilegeLevel: 0, mode: context.mode, isImplicitSupervisorAccess: true))
+  }
+
   public func readScalar(at address: UInt64, byteCount: Int) throws -> UInt64 {
     guard [1, 2, 4, 8].contains(byteCount) else {
       throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)

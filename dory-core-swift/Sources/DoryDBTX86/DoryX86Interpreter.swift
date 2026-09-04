@@ -5,6 +5,7 @@ public struct DoryX86Exception: Error, Codable, Sendable, Hashable {
     case divideError
     case debug
     case invalidOpcode
+    case segmentNotPresent
     case stackSegment
     case generalProtection
     case pageFault
@@ -2893,15 +2894,24 @@ public struct DoryX86Interpreter: Sendable {
         let selector = UInt16(
           truncatingIfNeeded: try read(
             source, instruction: instruction, state: state, memory: executionMemory))
-        guard
-          let loaded = try loadSystemSegment(
+        let descriptorMemory: any DoryX86Memory =
+          if let translated = executionMemory as? DoryX86TranslatedMemory {
+            translated.implicitSupervisorMemory()
+          } else { executionMemory }
+        let load = { (current: inout DoryX86ArchitecturalState) in
+          try loadSystemSegment(
             task: task,
             selector: selector,
             mode: mode,
-            state: state,
-            memory: executionMemory
+            state: current,
+            memory: descriptorMemory
           )
-        else { return generalProtection(at: originalRIP) }
+        }
+        // Serialize the descriptor check and busy-byte store against other locked
+        // interpreter operations. Ordinary selector-operand reads stay explicit.
+        let loaded = task
+          ? try DoryX86AtomicGate.shared.withLock(state: &state, load)
+          : try load(&state)
         if task { state.tr = loaded } else { state.ldtr = loaded }
       case .readModelSpecificRegister:
         guard currentPrivilegeLevel(state, mode: mode) == 0,
@@ -5772,30 +5782,59 @@ public struct DoryX86Interpreter: Sendable {
     mode: DoryX86ExecutionMode,
     state: DoryX86ArchitecturalState,
     memory: any DoryX86Memory
-  ) throws -> DoryX86SegmentState? {
-    if selector & 0xfffc == 0 {
-      return task ? nil : .init(selector: 0)
+  ) throws -> DoryX86SegmentState {
+    let selectorError = UInt32(selector & 0xFFFC)
+    func fault(notPresent: Bool = false, errorCode: UInt32? = nil) -> DoryX86Exception {
+      .init(kind: notPresent ? .segmentNotPresent : .generalProtection,
+        vector: notPresent ? 11 : 13, errorCode: errorCode ?? selectorError,
+        instructionPointer: state.rip)
     }
-    guard selector & 4 == 0 else { return nil }
+    if selector & 0xfffc == 0 {
+      if task { throw fault(errorCode: 0) }
+      return .init(selector: selector)
+    }
+    guard selector & 4 == 0 else { throw fault() }
     let offset = UInt64(selector >> 3) * 8
-    let descriptorBytes = mode == .long64 ? 16 : 8
-    guard offset + UInt64(descriptorBytes - 1) <= UInt64(state.gdtr.limit) else { return nil }
-    let bytes = try memory.read(at: state.gdtr.base &+ offset, byteCount: descriptorBytes)
+    // System descriptors are 16 bytes throughout IA-32e, including compatibility mode.
+    let ia32e = mode == .long64 || state.control.efer & (1 << 10) != 0
+    let descriptorBytes = ia32e ? 16 : 8
+    guard offset + UInt64(descriptorBytes - 1) <= UInt64(state.gdtr.limit) else { throw fault() }
+    let address = state.gdtr.base.addingReportingOverflow(offset)
+    let lastAddress = address.partialValue.addingReportingOverflow(UInt64(descriptorBytes - 1))
+    // Vol. 3A #GP error-code rules: a fault while loading a descriptor names its
+    // selector. Check the complete implicit table access before touching memory.
+    guard !address.overflow, !lastAddress.overflow else { throw fault() }
+    if ia32e {
+      guard DoryX86ArchitecturalState.isCanonical(address.partialValue),
+        DoryX86ArchitecturalState.isCanonical(lastAddress.partialValue)
+      else { throw fault() }
+    }
+    let bytes = try memory.read(at: address.partialValue, byteCount: descriptorBytes)
+    guard bytes.count == descriptorBytes else {
+      throw DoryX86MemoryError.unmapped(address: address.partialValue,
+        byteCount: descriptorBytes, access: .read)
+    }
     let raw = bytes.prefix(8).enumerated().reduce(UInt64(0)) {
       $0 | UInt64($1.element) << UInt64($1.offset * 8)
     }
     let access = UInt8(truncatingIfNeeded: raw >> 40)
     let type = access & 0x0f
-    guard access & 0x80 != 0, access & 0x10 == 0 else { return nil }
+    guard access & 0x10 == 0 else { throw fault() }
     if task {
-      guard type == 1 || type == 9 else { return nil }
+      guard type == 9 || (!ia32e && type == 1) else { throw fault() }
     } else {
-      guard type == 2 else { return nil }
+      guard type == 2 else { throw fault() }
     }
+    if ia32e {
+      // Intel SDM Vol. 3A Fig. 10-4: the upper slot's type/S field must be zero.
+      // Other upper-slot fields labeled reserved have no added fault policy here.
+      guard bytes[13] & 0x1F == 0 else { throw fault() }
+    }
+    guard access & 0x80 != 0 else { throw fault(notPresent: true) }
     var base = (raw >> 16) & 0xffff
     base |= ((raw >> 32) & 0xff) << 16
     base |= ((raw >> 56) & 0xff) << 24
-    if mode == .long64 {
+    if ia32e {
       base |= UInt64(bytes[8]) << 32
       base |= UInt64(bytes[9]) << 40
       base |= UInt64(bytes[10]) << 48
@@ -5806,8 +5845,8 @@ public struct DoryX86Interpreter: Sendable {
     var attributes = UInt16(access) | UInt16((raw >> 48) & 0xf0) << 8
     if task {
       let busyAccess = access | 2
-      try memory.validateWrite(at: state.gdtr.base &+ offset &+ 5, byteCount: 1)
-      try memory.write(at: state.gdtr.base &+ offset &+ 5, bytes: [busyAccess])
+      try memory.validateWrite(at: address.partialValue &+ 5, byteCount: 1)
+      try memory.write(at: address.partialValue &+ 5, bytes: [busyAccess])
       attributes = (attributes & 0xff00) | UInt16(busyAccess)
     }
     return .init(selector: selector, attributes: attributes, limit: limit, base: base)
