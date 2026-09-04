@@ -4,8 +4,13 @@ import Testing
 @testable import DoryMachinePC
 
 @Suite struct DoryPCPhysicalMemoryTests {
-  @Test func sealedBusRoutesRAMAndStandardAPICWindows() throws {
-    let ram = DoryX86ByteArrayMemory(byteCount: 0x1000)
+  private func backing(mmap: Bool, byteCount: Int) throws -> any DoryX86PhysicalRAM {
+    if mmap { return try DoryX86MmapMemory(byteCount: byteCount) }
+    return try DoryX86ByteArrayMemory(validatingByteCount: byteCount)
+  }
+
+  @Test(arguments: [false, true]) func sealedBusRoutesRAMAndStandardAPICWindows(mmap: Bool) throws {
+    let ram = try backing(mmap: mmap, byteCount: 0x1000)
     let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     let local = DoryPCLocalAPIC(apicID: 2)
     let io = DoryPCIOAPIC()
@@ -23,8 +28,8 @@ import Testing
     }
   }
 
-  @Test func routingRemainsExactAcrossSealedTablePublication() throws {
-    let ram = DoryX86ByteArrayMemory(byteCount: 0x4000)
+  @Test(arguments: [false, true]) func routingRemainsExactAcrossSealedTablePublication(mmap: Bool) throws {
+    let ram = try backing(mmap: mmap, byteCount: 0x4000)
     let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     let first = TestMMIODevice(baseAddress: 0x1000, byteCount: 0x100)
     let second = TestMMIODevice(baseAddress: 0x3000, byteCount: 0x100)
@@ -49,8 +54,8 @@ import Testing
     }
   }
 
-  @Test func codeGenerationsCoverOnlyOrdinaryRAMPages() throws {
-    let ram = DoryX86ByteArrayMemory(byteCount: 0x4000)
+  @Test(arguments: [false, true]) func codeGenerationsCoverOnlyOrdinaryRAMPages(mmap: Bool) throws {
+    let ram = try backing(mmap: mmap, byteCount: 0x4000)
     let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     try bus.attach(TestMMIODevice(baseAddress: 0x2000, byteCount: 0x100))
     bus.seal()
@@ -129,8 +134,8 @@ import Testing
     #expect(local.acknowledge(interruptsEnabled: true) == 0x45)
   }
 
-  @Test func busRejectsOverlapCrossBoundaryAndMMIOInstructionFetch() throws {
-    let ram = DoryX86ByteArrayMemory(byteCount: 0x1000)
+  @Test(arguments: [false, true]) func busRejectsOverlapCrossBoundaryAndMMIOInstructionFetch(mmap: Bool) throws {
+    let ram = try backing(mmap: mmap, byteCount: 0x1000)
     let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     let local = DoryPCLocalAPIC(apicID: 0)
     try bus.attach(DoryPCLocalAPICMMIO(apic: local))
@@ -149,8 +154,8 @@ import Testing
     }
   }
 
-  @Test func bulkStringCopiesStayInsideOrdinaryRAM() throws {
-    let ram = DoryX86ByteArrayMemory(byteCount: 0x1000)
+  @Test(arguments: [false, true]) func bulkStringCopiesStayInsideOrdinaryRAM(mmap: Bool) throws {
+    let ram = try backing(mmap: mmap, byteCount: 0x1000)
     let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     let local = DoryPCLocalAPIC(apicID: 0)
     try bus.attach(DoryPCLocalAPICMMIO(apic: local))
@@ -172,8 +177,8 @@ import Testing
     )
   }
 
-  @Test func remapsCompactRAMAboveTheGuestMMIOHole() throws {
-    let ram = DoryX86ByteArrayMemory(byteCount: 0x1200)
+  @Test(arguments: [false, true]) func remapsCompactRAMAboveTheGuestMMIOHole(mmap: Bool) throws {
+    let ram = try backing(mmap: mmap, byteCount: 0x1200)
     let bus = try DoryPCPhysicalMemoryBus(
       ram: ram,
       mmioHoleStart: 0x1000,
@@ -203,8 +208,8 @@ import Testing
     #expect(try ram.read(at: 0x1008, byteCount: 8) == [0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88])
   }
 
-  @Test func highRAMDMAAndBulkCopiesUseTheCompactBackingRange() throws {
-    let ram = DoryX86ByteArrayMemory(byteCount: 0x1200)
+  @Test(arguments: [false, true]) func highRAMDMAAndBulkCopiesUseTheCompactBackingRange(mmap: Bool) throws {
+    let ram = try backing(mmap: mmap, byteCount: 0x1200)
     let bus = try DoryPCPhysicalMemoryBus(
       ram: ram,
       mmioHoleStart: 0x1000,

@@ -4,11 +4,14 @@ import Foundation
 import Testing
 
 @Suite struct DoryPCFirmwareFlashTests {
-  @Test func mapsRightAlignedImmutableFirmwareAtTheResetVector() throws {
+  @Test(arguments: [false, true]) func mapsRightAlignedImmutableFirmwareAtTheResetVector(mmap: Bool) throws {
     var image = Data(repeating: 0xa5, count: 4_096)
     image.replaceSubrange((image.count - 16)..<image.count, with: (0..<16).map(UInt8.init))
     let flash = try DoryPCFirmwareFlash(image: image)
-    let bus = try DoryPCPhysicalMemoryBus(ram: DoryX86ByteArrayMemory(byteCount: 1 << 20))
+    let ram: any DoryX86PhysicalRAM = mmap
+      ? try DoryX86MmapMemory(byteCount: 1 << 20)
+      : try DoryX86ByteArrayMemory(validatingByteCount: 1 << 20)
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
     try bus.attach(flash)
     bus.seal()
 
