@@ -893,7 +893,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           (try? translatedMemory.instructionBytes(at: address, maximumCount: maximumCount)) ?? []
         },
         codeGenerationProvider: { address, byteCount in
-          try translatedMemory.codeGeneration(at: address, byteCount: byteCount)
+          // Generation tracking is speculative cache metadata, not an architectural fetch.
+          // A missing/revoked page invalidates this proof; the precise fetch must fault through
+          // the interpreter after any already-completed native chain has been published.
+          try? translatedMemory.codeGeneration(at: address, byteCount: byteCount)
         },
         at: guestRIP,
         mode: mode,

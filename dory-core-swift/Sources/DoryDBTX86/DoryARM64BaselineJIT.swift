@@ -3103,7 +3103,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       // of compiling and replacing the same RIP for every transient deadline.
       guard cached.block.guestInstructionCount <= maximumInstructions else { return nil }
       let byteCount = Int(cached.block.guestByteCount)
-      let memoryGeneration = try readCodeGeneration(
+      let memoryGeneration = readCodeGeneration(
         using: codeGenerationProvider,
         byteCount: byteCount
       )
@@ -3151,7 +3151,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             block: shared.block,
             offset: shared.offset,
             codeGeneration: shared.codeGeneration,
-            memoryCodeGeneration: try readCodeGeneration(
+            memoryCodeGeneration: readCodeGeneration(
               using: codeGenerationProvider,
               byteCount: byteCount
             )
@@ -3249,7 +3249,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     try region.publish(compiled, at: offset)
     nextOffset += byteCount
     let guestBytes = Array(bytes.prefix(Int(compiled.guestByteCount)))
-    let memoryCodeGeneration = try readCodeGeneration(
+    let memoryCodeGeneration = readCodeGeneration(
       using: codeGenerationProvider,
       byteCount: guestBytes.count
     )
@@ -3425,7 +3425,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     guard let codeGenerationProvider else { return .invalid }
     for validation in trace.validations {
       codeGenerationCheckCount &+= 1
-      guard try codeGenerationProvider(validation.guestStart, validation.guestByteCount)
+      guard (try? codeGenerationProvider(validation.guestStart, validation.guestByteCount))
         == validation.memoryCodeGeneration
       else {
         codeGenerationMismatchCount &+= 1
@@ -3450,10 +3450,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private func readCodeGeneration(
     using provider: ((_ byteCount: Int) throws -> UInt64?)?,
     byteCount: Int
-  ) throws -> UInt64? {
+  ) -> UInt64? {
     guard let provider else { return nil }
     codeGenerationCheckCount &+= 1
-    return try provider(byteCount)
+    // A generation token is optional proof of cache validity. Losing that proof must use
+    // byte validation, not unwind a chain that may already have committed guest stores.
+    // Architectural instruction/data faults still follow their normal execution paths.
+    return try? provider(byteCount)
   }
 
   private func publishNativeTrace(
