@@ -80,12 +80,8 @@ struct MachineManagerStartJournalIntegrationTests {
             let id = "unplanned-start"
             let config = DoryMachineConfiguration(id: id, kernelPath: harness.fixture.directKernelPath,
                 rootfsPath: harness.fixture.root.appendingPathComponent("desktop.raw").path,
-                memoryMB: 4_096, cpuCount: 4, displayMode: .desktop)
-            let settings = try DoryMachineTypedSettingsPatch(xpcDictionary: [
-                "guestIdentityIntent": ["desktop": ["distributionIdentifier": "ubuntu"]],
-                "desktopGraphicsPreference": "software",
-            ], allowsClears: false)
-            _ = try manager.stageMachineForBootstrap(config, typedSettings: settings)
+                memoryMB: 4_096, cpuCount: 4, displayMode: .headless)
+            _ = try manager.stageMachineForBootstrap(config)
             defer { try? manager.delete(id: id) }
             #expect(manager.status(id: id)?.runtimeIdentity.mode == .requiresReplanning)
             let before = Set(try harness.journal.list().map(\.plan.id))

@@ -49,6 +49,109 @@ final class DoryVirtualMachineResourceAdmissionLedgerTests: XCTestCase {
         }
     }
 
+    func testSavedStateReadmissionPreservesExactPlanAndRejectsStaleAuthorityWithoutWriting() throws {
+        try withFixture("saved-state-readmission") { fixture in
+            let reserved = try fixture.ledger.reserveStarting(
+                binding: fixture.binding("saved"), hostFacts: fixture.host,
+                workload: .desktop, resources: fixture.resources)
+            let plan = fixture.plan(binding: reserved.binding, evidence: reserved.evidence)
+            let bound = try fixture.ledger.bind(leaseID: reserved.leaseID, to: plan,
+                expectedLeaseRevision: reserved.leaseRevision)
+            let stopped = try fixture.ledger.markStopped(leaseID: bound.leaseID,
+                expectedLeaseRevision: bound.leaseRevision)
+            let path = URL(fileURLWithPath: fixture.ledger.root + "/resource-admissions.json")
+            let before = try Data(contentsOf: path)
+            for rejection in ["revision", "plan", "host"] {
+                var candidatePlan = plan
+                if rejection == "plan" { candidatePlan.planRevision += 1 }
+                let host = rejection == "host" ? DoryVMHostResources(
+                    logicalCPUCount: fixture.host.logicalCPUCount + 1,
+                    physicalMemoryBytes: fixture.host.physicalMemoryBytes,
+                    freeStorageBytes: fixture.host.freeStorageBytes) : fixture.host
+                XCTAssertThrowsError(try fixture.ledger.readmitStoppedExactPlan(
+                    leaseID: stopped.leaseID, plan: candidatePlan, hostFacts: host,
+                    expectedLeaseRevision: rejection == "revision" ? stopped.leaseRevision - 1 : stopped.leaseRevision))
+                XCTAssertEqual(try Data(contentsOf: path), before, rejection)
+            }
+            let admitted = try fixture.ledger.readmitStoppedExactPlan(
+                leaseID: stopped.leaseID, plan: plan, hostFacts: fixture.host,
+                expectedLeaseRevision: stopped.leaseRevision)
+            XCTAssertEqual(admitted.state, .starting)
+            XCTAssertEqual(admitted.leaseID, stopped.leaseID)
+            XCTAssertEqual(admitted.leaseRevision, stopped.leaseRevision + 1)
+            XCTAssertEqual(admitted.binding, stopped.binding)
+            XCTAssertEqual(admitted.evidence, stopped.evidence)
+            XCTAssertEqual(admitted.boundPlanSHA256, try plan.canonicalSHA256())
+            XCTAssertNotNil(admitted.startingExpiresAtUnixMilliseconds)
+            XCTAssertEqual(try fixture.ledger.revalidateForStart(
+                leaseID: admitted.leaseID, plan: plan, hostFacts: fixture.host), stopped.evidence)
+            let running = try fixture.ledger.markRunning(leaseID: admitted.leaseID,
+                plan: plan, hostFacts: fixture.host, expectedLeaseRevision: admitted.leaseRevision)
+            XCTAssertEqual(running.boundPlanSHA256, stopped.boundPlanSHA256)
+        }
+    }
+
+    func testSavedStateReadmissionCountsCandidateCapacityAndPreservesStoppedLeaseOnRejection() throws {
+        try withFixture("saved-state-contended") { fixture in
+            let reserved = try fixture.ledger.reserveStarting(
+                binding: fixture.binding("saved"), hostFacts: fixture.host,
+                workload: .desktop, resources: fixture.resources)
+            let plan = fixture.plan(binding: reserved.binding, evidence: reserved.evidence)
+            let bound = try fixture.ledger.bind(leaseID: reserved.leaseID, to: plan,
+                expectedLeaseRevision: reserved.leaseRevision)
+            let stopped = try fixture.ledger.markStopped(leaseID: bound.leaseID,
+                expectedLeaseRevision: bound.leaseRevision)
+            _ = try fixture.ledger.reserveStarting(binding: fixture.binding("competing"),
+                hostFacts: fixture.host, workload: .desktop, resources: fixture.resources)
+            let path = URL(fileURLWithPath: fixture.ledger.root + "/resource-admissions.json")
+            let before = try Data(contentsOf: path)
+            XCTAssertThrowsError(try fixture.ledger.readmitStoppedExactPlan(
+                leaseID: stopped.leaseID, plan: plan, hostFacts: fixture.host,
+                expectedLeaseRevision: stopped.leaseRevision)) { error in
+                guard case DoryVirtualMachineResourceAdmissionLedgerError.capacityUnavailable = error else {
+                    return XCTFail("Expected readmission capacity rejection: \(error)")
+                }
+            }
+            XCTAssertEqual(try Data(contentsOf: path), before)
+            XCTAssertEqual(try fixture.ledger.snapshot().leases.first { $0.leaseID == stopped.leaseID }, stopped)
+        }
+    }
+
+    func testSavedStateReadmissionReportsPortOwnerBeforeAnyMutation() throws {
+        try withFixture("saved-state-port") { fixture in
+            let port = fixture.forward("ssh", transport: .tcp, hostPort: 22_222)
+            let reserved = try fixture.ledger.reserveStarting(
+                binding: fixture.binding("saved"), hostFacts: fixture.host,
+                workload: .server, resources: fixture.resources, portForwards: [port])
+            let plan = fixture.plan(binding: reserved.binding, evidence: reserved.evidence, portForwards: [port])
+            let bound = try fixture.ledger.bind(leaseID: reserved.leaseID, to: plan,
+                expectedLeaseRevision: reserved.leaseRevision)
+            let stopped = try fixture.ledger.markStopped(leaseID: bound.leaseID,
+                expectedLeaseRevision: bound.leaseRevision)
+            _ = try fixture.ledger.reserveStarting(binding: fixture.binding("port-owner"),
+                hostFacts: fixture.host, workload: .server, resources: fixture.resources, portForwards: [port])
+            let path = URL(fileURLWithPath: fixture.ledger.root + "/resource-admissions.json")
+            let before = try Data(contentsOf: path)
+            for preflight in [true, false] {
+                XCTAssertThrowsError(try {
+                    if preflight {
+                        _ = try fixture.ledger.revalidateForStart(leaseID: stopped.leaseID,
+                            plan: plan, hostFacts: fixture.host, purpose: .stoppedPreflight)
+                    } else {
+                        _ = try fixture.ledger.readmitStoppedExactPlan(leaseID: stopped.leaseID,
+                            plan: plan, hostFacts: fixture.host, expectedLeaseRevision: stopped.leaseRevision)
+                    }
+                }()) { error in
+                    guard case let DoryVirtualMachineResourceAdmissionLedgerError.portBindingUnavailable(_, _, owner) = error else {
+                        return XCTFail("Expected port ownership rejection: \(error)")
+                    }
+                    XCTAssertEqual(owner, "port-owner")
+                }
+                XCTAssertEqual(try Data(contentsOf: path), before)
+            }
+        }
+    }
+
     func testRuntimeOverheadAndStagingRemainReservedAcrossLedgerReload() throws {
         try withFixture("overhead") { fixture in
             let gib: UInt64 = 1_073_741_824

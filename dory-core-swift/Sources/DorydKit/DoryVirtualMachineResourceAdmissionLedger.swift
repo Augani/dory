@@ -542,10 +542,70 @@ public final class DoryVirtualMachineResourceAdmissionLedger: @unchecked Sendabl
             if purpose == .stoppedPreflight, lease.state == .stopped {
                 // Test the prospective execution budget without granting it or changing the
                 // durable lease. Only a later planning/starting transaction may reserve it.
+                try Self.validatePortAvailability(lease.portForwards, for: lease.binding.machineID,
+                                                  among: record.leases)
                 record.leases[index].state = .starting
             }
             try Self.validateCapacity(record.leases, hostFacts: hostFacts)
             return lease.evidence
+        }
+    }
+
+    /// Reads the exact saved-state lease without persisting expiry recovery or cleaning files.
+    func savedStateReadmissionLease(plan: DoryResolvedMachinePlan) throws -> DoryVirtualMachineResourceAdmissionLease {
+        try withExclusiveAccess(readOnly: true) {
+            var record = try readRecord()
+            _ = try recoverExpired(in: &record, at: now())
+            guard let leaseID = plan.resourceAdmission?.admissionIdentity else {
+                throw DoryVirtualMachineResourceAdmissionLedgerError.planMismatch
+            }
+            let lease = record.leases[try leaseIndex(leaseID, in: record)]
+            try Self.validate(plan, against: lease, requireBoundDigest: true)
+            return lease
+        }
+    }
+
+    /// Re-admits execution capacity for suspended memory that must retain its exact plan.
+    /// The daemon validates the saved-state manifest, current host and absence of a helper
+    /// before calling. A rejected candidate never changes the stopped lease or ledger bytes.
+    func readmitStoppedExactPlan(
+        leaseID: String,
+        plan: DoryResolvedMachinePlan,
+        hostFacts: DoryVMHostResources,
+        startingLeaseDurationMilliseconds: Int64 = 120_000,
+        expectedLeaseRevision: UInt64
+    ) throws -> DoryVirtualMachineResourceAdmissionLease {
+        try withExclusiveAccess(readOnly: true) {
+            let timestamp = now()
+            guard startingLeaseDurationMilliseconds > 0,
+                  startingLeaseDurationMilliseconds <= Self.maximumStartingLeaseDurationMilliseconds,
+                  timestamp > 0,
+                  timestamp <= Int64.max - startingLeaseDurationMilliseconds else {
+                throw DoryVirtualMachineResourceAdmissionLedgerError.invalidLeaseDuration
+            }
+            var record = try readRecord()
+            _ = try recoverExpired(in: &record, at: timestamp)
+            let index = try leaseIndex(leaseID, in: record)
+            var lease = record.leases[index]
+            try Self.validateLeaseRevision(expectedLeaseRevision, lease)
+            guard lease.state == .stopped else {
+                throw DoryVirtualMachineResourceAdmissionLedgerError.invalidLeaseState(lease.state)
+            }
+            guard hostFacts == lease.hostFacts,
+                  DoryVirtualMachineResourceAdmissionLease.digest(hostFacts) == lease.hostFactsSHA256 else {
+                throw DoryVirtualMachineResourceAdmissionLedgerError.hostFactsMismatch
+            }
+            try Self.validate(plan, against: lease, requireBoundDigest: true)
+            try Self.validatePortAvailability(lease.portForwards, for: lease.binding.machineID,
+                                              among: record.leases)
+            lease.state = .starting
+            lease.startingExpiresAtUnixMilliseconds = timestamp + startingLeaseDurationMilliseconds
+            lease.leaseRevision = try Self.incrementing(lease.leaseRevision)
+            lease.updatedAtUnixMilliseconds = timestamp
+            record.leases[index] = lease
+            try Self.validateCapacity(record.leases, hostFacts: hostFacts)
+            try advanceAndPublish(&record)
+            return lease
         }
     }
 

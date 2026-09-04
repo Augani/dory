@@ -1929,6 +1929,7 @@ public final class MachineManager: @unchecked Sendable {
             try recoverInterruptedSnapshotCreations()
             try recoverInterruptedCreationOperations()
             try recoverInterruptedProductionStarts()
+            try recoverInterruptedSavedStateRestores()
         }
         catch {
             managerStateLock.withLock { resolvedLaunchInfrastructureReady = false }
@@ -3265,6 +3266,9 @@ public final class MachineManager: @unchecked Sendable {
         catch DoryOperationJournalError.operationNotFound { return nil }
         let savedStateStart: Bool = try {
             guard record.plan.kind == .workspaceRestore else { return false }
+            if let active = activeLifecycleOperation(machineID: id), active.operation.operationID == operationID {
+                return active.operation.targetResourceID == DoryWorkspaceLifecycleOperation.savedStateResourceID
+            }
             let lease = try store.acquire(operationID)
             return try lease.readWorkspaceLifecycleOperation().targetResourceID
                 == DoryWorkspaceLifecycleOperation.savedStateResourceID
@@ -3279,6 +3283,9 @@ public final class MachineManager: @unchecked Sendable {
         if record.state.status == .completed {
             guard let current = status(id: id) else { throw MachineManagerError.unknownMachine(id) }
             return current
+        }
+        if savedStateStart {
+            return try resumeSavedStateRestore(savedStateRestoreContext(id: id, operationID: operationID))
         }
         if let current = activeLifecycleOperation(machineID: id), current.operation.operationID == operationID,
            lock.withLock({ machines[id]?.process?.isRunning == true }) {
@@ -6442,9 +6449,136 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    private func savedStateRestoreContext(id: String, operationID: UUID) throws -> MachineLifecycleJournalContext {
+        if let active = activeLifecycleOperation(machineID: id) {
+            guard active.operation.operationID == operationID,
+                  active.operation.targetResourceID == DoryWorkspaceLifecycleOperation.savedStateResourceID else {
+                throw MachineManagerError.persistence("saved-state restore is blocked by another operation")
+            }
+            return active
+        }
+        guard let store = lifecycleJournalStore else { throw MachineManagerError.persistence("saved-state journal is unavailable") }
+        let workspaceLock = try EngineStateDirectoryLock(stateDirectory: store.root, lockFileName: ".mutation.\(id).lock")
+        let lease = try store.acquire(operationID, holdingMutationLock: workspaceLock)
+        let operation = try lease.readWorkspaceLifecycleOperation()
+        guard operation.kind == .restoring,
+              operation.targetResourceID == DoryWorkspaceLifecycleOperation.savedStateResourceID,
+              operation.source.workspaceID == id, operation.target.workspaceID == id,
+              operation.source.state == .suspended, operation.target.state == .running,
+              operation.source.runtime == operation.target.runtime,
+              operation.target.runtime?.policy == .requireResolvedPlan else {
+            throw MachineManagerError.persistence("saved-state restore UUID belongs to another request")
+        }
+        let context = MachineLifecycleJournalContext(operation: operation, lease: lease, workspaceLock: workspaceLock)
+        managerStateLock.withLock { activeLifecycleOperations[id] = context }
+        lock.withLock {
+            machines[id]?.activeOperationID = operationID
+            machines[id]?.activeOperationKind = .restoring
+            machines[id]?.activeOperationPhase = .planned
+        }
+        return context
+    }
+
+    private func resumeSavedStateRestore(_ context: MachineLifecycleJournalContext) throws -> DoryMachineStatus {
+        do { return try resumeSavedStateRestoreImplementation(context) }
+        catch { retainConfigurationUpdateForRecovery(context); throw error }
+    }
+
+    private func resumeSavedStateRestoreImplementation(_ context: MachineLifecycleJournalContext) throws -> DoryMachineStatus {
+        let id = context.machineID
+        guard let entry = lock.withLock({ machines[id] }),
+              try lifecycleCondition(machine: entry.configuration, state: .suspended,
+                  runtimeIdentity: entry.runtimeIdentity) == context.operation.source else {
+            throw MachineManagerError.persistence("saved-state restore source authority changed")
+        }
+        if entry.process?.isRunning == true {
+            guard entry.state == .running,
+                  entry.handoff?.ready.operationID == context.operation.operationID.uuidString.lowercased() else {
+                throw MachineManagerError.persistence("saved-state restore helper has not reached exact readiness")
+            }
+            try validateLiveMachineBeforeQuiescence(entry)
+            if FileManager.default.fileExists(atPath: savedStateStore.statePath(machineID: id)) {
+                guard Self.recoveredSavedState(machineID: id, operation: context.operation, configuration: configuration) else {
+                    throw MachineManagerError.persistence("saved-state payload changed before completion")
+                }
+                try savedStateStore.remove(machineID: id)
+            }
+            lock.withLock { machines[id]?.pendingRestoreStatePath = nil; machines[id]?.savedStateStatus = nil }
+            _ = completeCommittedLifecycle(context, diagnostic: "saved-state restore completion requires recovery")
+            return status(id: id) ?? DoryMachineStatus(id: id, state: .running)
+        }
+        guard entry.process == nil,
+              Self.recoveredSavedState(machineID: id, operation: context.operation, configuration: configuration) else {
+            throw MachineManagerError.persistence("saved-state restore has no valid suspended source")
+        }
+        lock.withLock { machines[id]?.state = .suspended }
+        return try restoreSavedStateImplementation(id: id, requestedOperationID: context.operation.operationID,
+                                                    retainedLifecycle: context)
+    }
+
+    private func recoverInterruptedSavedStateRestores() throws {
+        guard let store = lifecycleJournalStore else { return }
+        for record in try store.list() where record.plan.kind == .workspaceRestore
+            && record.state.status != .completed && record.state.status != .failed {
+            let operation: DoryWorkspaceLifecycleOperation = try {
+                let lease = try store.acquire(record.plan.id)
+                return try lease.readWorkspaceLifecycleOperation()
+            }()
+            guard operation.targetResourceID == DoryWorkspaceLifecycleOperation.savedStateResourceID,
+                  operation.target.runtime?.policy == .requireResolvedPlan else { continue }
+            _ = try resumeSavedStateRestore(savedStateRestoreContext(
+                id: operation.source.workspaceID, operationID: operation.operationID))
+        }
+    }
+
+    private func prepareSavedStateReadmission(
+        id: String, runtimeIdentity: DoryMachineRuntimeIdentity
+    ) throws -> DoryVirtualMachineResourceAdmissionLease? {
+        guard launchPolicy == .perWorkspaceAuthority else { return nil }
+        guard let plan = runtimeIdentity.resolvedPlan,
+              let infrastructure = resolvedLaunchInfrastructureSnapshot(),
+              let ledger = productionAdmissionComponentsSnapshot().ledger,
+              try !liveResolvedHelperExists(machineID: id) else {
+            throw MachineManagerError.persistence("saved-state restoration has no exclusive exact-plan authority")
+        }
+        // Probe fresh host facts and prospective capacity before creating a journal. This
+        // grant cannot reserve execution capacity or publish a replacement plan.
+        let validated = try prepareResolvedMachineStart(
+            id: id, resolver: infrastructure.resolver, planStore: infrastructure.planStore,
+            revisionProvider: infrastructure.revisionProvider,
+            expectedRuntimeIdentity: runtimeIdentity, validationPurpose: .stoppedPreflight
+        )
+        try validated.preSpawnAuthorization.authorizeStoppedPreflight()
+        return try ledger.savedStateReadmissionLease(plan: plan)
+    }
+
+    private func readmitResolvedAdmissionForSavedState(
+        id: String, runtimeIdentity: DoryMachineRuntimeIdentity,
+        preparedLease: DoryVirtualMachineResourceAdmissionLease?
+    ) throws {
+        guard launchPolicy == .perWorkspaceAuthority else { return }
+        guard let plan = runtimeIdentity.resolvedPlan, let preparedLease,
+              let ledger = productionAdmissionComponentsSnapshot().ledger,
+              try !liveResolvedHelperExists(machineID: id) else {
+            throw MachineManagerError.persistence("saved-state readmission authority changed")
+        }
+        if preparedLease.state == .starting {
+            let current = try ledger.savedStateReadmissionLease(plan: plan)
+            guard current == preparedLease else {
+                throw MachineManagerError.persistence("saved-state starting admission changed")
+            }
+            return
+        }
+        _ = try ledger.readmitStoppedExactPlan(
+            leaseID: preparedLease.leaseID, plan: plan, hostFacts: preparedLease.hostFacts,
+            expectedLeaseRevision: preparedLease.leaseRevision
+        )
+    }
+
     private func restoreSavedStateImplementation(
         id: String,
-        requestedOperationID: UUID? = nil
+        requestedOperationID: UUID? = nil,
+        retainedLifecycle: MachineLifecycleJournalContext? = nil
     ) throws -> DoryMachineStatus {
         lock.lock()
         guard let entry = machines[id] else {
@@ -6484,7 +6618,13 @@ public final class MachineManager: @unchecked Sendable {
             descriptorSHA256: Self.sha256(data: try encoder.encode(manifest)),
             artifactEvidenceSHA256: manifest.stateFileSHA256
         )
-        let lifecycle = try beginLifecycleOperation(
+        let preparedLease = try prepareSavedStateReadmission(id: id, runtimeIdentity: runtimeIdentity)
+        if let retainedLifecycle {
+            guard retainedLifecycle.operation.targetSnapshotAuthority == authority else {
+                throw MachineManagerError.persistence("saved-state restore manifest differs from retained request")
+            }
+        }
+        let lifecycle = try retainedLifecycle ?? beginLifecycleOperation(
             operationID: requestedOperationID,
             kind: .restoring,
             source: lifecycleCondition(
@@ -6503,7 +6643,10 @@ public final class MachineManager: @unchecked Sendable {
         )
         do {
             try advanceLifecycle(lifecycle)
-            try refreshResolvedAdmissionForStartIfNeeded(id: id, operationID: lifecycle.operation.operationID)
+            try readmitResolvedAdmissionForSavedState(id: id, runtimeIdentity: runtimeIdentity, preparedLease: preparedLease)
+#if DEBUG
+            try injectLifecycleFault(.savedStateAfterAdmission)
+#endif
             lock.lock()
             guard var current = machines[id],
                   current.configuration == machine,
@@ -6571,7 +6714,11 @@ public final class MachineManager: @unchecked Sendable {
                 machines[id] = current
             }
             lock.unlock()
-            failLifecycle(lifecycle, stepID: "saved-state-restore.failed")
+            if launchPolicy == .perWorkspaceAuthority, savedStateIsValid {
+                retainConfigurationUpdateForRecovery(lifecycle)
+            } else {
+                failLifecycle(lifecycle, stepID: "saved-state-restore.failed")
+            }
             throw error
         }
     }
@@ -22099,6 +22246,10 @@ public final class MachineManager: @unchecked Sendable {
                     }
                     if operation.targetResourceID
                         == DoryWorkspaceLifecycleOperation.savedStateResourceID {
+                        if operation.target.runtime?.policy == .requireResolvedPlan {
+                            diagnostics[id] = "interrupted saved-state restore awaits authenticated runtime recovery"
+                            break
+                        }
                         if recoveredSavedState(
                             machineID: id,
                             operation: operation,
@@ -23580,6 +23731,7 @@ enum MachineLifecycleFaultPoint: Sendable, Equatable {
     case startAfterPreparation
     case startBeforePlanning
     case startAfterPlanning
+    case savedStateAfterAdmission
     case restartBeforeStop
     case configurationUpdateBeforeStop
     case stopAfterCancellationRequest
