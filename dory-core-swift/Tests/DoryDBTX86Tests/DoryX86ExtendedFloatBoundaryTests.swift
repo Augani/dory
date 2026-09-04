@@ -1,0 +1,112 @@
+import Foundation
+import Testing
+
+@testable import DoryDBTX86
+
+/// Exact binary80 boundaries from Intel SDM Vol. 1 §§4.8.3–4.8.4 and
+/// Vol. 2A FADD/FIST. Expectations use integer encodings, not host FP results.
+@Suite struct DoryX86ExtendedFloatBoundaryTests {
+  private let directions: [DoryX86FloatingRounding] = [.nearestEven, .down, .up, .towardZero]
+
+  @Test func infinitiesZerosAndFiniteValuesHaveNumericOrder() {
+    let infinity = value(significand: 0x8000_0000_0000_0000, exponentField: 0x7FFF)
+    let huge = value(significand: .max, exponentField: 0x7FFE)
+    let tiny = value(significand: 1, exponentField: 0)
+    let ordered = [infinity.negated(), huge.negated(), .one.negated(), tiny.negated(),
+                   DoryX86ExtendedFloat.zero, tiny, .one, huge, infinity]
+    for left in ordered.indices {
+      for right in ordered.indices {
+        let expected: ComparisonResult = left < right ? .orderedAscending
+          : left > right ? .orderedDescending : .orderedSame
+        #expect(ordered[left].compared(to: ordered[right]) == expected)
+      }
+    }
+    #expect(DoryX86ExtendedFloat.zero.compared(to: .zero.negated()) == .orderedSame)
+    let nan = value(significand: 0xC000_0000_0000_0001, exponentField: 0x7FFF)
+    for operand in ordered + [nan] {
+      #expect(nan.compared(to: operand) == nil)
+      #expect(operand.compared(to: nan) == nil)
+    }
+  }
+
+  @Test func largeIntegerConversionsRejectBeforeWideShiftTruncation() {
+    for exponent in [64, 127, 128, 191, 255, 16_383] {
+      let large = value(significand: 0x8000_0000_0000_0000,
+                        exponentField: UInt16(exponent + 16_383))
+      for direction in directions {
+        for width in [16, 32, 64] {
+          #expect(large.signedIntegerBits(bitCount: width, rounding: direction) == nil)
+          #expect(large.negated().signedIntegerBits(bitCount: width, rounding: direction) == nil)
+        }
+      }
+    }
+    for width in [16, 32, 64] {
+      let limit = value(significand: 0x8000_0000_0000_0000,
+                        exponentField: UInt16(width - 1 + 16_383))
+      #expect(limit.signedIntegerBits(bitCount: width, rounding: .towardZero) == nil)
+      #expect(limit.negated().signedIntegerBits(bitCount: width, rounding: .towardZero)
+              == UInt64(1) << (width - 1))
+    }
+  }
+
+  @Test func exactCancellationAndMixedZerosUseTheRoundingDirection() {
+    for direction in directions {
+      let negative = direction == .down
+      for operand in [DoryX86ExtendedFloat.one, .one.negated(),
+                      value(significand: 1, exponentField: 0)] {
+        let result = operand.subtracting(operand, rounding: direction)
+        #expect(result.isZero)
+        #expect(result.isNegative == negative)
+      }
+      for firstNegative in [false, true] {
+        for secondNegative in [false, true] {
+          let lhs = firstNegative ? DoryX86ExtendedFloat.zero.negated() : .zero
+          let rhs = secondNegative ? DoryX86ExtendedFloat.zero.negated() : .zero
+          let result = lhs.adding(rhs, rounding: direction)
+          #expect(result.isZero)
+          #expect(result.isNegative == (firstNegative == secondNegative ? firstNegative : negative))
+        }
+      }
+    }
+  }
+
+  @Test func precisionControlRoundsOnceAtAnExactHalfwayBoundary() {
+    for precision in [24, 53] {
+      // rhs = 2^-precision + 2^-65. The exact sum is just above
+      // the halfway point; first rounding to64bits can erase the final term.
+      let rhs = value(significand: 0x8000_0000_0000_0000 | (UInt64(1) << (precision - 2)),
+                      exponentField: UInt16(16_383 - precision))
+      let ulp = UInt64(1) << (64 - precision)
+      let positive = DoryX86ExtendedFloat.one.adding(rhs, precision: precision)
+      #expect(positive.exponent == 0)
+      #expect(positive.significand == 0x8000_0000_0000_0000 + ulp)
+      let negative = DoryX86ExtendedFloat.one.negated().subtracting(rhs, precision: precision)
+      #expect(negative.isNegative)
+      #expect(negative.significand == positive.significand)
+      let halfway = value(significand: 0x8000_0000_0000_0000,
+                           exponentField: UInt16(16_383 - precision))
+      #expect(DoryX86ExtendedFloat.one.adding(halfway, precision: precision).significand
+              == 0x8000_0000_0000_0000)
+    }
+  }
+
+  @Test func binary80OverflowUsesTheGuestRoundingDirection() {
+    let overflow = DoryX86ExtendedFloat.one.scaledByPowerOfTwo(16_384)
+    for direction in directions {
+      for negative in [false, true] {
+        let result = (negative ? overflow.negated() : overflow).bytes(rounding: direction)
+        let infinity = direction == .nearestEven || (direction == .up && !negative)
+          || (direction == .down && negative)
+        let expected = value(significand: infinity ? 0x8000_0000_0000_0000 : .max,
+                             exponentField: infinity ? 0x7FFF : 0x7FFE)
+        #expect(result == (negative ? expected.negated() : expected).bytes())
+      }
+    }
+  }
+
+  private func value(significand: UInt64, exponentField: UInt16) -> DoryX86ExtendedFloat {
+    let bytes = (0..<8).map { UInt8(truncatingIfNeeded: significand >> ($0 * 8)) }
+      + [UInt8(truncatingIfNeeded: exponentField), UInt8(truncatingIfNeeded: exponentField >> 8)]
+    return .init(bytes: bytes)
+  }
+}

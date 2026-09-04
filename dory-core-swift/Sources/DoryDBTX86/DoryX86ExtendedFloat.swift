@@ -245,8 +245,10 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       rawSignificand = 0
       exponentField = 0
     case .finite where exponent > 16_383:
-      rawSignificand = 0x8000_0000_0000_0000
-      exponentField = 0x7FFF
+      let infinity = rounding == .nearestEven || rounding == .up && !isNegative
+        || rounding == .down && isNegative
+      rawSignificand = infinity ? 0x8000_0000_0000_0000 : .max
+      exponentField = infinity ? 0x7FFF : 0x7FFE
     case .finite where exponent >= -16_382:
       rawSignificand = significand
       exponentField = UInt16(exponent + 16_383)
@@ -288,6 +290,10 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       if isInfinite, rhs.isInfinite, isNegative != rhs.isNegative { return Self.nan() }
       return isInfinite ? self : rhs
     }
+    if isZero, rhs.isZero {
+      let negative = isNegative == rhs.isNegative ? isNegative : rounding == .down
+      return .init(unsigned: 0, negative: negative)
+    }
     if isZero { return rhs.rounded(precision: precision, rounding: rounding) }
     if rhs.isZero { return rounded(precision: precision, rounding: rounding) }
 
@@ -307,7 +313,9 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       lhsMagnitude = rhsMagnitude - lhsMagnitude
       negative.toggle()
     }
-    guard lhsMagnitude != DoryX86WideUnsigned(0) else { return .zero }
+    guard lhsMagnitude != DoryX86WideUnsigned(0) else {
+      return .init(unsigned: 0, negative: rounding == .down)
+    }
     return Self.normalized(
       magnitudeWithGuardBits: lhsMagnitude,
       exponent: larger.exponent,
@@ -443,6 +451,9 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     precondition((1...64).contains(bitCount))
     guard kind == .finite else { return nil }
     guard significand != 0 else { return 0 }
+    // Reject before shifting into the bounded128-bit temporary. Otherwise very
+    // large finite operands can lose every bit and incorrectly convert to zero.
+    guard exponent < bitCount else { return nil }
     let magnitude: DoryX86WideUnsigned
     if exponent >= 63 {
       magnitude = DoryX86WideUnsigned(significand) << (exponent - 63)
@@ -477,7 +488,12 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     if isZero, rhs.isZero { return .orderedSame }
     if isNegative != rhs.isNegative { return isNegative ? .orderedAscending : .orderedDescending }
     let magnitude: ComparisonResult
-    if exponent != rhs.exponent {
+    if isInfinite || rhs.isInfinite {
+      magnitude = isInfinite == rhs.isInfinite ? .orderedSame
+        : isInfinite ? .orderedDescending : .orderedAscending
+    } else if isZero || rhs.isZero {
+      magnitude = isZero ? .orderedAscending : .orderedDescending
+    } else if exponent != rhs.exponent {
       magnitude = exponent < rhs.exponent ? .orderedAscending : .orderedDescending
     } else if significand != rhs.significand {
       magnitude = significand < rhs.significand ? .orderedAscending : .orderedDescending
@@ -603,8 +619,12 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       magnitude <<= shift
       resultExponent -= shift
     }
-    var rounded = roundedShiftRight(magnitude, by: 3, negative: negative, rounding: rounding)
-    if rounded >= DoryX86WideUnsigned(high: 1, low: 0) {
+    // Round once to the guest precision. Rounding first to64bits can erase
+    // the sticky bit and turn a value above a24/53-bit tie into an exact tie.
+    let precision = min(64, max(1, precision))
+    var rounded = roundedShiftRight(
+      magnitude, by: 3 + 64 - precision, negative: negative, rounding: rounding)
+    if rounded >= DoryX86WideUnsigned(1) << precision {
       rounded >>= 1
       resultExponent += 1
     }
@@ -612,8 +632,8 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       kind: .finite,
       isNegative: negative,
       exponent: resultExponent,
-      significand: rounded.low
-    ).rounded(precision: precision, rounding: rounding)
+      significand: rounded.low << UInt64(64 - precision)
+    )
   }
 
   private static func shiftRightJam(
