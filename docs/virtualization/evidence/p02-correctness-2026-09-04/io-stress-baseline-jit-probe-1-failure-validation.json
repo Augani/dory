@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-io-stress-failure-evidence-validation",
+  "review": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-1-failure-review.json",
+    "sha256": "c276904b52445b96c553a9825398e54aef83499782169eada7fef9565bb8a414"
+  },
+  "artifactsVerified": 7,
+  "repositoryReferencesVerified": 10,
+  "envelopeSchemaValidated": true,
+  "sourceCommit": "3337bd44235c45820d1ee6ffe3579b4a70d085e1",
+  "source43BindingAndCopiedRunnerVerified": true,
+  "fixtureCommit": "731967f5a6202034b59f145afa992d6f9f6e31c8",
+  "guestInputsVerifiedLocally": true,
+  "outcome": {
+    "exitCode": 1,
+    "passed": false,
+    "reason": "instruction-budget"
+  },
+  "guestReceiptSeen": false,
+  "acceptedWorkloads": 0,
+  "hostPoweroffObserved": false,
+  "retiredInstructions": 3000000000,
+  "elapsedNanoseconds": 1739420489417,
+  "blockCounters": {
+    "readRequests": 1,
+    "readBytes": 4096,
+    "writeRequests": 0,
+    "writeBytes": 0,
+    "flushRequests": 0,
+    "reopenedAndVerified": false
+  },
+  "networkCounters": {
+    "acceptedFrames": 0,
+    "acceptedBytes": 0,
+    "deliveredReplies": 0,
+    "queuedReplies": 0,
+    "verified": false
+  },
+  "syntheticDiskSHA256": "83ee47245398adee79bd9c0a8bc57b821e92aba10f5f9ade8a5d1fae4d8c4302",
+  "scratchDiskNotVendored": true,
+  "lastCompletedSliceVerified": true,
+  "jitSampleInstructionCount": 3000000000,
+  "liveNegativeCacheSiteCount": 16,
+  "rootCause": "Not established by the retained records.",
+  "checkpoint": "P02-25 remains open; instruction-budget exhaustion is a failure.",
+  "normalization": "Original new probe text contains no personal paths; retained text unchanged and gzip timestamp normalized.",
+  "qualification": "Independent read-only retention verification only; no new guest run, build, source mutation, physical device or performance qualification."
+}

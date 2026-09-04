@@ -1,0 +1,152 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-io-stress-guest-failure",
+  "status": "failed",
+  "releaseQualified": false,
+  "implementationCommit": "3337bd44235c45820d1ee6ffe3579b4a70d085e1",
+  "sourceBinding": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-43-commit-binding.json",
+    "sha256": "6472c0f54a6274af1f60b843b5bff0262c1dd0a1368ba8bc03f76a2dd2195e60"
+  },
+  "sourceReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-43.json",
+    "sha256": "5860c3ca8ffb8e60346f9360d44684c0565d6279203f84e941df0687d117ad74"
+  },
+  "releaseRunner": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-43-receipt.json",
+    "sha256": "f240f5ce355ff16546e76d7e72d3bad6dec8b806e49a576b7149f6f71ed07ac7"
+  },
+  "runnerSHA256": "c27f38e51be5686b18040b0a090b1d3aeee1dc7bcb7399b1aa8eea852266d29b",
+  "fixtureSourceCommit": "731967f5a6202034b59f145afa992d6f9f6e31c8",
+  "fixturePreparation": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-v1-fixture-preparation-review.json",
+    "sha256": "4adbf5fdfdc65e46c2ab63bb17e205bb591e19c357ef07c5b1028bfe87f0eb48"
+  },
+  "artifacts": {
+    ".json": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-io-stress-baseline-jit-probe-1.json",
+      "sha256": "d3576e7848f21d6044f9a513656e824047e905fbc6ef12075169aa4405c3eec7"
+    },
+    ".invocation.json": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-io-stress-baseline-jit-probe-1.invocation.json",
+      "sha256": "298240bf3901dd769e0ffcdb767df77bda84b11c5987b961b59163888e84ce3b"
+    },
+    ".exit": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-io-stress-baseline-jit-probe-1.exit",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    ".log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-io-stress-baseline-jit-probe-1.log.gz",
+      "sha256": "48e6b244ab6b60f989712e05324f171966a35a61b000d4310481254644198202"
+    }
+  },
+  "completion": {
+    "observedToolSession": 55328,
+    "completionChunk": "6519f8",
+    "toolExitCode": 1,
+    "subprocessReturnCode": 1
+  },
+  "outcome": {
+    "exitCode": 1,
+    "passed": false,
+    "reason": "instruction-budget"
+  },
+  "runID": "7e6ec8ee-1b53-46fc-b62f-e21846e3e835",
+  "retiredInstructions": 3000000000,
+  "elapsedNanoseconds": 1739420489417,
+  "executionStatistics": {
+    "baselineJITBlocks": 994348358,
+    "baselineJITInstructions": 2784854742,
+    "interpreterInstructions": 215145258,
+    "optimizingJITBlocks": 0,
+    "optimizingJITInstructions": 0
+  },
+  "declaredWorkloads": [
+    "io.block_flush_reopen",
+    "io.ethernet_frame_roundtrip"
+  ],
+  "acceptedWorkloads": [],
+  "guestReceiptSeen": false,
+  "hostPoweroffObserved": false,
+  "lastCompletedSlice": {
+    "elapsedNanoseconds": 1739419774209,
+    "instructionCount": 1000,
+    "nearestSymbol": {
+      "name": "rcu_note_context_switch",
+      "offset": 978,
+      "symbolAddress": 18446744071582676512
+    },
+    "reason": "instruction-quantum",
+    "rip": 18446744071582677490,
+    "totalInstructions": 3000000000
+  },
+  "consoleMilestones": [
+    {
+      "guestTimestampSeconds": 63.386764,
+      "text": "Run /init as init process"
+    },
+    {
+      "guestTimestampSeconds": 66.895674,
+      "text": "virtio_blk virtio0: 1/0/0 default/read/poll queues"
+    },
+    {
+      "guestTimestampSeconds": 66.946096,
+      "text": "virtio_blk virtio0: [vda] 65536 512-byte logical blocks (33.6 MB/32.0 MiB)"
+    },
+    {
+      "guestTimestampSeconds": 76.056815,
+      "text": "NET: Registered PF_PACKET protocol family"
+    }
+  ],
+  "hostIOCounters": {
+    "block": {
+      "capacityBytes": 33554432,
+      "discardRequests": 0,
+      "filePath": "/tmp/dory-p02-userspace-io-stress-baseline-jit-probe-1.disk/virtio-block.raw",
+      "flushRequests": 0,
+      "readBytes": 4096,
+      "readRequests": 1,
+      "reopenedAndVerified": false,
+      "runID": "7e6ec8ee-1b53-46fc-b62f-e21846e3e835",
+      "writeBytes": 0,
+      "writeRequests": 0,
+      "writeZeroesRequests": 0,
+      "zeroedBytes": 0
+    },
+    "network": {
+      "acceptedBytes": 0,
+      "acceptedFrames": 0,
+      "deliveredReplies": 0,
+      "ignoredFrames": 0,
+      "queuedReplies": 0,
+      "runID": "7e6ec8ee-1b53-46fc-b62f-e21846e3e835",
+      "timingScope": "Duration comes from the guest workload result; this backend does not independently measure guest time.",
+      "verified": false
+    }
+  },
+  "scratchDisk": {
+    "path": "/tmp/dory-p02-userspace-io-stress-baseline-jit-probe-1.disk/virtio-block.raw",
+    "bytes": 33554432,
+    "sha256": "83ee47245398adee79bd9c0a8bc57b821e92aba10f5f9ade8a5d1fae4d8c4302",
+    "scope": "Read-only identity of retained synthetic diagnostic disk after failure; not a post-poweroff durability proof. Binary not vendored."
+  },
+  "jitSample": {
+    "instructionCount": 3000000000,
+    "elapsedNanoseconds": 1739419775334,
+    "counterCount": 19,
+    "liveSites": 16,
+    "scope": "Last completed coarse sample, or normal terminal slice. Timeout/error may retain an older sample. Counters are executor-lifetime totals; negativeEntryCount and the capped hot sites describe only live entries. Site reasons and hit counts are not cumulative reason totals."
+  },
+  "rootCause": "Unresolved in this evidence record. A separate bounded device-path investigation is required.",
+  "retentionTransformations": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-1-retention-transformations.json",
+    "sha256": "65b982f1d17aaca5afceb273cef73801ef1f3834bc1921ef8eb06ae14deb4169"
+  },
+  "limitations": [
+    "Failure is preserved: exhausting an instruction budget is not workload success. No guest receipt, accepted block durability result, sustained network result or host poweroff exists.",
+    "One host read callback does not prove guest request completion or interrupt delivery. The retained console and sampled scheduler symbol do not determine the root cause.",
+    "The final block/network counters are bounded diagnostic observations. reopenedAndVerified and network verified remain false; no post-poweroff completion validation ran.",
+    "Source43 immutable runner executed this probe, not source47. Kernel, initrd, copied runner and scratch disk hashes were checked locally; large binaries are not vendored.",
+    "Deterministic guest time, experimental host and concurrent work: elapsed durations are engineering observations, not P14 qualification. Live negative-cache sites are not cumulative fallback reason totals."
+  ]
+}

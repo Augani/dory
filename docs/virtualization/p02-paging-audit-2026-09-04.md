@@ -2,9 +2,9 @@
 
 This records bounded architectural corrections and their retained regression evidence, not P02 completion or full Linux CPU-profile qualification. The original `compatibleV1` identity and the explicitly selected `intelCompatibleV1` identity remain engineering candidates. PAE, PSE and PGE stay unadvertised; implementing a paging mechanism does not by itself qualify its CPUID feature.
 
-## Review through run 46
+## Review through run 47
 
-The [retained source review](evidence/p02-correctness-2026-09-04/review-through-run-46.json) and [independent validation](evidence/p02-correctness-2026-09-04/evidence-validation-through-run-46.json) reconstruct three new frozen sources. Run 44 binds 709 tracked inputs to `3e0ac20f5`; run 45 binds 710 to `99400af11`; run 46 binds 714 to `73072d019`. Each also records six generated FFI identities. Every tracked byte matches its declared revision. The optimized runner remains bound to source 45. The [through-43 review](evidence/p02-correctness-2026-09-04/review-through-run-43.json) preserves its numeric failure and I/O preparation evidence. The separately retained [systemd probe 2](evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-2-review.json), completed after the source-only receipt, supersedes that receipt's pending systemd status.
+The [retained source-47 review](evidence/p02-correctness-2026-09-04/review-through-run-47.json) and [independent validation](evidence/p02-correctness-2026-09-04/evidence-validation-through-run-47.json) bind all 716 tracked inputs to `07fc927e5`, plus six identified generated FFI inputs. The gate is an incremental Debug test run; it introduces no optimized executable or guest outcome. The [through-46 review](evidence/p02-correctness-2026-09-04/review-through-run-46.json) retains its three exact sources and the distinct source-45 optimized runner. [Systemd probe 2](evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-2-review.json) remains a source-45 success. The separately retained [first I/O probe failure](evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-1-failure-review.json) remains bound to source 43.
 
 | Run | Swift passes | Swift failures | Disabled physical test | XCTest passes / optional skips |
 | --- | ---: | ---: | ---: | ---: |
@@ -24,6 +24,7 @@ The [retained source review](evidence/p02-correctness-2026-09-04/review-through-
 | 44 | 848 | 0 | 1 | 10 / 1 |
 | 45 | 853 | 0 | 1 | 10 / 1 |
 | 46 | 875 | 0 | 1 | 10 / 1 |
+| 47 | 888 | 0 | 1 | 10 / 1 |
 
 These are individual result counts, not sums across overlapping runs. Run 33's failure was a fixture expectation that PMOVZXBQ decoded; run 34 correctly expects `#UD` under both default and synthetic profiles. Run 36's escaping-symlink test used a nonexistent outside target; run 37 creates a real outside file and verifies the containment error. Neither fixture correction changed production behavior. Run 39 corrects the reduced glibc proof's initialization of a CPUID EBX slot from EAX to EBX; both versions pass and the distinct source hashes remain recorded.
 
@@ -39,6 +40,8 @@ Runs 44–46 add bounded corrections with exact source/log bindings:
 | Full LDT limits, `98e1d0737` | Three methods cover wide cached limits in segment loads and descriptor inspection, and out-of-range rejection. | Broader segmentation and task-state qualification remains open. |
 | Legacy floating-point admission, `e18a8cae4` | Eight methods check x87/MMX/WAIT/FX EM/TS/MP and feature rules before operands, fetch priority and native fallback. | Full x87 arithmetic/status/exception and SIMD qualification remains open. |
 | Protected interrupt paging, `73072d019` | Eleven methods cover translated system tables and stacks, user/supervisor permissions, implicit SMAP, return descriptors and full-frame write preflight. | Full interrupt priority, privilege-transition and fault qualification remains open. |
+
+Run 47 adds five [floating-point reset tests](../../dory-core-swift/Tests/DoryDBTX86Tests/DoryX86LegacyFloatingPointResetTests.swift): FNINIT preserves register data/MMX aliases and unrelated SIMD state, while FNCLEX clears the modeled exception/busy bits without disturbing other state. Eight [IRET width tests](../../dory-core-swift/Tests/DoryDBTX86Tests/DoryX86IRETWidthTests.swift) cover operand width independent of stack-address size, outer frames, privilege/flag merging, complete stack bounds and exact page-fault/CR2 behavior. The existing ten-method paging-feature suite passes with updated precise-fault expectations. These 13 new methods and ten revalidated methods are counted separately; P02-11/12/15 stay open for broader qualification.
 
 The following narrower checkpoints are closed without claiming physical-reference, hosted-CI or whole-phase qualification:
 
@@ -86,7 +89,10 @@ The [I/O fixture](evidence/p02-correctness-2026-09-04/io-stress-v1-fixture-prepa
 
 Run 40 passes 12 [host helper tests](../../dory-core-swift/Tests/DoryMachinePCLinuxBootRunnerTests/PVHStressIOTests.swift) and two [runner configuration tests](../../dory-core-swift/Tests/DoryMachinePCLinuxBootRunnerTests/PVHStressIOConfigurationTests.swift). The new block backend creates only a fresh 32 MiB disk, bounds requests and transfers, counts actual flush callbacks, and verifies the owned inode and exact 128 KiB region through a reopened descriptor. The network backend checks UUID/sequence/payload identity, queues at most 64 replies, delivers them between VM quanta and reconciles guest frame counts and guest-reported duration. This uses an isolated Ethernet peer with no host networking.
 
-Run 43 corrects modern `VIRTIO_F_VERSION_1` network framing: the 12-byte header includes `num_buffers`, and a single-buffer RX packet reports one. The [VirtIO network tests](../../dory-core-swift/Tests/DoryVirtioTests/DoryVirtioNetworkTests.swift) and [PCI framing tests](../../dory-core-swift/Tests/DoryMachinePCTests/DoryPCVirtioModernNetworkHeaderTests.swift) cover the negotiated layout. Actual guest disk flush/reopen and sustained frame roundtrip are not accepted by this source/preparation receipt; P02-25 remains open.
+Run 43 corrects modern `VIRTIO_F_VERSION_1` network framing: the 12-byte header includes `num_buffers`, and a single-buffer RX packet reports one. The [VirtIO network tests](../../dory-core-swift/Tests/DoryVirtioTests/DoryVirtioNetworkTests.swift) and [PCI framing tests](../../dory-core-swift/Tests/DoryMachinePCTests/DoryPCVirtioModernNetworkHeaderTests.swift) cover the negotiated layout. The first actual guest attempt, retained separately below, does not complete either workload; P02-25 remains open.
+
+
+The [source-43 I/O probe](evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-1-failure-review.json) ends at its 3,000,000,000-instruction budget after 1,739.420 host seconds. It produces no individual workload result, guest receipt or host poweroff. Its console reaches `/init` at guest time 63.386764 seconds, declares the 32 MiB `vda` at 66.946096 seconds and registers PF_PACKET at 76.056815 seconds. The host records one 4,096-byte block read, zero writes and flushes, and zero transmitted or returned network frames. Both completion-verification flags remain false. The [independent validator](evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-1-failure-validation.json) binds the failed outcome, exact source/runner/fixture hashes and unchanged synthetic disk identity. A host read callback does not prove guest request completion or interrupt delivery. The final sampled scheduler symbol and counters do not establish the cause; device-path reduction is still required. The failed probe does not alter the earlier tmpfs stress success or satisfy P02-25.
 
 ### Bounded engineering measurements
 

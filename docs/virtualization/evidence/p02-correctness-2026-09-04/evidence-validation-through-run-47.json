@@ -1,0 +1,75 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-evidence-retention-validation",
+  "reviewSHA256": "5bf34a698aacae07eed9d6c9d304103d76c4112fe6a3cc0a35e12ec0d5638dcb",
+  "newArtifactsBeforeThisValidation": 7,
+  "distinctRepositoryArtifactReferencesVerified": 8,
+  "previousReviewHashVerified": true,
+  "envelopesSchemaValidated": 1,
+  "schemaPath": "Config/DoryVirtualizationEvidence.schema.json",
+  "schemaSHA256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb",
+  "sourceBindings": [
+    {
+      "run": 47,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "07fc927e531850ee89e7503e44f2ced8ca585ec2",
+      "trackedInputs": 716,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 125,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    }
+  ],
+  "strictLogCountsVerified": true,
+  "logCounts": [
+    {
+      "run": 47,
+      "swiftPassed": 888,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 889,
+      "swiftSuites": 109,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    }
+  ],
+  "componentRegressionSourcesAndPassedLines": [
+    {
+      "commit": "f0b506ee0f3886827a8116cf6104e0b74be9286e",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86LegacyFloatingPointResetTests.swift",
+          "sha256": "d8cbc5c9f42c75cff79fa71051ae55904758d9d0b4e4d91390f1ac22f454f01b",
+          "run": 47,
+          "passedMethods": 5
+        }
+      ]
+    },
+    {
+      "commit": "07fc927e531850ee89e7503e44f2ced8ca585ec2",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86IRETWidthTests.swift",
+          "sha256": "4c2c03131d4792b7183baf26b4e70b3eddc6416f8e0c62f434af71675b0fba08",
+          "run": 47,
+          "passedMethods": 8
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PagingFeatureTests.swift",
+          "sha256": "423645bfd0f1908448a76fd41df991f741326c259d66a0b23be02129df4c4fef",
+          "run": 47,
+          "passedMethods": 10
+        }
+      ]
+    }
+  ],
+  "newRegressionMethods": 13,
+  "existingPagingFeatureMethodsRevalidated": 10,
+  "noUserHomePathsInNewArtifactTextOrMembers": true,
+  "tarOwnerAndTimeNormalizationVerified": true,
+  "pathNormalizedArtifacts": [],
+  "normalizationByThisValidation": "None; all retained inputs read-only.",
+  "qualification": "Source47 incremental gate only. No new clean, optimized build, guest execution, physical reference or checkpoint closure."
+}

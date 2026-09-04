@@ -1,0 +1,37 @@
+{
+  "kind": "p02-evidence-retention-transformations",
+  "artifacts": [
+    {
+      "originalPath": "/tmp/dory-p02-correctness-overlay-47.tar.gz",
+      "originalSHA256": "7b7b9fde594ed746b325a965f6d0badcd31632ce71609c6ec7fc1ec2b80eca91",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-47-source-overlay.tar.gz",
+        "sha256": "aad7bce4d51b13f2e8edd5c78e8115b3920a82d8c306fb84d6ccf8511f84c7bb"
+      },
+      "transformation": "Tar owner/timestamps normalized; member names, modes and bytes unchanged",
+      "memberCount": 125
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-manifest-47.json",
+      "originalSHA256": "8ad7ec024e7fe4a7a6a15f65a018bd465408ef2dcb4392fa77c432c94afd46f3",
+      "originalBytes": 141299,
+      "normalizedSHA256": "8ad7ec024e7fe4a7a6a15f65a018bd465408ef2dcb4392fa77c432c94afd46f3",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-47-source-manifest.json.gz",
+        "sha256": "eb301526ed6fdb3391dec67963f70d77bf048963f7d76f6152d88db230be39d8"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-run-47.log",
+      "originalSHA256": "8473c97f18765c2c205f6ecbf2aa9e311fc823d2da99743f09e36be12b31f952",
+      "originalBytes": 186349,
+      "normalizedSHA256": "8473c97f18765c2c205f6ecbf2aa9e311fc823d2da99743f09e36be12b31f952",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-47.log.gz",
+        "sha256": "104134308c6a448b410c9becb44013fd3f5955c2b6182dd337adc9be9c0d4e87"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    }
+  ]
+}
