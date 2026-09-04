@@ -3022,6 +3022,10 @@ public struct DoryX86Interpreter: Sendable {
             mode: mode
           )
           return .retired(instruction)
+        } catch let exception as DoryX86Exception {
+          throw exception
+        } catch let error as DoryX86MemoryError {
+          throw error
         } catch {
           state.rip = originalRIP
           return generalProtection(at: originalRIP)
@@ -3032,9 +3036,14 @@ public struct DoryX86Interpreter: Sendable {
             state: &state,
             physicalMemory: memory,
             pagingUnit: pagingUnit ?? translatedMemory?.translationUnit,
-            mode: mode
+            mode: mode,
+            operandSizeOverride: instruction.prefixes.operandSizeOverride
           )
           return .retired(instruction)
+        } catch let exception as DoryX86Exception {
+          throw exception
+        } catch let error as DoryX86MemoryError {
+          throw error
         } catch {
           state.rip = originalRIP
           return generalProtection(at: originalRIP)

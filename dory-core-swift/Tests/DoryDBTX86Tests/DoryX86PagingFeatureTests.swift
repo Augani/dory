@@ -235,11 +235,13 @@ import Testing
           #expect(state.rip == 0x8000)
           #expect(state.registers.rsp == (isReturn ? 0xA000 : 0x4000_8FD8))
         } else {
-          // The existing INT/IRET wrapper collapses delivery failures to #GP;
-          // precise delivery-fault propagation remains open in this tranche.
-          #expect(result == .exception(.init(kind: .generalProtection, vector: 13,
-            errorCode: 0, instructionPointer: before.rip)))
-          #expect(state == before && physical.snapshot() == snapshot)
+          let address: UInt64 = isReturn ? 0x4000_9000 : 0x4000_8FF8
+          #expect(result == .exception(.init(kind: .pageFault, vector: 14,
+            errorCode: isReturn ? 9 : 11, instructionPointer: before.rip,
+            linearAddress: address)))
+          var expected = before
+          expected.control.cr2 = address
+          #expect(state == expected && physical.snapshot() == snapshot)
         }
       }
     }

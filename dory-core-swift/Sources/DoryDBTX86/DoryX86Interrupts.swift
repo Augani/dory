@@ -198,15 +198,18 @@ public struct DoryX86InterruptDelivery: Sendable {
     state: inout DoryX86ArchitecturalState,
     physicalMemory: any DoryX86Memory,
     pagingUnit: DoryX86PagingUnit? = nil,
-    mode: DoryX86ExecutionMode
+    mode: DoryX86ExecutionMode,
+    operandSizeOverride: Bool = false
   ) throws {
     if mode == .real16 {
       try interruptReturnRealMode(state: &state, memory: physicalMemory)
       return
     }
     if mode == .protected16 || mode == .protected32 {
+      let width: DoryX86OperandWidth =
+        (mode == .protected16) != operandSizeOverride ? .word : .doubleword
       try interruptReturnProtectedMode(state: &state, physicalMemory: physicalMemory,
-        pagingUnit: pagingUnit, mode: mode)
+        pagingUnit: pagingUnit, mode: mode, width: width)
       return
     }
     guard mode == .long64 else { throw DoryX86InterruptDeliveryError.invalidReturnFrame }
@@ -460,7 +463,8 @@ public struct DoryX86InterruptDelivery: Sendable {
     state: inout DoryX86ArchitecturalState,
     physicalMemory: any DoryX86Memory,
     pagingUnit: DoryX86PagingUnit?,
-    mode: DoryX86ExecutionMode
+    mode: DoryX86ExecutionMode,
+    width: DoryX86OperandWidth
   ) throws {
     let currentCPL = UInt8(state.cs.selector & 3)
     let memory = translatedMemory(physicalMemory: physicalMemory,
@@ -471,16 +475,16 @@ public struct DoryX86InterruptDelivery: Sendable {
     let pointerWidth = state.ss.attributes & 0x4000 != 0 ? 32 : 16
     let pointerMask: UInt64 = pointerWidth == 32 ? 0xffff_ffff : 0xffff
     let stack = state.registers.rsp & pointerMask
-    let addresses = (0..<3).map { (stack &+ UInt64($0 * 4)) & pointerMask }
-    for address in addresses {
-      guard address + 3 <= UInt64(state.ss.limit) else {
-        throw DoryX86InterruptDeliveryError.invalidReturnFrame
-      }
+    let frameBytes = UInt64(width.byteCount)
+    try validateProtectedReturnStack(stack, byteCount: 3 * width.byteCount,
+      segment: state.ss, instructionPointer: state.rip)
+    let stackBase = state.ss.base
+    func readFrameValue(_ offset: UInt64) throws -> UInt64 {
+      fromLittleEndian(try memory.read(at: stackBase &+ offset, byteCount: width.byteCount))
     }
-    let instructionPointer = try read32(memory, state.ss.base &+ addresses[0])
-    let codeSelector = UInt16(
-      truncatingIfNeeded: try read32(memory, state.ss.base &+ addresses[1]))
-    let flagsValue = try read32(memory, state.ss.base &+ addresses[2])
+    let instructionPointer = try readFrameValue(stack)
+    let codeSelector = UInt16(truncatingIfNeeded: try readFrameValue((stack &+ frameBytes) & pointerMask))
+    let flagsValue = try readFrameValue((stack &+ 2 * frameBytes) & pointerMask)
     let targetCPL = UInt8(codeSelector & 3)
     guard targetCPL >= currentCPL else {
       throw DoryX86InterruptDeliveryError.invalidReturnFrame
@@ -492,24 +496,29 @@ public struct DoryX86InterruptDelivery: Sendable {
     else {
       throw DoryX86InterruptDeliveryError.invalidReturnFrame
     }
-    let requestedFlags = DoryX86RFLAGS(
-      rawValue: (state.rflags.rawValue & ~UInt64(0xffff_ffff)) | UInt64(flagsValue) | 2
-    )
+    // Intel SDM Vol. 2A IRET: word operands preserve RF/AC/ID/VIF/VIP.
+    // IF and IOPL permissions use the executing CPL and the old IOPL.
+    var flagsMask: UInt64 = 0x4DD5 // CF/PF/AF/ZF/SF/TF/DF/OF/NT.
+    if width == .doubleword { flagsMask |= (1 << 16) | (1 << 18) | (1 << 21) }
+    let oldIOPL = UInt8((state.rflags.rawValue >> 12) & 3)
+    if currentCPL <= oldIOPL { flagsMask |= 1 << 9 }
+    if currentCPL == 0 {
+      flagsMask |= 3 << 12
+      if width == .doubleword { flagsMask |= (1 << 19) | (1 << 20) }
+    }
+    let requestedFlags = DoryX86RFLAGS(rawValue:
+      (state.rflags.rawValue & ~flagsMask) | (flagsValue & flagsMask) | 2)
     guard let validatedFlags = try? requestedFlags.validated() else {
       throw DoryX86InterruptDeliveryError.invalidReturnFrame
     }
 
     if targetCPL > currentCPL {
-      let outerStackAddress = (stack &+ 12) & pointerMask
-      let outerSelectorAddress = (stack &+ 16) & pointerMask
-      guard outerStackAddress + 3 <= UInt64(state.ss.limit),
-        outerSelectorAddress + 3 <= UInt64(state.ss.limit)
-      else {
-        throw DoryX86InterruptDeliveryError.invalidReturnFrame
-      }
-      let outerStack = try read32(memory, state.ss.base &+ outerStackAddress)
-      let outerSelector = UInt16(
-        truncatingIfNeeded: try read32(memory, state.ss.base &+ outerSelectorAddress))
+      let outerStackAddress = (stack &+ 3 * frameBytes) & pointerMask
+      try validateProtectedReturnStack(outerStackAddress,
+        byteCount: 2 * width.byteCount, segment: state.ss, instructionPointer: state.rip)
+      let outerStack = try readFrameValue(outerStackAddress)
+      let outerSelector = UInt16(truncatingIfNeeded:
+        try readFrameValue((outerStackAddress &+ frameBytes) & pointerMask))
       let stackSegment = try readLegacySegment(
         selector: outerSelector,
         state: state,
@@ -524,20 +533,38 @@ public struct DoryX86InterruptDelivery: Sendable {
       }
       state.ss = stackSegment.segment
       state.ss.selector = outerSelector
+      // SDM Vol. 3B §25.31.4: a word pop zero-extends ESP when the returned
+      // stack is 32-bit. Preserve the existing 16-bit-stack high-word behavior
+      // (the Intel IRET behavior for which Linux uses ESPFIX).
       let outerPointerWidth = state.ss.attributes & 0x4000 != 0 ? 32 : 16
-      writeProtectedStackPointer(
-        UInt64(outerStack),
-        pointerWidth: outerPointerWidth,
-        state: &state
-      )
+      writeProtectedStackPointer(outerStack, pointerWidth: outerPointerWidth, state: &state)
     } else {
-      let nextStack = (stack &+ 12) & pointerMask
+      let nextStack = (stack &+ 3 * frameBytes) & pointerMask
       writeProtectedStackPointer(nextStack, pointerWidth: pointerWidth, state: &state)
     }
-    state.rip = UInt64(instructionPointer)
+    state.rip = instructionPointer
     state.cs = code.segment
     state.cs.selector = codeSelector
     state.rflags = validatedFlags
+  }
+
+  private func validateProtectedReturnStack(
+    _ offset: UInt64,
+    byteCount: Int,
+    segment: DoryX86SegmentState,
+    instructionPointer: UInt64
+  ) throws {
+    let end = offset &+ UInt64(byteCount - 1)
+    let expandDown = segment.attributes & 0xC == 4
+    let upperBound: UInt64 = expandDown
+      ? (segment.attributes & 0x4000 == 0 ? 0xFFFF : 0xFFFF_FFFF)
+      : UInt64(segment.limit)
+    guard end >= offset, end <= upperBound,
+      !expandDown || offset > UInt64(segment.limit)
+    else {
+      throw DoryX86Exception(kind: .stackSegment, vector: 12, errorCode: 0,
+        instructionPointer: instructionPointer)
+    }
   }
 
   private func readProtectedGate(
