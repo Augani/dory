@@ -117,8 +117,9 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
 
         try? FileManager.default.removeItem(atPath: fixture.exitMarker)
         let result = SavedStateLockedResult<DoryMachineStatus>()
+        let restoreOperationID = UUID()
         DispatchQueue.global(qos: .userInitiated).async {
-            result.store(Result { try recovered.resume(id: fixture.machineID) })
+            result.store(Result { try recovered.resume(id: fixture.machineID, operationID: restoreOperationID) })
         }
         let restoring = try waitForStatus(recovered, id: fixture.machineID) {
             $0.state == .starting && $0.handoffSocketPath != nil
@@ -143,7 +144,16 @@ final class MachineManagerSavedStateIntegrationTests: XCTestCase {
         let restoreIndex = try XCTUnwrap(arguments.firstIndex(of: "--restore-state"))
         XCTAssertEqual(arguments[restoreIndex + 1], fixture.savedStatePath)
 
+        let originalArguments = try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog))
+        let replay = try recovered.resume(id: fixture.machineID, operationID: restoreOperationID)
+        XCTAssertEqual(replay.state, .running)
+        XCTAssertEqual(replay.pid, restored.pid)
+        XCTAssertThrowsError(try recovered.pause(id: fixture.machineID, operationID: restoreOperationID))
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog)), originalArguments)
         _ = try recovered.stop(id: fixture.machineID)
+        XCTAssertEqual(try recovered.resume(id: fixture.machineID, operationID: restoreOperationID).state, .stopped)
+        XCTAssertNil(recovered.status(id: fixture.machineID)?.pid)
+        XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: fixture.argumentsLog)), originalArguments)
         try recovered.delete(id: fixture.machineID)
     }
 

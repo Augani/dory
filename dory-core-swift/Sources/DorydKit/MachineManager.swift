@@ -6153,6 +6153,50 @@ public final class MachineManager: @unchecked Sendable {
     }
 #endif
 
+    /// Replayed power requests return the current observation. A completed pause must not
+    /// pause a VM again after a later resume, and a completed resume must not undo a later stop.
+    private func replayPowerOperation(
+        id: String, operationID: UUID, expectedKind: DoryOperationKind
+    ) throws -> DoryMachineStatus? {
+        guard let store = lifecycleJournalStore else {
+            throw MachineManagerError.persistence("power operation journal is unavailable")
+        }
+        let record: DoryOperationRecord
+        do { record = try store.read(operationID) }
+        catch DoryOperationJournalError.operationNotFound { return nil }
+        guard record.plan.source.id == id, record.plan.target.id == id else {
+            throw MachineManagerError.persistence("power operation UUID belongs to another machine")
+        }
+        let savedStateResume = expectedKind == .workspaceResume && record.plan.kind == .workspaceRestore
+        if savedStateResume {
+            let operation: DoryWorkspaceLifecycleOperation
+            if let active = activeLifecycleOperation(machineID: id), active.operation.operationID == operationID {
+                operation = active.operation
+            } else {
+                let lease = try store.acquire(operationID)
+                operation = try lease.readWorkspaceLifecycleOperation()
+            }
+            guard operation.kind == .restoring,
+                  operation.targetResourceID == DoryWorkspaceLifecycleOperation.savedStateResourceID,
+                  operation.source.state == .suspended, operation.target.state == .running else {
+                throw MachineManagerError.persistence("resume UUID belongs to another restore request")
+            }
+        } else if record.plan.kind != expectedKind {
+            throw MachineManagerError.persistence("power operation UUID belongs to another request")
+        }
+        guard record.state.status != .failed else {
+            throw MachineManagerError.persistence("power operation failed; use a new caller operation")
+        }
+        if record.state.status == .completed {
+            guard let current = status(id: id) else { throw MachineManagerError.unknownMachine(id) }
+            return current
+        }
+        if savedStateResume, launchPolicy == .perWorkspaceAuthority {
+            return try resumeSavedStateRestore(savedStateRestoreContext(id: id, operationID: operationID))
+        }
+        throw MachineManagerError.persistence("power operation requires recovery before retry")
+    }
+
     public func pause(
         id: String,
         operationID: UUID? = nil
@@ -6163,6 +6207,8 @@ public final class MachineManager: @unchecked Sendable {
             operationID,
             action: "pause"
         )
+        if let replay = try replayPowerOperation(id: id, operationID: durableOperationID,
+                                                  expectedKind: .workspacePause) { return replay }
         try requireNoActivePlanningMutation(id: id)
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
         defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
@@ -6211,6 +6257,8 @@ public final class MachineManager: @unchecked Sendable {
             operationID,
             action: "resume"
         )
+        if let replay = try replayPowerOperation(id: id, operationID: durableOperationID,
+                                                  expectedKind: .workspaceResume) { return replay }
         try requireNoActivePlanningMutation(id: id)
         let directMutation = try retainDirectWorkspaceMutationLock(id: id)
         defer { releaseDirectWorkspaceMutationLock(id: id, retention: directMutation) }
