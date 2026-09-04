@@ -69,11 +69,13 @@ import Testing
       var state = try DoryX86ArchitecturalState(
         registers: .init(rax: 0xABCD_EF01_2345_6789, rbx: source), rip: 0x1000,
         rflags: preserved.union(arithmetic))
-      let decoded = try DoryX86Decoder().decode(bytes, at: 0x1000, mode: .long64)
       #expect(DoryX86Interpreter(profile: popcntProfile).step(
-        state: &state, memory: memory, mode: .long64) == .retired(decoded))
+        state: &state, memory: memory, mode: .long64)
+        == .exception(.init(kind: .debug, vector: 1,
+          instructionPointer: 0x1000 + UInt64(bytes.count))))
       #expect(state.registers.rax == expectedDestination)
       #expect(state.rflags == preserved)
+      #expect(state.debug.dr6 & ((1 << 14) | (1 << 16)) == (1 << 14) | (1 << 16))
       #expect(state.rip == 0x1000 + UInt64(bytes.count))
     }
 
@@ -81,11 +83,12 @@ import Testing
     var zero = try DoryX86ArchitecturalState(
       registers: .init(rax: .max, rbx: 0), rip: 0x1000,
       rflags: preserved.union(arithmetic))
-    let decoded = try DoryX86Decoder().decode(bytes, at: 0x1000, mode: .long64)
     #expect(DoryX86Interpreter(profile: popcntProfile).step(
-      state: &zero, memory: PopulationCountMemory(code: bytes), mode: .long64) == .retired(decoded))
+      state: &zero, memory: PopulationCountMemory(code: bytes), mode: .long64)
+      == .exception(.init(kind: .debug, vector: 1, instructionPointer: 0x1005)))
     #expect(zero.registers.rax == 0)
     #expect(zero.rflags == preserved.union(.zero))
+    #expect(zero.debug.dr6 & ((1 << 14) | (1 << 16)) == (1 << 14) | (1 << 16))
   }
 
   @Test func memoryFormsReadExactlyTheirOperandWidth() throws {

@@ -139,7 +139,7 @@ import Testing
             try expectFault(.generalProtection, vector: 13, errorCode: 0,
               state: &state, memory: memory, mode: mode)
           } else {
-            try retire(&state, memory: memory, mode: mode)
+            try expectSingleStep(state: &state, memory: memory, mode: mode)
             #expect(state.rip == 0x103)
           }
         }
@@ -207,6 +207,17 @@ import Testing
       Issue.record("Expected MOV DR to retire")
       return
     }
+  }
+
+  private func expectSingleStep(state: inout DoryX86ArchitecturalState,
+    memory: DoryX86ByteArrayMemory, mode: DoryX86ExecutionMode) throws {
+    let resumedRIP = state.rip + 3
+    #expect(DoryX86Interpreter().step(state: &state, memory: memory, mode: mode)
+      == .exception(.init(kind: .debug, vector: 1, instructionPointer: resumedRIP)))
+    #expect(state.rip == resumedRIP)
+    #expect(state.rflags.contains(.trap))
+    #expect(!state.rflags.contains(.resume))
+    #expect(state.debug.dr6 & ((1 << 14) | (1 << 16)) == (1 << 14) | (1 << 16))
   }
 
   private func memory(_ bytes: [UInt8]) throws -> DoryX86ByteArrayMemory {

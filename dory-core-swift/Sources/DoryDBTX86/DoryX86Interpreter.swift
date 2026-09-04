@@ -78,14 +78,21 @@ public struct DoryX86Interpreter: Sendable {
     ioBus: (any DoryX86IOBus)? = nil
   ) -> DoryX86InterpreterResult {
     let priorInterruptShadow = state.interruptShadow
+    let singleStepWasEnabled = state.rflags.contains(.trap)
+    var singleStepSuppressed = false
     var candidate = state
+    // Intel SDM Vol. 3B §18.3.1.1 clears RF after the instruction-breakpoint
+    // check. Dory does not yet execute DR0-DR3 breakpoints, so a successfully
+    // executed instruction always observes that automatic clear.
+    candidate.rflags.remove(.resume)
     let result = executeStep(
       state: &candidate,
       memory: memory,
       mode: mode,
       pagingUnit: pagingUnit,
       translatedMemory: translatedMemory,
-      ioBus: ioBus
+      ioBus: ioBus,
+      singleStepSuppressed: &singleStepSuppressed
     )
     switch result {
     case .retired, .yielded, .halted:
@@ -93,6 +100,17 @@ public struct DoryX86Interpreter: Sendable {
       // SS load does not extend a shadow that was already active on entry.
       if priorInterruptShadow != nil { candidate.interruptShadow = nil }
       state = candidate
+      if singleStepWasEnabled,
+        state.rflags.contains(.trap),
+        !singleStepSuppressed
+      {
+        // §18.2.3/§18.3.1.4: single-step is a trap after execution. Preserve
+        // prior status, set BS and the outside-RTM indication, and report the
+        // architecturally resumed RIP (the REP RIP between iterations).
+        state.debug.dr6 |= (1 << 14) | (1 << 16)
+        return .exception(
+          .init(kind: .debug, vector: 1, instructionPointer: state.rip))
+      }
     case .exception(let exception):
       if exception.commitsPartialProgress { state = candidate }
       // IRET removes NMI blocking before validating its frame. Preserve only
@@ -121,7 +139,8 @@ public struct DoryX86Interpreter: Sendable {
     mode: DoryX86ExecutionMode,
     pagingUnit: DoryX86PagingUnit?,
     translatedMemory: DoryX86TranslatedMemory?,
-    ioBus: (any DoryX86IOBus)?
+    ioBus: (any DoryX86IOBus)?,
+    singleStepSuppressed: inout Bool
   ) -> DoryX86InterpreterResult {
     let originalRIP = state.rip
     do {
@@ -2591,7 +2610,12 @@ public struct DoryX86Interpreter: Sendable {
         // together only after both the stack read and descriptor load succeed.
         setSegment(segment, value: loaded, state: &state)
         writeStackPointer(popped.nextOffset, mode: mode, state: &state)
-        if segment == .ss { state.interruptShadow = .movSS }
+        if segment == .ss {
+          state.interruptShadow = .movSS
+          // Intel SDM Vol. 3A §6.8.3 suppresses the TF trap immediately
+          // following a successful SS load.
+          singleStepSuppressed = true
+        }
       case .call(let relative):
         let returnWidth = nearTransferWidth(instruction, mode: mode)
         let target = addRelative(nextRIP, relative) & mask(returnWidth)
@@ -2955,7 +2979,10 @@ public struct DoryX86Interpreter: Sendable {
           loaded = ordinarySegment
         }
         setSegment(segment, value: loaded, state: &state)
-        if segment == .ss { state.interruptShadow = .movSS }
+        if segment == .ss {
+          state.interruptShadow = .movSS
+          singleStepSuppressed = true
+        }
       case .farJump(let offset, let selector):
         guard
           let loaded = try loadSegment(
@@ -6303,7 +6330,10 @@ public struct DoryX86Interpreter: Sendable {
     let repeated = instruction.prefixes.repeatPrefix != nil
     var remaining = repeated ? stringRegister(.rcx, width: addressWidth, state: state) : 1
     var completed: UInt64 = 0
-    let iterationBudget: UInt64 = 4_096
+    // A repeated string instruction is restartable between iterations. With
+    // TF set, retire one iteration so step() can report the architectural
+    // single-step trap with RIP still pointing at the REP instruction.
+    let iterationBudget: UInt64 = state.rflags.contains(.trap) ? 1 : 4_096
     let port = UInt16(truncatingIfNeeded: state.registers.rdx)
     if operation == .input || operation == .output {
       guard ioBus != nil,
