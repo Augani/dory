@@ -1,3 +1,4 @@
+import DoryOperations
 import Foundation
 import Testing
 @testable import Dory

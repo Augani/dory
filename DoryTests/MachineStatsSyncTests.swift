@@ -1,9 +1,10 @@
+import DoryOperations
 import Testing
 @testable import Dory
 
 @MainActor
 struct MachineStatsSyncTests {
-    private func machine(containerID: String, status: RunState) -> Machine {
+    private func machine(containerID: String, status: DoryVirtualMachineState) -> Machine {
         Machine(name: "m-\(containerID)", distro: "Ubuntu", version: "24.04 LTS", status: status,
                 cpuPercent: 0, memoryDisplay: "—", ip: "-", letter: "U", badgeHex: 0, containerID: containerID)
     }

@@ -61,6 +61,7 @@ import Foundation
     func machineCloneSnapshot(_ machineID: String, snapshotID: String, newID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineCloneSnapshot(_ machineID: String, snapshotID: String, newID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineRestoreSnapshot(_ machineID: String, snapshotID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineRestoreSnapshot(_ machineID: String, snapshotID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDeleteSnapshot(_ machineID: String, snapshotID: String, reply: @escaping (Bool, String) -> Void)
     func machineExportSnapshot(_ machineID: String, snapshotID: String, path: String, reply: @escaping (Bool, String) -> Void)
     func machineAssessSnapshotImport(_ path: String, reply: @escaping (Bool, NSDictionary, String) -> Void)

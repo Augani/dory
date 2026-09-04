@@ -1832,17 +1832,22 @@ struct DorydClientTests {
             distributionInstallationName: "ubuntu-installation",
             runtimeInstallationName: "runtime-installation"
         )
+        let snapshotOperationID = UUID()
         let snapshot = try await client.machineSnapshot(
             "dev",
             note: "before",
             createdISO: "2026-07-07T00:00:00Z",
-            snapshotID: "s1"
+            snapshotID: "s1",
+            operationID: snapshotOperationID
         )
+        #expect(service.latestMachineSnapshotOperationID == snapshotOperationID.uuidString.lowercased())
         let snapshots = try await client.machineSnapshots(machineID: "dev")
         let cloneOperationID = UUID()
         let clonedSnapshot = try await client.machineCloneSnapshot(machineID: "dev", snapshotID: "s1", newID: "dev-copy", operationID: cloneOperationID)
         #expect(service.latestMachineCloneOperationID == cloneOperationID.uuidString.lowercased())
-        let restoredSnapshot = try await client.machineRestoreSnapshot(machineID: "dev", snapshotID: "s1")
+        let restoreOperationID = UUID()
+        let restoredSnapshot = try await client.machineRestoreSnapshot(machineID: "dev", snapshotID: "s1", operationID: restoreOperationID)
+        #expect(service.latestMachineRestoreOperationID == restoreOperationID.uuidString.lowercased())
         let exportedSnapshot = try await client.machineExportSnapshot(machineID: "dev", snapshotID: "s1", to: "/tmp/dev.dorymachine")
         let importedSnapshot = try await client.machineImportSnapshot(from: "/tmp/dev.dorymachine")
         let savedBackup = try await client.machineBackupSet(DorydMachineBackupSchedule(
@@ -5159,6 +5164,8 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     private var _latestMachineUpdateConfig: NSDictionary?
     private var _latestMachineProvisionRecipe: String?
     private var _latestMachineDesktopUpdateOperationID: String?
+    private var _latestMachineSnapshotOperationID: String?
+    private var _latestMachineRestoreOperationID: String?
     private var _machineDesktopUpdateOperationIDResponseOverride: Any?
     private var _latestMachineTransferRequest: NSDictionary?
     private var _latestMachineTransferStartRequest: NSDictionary?
@@ -5391,6 +5398,16 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     var latestMachineDesktopUpdateOperationID: String? {
         lock.lock(); defer { lock.unlock() }
         return _latestMachineDesktopUpdateOperationID
+    }
+
+    var latestMachineSnapshotOperationID: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachineSnapshotOperationID
+    }
+
+    var latestMachineRestoreOperationID: String? {
+        lock.lock(); defer { lock.unlock() }
+        return _latestMachineRestoreOperationID
     }
 
     func setMachineDesktopUpdateOperationIDResponse(_ value: Any) {
@@ -6624,6 +6641,9 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
     }
 
     func machineSnapshot(_ machineID: String, request: NSDictionary, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        lock.lock()
+        _latestMachineSnapshotOperationID = request["operationID"] as? String
+        lock.unlock()
         let id = request["snapshotID"] as? String ?? "s\(UUID().uuidString.prefix(8).lowercased())"
         let baseRow = Self.snapshotRow(
             id: id,
@@ -6697,6 +6717,13 @@ private final class FakeDorydService: NSObject, DorydControlXPC {
         }
         lock.unlock()
         reply(ok, ok ? row : [:], message)
+    }
+
+    func machineRestoreSnapshot(_ machineID: String, snapshotID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {
+        lock.lock()
+        _latestMachineRestoreOperationID = operationID
+        lock.unlock()
+        machineRestoreSnapshot(machineID, snapshotID: snapshotID, reply: reply)
     }
 
     func machineRestoreSnapshot(_ machineID: String, snapshotID: String, reply: @escaping (Bool, NSDictionary, String) -> Void) {

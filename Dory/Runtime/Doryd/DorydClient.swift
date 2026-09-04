@@ -61,6 +61,7 @@ nonisolated protocol DorydControlXPC {
     func machineCloneSnapshot(_ machineID: String, snapshotID: String, newID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineCloneSnapshot(_ machineID: String, snapshotID: String, newID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineRestoreSnapshot(_ machineID: String, snapshotID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
+    func machineRestoreSnapshot(_ machineID: String, snapshotID: String, operationID: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
     func machineDeleteSnapshot(_ machineID: String, snapshotID: String, reply: @escaping (Bool, String) -> Void)
     func machineExportSnapshot(_ machineID: String, snapshotID: String, path: String, reply: @escaping (Bool, String) -> Void)
     func machineAssessSnapshotImport(_ path: String, reply: @escaping (Bool, NSDictionary, String) -> Void)
@@ -2552,11 +2553,13 @@ nonisolated final class DorydClient: @unchecked Sendable {
         _ machineID: String,
         note: String = "",
         createdISO: String,
-        snapshotID: String? = nil
+        snapshotID: String? = nil,
+        operationID: UUID = UUID()
     ) async throws -> DorydMachineSnapshot {
         var request: [String: Any] = [
             "note": note,
             "createdISO": createdISO,
+            "operationID": operationID.uuidString.lowercased(),
         ]
         if let snapshotID {
             request["snapshotID"] = snapshotID
@@ -2593,9 +2596,10 @@ nonisolated final class DorydClient: @unchecked Sendable {
         }
     }
 
-    func machineRestoreSnapshot(machineID: String, snapshotID: String) async throws -> DorydMachineStatus {
+    func machineRestoreSnapshot(machineID: String, snapshotID: String, operationID: UUID = UUID()) async throws -> DorydMachineStatus {
         try await withTimeout(atLeast: 120).statusCommand { proxy, reply in
-            proxy.machineRestoreSnapshot(machineID, snapshotID: snapshotID, reply: reply)
+            proxy.machineRestoreSnapshot(machineID, snapshotID: snapshotID,
+                operationID: operationID.uuidString.lowercased(), reply: reply)
         } decode: {
             Self.machineStatus(from: $0)
         }

@@ -1333,6 +1333,9 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         }
         try emitJSON(batch)
     case "create":
+        guard DoryHostArchitecture.current == .arm64 else {
+            throw DorydCtlError.usage("Dory virtual machines require an Apple Silicon host")
+        }
         let name = try cursor.take("usage: dorydctl machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N])")
         let installerISO = try cursor.optionValue("--installer-iso")
         let kernel = try cursor.optionValue("--kernel")
@@ -1456,8 +1459,9 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         })
     case "restart":
         let name = try cursor.take("usage: dorydctl machine restart NAME")
+        let operationID = DoryOperationIdentity.canonical(UUID())
         try emitJSON(try client.withTimeout(atLeast: DoryMachineControlTiming.restartSeconds).statusCommand {
-            $0.machineRestart(name, reply: $1)
+            $0.machineRestart(name, operationID: operationID, reply: $1)
         })
     case "update":
         try runMachineUpdate(cursor: &cursor, client: client)
@@ -1538,11 +1542,13 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
     case "restore-snapshot":
         let name = try cursor.take("usage: dorydctl machine restore-snapshot NAME SNAPSHOT_ID")
         let snapshotID = try cursor.take("usage: dorydctl machine restore-snapshot NAME SNAPSHOT_ID")
+        let operationID = DoryOperationIdentity.canonical(UUID())
         guard cursor.values.isEmpty else {
             throw DorydCtlError.usage("unexpected restore-snapshot argument: \(cursor.values[0])")
         }
         try emitJSON(try client.withTimeout(atLeast: machineFileMutationTimeout).statusCommand { proxy, reply in
-            proxy.machineRestoreSnapshot(name, snapshotID: snapshotID, reply: reply)
+            proxy.machineRestoreSnapshot(name, snapshotID: snapshotID,
+                operationID: operationID, reply: reply)
         })
     case "delete-snapshot":
         let name = try cursor.take("usage: dorydctl machine delete-snapshot NAME SNAPSHOT_ID")
@@ -1723,6 +1729,7 @@ func runMachineUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) thro
     guard cursor.values.isEmpty else {
         throw DorydCtlError.usage("unexpected machine update argument: \(cursor.values[0])")
     }
+    config["operationID"] = UUID().uuidString.lowercased()
     let updateClient = client.withTimeout(atLeast: 120)
     let status = try updateClient.statusCommand { proxy, reply in
         proxy.machineUpdate(name, config: config as NSDictionary, reply: reply)
@@ -1733,7 +1740,7 @@ func runMachineUpdate(cursor: inout ArgumentCursor, client: DorydCtlClient) thro
 func runMachineSnapshot(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
     let usage = "usage: dorydctl machine snapshot NAME [--note NOTE] [--id ID]"
     let name = try cursor.take(usage)
-    var request: [String: Any] = [:]
+    var request: [String: Any] = ["operationID": UUID().uuidString.lowercased()]
     if let note = try cursor.optionValue("--note") {
         request["note"] = note
     }

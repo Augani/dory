@@ -1539,7 +1539,8 @@ public final class DorydService: NSObject, DorydControl {
                 id: machineID,
                 note: snapshotRequest.note,
                 createdISO: snapshotRequest.createdISO,
-                snapshotID: snapshotRequest.snapshotID
+                snapshotID: snapshotRequest.snapshotID,
+                operationID: snapshotRequest.operationID
             )
             incidentWriter?.record(type: "machine.snapshot", detail: "\(machineID) \(snapshot.id)")
             reply(true, snapshot.xpcDictionary, "")
@@ -1587,30 +1588,22 @@ public final class DorydService: NSObject, DorydControl {
         snapshotID: String,
         reply: @escaping (Bool, NSDictionary, String) -> Void
     ) {
-        machineControl("\(machineID)/\(snapshotID)", action: "restore_snapshot", reply: reply) { manager, _ in
-            guard let source = manager.status(id: machineID) else {
-                throw MachineManagerError.unknownMachine(machineID)
-            }
-            let shouldRestart = source.state == .starting || source.state == .running
-            var status = try manager.restoreSnapshot(
-                machineID: machineID,
-                snapshotID: snapshotID
-            )
-            if manager.configuredLaunchPolicy == .perWorkspaceAuthority {
-                guard let productionPlanningController else {
-                    throw MachineManagerError.persistence(
-                        "production planning controller is not configured"
-                    )
-                }
-                status = try manager.resolveAndPublishProductionPlan(
-                    id: machineID,
-                    controller: productionPlanningController
-                )
-                if shouldRestart {
-                    status = try manager.start(id: machineID)
-                }
-            }
-            return status
+        machineRestoreSnapshot(machineID, snapshotID: snapshotID,
+            operationID: DoryOperationIdentity.canonical(UUID()), reply: reply)
+    }
+
+    public func machineRestoreSnapshot(
+        _ machineID: String,
+        snapshotID: String,
+        operationID: String,
+        reply: @escaping (Bool, NSDictionary, String) -> Void
+    ) {
+        guard let identity = DoryOperationIdentity.parseCanonical(operationID) else {
+            reply(false, [:], "snapshot restore requires a canonical operation ID")
+            return
+        }
+        machineControl(machineID, action: "restore_snapshot", reply: reply) { manager, id in
+            try manager.restoreSnapshot(machineID: id, snapshotID: snapshotID, operationID: identity)
         }
     }
 
@@ -2636,11 +2629,21 @@ private struct MachineUpdateRequest {
 }
 
 private struct MachineSnapshotRequest {
+    var operationID: UUID
     var note: String
     var createdISO: String
     var snapshotID: String?
 
     init(xpcDictionary dictionary: NSDictionary) throws {
+        if dictionary["operationID"] != nil {
+            guard let raw = dictionary["operationID"] as? String,
+                  let operationID = DoryOperationIdentity.parseCanonical(raw) else {
+                throw XPCRemoteConfigError.invalid("operationID")
+            }
+            self.operationID = operationID
+        } else {
+            self.operationID = UUID()
+        }
         self.note = dictionary.optionalString("note") ?? ""
         self.createdISO = dictionary.optionalString("createdISO") ?? ISO8601DateFormatter().string(from: Date())
         self.snapshotID = dictionary.optionalString("snapshotID")
