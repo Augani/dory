@@ -1,0 +1,56 @@
+{
+  "scope": "Snapshot root ownership, compensation, replay, quiescence uncertainty, and private initial publication handoff. Controlled real production factory/planning plus authenticated XCTest helper; no physical guest qualification.",
+  "owned_files": [
+    "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+    "dory-core-swift/Tests/DorydKitTests/DoryProductionSnapshotCreationTests.swift"
+  ],
+  "owned_patch": {
+    "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-root-agent-only.patch.gz",
+    "sha256": "da44f7f6866121bb7c43dbd3b6dd4e8b8c51feb600058db3e93f221986084125"
+  },
+  "owned_region_sha256": "855b85208e772e402d3befe01b55a64e78d2a81fc6e7c7d92196896e1da82a8b",
+  "test_sha256": "37a561bf0cb16b06c092734a44af10e64745f5f31d70f92a756a621e628ed783",
+  "current_gate_inputs_unchanged": 673,
+  "current_manifest": {
+    "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-source-manifest-6.json",
+    "sha256": "1d3459afcc991a041d1c672de64a31b55ace1f904495c37d358448adb499a770"
+  },
+  "gates": [
+    {
+      "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-source-manifest.json",
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-tests.log.gz",
+      "pass": "completionRecovery stopped/running/paused: 3 scenarios",
+      "limitation": "Earlier source also ran success3 and copy3; copy running/paused failed, later fixed and reverified."
+    },
+    {
+      "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-source-manifest-2.json",
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-tests-2.log.gz",
+      "pass": "compensationFailureCanBeRepairedAndRetried source metadata and snapshot directory symlink: 2 scenarios",
+      "limitation": "Earlier source copy running/paused failed, later fixed and reverified."
+    },
+    {
+      "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-source-manifest-3.json",
+      "archived_source": "/tmp/dory-p01-snapshot-creation-verified-source-3",
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-tests-3.log.gz",
+      "pass": "successAndReplay stopped/running/paused and interruptedCopyRecovery stopped/running/paused: 6 scenarios, 336.424s. Includes changed-note and tampered-kernel replay rejection."
+    },
+    {
+      "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-source-manifest-6.json",
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-tests-6.log.gz",
+      "pass": "failedQuiescenceRecovery direct compensation and daemon interruption after authenticated stop: 2 scenarios, 12.752s."
+    }
+  ],
+  "distinct_passing_scenarios_across_gates": 13,
+  "final_source_whole_suite_rerun": false,
+  "known_prior_failed_gates": [
+    "Source4 compile failed on adjacent creation-test let-property assignment; corrected by owning agent and overlaid singly.",
+    "Source5 optional fixture capability order rejected exec before snapshot; owning agent sorted capabilities, overlaid singly and passed source6."
+  ],
+  "implementation": [
+    "Require canonical owned snapshot artifact paths/private directory and exact source authority before cleanup; fsync cleanup directory.",
+    "Retain and release failed compensation lease so repaired same-UUID retry can recover.",
+    "Project active snapshot root before recovery launch to preserve spawn authority.",
+    "Pass private non-Codable validated publication only on fresh same-root completion; replay/recovery retain full artifact hashing.",
+    "After any durable quiesce attempt, fully authenticate and stop uncertain source helper before root replan/restart; never accept resident potentially frozen source on compensation."
+  ]
+}

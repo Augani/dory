@@ -664,11 +664,10 @@
     "Final/public host matrix, notarization and release qualification"
   ],
   "remainingGates": [
-    "P01-04/P01-13: complete the production/diagnostic compatibility caller separation and remove the alternate production launch constructor.",
-    "P01-08: finish one-root desktop, restore, create/clone and snapshot composition with caller UUIDs and replay/recovery tests.",
-    "P01-09: integrate cooperative cancellation into active compound operations and verify stop/rollback lease settlement.",
-    "P01-12: finish the public compound-operation interruption/cancellation matrix on one final combined source snapshot.",
-    "Physical guest, native/DBT workload-pause, original-bundle UI launch, release signing and pressure qualification remain separate later-phase gates. The optional P02 PVH boot fixture is still absent."
+    "Finish ordinary-start planning/admission under the caller root and exact-plan saved-state readmission.",
+    "Verify shared restore artifact handoffs and directory durability.",
+    "Finish compound cancellation and authenticated legacy fixture parity.",
+    "Run final combined integration regression and reconcile the P01 exit inventory."
   ],
   "plan": "PLAN.md#phase-p01",
   "historicalRuns": [
@@ -6391,7 +6390,7 @@
       "campaign": "compound-lifecycle-production-review",
       "receipt": "docs/virtualization/evidence/p01-compound-review-2026-09-04/campaign.json",
       "phaseComplete": false,
-      "sourceScope": "Individually frozen sources; public snapshot/restore/create integration and final combined gate remain underway.",
+      "sourceScope": "Individually frozen sources and focused committed extractions; final start/saved-state admission, restore proof, authenticated fixture parity and combined integration remain open.",
       "commits": [
         "e1fb03ebe",
         "a5ff20151",
@@ -6402,7 +6401,13 @@
         "be87cc325",
         "a80062888",
         "139b26b28",
-        "cf14acc4e"
+        "cf14acc4e",
+        "ff370d72b",
+        "37d2886f5",
+        "bc2ba05eb",
+        "6ab6c1328",
+        "bdc5fd3ad",
+        "3a7c18067"
       ]
     }
   ]

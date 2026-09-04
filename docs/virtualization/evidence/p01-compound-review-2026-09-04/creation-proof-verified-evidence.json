@@ -1,0 +1,10 @@
+{
+  "snapshot": "/tmp/dory-p01-creation-proof-verified-snapshot",
+  "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-proof-verified-manifest.json",
+  "manifestSHA256": "19ff7a3c5690093df3cbaab1b1e8fdc3f6905019b87d2445f4e3d630fde52925",
+  "files": 670,
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-proof-agent-tests-1.log.gz",
+  "logSHA256": "3f595ab04ca99ef3cc9b8c18c8971765aae5bb9a55ee8a36bd5cba7c4c5a5c09",
+  "result": "8 Swift tests in3suites passed110.244s. Public source-preserving clone110.128s vs192.206s pre-proof. XCTest51/52 passed, one stale injected-controller count assertion corrected afterward.",
+  "scope": "Same frozen shared sources as preceding17-test campaign, overlaid non-Codable clone artifact proof and dedicated tests. No physical guest qualification."
+}

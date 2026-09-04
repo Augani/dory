@@ -1,0 +1,43 @@
+{
+  "result": "83 DorydClientTests passed in 35.636 seconds; build-for-testing and isolated test-without-building both exited 0.",
+  "sourceSnapshot": "/tmp/dory-p01-creation-client-source",
+  "sourceManifestSHA256": "cc409aea5ca03203c1cde5dea5c1cfc52bdaeabac3fa4ffb97ce94ef808a4a18",
+  "sourceFiles": 1991,
+  "verifiedOverlayFiles": [
+    "DoryTests/DorydClientTests.swift"
+  ],
+  "sourceFilesChangedDuringBuildOrTest": [],
+  "testHostPath": "/tmp/dory-p01-creation-client-isolated-s9h2ha2d/DoryP01Tests.app",
+  "testBundleIdentifier": "com.pythonxi.Dory.P01CreationClientTests",
+  "resultBundle": "/tmp/dory-p01-creation-client-isolated-s9h2ha2d/Results.xcresult",
+  "installedAppProcessBeforeAndAfter": "1876 Thu Sep  3 11:49:19 2026     /Applications/Dory.app/Contents/MacOS/Dory",
+  "artifacts": {
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-client-build.log.gz": "e96b65f6b2f4608008f3dfe7768d9076d9efa674bd689fc82024d3a66ecb00d1",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-client-isolated-tests.log.gz": "aaf08e98c669684d5ca797f219577e4d1e268b0b36c196c443d03e2296eb55ef",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-client-source-manifest.json": "cc409aea5ca03203c1cde5dea5c1cfc52bdaeabac3fa4ffb97ce94ef808a4a18",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-client-isolated-tests-manifest.json": "fcd3b69b2b9e8225243a9aaba8b48aa5357fc1af516c85e40a17995087305fa5",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-client-isolated-tests.py": "32ebf14ab1b99c0c87fa5115a6a52249a5c145fffa11f9c0e9f04a3fa088de63"
+  },
+  "scope": "DorydClientTests including explicit creation and clone UUID assertions in a copied Debug app, with a separate test-host bundle identity, preserved entitlements and ad-hoc signing. DORY_UI_TEST=1 disables app instance management and startup side effects. This does not qualify the original bundle identity, app UI automation, physical guests or release signing. App source is frozen from the prior 86-test app source with only DoryTests/DorydClientTests.swift overlaid to add create/clone UUID assertions. Latest core start work is excluded.",
+  "copyComparison": {
+    "identicalRegularFiles": 133,
+    "changedFiles": [
+      {
+        "path": "Contents/Info.plist",
+        "originalSHA256": "ac28528333c37c471e01c81ab85a6ca0f3b60ce5b10ec5e582fb7853233967c4",
+        "testHostSHA256": "451c16b3429e683d27a4da76e902cd75f92afaf636bc071d6d6c74455616fa15"
+      },
+      {
+        "path": "Contents/MacOS/Dory",
+        "originalSHA256": "aeba986282711372eda86eba1da97b31e3c64a973ac73f7802c645e90f007428",
+        "testHostSHA256": "ba8e665a2317ce6956206fde1ee04f4b50acbcae021a1f0522adb242618099da"
+      }
+    ],
+    "meaning": "The app debug dylib, test bundle and embedded dependencies remain byte-identical; only the host identity and its signature changed.",
+    "hostExecutablePayload": {
+      "sha256": "dcdebd63fe67a978cf1010d88538f78162031295cf37d0b3fa30f49982494ef8",
+      "bytes": 97909296,
+      "meaning": "Identical Mach-O bytes after the header/load commands and before LC_CODE_SIGNATURE; bundle/signature metadata is excluded."
+    }
+  }
+}

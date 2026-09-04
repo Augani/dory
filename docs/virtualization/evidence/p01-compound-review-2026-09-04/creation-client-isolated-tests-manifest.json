@@ -1,0 +1,52 @@
+{
+  "testHostPath": "/tmp/dory-p01-creation-client-isolated-s9h2ha2d/DoryP01Tests.app",
+  "xctestrun": "/tmp/dory-p01-creation-client-isolated-s9h2ha2d/DoryP01.xctestrun",
+  "originalBundleIdentifier": "com.pythonxi.Dory",
+  "testBundleIdentifier": "com.pythonxi.Dory.P01CreationClientTests",
+  "signingCommandArguments": [
+    "codesign",
+    "--force",
+    "--sign",
+    "-",
+    "--preserve-metadata=entitlements,flags,runtime",
+    "/tmp/dory-p01-creation-client-isolated-s9h2ha2d/DoryP01Tests.app"
+  ],
+  "commandArguments": [
+    "xcodebuild",
+    "test-without-building",
+    "-xctestrun",
+    "/tmp/dory-p01-creation-client-isolated-s9h2ha2d/DoryP01.xctestrun",
+    "-destination",
+    "platform=macOS",
+    "-parallel-testing-enabled",
+    "NO",
+    "-resultBundlePath",
+    "/tmp/dory-p01-creation-client-isolated-s9h2ha2d/Results.xcresult",
+    "-only-testing:DoryTests/DorydClientTests"
+  ],
+  "scope": "DorydClientTests including explicit creation and clone UUID assertions in a copied Debug app, with a separate test-host bundle identity, preserved entitlements and ad-hoc signing. DORY_UI_TEST=1 disables app instance management and startup side effects. This does not qualify the original bundle identity, app UI automation, physical guests or release signing. App source is frozen from the prior 86-test app source with only DoryTests/DorydClientTests.swift overlaid to add create/clone UUID assertions. Latest core start work is excluded.",
+  "copyComparison": {
+    "identicalRegularFiles": 133,
+    "changedFiles": [
+      {
+        "path": "Contents/Info.plist",
+        "originalSHA256": "ac28528333c37c471e01c81ab85a6ca0f3b60ce5b10ec5e582fb7853233967c4",
+        "testHostSHA256": "451c16b3429e683d27a4da76e902cd75f92afaf636bc071d6d6c74455616fa15"
+      },
+      {
+        "path": "Contents/MacOS/Dory",
+        "originalSHA256": "aeba986282711372eda86eba1da97b31e3c64a973ac73f7802c645e90f007428",
+        "testHostSHA256": "ba8e665a2317ce6956206fde1ee04f4b50acbcae021a1f0522adb242618099da"
+      }
+    ],
+    "meaning": "The app debug dylib, test bundle and embedded dependencies remain byte-identical; only the host identity and its signature changed.",
+    "hostExecutablePayload": {
+      "sha256": "dcdebd63fe67a978cf1010d88538f78162031295cf37d0b3fa30f49982494ef8",
+      "bytes": 97909296,
+      "meaning": "Identical Mach-O bytes after the header/load commands and before LC_CODE_SIGNATURE; bundle/signature metadata is excluded."
+    }
+  },
+  "sourceSnapshotManifestPath": "/tmp/dory-p01-creation-client-source-manifest.json",
+  "sourceSnapshotManifestSHA256": "cc409aea5ca03203c1cde5dea5c1cfc52bdaeabac3fa4ffb97ce94ef808a4a18",
+  "exitCode": 0
+}

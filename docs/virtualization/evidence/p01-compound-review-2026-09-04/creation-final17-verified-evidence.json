@@ -1,0 +1,10 @@
+{
+  "snapshot": "/tmp/dory-p01-creation-final17-verified-snapshot",
+  "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-final17-verified-manifest.json",
+  "manifestSHA256": "dfd6bb9df857be3e2babdaf994dd2c03635e5b1f4be06288dca3635e68f20859",
+  "files": 668,
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-final-agent-tests-3.log.gz",
+  "logSHA256": "3f4852666032737f4b92b097d42ed66ab28c5da7422c603f8c465e88647cfae8",
+  "result": "Swift Testing 17 tests in 4 suites passed in 624.178s, including 5 public creation/clone tests. XCTest service suite: 51 passed, 1 stale unplanned-snapshot fixture failed; fixture corrected separately afterward.",
+  "scope": "Production signed control-plane fixture with synthetic authenticated backend, not physical guest qualification. Pre bounded same-context clone artifact proof."
+}

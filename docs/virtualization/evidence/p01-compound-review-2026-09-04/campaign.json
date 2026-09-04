@@ -1,7 +1,7 @@
 {
   "name": "compound-lifecycle-production-review",
   "phaseComplete": false,
-  "scope": "Independent frozen source campaigns; not a combined-current-tree pass and not physical guest qualification. Public creation/snapshot/restore and remaining integration work continue.",
+  "scope": "Independent frozen campaigns and focused committed extractions. Public creation, clone, snapshot and restore are verified. Final start consolidation, restore artifact proof, authenticated fixture parity and combined integration remain underway. Not physical guest qualification.",
   "desktop": {
     "passedCases": 30,
     "commit": "0eb66d7e7"
@@ -130,6 +130,54 @@
       "uncompressedSHA256": "ad5c0fc330d8268fbb81364cf957b30caa036c565e2d49897542fe7f7e51f3c6"
     },
     {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-callers-agent-only.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-creation-callers-agent-only.patch",
+      "originalSHA256": "66399b3abe63d01ece4364312a840905818ea6f5df5cb56ab206f9bdcb0d91a1",
+      "compression": "gzip",
+      "uncompressedSHA256": "66399b3abe63d01ece4364312a840905818ea6f5df5cb56ab206f9bdcb0d91a1",
+      "sha256": "977d7e81dff1978df0761d29b1efad2de4d6380b79917b7c5eb2f5b1c972b3a9"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-client-build.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-creation-client-build.log",
+      "originalSHA256": "e96b65f6b2f4608008f3dfe7768d9076d9efa674bd689fc82024d3a66ecb00d1",
+      "compression": "gzip",
+      "uncompressedSHA256": "e96b65f6b2f4608008f3dfe7768d9076d9efa674bd689fc82024d3a66ecb00d1",
+      "sha256": "eab60349d0b3915fd0a9e89a4ebb5f026f7bff10bba2b9175f70aff73f3f7cfa"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-client-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-creation-client-evidence.json",
+      "originalSHA256": "fa0f29953a12ff530ff83a496ef7a96544c327b62ddddfcef69334ba0588f60a",
+      "sha256": "fe162e48d702700bea20b76acb762450dbe03147f2d2ad66f0f532530ffb92eb"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-client-isolated-tests-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-creation-client-isolated-tests-manifest.json",
+      "originalSHA256": "fcd3b69b2b9e8225243a9aaba8b48aa5357fc1af516c85e40a17995087305fa5",
+      "sha256": "fcd3b69b2b9e8225243a9aaba8b48aa5357fc1af516c85e40a17995087305fa5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-client-isolated-tests.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-creation-client-isolated-tests.log",
+      "originalSHA256": "aaf08e98c669684d5ca797f219577e4d1e268b0b36c196c443d03e2296eb55ef",
+      "compression": "gzip",
+      "uncompressedSHA256": "aaf08e98c669684d5ca797f219577e4d1e268b0b36c196c443d03e2296eb55ef",
+      "sha256": "33ee45825b46bd7baa6ad571d6ab9ad37321fe0ac48a117f40061840b9e5e3de"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-client-isolated-tests.py",
+      "originalEvidencePath": "/tmp/dory-p01-creation-client-isolated-tests.py",
+      "originalSHA256": "32ebf14ab1b99c0c87fa5115a6a52249a5c145fffa11f9c0e9f04a3fa088de63",
+      "sha256": "32ebf14ab1b99c0c87fa5115a6a52249a5c145fffa11f9c0e9f04a3fa088de63"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-client-source-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-creation-client-source-manifest.json",
+      "originalSHA256": "cc409aea5ca03203c1cde5dea5c1cfc52bdaeabac3fa4ffb97ce94ef808a4a18",
+      "sha256": "cc409aea5ca03203c1cde5dea5c1cfc52bdaeabac3fa4ffb97ce94ef808a4a18"
+    },
+    {
       "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-contract-verified-evidence.json",
       "originalEvidencePath": "/tmp/dory-p01-creation-contract-verified-evidence.json",
       "originalSHA256": "5b4623bf656123277f087d4effccfcae0d80641c1ed778617ae9c176114477bb",
@@ -142,12 +190,80 @@
       "sha256": "2e244478f7a66914eb707ed05b75fdb7942e8bc529fab26731840edb3aa3af52"
     },
     {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-final-agent-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-creation-final-agent-evidence.json",
+      "originalSHA256": "7fa4f714611e30206bdaaf25830a74bf425930af435be597a2f1a05f0dd62a05",
+      "sha256": "b6a5741afeb5b41d53667559393e9b3d21d74953f589a707804e367cac92e024"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-final-agent-tests-3.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-creation-final-agent-tests-3.log",
+      "originalSHA256": "3f4852666032737f4b92b097d42ed66ab28c5da7422c603f8c465e88647cfae8",
+      "compression": "gzip",
+      "uncompressedSHA256": "3f4852666032737f4b92b097d42ed66ab28c5da7422c603f8c465e88647cfae8",
+      "sha256": "af37a95792e9df34d8c673d3161a29ab6984ef4924aa17166074b2b0905616e3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-final-agent-tests-4.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-creation-final-agent-tests-4.log",
+      "originalSHA256": "2ca5cd5f75ceb745ea4c94eb4f1448aebdde967ace7293329ed8c97708e26f0a",
+      "compression": "gzip",
+      "uncompressedSHA256": "2ca5cd5f75ceb745ea4c94eb4f1448aebdde967ace7293329ed8c97708e26f0a",
+      "sha256": "84f8351e2c964a2bb26187a905ed8815e53c054220d815a8afb332247032c787"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-final-verified-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-creation-final-verified-manifest.json",
+      "originalSHA256": "f65b4b7600b27c4f687ad6a46053f859d8db104a4f6865abfbb5d07ff9b483a6",
+      "sha256": "f65b4b7600b27c4f687ad6a46053f859d8db104a4f6865abfbb5d07ff9b483a6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-final17-verified-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-creation-final17-verified-evidence.json",
+      "originalSHA256": "8e8b38c77eb0ceb8d87c7da3bce571f95ee1d1e6342a84c20936fad42be54251",
+      "sha256": "ad819630f5320c88c009791c69a1a4eea39925d199bc4c1806907b7671c9e71b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-final17-verified-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-creation-final17-verified-manifest.json",
+      "originalSHA256": "dfd6bb9df857be3e2babdaf994dd2c03635e5b1f4be06288dca3635e68f20859",
+      "sha256": "dfd6bb9df857be3e2babdaf994dd2c03635e5b1f4be06288dca3635e68f20859"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-implementation-agent-only.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-creation-implementation-agent-only.patch",
+      "originalSHA256": "a6f2fe7f95311ba228d93fd7357dc5e5a9a1c2f6bfcd394cd737bcbdfe7d0fcb",
+      "compression": "gzip",
+      "uncompressedSHA256": "a6f2fe7f95311ba228d93fd7357dc5e5a9a1c2f6bfcd394cd737bcbdfe7d0fcb",
+      "sha256": "144d4c3aa02495b7a480409f12579b4a39ea5a4fb3540c4d95797ba8cc5c445f"
+    },
+    {
       "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-live-agent-tests-4.log.gz",
       "originalEvidencePath": "/tmp/dory-p01-creation-live-agent-tests-4.log",
       "originalSHA256": "f062cc41bfde4f2dcfd52cea1152e2c4b7bba773f56d856ff8c4803f33757501",
       "uncompressedSHA256": "f062cc41bfde4f2dcfd52cea1152e2c4b7bba773f56d856ff8c4803f33757501",
       "compression": "gzip",
       "sha256": "2bd5ab740af7e5c3fea4df3643891deb4517f581e1dde39618d14b5b1c86fa18"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-proof-agent-tests-1.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-creation-proof-agent-tests-1.log",
+      "originalSHA256": "3f595ab04ca99ef3cc9b8c18c8971765aae5bb9a55ee8a36bd5cba7c4c5a5c09",
+      "compression": "gzip",
+      "uncompressedSHA256": "3f595ab04ca99ef3cc9b8c18c8971765aae5bb9a55ee8a36bd5cba7c4c5a5c09",
+      "sha256": "1ffc20d5c10066be5b5162ef530d36bcad15bfcd499630b438100ebb8549a2fa"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-proof-verified-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-creation-proof-verified-evidence.json",
+      "originalSHA256": "56a473891fec996925633600e0dd731d640c75e81528e5999ddf4822a384d48a",
+      "sha256": "c2c51f98e07784668601400e9438fd6888f040eefd5dfc6a48d5025c3cb2431a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-proof-verified-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-creation-proof-verified-manifest.json",
+      "originalSHA256": "19ff7a3c5690093df3cbaab1b1e8fdc3f6905019b87d2445f4e3d630fde52925",
+      "sha256": "19ff7a3c5690093df3cbaab1b1e8fdc3f6905019b87d2445f4e3d630fde52925"
     },
     {
       "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/desktop-agent-verified-owned.patch.gz",
@@ -350,6 +466,200 @@
       "originalEvidencePath": "/tmp/dory-p01-final-client-source-manifest.json",
       "originalSHA256": "29ad4e5e5f18a6f53351337dc7764d8a846b80956961eaa0c2aeececc68ff9dd",
       "sha256": "29ad4e5e5f18a6f53351337dc7764d8a846b80956961eaa0c2aeececc68ff9dd"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-1.json",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-source-manifest-1.json",
+      "originalSHA256": "1c0697238987fe623960a7781c2016443de0d6c94c93bcb762eafefd6ae046c0",
+      "sha256": "1c0697238987fe623960a7781c2016443de0d6c94c93bcb762eafefd6ae046c0"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-2.json",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-source-manifest-2.json",
+      "originalSHA256": "48145901d4ce9f371c2c4d9554a49a13617a36573ee2de2883a06366bd6832ef",
+      "sha256": "48145901d4ce9f371c2c4d9554a49a13617a36573ee2de2883a06366bd6832ef"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-3.json",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-source-manifest-3.json",
+      "originalSHA256": "4252793637e26fd1d44e63274a5d78b8842b83610ae4c9c52dfa2c80a40f4887",
+      "sha256": "4252793637e26fd1d44e63274a5d78b8842b83610ae4c9c52dfa2c80a40f4887"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-4-diagnostic.json",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-source-manifest-4-diagnostic.json",
+      "originalSHA256": "5a2a46ad73b3509dba919c1ba7684ebec909b7e6f84dfba7f35de486ae70fdfb",
+      "sha256": "5a2a46ad73b3509dba919c1ba7684ebec909b7e6f84dfba7f35de486ae70fdfb"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-5.json",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-source-manifest-5.json",
+      "originalSHA256": "b7b4e21495eb8b89dda90c639005e43bd2a6d52a1e8bf2c3bf0475504602dc40",
+      "sha256": "b7b4e21495eb8b89dda90c639005e43bd2a6d52a1e8bf2c3bf0475504602dc40"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source5-tests.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-source5-tests.patch",
+      "originalSHA256": "f304f0cad1e8bb5b004d49bdaf18dc3e4a9aa34d8017b411c7317f52add43128",
+      "compression": "gzip",
+      "uncompressedSHA256": "f304f0cad1e8bb5b004d49bdaf18dc3e4a9aa34d8017b411c7317f52add43128",
+      "sha256": "4dff4658b316b925b30d94fe1b5f263bfed4f29728d61525d945651b44869e5c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-1.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-tests-1.log",
+      "originalSHA256": "35420ad05aee7379b969a701e6a68d6e48195a8a71a289ab84f7a6cc61923671",
+      "compression": "gzip",
+      "uncompressedSHA256": "35420ad05aee7379b969a701e6a68d6e48195a8a71a289ab84f7a6cc61923671",
+      "sha256": "2d0704d595440466c610d8245151fa987f6f97ba1f0791da93dafa29c5f9664c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-2.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-tests-2.log",
+      "originalSHA256": "ae1468620b5e26244ccab0b6f2c49f3cd03d8676f577fcec39e57df65a527c67",
+      "compression": "gzip",
+      "uncompressedSHA256": "ae1468620b5e26244ccab0b6f2c49f3cd03d8676f577fcec39e57df65a527c67",
+      "sha256": "93b2da7df4f1b4454f27238009513e31f5596e311388bea4189d778f883f0107"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-3-baseline.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-tests-3-baseline.log",
+      "originalSHA256": "24ca3fabcf6657dbdb030bfc6ebe28c43dd486ae22bcd8e2291cf90aa2ab4e7d",
+      "compression": "gzip",
+      "uncompressedSHA256": "24ca3fabcf6657dbdb030bfc6ebe28c43dd486ae22bcd8e2291cf90aa2ab4e7d",
+      "sha256": "c4f3ebff624d522e2667ddf19a81b509348632c087fde064af94ce2a65eb3452"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-3-recovery-direct-2.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-tests-3-recovery-direct-2.log",
+      "originalSHA256": "f1632700b5a28dd4fd10dc1ac7b0b6329713207508d792090b838a8328a1cbae",
+      "compression": "gzip",
+      "uncompressedSHA256": "f1632700b5a28dd4fd10dc1ac7b0b6329713207508d792090b838a8328a1cbae",
+      "sha256": "3e80e9edd585ff13e5e0395d00eac593c5cdd1905a04ccf7303acab571c6ae08"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-3-recovery-direct-3.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-tests-3-recovery-direct-3.log",
+      "originalSHA256": "3663d699721244b65bedc44ad1b9c40c3661a2203ee011c2d89d8a3163eb8987",
+      "compression": "gzip",
+      "uncompressedSHA256": "3663d699721244b65bedc44ad1b9c40c3661a2203ee011c2d89d8a3163eb8987",
+      "sha256": "c64390ddfe9111e24a5d2805e82e4f5aeb33023e11071e67e6fcc06fb7eeb715"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-3-recovery-direct-4.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-tests-3-recovery-direct-4.log",
+      "originalSHA256": "cf6ce27ec7a78636bf75d87421607635eec9d00e8905cae4df3139dc282e39dc",
+      "compression": "gzip",
+      "uncompressedSHA256": "cf6ce27ec7a78636bf75d87421607635eec9d00e8905cae4df3139dc282e39dc",
+      "sha256": "f57ffcb9ee407493bc61971d5613cee6ccd84de9ff07cfdbe2993187693ca16d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-3-recovery-direct.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-tests-3-recovery-direct.log",
+      "originalSHA256": "6acd62010561a333cb76d69c0bfd964e6e68bd4f4c15c75311bc94d0794a724b",
+      "compression": "gzip",
+      "uncompressedSHA256": "6acd62010561a333cb76d69c0bfd964e6e68bd4f4c15c75311bc94d0794a724b",
+      "sha256": "43cad1751440332a6014a3921461f0d054fa80f79786d92cd456e606d706cec4"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-4-diagnostic.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-tests-4-diagnostic.log",
+      "originalSHA256": "c0971e8a818270d6b613a04112ddc06ffbc1e64b254b1aef662cfe647d570eea",
+      "compression": "gzip",
+      "uncompressedSHA256": "c0971e8a818270d6b613a04112ddc06ffbc1e64b254b1aef662cfe647d570eea",
+      "sha256": "c42283fc4fa883b4e5de8f1d3be1c958199dabc9f3954989553840ce4d199be2"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-5-recovery.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-tests-5-recovery.log",
+      "originalSHA256": "58c5da5fa71bb488361fc8d5949820d5ad96d1a75e56170337adb06f5cac8cdf",
+      "compression": "gzip",
+      "uncompressedSHA256": "58c5da5fa71bb488361fc8d5949820d5ad96d1a75e56170337adb06f5cac8cdf",
+      "sha256": "e7ef868a1d7383008b676cc610699ce4367a47d70e445760e788a04d1837d0e5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-verification.json",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-verification.json",
+      "originalSHA256": "d5803f7aea39cc20358c70ef448a5dce47473e3dec9c9b5de49285633f990c29",
+      "sha256": "8295a7c847e5e4c74e8f8b4c74a245496bf5915d06439105433ce12d02d19d80"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-verified-tests.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-agent-verified-tests.patch",
+      "originalSHA256": "1b243017aac0100ab4682175cec63b59018fa013a382edfec4d208905ef212c0",
+      "compression": "gzip",
+      "uncompressedSHA256": "1b243017aac0100ab4682175cec63b59018fa013a382edfec4d208905ef212c0",
+      "sha256": "5ccef066f82522e85662d83b9f27ba4767fe815477a614d97ef4eb3feaa311b4"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-source-manifest-2.json",
+      "originalEvidencePath": "/tmp/dory-p01-snapshot-creation-agent-source-manifest-2.json",
+      "originalSHA256": "f2220d654113843049e8967a7c9d427ddae5ea16eac7d3efee1e51f1352258a6",
+      "sha256": "f2220d654113843049e8967a7c9d427ddae5ea16eac7d3efee1e51f1352258a6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-source-manifest-3.json",
+      "originalEvidencePath": "/tmp/dory-p01-snapshot-creation-agent-source-manifest-3.json",
+      "originalSHA256": "64746f73bd235760ec53795fb039921815db096ee41b8f7c04f1378443fe6310",
+      "sha256": "64746f73bd235760ec53795fb039921815db096ee41b8f7c04f1378443fe6310"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-source-manifest-6.json",
+      "originalEvidencePath": "/tmp/dory-p01-snapshot-creation-agent-source-manifest-6.json",
+      "originalSHA256": "1d3459afcc991a041d1c672de64a31b55ace1f904495c37d358448adb499a770",
+      "sha256": "1d3459afcc991a041d1c672de64a31b55ace1f904495c37d358448adb499a770"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-source-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-snapshot-creation-agent-source-manifest.json",
+      "originalSHA256": "7b963724f9ca175f02352ee303a07409aa8122f5bd46e4a8aff0cfc525c18cc5",
+      "sha256": "7b963724f9ca175f02352ee303a07409aa8122f5bd46e4a8aff0cfc525c18cc5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-tests-2.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-snapshot-creation-agent-tests-2.log",
+      "originalSHA256": "ff4c652df7387f1c98826e384cd904ed5bb9c7dcd314322c4514ac3a913e4eb0",
+      "compression": "gzip",
+      "uncompressedSHA256": "ff4c652df7387f1c98826e384cd904ed5bb9c7dcd314322c4514ac3a913e4eb0",
+      "sha256": "0c78ee5974dce2c9936f20ab322eb23efff06df37d0343a06f5c596281029531"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-tests-3.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-snapshot-creation-agent-tests-3.log",
+      "originalSHA256": "4a6c6ae3e26b829e80d9264b084b811c82b39a38ec15301e8925cfd86ceeaca9",
+      "compression": "gzip",
+      "uncompressedSHA256": "4a6c6ae3e26b829e80d9264b084b811c82b39a38ec15301e8925cfd86ceeaca9",
+      "sha256": "1e486dfbeb9e09d6026a6bd9047c1ba6464feb132c873a0a88d66d1eb406cba1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-tests-6.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-snapshot-creation-agent-tests-6.log",
+      "originalSHA256": "a71a50add548bf91a6dd09ebcaecb0cc12bf186a37c22383b3bd817ea201c552",
+      "compression": "gzip",
+      "uncompressedSHA256": "a71a50add548bf91a6dd09ebcaecb0cc12bf186a37c22383b3bd817ea201c552",
+      "sha256": "2f8a39982b38510df0ab7256c74e6396ab3b091ae6ca323d5c6543035110707f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-tests.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-snapshot-creation-agent-tests.log",
+      "originalSHA256": "c8acf6a445a9ee2876b5fa81321a68f841d042a2903417de42b9f170d3e9f4cc",
+      "compression": "gzip",
+      "uncompressedSHA256": "c8acf6a445a9ee2876b5fa81321a68f841d042a2903417de42b9f170d3e9f4cc",
+      "sha256": "c7118850df796d929f8c8e0b99be0d300bfea74fa9e9ba5d94ff084d376a8ac7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-root-agent-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-snapshot-root-agent-evidence.json",
+      "originalSHA256": "786c36970e6e0d99de59ca1c68baa650bf8c2d9275e7e43b4f33266378fa49b0",
+      "sha256": "71b70e83a22d4b9e2d30c747e1c5e969a85c54fd16045e8a83314aebc2e1d064"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-root-agent-only.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-snapshot-root-agent-only.patch",
+      "originalSHA256": "da44f7f6866121bb7c43dbd3b6dd4e8b8c51feb600058db3e93f221986084125",
+      "compression": "gzip",
+      "uncompressedSHA256": "da44f7f6866121bb7c43dbd3b6dd4e8b8c51feb600058db3e93f221986084125",
+      "sha256": "3ea86dd5da9fe4d3f3ac577f5625bcc305098d5383dd2e8e18194487117fcfa0"
     }
   ],
   "appTransportAndProjection": {
@@ -357,5 +667,29 @@
     "testSeconds": 35.829,
     "buildSucceeded": true,
     "scope": "Copied Debug host with a separate bundle identity, ad-hoc signed; exact source manifest and code-payload comparison retained."
+  },
+  "publicCreationAndClone": {
+    "passedScenarios": 5,
+    "finalContractAndServiceTests": 70,
+    "commits": [
+      "ff370d72b",
+      "6ab6c1328"
+    ]
+  },
+  "publicSnapshot": {
+    "distinctPassingScenariosAcrossFrozenGates": 13,
+    "commit": "bc2ba05eb"
+  },
+  "publicRestore": {
+    "distinctPassingScenariosAcrossFrozenGates": 8,
+    "commit": "bc2ba05eb"
+  },
+  "latestClient": {
+    "passedTests": 83,
+    "testSeconds": 35.636,
+    "commits": [
+      "6ab6c1328",
+      "bdc5fd3ad"
+    ]
   }
 }

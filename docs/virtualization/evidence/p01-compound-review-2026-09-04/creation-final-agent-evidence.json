@@ -1,0 +1,21 @@
+{
+  "snapshot": "/tmp/dory-p01-creation-final-verified-snapshot",
+  "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-final-verified-manifest.json",
+  "manifestSHA256": "f65b4b7600b27c4f687ad6a46053f859d8db104a4f6865abfbb5d07ff9b483a6",
+  "files": 670,
+  "result": "Latest frozen final source:52XCTest+18Swift Testing pass; compiler16.56s. Dedicated same-context proof suite and publicclone passed on preceding frozen proof snapshot, with publicclone110.128s vs192.206s pre-proof. All5public create/clone workflows passed on pre-proof frozen snapshot including fresh activation recovery and detached import/clone.",
+  "logs": {
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-final-agent-tests-4.log.gz": "2ca5cd5f75ceb745ea4c94eb4f1448aebdde967ace7293329ed8c97708e26f0a",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-final-agent-tests-3.log.gz": "3f4852666032737f4b92b097d42ed66ab28c5da7422c603f8c465e88647cfae8",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-proof-agent-tests-1.log.gz": "3f595ab04ca99ef3cc9b8c18c8971765aae5bb9a55ee8a36bd5cba7c4c5a5c09"
+  },
+  "relatedReceipts": [
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-final17-verified-evidence.json",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-proof-verified-evidence.json"
+  ],
+  "patches": {
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-implementation-agent-only.patch.gz": "a6f2fe7f95311ba228d93fd7357dc5e5a9a1c2f6bfcd394cd737bcbdfe7d0fcb",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-callers-agent-only.patch.gz": "66399b3abe63d01ece4364312a840905818ea6f5df5cb56ab206f9bdcb0d91a1"
+  },
+  "scope": "Signed real production planning/control-plane construction with synthetic authenticated backend. No physical guest qualification. Final source differs from public proof snapshot only by early native sync-create rejection and service/private test corrections. App caller UUID assertions separately validated by parent app gate; patches exclude parent snapshot/restore callers and shared MMhooks."
+}

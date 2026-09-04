@@ -1,0 +1,145 @@
+{
+  "runs": [
+    {
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-1.log.gz",
+      "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-1.json",
+      "cases": 3,
+      "issues": 3,
+      "duration_seconds": 250.909,
+      "exit_code": 1,
+      "findings": [
+        "stopped restore improperly required launch-grade mutable source evidence",
+        "resident restore improperly required historical snapshot plan equal current plan"
+      ]
+    },
+    {
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-2.log.gz",
+      "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-2.json",
+      "cases": 3,
+      "issues": 3,
+      "duration_seconds": 450.173,
+      "exit_code": 1,
+      "findings": [
+        "stopped target power projection not re-established after planning",
+        "resident target replan blocked by old admission retained for restart"
+      ],
+      "changed_inputs": []
+    },
+    {
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-3-baseline.log.gz",
+      "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-3.json",
+      "manifest_sha256": "4252793637e26fd1d44e63274a5d78b8842b83610ae4c9c52dfa2c80a40f4887",
+      "cases": 3,
+      "issues": 0,
+      "duration_seconds": 570.209,
+      "exit_code": 0,
+      "changed_inputs": [],
+      "scope": "public restore after legitimate workload writes, stopped/running/paused target, one root and exact UUID/revision/helper/replay"
+    },
+    {
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-4-diagnostic.log.gz",
+      "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-4-diagnostic.json",
+      "cases": 1,
+      "issues": 1,
+      "duration_seconds": 134.51,
+      "exit_code": 1,
+      "changed_inputs": [],
+      "finding": "fresh startup generic cleanup deletes owned .restore-UUID backups, so recorded snapshot artifact cannot be opened",
+      "count_note": "Auxiliary-thread Issue.record labels individual case passed, but entire run failed with1 issue; no recovery pass claim."
+    },
+    {
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-5-recovery.log.gz",
+      "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-5.json",
+      "manifest_sha256": "b7b4e21495eb8b89dda90c639005e43bd2a6d52a1e8bf2c3bf0475504602dc40",
+      "cases": 4,
+      "issues": 0,
+      "duration_seconds": 782.694,
+      "exit_code": 0,
+      "changed_inputs": [],
+      "files_checked": 602,
+      "scope": [
+        "fresh manager after recorded backups, stopped source",
+        "fresh manager after recorded backups, paused source",
+        "fresh manager after qualified completion, stopped source",
+        "fresh manager after qualified completion, running source"
+      ],
+      "fix_verified": "startup cleanup preserves exact owned restore backups until typed root recovery commits"
+    }
+  ],
+  "authored_unrun": [],
+  "scope": "Signed production trust, public APIs and authenticated runtime subprocess fixture; no physical VM qualification.",
+  "partial_active_recovery_run": {
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-3-recovery-direct-4.log.gz",
+    "stopped_completion_retry_pass_seconds": 148.747,
+    "pending_fresh_recovery_cases": 2,
+    "launcher": "direct SwiftPM testing helper with verified Xcode framework/library paths; no source/binary changes",
+    "loader_only_failed_attempts": [
+      "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-3-recovery-direct.log.gz",
+      "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-3-recovery-direct-2.log.gz",
+      "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-3-recovery-direct-3.log.gz"
+    ],
+    "status": "terminated after two afterBackups fresh-activation failures; qualified cases not claimed",
+    "fresh_after_backups_failures": [
+      "stopped",
+      "paused"
+    ],
+    "exit_code": 143
+  },
+  "test_only_patch": {
+    "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-verified-tests.patch.gz",
+    "sha256": "1b243017aac0100ab4682175cec63b59018fa013a382edfec4d208905ef212c0",
+    "base_sha256": "b0a9620d4dd8b1f0bf24db14d2935f64ebd3bb1da48a9f2f325916f140056c6b",
+    "tested_postimage_sha256": "5215e239ff1d9c27a5f3bdc5fe680f1fbfaf09a41328295808cd0dc51f3528f9",
+    "scope": "exact frozen restore extension/helpers only; additional cases authored and running are identified above"
+  },
+  "latest_test_only_patch": {
+    "base": "/tmp/dory-p01-desktop-root-source-8/dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift",
+    "postimage": "/tmp/dory-p01-restore-agent-source-1/dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift",
+    "base_sha256": "b0a9620d4dd8b1f0bf24db14d2935f64ebd3bb1da48a9f2f325916f140056c6b",
+    "postimage_sha256": "efef52f462941add2abafec4ed2375893de4a9dbabaca2fcc72ad2e13002dc52",
+    "patch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source5-tests.patch.gz",
+    "patch_sha256": "f304f0cad1e8bb5b004d49bdaf18dc3e4a9aa34d8017b411c7317f52add43128",
+    "verification": "Four fresh-manager recovery cases passed on source5. Three baseline states and stopped same-manager completion case passed source3; these were not rerun on source5, whose production delta is startup cleanup preservation and activation diagnostic."
+  },
+  "passing_case_summary": {
+    "distinct_cases": 8,
+    "baseline_states": {
+      "count": 3,
+      "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-3.json",
+      "duration_seconds": 570.209,
+      "exit_code": 0
+    },
+    "stopped_same_manager_completion_retry": {
+      "count": 1,
+      "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-3.json",
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-3-recovery-direct-4.log.gz",
+      "duration_seconds": 148.747,
+      "note": "Individual test passed before fresh-manager tests failed and run was interrupted; not an overall suite pass."
+    },
+    "fresh_manager_recovery": {
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-tests-5-recovery.log.gz",
+      "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-5.json",
+      "manifest_sha256": "b7b4e21495eb8b89dda90c639005e43bd2a6d52a1e8bf2c3bf0475504602dc40",
+      "cases": 4,
+      "issues": 0,
+      "duration_seconds": 782.694,
+      "exit_code": 0,
+      "changed_inputs": [],
+      "files_checked": 602,
+      "scope": [
+        "fresh manager after recorded backups, stopped source",
+        "fresh manager after recorded backups, paused source",
+        "fresh manager after qualified completion, stopped source",
+        "fresh manager after qualified completion, running source"
+      ],
+      "fix_verified": "startup cleanup preserves exact owned restore backups until typed root recovery commits"
+    },
+    "qualification": "Public production trust/planning + authenticated subprocess runtime and real 32GiB disk copies/hashes. Not physical VM boot qualification; not one combined-current-tree eight-case run."
+  },
+  "current_source_hashes": {
+    "Sources/DorydKit/DoryDaemonVirtualMachineProductionActivation.swift": "396959952cc95ebed61aa2a852d61d9b7a4cac3eb916f05c19fb505b7fdff2b6",
+    "Sources/DorydKit/DoryMachineSnapshotRestore.swift": "5d4b8819d0bcd60d8b0bd418cfd4481466d684f4ae94805ff4382e139bb52187",
+    "Sources/DorydKit/MachineManager.swift": "519a0849a3d5e9a835f0aa4ec2a65bb967788e5de9a3ab1bca7499d8ba4a1c23",
+    "Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift": "efef52f462941add2abafec4ed2375893de4a9dbabaca2fcc72ad2e13002dc52"
+  }
+}
