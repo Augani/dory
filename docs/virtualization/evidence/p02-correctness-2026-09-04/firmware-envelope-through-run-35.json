@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "firmware",
+  "issueLabel": "subsystem:firmware",
+  "planItems": [
+    "P02-06",
+    "P02-07",
+    "P02-22",
+    "P02-23",
+    "P02-24",
+    "P02-26"
+  ],
+  "sourceCommit": "2a22e9c6ac06ab56a7120822703eb247eee7ddb0",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Bounded runs 31 through 35 and optimized source-32 runner; completed probes only. Exact failed run 33 retained.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-35.json",
+      "sha256": "6a9d4b78a05c62b242aa5d117137613ba5d191ee2d20688d7e63f6b06071edcf"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-30.json",
+      "sha256": "f6d0bdff312b7ccf72722f83f174f97c54953443eac0a971f378322072508766"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete; no physical x86 reference, full ISA, sustained disk/network stress or release qualification is established.",
+    "Counts distinguish individual passed tests, one disabled physical-reference test and one optional XCTest fixture skip. Run 33 is a retained failing test and is not relabeled as passing.",
+    "RDSSP maps to a no-op only because no represented profile exposes CET; no CET support is claimed.",
+    "Synthetic AVX profiles are test inputs, not qualified public CPU profiles. Global SIMD enable-state, x87 pointers/opcode/tag reconstruction and other floating-point qualifications remain separate.",
+    "Generated FFI and copied executables are hash-bound without vendoring binary payloads. The experimental host and concurrent work make timing engineering data only."
+  ]
+}

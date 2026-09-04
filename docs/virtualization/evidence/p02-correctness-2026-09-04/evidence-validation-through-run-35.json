@@ -1,0 +1,156 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-evidence-retention-validation",
+  "reviewSHA256": "6a9d4b78a05c62b242aa5d117137613ba5d191ee2d20688d7e63f6b06071edcf",
+  "newArtifactsBeforeThisValidation": 31,
+  "distinctRepositoryArtifactReferencesVerified": 30,
+  "previousReviewHashVerified": true,
+  "envelopesSchemaValidated": 2,
+  "schemaPath": "Config/DoryVirtualizationEvidence.schema.json",
+  "schemaSHA256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb",
+  "sourceBindings": [
+    {
+      "run": 31,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "874bb56f540499f48081f1590968b49214c58493",
+      "trackedInputs": 689,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 93,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    },
+    {
+      "run": 32,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "061fbac10a1cd34cbf7c363744a1c8941149b0be",
+      "trackedInputs": 691,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 95,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    },
+    {
+      "run": 33,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "58928ec467df02bcc4224757e71f54afb193a861",
+      "trackedInputs": 693,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 97,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86InstructionFeaturePolicyTests.swift",
+          "frozenSHA256": "d96ff527a4687eae7ed658400e134d700d828682cc7e0ae808f1380a1bed55d7",
+          "commitSHA256": "520c9d31ed34f2c6f0a680743cdda8f09dfd6b15917efdce45c61fbb3df472f2"
+        }
+      ]
+    },
+    {
+      "run": 34,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "58928ec467df02bcc4224757e71f54afb193a861",
+      "trackedInputs": 693,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 97,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    },
+    {
+      "run": 35,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "2a22e9c6ac06ab56a7120822703eb247eee7ddb0",
+      "trackedInputs": 694,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 98,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    }
+  ],
+  "strictLogCountsVerified": true,
+  "logCounts": [
+    {
+      "run": 31,
+      "swiftPassed": 746,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 747,
+      "swiftSuites": 87,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    },
+    {
+      "run": 32,
+      "swiftPassed": 761,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 762,
+      "swiftSuites": 89,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    },
+    {
+      "run": 33,
+      "swiftPassed": 766,
+      "swiftFailed": 1,
+      "swiftDisabled": 1,
+      "swiftReported": 768,
+      "swiftSuites": 90,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": [
+        "\udbc2\udc84  Test legacyOptionalOperationsRequireTheirOwnAdvertisedFeature() failed after 0.001 seconds with 1 issue."
+      ]
+    },
+    {
+      "run": 34,
+      "swiftPassed": 767,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 768,
+      "swiftSuites": 90,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    },
+    {
+      "run": 35,
+      "swiftPassed": 773,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 774,
+      "swiftSuites": 91,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    }
+  ],
+  "glibcFailedProbeConsistencyChecks": {
+    "failedResetNoAcceptedReceipt": true,
+    "exitFileMatches": true,
+    "source32RunnerIdentity": true,
+    "uniqueRunIDBound": true,
+    "pinnedInputsBound": true,
+    "retiredCountsAgree": true,
+    "elapsedBudgetBound": true,
+    "glibcRejectionObserved": true,
+    "noGuestSuccessOrS5": true,
+    "terminalSampleBound": true,
+    "liveCountersNotReasonTotals": true,
+    "baselineCountersAndSitesBounded": true,
+    "optimizingTierNotSampled": true,
+    "recordCollectionsBounded": true
+  },
+  "glibcProbeScope": "Source32 runner; RDSSP rejection is no longer the observed stopping point. The glibc loader emits an ISA-level rejection, exits init and the guest resets without an accepted receipt or poweroff. The ISA/profile/instruction cause remains under investigation.",
+  "telemetryScope": "19 baseline lifetime counters and at most16 baseline live negative-cache sites, not cumulative reason totals. Optimizing-tier diagnostics are absent and unmeasured. Terminal sample at655563332 retired instructions; no per-instruction guest-fault or full-state parity claim.",
+  "noUserHomePathsInNewArtifactTextOrMembers": true,
+  "tarOwnerAndTimeNormalizationVerified": true,
+  "normalizationByThisValidation": "None; retained artifacts were read-only. All new artifact references are repository-relative.",
+  "qualification": "Schema, artifact, exact-source, test-count and failed-probe consistency validation only. No additional build or guest execution; hosted CI, physical reference, glibc/systemd acceptance, sustained stress and phase completion are not established."
+}
