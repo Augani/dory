@@ -9,6 +9,7 @@ from pathlib import Path
 import re
 import selectors
 import stat
+import struct
 import subprocess
 import sys
 import time
@@ -20,6 +21,7 @@ import zlib
 
 CATALOG = Path(__file__).resolve().parent.parent / "Config/DoryVirtualizationGuestCandidates.json"
 DIAGNOSTIC_DIRECTORY = Path(__file__).resolve().parent.parent / "guest/diagnostics/p02-minimal-userspace"
+GLIBC_DIAGNOSTIC_DIRECTORY = DIAGNOSTIC_DIRECTORY.with_name("p02-glibc-userspace")
 CHUNK_BYTES = 64 * 1024
 MAX_DOWNLOAD_BYTES = 32 * 1024**3
 MAX_MEMBER_BYTES = 512 * 1024**2
@@ -221,9 +223,15 @@ def download_chunks(url, maximum):
 def tar_member_chunks(descriptor, member):
     """libarchive's tar can read ISO9660; -O streams data and never creates archive paths."""
     safe_member(member)
+    yield from checked_member_chunks(descriptor,
+        ["tar", "-xOf", "/dev/fd/" + str(descriptor), "--", member], MAX_MEMBER_BYTES)
+
+
+def checked_member_chunks(descriptor, command, maximum):
+    """Stream a selected member from an owned verified descriptor; never extract host paths."""
     before = file_stamp(descriptor)
     os.lseek(descriptor, 0, os.SEEK_SET)
-    process = subprocess.Popen(["tar", "-xOf", "/dev/fd/" + str(descriptor), "--", member],
+    process = subprocess.Popen(command,
                                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                                stderr=subprocess.PIPE, pass_fds=(descriptor,))
     errors, size = bytearray(), 0
@@ -243,10 +251,10 @@ def tar_member_chunks(descriptor, member):
                         errors.extend(chunk[:max(0, 4096 - len(errors))])
                     else:
                         size += len(chunk)
-                        require(size <= MAX_MEMBER_BYTES, "archive member exceeds byte limit")
+                        require(size <= maximum, "archive member exceeds byte limit")
                         yield chunk
         status = process.wait(timeout=max(0.001, deadline - time.monotonic()))
-        require(status == 0, "tar member extraction failed: " + errors.decode("utf-8", "replace"))
+        require(status == 0, "archive member extraction failed: " + errors.decode("utf-8", "replace"))
         require(file_stamp(descriptor) == before, "verified archive changed during extraction")
     finally:
         if process.poll() is None:
@@ -510,6 +518,246 @@ def prepare_diagnostic(artifact, cache, directory=DIAGNOSTIC_DIRECTORY):
             "qualification": manifest["qualification"]}
 
 
+def elf_dependencies(data):
+    """Inspect file-backed ELF64 tables without executing an extracted guest program."""
+    require(len(data) >= 64 and data[:7] == b"\x7fELF\x02\x01\x01"
+            and int.from_bytes(data[18:20], "little") == 62, "not ELF64 little-endian x86-64")
+    phoff = struct.unpack_from("<Q", data, 32)[0]
+    phsize, count = struct.unpack_from("<HH", data, 54)
+    require(phsize == 56 and 1 <= count <= 128 and phoff + count * phsize <= len(data),
+            "invalid ELF program-header table")
+    loads, dynamic, interpreter = [], None, None
+    for index in range(count):
+        kind, _, offset, address, _, size, memory_size, _ = struct.unpack_from(
+            "<IIQQQQQQ", data, phoff + index * phsize)
+        require(offset + size <= len(data), "ELF segment extends beyond file")
+        if kind == 1:
+            require(size <= memory_size, "invalid ELF load segment")
+            loads.append((address, offset, size))
+        elif kind == 2:
+            require(dynamic is None and size % 16 == 0, "invalid ELF dynamic table")
+            dynamic = data[offset:offset + size]
+        elif kind == 3:
+            require(interpreter is None and 2 <= size <= 1024
+                    and data[offset + size - 1] == 0, "invalid ELF interpreter")
+            interpreter = data[offset:offset + size - 1].decode("ascii")
+            require(interpreter.startswith("/"), "ELF interpreter must be absolute")
+            safe_member(interpreter[1:])
+    strings, needed_offsets, soname_offset = {}, [], None
+    if dynamic is not None:
+        terminated = False
+        for offset in range(0, len(dynamic), 16):
+            tag, value = struct.unpack_from("<qQ", dynamic, offset)
+            if tag == 0:
+                terminated = True
+                break
+            if tag == 1:
+                needed_offsets.append(value)
+            elif tag in (5, 10, 14):
+                require(tag not in strings, "duplicate ELF dynamic field")
+                strings[tag] = value
+            elif tag in (15, 29):
+                raise FixtureError("ELF search-path overrides are unsupported")
+        require(terminated, "unterminated ELF dynamic table")
+        if needed_offsets or 14 in strings:
+            require(5 in strings and 10 in strings and 0 < strings[10] <= len(data),
+                    "missing ELF dynamic strings")
+            candidates = [offset + strings[5] - address for address, offset, size in loads
+                          if address <= strings[5] and strings[5] + strings[10] <= address + size]
+            require(len(candidates) == 1, "ELF strings are not uniquely file-backed")
+            table = data[candidates[0]:candidates[0] + strings[10]]
+
+            def name_at(offset):
+                require(offset < len(table), "ELF dynamic string offset exceeds table")
+                end = table.find(b"\0", offset)
+                require(end >= offset, "unterminated ELF dynamic string")
+                return safe_name(table[offset:end].decode("ascii"))
+
+            needed_offsets = [name_at(offset) for offset in needed_offsets]
+            soname_offset = name_at(strings[14]) if 14 in strings else None
+    require(len(set(needed_offsets)) == len(needed_offsets), "duplicate ELF dependency")
+    return {"interpreter": interpreter, "needed": needed_offsets, "soname": soname_offset}
+
+
+GLIBC_LINKS = {"bin/sh": "busybox", "lib": "usr/lib", "lib64": "usr/lib/x86_64-linux-gnu"}
+
+
+def validate_glibc_closure(members, specifications):
+    installed, observed = {}, {}
+    for member, specification in specifications.items():
+        destination = safe_member(specification["destination"])
+        require(destination not in installed and destination not in GLIBC_LINKS,
+                "duplicate glibc guest destination")
+        installed[destination] = member
+        observed[member] = elf_dependencies(members[member])
+        require(observed[member] == specification.get("elf"), "ELF dependency pins differ: " + member)
+
+    def resolve(path):
+        for _ in range(8):
+            parts = path.split("/")
+            for count in range(1, len(parts) + 1):
+                prefix = "/".join(parts[:count])
+                if prefix in GLIBC_LINKS:
+                    path = "/".join(parts[:count - 1] + [GLIBC_LINKS[prefix]] + parts[count:])
+                    break
+            else:
+                return installed.get(path)
+        raise FixtureError("glibc guest symlink cycle")
+
+    edges = {}
+    for member, metadata in observed.items():
+        dependencies = []
+        if metadata["interpreter"]:
+            dependency = resolve(metadata["interpreter"][1:])
+            require(dependency is not None, "ELF interpreter is missing from closure")
+            dependencies.append(dependency)
+        for name in metadata["needed"]:
+            targets = {resolve(directory + "/" + name) for directory in (
+                "lib/x86_64-linux-gnu", "lib", "usr/lib/x86_64-linux-gnu", "usr/lib")}
+            targets.discard(None)
+            require(len(targets) == 1, "ELF dependency is missing or ambiguous: " + name)
+            dependency = targets.pop()
+            require(observed[dependency]["soname"] == name, "ELF dependency SONAME differs")
+            dependencies.append(dependency)
+        edges[member] = set(dependencies)
+    pending = [resolve("bin/busybox"), resolve("sbin/poweroff")]
+    require(None not in pending, "glibc workload and shutdown entrypoints are required")
+    reached = set()
+    while pending:
+        member = pending.pop()
+        if member not in reached:
+            reached.add(member)
+            pending.extend(edges[member] - reached)
+    require(reached == set(members), "unreferenced ELF outside minimal dependency closure")
+    return observed
+
+
+def glibc_diagnostic_cpio(init, members, specifications):
+    entries = {name: (stat.S_IFREG | 0o755, members[member], 0, 0)
+               for member, spec in specifications.items() for name in [spec["destination"]]}
+    entries.update({name: (stat.S_IFLNK | 0o777, target.encode("ascii"), 0, 0)
+                    for name, target in GLIBC_LINKS.items()})
+    entries.update({"init": (stat.S_IFREG | 0o755, init, 0, 0),
+                    "dev/console": (stat.S_IFCHR | 0o600, b"", 5, 1),
+                    "dev/null": (stat.S_IFCHR | 0o666, b"", 1, 3),
+                    "dev/zero": (stat.S_IFCHR | 0o666, b"", 1, 5)})
+    directories = {"bin", "sbin", "dev", "proc", "run", "sys", "tmp"}
+    for name in list(entries):
+        safe_member(name)
+        parts = name.split("/")
+        directories.update("/".join(parts[:count]) for count in range(1, len(parts)))
+    require(not directories.intersection(entries), "guest archive parent is not a directory")
+    entries.update({name: (stat.S_IFDIR | 0o755, b"", 0, 0) for name in directories})
+    output = bytearray()
+    for inode, name in enumerate(sorted(entries) + ["TRAILER!!!"], 1):
+        mode, body, major, minor = entries.get(name, (0, b"", 0, 0))
+        encoded = name.encode("ascii") + b"\0"
+        fields = [inode, mode, 0, 0, 2 if stat.S_ISDIR(mode) else 1, 0,
+                  len(body), 0, 0, major, minor, len(encoded), 0]
+        output.extend(b"070701" + "".join(f"{value:08x}" for value in fields).encode("ascii"))
+        output.extend(encoded)
+        output.extend(b"\0" * (-len(output) % 4))
+        output.extend(body)
+        output.extend(b"\0" * (-len(output) % 4))
+    output.extend(b"\0" * (-len(output) % 512))
+    return bytes(output)
+
+
+def prepare_glibc_diagnostic(artifact, cache, directory=GLIBC_DIAGNOSTIC_DIRECTORY):
+    recipe_bytes = read_diagnostic_source(directory / "fixture.json", 64 * 1024)
+    recipe = json.loads(recipe_bytes, object_pairs_hook=unique_object)
+    require(isinstance(recipe, dict) and type(recipe.get("schemaVersion")) is int
+            and recipe.get("schemaVersion") == 1 and recipe.get("kind") == "p02-glibc-userspace"
+            and recipe.get("architecture") == "x86_64", "unsupported glibc diagnostic recipe")
+    require(recipe.get("artifactID") == artifact["id"] and recipe.get("sourceSHA256") == artifact["sha256"],
+            "glibc source must match pinned catalog artifact")
+    source = recipe.get("squashfs")
+    require(isinstance(source, dict), "invalid squashfs recipe")
+    safe_member(source.get("member"))
+    safe_name(source.get("filename"))
+    require(isinstance(source.get("sha256"), str) and SHA256.fullmatch(source["sha256"]), "invalid squashfs SHA")
+    size = bounded_integer(source.get("bytes"), MAX_MEMBER_BYTES, "squashfs byte limit")
+    specs = recipe.get("members")
+    require(isinstance(specs, dict) and 1 <= len(specs) <= 16, "invalid glibc member count")
+    for name, spec in specs.items():
+        safe_member(name)
+        require(isinstance(spec, dict), "invalid glibc member recipe")
+        safe_member(spec.get("destination"))
+        bounded_integer(spec.get("bytes"), 8 * 1024**2, "glibc member byte limit")
+        require(isinstance(spec.get("sha256"), str) and SHA256.fullmatch(spec["sha256"]), "invalid glibc member SHA")
+    require(sum(spec["bytes"] for spec in specs.values()) <= 32 * 1024**2, "glibc closure exceeds byte limit")
+    upstream = recipe.get("upstreamUserspace")
+    require(isinstance(upstream, dict) and isinstance(upstream.get("libcBanner"), str)
+            and upstream.get("libcMember") in specs, "invalid glibc version recipe")
+    safe_name(recipe.get("outputFilename"))
+    bounded_integer(recipe.get("outputBytes"), 33 * 1024**2, "glibc output byte limit")
+    require(isinstance(recipe.get("runnerProtocol"), dict) and isinstance(recipe.get("limitations"), list),
+            "missing glibc acceptance limits")
+    init = read_diagnostic_source(directory / "init", 64 * 1024)
+    require(hashlib.sha256(init).hexdigest() == recipe.get("initSHA256"), "glibc init source SHA differs")
+    descriptor = cache.open_verified(source["filename"], source["sha256"], size, size)
+    if descriptor is None:
+        archive = cache.open_verified(artifact["filename"], artifact["sha256"],
+                                      artifact.get("bytes", MAX_DOWNLOAD_BYTES), artifact.get("bytes"))
+        require(archive is not None, "required cached glibc ISO is missing")
+        try:
+            cache.publish(source["filename"], source["sha256"], size,
+                          tar_member_chunks(archive, source["member"]), size)
+        finally:
+            os.close(archive)
+        descriptor = cache.open_verified(source["filename"], source["sha256"], size, size)
+    require(descriptor is not None, "published squashfs disappeared")
+    members = {}
+    try:
+        for name, spec in specs.items():
+            chunks = checked_member_chunks(descriptor,
+                ["unsquashfs", "-processors", "1", "-mem", "16M", "-cat",
+                 "/dev/fd/" + str(descriptor), name], spec["bytes"])
+            data = b"".join(chunks)
+            require(len(data) == spec["bytes"] and hashlib.sha256(data).hexdigest() == spec["sha256"],
+                    "glibc member size or SHA differs: " + name)
+            members[name] = data
+    finally:
+        os.close(descriptor)
+    observed = validate_glibc_closure(members, specs)
+    banner = recipe["upstreamUserspace"]["libcBanner"].encode("ascii")
+    require(banner in members[recipe["upstreamUserspace"]["libcMember"]], "actual glibc version banner differs")
+    for key, destination in (("busybox", "bin/busybox"), ("shutdownBinaryUsage", "sbin/poweroff")):
+        if key in upstream:
+            require(isinstance(upstream[key], str), "invalid glibc tool identity")
+            identity = upstream[key].encode("ascii")
+            require(any(spec["destination"] == destination and identity in members[name]
+                        for name, spec in specs.items()), "actual guest tool identity differs: " + key)
+    output = glibc_diagnostic_cpio(init, members, specs)
+    output_digest = hashlib.sha256(output).hexdigest()
+    require(len(output) == recipe["outputBytes"] and output_digest == recipe.get("outputSHA256"),
+            "glibc output size or SHA differs")
+    filename = safe_name(recipe["outputFilename"])
+    manifest = {"schemaVersion": 1, "kind": "p02-glibc-userspace-build", "architecture": "x86_64",
+        "qualification": "archive integrity and deterministic construction only; guest has not executed",
+        "sourceArtifactID": artifact["id"], "sourceArtifactSHA256": artifact["sha256"],
+        "squashfs": source, "members": specs, "observedELFDependencies": observed,
+        "upstreamUserspace": recipe["upstreamUserspace"],
+        "recipeSHA256": hashlib.sha256(recipe_bytes).hexdigest(), "initSHA256": recipe["initSHA256"],
+        "builderSHA256": hashlib.sha256(read_diagnostic_source(Path(__file__), 1024**2)).hexdigest(),
+        "outputFilename": filename, "outputSHA256": output_digest, "outputBytes": len(output),
+        "format": "newc; sorted names; uid/gid/mtime zero; sequential inodes; 512-byte padded; uncompressed",
+        "runnerProtocol": recipe["runnerProtocol"], "limitations": recipe["limitations"]}
+    manifest_bytes = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+    manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    manifest_name = filename + ".manifest.json"
+    for name, data, digest in ((filename, output, output_digest), (manifest_name, manifest_bytes, manifest_digest)):
+        existing = cache.open_verified(name, digest, len(data), len(data))
+        if existing is not None:
+            os.close(existing)
+        else:
+            cache.publish(name, digest, len(data),
+                          (data[offset:offset + CHUNK_BYTES] for offset in range(0, len(data), CHUNK_BYTES)), len(data))
+    return {"filename": filename, "sha256": output_digest, "bytes": len(output),
+            "manifestFilename": manifest_name, "manifestSHA256": manifest_digest,
+            "qualification": manifest["qualification"]}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path, default=CATALOG)
@@ -521,10 +769,12 @@ def main(argv=None):
                         help="derive missing boot files from verified inputs; verify existing outputs")
     parser.add_argument("--diagnostic-initramfs", action="store_true",
                         help="derive the pinned P02 x86-64 BusyBox/musl workload (requires --extract)")
+    parser.add_argument("--glibc-diagnostic-initramfs", action="store_true",
+                        help="derive the pinned P02 x86-64 BusyBox/glibc workload (requires --extract)")
     arguments = parser.parse_args(argv)
     if arguments.list:
         if (arguments.id or arguments.cache_directory or arguments.verify_only or arguments.extract
-                or arguments.diagnostic_initramfs):
+                or arguments.diagnostic_initramfs or arguments.glibc_diagnostic_initramfs):
             parser.error("--list cannot be combined with preparation options")
     elif not arguments.id or arguments.cache_directory is None:
         parser.error("preparation requires explicit --id and --cache-directory")
@@ -539,6 +789,10 @@ def main(argv=None):
         if arguments.diagnostic_initramfs:
             require(arguments.extract and arguments.id == ["alpine-virt-3.24.1-x86_64"],
                     "diagnostic initramfs requires --extract and only --id alpine-virt-3.24.1-x86_64")
+        if arguments.glibc_diagnostic_initramfs:
+            require(arguments.extract and not arguments.diagnostic_initramfs
+                    and arguments.id == ["ubuntu-server-24.04.4-x86_64"],
+                    "glibc diagnostic initramfs requires --extract and only --id ubuntu-server-24.04.4-x86_64")
         results = []
         diagnostic = None
         with Cache(arguments.cache_directory) as cache:
@@ -546,6 +800,8 @@ def main(argv=None):
                 results.append(prepare(by_id[identity], cache, arguments.verify_only, arguments.extract))
             if arguments.diagnostic_initramfs:
                 diagnostic = prepare_diagnostic(by_id[arguments.id[0]], cache)
+            if arguments.glibc_diagnostic_initramfs:
+                diagnostic = prepare_glibc_diagnostic(by_id[arguments.id[0]], cache)
         print(json.dumps({"schemaVersion": 1, "kind": "virtualization-fixture-preparation",
                           "cacheDirectory": str(arguments.cache_directory.absolute()),
                           "qualification": "input integrity only; no guest boot or workload qualification",

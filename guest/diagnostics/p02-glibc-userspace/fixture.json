@@ -1,0 +1,122 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-glibc-userspace",
+  "architecture": "x86_64",
+  "artifactID": "ubuntu-server-24.04.4-x86_64",
+  "sourceSHA256": "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433",
+  "squashfs": {
+    "member": "casper/ubuntu-server-minimal.squashfs",
+    "filename": "ubuntu-24.04.4-amd64-server-minimal.squashfs",
+    "bytes": 166309888,
+    "sha256": "cbb98254e0f38428994db0e1cf45fb4512af17d59ff98189acb1a6a104aa5681"
+  },
+  "initSHA256": "67bd3c52a7da6c9f97d26858534f91f3fab61e9d9887e3de8b5d4e13c5e391e8",
+  "members": {
+    "usr/lib/initramfs-tools/bin/busybox": {
+      "destination": "bin/busybox",
+      "bytes": 330000,
+      "sha256": "836e212c2f9cbcc71abaa15fb6d5f6db8cab23fe25b2f58051c80c6bdee35cd5",
+      "elf": {
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "needed": [
+          "libc.so.6"
+        ],
+        "soname": null
+      }
+    },
+    "usr/lib/x86_64-linux-gnu/libc.so.6": {
+      "destination": "usr/lib/x86_64-linux-gnu/libc.so.6",
+      "bytes": 2125328,
+      "sha256": "d8db8739a1633c972cec6a4fe0566bdcec6fd088f98723492ab0361f66238f75",
+      "elf": {
+        "interpreter": "/lib64/ld-linux-x86-64.so.2",
+        "needed": [
+          "ld-linux-x86-64.so.2"
+        ],
+        "soname": "libc.so.6"
+      }
+    },
+    "usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2": {
+      "destination": "usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+      "bytes": 236616,
+      "sha256": "1cd555ac46b7887edeaf3c42aac5408c8135e52f6b37870da2cf82d5fe14e829",
+      "elf": {
+        "interpreter": null,
+        "needed": [],
+        "soname": "ld-linux-x86-64.so.2"
+      }
+    },
+    "usr/lib/klibc/bin/poweroff": {
+      "destination": "sbin/poweroff",
+      "bytes": 9104,
+      "sha256": "06bcf2ba66fb1af6cb821db567d0a633c0c25b313cfa914688b026bbd2876495",
+      "elf": {
+        "interpreter": "/usr/lib/klibc-sw0VayLfV0hmLGCQE9vyfOnj81g.so",
+        "needed": [],
+        "soname": null
+      }
+    },
+    "usr/lib/klibc-sw0VayLfV0hmLGCQE9vyfOnj81g.so": {
+      "destination": "usr/lib/klibc-sw0VayLfV0hmLGCQE9vyfOnj81g.so",
+      "bytes": 78784,
+      "sha256": "2fba526b4c478ef1e70f344d552be2cddee99053d0aa31dbc4a9526cbab8f7da",
+      "elf": {
+        "interpreter": null,
+        "needed": [],
+        "soname": null
+      }
+    }
+  },
+  "outputFilename": "x86_64-p02-glibc-userspace-v1.cpio",
+  "outputSHA256": "813de160103ef6179de5d3b6d9271ed8f9883d8c3fa7671a49254f0ec7cb9d24",
+  "outputBytes": 2788352,
+  "upstreamUserspace": {
+    "busybox": "BusyBox v1.36.1 (Ubuntu 1:1.36.1-6ubuntu3.1)",
+    "libcMember": "usr/lib/x86_64-linux-gnu/libc.so.6",
+    "libcBanner": "GNU C Library (Ubuntu GLIBC 2.39-0ubuntu8.7) stable release version 2.39.",
+    "workloadRuntime": "All seven checks execute the dynamically linked BusyBox and glibc loader/libc closure.",
+    "shutdownRuntime": "Only the final /sbin/poweroff helper uses the separately pinned klibc interpreter.",
+    "shutdownInvocation": "/sbin/poweroff (no arguments), after /bin/busybox sync",
+    "shutdownBinaryUsage": "Usage: {halt|reboot|poweroff} [-n] [reboot-arg]"
+  },
+  "expectedResults": [
+    "bootstrap.filesystems",
+    "syscall.identity",
+    "process.creation_exec_wait",
+    "memory.allocation_copy",
+    "signal.handler_return",
+    "timer.sleep_elapsed",
+    "filesystem.write_read_sync",
+    "shutdown.request"
+  ],
+  "acceptance": "Fresh caller UUID from dory.pvh_run_id in every result; seven pass results, zero failures, one matching unprefixed runner receipt; shutdown.request is requested only and requires independent host ACPI S5 evidence. No build-only qualification.",
+  "runnerProtocol": {
+    "commandLineUUIDKey": "dory.pvh_run_id",
+    "receipt": "unprefixed JSON line",
+    "schemaVersion": 1,
+    "doryPVHBoot": "userspace-ready",
+    "runID": "exact command-line UUID",
+    "workloadsPassed": "true only when all seven named checks passed",
+    "workloads": "exact seven expectedResults names except shutdown.request",
+    "hostCompletion": "independent ACPI S5 poweredOff exit required"
+  },
+  "limitations": [
+    "Fixture preparation only; no guest has executed and no libc or distribution boot qualification is implied.",
+    "BusyBox/glibc shell workloads only; no systemd service manager or general-purpose distribution qualification.",
+    "The final poweroff helper uses klibc; it is not one of the seven glibc workload checks.",
+    "Shell process isolation and exec/wait semantics; exact fork/clone/vfork syscall choice is not traced.",
+    "64 KiB shell allocation/copy only; no malloc/mmap stress or exhaustion contract.",
+    "USR1 handler and sleep/uptime only; no complete signal or timer syscall coverage.",
+    "Writable tmpfs only; no block filesystem persistence qualification."
+  ],
+  "futureKernelInput": {
+    "status": "Optional source identity from the same verified ISO; not included or required by this initramfs builder. No kernel qualification.",
+    "member": "casper/vmlinuz",
+    "bytes": 15030664,
+    "sha256": "528d909745819a1464848a2c4d91c609db4f54b33ccae7069aad4178fb34606f",
+    "payloadCompression": "zstd",
+    "payloadOffset": 21196,
+    "payloadBytes": 14792736,
+    "extractionStatus": "Existing preparer supports gzip only; no Zstandard kernel recipe is introduced."
+  }
+}

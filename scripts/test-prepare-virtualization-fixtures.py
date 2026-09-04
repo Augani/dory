@@ -9,7 +9,9 @@ import io
 import json
 import os
 from pathlib import Path
+import struct
 import subprocess
+import sys
 import tarfile
 import tempfile
 import unittest
@@ -397,6 +399,189 @@ class DiagnosticInitramfsTests(unittest.TestCase):
                 self.assertEqual(receipt["runID"], run_id)
                 self.assertIs(receipt["workloadsPassed"], passed == 7 and failed == 0)
                 self.assertEqual(receipt["workloads"], expected if receipt["workloadsPassed"] else [])
+
+
+class GlibcDiagnosticTests(unittest.TestCase):
+    @staticmethod
+    def elf(interpreter=None, needed=(), soname=None, banner=b""):
+        """Small synthetic ELF tables exercise inspection only; never execute these bytes."""
+        output = bytearray(2048)
+        output[:7] = b"\x7fELF\x02\x01\x01"
+        struct.pack_into("<HHI", output, 16, 3, 62, 1)
+        struct.pack_into("<Q", output, 32, 64)
+        struct.pack_into("<HHH", output, 52, 64, 56, 3 if interpreter else 2)
+        struct.pack_into("<IIQQQQQQ", output, 64, 1, 4, 0, 0x400000, 0, len(output), len(output), 4096)
+        strings = bytearray(b"\0")
+        tags = []
+        for name in needed:
+            tags.append((1, len(strings)))
+            strings.extend(name.encode() + b"\0")
+        if soname:
+            tags.append((14, len(strings)))
+            strings.extend(soname.encode() + b"\0")
+        tags.extend([(5, 0x400400), (10, len(strings)), (0, 0)])
+        for index, tag in enumerate(tags):
+            struct.pack_into("<qQ", output, 512 + index * 16, *tag)
+        struct.pack_into("<IIQQQQQQ", output, 120, 2, 4, 512, 0x400200, 0,
+                         len(tags) * 16, len(tags) * 16, 8)
+        output[1024:1024 + len(strings)] = strings
+        output[1536:1536 + len(banner)] = banner
+        if interpreter:
+            encoded = interpreter.encode() + b"\0"
+            output[256:256 + len(encoded)] = encoded
+            struct.pack_into("<IIQQQQQQ", output, 176, 3, 4, 256, 0x400100, 0,
+                             len(encoded), len(encoded), 1)
+        return bytes(output)
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.directory = self.root / "source"
+        self.directory.mkdir()
+        self.cache_path = self.root / "cache"
+        self.cache_path.mkdir()
+        self.init = b"#!/bin/sh\nprintf synthetic-fixture\n"
+        (self.directory / "init").write_bytes(self.init)
+        self.members = {"upstream/busybox": self.elf("/lib64/loader", ["libc.so.6"]),
+                        "upstream/libc": self.elf(None, ["loader"], "libc.so.6", b"synthetic-glibc-banner"),
+                        "upstream/loader": self.elf(None, (), "loader"),
+                        "upstream/poweroff": self.elf("/lib64/loader", ["libc.so.6"])}
+        destinations = ["bin/busybox", "usr/lib/x86_64-linux-gnu/libc.so.6",
+                        "usr/lib/x86_64-linux-gnu/loader", "sbin/poweroff"]
+        self.specs = {name: {"bytes": len(data), "sha256": digest(data), "destination": destination,
+                             "elf": fixture.elf_dependencies(data)}
+                      for (name, data), destination in zip(self.members.items(), destinations)}
+        self.squashfs = b"synthetic pinned extractor input"
+        (self.cache_path / "input.squashfs").write_bytes(self.squashfs)
+        self.artifact = {"id": "parser-fixture", "sha256": digest(b"synthetic ISO"),
+                         "filename": "input.iso", "bytes": 13}
+        output = fixture.glibc_diagnostic_cpio(self.init, self.members, self.specs)
+        self.recipe = {"schemaVersion": 1, "kind": "p02-glibc-userspace", "architecture": "x86_64",
+                       "artifactID": self.artifact["id"], "sourceSHA256": self.artifact["sha256"],
+                       "squashfs": {"member": "casper/input.squashfs", "filename": "input.squashfs",
+                                    "bytes": len(self.squashfs), "sha256": digest(self.squashfs)},
+                       "members": self.specs, "initSHA256": digest(self.init),
+                       "outputFilename": "glibc.cpio", "outputSHA256": digest(output), "outputBytes": len(output),
+                       "upstreamUserspace": {"libcMember": "upstream/libc", "libcBanner": "synthetic-glibc-banner"},
+                       "runnerProtocol": {}, "limitations": ["synthetic inspection-only test"]}
+        self.save_recipe()
+
+    def save_recipe(self):
+        (self.directory / "fixture.json").write_text(json.dumps(self.recipe))
+
+    def prepare(self):
+        def extract(descriptor, command, maximum):
+            self.assertEqual(os.read(descriptor, len(self.squashfs)), self.squashfs)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            self.assertEqual(command[:6], ["unsquashfs", "-processors", "1", "-mem", "16M", "-cat"])
+            self.assertEqual(maximum, len(self.members[command[-1]]))
+            return iter([self.members[command[-1]]])
+        with fixture.Cache(self.cache_path) as cache, mock.patch.object(fixture, "checked_member_chunks", extract):
+            return fixture.prepare_glibc_diagnostic(self.artifact, cache, self.directory)
+
+    def test_reproducible_archive_and_manifest_bind_observed_dependency_closure(self):
+        first = self.prepare()
+        self.assertEqual(self.prepare(), first)
+        manifest = json.loads((self.cache_path / first["manifestFilename"]).read_text())
+        self.assertEqual(manifest["observedELFDependencies"],
+                         {name: fixture.elf_dependencies(data) for name, data in self.members.items()})
+        self.assertEqual(manifest["squashfs"], self.recipe["squashfs"])
+        self.assertEqual(manifest["members"], self.specs)
+        self.assertIn("guest has not executed", manifest["qualification"])
+        normal = (self.cache_path / "glibc.cpio").read_bytes()
+        self.assertEqual(normal, fixture.glibc_diagnostic_cpio(self.init,
+            dict(reversed(list(self.members.items()))), dict(reversed(list(self.specs.items())))))
+        self.assertEqual(len(normal) % 512, 0)
+
+    def test_elf_missing_interpreter_dependency_or_wrong_soname_rejects(self):
+        for missing in ("upstream/loader", "upstream/libc"):
+            with self.subTest(missing=missing), self.assertRaises(fixture.FixtureError):
+                fixture.validate_glibc_closure({k: v for k, v in self.members.items() if k != missing},
+                                              {k: v for k, v in self.specs.items() if k != missing})
+        self.members["upstream/libc"] = self.elf(None, (), "other-libc.so")
+        self.specs["upstream/libc"]["elf"] = fixture.elf_dependencies(self.members["upstream/libc"])
+        with self.assertRaisesRegex(fixture.FixtureError, "SONAME"):
+            fixture.validate_glibc_closure(self.members, self.specs)
+
+    def test_elf_out_of_range_headers_strings_and_search_override_reject(self):
+        valid = self.members["upstream/busybox"]
+        mutations = [(32, "<Q", len(valid)), (64 + 32, "<Q", len(valid) + 1),
+                     (512 + 8, "<Q", 0xffff), (512, "<q", 29)]
+        for offset, encoding, value in mutations:
+            data = bytearray(valid)
+            struct.pack_into(encoding, data, offset, value)
+            with self.subTest(offset=offset), self.assertRaises(fixture.FixtureError):
+                fixture.elf_dependencies(bytes(data))
+
+    def test_corrupt_member_banner_or_catalog_binding_never_publishes_output(self):
+        mutations = [lambda: self.recipe.update(sourceSHA256="0" * 64),
+                     lambda: self.recipe["members"]["upstream/libc"].update(sha256="0" * 64),
+                     lambda: self.recipe["upstreamUserspace"].update(libcBanner="wrong version")]
+        original = json.dumps(self.recipe)
+        for mutate in mutations:
+            self.recipe = json.loads(original)
+            mutate()
+            self.save_recipe()
+            with self.assertRaises(fixture.FixtureError):
+                self.prepare()
+            self.assertFalse((self.cache_path / "glibc.cpio").exists())
+
+    def test_unsafe_extraction_path_destination_or_parent_collision_rejects(self):
+        for key, value in [("destination", "../../outside"), ("destination", "bin"), ("bytes", -1)]:
+            original = self.specs["upstream/busybox"][key]
+            self.specs["upstream/busybox"][key] = value
+            self.save_recipe()
+            with self.subTest(key=key, value=value), self.assertRaises(fixture.FixtureError):
+                self.prepare()
+            self.specs["upstream/busybox"][key] = original
+        self.assertFalse((self.root / "outside").exists())
+
+    def test_corrupt_existing_archive_is_preserved(self):
+        (self.cache_path / "glibc.cpio").write_bytes(b"retain previous record")
+        with self.assertRaises(fixture.FixtureError):
+            self.prepare()
+        self.assertEqual((self.cache_path / "glibc.cpio").read_bytes(), b"retain previous record")
+        self.assertFalse(any(path.name.startswith(".dory-fixture-") for path in self.cache_path.iterdir()))
+
+    def test_streamed_member_limit_and_failed_extractor_reject(self):
+        with fixture.Cache(self.cache_path) as cache:
+            descriptor = cache.open_verified("input.squashfs", digest(self.squashfs), len(self.squashfs))
+            try:
+                for code in ["import os;os.write(1,b'x'*1025)", "raise SystemExit(3)"]:
+                    with self.subTest(code=code), self.assertRaises(fixture.FixtureError):
+                        list(fixture.checked_member_chunks(descriptor, [sys.executable, "-c", code], 1024))
+            finally:
+                os.close(descriptor)
+
+    def test_glibc_workloads_share_runner_contract_and_use_unflagged_shutdown(self):
+        source = (fixture.GLIBC_DIAGNOSTIC_DIRECTORY / "init").read_text()
+        original = (fixture.DIAGNOSTIC_DIRECTORY / "init").read_text()
+        recipe = json.loads((fixture.GLIBC_DIAGNOSTIC_DIRECTORY / "fixture.json").read_text())
+        self.assertEqual(source, original.replace('"$BB" poweroff -f', '/sbin/poweroff').replace('musl', 'glibc'))
+        self.assertEqual(digest(source.encode()), recipe["initSHA256"])
+        self.assertIn("dory.pvh_run_id=", source)
+        body = source.split("\nemit_runner_receipt() {\n", 1)[1].split("\n}\n", 1)[0]
+        command = 'run_uuid=$1; passed=$2; failed=$3\nemit_runner_receipt() {\n' + body + '\n}\nemit_runner_receipt\n'
+        run_id = "51c98ad0-a67b-4658-ac7e-81a779805823"
+        for passed, failed in [(7, 0), (6, 0), (7, 1)]:
+            reply = subprocess.run(["/bin/sh", "-c", command, "receipt-test", run_id,
+                                    str(passed), str(failed)], check=True, capture_output=True, text=True)
+            receipt = json.loads(reply.stdout)
+            self.assertEqual(receipt["runID"], run_id)
+            self.assertEqual(receipt["doryPVHBoot"], "userspace-ready")
+            self.assertEqual(receipt["workloads"], recipe["expectedResults"][:-1] if passed == 7 and failed == 0 else [])
+        self.assertIn("klibc", recipe["upstreamUserspace"]["shutdownRuntime"])
+
+    def test_cli_glibc_selection_cannot_mix_or_replace_musl_fixture(self):
+        cases = [["--id", "alpine-virt-3.24.1-x86_64", "--extract"],
+                 ["--id", "ubuntu-server-24.04.4-x86_64"],
+                 ["--id", "ubuntu-server-24.04.4-x86_64", "--extract", "--diagnostic-initramfs"]]
+        for arguments in cases:
+            with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(fixture.main(arguments + ["--glibc-diagnostic-initramfs",
+                    "--cache-directory", str(self.root / "unused-cache")]), 1)
+        self.assertFalse((self.root / "unused-cache").exists())
 
 
 if __name__ == "__main__":
