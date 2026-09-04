@@ -178,7 +178,12 @@ import Testing
     data[4] = 2
     data[5] = 1
     data[6] = 1
+    write(UInt16(2), to: &data, at: 16)
     write(UInt16(0x3E), to: &data, at: 18)
+    write(UInt32(1), to: &data, at: 20)
+    write(UInt16(64), to: &data, at: 52)
+    write(UInt32(5), to: &data, at: 0x44)
+    write(UInt64(0x10_0000), to: &data, at: 0x50)
     write(UInt64(0x40), to: &data, at: 32)
     write(UInt16(56), to: &data, at: 54)
     write(UInt16(2), to: &data, at: 56)
