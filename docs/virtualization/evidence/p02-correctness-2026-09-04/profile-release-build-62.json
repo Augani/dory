@@ -1,0 +1,30 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-optimized-runner-build",
+  "sourceManifest": "/tmp/dory-p02-correctness-manifest-62.json",
+  "sourceManifestSHA256": "693e4fa26d4aef543f672b354e0a07cd5a86c133b4a101f351070f0f2c5362e6",
+  "implementationCommit": "b930793f5a",
+  "configuration": "release",
+  "product": "dory-pc-linux-boot-runner",
+  "command": [
+    "swift",
+    "build",
+    "--package-path",
+    "/tmp/dory-p02-correctness-source-1/dory-core-swift",
+    "--scratch-path",
+    "/tmp/dory-p02-profile-release-build-62",
+    "-c",
+    "release",
+    "--product",
+    "dory-pc-linux-boot-runner",
+    "--jobs",
+    "3"
+  ],
+  "elapsedSeconds": 63.35,
+  "exitCode": 0,
+  "runner": "/tmp/dory-p02-runner-b930793f5-release",
+  "runnerSHA256": "4f482f4631415a1d19ac031973761a25648deec6ec55d43bfb430557be5288f0",
+  "buildLog": "/tmp/dory-p02-profile-release-build-62.log",
+  "buildLogSHA256": "e56798ae83e6d740dbc758dd991d3bddbcfe945ffeef390095bd32d5c512b906",
+  "qualification": "Optimized diagnostic executable construction only; kernel probes remain required."
+}

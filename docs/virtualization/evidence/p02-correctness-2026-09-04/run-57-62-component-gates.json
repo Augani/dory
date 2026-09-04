@@ -1,0 +1,265 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-component-source-gates",
+  "components": [
+    {
+      "commit": "c15a3408277850f1188b115812fa72db4898e272",
+      "run": 59,
+      "paths": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+          "sha256": "16d4d8ec6b57900ce0360b62db07f6b4faffd6ce5a803e846a54084794d19a0f"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86CompareExchangeWriteTests.swift",
+          "sha256": "fe8faa2346839acf1dde9936517b048c06cd921d12aa525237a5dcd22efce478"
+        }
+      ],
+      "addedOrReauthoredPassingMethods": [
+        "ignoredVMInCompatibilityModeDoesNotMakeANullSegmentUsable",
+        "failedRegisterComparisonPreservesDestinationUpperBitsAndPairAlignmentStaysPrecise"
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-59.log.gz",
+        "sha256": "eae2512424add5b7dfa8534694779857619d7d8acf53fe1c6956c387b89da712"
+      }
+    },
+    {
+      "commit": "08bee22b264715d6e8ba64c2e84b0db25e6594b3",
+      "run": 59,
+      "paths": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PAEBaselineTests.swift",
+          "sha256": "181eb7925945a20904b6478e728fe8a5c45d06cb25efe504c77654930ea35ee6"
+        }
+      ],
+      "addedOrReauthoredPassingMethods": [
+        "fourKiBAndTwoMiBPermissionsCombinePDEAndPTEWithCPLAndWP",
+        "NXAtEitherLevelHonorsNXEAndPublishesExactFetchFaultCR2",
+        "sparsePhysicalBackingPreservesAddressBitsThroughTheFortyBitCeiling",
+        "warmedTLBSeparatesCPLWriteProtectAccessKindAndNXE",
+        "accessedDirtyAndInvalidationLeaveLatchedPDPTEsIndependentOfCR3RAM",
+        "nonpresentAndReservedEntriesWinOverAccumulatedPermissionDenial"
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-59.log.gz",
+        "sha256": "eae2512424add5b7dfa8534694779857619d7d8acf53fe1c6956c387b89da712"
+      }
+    },
+    {
+      "commit": "d0efdccf92cc63c414c24cb31b74494772d0edf4",
+      "run": 59,
+      "paths": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86ArchitecturalState.swift",
+          "sha256": "0b79a0d0c59e90bcc5aa1cdd0783d16ee3128ed152414a4d5c6d31107b1c7fc2"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86FloatingPointEnvironment.swift",
+          "sha256": "a4044e1b9138ef59e069761430ee0d06cff9e03ff7f6081150b7e7dc68a896e2"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+          "sha256": "79a9ae6bd06d4f3f00f067e0e55346fb6adbfdf8ba1bea3ec0b2fba95b23a65a"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86FXStateTransferTests.swift",
+          "sha256": "8c0bdccee69f0d145c4d33c84d8892db4813a4f005587fc88a3dddb5dc28cf0e"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86FloatingPointEnvironmentTests.swift",
+          "sha256": "1d7463d6c886e91a4fc46e9bd422afb4a418191c2f2b0919004bfe6af59be8a4"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86InterpreterTests.swift",
+          "sha256": "2cee915641c68e2f0472d9542e3664d4edd3ccb6867a1f6c76210a469a97cb9a"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86LegacyFloatingPointResetTests.swift",
+          "sha256": "feb332051e0e57d4cfac37c5adab38cea65f5853949ca70f0cb416d3ec6a2e4c"
+        }
+      ],
+      "addedOrReauthoredPassingMethods": [
+        "fourEnvironmentImagesMatchIndependentLiteralBytesUnderDefinedMasks",
+        "protectedEnvironmentFieldsUseEffectiveOperandSizeIncluding66",
+        "realAndVirtual8086ImagesPackLinearPointersAtBothSizes",
+        "retainedVMBitInIA32eDoesNotSelectRealEnvironmentLayouts",
+        "longModeREXWOverrides66ForEnvironmentSizeButSelectsWideFXPointers",
+        "fldenvLoadsGoldenProtectedFieldsClassifiesPhysicalTagsAndPreservesData",
+        "fldenvRealAndVirtualImagesRestorePackedPointersAndIgnoreReservedBits",
+        "fxImagesUseLogicalDataSlotsPhysicalTagsAndREXWPointerLayout",
+        "fninitClearsPointersOpcodeAndFNCLEXPreservesThem",
+        "ordinaryX87TracksPrefixStartAndMemorySegmentButControlsAndMMXDoNot",
+        "environmentAndFXFaultsPreserveEntireStateAndDoNotPartiallyStore",
+        "environmentSpanChecksPrecedeDataAccessAtSegmentAndCanonicalBoundaries",
+        "x87DataFaultDoesNotOverwritePreviousInstructionOrOperandPointers",
+        "opcodeTrackingUsesOnlyNewlyRepresentedUnmaskedExceptionAndStripsPrefixes",
+        "pointerStateRoundTripsAndLegacyJSONDefaultsWithoutLosingStrictOpcodeValidation"
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-59.log.gz",
+        "sha256": "eae2512424add5b7dfa8534694779857619d7d8acf53fe1c6956c387b89da712"
+      }
+    },
+    {
+      "commit": "b0d4439a0f724da685f9b1107db08f01336d6f17",
+      "run": 59,
+      "paths": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Decoder.swift",
+          "sha256": "ce7272be8c7dcd2fce9df4b41b23d2d55861c3e1717a715e72c60c3b4a55c1d6"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Instruction.swift",
+          "sha256": "36035fb73002b87ef966275bafe469a3af9ace9f1950fb3633c783e7e0fd5558"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86InstructionFeaturePolicy.swift",
+          "sha256": "3b3e68c708df1b1671f421d2a554b533bffec957211aedf0721017b8965a1b17"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+          "sha256": "3036550330423f73fb6110255a3e6fb2dd859679acfe0639fc3c1ddbc98a3132"
+        },
+        {
+          "path": "dory-core-swift/Sources/dory-x86-decode-audit/Vectors/p02-sse2-conversions-v1.json",
+          "sha256": "2a33b705df81f3090ce6c8328629650fa5b14615d0aab5de5b12afc818fb6171"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PackedSingleConversionTests.swift",
+          "sha256": "aef248a22c2053a75b8aec4312988550910a6be662bded5f9b6ed825e5db4b55"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryX86DecodeAuditTests/SSE2ConversionInventoryTests.swift",
+          "sha256": "2dc243b5da1b2feb5f1d8edcac90443a2a8b89aca7b12d2edb9166b26bb5d569"
+        }
+      ],
+      "addedOrReauthoredPassingMethods": [
+        "exactPrefixesAndAllRegisterModRMFormsDecodeInEachMode",
+        "fourLanesObeyRoundingAndTruncationWithSameOrExtendedRegisters",
+        "maskedInvalidAndRepresentableBoundariesDoNotTrapOrCorruptOtherLanes",
+        "singlePrecisionDenormalsApplyDAZBeforeWideningAndNeverSignalDenormal",
+        "unmaskedExceptionsPreserveDestinationAndPublishOnlyNewStickyFlags",
+        "memoryReadsExactlySixteenBytesAndFaultsBeforeNumericEffects",
+        "featureAndExecutionStateChecksWinBeforeAnUnmappedOperand",
+        "bothNativeTiersDeclineAndPublishACompletedIntegerPrefixExactlyOnce",
+        "separateConversionCorpusMatchesTheCurrentDecoderWithoutInheritingExecutionClaims"
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-59.log.gz",
+        "sha256": "eae2512424add5b7dfa8534694779857619d7d8acf53fe1c6956c387b89da712"
+      }
+    },
+    {
+      "commit": "2ea7a8bc99e3b6b4408a6dcb05443910b9b09db3",
+      "run": 59,
+      "paths": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interrupts.swift",
+          "sha256": "4cb06d44c8c132de1c498432a6510ca13fa2362552ddbf5fd971ead04428702f"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Paging.swift",
+          "sha256": "546ad2018853acace79cee1c91a61db78a8b63ae600a45b8e75cd6a3d913cc14"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ModePrivilegeTests.swift",
+          "sha256": "73c2c382e59866e383f5595c47392adbcc88eae5e959ea69b8d5ff744786fcfa"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PATReservedBitsTests.swift",
+          "sha256": "76c8958ac0b5a5e0f7ae5076aa18a4185655ee5eff8504b23e46b0d8aabeef87"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PagingFeatureTests.swift",
+          "sha256": "d75027e09982b9a6dc56661f5750fb8b7f197a41710e93a7867ed34a4273f3be"
+        }
+      ],
+      "addedOrReauthoredPassingMethods": [
+        "presentLeafPATBitsFaultBeforeLeafAccessedDirtyUpdates",
+        "nonpresentLeafPATBitsNeverBecomeReservedFaults",
+        "PATMechanismOptInAndOrdinaryPageSizeAddressBitsRemainDistinct",
+        "legacyPSEClearIgnoresPATAndPDEPageSizeBits",
+        "warmedTLBAndImplicitSupervisorCopiesRetainThePATCapability",
+        "bothSelectedProfilesFaultInstructionFetchPreciselyWithoutPATPromotion"
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-59.log.gz",
+        "sha256": "eae2512424add5b7dfa8534694779857619d7d8acf53fe1c6956c387b89da712"
+      }
+    },
+    {
+      "commit": "7fdcd31dceae2d194c33335228d2f3a10b6a02b6",
+      "run": 59,
+      "paths": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+          "sha256": "99daff8ed74aaf9d4cfcb5c7917417cb3f6a35cc36e8e86fa01c891ff76d441b"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86X87Stack.swift",
+          "sha256": "f938e349ec8df3bb8a53f8dce3b0f15ac784a56631b81375351bdcda0b6ce828"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86X87TransferStackTests.swift",
+          "sha256": "a7b423be154621f70a5106a00d0dbf28acc0eb173f3bfd68ae6b4152d01ad329"
+        }
+      ],
+      "addedOrReauthoredPassingMethods": [
+        "fullStackRegisterLoadsReturnMaskedIndefiniteOrSuppressUnmaskedPush",
+        "emptyRegisterSourceHasPriorityOverFullPushDestination",
+        "allMemoryLoadFormatsReadOnceBeforeFullStackFaultPublication",
+        "sevenConstantLoadsHavePreciseOverflowAtEveryTop",
+        "maskedMemoryStoresUseExactIndefiniteBytesAndOnlyRequestedPop",
+        "unmaskedStoresSuppressMemoryAndPopThenFaultAtNextWaitingInstruction",
+        "maskedStorePreflightFaultPreservesOriginalStatusPointersTagsAndDestination",
+        "canonicalSpanFaultsPrecedeMaskedStackEffectsAndUseTheOperandSegment",
+        "registerStoresDoNotTreatEmptyDestinationsAsOverflowAndSuppressUnmaskedUnderflow",
+        "maskedExchangeFillsOnlyEmptyOperandsBeforeSwappingAndUnmaskedDoesNotSwap",
+        "successfulPushClearsC1ButRetainsStickyStackExceptionFlags",
+        "unmaskedNewStackFaultRefreshesOpcodeEvenWhenIEWasAlreadySticky",
+        "invalidBCDConversionUsesTheSameArchitecturalIndefiniteEncoding",
+        "bothNativeTiersFallBackWithoutRepeatingPrefixOrPartiallyPublishingStackState"
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-59.log.gz",
+        "sha256": "eae2512424add5b7dfa8534694779857619d7d8acf53fe1c6956c387b89da712"
+      }
+    },
+    {
+      "commit": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9",
+      "run": 62,
+      "paths": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86CPUProfile.swift",
+          "sha256": "ab22083b676f93f3f19057032cddd6542dbedb29431c7b9d302e6b16dda23486"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+          "sha256": "6079d2b9a6362af9e101cbf979756170ff6691aefe6380bab61df1404a0dcffc"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86CPUProfileTests.swift",
+          "sha256": "2dc40dc129aa54f8640d96bf729bc0f09e500cc70509c6c50ed2468a12348910"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ControlTransitionTests.swift",
+          "sha256": "37a49d35adfe2ae651649b321d27f84981e4637efef4f074dffa984215542fe7"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PAEBaselineTests.swift",
+          "sha256": "d38d57cfaa9e84b4cfbc0619d029ed5972bb2d5014eb61b19d38b2d3980da2d3"
+        }
+      ],
+      "addedOrReauthoredPassingMethods": [
+        "candidatePublishesQualifiedPagingWhileLeavingPATAndExtendedStateGapsVisible",
+        "protectedBootPreparationUsesTheQualifiedPagingFeatureSet"
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-62.log.gz",
+        "sha256": "602c59ece97b44b33fa836ee805bf0fadd958388c2db6c9b7bf099d6c1bdd003"
+      }
+    }
+  ],
+  "scope": "Exact commit sources and named passing method lines. Methods changed by a commit are not all necessarily additive to the prior global count."
+}

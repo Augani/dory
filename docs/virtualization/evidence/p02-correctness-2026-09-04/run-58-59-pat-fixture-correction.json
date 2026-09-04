@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-pat-fixture-correction",
+  "failedRun": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-58-commit-binding.json",
+    "sha256": "ccc49854c03a32f3b58b405c0c5562efdbf8105324ccad87b24c9df78e3e6ce6"
+  },
+  "failedLog": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-58.log.gz",
+    "sha256": "621106d9c98cb9aa2dfc703aadaf104262cc088646a83e5bd1908a8bafc50169"
+  },
+  "passingRun": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-59-commit-binding.json",
+    "sha256": "e8391fa5dc6477716becb24c5eff804cf5f491792fe50dadcfc348c15e006f4e"
+  },
+  "passingLog": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-59.log.gz",
+    "sha256": "eae2512424add5b7dfa8534694779857619d7d8acf53fe1c6956c387b89da712"
+  },
+  "failedMethods": [
+    {
+      "name": "pagingContextNormalizesPrivilegeForRealVirtualAndIA32eModes",
+      "issues": 64
+    },
+    {
+      "name": "enabledOneGiBAndProfilelessContextsRetainPATAndAccessedDirtySemantics",
+      "issues": 1
+    }
+  ],
+  "changedInputs": [
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ModePrivilegeTests.swift",
+      "source58SHA256": "4b5dbe4fea0e0024eb64f52b003cb6b6f1f074b8bfbb271db5adfb1c86b12136",
+      "source59SHA256": "73c2c382e59866e383f5595c47392adbcc88eae5e959ea69b8d5ff744786fcfa"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PagingFeatureTests.swift",
+      "source58SHA256": "423645bfd0f1908448a76fd41df991f741326c259d66a0b23be02129df4c4fef",
+      "source59SHA256": "d75027e09982b9a6dc56661f5750fb8b7f197a41710e93a7867ed34a4273f3be"
+    }
+  ],
+  "classification": "Two fixture expectations failed after selected profiles correctly stopped inheriting the explicit engineering PAT mechanism. Run59 carries the derived capability or separates the profileless mechanism test; production source is unchanged from run58.",
+  "productSourceChanged58to59": false
+}

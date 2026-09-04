@@ -1,0 +1,235 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-evidence-retention-validation",
+  "status": "passed",
+  "review": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-62.json",
+    "sha256": "302595a0bbccf666ce6c88fa6eb991c1feb09a4a76e6ab36f25ebaa11d39c89a"
+  },
+  "sourceCommit": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9",
+  "newArtifactsBeforeThisValidation": 30,
+  "distinctRepositoryArtifactReferencesVerified": 31,
+  "envelopeSchemaValidated": true,
+  "sourceBindings": [
+    {
+      "run": 57,
+      "comparisonCommit": "d0efdccf92cc63c414c24cb31b74494772d0edf4",
+      "trackedInputs": 731,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 143,
+      "trackedDifferences": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+          "frozenSHA256": "3cc0dc286b9344e110d73d84abb09f3f25a526e63e036e310f2be8bc93f64718",
+          "commitSHA256": "79a9ae6bd06d4f3f00f067e0e55346fb6adbfdf8ba1bea3ec0b2fba95b23a65a"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86FloatingPointEnvironmentTests.swift",
+          "frozenSHA256": "c678522363ef812d9532b0f6146d2f2363ec5dfe4402119c173b1b455495e761",
+          "commitSHA256": "1d7463d6c886e91a4fc46e9bd422afb4a418191c2f2b0919004bfe6af59be8a4"
+        }
+      ],
+      "basePlusOverlayReconstructed": true
+    },
+    {
+      "run": 58,
+      "comparisonCommit": "7fdcd31dceae2d194c33335228d2f3a10b6a02b6",
+      "trackedInputs": 737,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 149,
+      "trackedDifferences": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ModePrivilegeTests.swift",
+          "frozenSHA256": "4b5dbe4fea0e0024eb64f52b003cb6b6f1f074b8bfbb271db5adfb1c86b12136",
+          "commitSHA256": "73c2c382e59866e383f5595c47392adbcc88eae5e959ea69b8d5ff744786fcfa"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PagingFeatureTests.swift",
+          "frozenSHA256": "423645bfd0f1908448a76fd41df991f741326c259d66a0b23be02129df4c4fef",
+          "commitSHA256": "d75027e09982b9a6dc56661f5750fb8b7f197a41710e93a7867ed34a4273f3be"
+        }
+      ],
+      "basePlusOverlayReconstructed": true
+    },
+    {
+      "run": 59,
+      "comparisonCommit": "7fdcd31dceae2d194c33335228d2f3a10b6a02b6",
+      "trackedInputs": 737,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 149,
+      "trackedDifferences": [],
+      "basePlusOverlayReconstructed": true
+    },
+    {
+      "run": 60,
+      "comparisonCommit": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9",
+      "trackedInputs": 737,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 149,
+      "trackedDifferences": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86CPUProfile.swift",
+          "frozenSHA256": "b907100fbb818e8a73158e5c65024331f215fa1c8eb527c59d58e95b8ae48d9a",
+          "commitSHA256": "ab22083b676f93f3f19057032cddd6542dbedb29431c7b9d302e6b16dda23486"
+        }
+      ],
+      "basePlusOverlayReconstructed": true
+    },
+    {
+      "run": 61,
+      "comparisonCommit": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9",
+      "trackedInputs": 737,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 149,
+      "trackedDifferences": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86CPUProfile.swift",
+          "frozenSHA256": "b907100fbb818e8a73158e5c65024331f215fa1c8eb527c59d58e95b8ae48d9a",
+          "commitSHA256": "ab22083b676f93f3f19057032cddd6542dbedb29431c7b9d302e6b16dda23486"
+        }
+      ],
+      "basePlusOverlayReconstructed": true
+    },
+    {
+      "run": 62,
+      "comparisonCommit": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9",
+      "trackedInputs": 737,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 149,
+      "trackedDifferences": [],
+      "basePlusOverlayReconstructed": true
+    }
+  ],
+  "strictLogCountsVerified": true,
+  "logCounts": [
+    {
+      "run": 57,
+      "swiftPassed": 1009,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 1010,
+      "swiftSuites": 131,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "scratchState": "fresh-clean-build"
+    },
+    {
+      "run": 58,
+      "swiftPassed": 1037,
+      "swiftFailed": 2,
+      "swiftDisabled": 1,
+      "swiftReported": 1040,
+      "swiftSuites": 135,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "scratchState": "incremental-build"
+    },
+    {
+      "run": 59,
+      "swiftPassed": 1039,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 1040,
+      "swiftSuites": 135,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "scratchState": "incremental-build"
+    },
+    {
+      "run": 60,
+      "swiftPassed": 1037,
+      "swiftFailed": 2,
+      "swiftDisabled": 1,
+      "swiftReported": 1040,
+      "swiftSuites": 135,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "scratchState": "incremental-build"
+    },
+    {
+      "run": 61,
+      "swiftPassed": 1039,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 1040,
+      "swiftSuites": 135,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "scratchState": "fresh-clean-build"
+    },
+    {
+      "run": 62,
+      "swiftPassed": 1039,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 1040,
+      "swiftSuites": 135,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "scratchState": "fresh-clean-build"
+    }
+  ],
+  "patFixtureCorrection": {
+    "failedMethods": 2,
+    "issues": 65,
+    "productionSourceChanged58to59": false,
+    "passingReplay59": true
+  },
+  "incrementalLayoutCorrection": {
+    "source60And61ByteIdentical": true,
+    "failedMethods60": 2,
+    "issues60": 28,
+    "freshCleanReplay61": true,
+    "onlyCPUProfileChanged61to62": true,
+    "tailCases": 4,
+    "cleanReplay62": true
+  },
+  "componentMethods": [
+    {
+      "commit": "c15a3408277850f1188b115812fa72db4898e272",
+      "run": 59,
+      "passingMethods": 2
+    },
+    {
+      "commit": "08bee22b264715d6e8ba64c2e84b0db25e6594b3",
+      "run": 59,
+      "passingMethods": 6
+    },
+    {
+      "commit": "d0efdccf92cc63c414c24cb31b74494772d0edf4",
+      "run": 59,
+      "passingMethods": 15
+    },
+    {
+      "commit": "b0d4439a0f724da685f9b1107db08f01336d6f17",
+      "run": 59,
+      "passingMethods": 9
+    },
+    {
+      "commit": "2ea7a8bc99e3b6b4408a6dcb05443910b9b09db3",
+      "run": 59,
+      "passingMethods": 6
+    },
+    {
+      "commit": "7fdcd31dceae2d194c33335228d2f3a10b6a02b6",
+      "run": 59,
+      "passingMethods": 14
+    },
+    {
+      "commit": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9",
+      "run": 62,
+      "passingMethods": 2
+    }
+  ],
+  "noUserHomePathsInNewArtifactTextOrMembers": true,
+  "tarOwnerAndTimeNormalizationVerified": true,
+  "pathNormalizedArtifacts": [],
+  "normalizationByThisValidation": "None; all retained inputs read-only.",
+  "qualification": "Source-only gates through62. PSE/PAE/PGE guest replay and broad P02 profile, paging, exception, floating-point and SIMD qualification remain open."
+}

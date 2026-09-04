@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-profile-probe-retention-transformations",
+  "artifacts": [
+    {
+      "originalPath": "/tmp/dory-p02-profile-release-build-62.evidence.json",
+      "originalSHA256": "488f186ce8e2c3f232d5c38411177447ca9e0fa533bad784dcd8415bee10a7a9",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-release-build-62.json",
+        "sha256": "488f186ce8e2c3f232d5c38411177447ca9e0fa533bad784dcd8415bee10a7a9"
+      },
+      "transformation": "byte-exact copy"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-profile-release-build-62.log",
+      "originalSHA256": "e56798ae83e6d740dbc758dd991d3bddbcfe945ffeef390095bd32d5c512b906",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-release-build-62.log.gz",
+        "sha256": "74fe6f41a0b638455af1df24ba4d8ea8b219d925a3cf142b9a5286e030fdbd20"
+      },
+      "transformation": "gzip level default with mtime zero; content bytes unchanged"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-profile-musl-probe-1.invocation.json",
+      "originalSHA256": "388564f950909abd4fc79c9be1a0f6ce57dc94f94a0297e50e13d5413b22c286",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-musl-probe-1.invocation.json",
+        "sha256": "388564f950909abd4fc79c9be1a0f6ce57dc94f94a0297e50e13d5413b22c286"
+      },
+      "transformation": "byte-exact copy"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-profile-musl-probe-1.json",
+      "originalSHA256": "94a6d6033e825f02fff16f2921fcc41eac439dbe040cdd123205ae55ed3c77d1",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-musl-probe-1.json",
+        "sha256": "94a6d6033e825f02fff16f2921fcc41eac439dbe040cdd123205ae55ed3c77d1"
+      },
+      "transformation": "byte-exact copy"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-profile-musl-probe-1.log",
+      "originalSHA256": "604fccd27d46e213d0f58de5858ae14c35a5ccda88d6048252ccbdaacc21ba2c",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-musl-probe-1.result.json.gz",
+        "sha256": "6ef28fccc7293fdedfe4b53f57484cd4e359fdce534d655c90064951473534ce"
+      },
+      "transformation": "gzip level default with mtime zero; content bytes unchanged"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-profile-musl-probe-1.exit",
+      "originalSHA256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-musl-probe-1.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "transformation": "byte-exact copy"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-profile-glibc-probe-1.invocation.json",
+      "originalSHA256": "94c5f5ac08d9f7960b82c21632125d8d4ce2006dd568616760915e4fb4fccac1",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-glibc-probe-1.invocation.json",
+        "sha256": "94c5f5ac08d9f7960b82c21632125d8d4ce2006dd568616760915e4fb4fccac1"
+      },
+      "transformation": "byte-exact copy"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-profile-glibc-probe-1.json",
+      "originalSHA256": "300e144bed9084f46eea2861fe2d42352f45f13a55e0440341ff5fc06f975237",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-glibc-probe-1.json",
+        "sha256": "300e144bed9084f46eea2861fe2d42352f45f13a55e0440341ff5fc06f975237"
+      },
+      "transformation": "byte-exact copy"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-profile-glibc-probe-1.log",
+      "originalSHA256": "1db55672b654570f48882200424da94a557ac5212a6c1c1afe263c1e51da6507",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-glibc-probe-1.result.json.gz",
+        "sha256": "f92f54a0a0b8e5c52ba43619f1be225f2c691c04a51307cc5589de49175e4d3b"
+      },
+      "transformation": "gzip level default with mtime zero; content bytes unchanged"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-profile-glibc-probe-1.exit",
+      "originalSHA256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-glibc-probe-1.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "transformation": "byte-exact copy"
+    }
+  ]
+}

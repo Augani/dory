@@ -1,0 +1,44 @@
+{
+  "kind": "p02-frozen-source-binding",
+  "run": 60,
+  "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+  "comparisonCommit": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9",
+  "totalInputs": 743,
+  "trackedInputs": 737,
+  "ignoredFFIInputs": [
+    {
+      "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+      "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+    },
+    {
+      "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+      "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+      "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+      "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+      "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+      "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+    }
+  ],
+  "overlayMemberCount": 149,
+  "basePlusOverlayMatchesEveryTrackedInput": true,
+  "trackedDifferences": [
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86CPUProfile.swift",
+      "frozenSHA256": "b907100fbb818e8a73158e5c65024331f215fa1c8eb527c59d58e95b8ae48d9a",
+      "commitSHA256": "ab22083b676f93f3f19057032cddd6542dbedb29431c7b9d302e6b16dda23486"
+    }
+  ],
+  "allTrackedInputsMatchComparisonCommit": false
+}

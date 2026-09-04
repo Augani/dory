@@ -1,0 +1,247 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-selected-paging-profile-probe-review",
+  "status": "passed",
+  "phaseComplete": false,
+  "releaseQualified": false,
+  "planItem": "P02-09",
+  "implementationCommit": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9",
+  "sourceGate": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-62.json",
+    "sha256": "302595a0bbccf666ce6c88fa6eb991c1feb09a4a76e6ab36f25ebaa11d39c89a"
+  },
+  "sourceValidation": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/evidence-validation-through-run-62.json",
+    "sha256": "213ec64e2f283bcf31bd26d7d73da62a9e2efc60a546b5e65abac00b8ee7f895"
+  },
+  "sourceManifest": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-62-source-manifest.json.gz",
+    "sha256": "f59138aaea7b33f51fd88ab019089c7b3435488593add99aacc31704851822e1"
+  },
+  "sourceBinding": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-62-commit-binding.json",
+    "sha256": "d420d3d0affbedab3cf230a57c34e1c68abd9f4bccc49fcba19cba66c0460e37"
+  },
+  "optimizedRunnerBuild": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-release-build-62.json",
+    "sha256": "488f186ce8e2c3f232d5c38411177447ca9e0fa533bad784dcd8415bee10a7a9"
+  },
+  "optimizedRunnerBuildLog": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-release-build-62.log.gz",
+    "sha256": "74fe6f41a0b638455af1df24ba4d8ea8b219d925a3cf142b9a5286e030fdbd20"
+  },
+  "runner": {
+    "path": "/tmp/dory-p02-runner-b930793f5-release",
+    "sha256": "4f482f4631415a1d19ac031973761a25648deec6ec55d43bfb430557be5288f0",
+    "byteCount": 9221992
+  },
+  "producerMetadataCorrection": {
+    "recordedImplementationCommit": "b930793f5a",
+    "recordedValueResolvesInRepository": false,
+    "actualImplementationCommit": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9",
+    "rawRecordsRewritten": false,
+    "bindingBasis": [
+      "source manifest SHA-256",
+      "reconstructed source-62 commit binding",
+      "optimized runner SHA-256",
+      "build log SHA-256"
+    ]
+  },
+  "publishedFeatures": [
+    "PSE",
+    "PAE",
+    "PGE"
+  ],
+  "unpublishedFeature": "PAT",
+  "profileAudit": {
+    "sourceFiles": [
+      {
+        "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86CPUProfile.swift",
+        "sha256": "ab22083b676f93f3f19057032cddd6542dbedb29431c7b9d302e6b16dda23486"
+      },
+      {
+        "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86CPUProfileTests.swift",
+        "sha256": "2dc40dc129aa54f8640d96bf729bc0f09e500cc70509c6c50ed2468a12348910"
+      },
+      {
+        "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86IntelCompatibleProfileTests.swift",
+        "sha256": "d37c67ad4a72a2b420c746b8d843858a8c022c531264357a5c9d5cd925b15c7a"
+      },
+      {
+        "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ArchitecturalStateTests.swift",
+        "sha256": "e8abcc8a076a6798fd6938e40ccebf1365c2530ad52841c4adb033c59ffc745f"
+      },
+      {
+        "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ControlTransitionTests.swift",
+        "sha256": "37a49d35adfe2ae651649b321d27f84981e4637efef4f074dffa984215542fe7"
+      },
+      {
+        "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86InterpreterTests.swift",
+        "sha256": "2cee915641c68e2f0472d9542e3664d4edd3ccb6867a1f6c76210a469a97cb9a"
+      },
+      {
+        "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86PAEPDPTELatchTests.swift",
+        "sha256": "3f053018dd77f8eed9554c28126088edb4801e3b1adf8cfad725d1b6e9496137"
+      },
+      {
+        "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPAEExecutionBoundaryTests.swift",
+        "sha256": "0eb746dd92aa55e9ff3168a62b5f10adbffd9675eb32c4af714de56c7f1b32de"
+      }
+    ],
+    "passingMethodGroups": {
+      "CPUID leaf, subleaf, topology, cache, timing, address-width, dependency and XSTATE policy": [
+        "candidateIdentityDoesNotInventAHypervisorABI",
+        "candidatePublishesQualifiedPagingWhileLeavingPATAndExtendedStateGapsVisible",
+        "unmeasuredTimeAndCacheGeometryRemainUnadvertised",
+        "unknownLeavesAndStructuredSubleavesReturnDefinedZeros",
+        "topologyHasOneThreadPerCoreAndConsistentCountBounds",
+        "featureDependenciesDoNotAdvertiseOrphanedExtensions",
+        "osxsaveReflectsGuestControlStateRatherThanRequestedFeature",
+        "extendedStateSizesFollowEnabledComponents",
+        "optionalTimingFeaturesRequireTSCAndRoundTripStably",
+        "compatibleProfileIsDenyByDefaultAndCPUIDIsSelfConsistent"
+      ],
+      "versioned identity and defined MSR surface": [
+        "explicitIdentityChangesOnlyVendorAndSignature",
+        "legacyProfileJSONDefaultsIdentityAndArbitraryLabelsCannotSwitchIt",
+        "oldArchitecturalStateDefaultsSignatureAndNewStatePreservesIt",
+        "signatureStoresHighDWORDAndCPUIDDoesNotInventAMicrocodeUpdate",
+        "reservedLowDWORDAndMicrocodeTriggerFaultWithoutEffects",
+        "oldIdentityAndInsufficientPrivilegeCannotAccessSignature",
+        "absentMSRFeatureRaisesInvalidOpcodeBeforePrivilegeAndWrites",
+        "readsAndWritesOnlyTheDefinedMSRSurface",
+        "platformIdentityMSRIsStableAndReadOnly"
+      ],
+      "published paging feature semantics and physical-width propagation": [
+        "protectedBootPreparationUsesTheQualifiedPagingFeatureSet",
+        "eferWritableFeaturesFollowTheSelectedProfile",
+        "reservedValidationUsesEachCPUPhysicalAddressWidth",
+        "invalidPhysicalWidthsThrowRatherThanTrapEvenForInactivePaging",
+        "selectedPhysicalWidthReachesBothJITsAndRunPreservesTheLoadedPDPTEs",
+        "narrowerPhysicalWidthRejectsPagingEnableWithoutPublishingControlOrLatch",
+        "invalidProfileWidthsThrowBeforeAllocatingMachineOrExecutionResources"
+      ]
+    },
+    "run62Log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-62.log.gz",
+      "sha256": "602c59ece97b44b33fa836ee805bf0fadd958388c2db6c9b7bf099d6c1bdd003"
+    },
+    "scope": "All published CPUID leaves/subleaves, defined-zero leaves, topology, absent cache/timing leaves, address widths, MSR access, XSTATE and feature dependencies are exercised against the exact run-62 source. PSE/PAE/PGE have paging mechanism, transition, width and machine propagation gates."
+  },
+  "probes": [
+    {
+      "fixture": "musl",
+      "profile": "dory.x86_64.compat-v1",
+      "invocation": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-musl-probe-1.invocation.json",
+        "sha256": "388564f950909abd4fc79c9be1a0f6ce57dc94f94a0297e50e13d5413b22c286"
+      },
+      "diagnostic": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-musl-probe-1.json",
+        "sha256": "94a6d6033e825f02fff16f2921fcc41eac439dbe040cdd123205ae55ed3c77d1"
+      },
+      "result": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-musl-probe-1.result.json.gz",
+        "sha256": "6ef28fccc7293fdedfe4b53f57484cd4e359fdce534d655c90064951473534ce"
+      },
+      "exit": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-musl-probe-1.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "observedToolSession": "65555",
+      "completionChunk": "44e593",
+      "runID": "f79cd08c-edf6-43e9-b77f-73412cc39dfb",
+      "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+      "kernelBuildID": "6605cb9027e42995c51847655ec230aeb78559bd",
+      "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+      "tier": "baselineJIT",
+      "memoryMiB": 512,
+      "maximumInstructions": 2000000000,
+      "wallSeconds": 1800,
+      "retiredInstructions": 733658175,
+      "elapsedNanoseconds": 521917769292,
+      "guestReceipt": {
+        "workloadsPassed": true,
+        "count": 7
+      },
+      "terminalExit": "powered-off",
+      "outcome": "userspace-workloads-powered-off"
+    },
+    {
+      "fixture": "glibc",
+      "profile": "dory.x86_64.intel-compatible-v1",
+      "invocation": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-glibc-probe-1.invocation.json",
+        "sha256": "94c5f5ac08d9f7960b82c21632125d8d4ce2006dd568616760915e4fb4fccac1"
+      },
+      "diagnostic": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-glibc-probe-1.json",
+        "sha256": "300e144bed9084f46eea2861fe2d42352f45f13a55e0440341ff5fc06f975237"
+      },
+      "result": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-glibc-probe-1.result.json.gz",
+        "sha256": "f92f54a0a0b8e5c52ba43619f1be225f2c691c04a51307cc5589de49175e4d3b"
+      },
+      "exit": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/profile-glibc-probe-1.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "observedToolSession": "50670",
+      "completionChunk": "2962ab",
+      "runID": "3c52d305-63c6-4c9c-810a-fc6add753f46",
+      "kernelSHA256": "ae0dcbf0d699293a29e8c55e4b319e8fe093aa07a18e1902beb41c3e0243c405",
+      "kernelBuildID": "d838eee071a9f7ddba323742d7dec05a314b6c78",
+      "initrdSHA256": "813de160103ef6179de5d3b6d9271ed8f9883d8c3fa7671a49254f0ec7cb9d24",
+      "tier": "baselineJIT",
+      "memoryMiB": 512,
+      "maximumInstructions": 2000000000,
+      "wallSeconds": 900,
+      "retiredInstructions": 738921253,
+      "elapsedNanoseconds": 563156977625,
+      "guestReceipt": {
+        "workloadsPassed": true,
+        "count": 7
+      },
+      "terminalExit": "powered-off",
+      "outcome": "userspace-workloads-powered-off"
+    }
+  ],
+  "acceptance": {
+    "bothExitZero": true,
+    "bothStageFinished": true,
+    "bothGuestReceiptsMatchInvocationUUID": true,
+    "bothGuestReceiptsContainExactSevenRequestedWorkloads": true,
+    "bothHostObserveACPIS5": true,
+    "bothUseSource62Runner": true,
+    "selectedProfiles": [
+      "dory.x86_64.compat-v1",
+      "dory.x86_64.intel-compatible-v1"
+    ],
+    "selectedKernelSHA256": [
+      "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+      "ae0dcbf0d699293a29e8c55e4b319e8fe093aa07a18e1902beb41c3e0243c405"
+    ]
+  },
+  "checkpointAssessment": {
+    "checkpoint": "P02-09",
+    "closed": true,
+    "basis": "The conservative versioned profiles now have explicit CPUID/MSR/topology/cache/address/XSTATE/dependency contracts, publish only the qualified PSE/PAE/PGE additions, keep PAT and other unqualified features absent, and boot both selected kernels through their complete pinned seven-workload userspace receipts and ACPI S5.",
+    "doesNotClose": [
+      "P02-10",
+      "P02-12",
+      "P02-13",
+      "P02-14",
+      "P02-15",
+      "P02-16",
+      "P02-20"
+    ]
+  },
+  "limitations": [
+    "The two profiles remain conservative versioned Dory engineering identities; neither represents a physical Intel SKU nor a qualified x86-64-v2/v3 baseline.",
+    "PAT, XSAVE, OSXSAVE, AVX, AVX2, RDTSCP and invariant TSC remain absent from the selected profiles.",
+    "The probes cover two selected Alpine kernel builds, two pinned diagnostic archives, baseline JIT with interpreter fallback and one vCPU. They do not qualify all distributions, optimizing JIT, multi-vCPU, physical reference, hosted CI or performance.",
+    "The two kernel images have different internal layouts but their retained ELF PT_LOAD envelopes are identical.",
+    "Raw producer metadata uses the erroneous non-resolving abbreviation b930793f5a. Exact source-manifest, runner, build-log and repository bindings establish the actual implementation commit without rewriting the raw records.",
+    "P02-10 and broad CPU/ISA/floating-point/paging qualification remain open."
+  ]
+}

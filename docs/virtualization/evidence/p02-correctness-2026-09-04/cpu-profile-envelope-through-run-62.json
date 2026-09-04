@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-09",
+    "P02-10"
+  ],
+  "sourceCommit": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "passed",
+  "scope": "Exact source-62 CPU-profile contract plus two selected-kernel baseline-JIT userspace probes. Both pinned diagnostic archives return seven matching UUID-bound workloads and host-observed ACPI S5. This closes the conservative versioned profile audit in P02-09, not the Linux CPU baseline in P02-10.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/selected-paging-profile-probes-through-run-62.json",
+      "sha256": "a0c5f334de1831e1d783f3e151c0c03c297719832947db1223ef1abfb039b160"
+    }
+  ],
+  "limitations": [
+    "The two profiles remain conservative versioned Dory engineering identities; neither represents a physical Intel SKU nor a qualified x86-64-v2/v3 baseline.",
+    "PAT, XSAVE, OSXSAVE, AVX, AVX2, RDTSCP and invariant TSC remain absent from the selected profiles.",
+    "The probes cover two selected Alpine kernel builds, two pinned diagnostic archives, baseline JIT with interpreter fallback and one vCPU. They do not qualify all distributions, optimizing JIT, multi-vCPU, physical reference, hosted CI or performance.",
+    "The two kernel images have different internal layouts but their retained ELF PT_LOAD envelopes are identical.",
+    "Raw producer metadata uses the erroneous non-resolving abbreviation b930793f5a. Exact source-manifest, runner, build-log and repository bindings establish the actual implementation commit without rewriting the raw records.",
+    "P02-10 and broad CPU/ISA/floating-point/paging qualification remain open."
+  ]
+}

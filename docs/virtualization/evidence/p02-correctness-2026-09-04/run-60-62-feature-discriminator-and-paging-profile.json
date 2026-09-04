@@ -1,0 +1,70 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-legacy-paging-profile-gate",
+  "implementationCommit": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9",
+  "incrementalFailure60": {
+    "source": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-60-commit-binding.json",
+      "sha256": "d439993c3a4b9f12958385fc3a5e775a31aee0128fc963bcb85ba9046875c1a0"
+    },
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-60.log.gz",
+      "sha256": "925cf9dd9d9d48f8edbe9b8c538f2fc49046c770c3d2641be92aa22fc8be6b4e"
+    },
+    "failedMethods": [
+      {
+        "name": "selectedCMOVMaskReachesEveryMachineExecutor",
+        "issues": 16
+      },
+      {
+        "name": "selectedProfileControlsMachineFetchDiagnosticsAndBothNativeTiers",
+        "issues": 12
+      }
+    ],
+    "classification": "Stale dependent objects compiled against the prior Swift enum discriminator layout; no architectural failure is inferred."
+  },
+  "cleanReplay61": {
+    "source": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-61-commit-binding.json",
+      "sha256": "f4d1e0fdebebafd420a84125e609d24e48d99c56dcc53d9c9456c60b193adf45"
+    },
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-61.log.gz",
+      "sha256": "4998dcc09b3eb46e1ccca9b2c0c12781f43cf090a66e0871516e9f80a3cfff4e"
+    },
+    "sourceBytesIdenticalTo60": true,
+    "allTestsPass": true
+  },
+  "tailAppendedLayout62": {
+    "source": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-62-commit-binding.json",
+      "sha256": "d420d3d0affbedab3cf230a57c34e1c68abd9f4bccc49fcba19cba66c0460e37"
+    },
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-62.log.gz",
+      "sha256": "602c59ece97b44b33fa836ee805bf0fadd958388c2db6c9b7bf099d6c1bdd003"
+    },
+    "onlyChangedInputFrom61": "dory-core-swift/Sources/DoryDBTX86/DoryX86CPUProfile.swift",
+    "source61SHA256": "b907100fbb818e8a73158e5c65024331f215fa1c8eb527c59d58e95b8ae48d9a",
+    "source62SHA256": "ab22083b676f93f3f19057032cddd6542dbedb29431c7b9d302e6b16dda23486",
+    "newCasesMovedToTail": [
+      "pageSizeExtension",
+      "physicalAddressExtension",
+      "pageGlobalEnable",
+      "pageAttributeTable"
+    ],
+    "allTestsPass": true
+  },
+  "publishedFeatures": [
+    "PSE",
+    "PAE",
+    "PGE"
+  ],
+  "unpublishedFeature": "PAT",
+  "scope": "Selected engineering profiles publish the tested PSE/PAE/PGE mechanisms and keep PAT absent. Clean source gates pass; selected real-kernel userspace replay is separate and pending here.",
+  "limitations": [
+    "No kernel guest run is included, so P02-09 and P02-10 remain open.",
+    "The enum-tail move preserves the original in-process discriminator ordering for local incremental builds; serialized feature identities remain string raw values.",
+    "The stale-layout classification follows byte-identical clean run61 and the affected tests; arbitrary cross-version binary module ABI is not claimed."
+  ]
+}

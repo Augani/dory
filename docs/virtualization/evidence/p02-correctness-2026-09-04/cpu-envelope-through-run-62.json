@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-09",
+    "P02-12",
+    "P02-13",
+    "P02-15",
+    "P02-16"
+  ],
+  "sourceCommit": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Runs57-62 retain effective-VM atomic handling, PAE/PAT/environment/x87/SSE2 gates and selected PSE/PAE/PGE profile publication, including failed fixture/incremental observations and clean corrections.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-62.json",
+      "sha256": "302595a0bbccf666ce6c88fa6eb991c1feb09a4a76e6ab36f25ebaa11d39c89a"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete and no checkpoint is newly closed by this source-only batch.",
+    "Run58 preserves two fixture failures and65 issues; run59 changes only those fixture expectations and passes. Production source does not change between them.",
+    "Run60 preserves two selected-feature failures and28 issues from an incremental scratch. Byte-identical source61 passes from a fresh clean build; source62 moves only new enum cases to the tail and also passes clean.",
+    "Missing run58/run60 unified-exec session and completion-chunk IDs are explicitly unavailable; exact logs, manifests, overlays, outcomes and strict counts remain retained.",
+    "One disabled physical-reference method and one optional XCTest fixture skip remain excluded from pass counts. Overlapping runs and reauthored methods are not summed.",
+    "PSE/PAE/PGE publication is source and regression evidence here. No selected real-kernel replay is included, PAT stays unadvertised and P02-09/P02-10 remain open.",
+    "Experimental host and timings remain engineering observations rather than P14 qualification."
+  ]
+}

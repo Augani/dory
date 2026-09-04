@@ -1,0 +1,87 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-selected-paging-profile-probe-validation",
+  "status": "passed",
+  "review": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/selected-paging-profile-probes-through-run-62.json",
+    "sha256": "a0c5f334de1831e1d783f3e151c0c03c297719832947db1223ef1abfb039b160"
+  },
+  "sourceCommit": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9",
+  "source62": {
+    "manifestSHA256": "693e4fa26d4aef543f672b354e0a07cd5a86c133b4a101f351070f0f2c5362e6",
+    "trackedInputs": 737,
+    "generatedFFIInputs": 6,
+    "overlayMembers": 149,
+    "allTrackedInputsMatchImplementationCommit": true
+  },
+  "optimizedRunner": {
+    "sha256": "4f482f4631415a1d19ac031973761a25648deec6ec55d43bfb430557be5288f0",
+    "byteCount": 9221992,
+    "releaseBuildExitCode": 0,
+    "buildLogSHA256": "e56798ae83e6d740dbc758dd991d3bddbcfe945ffeef390095bd32d5c512b906"
+  },
+  "producerMetadataDefect": {
+    "recordedInvalidAbbreviation": "b930793f5a",
+    "preserved": true,
+    "actualCommitEstablishedByIndependentBindings": "b930793f5f00d3abc0eae8ee2cee7e4b8e9da8d9"
+  },
+  "profileContractPassingMethods": 26,
+  "publishedFeaturesVerified": [
+    "PSE",
+    "PAE",
+    "PGE"
+  ],
+  "unpublishedFeaturesVerified": [
+    "PAT",
+    "XSAVE",
+    "OSXSAVE",
+    "AVX",
+    "AVX2",
+    "RDTSCP",
+    "invariant TSC"
+  ],
+  "probes": [
+    {
+      "fixture": "musl",
+      "profile": "dory.x86_64.compat-v1",
+      "runID": "f79cd08c-edf6-43e9-b77f-73412cc39dfb",
+      "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+      "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+      "retiredInstructions": 733658175,
+      "elapsedNanoseconds": 521917769292,
+      "receiptWorkloads": 7,
+      "terminalACPIS5": true,
+      "sourceManifestAndRunnerBound": true
+    },
+    {
+      "fixture": "glibc",
+      "profile": "dory.x86_64.intel-compatible-v1",
+      "runID": "3c52d305-63c6-4c9c-810a-fc6add753f46",
+      "kernelSHA256": "ae0dcbf0d699293a29e8c55e4b319e8fe093aa07a18e1902beb41c3e0243c405",
+      "initrdSHA256": "813de160103ef6179de5d3b6d9271ed8f9883d8c3fa7671a49254f0ec7cb9d24",
+      "retiredInstructions": 738921253,
+      "elapsedNanoseconds": 563156977625,
+      "receiptWorkloads": 7,
+      "terminalACPIS5": true,
+      "sourceManifestAndRunnerBound": true
+    }
+  ],
+  "exactRequestedWorkloads": [
+    "bootstrap.filesystems",
+    "syscall.identity",
+    "process.creation_exec_wait",
+    "memory.allocation_copy",
+    "signal.handler_return",
+    "timer.sleep_elapsed",
+    "filesystem.write_read_sync"
+  ],
+  "allGuestReceiptsMatchInvocationUUID": true,
+  "allGuestReceiptsComplete": true,
+  "allTerminalExitsPoweredOff": true,
+  "allConsoleTailsContainACPIS5": true,
+  "envelopeSchemaValidated": true,
+  "artifactReferencesVerified": 16,
+  "retentionTransformationsVerified": 10,
+  "noUserHomePathsInNewArtifacts": true,
+  "qualification": "This independently closes only the conservative versioned CPU-profile audit in P02-09. P02-10, physical-reference, optimizing-JIT, multi-vCPU, broad distribution, performance and full CPU/ISA/paging/floating-point qualification remain open."
+}
