@@ -117,6 +117,9 @@ extension DoryDaemonVirtualMachinePlanningTransactionCoordinator:
 public protocol DoryDaemonVirtualMachineProductionPlanningControlling: Sendable {
     func recoveryDescriptor(for machineID: String) throws -> DoryDaemonVirtualMachinePlanningRecoveryDescriptor?
     func authorityRevision(for reference: DoryVMResolverReference) throws -> UInt64?
+    func validateBackingOwnership(
+        of artifact: DoryResolvedMachineLaunchArtifact, atPath path: String
+    ) throws
     func publishResolvedPlan(
         _ request: DoryDaemonVirtualMachinePlanningTransactionRequest,
         artifacts: [DoryDaemonVirtualMachinePlanningArtifactPublication]
@@ -125,6 +128,15 @@ public protocol DoryDaemonVirtualMachineProductionPlanningControlling: Sendable 
 
 extension DoryDaemonVirtualMachineProductionPlanningControlling {
     public func recoveryDescriptor(for machineID: String) throws -> DoryDaemonVirtualMachinePlanningRecoveryDescriptor? { nil }
+
+    public func validateBackingOwnership(
+        of artifact: DoryResolvedMachineLaunchArtifact, atPath path: String
+    ) throws {
+        throw DoryDaemonVirtualMachineProductionPlanningControllerFailure(
+            code: .mediaAuthorityMissing,
+            message: "Artifact backing ownership validation is unavailable."
+        )
+    }
 }
 
 /// The sole production entry for a manager-owned native create/update/replan transaction. It
@@ -171,6 +183,21 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
 
     public func recoveryDescriptor(for machineID: String) throws -> DoryDaemonVirtualMachinePlanningRecoveryDescriptor? {
         try coordinator.recoveryDescriptor(for: machineID)
+    }
+
+    /// The manager must first authenticate the persisted plan, runtime generation and private
+    /// workspace path. This check permits guest writes only on that exact mutable backing;
+    /// it cannot provide fresh start evidence or authorize a replacement helper.
+    public func validateBackingOwnership(
+        of artifact: DoryResolvedMachineLaunchArtifact, atPath path: String
+    ) throws {
+        try artifactAuthority.validateBackingOwnership(
+            reference: artifact.resolverReference,
+            path: path,
+            media: artifact.media,
+            authorityRevision: artifact.authorityRevision,
+            mutableProvenanceEvidence: artifact.mutableProvenanceEvidence
+        )
     }
 
     public func resolveReserveAndPublish(

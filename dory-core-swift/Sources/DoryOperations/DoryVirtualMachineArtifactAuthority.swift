@@ -314,6 +314,52 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
         }
     }
 
+    /// Verifies the backing of an already-owned runtime before quiescence or replacement.
+    /// Mutable disks may contain guest writes, but must retain their published device, inode,
+    /// and length. Immutable media retain full content verification. The caller supplies the
+    /// exact persisted publication and its independently validated private workspace path.
+    /// This read-only check grants no launch authority and does not refresh a publication.
+    public func validateBackingOwnership(
+        reference: DoryVMResolverReference,
+        path: String,
+        media: DoryBootMedia,
+        authorityRevision: UInt64,
+        mutableProvenanceEvidence: DoryMutableBootMediaProvenanceAuditEvidence?
+    ) throws {
+        try withExclusiveAccess(readOnly: true) {
+            guard let record = try readIfPresent(reference) else {
+                throw DoryVirtualMachineArtifactAuthorityError.artifactMissing
+            }
+            guard record.authorityRevision == authorityRevision else {
+                throw DoryVirtualMachineArtifactAuthorityError.staleRevision(
+                    expected: authorityRevision, actual: record.authorityRevision
+                )
+            }
+            let publication = DoryVerifiedVirtualMachineArtifact(record: record)
+            guard record.path == (try Self.validatedPath(path)),
+                  publication.media == media,
+                  publication.mutableProvenance?.persistedAuditEvidence
+                    == mutableProvenanceEvidence else {
+                throw DoryVirtualMachineArtifactAuthorityError.invalidRecord
+            }
+            switch record.identity {
+            case .immutable:
+                let file = try Self.inspect(
+                    record.path, hashContents: true,
+                    progressInjector: inspectionProgressInjector
+                )
+                guard Self.file(file, matches: record.identity,
+                                recordSchemaVersion: record.schemaVersion) else {
+                    throw DoryVirtualMachineArtifactAuthorityError.artifactChanged
+                }
+            case let .mutable(_, _, byteCount, device, inode, _, _, _, _):
+                try Self.validateMutableBacking(
+                    path: record.path, byteCount: byteCount, device: device, inode: inode
+                )
+            }
+        }
+    }
+
     /// Returns daemon-private publication metadata for optimistic reconciliation. This does not
     /// verify current artifact bytes and therefore never returns an opaque trusted receipt.
     public func authorityRecord(
@@ -449,7 +495,9 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
         hashContents: Bool,
         progressInjector: (@Sendable (InspectionStage) throws -> Void)?
     ) throws -> InspectedFile {
-        let descriptor = path.withCString { open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW) }
+        let descriptor = path.withCString {
+            open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        }
         guard descriptor >= 0 else {
             throw DoryVirtualMachineArtifactAuthorityError.insecureArtifact
         }
@@ -510,6 +558,32 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
             && status.st_nlink == 1
             && status.st_mode & 0o077 == 0
             && status.st_size > 0
+    }
+
+    private static func validateMutableBacking(
+        path: String, byteCount: UInt64, device: UInt64, inode: UInt64
+    ) throws {
+        let descriptor = path.withCString {
+            open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+        }
+        guard descriptor >= 0 else {
+            throw DoryVirtualMachineArtifactAuthorityError.insecureArtifact
+        }
+        defer { close(descriptor) }
+        var opened = stat()
+        var named = stat()
+        guard fstat(descriptor, &opened) == 0, isPrivateArtifact(opened),
+              lstat(path, &named) == 0, isPrivateArtifact(named) else {
+            throw DoryVirtualMachineArtifactAuthorityError.insecureArtifact
+        }
+        // A running guest may keep changing mtime/ctime while this check executes. Compare
+        // the opened backing and its current name without requiring a content snapshot.
+        guard [opened, named].allSatisfy({ status in
+            UInt64(status.st_dev) == device && UInt64(status.st_ino) == inode
+                && UInt64(status.st_size) == byteCount
+        }) else {
+            throw DoryVirtualMachineArtifactAuthorityError.artifactChanged
+        }
     }
 
     private static func sameArtifactSnapshot(_ lhs: stat, _ rhs: stat) -> Bool {
