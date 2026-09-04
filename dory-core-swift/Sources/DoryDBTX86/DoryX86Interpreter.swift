@@ -5983,6 +5983,9 @@ public struct DoryX86Interpreter: Sendable {
       base |= UInt64(bytes[9]) << 40
       base |= UInt64(bytes[10]) << 48
       base |= UInt64(bytes[11]) << 56
+      // SDM Vol. 3A §4.5.3: LLDT/LTR reject a noncanonical loaded base.
+      // Validate before LTR marks the descriptor busy or publishes TR/LDTR.
+      guard DoryX86ArchitecturalState.isCanonical(base) else { throw fault() }
     }
     var limit = UInt32(raw & 0xffff) | UInt32((raw >> 48) & 0x0f) << 16
     if raw & (1 << 55) != 0 { limit = (limit << 12) | 0xfff }
