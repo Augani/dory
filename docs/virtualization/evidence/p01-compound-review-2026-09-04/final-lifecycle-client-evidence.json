@@ -1,0 +1,48 @@
+{
+  "sourceRoot": "/tmp/dory-p01-kernel-refresh-app-source",
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-app-source-manifest.json",
+  "sourceManifestSHA256": "53552f339cf8efd97ea9eef17c18a5e9f4cce1dcf4fb2d7e6167c08af96eb0bf",
+  "sourceFileCount": 1991,
+  "sourceUnchangedThroughBuildAndTest": true,
+  "compilerInputPathsVerified": true,
+  "appLiveFrozenHashes": {
+    "Dory/Models/AppStore.swift": {
+      "frozenSHA256": "159ed37554d28828a20fbc4f01465e8ede0a3fa8e19f1447c77e610f2d103008",
+      "liveSHA256": "159ed37554d28828a20fbc4f01465e8ede0a3fa8e19f1447c77e610f2d103008"
+    },
+    "Dory/Runtime/Doryd/DorydClient.swift": {
+      "frozenSHA256": "95eda7947445113a731b3459dbb5e115e7788a83747628aa1c93719b9448bf8f",
+      "liveSHA256": "95eda7947445113a731b3459dbb5e115e7788a83747628aa1c93719b9448bf8f"
+    },
+    "DoryTests/DorydClientTests.swift": {
+      "frozenSHA256": "972f75fd149e2913719ec7c5ced1794b4c2342a74f1f75540da1cb3ffed27a32",
+      "liveSHA256": "972f75fd149e2913719ec7c5ced1794b4c2342a74f1f75540da1cb3ffed27a32"
+    }
+  },
+  "buildLog": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-app-build.log.gz",
+  "buildExitCode": 0,
+  "derivedDataPath": "/tmp/dory-p01-final-client-build",
+  "testLog": "docs/virtualization/evidence/p01-compound-review-2026-09-04/lifecycle-client-isolated-tests.log.gz",
+  "testManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/lifecycle-client-isolated-tests-manifest.json",
+  "testManifestSHA256": "7b35f3886ddc06ec7acea7f245226b356680c95b4dc284273cae45e1cbdd00dd",
+  "testExitCode": 0,
+  "swiftTestingMethods": 83,
+  "durationSeconds": 35.518,
+  "testHostPath": "/tmp/dory-p01-lifecycle-client-isolated-6irzo2si/DoryP01Tests.app",
+  "testHostBundleIdentifier": "com.pythonxi.Dory.P01FinalLifecycleClientTests",
+  "resultBundlePath": "/tmp/dory-p01-lifecycle-client-isolated-6irzo2si/Results.xcresult",
+  "focusedAssertions": {
+    "normalLifecycleUsesExistingAssets": true,
+    "maintenanceRestoreUsesExistingAssets": true,
+    "pauseSuspendResumeCallerUUIDPropagation": true,
+    "explicitDesktopUpdateTransportRetained": true
+  },
+  "kernelRefreshRemovalPatch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-removal-agent-only.patch.gz",
+  "kernelRefreshRemovalPatchSHA256": "787d072c69077d611c426e1d538f241b64fadb93e1b6afeb44508bdc64bddb81",
+  "suspendUUIDAppPatch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/suspend-uuid-app-only.patch.gz",
+  "suspendUUIDAppPatchSHA256": "2668826786766119a1fbc6996d594e216157792cbb4e78759b8438a2ebd0f18c",
+  "scope": "Independent app XPC protocol/client/fake service and AppStore lifecycle behavior. Frozen older compiling daemon core only includes kernel-refresh removal; latest native saved-state/start/suspend service implementation is verified separately by parent. No physical guest or release signing qualification.",
+  "installedAppPID": 1876,
+  "installedAppStart": "Thu Sep 3 11:49:19 2026",
+  "installedAppUnchanged": true
+}

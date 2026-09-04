@@ -1,0 +1,20 @@
+{
+  "outcome": "passed",
+  "liveOwnedFile": "/Users/augustusotu/Projects/Dory/dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift",
+  "liveOwnedFileSHA256": "059b40515f9aa7f61b777c05d63b9d6eafb17611852a740247c03788b6ec1aa4",
+  "fixturePatch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-agent-only-4.patch.gz",
+  "fixturePatchSHA256": "62cf33f1359cadd4aab857b96cedb9ffb08c1a32f8747d7a97b6a299560d0445",
+  "gates": [
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-installer-evidence.json",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-headless-evidence.json"
+  ],
+  "distinctSwiftTestingMethods": 14,
+  "argumentCasesIncludingUnparameterized": 85,
+  "scope": "13 migrated source-owning production fixture methods, plus existing desktop graphics omission negative regression; exact sources differ across the two frozen gates as recorded.",
+  "discardedInitialRun": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-discarded-run-1.json",
+  "remainingGaps": [],
+  "installedAppUnchanged": true,
+  "regionManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-region-manifest.json",
+  "regionManifestSHA256": "ddc424760f5c1bb02a6c7ab8c5546434f9dc41ea222210082d4da761f8c429f4",
+  "allOwnedLiveFrozenRegionsIdentical": true
+}

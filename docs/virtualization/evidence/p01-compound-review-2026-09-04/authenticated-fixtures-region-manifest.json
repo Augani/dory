@@ -1,0 +1,110 @@
+{
+  "activatedGraphPlansHeadlessCreate": {
+    "liveSHA256": "88283b61a41caca4b91a9f6979f4909bb838a60752a28d2801182fd70edd8855",
+    "frozenSHA256": "88283b61a41caca4b91a9f6979f4909bb838a60752a28d2801182fd70edd8855",
+    "byteCount": 5677,
+    "identical": true
+  },
+  "configurationUpdateOwnsPlanning": {
+    "liveSHA256": "08dd108e15a73f4a5f3a730c10b3a9dd20e3e6409efaa30eb0837724d9aca818",
+    "frozenSHA256": "08dd108e15a73f4a5f3a730c10b3a9dd20e3e6409efaa30eb0837724d9aca818",
+    "byteCount": 4039,
+    "identical": true
+  },
+  "configurationUpdateRecovers": {
+    "liveSHA256": "dad068781cae4758b0c4a8159c53ce44e6025bdb3047494c63f2b6a90355bf34",
+    "frozenSHA256": "dad068781cae4758b0c4a8159c53ce44e6025bdb3047494c63f2b6a90355bf34",
+    "byteCount": 4150,
+    "identical": true
+  },
+  "configurationUpdatePreflightRejectsWithoutStop": {
+    "liveSHA256": "8ef399ead10388c2f8119b8fd1c2b6967076a2ed41cc5c64601049db06e91405",
+    "frozenSHA256": "8ef399ead10388c2f8119b8fd1c2b6967076a2ed41cc5c64601049db06e91405",
+    "byteCount": 2141,
+    "identical": true
+  },
+  "installerPreflightPreservesSource": {
+    "liveSHA256": "201f49d337c8ed5441ce3f0a29917661381d15674fa44b8866ed62e8a9c31b46",
+    "frozenSHA256": "201f49d337c8ed5441ce3f0a29917661381d15674fa44b8866ed62e8a9c31b46",
+    "byteCount": 5881,
+    "identical": true
+  },
+  "installerPublicationRecovers": {
+    "liveSHA256": "7c1aae6de840b3ae203ff1945a6a2b59776d1676ee6e55f2f435c1e5c8d14ce8",
+    "frozenSHA256": "7c1aae6de840b3ae203ff1945a6a2b59776d1676ee6e55f2f435c1e5c8d14ce8",
+    "byteCount": 3826,
+    "identical": true
+  },
+  "installerAttachmentOwnsRestart": {
+    "liveSHA256": "b13c053e73d7119c3549dd7eef972bacadeb53fbe4a75094fc7c33211bd862a5",
+    "frozenSHA256": "b13c053e73d7119c3549dd7eef972bacadeb53fbe4a75094fc7c33211bd862a5",
+    "byteCount": 3166,
+    "identical": true
+  },
+  "installerPreStopReplay": {
+    "liveSHA256": "3e94dfdac6c6a89f9606cee9f3d0c9b69071192d29c6350f721da27c4c2812cf",
+    "frozenSHA256": "3e94dfdac6c6a89f9606cee9f3d0c9b69071192d29c6350f721da27c4c2812cf",
+    "byteCount": 3314,
+    "identical": true
+  },
+  "installerRollbackOwnsRecovery": {
+    "liveSHA256": "ed8c4ae998c0eb82b648a50c4067b7b57d54539e0fb65c498a5ae17fdc2cd7f2",
+    "frozenSHA256": "ed8c4ae998c0eb82b648a50c4067b7b57d54539e0fb65c498a5ae17fdc2cd7f2",
+    "byteCount": 6556,
+    "identical": true
+  },
+  "installerFirstBootReplay": {
+    "liveSHA256": "246c5a566dcc35f970a027cc8a3efc7460ebc8fd8f892c3eae4b7871bb78b154",
+    "frozenSHA256": "246c5a566dcc35f970a027cc8a3efc7460ebc8fd8f892c3eae4b7871bb78b154",
+    "byteCount": 3080,
+    "identical": true
+  },
+  "activatedGraphRunsPortableEFILifecycle": {
+    "liveSHA256": "7e623593a99959f7fec2aed2bea46b56365c68b1ace9be059f0667f6ee5a3e50",
+    "frozenSHA256": "7e623593a99959f7fec2aed2bea46b56365c68b1ace9be059f0667f6ee5a3e50",
+    "byteCount": 6792,
+    "identical": true
+  },
+  "productionInstallerCancellation": {
+    "liveSHA256": "d1ff42a8ca169b1c9aae429ad667e5c024fd397858fb4e5d889a13cf2ba1d60c",
+    "frozenSHA256": "d1ff42a8ca169b1c9aae429ad667e5c024fd397858fb4e5d889a13cf2ba1d60c",
+    "byteCount": 2534,
+    "identical": true
+  },
+  "desktopUpdatePreflightPreservesSource": {
+    "liveSHA256": "5af98028b8d2a154ef9bbeccf5ccc85f2f91db7c617ca6ee77a3c4c5a56ac27c",
+    "frozenSHA256": "5af98028b8d2a154ef9bbeccf5ccc85f2f91db7c617ca6ee77a3c4c5a56ac27c",
+    "byteCount": 4939,
+    "identical": true
+  },
+  "authenticatedProductionTrustFixture": {
+    "liveSHA256": "1d20f5c32450b5e066a2966d55c9bd040388f87c5632fed446fa09146a100ccd",
+    "frozenSHA256": "1d20f5c32450b5e066a2966d55c9bd040388f87c5632fed446fa09146a100ccd",
+    "byteCount": 298,
+    "identical": true
+  },
+  "startAuthenticatedProductionMachine": {
+    "liveSHA256": "234a4c55db7377fe38e35bd198bec1cd50ddd31cdaa3d5535c88743e37acecd2",
+    "frozenSHA256": "234a4c55db7377fe38e35bd198bec1cd50ddd31cdaa3d5535c88743e37acecd2",
+    "byteCount": 223,
+    "identical": true
+  },
+  "waitForAuthenticatedProductionMachine": {
+    "liveSHA256": "af7f3be8c46cc5bdd9227186a2829a9cba711586d38c0655600608fb94af5825",
+    "frozenSHA256": "af7f3be8c46cc5bdd9227186a2829a9cba711586d38c0655600608fb94af5825",
+    "byteCount": 677,
+    "identical": true
+  },
+  "testAuthenticatedDesktopRuntimeServer": {
+    "liveSHA256": "d89f2153ce7c21da7dd060957b7f45ae602466b2a5b9589888d40e3361c7dafd",
+    "frozenSHA256": "d89f2153ce7c21da7dd060957b7f45ae602466b2a5b9589888d40e3361c7dafd",
+    "byteCount": 2077,
+    "identical": true
+  },
+  "authenticatedHelperScript": {
+    "liveSHA256": "ee8cd65337fc2b49553e337dc59da4eb98242a6b10bac4de2f4f0402d6f5ad46",
+    "frozenSHA256": "ee8cd65337fc2b49553e337dc59da4eb98242a6b10bac4de2f4f0402d6f5ad46",
+    "byteCount": 1440,
+    "identical": true
+  }
+}

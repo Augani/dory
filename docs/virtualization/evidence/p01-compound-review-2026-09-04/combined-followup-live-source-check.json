@@ -1,0 +1,7 @@
+{
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-source-manifest.json",
+  "sourceManifestSHA256": "b2bcf9fc472c73027c2037a8d17959d4789ad2bab52949123f75c54b548519d0",
+  "compiledInputCount": 674,
+  "allCompiledInputsMatchCommittedWorkingTree": true,
+  "gitHEAD": "cd88d9dc8fa2f32ced69de95ee7dab07d3dc4181"
+}

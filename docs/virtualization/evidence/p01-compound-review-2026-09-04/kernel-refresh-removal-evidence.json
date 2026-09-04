@@ -1,0 +1,11 @@
+{
+  "change": "Remove obsolete managed desktop kernel refresh API and implicit pre-start/maintenance kernel mutation; explicit desktop update remains supported.",
+  "patch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-removal-agent-only.patch.gz",
+  "patchSHA256": "787d072c69077d611c426e1d538f241b64fadb93e1b6afeb44508bdc64bddb81",
+  "fileHashes": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-removal-files.json",
+  "coreEvidence": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-core-evidence.json",
+  "appEvidence": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-lifecycle-client-evidence.json",
+  "verification": "3 focused core tests pass;83 combined app client tests pass. Broader older-baseline service gate had50/51pass with an unrelated competing-start controller count mismatch, preserved in core evidence for parent final current-core verification.",
+  "sourceEditsFrozen": true,
+  "committedByAgent": false
+}

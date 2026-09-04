@@ -1,0 +1,22 @@
+{
+  "result": "passed",
+  "testCommand": "swift test --no-parallel --filter MachineManagerStartJournalIntegrationTests|MachineManagerResolvedPlanIntegrationTests/rejectedPlansFailBeforeSpawn",
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/start-agent-tests-8.log.gz",
+  "exitCode": 0,
+  "testFunctions": 6,
+  "scenarios": 8,
+  "suites": 2,
+  "elapsedSeconds": 40.273,
+  "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/start-agent-source-manifest-8.json",
+  "manifestSHA256": "98e8f66e381ec045d03f08528e41418b88e9878e4b2639a58674aba307723c9c",
+  "verifiedInputs": 675,
+  "sourceUnchangedAfterTests": true,
+  "patch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/start-agent-index.patch.gz",
+  "patchSHA256": "511c586f45b07e97f406b2f23b7fe9a9ed1101051f6aafc1581a47269063756a",
+  "patchBase": "42d10887e34b896d5db139fbf2a55e0cd790c5b6",
+  "limitations": [
+    "unplanned source case currently desktop; headless production matcher fix and test follow separately",
+    "saved-state admission still uses preexisting generic replanning; scoped exact-plan fix next",
+    "authenticated process fixture, not physical VM desktop qualification"
+  ]
+}

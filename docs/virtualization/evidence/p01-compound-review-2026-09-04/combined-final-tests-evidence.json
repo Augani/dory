@@ -1,0 +1,36 @@
+{
+  "command": [
+    "swift",
+    "test",
+    "--package-path",
+    "/tmp/dory-p01-combined-final-source-1/dory-core-swift",
+    "--scratch-path",
+    "/tmp/dory-p01-combined-final-build-1",
+    "--jobs",
+    "3",
+    "--no-parallel",
+    "--skip",
+    "productionDesktop|productionSnapshotRestore|publicCloneSourcePreserved|detachedImportedClone|DoryProductionSnapshotCreationTests"
+  ],
+  "workingDirectory": "/tmp/dory-p01-combined-final-source-1/dory-core-swift",
+  "exitCode": 1,
+  "elapsedSeconds": 885.418,
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-source-manifest.json",
+  "sourceManifestSHA256": "070241b0d22346f5a1d29a6c69393e2548e7d1915f0adff774ec01cf0e8c23bc",
+  "sourceFilesVerifiedAfterRun": 674,
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-tests.log.gz",
+  "logSHA256": "18f9f7e79d7bf8748edb08c2811c5a2a4b604a2b72e4771612c74819d7178d57",
+  "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+  "excludedAlreadyVerifiedHeavyCampaigns": "productionDesktop|productionSnapshotRestore|publicCloneSourcePreserved|detachedImportedClone|DoryProductionSnapshotCreationTests",
+  "mediaEnvironment": {
+    "DORY_TEST_INSTALLED_DISK": "/tmp/noble-server-cloudimg-arm64.raw",
+    "DORY_TEST_INSTALLED_ROOT_DEVICE": "/dev/vda1",
+    "DORY_TEST_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-arm64.iso",
+    "DORY_TEST_PORTABLE_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-arm64.iso",
+    "DORY_TEST_PORTABLE_INSTALLER_ARCHITECTURE": "arm64",
+    "DORY_TEST_X86_64_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-amd64.iso",
+    "DORY_TEST_INSTALLER_ISO_SHA256": "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433"
+  },
+  "mediaManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-media.json",
+  "mediaMetadataUnchangedAfterRun": true
+}

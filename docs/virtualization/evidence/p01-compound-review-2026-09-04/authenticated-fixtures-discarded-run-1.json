@@ -1,0 +1,10 @@
+{
+  "status": "discarded",
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-tests-1.log.gz",
+  "reason": "Reused scratch retained build plan for /private/tmp/dory-p01-creation-live-agent-snapshot rather than authenticated-fixtures-snapshot; not evidence of newly frozen fixture changes.",
+  "replacementScratch": "/tmp/dory-p01-authenticated-fixtures-agent-build",
+  "cleanGateLog": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-tests-2.log.gz",
+  "cleanGateSourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-source-manifest-2.json",
+  "cleanGateSourceManifestSHA256": "bbbf02a578fd7f9257a4b5647e0bb88fcd3579d55776541734a53027dd3063a0",
+  "cleanGateOutcome": "3 methods, 1 pass (installer cancellation) and 2 failures (4 issues) from RawHV headless .none readiness; parent owns product correction."
+}

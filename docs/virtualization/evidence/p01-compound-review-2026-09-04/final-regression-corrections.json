@@ -1,0 +1,196 @@
+{
+  "scope": "Full core regression findings followed by all affected suites on the final seven-file correction. Heavy public desktop/creation/clone/snapshot/restore campaigns are separately frozen evidence, not included in this run total.",
+  "originalRegression": {
+    "command": [
+      "swift",
+      "test",
+      "--package-path",
+      "/tmp/dory-p01-combined-final-source-1/dory-core-swift",
+      "--scratch-path",
+      "/tmp/dory-p01-combined-final-build-1",
+      "--jobs",
+      "3",
+      "--no-parallel",
+      "--skip",
+      "productionDesktop|productionSnapshotRestore|publicCloneSourcePreserved|detachedImportedClone|DoryProductionSnapshotCreationTests"
+    ],
+    "workingDirectory": "/tmp/dory-p01-combined-final-source-1/dory-core-swift",
+    "exitCode": 1,
+    "elapsedSeconds": 885.418,
+    "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-source-manifest.json",
+    "sourceManifestSHA256": "070241b0d22346f5a1d29a6c69393e2548e7d1915f0adff774ec01cf0e8c23bc",
+    "sourceFilesVerifiedAfterRun": 674,
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-tests.log.gz",
+    "logSHA256": "18f9f7e79d7bf8748edb08c2811c5a2a4b604a2b72e4771612c74819d7178d57",
+    "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "excludedAlreadyVerifiedHeavyCampaigns": "productionDesktop|productionSnapshotRestore|publicCloneSourcePreserved|detachedImportedClone|DoryProductionSnapshotCreationTests",
+    "mediaEnvironment": {
+      "DORY_TEST_INSTALLED_DISK": "/tmp/noble-server-cloudimg-arm64.raw",
+      "DORY_TEST_INSTALLED_ROOT_DEVICE": "/dev/vda1",
+      "DORY_TEST_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-arm64.iso",
+      "DORY_TEST_PORTABLE_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-arm64.iso",
+      "DORY_TEST_PORTABLE_INSTALLER_ARCHITECTURE": "arm64",
+      "DORY_TEST_X86_64_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-amd64.iso",
+      "DORY_TEST_INSTALLER_ISO_SHA256": "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433"
+    },
+    "mediaManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-media.json",
+    "mediaMetadataUnchangedAfterRun": true
+  },
+  "finalTargetedRegression": {
+    "command": [
+      "swift",
+      "test",
+      "--package-path",
+      "/tmp/dory-p01-combined-followup-source-1/dory-core-swift",
+      "--scratch-path",
+      "/tmp/dory-p01-combined-followup-build-1",
+      "--jobs",
+      "3",
+      "--no-parallel",
+      "--filter",
+      "DorydServiceTests|MachineBackupSchedulerTests|MachineManagerTests|DoryVMMShimTests|MachineManagerResolvedPlanIntegrationTests"
+    ],
+    "workingDirectory": "/tmp/dory-p01-combined-followup-source-1/dory-core-swift",
+    "exitCode": 0,
+    "elapsedSeconds": 257.927,
+    "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-source-manifest.json",
+    "sourceManifestSHA256": "b2bcf9fc472c73027c2037a8d17959d4789ad2bab52949123f75c54b548519d0",
+    "sourceFilesVerifiedAfterRun": 674,
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-tests.log.gz",
+    "logSHA256": "f4f896292b63e71f96c26c6f8fd1d7740af31869559d7b9921917fc14b66465c",
+    "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "fullRegressionSourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-source-manifest.json",
+    "scope": "Focused follow-up for four failed regression suites and the helper-location skip; Release rebuild verifies the scheduler compatibility correction.",
+    "targetedFailureCorrections": "DorydServiceTests|MachineBackupSchedulerTests|MachineManagerTests|DoryVMMShimTests|MachineManagerResolvedPlanIntegrationTests",
+    "mediaEnvironment": {
+      "DORY_TEST_INSTALLED_DISK": "/tmp/noble-server-cloudimg-arm64.raw",
+      "DORY_TEST_INSTALLED_ROOT_DEVICE": "/dev/vda1",
+      "DORY_TEST_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-arm64.iso",
+      "DORY_TEST_PORTABLE_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-arm64.iso",
+      "DORY_TEST_PORTABLE_INSTALLER_ARCHITECTURE": "arm64",
+      "DORY_TEST_X86_64_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-amd64.iso",
+      "DORY_TEST_INSTALLER_ISO_SHA256": "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433"
+    },
+    "mediaManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-media.json",
+    "mediaMetadataUnchangedAfterRun": true
+  },
+  "release": {
+    "command": [
+      "swift",
+      "build",
+      "--package-path",
+      "/tmp/dory-p01-combined-followup-source-1/dory-core-swift",
+      "--scratch-path",
+      "/tmp/dory-p01-combined-followup-release-1",
+      "--jobs",
+      "3",
+      "-c",
+      "release",
+      "--product",
+      "doryd"
+    ],
+    "workingDirectory": "/tmp/dory-p01-combined-followup-source-1/dory-core-swift",
+    "exitCode": 0,
+    "elapsedSeconds": 222.943,
+    "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-source-manifest.json",
+    "sourceManifestSHA256": "b2bcf9fc472c73027c2037a8d17959d4789ad2bab52949123f75c54b548519d0",
+    "sourceFilesVerifiedAfterRun": 674,
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-release.log.gz",
+    "logSHA256": "e94a65861425323ca5396619793d5b0676be0ba960e27226ed5a27368e2c9285",
+    "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "fullRegressionSourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-source-manifest.json",
+    "scope": "Focused follow-up for four failed regression suites and the helper-location skip; Release rebuild verifies the scheduler compatibility correction."
+  },
+  "releaseSymbols": {
+    "releaseBinary": "/tmp/dory-p01-combined-followup-release-1/arm64-apple-macosx/release/doryd",
+    "releaseBinarySHA256": "5992cbb6ff37545a11229a19d7186ab3dbd25f5ef3a5d151e6b8dffc67d62959",
+    "requiredSymbolPresent": "startResolvedMachine",
+    "forbiddenReleaseSymbolsAbsent": [
+      "startLegacyMachine",
+      "prepareLegacyRawHVInstalledLinuxBootIfNeeded",
+      "materializeInstalledLinuxBootRuntimeIfNeeded",
+      "qualificationBootstrapRuntimeAuthority",
+      "qualificationBootstrapDoryPCRuntimeAuthority",
+      "diagnosticConfiguration",
+      "resolveDiagnosticPlanningComposition"
+    ],
+    "debugPositiveControlsPresent": [
+      "startLegacyMachine",
+      "prepareLegacyRawHVInstalledLinuxBootIfNeeded",
+      "materializeInstalledLinuxBootRuntimeIfNeeded",
+      "qualificationBootstrapRuntimeAuthority",
+      "qualificationBootstrapDoryPCRuntimeAuthority",
+      "diagnosticConfiguration",
+      "resolveDiagnosticPlanningComposition"
+    ],
+    "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-source-manifest.json",
+    "sourceManifestSHA256": "b2bcf9fc472c73027c2037a8d17959d4789ad2bab52949123f75c54b548519d0"
+  },
+  "finalLiveSourceCheck": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-live-source-check.json",
+  "finalAppSourceCheck": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-app-live-source-check.json",
+  "originalXCTest": {
+    "executed": 1101,
+    "skipped": 2,
+    "assertionFailures": 4,
+    "failingMethods": 3
+  },
+  "originalSwiftTesting": {
+    "tests": 1159,
+    "suites": 153,
+    "issues": 4,
+    "failingMethods": 3
+  },
+  "changedFiles": [
+    "dory-core-swift/Sources/DorydKit/MachineBackupScheduler.swift",
+    "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift",
+    "dory-core-swift/Tests/DorydKitTests/DoryVMMShimTests.swift",
+    "dory-core-swift/Tests/DorydKitTests/DorydServiceTests.swift",
+    "dory-core-swift/Tests/DorydKitTests/MachineBackupSchedulerTests.swift",
+    "dory-core-swift/Tests/DorydKitTests/MachineManagerResolvedPlanIntegrationTests.swift",
+    "dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift"
+  ],
+  "productionChanges": [
+    "dory-core-swift/Sources/DorydKit/MachineBackupScheduler.swift"
+  ],
+  "corrections": [
+    {
+      "commit": "fdec54d9b",
+      "problem": "Competing start on unfinished creation must preserve the existing planning root, not invoke planning again."
+    },
+    {
+      "commit": "c5249e851",
+      "problem": "Custom SwiftPM scratch builds must locate and execute their actual dory-vmm helper; missing helper is a failure."
+    },
+    {
+      "commit": "196ec6a9f",
+      "problem": "Sandbox lifecycle fixture must activate real production planning before snapshot/restore."
+    },
+    {
+      "commit": "b5ae09c17",
+      "problem": "Backup verification must start its stopped planned clone, await owned readiness and reject foreign operation ownership."
+    },
+    {
+      "commit": "c53f8b902",
+      "problem": "Partial injected launch infrastructure cannot authorize public start or historical restore."
+    },
+    {
+      "commit": "cd88d9dc8",
+      "problem": "Unqualified native graphics intent is tested at the typed persistence boundary; supported public lifecycle uses signed production fixtures."
+    }
+  ],
+  "patches": [
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-only.patch.gz",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/sandbox-fixture.patch.gz",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/partial-authority-fixtures.patch.gz",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/native-settings-fixture.patch.gz"
+  ],
+  "finalImplementationCommit": "cd88d9dc8fa2f32ced69de95ee7dab07d3dc4181",
+  "remainingExplicitSkip": "Pinned x86 PVH boot kernel/initrd are unavailable; physical boot remains P02. The unrelated helper-location skip is fixed and passes.",
+  "physicalGuestQualification": false,
+  "finalFocusedResults": {
+    "xctest": 182,
+    "swiftTesting": 46,
+    "failures": 0,
+    "skips": 0
+  }
+}

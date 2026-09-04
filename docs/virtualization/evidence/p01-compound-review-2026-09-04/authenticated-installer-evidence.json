@@ -1,0 +1,19 @@
+{
+  "snapshot": "/tmp/dory-p01-authenticated-installer-verified-snapshot",
+  "originalCompilerSource": "/tmp/dory-p01-authenticated-fixtures-snapshot",
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-source-manifest-3.json",
+  "sourceManifestSHA256": "def77ecff6212ffe4201fd090621adc7a8fdaf192bd50edf4ebaa7c8625a55a5",
+  "fileCount": 670,
+  "sourceUnchangedDuringTest": true,
+  "archiveBytesVerified": true,
+  "scratch": "/tmp/dory-p01-authenticated-fixtures-agent-build",
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-installer-fixtures-tests-1.log.gz",
+  "exitCode": 0,
+  "swiftTestingMethods": 8,
+  "argumentCasesIncludingUnparameterized": 50,
+  "durationSeconds": 277.646,
+  "buildSeconds": 13.89,
+  "qualification": "Synthetic authenticated control helper; no physical guest qualification claim",
+  "installedAppPID": 1876,
+  "installedAppStart": "Thu Sep 3 11:49:19 2026"
+}

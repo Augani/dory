@@ -1,0 +1,34 @@
+{
+  "Dory/Models/AppStore.swift": {
+    "beforeSHA256": "a00b749e9aeea21830ff2efa5af174bda1dde52df061cbf1176235a8e7473413",
+    "patchAfterSHA256": "b2e6138e5ee869a708660de0dbd4fda075903efc6764ee2e6702473dd2fca7d3"
+  },
+  "Dory/Runtime/Doryd/DorydClient.swift": {
+    "beforeSHA256": "b3e7da8b5836459a2cb16e23d5f76f6bd57748ebd3286baa3915e9856c3fc233",
+    "patchAfterSHA256": "c68203479392f7a0142e9b2cb380df383ab6f8ce4c79fecc18ca614562a2de6f"
+  },
+  "DoryTests/DorydClientTests.swift": {
+    "beforeSHA256": "0dd8ee81cf6b016a8a544cabf88abe6c1d5e3ff70859f1a432a4cccc8d6d1a7e",
+    "patchAfterSHA256": "d9d04920315412fe8e128a3dabac33b55ac5bc6b0de48adcb5f7fdb222ba59e5"
+  },
+  "dory-core-swift/Sources/DorydKit/MachineManager.swift": {
+    "beforeSHA256": "7d84380b79e2fda619b8552faf1a4c1f40dcf23a57d37d984d1e1ca5e77fa5d9",
+    "patchAfterSHA256": "2d3696b891725a127a5f3029cf25d7f3c9df22b85e142f0b6f95393a379f2315"
+  },
+  "dory-core-swift/Sources/DorydKit/DorydService.swift": {
+    "beforeSHA256": "5b8c4de1119c31678966388124b19d6c40822bb16fd7a39f341111c275a3520a",
+    "patchAfterSHA256": "65a6900c6838f36b90d73997c7ed4cac331f932b9103a4b03def081caf8c09c2"
+  },
+  "dory-core-swift/Sources/DorydKit/DorydControl.swift": {
+    "beforeSHA256": "2bc151beaccf8109ffba0c768d5b00e5c7af1e5abe94b3f8ad715265c7c0b297",
+    "patchAfterSHA256": "96bc9041dcbff5fa4892a36016f7055d0be26798b9e59842daa50dbdfa4af584"
+  },
+  "dory-core-swift/Tests/DorydKitTests/MachineManagerTests.swift": {
+    "beforeSHA256": "4672f3af3586a552d71b4b14f36c3b7d2df5ec9c50f67b0cc430f8a213c9094b",
+    "patchAfterSHA256": "223f7cd2c68522510ba066f28c34f715de38541fc03538fa1b1be609d522a681"
+  },
+  "dory-core-swift/Tests/DorydKitTests/DorydServiceTests.swift": {
+    "beforeSHA256": "83cf235900ace838f4a78d59d4eb315931c6af595d3531545d9684c0e727bf04",
+    "patchAfterSHA256": "78cbd68ed2e92e718a05ebc6135d89c75ae15f6d445b2dabc3dbc64b02025141"
+  }
+}

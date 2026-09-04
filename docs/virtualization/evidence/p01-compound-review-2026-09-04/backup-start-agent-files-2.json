@@ -1,0 +1,10 @@
+{
+  "dory-core-swift/Sources/DorydKit/MachineBackupScheduler.swift": {
+    "before": "388e0c3373a013b15c930c919983c0b986f21bcfee2e34657b0ac46cf161408c",
+    "after": "0a307ee3033fbf025621333310acf6d467aac8be440c646ae68ad68dd7a43a98"
+  },
+  "dory-core-swift/Tests/DorydKitTests/MachineBackupSchedulerTests.swift": {
+    "before": "ce032e9810a0d94d17226782ae6e4782c5ca5435abcc0543b5c4ac820b2738e2",
+    "after": "c88b744cb700cc0b3ea2d3af797e343b1ff238519b8b08a34816cf3b048c3dec"
+  }
+}

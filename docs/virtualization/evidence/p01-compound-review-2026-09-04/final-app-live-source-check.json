@@ -1,0 +1,8 @@
+{
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-app-source-manifest.json",
+  "sourceManifestSHA256": "53552f339cf8efd97ea9eef17c18a5e9f4cce1dcf4fb2d7e6167c08af96eb0bf",
+  "verifiedFiles": 618,
+  "scope": "All tracked app, app tests, Xcode project and ContainerizationEngine inputs in final isolated app manifest match live files. Current daemon implementation is independently verified by final core campaigns.",
+  "allSelectedInputsMatchLiveTree": true,
+  "gitHEAD": "c53f8b9026468ee00881ea8a6afaa2ba80680522"
+}

@@ -1,0 +1,52 @@
+{
+  "testHostPath": "/tmp/dory-p01-lifecycle-client-isolated-6irzo2si/DoryP01Tests.app",
+  "xctestrun": "/tmp/dory-p01-lifecycle-client-isolated-6irzo2si/DoryP01.xctestrun",
+  "originalBundleIdentifier": "com.pythonxi.Dory",
+  "testBundleIdentifier": "com.pythonxi.Dory.P01FinalLifecycleClientTests",
+  "signingCommandArguments": [
+    "codesign",
+    "--force",
+    "--sign",
+    "-",
+    "--preserve-metadata=entitlements,flags,runtime",
+    "/tmp/dory-p01-lifecycle-client-isolated-6irzo2si/DoryP01Tests.app"
+  ],
+  "commandArguments": [
+    "xcodebuild",
+    "test-without-building",
+    "-xctestrun",
+    "/tmp/dory-p01-lifecycle-client-isolated-6irzo2si/DoryP01.xctestrun",
+    "-destination",
+    "platform=macOS",
+    "-parallel-testing-enabled",
+    "NO",
+    "-resultBundlePath",
+    "/tmp/dory-p01-lifecycle-client-isolated-6irzo2si/Results.xcresult",
+    "-only-testing:DoryTests/DorydClientTests"
+  ],
+  "scope": "DorydClientTests including start/maintenance artifact stability and pause/suspend/resume caller UUID assertions in a copied Debug app, with a separate test-host bundle identity, preserved entitlements and ad-hoc signing. DORY_UI_TEST=1 disables app instance management and startup side effects. This does not qualify the original bundle identity, app UI automation, physical guests or release signing. Frozen prior compiling core with obsolete kernel refresh removed, plus final app pause/suspend/resume UUID transport and fake service assertions. Latest daemon saved-state/start and suspend service implementation are excluded; parent verifies those separately. This gate validates the independent app XPC mirror.",
+  "copyComparison": {
+    "identicalRegularFiles": 133,
+    "changedFiles": [
+      {
+        "path": "Contents/Info.plist",
+        "originalSHA256": "ac28528333c37c471e01c81ab85a6ca0f3b60ce5b10ec5e582fb7853233967c4",
+        "testHostSHA256": "41ad262144d0ad8c8e971990e40b0fc893e76061229a7a8f218fe843d9d6d273"
+      },
+      {
+        "path": "Contents/MacOS/Dory",
+        "originalSHA256": "12a8382cfde3068211637bd3709e2803448f874f64e989d6167e5b0edf799fcb",
+        "testHostSHA256": "b050b3d1f6b285da3b4bdc48f75bd34f74b22fc116fb77c386b61cbf05bb3d44"
+      }
+    ],
+    "meaning": "The app debug dylib, test bundle and embedded dependencies remain byte-identical; only the host identity and its signature changed.",
+    "hostExecutablePayload": {
+      "sha256": "b4c95949544f78fcb6b28c7de845b9406857d6d5904490b973c747f73224e10a",
+      "bytes": 97978656,
+      "meaning": "Identical Mach-O bytes after the header/load commands and before LC_CODE_SIGNATURE; bundle/signature metadata is excluded."
+    }
+  },
+  "sourceSnapshotManifestPath": "/tmp/dory-p01-kernel-refresh-app-source-manifest.json",
+  "sourceSnapshotManifestSHA256": "53552f339cf8efd97ea9eef17c18a5e9f4cce1dcf4fb2d7e6167c08af96eb0bf",
+  "exitCode": 0
+}

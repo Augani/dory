@@ -1,0 +1,34 @@
+[
+  {
+    "variable": "DORY_TEST_INSTALLER_ISO",
+    "path": "/tmp/ubuntu-24.04.4-live-server-arm64.iso",
+    "architecture": "arm64",
+    "sha256": "9a6ce6d7e66c8abed24d24944570a495caca80b3b0007df02818e13829f27f32",
+    "byteCount": 3059724288,
+    "inode": 587389491,
+    "mtimeNS": 1788458345331603299,
+    "ctimeNS": 1788458345331603299
+  },
+  {
+    "variable": "DORY_TEST_X86_64_INSTALLER_ISO",
+    "path": "/tmp/ubuntu-24.04.4-live-server-amd64.iso",
+    "architecture": "x86_64",
+    "sha256": "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433",
+    "byteCount": 3405469696,
+    "inode": 587392234,
+    "mtimeNS": 1788458411513495730,
+    "ctimeNS": 1788458411529153981
+  },
+  {
+    "variable": "DORY_TEST_INSTALLED_DISK",
+    "path": "/tmp/noble-server-cloudimg-arm64.raw",
+    "architecture": "arm64",
+    "rootDevice": "/dev/vda1",
+    "sha256": "8fba23b1c03d483386652206f0c5abc430cc2625cf9ce6c87d0f3fa71ed351e0",
+    "sourceQCOW2SHA256": "afa139bac6f2629c1e1f2f8f34215f3a9ad9779801bcb945521ba1a45016743f",
+    "byteCount": 3758096384,
+    "inode": 587390040,
+    "mtimeNS": 1788457928891928656,
+    "ctimeNS": 1788457928891928656
+  }
+]

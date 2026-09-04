@@ -1,7 +1,7 @@
 {
   "name": "compound-lifecycle-production-review",
-  "phaseComplete": false,
-  "scope": "Independent frozen campaigns and focused committed extractions. Public creation, clone, snapshot and restore are verified. Final start consolidation, restore artifact proof, authenticated fixture parity and combined integration remain underway. Not physical guest qualification.",
+  "phaseComplete": true,
+  "scope": "P01 control-plane completion from a broad frozen core regression plus passing targeted corrections, final Release build and symbol audit, isolated final app client tests, and separately frozen heavy public-operation campaigns. Original failures and optional media skip are retained. No physical guest or release qualification is claimed.",
   "desktop": {
     "passedCases": 30,
     "commit": "0eb66d7e7"
@@ -31,6 +31,94 @@
     "commit": "139b26b28"
   },
   "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-agent-only-4.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-authenticated-fixtures-agent-only-4.patch",
+      "originalSHA256": "62cf33f1359cadd4aab857b96cedb9ffb08c1a32f8747d7a97b6a299560d0445",
+      "compression": "gzip",
+      "uncompressedSHA256": "62cf33f1359cadd4aab857b96cedb9ffb08c1a32f8747d7a97b6a299560d0445",
+      "sha256": "1bd3c645491725e766f0f28e90fa67934998b6fc3ae1440f4ad6bcf4d6ee887e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-discarded-run-1.json",
+      "originalEvidencePath": "/tmp/dory-p01-authenticated-fixtures-discarded-run-1.json",
+      "originalSHA256": "24951d090d7bbed3fa57340f875234cf10f94754ba77f2c6e1238e4c715d7d17",
+      "sha256": "4f75138f67da1584d776309e1aa4de59a41153c4ac71681fb265c5807af7f02f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-authenticated-fixtures-evidence.json",
+      "originalSHA256": "9b0379ea61703a1a7dcda8f94c6b5eb7dcd9f60348a173ef59fede7bd84a4187",
+      "sha256": "2add7547bef8fb867289596850fb4e7fb0736917d7e200d11c5393f3086b483b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-region-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-authenticated-fixtures-region-manifest.json",
+      "originalSHA256": "ddc424760f5c1bb02a6c7ab8c5546434f9dc41ea222210082d4da761f8c429f4",
+      "sha256": "ddc424760f5c1bb02a6c7ab8c5546434f9dc41ea222210082d4da761f8c429f4"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-source-manifest-2.json",
+      "originalEvidencePath": "/tmp/dory-p01-authenticated-fixtures-source-manifest-2.json",
+      "originalSHA256": "bbbf02a578fd7f9257a4b5647e0bb88fcd3579d55776541734a53027dd3063a0",
+      "sha256": "bbbf02a578fd7f9257a4b5647e0bb88fcd3579d55776541734a53027dd3063a0"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-source-manifest-3.json",
+      "originalEvidencePath": "/tmp/dory-p01-authenticated-fixtures-source-manifest-3.json",
+      "originalSHA256": "def77ecff6212ffe4201fd090621adc7a8fdaf192bd50edf4ebaa7c8625a55a5",
+      "sha256": "def77ecff6212ffe4201fd090621adc7a8fdaf192bd50edf4ebaa7c8625a55a5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-source-manifest-4.json",
+      "originalEvidencePath": "/tmp/dory-p01-authenticated-fixtures-source-manifest-4.json",
+      "originalSHA256": "fcc0f1178d632dcf95cb10039cde50dcebd1f9325c8185854144c2db048ae872",
+      "sha256": "fcc0f1178d632dcf95cb10039cde50dcebd1f9325c8185854144c2db048ae872"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-tests-1.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-authenticated-fixtures-tests-1.log",
+      "originalSHA256": "990b6944580b6b78438e71be05d8bfffea912254bff0e7153d356381182ec19e",
+      "compression": "gzip",
+      "uncompressedSHA256": "990b6944580b6b78438e71be05d8bfffea912254bff0e7153d356381182ec19e",
+      "sha256": "967e38842c33e588e87f4cc7d3ea10079cf8f79d4a2a19e4efe0051319b8a3f6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-fixtures-tests-2.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-authenticated-fixtures-tests-2.log",
+      "originalSHA256": "7dbd051c3855aecd96c78a035c50d7b67a4880d2daf623206e346ae033f9bb6b",
+      "compression": "gzip",
+      "uncompressedSHA256": "7dbd051c3855aecd96c78a035c50d7b67a4880d2daf623206e346ae033f9bb6b",
+      "sha256": "8a247c5dd993a8121ac3aef116a5cc8d30fdec5515b15238a735699ad8118663"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-headless-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-authenticated-headless-evidence.json",
+      "originalSHA256": "c43f214a4171e3c873bc46eb76b9559ea76147a791be7760ee252cfd4c282d97",
+      "sha256": "66859ce82de5df6e6cad7529122552461ba36231d0b653713c0e56f20001bf89"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-headless-fixtures-tests-1.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-authenticated-headless-fixtures-tests-1.log",
+      "originalSHA256": "911ff98d5e5586e4c9dad0359f1f2487e9f10a6dfb116ed5fcb6869392e50b9b",
+      "compression": "gzip",
+      "uncompressedSHA256": "911ff98d5e5586e4c9dad0359f1f2487e9f10a6dfb116ed5fcb6869392e50b9b",
+      "sha256": "1b229001fe9296e49e91922be4d2026df96ae625af84d8869c2228f295699e38"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-installer-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-authenticated-installer-evidence.json",
+      "originalSHA256": "c95078f00fa04315e13e6c1bc3408d49b34297eddb87e45812437630b9454bd4",
+      "sha256": "2b1e6c5d633d9a7c845f61888ea3a0db4253e8f19c51f8a2f4b714e53c1cf641"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/authenticated-installer-fixtures-tests-1.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-authenticated-installer-fixtures-tests-1.log",
+      "originalSHA256": "da05d4914ae9f6daf68e7a82738ccb0f91abe3202ea5a481f0af9b0bbfc1e223",
+      "compression": "gzip",
+      "uncompressedSHA256": "da05d4914ae9f6daf68e7a82738ccb0f91abe3202ea5a481f0af9b0bbfc1e223",
+      "sha256": "8616672f5ffa1546f26ac8293e3aaad16e3c291d9845f8d9c146a82d5d55d0a8"
+    },
     {
       "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backing-ownership-agent-only.patch.gz",
       "originalEvidencePath": "/tmp/dory-p01-backing-ownership-agent-only.patch",
@@ -72,6 +160,84 @@
       "uncompressedSHA256": "942ac3dc7309a2885236edcc4d2580d147c88fc56d18bbec6f8e621c380db242",
       "compression": "gzip",
       "sha256": "3baf76eedc7cdee888db21b180828a9493b70e91214bec509e224cc7f6a67b76"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-cleanup-repro.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-backup-cleanup-repro.log",
+      "originalSHA256": "b4535ef90ecfd701f84d27a34acec1e9c95f42abb95211d35068a8f5c45f406a",
+      "compression": "gzip",
+      "uncompressedSHA256": "b4535ef90ecfd701f84d27a34acec1e9c95f42abb95211d35068a8f5c45f406a",
+      "sha256": "8629ba1a14119ffd328ac3f4fedee603c0ecc5ac680372fa14e001449d07d27c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-backup-start-agent-evidence.json",
+      "originalSHA256": "6520aaf27c9ebf325e963c7d0ea57dabd07e81170add886fa0cfca3353108ccc",
+      "sha256": "df24e18750e18a741e6fee6b0be88176512dd721c381bd7574128ce01461db8f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-files-2.json",
+      "originalEvidencePath": "/tmp/dory-p01-backup-start-agent-files-2.json",
+      "originalSHA256": "3623d9616b0bf6305bd1f6f47364729758c813d9e16c6c415a4be156755d7c95",
+      "sha256": "3623d9616b0bf6305bd1f6f47364729758c813d9e16c6c415a4be156755d7c95"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-files.json",
+      "originalEvidencePath": "/tmp/dory-p01-backup-start-agent-files.json",
+      "originalSHA256": "fe5fed4215af3c83f129a9bc26918d56da17c96f54b98bdc0e758aab4fe571c6",
+      "sha256": "fe5fed4215af3c83f129a9bc26918d56da17c96f54b98bdc0e758aab4fe571c6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-only-2.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-backup-start-agent-only-2.patch",
+      "originalSHA256": "bdeaaa86a4069330775014aadb09ac2dc8d01c5231d491997cc61d32b8a26d59",
+      "compression": "gzip",
+      "uncompressedSHA256": "bdeaaa86a4069330775014aadb09ac2dc8d01c5231d491997cc61d32b8a26d59",
+      "sha256": "e5cf788afed37e1fb25a43d6a3e359402c5babe045768a617dd4c391f6943fb6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-only.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-backup-start-agent-only.patch",
+      "originalSHA256": "ffb3b0013443770010c96c2a16d4364679414dd0455cc6466e47dea0577e3f67",
+      "compression": "gzip",
+      "uncompressedSHA256": "ffb3b0013443770010c96c2a16d4364679414dd0455cc6466e47dea0577e3f67",
+      "sha256": "49059f4b238af6b5286d068a5a1058ab68c78f5746fdf9f8b29f8427f8d29f4e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-source-manifest-2.json",
+      "originalEvidencePath": "/tmp/dory-p01-backup-start-agent-source-manifest-2.json",
+      "originalSHA256": "f04e0f316355df0499834db5f8f738e15d11dca0d47998807b3b12446b214e08",
+      "sha256": "f04e0f316355df0499834db5f8f738e15d11dca0d47998807b3b12446b214e08"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-source-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-backup-start-agent-source-manifest.json",
+      "originalSHA256": "0af74f6a556ecdd23b117e48ff79b7c3abba1843330632e5a81234842e58afba",
+      "sha256": "0af74f6a556ecdd23b117e48ff79b7c3abba1843330632e5a81234842e58afba"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-tests-2.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-backup-start-agent-tests-2.log",
+      "originalSHA256": "8adf4737a48635db1d89cdddf98a585fe77f8dd6780b769c00ce3eec15a357ae",
+      "compression": "gzip",
+      "uncompressedSHA256": "8adf4737a48635db1d89cdddf98a585fe77f8dd6780b769c00ce3eec15a357ae",
+      "sha256": "d325f98fdc6cecaca6c22a99943274c4762d9d2fdb8d43506174bf6e26e1f8c3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-tests.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-backup-start-agent-tests.log",
+      "originalSHA256": "ac3768f6b27e79d1545979ba1fa6d800827512455f853da7972ff805172b663c",
+      "compression": "gzip",
+      "uncompressedSHA256": "ac3768f6b27e79d1545979ba1fa6d800827512455f853da7972ff805172b663c",
+      "sha256": "c4f2ffdfda3959d4cfc7ea7c06b9a8879e88b6561b1de14408d5ab7394f20084"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-throws.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-backup-throws.log",
+      "originalSHA256": "28980b83edeb4600526bed5b765118cbd77154e5e727e88f88b639a3905ec4d3",
+      "compression": "gzip",
+      "uncompressedSHA256": "28980b83edeb4600526bed5b765118cbd77154e5e727e88f88b639a3905ec4d3",
+      "sha256": "91ba0d58c592cf62619bd2ef0b81e8154ffdc2e42a72af1dbee1e6edd342194b"
     },
     {
       "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/cancellation-agent-source-manifest-1.json",
@@ -128,6 +294,110 @@
       "sha256": "742d06b76a22b9f2c6f1365fbe35bdb69c4d0e8369218973910a359dd1cd12fb",
       "compression": "gzip",
       "uncompressedSHA256": "ad5c0fc330d8268fbb81364cf957b30caa036c565e2d49897542fe7f7e51f3c6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-live-source-check.json",
+      "originalEvidencePath": "/tmp/dory-p01-combined-final-live-source-check.json",
+      "originalSHA256": "12f744af9a9e9f32f7bab7bb20ca0b678c328424d9c4625170455923c1714feb",
+      "sha256": "a4aa54e477562063d9de59c31fb9057814c3a67a7234c3a72e4fe258a7d75a38"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-media.json",
+      "originalEvidencePath": "/tmp/dory-p01-combined-final-media.json",
+      "originalSHA256": "4d45e61b14b7192cb17946ed88a6090ac48d1358fd9aceb88906b120b29fa0a6",
+      "sha256": "4d45e61b14b7192cb17946ed88a6090ac48d1358fd9aceb88906b120b29fa0a6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-release-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-combined-final-release-evidence.json",
+      "originalSHA256": "ba2ed0520f0979c590d7ed80ce460046cb284c90d7fa50a47b6056bec862b827",
+      "sha256": "eeebff67a0b6df70794e13c42e43b95d7dd56cfdce5777f080c3a5242849dfb3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-release-symbol-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-combined-final-release-symbol-evidence.json",
+      "originalSHA256": "8b1e3ceb4fa1bc5ce49e459d822b0615f2cd8931e14cbeb7890ab9d4dab37be0",
+      "sha256": "ee5d442a84198aa50327b8410656ca151b405fc135aef54d0ce4eebc9eacb441"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-release.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-combined-final-release.log",
+      "originalSHA256": "5d473573d13c206ea2cb2224ab083ce28efd22c90446d38c1e32829866cbf4e5",
+      "compression": "gzip",
+      "uncompressedSHA256": "5d473573d13c206ea2cb2224ab083ce28efd22c90446d38c1e32829866cbf4e5",
+      "sha256": "916d5a90727e790a3b02780f7ba9f8e0698fb30a02192c9ecadc70567f689b93"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-source-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-combined-final-source-manifest.json",
+      "originalSHA256": "070241b0d22346f5a1d29a6c69393e2548e7d1915f0adff774ec01cf0e8c23bc",
+      "sha256": "070241b0d22346f5a1d29a6c69393e2548e7d1915f0adff774ec01cf0e8c23bc"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-tests-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-combined-final-tests-evidence.json",
+      "originalSHA256": "b4c19e92ed64ff66e35b02520c0d86a3da7da61393ae454046c1f2bf656c5d43",
+      "sha256": "64fb68564ebd3edacd9b8a5800a50600fa6b06be60587c316229a4d72d7ce423"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-tests.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-combined-final-tests.log",
+      "originalSHA256": "18f9f7e79d7bf8748edb08c2811c5a2a4b604a2b72e4771612c74819d7178d57",
+      "compression": "gzip",
+      "uncompressedSHA256": "18f9f7e79d7bf8748edb08c2811c5a2a4b604a2b72e4771612c74819d7178d57",
+      "sha256": "5bda1fd57f6d9b8dbf80d029de2df32439fd4d697c3a2ca0b70053eeb7306dcb"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-live-source-check.json",
+      "originalEvidencePath": "/tmp/dory-p01-combined-followup-live-source-check.json",
+      "originalSHA256": "b37096bfed268b48ea482c3681a384258ea28e9a2369a99d7423813830bc78f9",
+      "sha256": "7c65e3d4bb662dc733f0729ef13d7f9c835f9b9c51190a8a32b54efbc2041d0c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-media.json",
+      "originalEvidencePath": "/tmp/dory-p01-combined-followup-media.json",
+      "originalSHA256": "4d45e61b14b7192cb17946ed88a6090ac48d1358fd9aceb88906b120b29fa0a6",
+      "sha256": "4d45e61b14b7192cb17946ed88a6090ac48d1358fd9aceb88906b120b29fa0a6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-release-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-combined-followup-release-evidence.json",
+      "originalSHA256": "03e8863f11f1d60bdc89dff5d7d67bff64d231b4f8f71a96bbd0694a71c3ba53",
+      "sha256": "680e37e7a29bee428984c9b293867791850ec52ce53e87e86caf83b0e6f4fab8"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-release-symbol-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-combined-followup-release-symbol-evidence.json",
+      "originalSHA256": "7e4b44bc9e84fa028aa5f553aaa3bae03ee64efc01a32095365ddc2aac534d79",
+      "sha256": "31711ef0c4cf856e5a1ee345983f0ca9b0731c48614923b18b85bf0e55665917"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-release.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-combined-followup-release.log",
+      "originalSHA256": "e94a65861425323ca5396619793d5b0676be0ba960e27226ed5a27368e2c9285",
+      "compression": "gzip",
+      "uncompressedSHA256": "e94a65861425323ca5396619793d5b0676be0ba960e27226ed5a27368e2c9285",
+      "sha256": "d5f78f3ad9dcd5e0d0b1c8287f45dcb7545c11d9ef177b055b1157ca7ac9aa05"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-source-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-combined-followup-source-manifest.json",
+      "originalSHA256": "b2bcf9fc472c73027c2037a8d17959d4789ad2bab52949123f75c54b548519d0",
+      "sha256": "b2bcf9fc472c73027c2037a8d17959d4789ad2bab52949123f75c54b548519d0"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-tests-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-combined-followup-tests-evidence.json",
+      "originalSHA256": "37562af0b05d019f97629344f0556d8462f5587301db383d82bcfa3bc882cc5e",
+      "sha256": "63c17c2875ac6cd8582d4e8465ee2697c5acc5fed9f8e79cd095523556f03353"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-tests.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-combined-followup-tests.log",
+      "originalSHA256": "f4f896292b63e71f96c26c6f8fd1d7740af31869559d7b9921917fc14b66465c",
+      "compression": "gzip",
+      "uncompressedSHA256": "f4f896292b63e71f96c26c6f8fd1d7740af31869559d7b9921917fc14b66465c",
+      "sha256": "17ce7e00c864cd85645bced4a83ed63c3bc2319e60d67ec2207d127b363d53ff"
     },
     {
       "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-callers-agent-only.patch.gz",
@@ -440,6 +710,12 @@
       "sha256": "bf54eb4472fe884e9572ce8720085daa2d78b832029ef3eef1e07056dc82caee"
     },
     {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-app-live-source-check.json",
+      "originalEvidencePath": "/tmp/dory-p01-final-app-live-source-check.json",
+      "originalSHA256": "c8c7ecfcaff10bd097a0e10e8dae01ab51cc4cf2bbc86b14359dc9949c29115f",
+      "sha256": "1b9fa52fe7b805e1f0a4592d9b2dec810e22f0cc2eebfa0b4b3f4366026b0075"
+    },
+    {
       "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-client-build-2.log.gz",
       "originalEvidencePath": "/tmp/dory-p01-final-client-build-2.log",
       "originalSHA256": "07f7021dbd6874a13b0fd6f2128da61447d30b09d3c8f557adc4f7b3c972e622",
@@ -466,6 +742,196 @@
       "originalEvidencePath": "/tmp/dory-p01-final-client-source-manifest.json",
       "originalSHA256": "29ad4e5e5f18a6f53351337dc7764d8a846b80956961eaa0c2aeececc68ff9dd",
       "sha256": "29ad4e5e5f18a6f53351337dc7764d8a846b80956961eaa0c2aeececc68ff9dd"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-lifecycle-client-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-final-lifecycle-client-evidence.json",
+      "originalSHA256": "91063f01dde37aa04e0d07f3705ab9a833eb2dd135da4b70079c4c7f1e72cc3f",
+      "sha256": "0aaf4156e27e40a47f4a7097a6c6f53dcea3c8dcf836be523749d9f31f5d60e6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-regression-corrections.json",
+      "originalEvidencePath": "/tmp/dory-p01-final-regression-corrections.json",
+      "originalSHA256": "1c6b51926644b90cd4e51c90263ee05ff109641b3a14b4c2157072dae62f3ef9",
+      "sha256": "613fa0de21a224e7c1b99b6f84fa70ba24e13df93fa520ae06958c79a5a7be98"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-trust-bridge-agent-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-final-trust-bridge-agent-evidence.json",
+      "originalSHA256": "21e97893ab4bb85104f5e09afee6187ac2e51592ff69066f9e00a15fc8524027",
+      "sha256": "d61c300284ca3e0ac0c6f0d474c4e702406c14f97899fa4ab55e9307bf658c42"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-trust-bridge-agent-only.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-final-trust-bridge-agent-only.patch",
+      "originalSHA256": "18d2e3f21f44038dd036f6772516fcf655b537f0baa972ea14abbdfc1317101a",
+      "compression": "gzip",
+      "uncompressedSHA256": "18d2e3f21f44038dd036f6772516fcf655b537f0baa972ea14abbdfc1317101a",
+      "sha256": "1338e046e3e806921c8e870700e0def530954e12563684a1807f395837ce59fe"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-trust-bridge-agent-source-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-final-trust-bridge-agent-source-manifest.json",
+      "originalSHA256": "207973995ba60f404f4383b0c8bb27fe80adbbaf9c0e469660e308af6961a387",
+      "sha256": "207973995ba60f404f4383b0c8bb27fe80adbbaf9c0e469660e308af6961a387"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-trust-bridge-agent-tests.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-final-trust-bridge-agent-tests.log",
+      "originalSHA256": "c0dab1c23cb48df85ac993b6c9c00d8bfb3cd90b472c51ba3b2bdf1e8b968d6d",
+      "compression": "gzip",
+      "uncompressedSHA256": "c0dab1c23cb48df85ac993b6c9c00d8bfb3cd90b472c51ba3b2bdf1e8b968d6d",
+      "sha256": "583cdf53e9fd804ca8ea268be5b5504e55723300a761f4ded3460c2055d96485"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-trust-bridge-debug-symbols.txt",
+      "originalEvidencePath": "/tmp/dory-p01-final-trust-bridge-debug-symbols.txt",
+      "originalSHA256": "c86dd7f7c70968cb7ca05540b1e810c65cf0ab5cf37774da3fc16db01bdf7fcc",
+      "sha256": "c86dd7f7c70968cb7ca05540b1e810c65cf0ab5cf37774da3fc16db01bdf7fcc"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/headless-readiness.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-headless-readiness.patch",
+      "originalSHA256": "22909ab429339115a09dafb931ba4b74a5a99b1d003c7b8f321442994f309b04",
+      "compression": "gzip",
+      "uncompressedSHA256": "22909ab429339115a09dafb931ba4b74a5a99b1d003c7b8f321442994f309b04",
+      "sha256": "5212c096dd984d7334e0a596af11ce7211c87cf160d20c753842a38b7edb1f9a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/headless-start-test.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-headless-start-test.patch",
+      "originalSHA256": "49da446f1820d00a759fd3f92a6c4affc23204e1efcd90d0b3d79c5ccbf324fb",
+      "compression": "gzip",
+      "uncompressedSHA256": "49da446f1820d00a759fd3f92a6c4affc23204e1efcd90d0b3d79c5ccbf324fb",
+      "sha256": "c28a49739579b116729bcdcc0d0f7c814da337360f52ea61bc5e954759644e45"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-app-build.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-kernel-refresh-app-build.log",
+      "originalSHA256": "eba0c247e63a5ab076784fd536e46fb1c7b7a4337cf164e8968cd9a4490cdc9b",
+      "compression": "gzip",
+      "uncompressedSHA256": "eba0c247e63a5ab076784fd536e46fb1c7b7a4337cf164e8968cd9a4490cdc9b",
+      "sha256": "eb79c842aed27d97e1cbe8dbbc4ef53ce8b96db99c162ca6f5671f8d308232aa"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-app-source-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-kernel-refresh-app-source-manifest.json",
+      "originalSHA256": "53552f339cf8efd97ea9eef17c18a5e9f4cce1dcf4fb2d7e6167c08af96eb0bf",
+      "sha256": "53552f339cf8efd97ea9eef17c18a5e9f4cce1dcf4fb2d7e6167c08af96eb0bf"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-core-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-kernel-refresh-core-evidence.json",
+      "originalSHA256": "0674cde0f916dc12b3590c135e5f83af6a215f8241111a3586fbc822029051a0",
+      "sha256": "67036b66456590fb76c3709f162e6d7b857b8497d0c436dd75fdb255ab511bab"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-core-focused-tests.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-kernel-refresh-core-focused-tests.log",
+      "originalSHA256": "e2b007a4d8248fb1f0760dbda2fa78cbb80a3472f59da34d7d151f3108f87246",
+      "compression": "gzip",
+      "uncompressedSHA256": "e2b007a4d8248fb1f0760dbda2fa78cbb80a3472f59da34d7d151f3108f87246",
+      "sha256": "4194fc7803a4403fed1c4b4c69a31b7b33e92ad0742d3c05c16a4d35cda4e00e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-core-tests.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-kernel-refresh-core-tests.log",
+      "originalSHA256": "a15d70494478e42bf0414cea1b42bdf4a94613abb51aed121da84cceb652dc02",
+      "compression": "gzip",
+      "uncompressedSHA256": "a15d70494478e42bf0414cea1b42bdf4a94613abb51aed121da84cceb652dc02",
+      "sha256": "31159ddf5ed82207f8b8efa2543827fd000514b94a0ada2ac57a4e1eaa208998"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-removal-agent-only.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-kernel-refresh-removal-agent-only.patch",
+      "originalSHA256": "787d072c69077d611c426e1d538f241b64fadb93e1b6afeb44508bdc64bddb81",
+      "compression": "gzip",
+      "uncompressedSHA256": "787d072c69077d611c426e1d538f241b64fadb93e1b6afeb44508bdc64bddb81",
+      "sha256": "dc733b551e689fa255eedeaec71d8a8e1c9f1a9f805835d583e8276bd5c2a5e4"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-removal-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-kernel-refresh-removal-evidence.json",
+      "originalSHA256": "0662664066a3c1790f2dc0d0a4ba2d912d030219aeb942c65e039a74c77af5c9",
+      "sha256": "047adf93eab8085641766b8bb61776e341d5b667c22abccb94288d09acfac76a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-removal-files.json",
+      "originalEvidencePath": "/tmp/dory-p01-kernel-refresh-removal-files.json",
+      "originalSHA256": "ad0a9ebe2ca61edec6c86efc43aa80f74cc61a25ebb708aeff71263fabddc8ef",
+      "sha256": "ad0a9ebe2ca61edec6c86efc43aa80f74cc61a25ebb708aeff71263fabddc8ef"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-source-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-kernel-refresh-source-manifest.json",
+      "originalSHA256": "fbb00da692e1086585e1596ff630571a62de8fd3bdd1c0e0eba0b03245924476",
+      "sha256": "fbb00da692e1086585e1596ff630571a62de8fd3bdd1c0e0eba0b03245924476"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/lifecycle-client-isolated-tests-manifest.json",
+      "originalEvidencePath": "/tmp/dory-p01-lifecycle-client-isolated-tests-manifest.json",
+      "originalSHA256": "7b35f3886ddc06ec7acea7f245226b356680c95b4dc284273cae45e1cbdd00dd",
+      "sha256": "7b35f3886ddc06ec7acea7f245226b356680c95b4dc284273cae45e1cbdd00dd"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/lifecycle-client-isolated-tests.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-lifecycle-client-isolated-tests.log",
+      "originalSHA256": "349f1a85b9bee6d15be11b31f0c0bcaa00f602c3aa5fec624001aef2f90c3316",
+      "compression": "gzip",
+      "uncompressedSHA256": "349f1a85b9bee6d15be11b31f0c0bcaa00f602c3aa5fec624001aef2f90c3316",
+      "sha256": "8a4df660fdc67ea87a4cf1c0c2c51a454fe32a7cffe1bc2368348f882e0d4d5e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/native-sandbox-throws.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-native-sandbox-throws.log",
+      "originalSHA256": "4df15de60038450cd2549b4d405a3c4a3b1407a19fb780bb58bf189f24139a7e",
+      "compression": "gzip",
+      "uncompressedSHA256": "4df15de60038450cd2549b4d405a3c4a3b1407a19fb780bb58bf189f24139a7e",
+      "sha256": "e51466e8345f1d34fa567784c367955efc75d06f2584b1c1ddc112c9e9035b2f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/native-settings-fixture.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-native-settings-fixture.patch",
+      "originalSHA256": "53fd1cc2871a8e1203fc597a327e42816144b258827c0461710504fa02649759",
+      "compression": "gzip",
+      "uncompressedSHA256": "53fd1cc2871a8e1203fc597a327e42816144b258827c0461710504fa02649759",
+      "sha256": "28fb07d521f5575b102d79a2e443a1879efb5cf6f356901f4b3db68c1883d4b6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/partial-authority-fixtures.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-partial-authority-fixtures.patch",
+      "originalSHA256": "6ac54b1ff7dd4e8a7ed7788ad70dae18d44218e92cf52b9bc7bcd1c1d8f41cee",
+      "compression": "gzip",
+      "uncompressedSHA256": "6ac54b1ff7dd4e8a7ed7788ad70dae18d44218e92cf52b9bc7bcd1c1d8f41cee",
+      "sha256": "5ef71092d2be166b9c5bcb6240de5b1d0e4137e0e7777991ce6c7f079d0475d0"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/power-replay-agent-index.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-power-replay-agent-index.patch",
+      "originalSHA256": "646242bd03573458d216d299d6caf976949ac4199cfd8a6a843a8daae69857b2",
+      "compression": "gzip",
+      "uncompressedSHA256": "646242bd03573458d216d299d6caf976949ac4199cfd8a6a843a8daae69857b2",
+      "sha256": "94bb8bf1ffa01cf5473d0536a2c70d9f0b47f10afc4ef5e8834420668250ce4e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/power-replay-agent-source-manifest-1.json",
+      "originalEvidencePath": "/tmp/dory-p01-power-replay-agent-source-manifest-1.json",
+      "originalSHA256": "6aeaf2c6002e3202bb56ee439c1d983ad201941a964434f0c7c5f20f9a0d09e8",
+      "sha256": "6aeaf2c6002e3202bb56ee439c1d983ad201941a964434f0c7c5f20f9a0d09e8"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/power-replay-agent-tests-1.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-power-replay-agent-tests-1.log",
+      "originalSHA256": "6bc27c23d4e82e2578dee3a73bb5a639966d6ea6af79528dbcdf3604cc393b0d",
+      "compression": "gzip",
+      "uncompressedSHA256": "6bc27c23d4e82e2578dee3a73bb5a639966d6ea6af79528dbcdf3604cc393b0d",
+      "sha256": "5b1d066c4a01a91daefcc7c65b2061e5307c9a8c437283c02de41dda8396f568"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/power-replay-agent-verification.json",
+      "originalEvidencePath": "/tmp/dory-p01-power-replay-agent-verification.json",
+      "originalSHA256": "8dbf8752e464ced5e2ae5d06ce7f924990c6bfd3928cc2b9a7c3f26b2a0617bc",
+      "sha256": "602d63644af7e1374a80f513f604c500e45397cf94e636c827a86990b5978408"
     },
     {
       "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-agent-source-manifest-1.json",
@@ -592,6 +1058,78 @@
       "sha256": "5ccef066f82522e85662d83b9f27ba4767fe815477a614d97ef4eb3feaa311b4"
     },
     {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-proof-agent-evidence.json",
+      "originalEvidencePath": "/tmp/dory-p01-restore-proof-agent-evidence.json",
+      "originalSHA256": "b7b9df3c45cbe7013951bd0bb3fa314fbf424e4374d04d7612fb7a7de4066b20",
+      "sha256": "ffb081c7c5429a23a35c8016e6068df2ef338cc69fed8c55317b6f01317fd696"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-proof-agent-only.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-proof-agent-only.patch",
+      "originalSHA256": "02b466a583bc29d2eafafc73660ac7b1808c8e998132b6638b9c8e9ce471076a",
+      "compression": "gzip",
+      "uncompressedSHA256": "02b466a583bc29d2eafafc73660ac7b1808c8e998132b6638b9c8e9ce471076a",
+      "sha256": "8c9898657ea416422c2af294d44c012e03224df5f9ddaea3826e48920f365d38"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-proof-agent-source-manifest-2.json",
+      "originalEvidencePath": "/tmp/dory-p01-restore-proof-agent-source-manifest-2.json",
+      "originalSHA256": "29541ea8adf4f21a97c10aa335d605640e2c284f4c5db250ca27078418b1a35e",
+      "sha256": "29541ea8adf4f21a97c10aa335d605640e2c284f4c5db250ca27078418b1a35e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-proof-agent-tests-2.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-proof-agent-tests-2.log",
+      "originalSHA256": "6eb6123fc26c44277e693ef7efaf835054cc339f5b6ff82f6336b680f9f666eb",
+      "compression": "gzip",
+      "uncompressedSHA256": "6eb6123fc26c44277e693ef7efaf835054cc339f5b6ff82f6336b680f9f666eb",
+      "sha256": "d5cc2f8a466a3479572312ce8ab80771aac5231590509f6c8993f4bf0e469e9b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-proof-agent-tests.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-restore-proof-agent-tests.log",
+      "originalSHA256": "01ff5ceaa104771c12f0e200f0615cfef965116191f5b71b0fd0593a04d9b984",
+      "compression": "gzip",
+      "uncompressedSHA256": "01ff5ceaa104771c12f0e200f0615cfef965116191f5b71b0fd0593a04d9b984",
+      "sha256": "90af79894301b3d87b26784286fbebe38410550e80db7eadad2fabf792a4c3b5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/sandbox-fixture.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-sandbox-fixture.patch",
+      "originalSHA256": "3e03cb8c0781605e983ffe9d891320b71adebbeb97b0a11cf05e15fb76b3f1d5",
+      "compression": "gzip",
+      "uncompressedSHA256": "3e03cb8c0781605e983ffe9d891320b71adebbeb97b0a11cf05e15fb76b3f1d5",
+      "sha256": "65b4b1a9f873d6474cee7babf587f98164094abbabb6e625783232482a5e1b80"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/saved-state-agent-index.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-saved-state-agent-index.patch",
+      "originalSHA256": "b6d5f48a809859f39e30fe6a46fc4cd34bc2b949a96701adab4249f7c4bd08b9",
+      "compression": "gzip",
+      "uncompressedSHA256": "b6d5f48a809859f39e30fe6a46fc4cd34bc2b949a96701adab4249f7c4bd08b9",
+      "sha256": "dd286e3246b309d65f4226cb5449abf86415d04569da7a9a24c1241496263344"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/saved-state-agent-source-manifest-2.json",
+      "originalEvidencePath": "/tmp/dory-p01-saved-state-agent-source-manifest-2.json",
+      "originalSHA256": "1fcead3c33ead12d29303242581dce7869fb36ca523985d623dd385182dad709",
+      "sha256": "1fcead3c33ead12d29303242581dce7869fb36ca523985d623dd385182dad709"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/saved-state-agent-tests-2.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-saved-state-agent-tests-2.log",
+      "originalSHA256": "298df17e9a839f4d21b3f0110e7262b63ac95dd32cd1ad9a2523844dcfe0b51d",
+      "compression": "gzip",
+      "uncompressedSHA256": "298df17e9a839f4d21b3f0110e7262b63ac95dd32cd1ad9a2523844dcfe0b51d",
+      "sha256": "90abd81ae6bf79e1d9db6fe3bee2b4ac067e6530d9fd69762dadb0ac7f8ee63b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/saved-state-agent-verification.json",
+      "originalEvidencePath": "/tmp/dory-p01-saved-state-agent-verification.json",
+      "originalSHA256": "452fcba59cba809b8ece9f2be52769a64659227a60636293059157a5fe000aa3",
+      "sha256": "793ca46861426d1f73ae94a8754a9c1f54b207e8c19ec8e0c2a9ee3d3991e70c"
+    },
+    {
       "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/snapshot-creation-agent-source-manifest-2.json",
       "originalEvidencePath": "/tmp/dory-p01-snapshot-creation-agent-source-manifest-2.json",
       "originalSHA256": "f2220d654113843049e8967a7c9d427ddae5ea16eac7d3efee1e51f1352258a6",
@@ -660,6 +1198,48 @@
       "compression": "gzip",
       "uncompressedSHA256": "da44f7f6866121bb7c43dbd3b6dd4e8b8c51feb600058db3e93f221986084125",
       "sha256": "3ea86dd5da9fe4d3f3ac577f5625bcc305098d5383dd2e8e18194487117fcfa0"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/start-agent-index.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-start-agent-index.patch",
+      "originalSHA256": "511c586f45b07e97f406b2f23b7fe9a9ed1101051f6aafc1581a47269063756a",
+      "compression": "gzip",
+      "uncompressedSHA256": "511c586f45b07e97f406b2f23b7fe9a9ed1101051f6aafc1581a47269063756a",
+      "sha256": "6727b8a0e8bbf0f91315b70cd42d7e5d7ab990be12a3242147bd157b0a0a6fca"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/start-agent-source-manifest-8.json",
+      "originalEvidencePath": "/tmp/dory-p01-start-agent-source-manifest-8.json",
+      "originalSHA256": "98e8f66e381ec045d03f08528e41418b88e9878e4b2639a58674aba307723c9c",
+      "sha256": "98e8f66e381ec045d03f08528e41418b88e9878e4b2639a58674aba307723c9c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/start-agent-tests-8.log.gz",
+      "originalEvidencePath": "/tmp/dory-p01-start-agent-tests-8.log",
+      "originalSHA256": "377e33d6c6d646cd8f65f9dcabc8773fff92816478db1968d2c1a712073579a7",
+      "compression": "gzip",
+      "uncompressedSHA256": "377e33d6c6d646cd8f65f9dcabc8773fff92816478db1968d2c1a712073579a7",
+      "sha256": "b56b9fc025e71dbf42c16354d17c0c5c9ed7ad51f2bfb0c319a0a8b97744b005"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/start-agent-verification.json",
+      "originalEvidencePath": "/tmp/dory-p01-start-agent-verification.json",
+      "originalSHA256": "4a054fb30deec2b34d1771c2907bc135b7f5f90abbac37ec554baf099190137f",
+      "sha256": "61a134eb289fdbeba5a732c22e64f297cba610cc10bfebba7b3c3a00ca3ccae7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/suspend-uuid-app-only.patch.gz",
+      "originalEvidencePath": "/tmp/dory-p01-suspend-uuid-app-only.patch",
+      "originalSHA256": "2668826786766119a1fbc6996d594e216157792cbb4e78759b8438a2ebd0f18c",
+      "compression": "gzip",
+      "uncompressedSHA256": "2668826786766119a1fbc6996d594e216157792cbb4e78759b8438a2ebd0f18c",
+      "sha256": "967da27d2981b898ff8cd8e6df1ed666d95f9b8fbd9d2fd2af4dcd9544f762b5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/suspend-uuid-final-freeze-check.json",
+      "originalEvidencePath": "/tmp/dory-p01-suspend-uuid-final-freeze-check.json",
+      "originalSHA256": "b0159345f4cfe7800ba8132291744da1f1b61f5ae7e1c6c5e62f9964a05d1a25",
+      "sha256": "b0159345f4cfe7800ba8132291744da1f1b61f5ae7e1c6c5e62f9964a05d1a25"
     }
   ],
   "appTransportAndProjection": {
@@ -686,10 +1266,58 @@
   },
   "latestClient": {
     "passedTests": 83,
-    "testSeconds": 35.636,
+    "testSeconds": 35.518,
+    "appProjectAndContainerInputsMatchLive": 618,
+    "receipt": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-lifecycle-client-evidence.json",
+    "scope": "Final app code and transport; current daemon implementation covered separately by core tests."
+  },
+  "restoreArtifactProof": {
+    "distinctScenarios": 19,
+    "commit": "42d10887e"
+  },
+  "authenticatedSourceFixtures": {
+    "methods": 14,
+    "scenarios": 85,
     "commits": [
-      "6ab6c1328",
-      "bdc5fd3ad"
+      "b7778221c",
+      "cba9e2c1a"
     ]
+  },
+  "ordinaryStart": {
+    "scenarios": 8,
+    "commit": "9a24a5d7d"
+  },
+  "savedStateAdmission": {
+    "xctest": 34,
+    "swiftTestingFunctions": 8,
+    "commit": "475365dbb",
+    "nativeGuestRoundtripQualified": false
+  },
+  "powerReplay": {
+    "focusedTests": 3,
+    "commit": "3d7f35ade"
+  },
+  "obsoleteTrustBridge": {
+    "focusedTests": 18,
+    "commit": "4ebf5b8b4"
+  },
+  "finalIntegration": {
+    "status": "passed with targeted regression corrections",
+    "receipt": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-regression-corrections.json",
+    "sha256": "613fa0de21a224e7c1b99b6f84fa70ba24e13df93fa520ae06958c79a5a7be98",
+    "sourceManifestSHA256": "b2bcf9fc472c73027c2037a8d17959d4789ad2bab52949123f75c54b548519d0",
+    "finalImplementationCommit": "cd88d9dc8fa2f32ced69de95ee7dab07d3dc4181",
+    "sourceInputs": 674,
+    "affectedSuiteFilter": "DorydServiceTests|MachineBackupSchedulerTests|MachineManagerTests|DoryVMMShimTests|MachineManagerResolvedPlanIntegrationTests",
+    "finalReleasePassed": true,
+    "diagnosticSymbolsAbsent": 7,
+    "optionalPVHBootSkipped": true,
+    "helperHandoffExecuted": true,
+    "focusedResults": {
+      "xctest": 182,
+      "swiftTesting": 46,
+      "failures": 0,
+      "skips": 0
+    }
   }
 }

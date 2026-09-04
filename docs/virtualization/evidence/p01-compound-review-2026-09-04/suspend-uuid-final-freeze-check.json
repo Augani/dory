@@ -1,0 +1,26 @@
+[
+  {
+    "path": "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+    "frozenMatchesLive": true
+  },
+  {
+    "path": "dory-core-swift/Sources/DorydKit/DorydControl.swift",
+    "frozenMatchesLive": true
+  },
+  {
+    "path": "dory-core-swift/Sources/DorydKit/DorydService.swift",
+    "frozenMatchesLive": true
+  },
+  {
+    "path": "dory-core-swift/Sources/dorydctl/main.swift",
+    "frozenMatchesLive": true
+  },
+  {
+    "path": "dory-core-swift/Tests/DorydKitTests/DorydServiceTests.swift",
+    "frozenMatchesLive": true
+  },
+  {
+    "path": "dory-core-swift/Tests/DorydKitTests/MachineManagerSavedStateIntegrationTests.swift",
+    "frozenMatchesLive": true
+  }
+]

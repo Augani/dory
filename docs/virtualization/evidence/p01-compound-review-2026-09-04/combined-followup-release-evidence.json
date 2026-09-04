@@ -1,0 +1,27 @@
+{
+  "command": [
+    "swift",
+    "build",
+    "--package-path",
+    "/tmp/dory-p01-combined-followup-source-1/dory-core-swift",
+    "--scratch-path",
+    "/tmp/dory-p01-combined-followup-release-1",
+    "--jobs",
+    "3",
+    "-c",
+    "release",
+    "--product",
+    "doryd"
+  ],
+  "workingDirectory": "/tmp/dory-p01-combined-followup-source-1/dory-core-swift",
+  "exitCode": 0,
+  "elapsedSeconds": 222.943,
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-source-manifest.json",
+  "sourceManifestSHA256": "b2bcf9fc472c73027c2037a8d17959d4789ad2bab52949123f75c54b548519d0",
+  "sourceFilesVerifiedAfterRun": 674,
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-release.log.gz",
+  "logSHA256": "e94a65861425323ca5396619793d5b0676be0ba960e27226ed5a27368e2c9285",
+  "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+  "fullRegressionSourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-source-manifest.json",
+  "scope": "Focused follow-up for four failed regression suites and the helper-location skip; Release rebuild verifies the scheduler compatibility correction."
+}

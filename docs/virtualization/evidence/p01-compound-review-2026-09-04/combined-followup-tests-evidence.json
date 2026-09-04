@@ -1,0 +1,38 @@
+{
+  "command": [
+    "swift",
+    "test",
+    "--package-path",
+    "/tmp/dory-p01-combined-followup-source-1/dory-core-swift",
+    "--scratch-path",
+    "/tmp/dory-p01-combined-followup-build-1",
+    "--jobs",
+    "3",
+    "--no-parallel",
+    "--filter",
+    "DorydServiceTests|MachineBackupSchedulerTests|MachineManagerTests|DoryVMMShimTests|MachineManagerResolvedPlanIntegrationTests"
+  ],
+  "workingDirectory": "/tmp/dory-p01-combined-followup-source-1/dory-core-swift",
+  "exitCode": 0,
+  "elapsedSeconds": 257.927,
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-source-manifest.json",
+  "sourceManifestSHA256": "b2bcf9fc472c73027c2037a8d17959d4789ad2bab52949123f75c54b548519d0",
+  "sourceFilesVerifiedAfterRun": 674,
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-tests.log.gz",
+  "logSHA256": "f4f896292b63e71f96c26c6f8fd1d7740af31869559d7b9921917fc14b66465c",
+  "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+  "fullRegressionSourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-source-manifest.json",
+  "scope": "Focused follow-up for four failed regression suites and the helper-location skip; Release rebuild verifies the scheduler compatibility correction.",
+  "targetedFailureCorrections": "DorydServiceTests|MachineBackupSchedulerTests|MachineManagerTests|DoryVMMShimTests|MachineManagerResolvedPlanIntegrationTests",
+  "mediaEnvironment": {
+    "DORY_TEST_INSTALLED_DISK": "/tmp/noble-server-cloudimg-arm64.raw",
+    "DORY_TEST_INSTALLED_ROOT_DEVICE": "/dev/vda1",
+    "DORY_TEST_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-arm64.iso",
+    "DORY_TEST_PORTABLE_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-arm64.iso",
+    "DORY_TEST_PORTABLE_INSTALLER_ARCHITECTURE": "arm64",
+    "DORY_TEST_X86_64_INSTALLER_ISO": "/tmp/ubuntu-24.04.4-live-server-amd64.iso",
+    "DORY_TEST_INSTALLER_ISO_SHA256": "e907d92eeec9df64163a7e454cbc8d7755e8ddc7ed42f99dbc80c40f1a138433"
+  },
+  "mediaManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-followup-media.json",
+  "mediaMetadataUnchangedAfterRun": true
+}

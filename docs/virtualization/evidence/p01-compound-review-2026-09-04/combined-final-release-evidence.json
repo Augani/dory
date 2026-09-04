@@ -1,0 +1,25 @@
+{
+  "command": [
+    "swift",
+    "build",
+    "--package-path",
+    "/tmp/dory-p01-combined-final-source-1/dory-core-swift",
+    "--scratch-path",
+    "/tmp/dory-p01-combined-final-release-1",
+    "--jobs",
+    "3",
+    "-c",
+    "release",
+    "--product",
+    "doryd"
+  ],
+  "workingDirectory": "/tmp/dory-p01-combined-final-source-1/dory-core-swift",
+  "exitCode": 0,
+  "elapsedSeconds": 230.419,
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-source-manifest.json",
+  "sourceManifestSHA256": "070241b0d22346f5a1d29a6c69393e2548e7d1915f0adff774ec01cf0e8c23bc",
+  "sourceFilesVerifiedAfterRun": 674,
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-release.log.gz",
+  "logSHA256": "5d473573d13c206ea2cb2224ab083ce28efd22c90446d38c1e32829866cbf4e5",
+  "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer"
+}

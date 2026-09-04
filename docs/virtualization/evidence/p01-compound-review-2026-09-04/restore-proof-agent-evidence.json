@@ -1,0 +1,104 @@
+{
+  "scope": "Bounded restore durability and immutable verification consolidation; neutral descriptor proof shared with creation.",
+  "source_manifest": {
+    "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-proof-agent-source-manifest-2.json",
+    "sha256": "29541ea8adf4f21a97c10aa335d605640e2c284f4c5db250ca27078418b1a35e",
+    "files_unchanged": 675
+  },
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-proof-agent-tests-2.log.gz",
+  "compiler_seconds": 18.77,
+  "xctest": {
+    "passed": 8,
+    "failed": 0,
+    "seconds": 4.809,
+    "coverage": [
+      "Snapshot copy/restore/clone/export/import/delete roundtrip",
+      "Copy and kernel-copy failure preserve original workload",
+      "Interrupted restore backup recovery",
+      "Post-binding snapshot mutation rejects and rolls back",
+      "Tampered completed target refuses recovery",
+      "VZ EFI and DoryPC firmware restore parity"
+    ]
+  },
+  "swift_testing": {
+    "test_definitions_passed": 6,
+    "suites_passed": 2,
+    "failed": 0,
+    "seconds": 621.241,
+    "proof_scenarios": 7,
+    "production_restore_scenarios": 4,
+    "production_coverage": [
+      "Stopped and paused interruption after backups recover in a fresh manager",
+      "Stopped and running completion-before-journal-write recover exact same root plan/process and replay"
+    ],
+    "proof_coverage": [
+      "Unchanged same-context checks do not rehash; fresh context hashes all content",
+      "Same-inode mutation with restored mtime, inode replacement and symlink rejected",
+      "Mutation during initial hashing rejects proof",
+      "All firmware artifact bindings required; firmware mutation and fresh verification reject",
+      "Empty and duplicate-path artifact sets reject"
+    ]
+  },
+  "distinct_scenarios": 19,
+  "live_owned_regions_match_frozen_source": [
+    {
+      "start": "public func restoreSnapshot(",
+      "end": "/// The source disk will be replaced",
+      "sha256": "5cd3c4686638de6c7ac61054bef2f249f9106bdb5d434aa006c2080929f977d4"
+    },
+    {
+      "start": "private func resumeResolvedSnapshotRestore(",
+      "end": "private func validateSnapshotRestorePublication(",
+      "sha256": "4e384676fcb9a50b8d9b4be3ca7f1e111b817236f7f1f0b1d1bc3a06355d30f8"
+    },
+    {
+      "start": "@discardableResult\n    private func restoreManagedArtifacts(",
+      "end": "@discardableResult\n    private func ensurePrivateSnapshotDirectory(",
+      "sha256": "7ccc4d43afc2fe02e8d9eb676e772e49207be86890e5093ec9c40b22fc2f13d4"
+    },
+    {
+      "start": "private func loadSnapshot(machineID:",
+      "end": "private static func snapshotDescriptorData(",
+      "sha256": "53fff0bd31040c5089a0b9d15925af2ffafa2e32029ed0ac5fdb585b4090c231"
+    },
+    {
+      "start": "private static func cloneOrCopyFile(",
+      "end": "private static func sha256(descriptor:",
+      "sha256": "644f621f4e37ab4f5c98d2e3a41ebfc49b335582609923a116fd8372976d7c0c"
+    }
+  ],
+  "live_owned_files_match_frozen_source": [
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryMachineArtifactProof.swift",
+      "sha256": "3ff5675050e0a92c06c5e68a34171a1bdf8bdba95d5a55253f09783e4f0686a1"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryMachineArtifactProofTests.swift",
+      "sha256": "1e62d117fe5844546a54b2acb7baa1206db7615e7ab124e7e9b9ea88eaee6f50"
+    }
+  ],
+  "patch": {
+    "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-proof-agent-only.patch.gz",
+    "sha256": "02b466a583bc29d2eafafc73660ac7b1808c8e998132b6638b9c8e9ce471076a"
+  },
+  "parent_only_preimage": {
+    "path": "/tmp/dory-p01-restore-proof-before/parent-current-without-restore-proof.swift",
+    "sha256": "517c1d2c391efd71483b6d05d6ae4537acdbdacc881b74e6650d2e716e60dad5"
+  },
+  "changes": [
+    "Fsync the retained destination directory descriptor after each successful copy/clone publication before returning to checkpoint writers.",
+    "Generalize DoryMachineCreationArtifactProof into DoryMachineArtifactProof with exact path/evidence binding arrays, retaining open descriptors and private ownership/dev/inode/size/mtime/ctime checks. Creation configuration/evidence API preserved.",
+    "Mint restore input proof during initial full artifact loading, bind caller UUID, exact snapshot descriptor/evidence/canonical paths and original metadata bytes, then validate same-context stamps instead of loading all bytes again.",
+    "Mint direct-kernel target proof during original post-copy full verification and validate before publishing target metadata. EFI live firmware remains fully checked at every prior boundary.",
+    "No proof is Codable, persisted in a checkpoint, or recreated from artifactsPublished. Recovery without a handoff hashes again. Backup deletion and production plan/admission/pre-spawn checks remain strict."
+  ],
+  "limitations": [
+    "Controlled signed production factory/planning with authenticated XCTest subprocess helper, not physical guest or power-loss qualification.",
+    "The entire final repository was not rerun; exact frozen source manifest and all owned live regions/files are recorded."
+  ],
+  "prior_gate": {
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/restore-proof-agent-tests.log.gz",
+    "result": "Compiler green76.80s; 7/8 XCTest passed and all7proof scenarios passed. Legacy error substring changed and4production fixtures rejected an unfinished start during setup.",
+    "corrections": "Preserved bound snapshot evidence error context. Overlaid start owner\u2019s exact readinessAcceptedPendingPublication guard correction in completeActiveStartLifecycle; no fixture authority was relaxed."
+  }
+}

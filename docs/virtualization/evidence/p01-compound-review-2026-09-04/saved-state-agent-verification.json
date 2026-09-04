@@ -1,0 +1,36 @@
+{
+  "result": "passed",
+  "exitCode": 0,
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/saved-state-agent-tests-2.log.gz",
+  "xctest": {
+    "tests": 34,
+    "suites": 2,
+    "seconds": 12.414
+  },
+  "swiftTesting": {
+    "testFunctions": 8,
+    "suites": 4,
+    "seconds": 38.899
+  },
+  "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/saved-state-agent-source-manifest-2.json",
+  "manifestSHA256": "1fcead3c33ead12d29303242581dce7869fb36ca523985d623dd385182dad709",
+  "verifiedInputs": 674,
+  "sourceUnchangedAfterTests": true,
+  "patch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/saved-state-agent-index.patch.gz",
+  "patchSHA256": "b6d5f48a809859f39e30fe6a46fc4cd34bc2b949a96701adab4249f7c4bd08b9",
+  "headlessTestPatch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/headless-start-test.patch.gz",
+  "headlessTestPatchSHA256": "49da446f1820d00a759fd3f92a6c4affc23204e1efcd90d0b3d79c5ccbf324fb",
+  "base": "4ebf5b8b4db34359e6fefa48c6860c53b24a3f6f",
+  "limitations": [
+    "Saved-state manager tests use the existing explicit diagnostic VZ protocol fixture; exact-plan admission uses real ledger contracts. Native macOS saved-memory production roundtrip/recovery has not been exercised without a valid IPSW-derived bundle.",
+    "New saved-state root retry/recovery path compiled and reviewed, but not yet runtime exercised by a native production fixture.",
+    "Headless start uses a real authenticated synthetic helper under signed production planning; not a physical guest qualification."
+  ],
+  "sourceHashes": {
+    "dory-core-swift/Sources/DorydKit/DoryVirtualMachineResourceAdmissionLedger.swift": "b17bdb2ee8597ef5425e3a08dccea309af75d12f06fb73e9eb3036bca9bc014f",
+    "dory-core-swift/Sources/DorydKit/MachineManager.swift": "7d84380b79e2fda619b8552faf1a4c1f40dcf23a57d37d984d1e1ca5e77fa5d9",
+    "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift": "059b40515f9aa7f61b777c05d63b9d6eafb17611852a740247c03788b6ec1aa4",
+    "dory-core-swift/Tests/DorydKitTests/DoryVirtualMachineResourceAdmissionLedgerTests.swift": "a0956640aa07c72e0c567b6060463b6a0d730361a29013007e5b541ea11d150a",
+    "dory-core-swift/Tests/DorydKitTests/MachineManagerStartJournalIntegrationTests.swift": "7053adf9608d1608b5b3453d845dcddeb4ed636065e38226db67a7b4bd9ce539"
+  }
+}

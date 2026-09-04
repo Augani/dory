@@ -1,0 +1,75 @@
+{
+  "result": "Version2: 9 XCTest passed, 0 failures, 1.633 seconds; incremental build passed in9.00 seconds. Later foreign-active UUID guard ordering and its10th regression are pending the parent final followup gate.",
+  "command": [
+    "swift",
+    "test",
+    "--package-path",
+    "/tmp/dory-p01-backup-start-agent-source/dory-core-swift",
+    "--scratch-path",
+    "/tmp/dory-p01-backup-start-agent-build",
+    "--jobs",
+    "3",
+    "--no-parallel",
+    "--filter",
+    "MachineBackupSchedulerTests"
+  ],
+  "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+  "exitCode": 0,
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-source-manifest-2.json",
+  "sourceManifestSHA256": "f04e0f316355df0499834db5f8f738e15d11dca0d47998807b3b12446b214e08",
+  "sourceFilesVerifiedAfterRun": 674,
+  "sourceFilesChangedDuringRun": [],
+  "scope": "Scheduler starts a stopped clone under an explicit caller UUID, waits through pending readiness and UUID-clear publication before running, rejects failed readiness and foreign clone identity, and cleans only the accepted disposable clone. Two tiny real-manager bundle cases use a test-only diagnostic clone adapter; production clone and start remain strict. No physical guest qualification.",
+  "diagnosis": "Original combined backup failure reproduced using its frozen xctest binary. swift_willThrow trace identified creationPlanningController rejection at the scheduler clone call; the reported missing runtime directory was later ignored cleanup. Production clone now returns a planned stopped workspace, requiring scheduler start. Sandbox failure was independently traced to an unactivated bootstrap fixture and delegated to state agent; no MachineManager changes in this patch.",
+  "firstRun": {
+    "testsPassed": 9,
+    "elapsedSeconds": 1.474,
+    "buildSeconds": 106.99,
+    "all674SourcesVerifiedBeforeSecondVersion": true,
+    "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-source-manifest.json",
+    "preservedPriorOwnedFiles": "/tmp/dory-p01-backup-start-agent-source-1-owned",
+    "exitCode": 0
+  },
+  "artifacts": {
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-source-manifest.json": "0af74f6a556ecdd23b117e48ff79b7c3abba1843330632e5a81234842e58afba",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-source-manifest-2.json": "f04e0f316355df0499834db5f8f738e15d11dca0d47998807b3b12446b214e08",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-tests.log.gz": "ac3768f6b27e79d1545979ba1fa6d800827512455f853da7972ff805172b663c",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-tests-2.log.gz": "8adf4737a48635db1d89cdddf98a585fe77f8dd6780b769c00ce3eec15a357ae",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-cleanup-repro.log.gz": "b4535ef90ecfd701f84d27a34acec1e9c95f42abb95211d35068a8f5c45f406a",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-throws.log.gz": "28980b83edeb4600526bed5b765118cbd77154e5e727e88f88b639a3905ec4d3",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/native-sandbox-throws.log.gz": "4df15de60038450cd2549b4d405a3c4a3b1407a19fb780bb58bf189f24139a7e",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-only-2.patch.gz": "bdeaaa86a4069330775014aadb09ac2dc8d01c5231d491997cc61d32b8a26d59",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-files-2.json": "3623d9616b0bf6305bd1f6f47364729758c813d9e16c6c415a4be156755d7c95",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-files.json": "fe5fed4215af3c83f129a9bc26918d56da17c96f54b98bdc0e758aab4fe571c6",
+    "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-only.patch.gz": "ffb3b0013443770010c96c2a16d4364679414dd0455cc6466e47dea0577e3f67"
+  },
+  "ownedFilesMatchedLiveAtRunCompletion": [
+    "dory-core-swift/Sources/DorydKit/MachineBackupScheduler.swift",
+    "dory-core-swift/Tests/DorydKitTests/MachineBackupSchedulerTests.swift"
+  ],
+  "pendingParentFollowup": {
+    "patch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-only.patch.gz",
+    "patchSHA256": "ffb3b0013443770010c96c2a16d4364679414dd0455cc6466e47dea0577e3f67",
+    "reason": "Move foreign active UUID rejection before running success; retain nil completion projection and add running foreign-owner regression.",
+    "commit": "b5ae09c17",
+    "expectedTests": 10,
+    "files": {
+      "dory-core-swift/Sources/DorydKit/MachineBackupScheduler.swift": {
+        "before": "388e0c3373a013b15c930c919983c0b986f21bcfee2e34657b0ac46cf161408c",
+        "after": "313f3c53000e3f0f5c880e8626fc3bc9fc9177b7592451bf43c86509edbf0ad3"
+      },
+      "dory-core-swift/Tests/DorydKitTests/MachineBackupSchedulerTests.swift": {
+        "before": "ce032e9810a0d94d17226782ae6e4782c5ca5435abcc0543b5c4ac820b2738e2",
+        "after": "1270021faef0243c7b4d1aba1bb648bfab673c299c2af739706d0a6de6836f90"
+      }
+    }
+  },
+  "secondRun": {
+    "testsPassed": 9,
+    "elapsedSeconds": 1.633,
+    "buildSeconds": 9.0,
+    "exitCode": 0,
+    "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backup-start-agent-source-manifest-2.json",
+    "sourceManifestSHA256": "f04e0f316355df0499834db5f8f738e15d11dca0d47998807b3b12446b214e08"
+  }
+}

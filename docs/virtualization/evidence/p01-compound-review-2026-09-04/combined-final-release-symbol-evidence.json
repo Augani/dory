@@ -1,0 +1,25 @@
+{
+  "releaseBinary": "/tmp/dory-p01-combined-final-release-1/arm64-apple-macosx/release/doryd",
+  "releaseBinarySHA256": "f5dab68c1348ee775a63ced5b37b42d7f5eb079835e7755a7e549fb819ec5597",
+  "requiredSymbolPresent": "startResolvedMachine",
+  "forbiddenReleaseSymbolsAbsent": [
+    "startLegacyMachine",
+    "prepareLegacyRawHVInstalledLinuxBootIfNeeded",
+    "materializeInstalledLinuxBootRuntimeIfNeeded",
+    "qualificationBootstrapRuntimeAuthority",
+    "qualificationBootstrapDoryPCRuntimeAuthority",
+    "diagnosticConfiguration",
+    "resolveDiagnosticPlanningComposition"
+  ],
+  "debugPositiveControlsPresent": [
+    "startLegacyMachine",
+    "prepareLegacyRawHVInstalledLinuxBootIfNeeded",
+    "materializeInstalledLinuxBootRuntimeIfNeeded",
+    "qualificationBootstrapRuntimeAuthority",
+    "qualificationBootstrapDoryPCRuntimeAuthority",
+    "diagnosticConfiguration",
+    "resolveDiagnosticPlanningComposition"
+  ],
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/combined-final-source-manifest.json",
+  "sourceManifestSHA256": "070241b0d22346f5a1d29a6c69393e2548e7d1915f0adff774ec01cf0e8c23bc"
+}

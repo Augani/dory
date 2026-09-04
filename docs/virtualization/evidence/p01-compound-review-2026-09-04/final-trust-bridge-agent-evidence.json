@@ -1,0 +1,42 @@
+{
+  "scope": "Remove obsolete injected-test trust-manager composition from Release. Public resolve retains trust/ledger readiness and migration classification; production activate unchanged.",
+  "owned_file": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionTrust.swift",
+  "owned_region_sha256": "8d472720c6c742a6e97711bef1bfc51d5ecd579f452efb5330e6b3983df6176f",
+  "frozen_manifest": {
+    "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-trust-bridge-agent-source-manifest.json",
+    "sha256": "207973995ba60f404f4383b0c8bb27fe80adbbaf9c0e469660e308af6961a387",
+    "verified_unchanged_inputs": 675
+  },
+  "source_basis": "Previously verified restore-proof source2 plus only this resolve-region overlay. Concurrent saved-state factory injection/activation changes deliberately excluded.",
+  "tests": {
+    "filter": "DoryDaemonVirtualMachineProductionTrustTests/(missingCatalog|schemaV1FailsClosed|tamperedSignature|tamperedManifest|developerDaemonRejected|helperBuildRejected|v2WithoutPlanningTransactionStaysMigrationOnly|trustFloor.*|invalidStateDirectoryFailsClosed|resolvedPlanStateRejectsMissingCatalogDowngrade|signedV2Ready|activationOrderAndExactGraph|activationRequires.*|activationFloorFailureIsTyped)",
+    "passed": 18,
+    "failed": 0,
+    "suites": 1,
+    "runtime_seconds": 16.05,
+    "build_seconds": 79.28,
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-trust-bridge-agent-tests.log.gz"
+  },
+  "debug_symbol_positive_control": {
+    "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-trust-bridge-debug-symbols.txt",
+    "symbol": "resolveDiagnosticPlanningComposition",
+    "matching_lines": 7,
+    "sha256": "c86dd7f7c70968cb7ca05540b1e810c65cf0ab5cf37774da3fc16db01bdf7fcc"
+  },
+  "release_gate": "Pending parent final combined frozen Release doryd build; assert resolveDiagnosticPlanningComposition absent alongside previous6diagnostic names, and startResolvedMachine present. No duplicate Release build run in this subtask.",
+  "patch": {
+    "path": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-trust-bridge-agent-only.patch.gz",
+    "sha256": "18d2e3f21f44038dd036f6772516fcf655b537f0baa972ea14abbdfc1317101a"
+  },
+  "parent_only_preimage": {
+    "path": "/tmp/dory-p01-final-trust-bridge-parent-preimage.swift",
+    "sha256": "406df1aa279432713f25e5eb4dc43df9fabf79c50175bfee9cc9323dcfefb2ae"
+  },
+  "boundary_review": [
+    "Connected production planning preflight uses non-Codable validated request values; independently callable APIs still validate raw input.",
+    "Adapter callback bridge consumes a reserved exact plan and owns the process handoff; it is not an alternate backend selector.",
+    "The only daemon executable entrypoint uses factory.activate. Historical factory.resolve can compose a test manager only under DEBUG.",
+    "Existing SwiftPM architecture test inspects transitive dependency edges; app Xcode target links DoryOperations, runner target owns DoryVMMKit.",
+    "Final core gate may skip previously verified heavy desktop/restore/clone/snapshot campaigns while retaining start, saved-state, cancellation, proof, dependency, and existing copy/EFI tests."
+  ]
+}

@@ -1,0 +1,27 @@
+{
+  "scope": "Delete obsolete pre-start managed-kernel mutation and duplicated XPC refresh root; preserve explicit desktop update.",
+  "snapshot": "/tmp/dory-p01-kernel-refresh-agent-snapshot",
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-source-manifest.json",
+  "sourceManifestSHA256": "fbb00da692e1086585e1596ff630571a62de8fd3bdd1c0e0eba0b03245924476",
+  "sourceFileCount": 670,
+  "sourceUnchangedDuringTest": true,
+  "scratch": "/tmp/dory-p01-kernel-refresh-agent-build",
+  "patch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-removal-agent-only.patch.gz",
+  "patchSHA256": "787d072c69077d611c426e1d538f241b64fadb93e1b6afeb44508bdc64bddb81",
+  "patchFilesManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-removal-files.json",
+  "focusedGate": {
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-core-focused-tests.log.gz",
+    "exitCode": 0,
+    "xctestTests": 3,
+    "durationSeconds": 1.094
+  },
+  "broaderOlderBaselineGate": {
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/kernel-refresh-core-tests.log.gz",
+    "exitCode": 1,
+    "xctestTests": 51,
+    "passed": 50,
+    "failed": 1,
+    "failure": "testPerWorkspaceCreatePlanningFailureRetainsCallerOwnedTarget expected controller count2, got3 after competing start. Unchanged test/source regions, frozen baseline predates latest start root. Parent final core gate verifies current start implementation; this run is not claimed as an all-green service suite."
+  },
+  "qualification": "Control-plane tests with fixtures; no physical guest qualification."
+}

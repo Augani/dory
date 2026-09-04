@@ -1,0 +1,34 @@
+{
+  "result": "passed",
+  "exitCode": 0,
+  "buildSeconds": 94.35,
+  "xctest": {
+    "tests": 1,
+    "suites": 1,
+    "seconds": 0.854
+  },
+  "swiftTesting": {
+    "tests": 2,
+    "suites": 2,
+    "seconds": 10.309
+  },
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/power-replay-agent-tests-1.log.gz",
+  "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/power-replay-agent-source-manifest-1.json",
+  "manifestSHA256": "6aeaf2c6002e3202bb56ee439c1d983ad201941a964434f0c7c5f20f9a0d09e8",
+  "verifiedInputs": 675,
+  "sourceUnchangedAfterTests": true,
+  "patch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/power-replay-agent-index.patch.gz",
+  "patchSHA256": "646242bd03573458d216d299d6caf976949ac4199cfd8a6a843a8daae69857b2",
+  "base": "2e730a94d52eea4011c6248fb043a7b78760d980",
+  "sourceHashes": {
+    "dory-core-swift/Sources/DorydKit/MachineManager.swift": "8672b8f5f7b99a51caf030fd7c909c76815f2c64fc91027475117745a913ccb1",
+    "dory-core-swift/Sources/DorydKit/RemoteMachineManager.swift": "8eb9b94cecede33054bb5a1bee9bdc24b27ef9c49ca6037c028e2383ac1d4f01",
+    "dory-core-swift/Tests/DorydKitTests/MachineManagerPowerReplayIntegrationTests.swift": "36fc83226e6d41ef7578926a3726019411d6947644b38e5f8fab9b3830e0f7b5",
+    "dory-core-swift/Tests/DorydKitTests/MachineManagerSavedStateIntegrationTests.swift": "8b2db5adcaf4db48eed836338f3af4903aac9433e4864ca4c86259ef4e4902df"
+  },
+  "scope": [
+    "Authenticated signed-production pause/resume and ordinary start replay; helper execution audit, exact plan and journal cardinality unchanged on replay",
+    "Diagnostic public saved-state resume completion replay after payload consumption and later stop",
+    "Pending saved-state resume forwards existing production root; native VZMac execution qualification remains outside this fixture"
+  ]
+}
