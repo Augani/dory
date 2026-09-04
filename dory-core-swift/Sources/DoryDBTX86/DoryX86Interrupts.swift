@@ -55,7 +55,9 @@ public struct DoryX86InterruptDelivery: Sendable {
         errorCode: errorCode,
         returnInstructionPointer: returnInstructionPointer,
         state: &state,
-        memory: physicalMemory
+        physicalMemory: physicalMemory,
+        pagingUnit: pagingUnit,
+        mode: mode
       )
       return
     }
@@ -69,7 +71,8 @@ public struct DoryX86InterruptDelivery: Sendable {
       pagingUnit: pagingUnit,
       state: state,
       mode: mode,
-      cpl: 0
+      cpl: 0,
+      isImplicitSupervisorAccess: true
     )
     let gate = try readGate(vector: vector, state: state, memory: systemMemory)
     let currentCPL = UInt8(state.cs.selector & 3)
@@ -131,11 +134,7 @@ public struct DoryX86InterruptDelivery: Sendable {
 
     let addresses = frame.indices.map { alignedTargetStack &- UInt64(($0 + 1) * 8) }
     for address in addresses {
-      if let translated = stackMemory as? DoryX86TranslatedMemory {
-        try translated.validateWrite(at: address, byteCount: 8)
-      } else {
-        _ = try stackMemory.read(at: address, byteCount: 8)
-      }
+      try stackMemory.validateWrite(at: address, byteCount: 8)
     }
     for value in frame {
       stack &-= 8
@@ -206,7 +205,8 @@ public struct DoryX86InterruptDelivery: Sendable {
       return
     }
     if mode == .protected16 || mode == .protected32 {
-      try interruptReturnProtectedMode(state: &state, memory: physicalMemory)
+      try interruptReturnProtectedMode(state: &state, physicalMemory: physicalMemory,
+        pagingUnit: pagingUnit, mode: mode)
       return
     }
     guard mode == .long64 else { throw DoryX86InterruptDeliveryError.invalidReturnFrame }
@@ -233,7 +233,8 @@ public struct DoryX86InterruptDelivery: Sendable {
       pagingUnit: pagingUnit,
       state: state,
       mode: mode,
-      cpl: 0
+      cpl: 0,
+      isImplicitSupervisorAccess: true
     )
     let code = try readCodeSegment(selector: codeSelector, state: state, memory: systemMemory)
     guard code.descriptorPrivilegeLevel == targetCPL else {
@@ -385,14 +386,21 @@ public struct DoryX86InterruptDelivery: Sendable {
     errorCode: UInt32?,
     returnInstructionPointer: UInt64?,
     state: inout DoryX86ArchitecturalState,
-    memory: any DoryX86Memory
+    physicalMemory: any DoryX86Memory,
+    pagingUnit: DoryX86PagingUnit?,
+    mode: DoryX86ExecutionMode
   ) throws {
-    let gate = try readProtectedGate(vector: vector, state: state, memory: memory)
+    // Intel SDM Vol. 3A §5.6.1: IDT, segment-descriptor and TSS accesses
+    // are implicit supervisor accesses, including while the interrupted CPL is 3.
+    let systemMemory = translatedMemory(physicalMemory: physicalMemory,
+      pagingUnit: pagingUnit, state: state, mode: mode, cpl: 0,
+      isImplicitSupervisorAccess: true)
+    let gate = try readProtectedGate(vector: vector, state: state, memory: systemMemory)
     let currentCPL = UInt8(state.cs.selector & 3)
     if source == .software, currentCPL > gate.descriptorPrivilegeLevel {
       throw DoryX86InterruptDeliveryError.privilegeViolation(vector: vector)
     }
-    let code = try readLegacySegment(selector: gate.selector, state: state, memory: memory)
+    let code = try readLegacySegment(selector: gate.selector, state: state, memory: systemMemory)
     let conforming = code.type & 4 != 0
     let targetCPL = conforming ? currentCPL : code.descriptorPrivilegeLevel
     guard code.type & 8 != 0,
@@ -409,7 +417,7 @@ public struct DoryX86InterruptDelivery: Sendable {
       (targetStack, targetStackSegment) = try readProtectedTaskStack(
         privilege: targetCPL,
         state: state,
-        memory: memory
+        memory: systemMemory
       )
     } else {
       targetStack = state.registers.rsp
@@ -426,13 +434,17 @@ public struct DoryX86InterruptDelivery: Sendable {
     values.append(UInt64(state.cs.selector))
     values.append(returnInstructionPointer ?? state.rip)
     if let errorCode { values.append(UInt64(errorCode)) }
+    // The stack remains an ordinary data access. An inner-privilege stack uses
+    // supervisor paging rights (§6.11.5); a same-CPL3 stack remains a user access.
+    let stackMemory = translatedMemory(physicalMemory: physicalMemory,
+      pagingUnit: pagingUnit, state: state, mode: mode, cpl: targetCPL)
     let finalStack = try writeProtectedFrame(
       values,
       width: gate.width,
       stack: targetStack & pointerMask,
       pointerMask: pointerMask,
       segment: targetStackSegment,
-      memory: memory
+      memory: stackMemory
     )
 
     if switchesPrivilege { state.ss = targetStackSegment }
@@ -446,8 +458,16 @@ public struct DoryX86InterruptDelivery: Sendable {
 
   private func interruptReturnProtectedMode(
     state: inout DoryX86ArchitecturalState,
-    memory: any DoryX86Memory
+    physicalMemory: any DoryX86Memory,
+    pagingUnit: DoryX86PagingUnit?,
+    mode: DoryX86ExecutionMode
   ) throws {
+    let currentCPL = UInt8(state.cs.selector & 3)
+    let memory = translatedMemory(physicalMemory: physicalMemory,
+      pagingUnit: pagingUnit, state: state, mode: mode, cpl: currentCPL)
+    let systemMemory = translatedMemory(physicalMemory: physicalMemory,
+      pagingUnit: pagingUnit, state: state, mode: mode, cpl: 0,
+      isImplicitSupervisorAccess: true)
     let pointerWidth = state.ss.attributes & 0x4000 != 0 ? 32 : 16
     let pointerMask: UInt64 = pointerWidth == 32 ? 0xffff_ffff : 0xffff
     let stack = state.registers.rsp & pointerMask
@@ -462,11 +482,10 @@ public struct DoryX86InterruptDelivery: Sendable {
       truncatingIfNeeded: try read32(memory, state.ss.base &+ addresses[1]))
     let flagsValue = try read32(memory, state.ss.base &+ addresses[2])
     let targetCPL = UInt8(codeSelector & 3)
-    let currentCPL = UInt8(state.cs.selector & 3)
     guard targetCPL >= currentCPL else {
       throw DoryX86InterruptDeliveryError.invalidReturnFrame
     }
-    let code = try readLegacySegment(selector: codeSelector, state: state, memory: memory)
+    let code = try readLegacySegment(selector: codeSelector, state: state, memory: systemMemory)
     guard code.type & 8 != 0,
       code.descriptorPrivilegeLevel == targetCPL,
       instructionPointer <= code.segment.limit
@@ -494,7 +513,7 @@ public struct DoryX86InterruptDelivery: Sendable {
       let stackSegment = try readLegacySegment(
         selector: outerSelector,
         state: state,
-        memory: memory
+        memory: systemMemory
       )
       guard outerSelector & 3 == targetCPL,
         stackSegment.descriptorPrivilegeLevel == targetCPL,
@@ -585,15 +604,15 @@ public struct DoryX86InterruptDelivery: Sendable {
     guard selector & 0xfff8 != 0 else {
       throw DoryX86InterruptDeliveryError.invalidCodeSegment(selector: selector)
     }
-    let table: DoryX86DescriptorTableState =
-      selector & 4 == 0
-      ? state.gdtr
-      : .init(limit: UInt16(truncatingIfNeeded: state.ldtr.limit), base: state.ldtr.base)
+    // A cached LDT segment limit is 32 bits after granularity expansion;
+    // representing it as a GDTR-style 16-bit limit can reject valid selectors.
+    let tableBase = selector & 4 == 0 ? state.gdtr.base : state.ldtr.base
+    let tableLimit = selector & 4 == 0 ? UInt64(state.gdtr.limit) : UInt64(state.ldtr.limit)
     let offset = UInt64(selector & 0xfff8)
-    guard offset + 7 <= UInt64(table.limit) else {
+    guard offset + 7 <= tableLimit else {
       throw DoryX86InterruptDeliveryError.invalidCodeSegment(selector: selector)
     }
-    let raw = try read64(memory, table.base &+ offset)
+    let raw = try read64(memory, tableBase &+ offset)
     let access = UInt8(truncatingIfNeeded: raw >> 40)
     let flags = UInt8(truncatingIfNeeded: raw >> 52) & 0x0f
     guard access & 0x80 != 0, access & 0x10 != 0 else {
@@ -745,7 +764,8 @@ public struct DoryX86InterruptDelivery: Sendable {
     pagingUnit: DoryX86PagingUnit?,
     state: DoryX86ArchitecturalState,
     mode: DoryX86ExecutionMode,
-    cpl: UInt8
+    cpl: UInt8,
+    isImplicitSupervisorAccess: Bool = false
   ) -> any DoryX86Memory {
     guard let pagingUnit else { return physicalMemory }
     return DoryX86TranslatedMemory(
@@ -756,6 +776,7 @@ public struct DoryX86InterruptDelivery: Sendable {
         rflags: state.rflags,
         currentPrivilegeLevel: cpl,
         mode: mode,
+        isImplicitSupervisorAccess: isImplicitSupervisorAccess,
         supportsOneGiBPages: profile.supports(.oneGiBPages)
       )
     )
