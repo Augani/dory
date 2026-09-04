@@ -4577,7 +4577,7 @@ public struct DoryX86Interpreter: Sendable {
     let rhsNaN = rhs & exponentMask == exponentMask && rhs & fractionMask != 0
     if operation == .minimum || operation == .maximum {
       if lhsNaN || rhsNaN || Float(bitPattern: lhs) == Float(bitPattern: rhs) {
-        return (rhs, exceptions)
+        return (rhsNaN ? rhs | quietBit : rhs, exceptions)
       }
     } else if lhsNaN || rhsNaN {
       return ((lhsNaN ? lhs : rhs) | quietBit, exceptions)
@@ -4635,7 +4635,7 @@ public struct DoryX86Interpreter: Sendable {
     let rhsNaN = rhs & exponentMask == exponentMask && rhs & fractionMask != 0
     if operation == .minimum || operation == .maximum {
       if lhsNaN || rhsNaN || Double(bitPattern: lhs) == Double(bitPattern: rhs) {
-        return (rhs, exceptions)
+        return (rhsNaN ? rhs | quietBit : rhs, exceptions)
       }
     } else if lhsNaN || rhsNaN {
       return ((lhsNaN ? lhs : rhs) | quietBit, exceptions)

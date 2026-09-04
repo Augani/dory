@@ -214,6 +214,35 @@ import Testing
     }
   }
 
+  @Test func minimumAndMaximumQuietASecondSignalingNaNOrFaultPrecisely() throws {
+    let minSingle: [UInt8] = [0xF3, 0x0F, 0x5D, 0xC1] // MINSS xmm0,xmm1
+    let signalingSingle: UInt32 = 0x7F81_2345
+    var masked = try makeState(
+      lhs: [Float(1).bitPattern], rhs: [signalingSingle], mxcsr: 0x1F80)
+    expectRetired(step(minSingle, state: &masked))
+    #expect(lane32(0, register: 0, state: masked) == signalingSingle | 0x0040_0000)
+    #expect(masked.floatingPoint.mxcsr == 0x1F81)
+
+    var unmasked = try makeState(
+      lhs: [Float(1).bitPattern], rhs: [signalingSingle],
+      mxcsr: 0x1F80 & ~(1 << 7))
+    let before = unmasked
+    #expect(step(minSingle, state: &unmasked)
+      == .exception(.init(kind: .simdFloatingPoint, vector: 19,
+        instructionPointer: 0x1000)))
+    #expect(unmasked.floatingPoint.ymm == before.floatingPoint.ymm)
+    #expect(unmasked.floatingPoint.mxcsr == before.floatingPoint.mxcsr | 1)
+
+    let maxDouble: [UInt8] = [0xF2, 0x0F, 0x5F, 0xC1] // MAXSD xmm0,xmm1
+    let signalingDouble: UInt64 = 0x7FF0_0000_0001_2345
+    var double = try makeDoubleState(
+      lhs: Double(1).bitPattern, rhs: signalingDouble, mxcsr: 0x1F80)
+    expectRetired(step(maxDouble, state: &double))
+    #expect(lane64(0, register: 0, state: double)
+      == signalingDouble | 0x0008_0000_0000_0000)
+    #expect(double.floatingPoint.mxcsr == 0x1F81)
+  }
+
   private func makeState(
     lhs: [UInt32], rhs: [UInt32], mxcsr: UInt32,
     osxmmexcpt: Bool = true, avx: Bool = false
