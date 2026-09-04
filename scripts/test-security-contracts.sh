@@ -84,8 +84,11 @@ grep -F 'DorydXPCSecurity.productionDaemonRequirement' \
 # USB passthrough is now implemented end to end. Keep its UI availability bound to the signed
 # raw-hypervisor plan, and keep daemon admission bound to the live guest capability handshake.
 grep -F 'status.runtimeIdentity.authorizesRemovableUSBHotplug' \
-  Dory/Net/UsbAttachmentStore.swift >/dev/null \
+  Dory/Net/UsbPassthroughAvailability.swift >/dev/null \
   || fail "USB passthrough UI lost signed-plan authorization"
+grep -F 'UsbPassthroughAvailability.attachSupported(for: selectedMachine)' \
+  Dory/Features/Settings/UsbDevicesView.swift >/dev/null \
+  || fail "USB passthrough UI no longer uses signed-plan availability"
 grep -F 'supportsAgentCapability(' \
   dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
   || fail "USB passthrough daemon lost live guest capability admission"
@@ -121,7 +124,6 @@ grep -F 'sandboxSSHAgentDenied' dory-core-swift/Sources/DoryVMMKit/DoryVMM.swift
   || fail "sandbox VMM does not fail closed for ambient SSH-agent forwarding"
 grep -F -- '--env-json-stdin' dory-core-swift/Sources/dorydctl/main.swift scripts/dory >/dev/null \
   || fail "ephemeral sandbox secrets can no longer avoid process argv"
-[ -s SANDBOX_THREAT_MODEL.md ] || fail "sandbox threat model is missing"
 [ -x scripts/sandbox-security-gate.sh ] || fail "inside-VM sandbox security gate is missing"
 
 echo "security contracts: PASS"

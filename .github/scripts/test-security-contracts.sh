@@ -48,9 +48,12 @@ for usb_ui_contract in \
   'status.state == "running"' \
   'status.runtimeIdentity.backend == "dory-hypervisor"' \
   'status.runtimeIdentity.authorizesRemovableUSBHotplug'; do
-  grep -F "$usb_ui_contract" Dory/Net/UsbAttachmentStore.swift >/dev/null \
+  grep -F "$usb_ui_contract" Dory/Net/UsbPassthroughAvailability.swift >/dev/null \
     || fail "USB passthrough UI lost fail-closed runtime contract: $usb_ui_contract"
 done
+grep -F 'UsbPassthroughAvailability.attachSupported(for: selectedMachine)' \
+  Dory/Features/Settings/UsbDevicesView.swift >/dev/null \
+  || fail "USB passthrough UI no longer uses signed-plan availability"
 grep -F 'public func machineUSBAttach(' \
   dory-core-swift/Sources/DorydKit/DorydService.swift >/dev/null \
   || fail "doryd lost the authenticated USB attach RPC"
