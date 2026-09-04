@@ -412,12 +412,12 @@ let package = Package(
     ),
     .executableTarget(
       name: "dory-pc-linux-boot-runner",
-      dependencies: ["DoryDBTX86", "DoryMachinePC"],
+      dependencies: ["DoryDBTX86", "DoryMachinePC", "DoryVirtio"],
       path: "Tests/DoryMachinePCLinuxBootRunner"
     ),
     .testTarget(
       name: "DoryMachinePCLinuxBootRunnerTests",
-      dependencies: ["dory-pc-linux-boot-runner"]
+      dependencies: ["dory-pc-linux-boot-runner", "DoryVirtio"]
     ),
     .testTarget(
       name: "DoryCoreTests",

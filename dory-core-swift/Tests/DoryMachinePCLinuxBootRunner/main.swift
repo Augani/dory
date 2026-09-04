@@ -84,6 +84,13 @@ private final class PVHRunnerSession: @unchecked Sendable {
 private func run(_ configuration: PVHRunnerConfiguration) -> Never {
   let session = PVHRunnerSession(configuration: configuration)
   var record = PVHDiagnosticRecord(configuration: configuration)
+  var stressBlock: PVHStressBlockStorage?
+  var stressNetwork: PVHStressNetworkPeer?
+  var stressNetworkDevice: DoryPCVirtioNetworkPCIDevice?
+  func stressSnapshot() -> PVHStressIOSnapshot? {
+    guard let stressBlock, let stressNetwork else { return nil }
+    return .init(block: stressBlock.snapshot, network: stressNetwork.snapshot)
+  }
   do {
     if let path = configuration.diagnostics, FileManager.default.fileExists(atPath: path) {
       throw PVHRunnerError("Diagnostic output already exists; use a new file for this run")
@@ -106,9 +113,31 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
     }
     record.stage = "loading-machine"
     session.publish(record)
+    var pciFunctions: [any DoryPCPCIFunction] = []
+    if let directory = configuration.stressIODirectory {
+      guard let runID = UUID(uuidString: configuration.runID) else {
+        throw PVHRunnerError("Stress IO requires a valid run UUID")
+      }
+      let storage = try PVHStressBlockStorage(
+        newDirectory: URL(fileURLWithPath: directory, isDirectory: true), runID: runID)
+      stressBlock = storage
+      let peer = PVHStressNetworkPeer(runID: runID)
+      stressNetwork = peer
+      let network = try DoryPCVirtioNetworkPCIDevice(address: .init(bus: 0, device: 4, function: 0),
+        initialBARAddress: 0xD000_2000, backend: peer, macAddress: [0x02, 0xD0, 0x52, 0, 0, 1])
+      stressNetworkDevice = network
+      pciFunctions = [
+        try DoryPCVirtioBlockPCIDevice(address: .init(bus: 0, device: 2, function: 0),
+          initialBARAddress: 0xD000_0000, storage: storage, identifier: "dory-io-stress"),
+        network,
+      ]
+      record.stressIO = stressSnapshot()
+      session.publish(record)
+    }
     let machine = try DoryPCDirectKernelMachine(
       memoryBytes: configuration.memoryMiB * 1024 * 1024,
       initialRTCDate: Date(timeIntervalSince1970: 0),
+      pciFunctions: pciFunctions,
       interpreter: .init(profile: configuration.effectiveCPUProfile), executionTier: configuration.tier,
       clockSource: .deterministic)
     try machine.load(kernel: kernel.data, initrd: Array(initrd.data), commandLine: configuration.commandLine)
@@ -121,6 +150,8 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
       if session.elapsedNanoseconds >= configuration.wallSeconds * 1_000_000_000 {
         session.finish(.wallBudget)
       }
+      // Deliver queued Ethernet replies outside transport/device execution locks.
+      try stressNetwork?.pump()
       let quantum = min(1000, configuration.maximumInstructions - record.retiredInstructions)
       let stop = try machine.run(maximumInstructions: quantum, exceptionPolicy: .deliver)
       let retired = PVHStopSnapshot.instructionCount(stop)
@@ -150,17 +181,37 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
           optimizing: { machine.optimizingJITDiagnostics.map(PVHJITCacheSnapshot.init) }
         ) {
           record.jitDiagnostics = sample
+          record.stressIO = stressSnapshot()
         }
       }
       record.elapsedNanoseconds = session.elapsedNanoseconds
       session.publish(record)
       if let outcome {
+        if outcome.passed, let stressBlock, let stressNetwork {
+          record.stage = "verifying-stress-io"
+          session.publish(record)
+          guard let measured = console.receipt?.ioNetwork else {
+            throw PVHRunnerError("Successful IO receipt is missing network measurements")
+          }
+          guard let device = stressNetworkDevice,
+            device.networkDevice.pendingReceiveCount == 0,
+            device.networkDevice.droppedReceiveCount == 0 else {
+            throw PVHRunnerError("Stress network has pending or dropped receive frames")
+          }
+          let block = try stressBlock.verifyAfterPoweroff()
+          let network = try stressNetwork.verifyCompletion(guestFrames: measured.frames,
+            guestBytes: measured.bytes, guestElapsedNanoseconds: measured.elapsedNanoseconds)
+          record.stressIO = .init(block: block, network: network)
+          session.publish(record)
+        }
         session.finish(outcome)
       }
       guard retired > 0 else { throw PVHRunnerError("Machine made no progress within an instruction quantum") }
     }
     session.finish(.instructionBudget)
   } catch {
+    record.stressIO = stressSnapshot()
+    session.publish(record)
     session.finish(.init(passed: false, reason: "fixture-or-runner-error", exitCode: 1), error: error)
   }
 }

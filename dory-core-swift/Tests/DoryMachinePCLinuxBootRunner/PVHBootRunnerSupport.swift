@@ -39,8 +39,10 @@ struct PVHRunnerConfiguration: Codable, Sendable {
   // Older diagnostic records predate explicit profile selection. Missing means
   // the historical profile; every new command-line configuration records its choice.
   let cpuProfile: PVHRunnerCPUProfile?
+  let stressIODirectory: String?
 
   var effectiveCPUProfile: DoryX86CPUProfile { (cpuProfile ?? .compatibleV1).profile }
+  static let stressIOWorkloads = ["io.block_flush_reopen", "io.ethernet_frame_roundtrip"]
 
   static let usage = """
     Usage: dory-pc-linux-boot-runner \
@@ -50,7 +52,8 @@ struct PVHRunnerConfiguration: Codable, Sendable {
       --tier interpreter|baseline-jit|optimizing-jit --memory-mib N \
       --max-instructions N --wall-seconds N --run-id UUID --workload NAME [--workload NAME ...] \
       [--diagnostics /absolute/result.json] [--symbols /absolute/System.map --symbols-sha256 HEX] \
-      [--cpu-profile dory.x86_64.compat-v1|dory.x86_64.intel-compatible-v1]
+      [--cpu-profile dory.x86_64.compat-v1|dory.x86_64.intel-compatible-v1] \
+      [--stress-io-directory /absolute/new-directory]
 
     Every input is explicit; no fixture search or download occurs. Limits: 2..524288 MiB,
     1..1000000000000 instructions, 1..3600 wall seconds. The wall budget includes file checks
@@ -60,6 +63,10 @@ struct PVHRunnerConfiguration: Codable, Sendable {
     --cpu-profile defaults to dory.x86_64.compat-v1. The Intel-compatible identity is a
     separate engineering candidate; selecting it neither enables extra ISA features nor
     establishes hardware, hypervisor, Linux-baseline or release qualification.
+    --stress-io-directory creates a fresh 32 MiB diagnostic disk and a bounded Ethernet
+    peer, with no connection to host networking. It requires --diagnostics and exactly
+    io.block_flush_reopen plus io.ethernet_frame_roundtrip. The new disk is retained;
+    an existing directory or disk is never reused. Host checks must pass after poweroff.
 
     The runner appends dory.pvh_run_id=UUID to the command line. The init process must emit
     one complete JSON line with schemaVersion=1, doryPVHBoot="userspace-ready", runID=UUID,
@@ -73,7 +80,7 @@ struct PVHRunnerConfiguration: Codable, Sendable {
     let names: Set<String> = [
       "kernel", "kernel-sha256", "initrd", "initrd-sha256", "command-line", "tier",
       "memory-mib", "max-instructions", "wall-seconds", "run-id", "workload", "diagnostics",
-      "symbols", "symbols-sha256", "cpu-profile",
+      "symbols", "symbols-sha256", "cpu-profile", "stress-io-directory",
     ]
     var values: [String: String] = [:]
     var requestedWorkloads: [String] = []
@@ -164,6 +171,12 @@ struct PVHRunnerConfiguration: Codable, Sendable {
       throw PVHRunnerError("Command line plus run ID exceeds the PVH limit")
     }
     diagnostics = values["diagnostics"] == nil ? nil : try absolutePath("diagnostics")
+    stressIODirectory = values["stress-io-directory"] == nil ? nil : try absolutePath("stress-io-directory")
+    if stressIODirectory != nil {
+      guard diagnostics != nil, workloads == Self.stressIOWorkloads.sorted() else {
+        throw PVHRunnerError("--stress-io-directory requires --diagnostics and both exact IO workloads")
+      }
+    }
     if values["symbols"] != nil || values["symbols-sha256"] != nil {
       symbols = try absolutePath("symbols")
       symbolsSHA256 = try digest("symbols-sha256")
@@ -328,6 +341,13 @@ struct PVHGuestReceipt: Codable, Sendable {
   let runID: String
   let workloadsPassed: Bool
   let workloads: [String]
+  var ioNetwork: PVHGuestIONetworkMeasurement? = nil
+}
+
+struct PVHGuestIONetworkMeasurement: Codable, Sendable {
+  let frames: UInt64
+  let bytes: UInt64
+  let elapsedNanoseconds: UInt64
 }
 
 /// Parses whole bounded lines; neither boot-command echoes nor tail truncation can create a marker.
@@ -618,6 +638,7 @@ struct PVHDiagnosticRecord: Codable, Sendable {
   var state: DoryX86ArchitecturalState?
   var executionStatistics: DoryPCExecutionStatistics?
   var jitDiagnostics: PVHJITDiagnosticSample?
+  var stressIO: PVHStressIOSnapshot?
   var timerInterruptState: PVHTimerInterruptSnapshot?
   var consoleTail = ""
   var consoleBytes: UInt64 = 0
