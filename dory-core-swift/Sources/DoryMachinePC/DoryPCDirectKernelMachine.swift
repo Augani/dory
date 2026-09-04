@@ -6,6 +6,7 @@ import Foundation
 public enum DoryPCMachineError: Error, Sendable, Equatable {
   case invalidMemorySize(Int)
   case invalidProcessorCount(Int)
+  case invalidTSCFrequency(UInt64)
   case alreadyLoaded
   case notLoaded
   case invalidBootRange
@@ -300,16 +301,16 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var rtcClockRemainder: UInt64 = 0
   private var localAPICClockRemainder: UInt64 = 0
   private var pmTimerClockRemainder: UInt64 = 0
+  private var tscClockRemainder: UInt64 = 0
   private let clockSource: DoryPCClockSource
   private var lastHostClockNanoseconds: UInt64?
   private var hostClockNanosecondRemainder: UInt64 = 0
   private var hostClockDiscontinuityGeneration: UInt32?
 
   // HPET exposes a 100 ns period, so one deterministic machine-clock tick is 100 ns. Keeping the
-  // execution tiers on this shared timebase makes the 1 GHz TSC advance by 100 cycles per tick
+  // execution tiers on this shared timebase preserves the selected CPU's TSC rate
   // while the PIT, RTC, and ACPI PM timer receive their independent oscillator rates.
   private static let machineClockFrequencyHz: UInt64 = 10_000_000
-  private static let tscTicksPerMachineClock: UInt64 = 100
   private static let localAPICClockFrequencyHz: UInt64 = 1_000_000_000
   private static let pitFrequencyHz: UInt64 = 1_193_182
 
@@ -341,6 +342,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     guard (32...52).contains(interpreter.profile.physicalAddressBits) else {
       throw DoryX86StateError.invalidPhysicalAddressBits(interpreter.profile.physicalAddressBits)
+    }
+    guard interpreter.profile.virtualTSCFrequencyHz > 0 else {
+      throw DoryPCMachineError.invalidTSCFrequency(interpreter.profile.virtualTSCFrequencyHz)
     }
     self.processorCount = processorCount
     self.executionTier = executionTier
@@ -1020,7 +1024,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   private func advanceTSCs(byMachineTicks ticks: UInt64) {
     guard ticks > 0 else { return }
-    let tscTicks = ticks &* Self.tscTicksPerMachineClock
+    let tscTicks = scaledDeviceTicks(
+      machineTicks: ticks,
+      frequencyHz: interpreter.profile.virtualTSCFrequencyHz,
+      remainder: &tscClockRemainder
+    )
     for index in loadedStates.indices {
       loadedStates[index]?.value.tsc &+= tscTicks
     }
@@ -1062,9 +1070,14 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   ) -> UInt64 {
     let wholeSeconds = machineTicks / Self.machineClockFrequencyHz
     let fractionalMachineTicks = machineTicks % Self.machineClockFrequencyHz
-    let fractional = remainder &+ fractionalMachineTicks &* frequencyHz
+    // Split both factors before multiplying: the fractional product is below 10^14
+    // even for an arbitrary UInt64 TSC rate. Only the delivered counter may wrap.
+    let wholeRate = frequencyHz / Self.machineClockFrequencyHz
+    let fractionalRate = frequencyHz % Self.machineClockFrequencyHz
+    let fractional = remainder + fractionalMachineTicks * fractionalRate
     remainder = fractional % Self.machineClockFrequencyHz
-    return wholeSeconds &* frequencyHz &+ fractional / Self.machineClockFrequencyHz
+    return machineTicks &* wholeRate &+ wholeSeconds &* fractionalRate
+      &+ fractional / Self.machineClockFrequencyHz
   }
 
   private func machineTicks(

@@ -79,6 +79,51 @@ import Testing
     #expect(try readPMTimer(machine) == 1)
   }
 
+  @Test func selectedTSCRateRetainsFractionsAcrossTiersWithoutChangingOtherOscillators() throws {
+    for tier in executionTiers {
+      for frequency: UInt64 in [1, 3_579_545, 1_000_000_003, .max] {
+        let machine = try makeMachine(tier: tier, tscFrequencyHz: frequency)
+        var elapsedTicks: UInt64 = 0
+        for budget: UInt64 in [1, 1, 1, 7, 17, 973] {
+          #expect(try machine.run(maximumInstructions: budget) == .instructionBudget(budget))
+          elapsedTicks += budget
+          // Independent 128-bit arithmetic gives the exact mathematical result here.
+          let expected = UInt64(10_000_000).dividingFullWidth(
+            elapsedTicks.multipliedFullWidth(by: frequency)
+          ).quotient
+          #expect(machine.state?.tsc == expected)
+          #expect(machine.hpet.snapshot().mainCounter == elapsedTicks)
+          #expect(try readPMTimer(machine) == UInt32(elapsedTicks * 3_579_545 / 10_000_000))
+        }
+      }
+    }
+  }
+
+  @Test func hostTSCRateWrapsOnlyTheCounterAndExcludesSuspendedTime() throws {
+    let clock = ManualClock()
+    let machine = try makeMachine(clockSource: clock.source, tscFrequencyHz: .max)
+    _ = try machine.run(maximumInstructions: 1)
+    clock.advance(nanoseconds: 1_000_000_000)
+    _ = try machine.run(maximumInstructions: 1)
+    #expect(machine.state?.tsc == UInt64.max)
+    clock.suspendAndResume(after: 30_000_000_000)
+    _ = try machine.run(maximumInstructions: 1)
+    #expect(machine.state?.tsc == UInt64.max)
+    clock.advance(nanoseconds: 1_000_000_000)
+    _ = try machine.run(maximumInstructions: 1)
+    #expect(machine.state?.tsc == UInt64.max - 1)
+    #expect(machine.hpet.snapshot().mainCounter == 20_000_000)
+    #expect(try readPMTimer(machine) == 7_159_090)
+  }
+
+  @Test func zeroTSCRateRejectsBeforeMachineAllocationAcrossTiers() throws {
+    for tier in executionTiers {
+      #expect(throws: DoryPCMachineError.invalidTSCFrequency(0)) {
+        try makeMachine(tier: tier, tscFrequencyHz: 0)
+      }
+    }
+  }
+
   private func expectCoherentClocks(
     _ machine: DoryPCDirectKernelMachine,
     elapsedMachineTicks: UInt64
@@ -107,10 +152,20 @@ import Testing
 
   private func makeMachine(
     tier: DoryPCExecutionTier = .interpreter,
-    clockSource: DoryPCClockSource = .deterministic
+    clockSource: DoryPCClockSource = .deterministic,
+    tscFrequencyHz: UInt64 = 1_000_000_000
   ) throws -> DoryPCDirectKernelMachine {
+    let baseline = DoryX86CPUProfile.compatibleV1
+    let profile = DoryX86CPUProfile(
+      identifier: "pm-timer-tsc-\(tscFrequencyHz)-mechanism-test",
+      features: baseline.features,
+      physicalAddressBits: baseline.physicalAddressBits,
+      linearAddressBits: baseline.linearAddressBits,
+      virtualTSCFrequencyHz: tscFrequencyHz
+    )
     let machine = try DoryPCDirectKernelMachine(
       memoryBytes: 2 * 1024 * 1024,
+      interpreter: .init(profile: profile),
       executionTier: tier,
       baselineJITMaximumCodeBytes: 64 * 1024,
       optimizingJITWarmupDispatches: 0,
