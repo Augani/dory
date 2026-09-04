@@ -159,6 +159,7 @@ docs/
 !/docs/virtualization/p01-control-plane-review-2026-09-03.json
 !/docs/virtualization/p00-baseline-2026-09-04.json
 !/docs/virtualization/p02-paging-audit-2026-09-04.md
+!/docs/virtualization/p02-linux-cpu-baseline-2026-09-04.md
 !/docs/virtualization/evidence/
 /docs/virtualization/evidence/*
 !/docs/virtualization/evidence/p01-control-plane-2026-09-03/

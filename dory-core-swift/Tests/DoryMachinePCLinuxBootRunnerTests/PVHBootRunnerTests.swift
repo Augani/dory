@@ -76,6 +76,12 @@ import Testing
     }
   }
 
+  @Test func everySelectableCPUProfileCarriesTheSupportedLinuxBaseline() {
+    for choice in PVHRunnerCPUProfile.allCases {
+      #expect(choice.satisfiesSupportedLinuxBaseline)
+    }
+  }
+
   @Test func historicalConfigurationKeepsLegacyCPUIdentityAndUnknownIDsReject() throws {
     let legacy = try PVHRunnerConfiguration(arguments: arguments())
     let data = try JSONEncoder().encode(legacy)

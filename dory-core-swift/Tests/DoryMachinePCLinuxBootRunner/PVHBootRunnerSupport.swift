@@ -19,6 +19,12 @@ enum PVHRunnerCPUProfile: String, Codable, CaseIterable, Sendable {
     case .intelCompatibleV1: .intelCompatibleV1
     }
   }
+
+  var satisfiesSupportedLinuxBaseline: Bool {
+    let assessment = profile.linuxBaselineAssessment(
+      for: DoryX86LinuxBaselinePolicy.firstSupportedLevel)
+    return assessment.isQualified
+  }
 }
 
 struct PVHRunnerConfiguration: Codable, Sendable {
@@ -60,9 +66,9 @@ struct PVHRunnerConfiguration: Codable, Sendable {
     and VM initialization. --diagnostics opts into a bounded state/exit/console-tail receipt,
     with JIT cache counters sampled every 1,000,000 retired instructions and at normal termination.
     --symbols annotates sampled PCs only; it never changes guest execution or loads memory.
-    --cpu-profile defaults to dory.x86_64.compat-v1. The Intel-compatible identity is a
-    separate engineering candidate; selecting it neither enables extra ISA features nor
-    establishes hardware, hypervisor, Linux-baseline or release qualification.
+    --cpu-profile defaults to dory.x86_64.compat-v1. Both selectable profiles implement
+    Dory's evidence-bound x86-64 Linux baseline; neither enables extra ISA features nor
+    establishes x86-64-v2/v3, hardware, hypervisor or release qualification.
     --stress-io-directory creates a fresh 32 MiB diagnostic disk and a bounded Ethernet
     peer, with no connection to host networking. It requires --diagnostics and exactly
     io.block_flush_reopen plus io.ethernet_frame_roundtrip. The new disk is retained;
@@ -128,6 +134,9 @@ struct PVHRunnerConfiguration: Codable, Sendable {
     guard let selectedProfile = PVHRunnerCPUProfile(
       rawValue: values["cpu-profile"] ?? PVHRunnerCPUProfile.compatibleV1.rawValue)
     else { throw PVHRunnerError("Unsupported --cpu-profile") }
+    guard selectedProfile.satisfiesSupportedLinuxBaseline else {
+      throw PVHRunnerError("--cpu-profile is not qualified for Dory's Linux baseline")
+    }
     cpuProfile = selectedProfile
     switch try required("tier") {
     case "interpreter": tier = .interpreter

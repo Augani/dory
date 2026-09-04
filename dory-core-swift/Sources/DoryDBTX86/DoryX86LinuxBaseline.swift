@@ -156,6 +156,29 @@ public enum DoryX86LinuxBaselineSemanticQualification: Codable, Sendable, Hashab
   case qualified(evidenceIdentifier: String)
 }
 
+/// The supported Linux CPU contract for Dory's versioned x86 profiles.
+///
+/// Qualification is deliberately narrower than feature advertisement. Only an
+/// exact selected profile value can carry the retained Linux-guest evidence;
+/// copying its identifier onto a different feature or identity envelope does
+/// not qualify that profile. Higher ISA levels remain unqualified until their
+/// complete requirements and semantic gates have separate evidence.
+public enum DoryX86LinuxBaselinePolicy {
+  public static let firstSupportedLevel: DoryX86LinuxISALevel = .baseline
+  public static let qualificationEvidenceIdentifier =
+    "p02-linux-cpu-baseline-selected-profiles-2026-09-04"
+
+  fileprivate static func semanticQualification(
+    for profile: DoryX86CPUProfile,
+    level: DoryX86LinuxISALevel
+  ) -> DoryX86LinuxBaselineSemanticQualification {
+    guard level == firstSupportedLevel,
+      profile == .compatibleV1 || profile == .intelCompatibleV1
+    else { return .unqualified }
+    return .qualified(evidenceIdentifier: qualificationEvidenceIdentifier)
+  }
+}
+
 public struct DoryX86LinuxBaselineAssessment: Codable, Sendable, Hashable {
   public let requirements: DoryX86LinuxBaselineRequirements
   public let advertisement: DoryX86LinuxBaselineAdvertisement
@@ -181,9 +204,8 @@ public struct DoryX86LinuxBaselineAssessment: Codable, Sendable, Hashable {
 extension DoryX86CPUProfile {
   /// Audits this profile's advertised requirements for a Linux ISA level.
   ///
-  /// No profile is semantically qualified by this bit-level assessment. A later
-  /// qualification must change the evidence-bound status deliberately after all
-  /// required instruction and guest-control semantics pass their gates.
+  /// Advertisement is calculated for every profile. Semantic qualification is
+  /// independently attached only by the evidence-bound selected-profile policy.
   public func linuxBaselineAssessment(
     for level: DoryX86LinuxISALevel
   ) -> DoryX86LinuxBaselineAssessment {
@@ -202,7 +224,8 @@ extension DoryX86CPUProfile {
         missingProfileFeatures: missingProfileFeatures,
         unavailableGuestControls: unavailableGuestControls
       ),
-      semanticQualification: .unqualified
+      semanticQualification: DoryX86LinuxBaselinePolicy.semanticQualification(
+        for: self, level: level)
     )
   }
 }

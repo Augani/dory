@@ -38,13 +38,15 @@ import Testing
 
   @Test func selectedProfilesAdvertiseBaselineAndExposeTheExactV2Gap() {
     let v2Gap: Set<DoryX86Feature> = [.popcnt, .sse3, .ssse3, .sse41, .sse42]
+    #expect(DoryX86LinuxBaselinePolicy.firstSupportedLevel == .baseline)
     for profile in [DoryX86CPUProfile.compatibleV1, .intelCompatibleV1] {
       let baseline = profile.linuxBaselineAssessment(for: .baseline)
       #expect(baseline.advertisement.satisfiesRequirements)
       #expect(baseline.advertisement.missingProfileFeatures.isEmpty)
       #expect(baseline.advertisement.unavailableGuestControls.isEmpty)
-      #expect(baseline.semanticQualification == .unqualified)
-      #expect(!baseline.isQualified)
+      #expect(baseline.semanticQualification == .qualified(
+        evidenceIdentifier: DoryX86LinuxBaselinePolicy.qualificationEvidenceIdentifier))
+      #expect(baseline.isQualified)
 
       let v2 = profile.linuxBaselineAssessment(for: .v2)
       #expect(v2.advertisement.missingProfileFeatures == v2Gap)
@@ -63,10 +65,28 @@ import Testing
       linearAddressBits: 48,
       virtualTSCFrequencyHz: 1_000_000_000
     )
-    let assessment = synthetic.linuxBaselineAssessment(for: .v2)
+    for level in DoryX86LinuxISALevel.allCases {
+      let assessment = synthetic.linuxBaselineAssessment(for: level)
+      #expect(assessment.advertisement.satisfiesRequirements)
+      #expect(assessment.advertisement.missingProfileFeatures.isEmpty)
+      #expect(assessment.advertisement.unavailableGuestControls.isEmpty)
+      #expect(assessment.semanticQualification == .unqualified)
+      #expect(!assessment.isQualified)
+    }
+  }
+
+  @Test func selectedIdentifierCannotQualifyADifferentProfileEnvelope() {
+    let selected = DoryX86CPUProfile.compatibleV1
+    let lookalike = DoryX86CPUProfile(
+      identifier: selected.identifier,
+      features: selected.features.union([.popcnt]),
+      physicalAddressBits: selected.physicalAddressBits,
+      linearAddressBits: selected.linearAddressBits,
+      virtualTSCFrequencyHz: selected.virtualTSCFrequencyHz,
+      identity: selected.identity
+    )
+    let assessment = lookalike.linuxBaselineAssessment(for: .baseline)
     #expect(assessment.advertisement.satisfiesRequirements)
-    #expect(assessment.advertisement.missingProfileFeatures.isEmpty)
-    #expect(assessment.advertisement.unavailableGuestControls.isEmpty)
     #expect(assessment.semanticQualification == .unqualified)
     #expect(!assessment.isQualified)
   }

@@ -103,8 +103,9 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       identity: values.decodeIfPresent(DoryX86CPUIdentity.self, forKey: .identity) ?? .legacyDoryV1)
   }
 
-  /// Engineering candidate, not a qualified x86-64-v2 baseline. The legacy PSE,
-  /// PAE, and PGE mechanisms are exposed after their paging conformance gates.
+  /// The first supported Linux profile at the x86-64 psABI baseline. This is not
+  /// a qualified x86-64-v2 profile. The legacy PSE, PAE, and PGE mechanisms are
+  /// exposed after their paging conformance gates.
   /// PAT remains absent until Dory implements its guest-visible memory types.
   /// XSAVE/AVX are absent while extended-state save/restore remains unsupported.
   /// A retirement counter is not an invariant-frequency architectural clock.
@@ -121,11 +122,12 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     virtualTSCFrequencyHz: 1_000_000_000
   )
 
-  /// Explicit engineering candidate for software that selects architectural
-  /// semantics by vendor. Keeps v1's conservative capabilities and clock contract.
-  /// Model zero selects no named modern microarchitecture or implicit invariant TSC.
-  /// Intel SDM 092 Vol. 1 §21.3 defines vendor/signature field encoding; this is a
-  /// Dory emulation identity, not a qualified Intel processor or Linux baseline.
+  /// Supported x86-64 psABI-baseline identity for software that selects
+  /// architectural semantics by vendor. Keeps v1's conservative capabilities
+  /// and clock contract. Model zero selects no named modern microarchitecture
+  /// or implicit invariant TSC. Intel SDM 092 Vol. 1 §21.3 defines
+  /// vendor/signature field encoding; this is a Dory emulation identity, not a
+  /// qualified Intel processor or x86-64-v2 profile.
   public static let intelCompatibleV1 = Self(
     identifier: intelCompatibleV1Identifier,
     features: compatibleV1.features,
