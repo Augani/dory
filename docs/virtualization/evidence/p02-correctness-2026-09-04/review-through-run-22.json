@@ -1,0 +1,447 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-correctness-review",
+  "status": "in-progress",
+  "phaseComplete": false,
+  "releaseQualified": false,
+  "sourceCommit": "6d2987592a993cb4025881237c7c7e3c040917c0",
+  "previousReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-18.json",
+    "sha256": "ddd10548ac2e095cc1a30cf829c4e942f138d5a7e77f40ced8f4b39c24510a3e"
+  },
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "verificationCommand": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=1 swift test --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 --jobs 3 --no-parallel --filter 'DoryX86|DoryPC|DoryARM64|PVHBootRunnerTests|ISAInventoryTests'",
+  "cleanBeforeRun19": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-19-command.json",
+    "sha256": "53448555777d015938437636682abff14a064b3fc4ee3dbaf5dc9b865a61ece4"
+  },
+  "runs": [
+    {
+      "run": 19,
+      "exitCode": 0,
+      "sourceBinding": {
+        "run": 19,
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "comparisonCommit": "620e37b92160a01f441adc05f90da2b6772b5be7",
+        "trackedInputs": 676,
+        "matchingComparisonInputs": 676,
+        "trackedDifferences": [],
+        "ignoredFFIInputs": [
+          {
+            "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+            "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+          },
+          {
+            "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+            "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+            "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+            "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+            "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+            "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+          }
+        ],
+        "totalInputs": 682,
+        "overlayFiles": 71,
+        "baseAndOverlayReconstructionPassed": true,
+        "manifest": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-19-source-manifest.json.gz",
+          "sha256": "820e67614ffdf919b8f51f37f20c8b8bb7bb487a13232c3b8218fb655bcf802b"
+        },
+        "overlay": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-19-source-overlay.tar.gz",
+          "sha256": "4c3ff3907e1305281c409c08d1f687f9bab1f889645214fd76e3bd0ee14f1778"
+        },
+        "log": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-19.log.gz",
+          "sha256": "abd3bb0360b6f2ae370c115fc995500039a2582a7692b46b25e88ade9cd88585"
+        }
+      },
+      "buildElapsedSeconds": 117.55,
+      "swiftTesting": {
+        "reported": 669,
+        "passed": 668,
+        "failed": 0,
+        "disabledPhysicalReference": 1,
+        "suites": 74,
+        "elapsedSeconds": 3.041
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    },
+    {
+      "run": 20,
+      "exitCode": 1,
+      "sourceBinding": {
+        "run": 20,
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "comparisonCommit": "6d2987592a993cb4025881237c7c7e3c040917c0",
+        "trackedInputs": 679,
+        "matchingComparisonInputs": 678,
+        "trackedDifferences": [
+          {
+            "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64MetadataFaultTests.swift",
+            "frozenSHA256": "4ef9ce592853284f708fe3c1db3800cc23c528d34ed42475ab445c4ee28c2de0",
+            "commitSHA256": "59c32ebad61c4003fbe0251900ce28382e159b5fef23bd3f255f17e28207e1fe"
+          }
+        ],
+        "ignoredFFIInputs": [
+          {
+            "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+            "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+          },
+          {
+            "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+            "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+            "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+            "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+            "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+            "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+          }
+        ],
+        "totalInputs": 685,
+        "overlayFiles": 74,
+        "baseAndOverlayReconstructionPassed": true,
+        "manifest": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-20-source-manifest.json.gz",
+          "sha256": "30bdf05432ee1c803b3978c03505d2676bd73793e93d8e7cc1e5caab448860e1"
+        },
+        "overlay": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-20-source-overlay.tar.gz",
+          "sha256": "a72190dbafc5f31e11fed2fc663c4dc6f82c265d4278519d3b47fbacd4ac327f"
+        },
+        "log": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-20.log.gz",
+          "sha256": "e90d8efaaf7b403559d5c4b0437616e5d1a392ee51c93c3a766808a664a255ee"
+        }
+      },
+      "buildElapsedSeconds": null,
+      "testExecution": "not started: compilation failed",
+      "failure": "Two nested Swift Testing #require calls needed inner try annotations; repeated compiler diagnostics are retained in the raw log."
+    },
+    {
+      "run": 21,
+      "exitCode": 1,
+      "sourceBinding": {
+        "run": 21,
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "comparisonCommit": "6d2987592a993cb4025881237c7c7e3c040917c0",
+        "trackedInputs": 679,
+        "matchingComparisonInputs": 678,
+        "trackedDifferences": [
+          {
+            "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64MetadataFaultTests.swift",
+            "frozenSHA256": "43f697e9d7afd2fe300f54fa9e63d3e8af8e3877f39f734606440ddc4214746d",
+            "commitSHA256": "59c32ebad61c4003fbe0251900ce28382e159b5fef23bd3f255f17e28207e1fe"
+          }
+        ],
+        "ignoredFFIInputs": [
+          {
+            "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+            "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+          },
+          {
+            "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+            "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+            "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+            "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+            "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+            "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+          }
+        ],
+        "totalInputs": 685,
+        "overlayFiles": 74,
+        "baseAndOverlayReconstructionPassed": true,
+        "manifest": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-21-source-manifest.json.gz",
+          "sha256": "84e72f5b7ecf4bd62a8c3efad5d60041d01f70c04f489e29b54e36a5650d76b7"
+        },
+        "overlay": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-21-source-overlay.tar.gz",
+          "sha256": "b2181fb8dbaf4dad1385fdcebf1ade33ceac5801c817c52382c2f713ca8bc082"
+        },
+        "log": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-21.log.gz",
+          "sha256": "b69250bcf36008467288586d044e0a7d247383b88e6c22119a87a928cd7cdc8a"
+        }
+      },
+      "buildElapsedSeconds": 13.15,
+      "swiftTesting": {
+        "reported": 681,
+        "passed": 679,
+        "failed": 1,
+        "disabledPhysicalReference": 1,
+        "suites": 77,
+        "elapsedSeconds": 2.883
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      },
+      "failure": "One metadata regression recorded two issues by requiring a single native block. Both tiers legally split the prefix into two blocks; architectural instruction count, state, memory, fault and retry checks already passed. Run 22 replaces only the implementation-specific block-count assertion with positive native execution."
+    },
+    {
+      "run": 22,
+      "exitCode": 0,
+      "sourceBinding": {
+        "run": 22,
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "comparisonCommit": "6d2987592a993cb4025881237c7c7e3c040917c0",
+        "trackedInputs": 679,
+        "matchingComparisonInputs": 679,
+        "trackedDifferences": [],
+        "ignoredFFIInputs": [
+          {
+            "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+            "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+          },
+          {
+            "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+            "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+            "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+            "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+            "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+          },
+          {
+            "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+            "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+          }
+        ],
+        "totalInputs": 685,
+        "overlayFiles": 74,
+        "baseAndOverlayReconstructionPassed": true,
+        "manifest": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-22-source-manifest.json.gz",
+          "sha256": "b07e9586bac809997f4d93215dda4b9cfb611a326081725632b8df3ab068df6a"
+        },
+        "overlay": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-22-source-overlay.tar.gz",
+          "sha256": "324c559e344aebea3a1042775b79b75159ab78127260caa0847f3629907d20ff"
+        },
+        "log": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-22.log.gz",
+          "sha256": "afd737ac0a2b2631611092cec91d24fe935ac906f9acd87fc13e9ac9afc87d44"
+        }
+      },
+      "buildElapsedSeconds": 4.47,
+      "swiftTesting": {
+        "reported": 681,
+        "passed": 680,
+        "failed": 0,
+        "disabledPhysicalReference": 1,
+        "suites": 77,
+        "elapsedSeconds": 2.904
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    }
+  ],
+  "componentChanges": [
+    {
+      "commit": "dd10b0acb",
+      "scope": "System encoding widths, mode faults and REX.B/EIP-relative addressing"
+    },
+    {
+      "commit": "ee6ec5774",
+      "scope": "Implicit supervisor TSS I/O bitmap access and SMAP/TLB separation"
+    },
+    {
+      "commit": "620e37b92",
+      "scope": "Selected positive CPU TSC rate, fractional clock slices and counter wrap"
+    },
+    {
+      "commit": "d841f72c2",
+      "scope": "Descriptor-table operand sizes, ranges, privilege and atomic stores"
+    },
+    {
+      "commit": "6d2987592",
+      "scope": "Optional JIT metadata faults preserve committed prefixes and precise guest exception paths"
+    }
+  ],
+  "sourceVerification": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-19-22-source-verification.json",
+    "sha256": "b51074aa916c79d15d95f0f046b520ec19cf08528f2abbfedfb78234d2b16fc5"
+  },
+  "optimizedRunnerBuild": {
+    "sourceRun": 22,
+    "sourceCommit": "6d2987592a993cb4025881237c7c7e3c040917c0",
+    "configuration": "release",
+    "exitCode": 0,
+    "elapsedSeconds": 53.9,
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-22-release-runner-build.log.gz",
+      "sha256": "f44cb7403fbec0b354bee2fd50f0c8083c85a443212bf4b0b47b7b667e3897cb"
+    },
+    "runnerSHA256": "d7097f5c9cfd83c82faa3e2900b6e7f65164fe65e0f796306b4279dac1a1cf26",
+    "qualification": "Engineering diagnostic executable only"
+  },
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-19-source-manifest.json.gz",
+      "sha256": "820e67614ffdf919b8f51f37f20c8b8bb7bb487a13232c3b8218fb655bcf802b",
+      "bytes": 36381,
+      "originalSHA256": "39a11ac50207583fa6fdaa1db4fbdf7e7b3fc472917504deb7d2ba24dce57236"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-19-source-overlay.tar.gz",
+      "sha256": "4c3ff3907e1305281c409c08d1f687f9bab1f889645214fd76e3bd0ee14f1778",
+      "bytes": 289449,
+      "originalSHA256": "4c3ff3907e1305281c409c08d1f687f9bab1f889645214fd76e3bd0ee14f1778"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-19.log.gz",
+      "sha256": "abd3bb0360b6f2ae370c115fc995500039a2582a7692b46b25e88ade9cd88585",
+      "bytes": 33714,
+      "originalSHA256": "1a0f0ef619ee04cd4a954515ae5320d8939fc21429bcc198c4ef53ed054b64c3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-20-source-manifest.json.gz",
+      "sha256": "30bdf05432ee1c803b3978c03505d2676bd73793e93d8e7cc1e5caab448860e1",
+      "bytes": 36558,
+      "originalSHA256": "0ef0579587cf6388b1cbe64d6d0dee04332bb2352c64e673706e01eeea5febff"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-20-source-overlay.tar.gz",
+      "sha256": "a72190dbafc5f31e11fed2fc663c4dc6f82c265d4278519d3b47fbacd4ac327f",
+      "bytes": 294341,
+      "originalSHA256": "a72190dbafc5f31e11fed2fc663c4dc6f82c265d4278519d3b47fbacd4ac327f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-20.log.gz",
+      "sha256": "e90d8efaaf7b403559d5c4b0437616e5d1a392ee51c93c3a766808a664a255ee",
+      "bytes": 2303,
+      "originalSHA256": "71c0505a3153eb2d0986638a7ba90a94b08be1924c2989d324f65f69ddfebfdb"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-21-source-manifest.json.gz",
+      "sha256": "84e72f5b7ecf4bd62a8c3efad5d60041d01f70c04f489e29b54e36a5650d76b7",
+      "bytes": 36557,
+      "originalSHA256": "118d2ea7ad59e5ad775e6c1c3d9de9a3def76695542a16a8890a6e5718ba2e99"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-21-source-overlay.tar.gz",
+      "sha256": "b2181fb8dbaf4dad1385fdcebf1ade33ceac5801c817c52382c2f713ca8bc082",
+      "bytes": 294335,
+      "originalSHA256": "b2181fb8dbaf4dad1385fdcebf1ade33ceac5801c817c52382c2f713ca8bc082"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-21.log.gz",
+      "sha256": "b69250bcf36008467288586d044e0a7d247383b88e6c22119a87a928cd7cdc8a",
+      "bytes": 22523,
+      "originalSHA256": "260018da83101d27a2e55e2b9c78e6b09cfb9f6ee87bcf28060807b85b98e5cb"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-22-source-manifest.json.gz",
+      "sha256": "b07e9586bac809997f4d93215dda4b9cfb611a326081725632b8df3ab068df6a",
+      "bytes": 36562,
+      "originalSHA256": "a7479fbb20fdc924d0ff77b5c76c96fd24ab124db77d217a5cb6266e3edb9894"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-22-source-overlay.tar.gz",
+      "sha256": "324c559e344aebea3a1042775b79b75159ab78127260caa0847f3629907d20ff",
+      "bytes": 294337,
+      "originalSHA256": "324c559e344aebea3a1042775b79b75159ab78127260caa0847f3629907d20ff"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-22.log.gz",
+      "sha256": "afd737ac0a2b2631611092cec91d24fe935ac906f9acd87fc13e9ac9afc87d44",
+      "bytes": 21966,
+      "originalSHA256": "3aa837d6993cb2c06327458d9cc43603ff186e5d6fe730f41e7d302248abeedd"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-19-22-source-verification.json",
+      "sha256": "b51074aa916c79d15d95f0f046b520ec19cf08528f2abbfedfb78234d2b16fc5",
+      "bytes": 9861,
+      "originalSHA256": "b51074aa916c79d15d95f0f046b520ec19cf08528f2abbfedfb78234d2b16fc5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-19.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "bytes": 20,
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-19-command.json",
+      "sha256": "53448555777d015938437636682abff14a064b3fc4ee3dbaf5dc9b865a61ece4",
+      "bytes": 472,
+      "originalSHA256": "53448555777d015938437636682abff14a064b3fc4ee3dbaf5dc9b865a61ece4"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-22-release-runner-build.log.gz",
+      "sha256": "f44cb7403fbec0b354bee2fd50f0c8083c85a443212bf4b0b47b7b667e3897cb",
+      "bytes": 2059,
+      "originalSHA256": "0f715ed4aca0288693c1f57cf98d02799becf8961155e702eac0f98bc2cb90ef"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete. These bounded gates do not establish full ISA, physical x86 reference execution, successful userspace, glibc/systemd, stress or release qualification.",
+    "The successful Swift totals exclude the separately disabled physical-reference test. Each executed XCTest gate passes 10 and skips the optional PVH fixture once. Historical count correction remains in the previous receipt.",
+    "Run 19 follows an explicit clean build. Run 20 compilation failure and run 21 test failure remain retained; only run 22 is the passing source for the metadata and descriptor changes.",
+    "The ARM64 macOS 27 beta/Xcode 17F109/SDK26.5 host is experimental; release configuration describes compiler optimization, not release qualification.",
+    "Generated FFI inputs and optimized runner bytes are hash-bound without vendoring executable payloads.",
+    "No new guest outcome is claimed here. Probe 6 uses the copied run 22 executable and was still running when this source-gate receipt was authored; its completed outcome requires a separate receipt.",
+    "No CPU capability bits are promoted. Alignment-check exceptions, broader control/descriptor/debug semantics, optional instruction gates and independent physical qualification remain open.",
+    "Optional JIT generation checks may decline cached proof; instruction/data execution still determines architectural faults. The regressions cover revoked mappings and once-only native prefixes, not all JIT/device races."
+  ]
+}

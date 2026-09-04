@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-evidence-validation",
+  "review": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-22.json",
+    "sha256": "fb51f216434a0493bf91700d98474c69201896734d5dd5e68ad680ed89973b0b"
+  },
+  "schemaEnvelopesPassed": 2,
+  "uniqueReferencedArtifactsVerified": 23,
+  "individualTestCountsReconciled": true,
+  "trackedSourceReconstructionPassed": true,
+  "releaseQualified": false
+}

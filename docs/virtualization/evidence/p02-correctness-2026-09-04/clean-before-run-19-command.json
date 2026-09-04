@@ -1,0 +1,9 @@
+{
+  "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift package --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 clean",
+  "exitCode": 0,
+  "toolSession": 16715,
+  "log": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-19.log.gz",
+    "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+  }
+}

@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-04",
+    "P02-09",
+    "P02-11",
+    "P02-12",
+    "P02-13",
+    "P02-17",
+    "P02-24"
+  ],
+  "sourceCommit": "6d2987592a993cb4025881237c7c7e3c040917c0",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Bounded source gates 19\u201322 for system instructions, explicit/implicit paging accesses, TSC rates and speculative JIT metadata faults. No completed new guest boot is claimed.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-22.json",
+      "sha256": "fb51f216434a0493bf91700d98474c69201896734d5dd5e68ad680ed89973b0b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-18.json",
+      "sha256": "ddd10548ac2e095cc1a30cf829c4e942f138d5a7e77f40ced8f4b39c24510a3e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-19-22-source-verification.json",
+      "sha256": "b51074aa916c79d15d95f0f046b520ec19cf08528f2abbfedfb78234d2b16fc5"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete. These bounded gates do not establish full ISA, physical x86 reference execution, successful userspace, glibc/systemd, stress or release qualification.",
+    "The successful Swift totals exclude the separately disabled physical-reference test. Each executed XCTest gate passes 10 and skips the optional PVH fixture once. Historical count correction remains in the previous receipt.",
+    "Run 19 follows an explicit clean build. Run 20 compilation failure and run 21 test failure remain retained; only run 22 is the passing source for the metadata and descriptor changes.",
+    "The ARM64 macOS 27 beta/Xcode 17F109/SDK26.5 host is experimental; release configuration describes compiler optimization, not release qualification.",
+    "Generated FFI inputs and optimized runner bytes are hash-bound without vendoring executable payloads.",
+    "No new guest outcome is claimed here. Probe 6 uses the copied run 22 executable and was still running when this source-gate receipt was authored; its completed outcome requires a separate receipt.",
+    "No CPU capability bits are promoted. Alignment-check exceptions, broader control/descriptor/debug semantics, optional instruction gates and independent physical qualification remain open.",
+    "Optional JIT generation checks may decline cached proof; instruction/data execution still determines architectural faults. The regressions cover revoked mappings and once-only native prefixes, not all JIT/device races."
+  ]
+}
