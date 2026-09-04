@@ -1,0 +1,42 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "devices",
+  "issueLabel": "subsystem:devices",
+  "planItems": [
+    "P02-25"
+  ],
+  "sourceCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "passed",
+  "scope": "Bounded one-vCPU stability closure combines the earlier seven-workload stress-v1 success with source56 IO probe 3: eight block flush/reopen rounds, 4,096 isolated Ethernet request/reply frames and host-observed ACPI S5.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-3-success-review.json",
+      "sha256": "89f3124a341cd18720aef907c1ee4344cef0ed6d11c107dc079383c20a103cb9"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/p02-25-stability-closure-through-io3.json",
+      "sha256": "47bb88da7721ec50f748e9bcca318c9b1b124cd77ddd0d6186ba2354ccba6e7f"
+    }
+  ],
+  "limitations": [
+    "The successful bounded run uses a 32 MiB synthetic virtio block file and an isolated in-process Ethernet peer; it does not qualify physical media, host networking, TCP/IP or an external endpoint.",
+    "Eight guest fsync rounds, eight host flush callbacks and the runner's post-poweroff reopened-byte gate qualify this fixture contract; they do not establish crash recovery, power-loss durability, reboot recovery or a host filesystem guarantee.",
+    "The network gate covers 4,096 strictly reconciled 1,024-byte request/reply frames over 18.4086489 guest seconds with one outstanding frame. It does not cover packet loss, retry, high queue depth, multi-queue, multi-vCPU or long soak.",
+    "P02-25 is satisfied by two separate bounded one-vCPU guest runs: stress-v1 covers allocation/process/filesystem/compression/clock work and this run covers block/network I/O. The workloads were not simultaneous in one guest invocation.",
+    "Source56 includes the reduced PSHUFLW correction and other intervening CPU fixes. This success validates the combined frozen source and exact guest inputs; it does not isolate EVENT_IDX or PSHUFLW as the sole cause of either earlier failure.",
+    "The experimental host and elapsed times are engineering observations, not P14 performance qualification. JIT hot sites are capped live entries rather than cumulative reason totals."
+  ]
+}

@@ -1,0 +1,49 @@
+{
+  "kind": "p02-evidence-retention-transformations",
+  "artifacts": [
+    {
+      "originalPath": "/tmp/dory-p02-userspace-io-stress-baseline-jit-probe-3.json",
+      "originalSHA256": "e2f1b145c38031688618ff9a2a3e610e709b39bb40531d63a86dd96a3c767656",
+      "originalBytes": 35067,
+      "normalizedSHA256": "e2f1b145c38031688618ff9a2a3e610e709b39bb40531d63a86dd96a3c767656",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-io-stress-baseline-jit-probe-3.json",
+        "sha256": "e2f1b145c38031688618ff9a2a3e610e709b39bb40531d63a86dd96a3c767656"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-userspace-io-stress-baseline-jit-probe-3.invocation.json",
+      "originalSHA256": "87cff1edaf87824505542e2af7e4c35b22a3ed7a02106ad22cda7aeedd9170e0",
+      "originalBytes": 1742,
+      "normalizedSHA256": "87cff1edaf87824505542e2af7e4c35b22a3ed7a02106ad22cda7aeedd9170e0",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-io-stress-baseline-jit-probe-3.invocation.json",
+        "sha256": "87cff1edaf87824505542e2af7e4c35b22a3ed7a02106ad22cda7aeedd9170e0"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-userspace-io-stress-baseline-jit-probe-3.exit",
+      "originalSHA256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "originalBytes": 2,
+      "normalizedSHA256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-io-stress-baseline-jit-probe-3.exit",
+        "sha256": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-userspace-io-stress-baseline-jit-probe-3.log",
+      "originalSHA256": "201be1d7b20b432ab0c127fa264fa34aa98740610a950d4c6e58c7c5094f87bc",
+      "originalBytes": 466,
+      "normalizedSHA256": "201be1d7b20b432ab0c127fa264fa34aa98740610a950d4c6e58c7c5094f87bc",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-io-stress-baseline-jit-probe-3.log.gz",
+        "sha256": "2a82983bf457ae5f345f24bd9ea5a251e5369f903aa0397ac1bb21aca354731b"
+      },
+      "transformation": "Text bytes unchanged; gzip timestamp zero"
+    }
+  ]
+}

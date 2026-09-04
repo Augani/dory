@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-io-stress-success-independent-validation",
+  "status": "passed",
+  "releaseQualified": false,
+  "sourceCommit": "07e61696f39901e7634e4b868c797301e1fbc141",
+  "review": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-3-success-review.json",
+    "sha256": "89f3124a341cd18720aef907c1ee4344cef0ed6d11c107dc079383c20a103cb9"
+  },
+  "closure": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/p02-25-stability-closure-through-io3.json",
+    "sha256": "47bb88da7721ec50f748e9bcca318c9b1b124cd77ddd0d6186ba2354ccba6e7f"
+  },
+  "envelope": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/devices-envelope-io-stress-baseline-jit-probe-3.json",
+    "sha256": "adb735ba8f91c03ed31349dbd860c68abcbf3a5322322abda6c9af62b0fcb3f4"
+  },
+  "artifactReferencesVerified": 16,
+  "retainedFilesVerified": 8,
+  "sourceBinding": {
+    "trackedInputs": 728,
+    "generatedFFIInputs": 6,
+    "allTrackedMatch": true
+  },
+  "runner": {
+    "sha256": "da9589b0591e412228bb3cce407eed839d91df04303a814433d80ae55a9ae966",
+    "bytes": 9168760,
+    "oneVCPUConstructionVerified": true
+  },
+  "guest": {
+    "runID": "d7a6c13c-bb1b-46ba-a1a8-5c0423ed9239",
+    "receiptMatchedWholeConsoleObject": true,
+    "sourceDigestMatchedFixture": true,
+    "workloads": [
+      "io.block_flush_reopen",
+      "io.ethernet_frame_roundtrip"
+    ],
+    "hostPoweroffObserved": true
+  },
+  "block": {
+    "guestRounds": 8,
+    "hostFlushRequests": 8,
+    "runnerPostPoweroffReopenedAndVerified": true,
+    "independentReadOnlyRegionMatched": true,
+    "regionSHA256": "dbb71d178d43f63f39dd9b0fb5fc30fb366ada39e3b8763e41338b892c098cd6"
+  },
+  "network": {
+    "frames": 4096,
+    "bytes": 4194304,
+    "deliveredReplies": 4096,
+    "queuedReplies": 0,
+    "ignoredFrames": 8,
+    "elapsedNanoseconds": 18408648900,
+    "guestAndHostCountersMatched": true
+  },
+  "priorStress": {
+    "sevenWorkloadsPassed": true,
+    "hostPoweroffObserved": true
+  },
+  "checkpointAssessment": "P02-25 is satisfied in the explicitly bounded two-run, one-vCPU diagnostic scope. P02 remains incomplete and the review limitations continue to apply."
+}
