@@ -19,6 +19,7 @@ import zlib
 
 
 CATALOG = Path(__file__).resolve().parent.parent / "Config/DoryVirtualizationGuestCandidates.json"
+DIAGNOSTIC_DIRECTORY = Path(__file__).resolve().parent.parent / "guest/diagnostics/p02-minimal-userspace"
 CHUNK_BYTES = 64 * 1024
 MAX_DOWNLOAD_BYTES = 32 * 1024**3
 MAX_MEMBER_BYTES = 512 * 1024**2
@@ -321,6 +322,194 @@ def prepare(artifact, cache, verify_only=False, extract=False):
         os.close(descriptor)
 
 
+def read_diagnostic_source(path, maximum):
+    descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        metadata = os.fstat(descriptor)
+        require(stat.S_ISREG(metadata.st_mode) and metadata.st_size <= maximum,
+                "diagnostic source is not a bounded regular file")
+        before = file_stamp(descriptor)
+        data = bytearray()
+        while True:
+            chunk = os.read(descriptor, CHUNK_BYTES)
+            if not chunk:
+                break
+            data.extend(chunk)
+            require(len(data) <= maximum, "diagnostic source grew beyond limit")
+        require(file_stamp(descriptor) == before, "diagnostic source changed while reading")
+        return bytes(data)
+    finally:
+        os.close(descriptor)
+
+
+def diagnostic_archive(descriptor, maximum):
+    """Decode one pinned gzip member with a strict allocation bound; never extract host paths."""
+    before = file_stamp(descriptor)
+    decoder = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    data = bytearray()
+    while True:
+        chunk = os.read(descriptor, CHUNK_BYTES)
+        if not chunk:
+            break
+        require(not decoder.eof, "unexpected trailing diagnostic gzip data")
+        while chunk:
+            output = decoder.decompress(chunk, min(CHUNK_BYTES, maximum + 1 - len(data)))
+            data.extend(output)
+            require(len(data) <= maximum, "diagnostic archive exceeds expanded byte limit")
+            chunk = decoder.unconsumed_tail
+            require(not decoder.unused_data, "unexpected trailing diagnostic gzip data")
+    require(decoder.eof, "truncated diagnostic gzip archive")
+    require(file_stamp(descriptor) == before, "diagnostic archive changed while reading")
+    return bytes(data)
+
+
+def diagnostic_members(data, selected):
+    """Read bounded newc entries. Symlinks, device nodes and hardlinks are never materialized."""
+    offset, seen, members = 0, set(), {}
+    while offset + 110 <= len(data):
+        require(data[offset:offset + 6] == b"070701", "unsupported diagnostic cpio header")
+        try:
+            fields = [int(data[offset + 6 + index * 8:offset + 14 + index * 8], 16)
+                      for index in range(13)]
+        except ValueError as error:
+            raise FixtureError("invalid diagnostic cpio integer") from error
+        size, name_size = fields[6], fields[11]
+        require(1 <= name_size <= 1024, "invalid diagnostic cpio name length")
+        name_start = offset + 110
+        name_end = name_start + name_size
+        require(name_end <= len(data) and data[name_end - 1] == 0,
+                "truncated diagnostic cpio name")
+        try:
+            name = data[name_start:name_end - 1].decode("ascii")
+        except UnicodeError as error:
+            raise FixtureError("non-ASCII diagnostic cpio name") from error
+        body_start = (name_end + 3) & ~3
+        body_end = body_start + size
+        offset = (body_end + 3) & ~3
+        require(offset <= len(data), "truncated diagnostic cpio body")
+        if name == "TRAILER!!!":
+            require(size == 0 and not any(data[offset:]), "unexpected diagnostic cpio trailer")
+            require(set(members) == set(selected), "required diagnostic cpio members are missing")
+            return members
+        if name != ".":
+            safe_member(name)
+        require(name not in seen and len(seen) < 4096, "duplicate or excessive diagnostic cpio entries")
+        seen.add(name)
+        if name in selected:
+            require(stat.S_ISREG(fields[1]) and fields[4] == 1,
+                    "diagnostic binary must be a standalone regular file")
+            members[name] = data[body_start:body_end]
+    raise FixtureError("diagnostic cpio trailer is missing")
+
+
+def diagnostic_cpio(init, members):
+    """Uncompressed newc avoids compressor-version differences. All metadata is normalized."""
+    entries = {name: (stat.S_IFDIR | 0o755, b"", 0, 0)
+               for name in ("bin", "dev", "lib", "proc", "run", "sys", "tmp")}
+    entries.update({
+        "bin/busybox": (stat.S_IFREG | 0o755, members["usr/bin/busybox"], 0, 0),
+        "bin/sh": (stat.S_IFLNK | 0o777, b"busybox", 0, 0),
+        "lib/ld-musl-x86_64.so.1": (stat.S_IFREG | 0o755,
+                                     members["usr/lib/ld-musl-x86_64.so.1"], 0, 0),
+        "lib/libc.musl-x86_64.so.1": (stat.S_IFLNK | 0o777, b"ld-musl-x86_64.so.1", 0, 0),
+        "dev/console": (stat.S_IFCHR | 0o600, b"", 5, 1),
+        "dev/null": (stat.S_IFCHR | 0o666, b"", 1, 3),
+        "dev/zero": (stat.S_IFCHR | 0o666, b"", 1, 5),
+        "init": (stat.S_IFREG | 0o755, init, 0, 0),
+    })
+    output = bytearray()
+    for inode, name in enumerate(sorted(entries) + ["TRAILER!!!"], 1):
+        mode, body, major, minor = entries.get(name, (0, b"", 0, 0))
+        encoded = name.encode("ascii") + b"\0"
+        fields = [inode, mode, 0, 0, 2 if stat.S_ISDIR(mode) else 1, 0,
+                  len(body), 0, 0, major, minor, len(encoded), 0]
+        output.extend(b"070701" + "".join(f"{value:08x}" for value in fields).encode("ascii"))
+        output.extend(encoded)
+        output.extend(b"\0" * (-len(output) % 4))
+        output.extend(body)
+        output.extend(b"\0" * (-len(output) % 4))
+    output.extend(b"\0" * (-len(output) % 512))
+    return bytes(output)
+
+
+def prepare_diagnostic(artifact, cache, directory=DIAGNOSTIC_DIRECTORY):
+    recipe_bytes = read_diagnostic_source(directory / "fixture.json", 64 * 1024)
+    recipe = json.loads(recipe_bytes, object_pairs_hook=unique_object)
+    require(isinstance(recipe, dict) and type(recipe.get("schemaVersion")) is int
+            and recipe["schemaVersion"] == 1 and recipe.get("kind") == "p02-minimal-userspace"
+            and recipe.get("architecture") == "x86_64", "unsupported diagnostic recipe")
+    require(recipe.get("artifactID") == artifact["id"], "diagnostic recipe artifact differs")
+    recipes = [entry for entry in artifact.get("extractions", [])
+               if entry["filename"] == recipe.get("sourceFilename")]
+    require(len(recipes) == 1 and recipes[0]["sha256"] == recipe.get("sourceSHA256"),
+            "diagnostic source must match a pinned catalog extraction")
+    kernels = [entry for entry in artifact.get("extractions", [])
+               if entry["filename"] == recipe.get("kernelFilename")]
+    require(len(kernels) == 1 and kernels[0]["sha256"] == recipe.get("kernelSHA256"),
+            "diagnostic kernel must match a pinned catalog extraction")
+    kernel = cache.open_verified(kernels[0]["filename"], kernels[0]["sha256"],
+                                 kernels[0]["maximumBytes"])
+    require(kernel is not None, "required diagnostic kernel is missing; use --extract")
+    os.close(kernel)
+    input_recipe = recipes[0]
+    maximum = bounded_integer(recipe.get("maximumExpandedBytes"), 64 * 1024**2,
+                              "diagnostic expanded byte limit")
+    init = read_diagnostic_source(directory / "init", 64 * 1024)
+    init_digest = hashlib.sha256(init).hexdigest()
+    require(init_digest == recipe.get("initSHA256"), "diagnostic init source SHA-256 differs")
+    expected_members = recipe.get("members")
+    require(isinstance(expected_members, dict) and set(expected_members) == {
+        "usr/bin/busybox", "usr/lib/ld-musl-x86_64.so.1"}, "unsupported diagnostic member set")
+    descriptor = cache.open_verified(input_recipe["filename"], input_recipe["sha256"],
+                                     input_recipe["maximumBytes"])
+    require(descriptor is not None, "required diagnostic initramfs is missing; use --extract")
+    try:
+        members = diagnostic_members(diagnostic_archive(descriptor, maximum), expected_members)
+    finally:
+        os.close(descriptor)
+    for name, data in members.items():
+        require(hashlib.sha256(data).hexdigest() == expected_members[name],
+                "diagnostic member SHA-256 differs: " + name)
+        require(len(data) >= 64 and data[:7] == b"\x7fELF\x02\x01\x01"
+                and int.from_bytes(data[18:20], "little") == 62,
+                "diagnostic member is not ELF64 little-endian x86-64: " + name)
+    output = diagnostic_cpio(init, members)
+    output_digest = hashlib.sha256(output).hexdigest()
+    require(output_digest == recipe.get("outputSHA256"), "diagnostic output SHA-256 differs")
+    filename = safe_name(recipe.get("outputFilename"))
+
+    def publish_verified(name, data, expected_digest):
+        existing = cache.open_verified(name, expected_digest, len(data), len(data))
+        if existing is not None:
+            os.close(existing)
+            return
+        cache.publish(name, expected_digest, len(data),
+                      (data[offset:offset + CHUNK_BYTES] for offset in range(0, len(data), CHUNK_BYTES)),
+                      len(data))
+
+    publish_verified(filename, output, output_digest)
+    manifest = {
+        "schemaVersion": 1, "kind": "p02-minimal-userspace-build", "architecture": "x86_64",
+        "qualification": "archive integrity and deterministic construction only; guest has not executed",
+        "sourceArtifactID": artifact["id"], "sourceArtifactSHA256": artifact["sha256"],
+        "sourceFilename": input_recipe["filename"], "sourceSHA256": input_recipe["sha256"],
+        "kernelFilename": recipe["kernelFilename"], "kernelSHA256": recipe["kernelSHA256"],
+        "recipeSHA256": hashlib.sha256(recipe_bytes).hexdigest(), "initSHA256": init_digest,
+        "builderSHA256": hashlib.sha256(read_diagnostic_source(Path(__file__), 1024**2)).hexdigest(),
+        "members": expected_members, "outputFilename": filename,
+        "outputSHA256": output_digest, "outputBytes": len(output),
+        "format": "newc; sorted names; uid/gid/mtime zero; sequential inodes; 512-byte padded; uncompressed",
+        "runUUIDSource": "exactly one canonical lowercase dory.pvh_run_id= value in /proc/cmdline",
+    }
+    manifest_bytes = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+    manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    manifest_name = filename + ".manifest.json"
+    publish_verified(manifest_name, manifest_bytes, manifest_digest)
+    return {"filename": filename, "sha256": output_digest, "bytes": len(output),
+            "manifestFilename": manifest_name, "manifestSHA256": manifest_digest,
+            "qualification": manifest["qualification"]}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path, default=CATALOG)
@@ -330,9 +519,12 @@ def main(argv=None):
     parser.add_argument("--verify-only", action="store_true", help="require cached inputs; never download")
     parser.add_argument("--extract", action="store_true",
                         help="derive missing boot files from verified inputs; verify existing outputs")
+    parser.add_argument("--diagnostic-initramfs", action="store_true",
+                        help="derive the pinned P02 x86-64 BusyBox/musl workload (requires --extract)")
     arguments = parser.parse_args(argv)
     if arguments.list:
-        if arguments.id or arguments.cache_directory or arguments.verify_only or arguments.extract:
+        if (arguments.id or arguments.cache_directory or arguments.verify_only or arguments.extract
+                or arguments.diagnostic_initramfs):
             parser.error("--list cannot be combined with preparation options")
     elif not arguments.id or arguments.cache_directory is None:
         parser.error("preparation requires explicit --id and --cache-directory")
@@ -344,14 +536,21 @@ def main(argv=None):
         by_id = {artifact["id"]: artifact for artifact in artifacts}
         require(len(set(arguments.id)) == len(arguments.id), "duplicate requested artifact ID")
         require(all(identity in by_id for identity in arguments.id), "unknown requested artifact ID")
+        if arguments.diagnostic_initramfs:
+            require(arguments.extract and arguments.id == ["alpine-virt-3.24.1-x86_64"],
+                    "diagnostic initramfs requires --extract and only --id alpine-virt-3.24.1-x86_64")
         results = []
+        diagnostic = None
         with Cache(arguments.cache_directory) as cache:
             for identity in arguments.id:
                 results.append(prepare(by_id[identity], cache, arguments.verify_only, arguments.extract))
+            if arguments.diagnostic_initramfs:
+                diagnostic = prepare_diagnostic(by_id[arguments.id[0]], cache)
         print(json.dumps({"schemaVersion": 1, "kind": "virtualization-fixture-preparation",
                           "cacheDirectory": str(arguments.cache_directory.absolute()),
                           "qualification": "input integrity only; no guest boot or workload qualification",
-                          "artifacts": results}, indent=2))
+                          "artifacts": results,
+                          **({"diagnosticInitramfs": diagnostic} if diagnostic is not None else {})}, indent=2))
         return 0
     except (FixtureError, OSError, ValueError, zlib.error, subprocess.SubprocessError) as error:
         print("fixture preparation failed: " + str(error), file=sys.stderr)

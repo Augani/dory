@@ -9,6 +9,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import tarfile
 import tempfile
 import unittest
@@ -246,6 +247,156 @@ class FixturePreparationTests(unittest.TestCase):
             self.assertEqual(fixture.main(["--catalog", str(self.catalog_path), "--id", "unknown",
                                            "--cache-directory", str(self.cache_path)]), 1)
         self.assertFalse(self.cache_path.exists())
+
+
+class DiagnosticInitramfsTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.directory = self.root / "source"
+        self.directory.mkdir()
+        self.cache_path = self.root / "cache"
+        self.cache_path.mkdir()
+        self.init = b"#!/bin/sh\nprintf diagnostic-fixture-test\n"
+        (self.directory / "init").write_bytes(self.init)
+        elf = bytearray(64)
+        elf[:7] = b"\x7fELF\x02\x01\x01"
+        elf[18:20] = (62).to_bytes(2, "little")
+        self.members = {"usr/bin/busybox": bytes(elf),
+                        "usr/lib/ld-musl-x86_64.so.1": bytes(elf) + b"loader"}
+        self.install_archive(list(self.members.items()))
+
+    @staticmethod
+    def cpio(entries, *, mode=0o100755, nlink=1):
+        output = bytearray()
+        for index, (name, body) in enumerate(entries + [("TRAILER!!!", b"")], 1):
+            encoded = name.encode() + b"\0"
+            fields = [index, mode, 0, 0, nlink, 123456, len(body), 0, 0, 0, 0, len(encoded), 0]
+            output.extend(b"070701" + "".join(f"{value:08x}" for value in fields).encode())
+            output.extend(encoded)
+            output.extend(b"\0" * (-len(output) % 4))
+            output.extend(body)
+            output.extend(b"\0" * (-len(output) % 4))
+        return bytes(output)
+
+    def install_archive(self, entries):
+        archive = gzip.compress(self.cpio(entries))
+        (self.cache_path / "input.gz").write_bytes(archive)
+        (self.cache_path / "kernel").write_bytes(b"pinned test kernel")
+        self.artifact = {"id": "synthetic-parser-test", "sha256": digest(b"synthetic ISO"),
+                         "extractions": [
+                             {"filename": "input.gz", "sha256": digest(archive), "maximumBytes": len(archive)},
+                             {"filename": "kernel", "sha256": digest(b"pinned test kernel"), "maximumBytes": 100}]}
+        self.recipe = {
+            "schemaVersion": 1, "kind": "p02-minimal-userspace", "architecture": "x86_64",
+            "artifactID": self.artifact["id"], "sourceFilename": "input.gz", "sourceSHA256": digest(archive),
+            "maximumExpandedBytes": 65536, "kernelFilename": "kernel",
+            "kernelSHA256": digest(b"pinned test kernel"), "initSHA256": digest(self.init),
+            "members": {name: digest(data) for name, data in self.members.items()},
+            "outputFilename": "diagnostic.cpio", "outputSHA256": digest(fixture.diagnostic_cpio(self.init, self.members))}
+        self.save_recipe()
+
+    def save_recipe(self):
+        (self.directory / "fixture.json").write_text(json.dumps(self.recipe))
+
+    def prepare(self):
+        with fixture.Cache(self.cache_path) as cache:
+            return fixture.prepare_diagnostic(self.artifact, cache, self.directory)
+
+    def test_reproducible_derivation_and_manifest_bind_exact_sources(self):
+        first = self.prepare()
+        output = (self.cache_path / first["filename"]).read_bytes()
+        self.assertEqual(output, fixture.diagnostic_cpio(self.init, self.members))
+        self.assertEqual(len(output) % 512, 0)
+        manifest_bytes = (self.cache_path / first["manifestFilename"]).read_bytes()
+        manifest = json.loads(manifest_bytes)
+        self.assertEqual(manifest["initSHA256"], digest(self.init))
+        self.assertEqual(manifest["sourceSHA256"], self.recipe["sourceSHA256"])
+        self.assertEqual(manifest["members"], self.recipe["members"])
+        self.assertEqual(first["manifestSHA256"], digest(manifest_bytes))
+        self.assertIn("guest has not executed", manifest["qualification"])
+        self.assertEqual(self.prepare(), first)
+
+    def test_source_and_member_tampering_reject_before_publication(self):
+        (self.directory / "init").write_bytes(self.init + b"changed")
+        with self.assertRaisesRegex(fixture.FixtureError, "init source SHA"):
+            self.prepare()
+        (self.directory / "init").write_bytes(self.init)
+        self.recipe["members"]["usr/bin/busybox"] = "0" * 64
+        self.save_recipe()
+        with self.assertRaisesRegex(fixture.FixtureError, "member SHA"):
+            self.prepare()
+        self.assertFalse((self.cache_path / "diagnostic.cpio").exists())
+
+    def test_catalog_binding_and_missing_kernel_reject(self):
+        self.recipe["sourceSHA256"] = "0" * 64
+        self.save_recipe()
+        with self.assertRaisesRegex(fixture.FixtureError, "pinned catalog"):
+            self.prepare()
+        self.recipe["sourceSHA256"] = self.artifact["extractions"][0]["sha256"]
+        self.save_recipe()
+        (self.cache_path / "kernel").unlink()
+        with self.assertRaisesRegex(fixture.FixtureError, "kernel is missing"):
+            self.prepare()
+        self.assertFalse((self.cache_path / "diagnostic.cpio").exists())
+
+    def test_cpio_traversal_duplicates_links_and_truncation_reject(self):
+        cases = [self.cpio([( "../outside", b"x")] + list(self.members.items())),
+                 self.cpio(list(self.members.items()) * 2),
+                 self.cpio(list(self.members.items()), mode=0o120777),
+                 self.cpio(list(self.members.items()), nlink=2),
+                 self.cpio(list(self.members.items()))[:-1]]
+        for archive in cases:
+            with self.subTest(length=len(archive)), self.assertRaises(fixture.FixtureError):
+                fixture.diagnostic_members(archive, self.members)
+        self.assertFalse((self.root / "outside").exists())
+
+    def test_expanded_archive_bound_and_wrong_architecture_reject(self):
+        self.recipe["maximumExpandedBytes"] = 110
+        self.save_recipe()
+        with self.assertRaisesRegex(fixture.FixtureError, "expanded byte limit"):
+            self.prepare()
+        self.recipe["maximumExpandedBytes"] = 65536
+        self.members["usr/bin/busybox"] = b"not-an-ELF" * 8
+        self.install_archive(list(self.members.items()))
+        with self.assertRaisesRegex(fixture.FixtureError, "not ELF64"):
+            self.prepare()
+        self.assertFalse((self.cache_path / "diagnostic.cpio").exists())
+
+    def test_existing_corrupt_output_is_preserved(self):
+        target = self.cache_path / "diagnostic.cpio"
+        target.write_bytes(b"retain this output")
+        with self.assertRaises(fixture.FixtureError):
+            self.prepare()
+        self.assertEqual(target.read_bytes(), b"retain this output")
+        self.assertFalse(any(path.name.startswith(".dory-fixture-") for path in self.cache_path.iterdir()))
+
+    def test_guest_receipt_matches_runner_protocol_and_rejects_incomplete_workloads(self):
+        source = (fixture.DIAGNOSTIC_DIRECTORY / "init").read_text()
+        recipe = json.loads((fixture.DIAGNOSTIC_DIRECTORY / "fixture.json").read_text())
+        runner = (fixture.DIAGNOSTIC_DIRECTORY.parents[2] /
+                  "dory-core-swift/Tests/DoryMachinePCLinuxBootRunner/PVHBootRunnerSupport.swift").read_text()
+        self.assertIn("dory.pvh_run_id=", source)
+        self.assertIn("dory.pvh_run_id=", runner)
+        self.assertNotIn("dory.run_uuid=", source)
+        self.assertEqual(digest(source.encode()), recipe["initSHA256"])
+        # Execute only this print-only function, never guest init's mount/kill/poweroff workload.
+        body = source.split("\nemit_runner_receipt() {\n", 1)[1].split("\n}\n", 1)[0]
+        command = 'run_uuid=$1; passed=$2; failed=$3\nemit_runner_receipt() {\n' + body + '\n}\nemit_runner_receipt\n'
+        run_id = "ba947d6c-ddfc-4437-a164-b159f63ad299"
+        expected = [name for name in recipe["expectedResults"] if name != "shutdown.request"]
+        for passed, failed in [(7, 0), (6, 1), (6, 0), (8, 0), (7, 1)]:
+            with self.subTest(passed=passed, failed=failed):
+                reply = subprocess.run(["/bin/sh", "-c", command, "receipt-test", run_id,
+                                        str(passed), str(failed)], check=True, capture_output=True, text=True)
+                self.assertEqual(len(reply.stdout.splitlines()), 1)
+                receipt = json.loads(reply.stdout)
+                self.assertEqual(receipt["schemaVersion"], 1)
+                self.assertEqual(receipt["doryPVHBoot"], "userspace-ready")
+                self.assertEqual(receipt["runID"], run_id)
+                self.assertIs(receipt["workloadsPassed"], passed == 7 and failed == 0)
+                self.assertEqual(receipt["workloads"], expected if receipt["workloadsPassed"] else [])
 
 
 if __name__ == "__main__":
