@@ -3497,12 +3497,23 @@ public struct DoryX86Interpreter: Sendable {
         state.ss = .init(selector: selector &+ 8, attributes: 0xC093, limit: .max, base: 0)
         nextRIP = state.modelSpecific.longStar
       case .sysret:
-        guard profile.supports(.syscall),
-          mode == .long64,
-          currentPrivilegeLevel(state, mode: mode) == 0,
-          state.control.efer & 1 != 0,
-          DoryX86ArchitecturalState.isCanonical(state.registers.rcx)
+        // Intel SDM Vol. 2D SYSRET: lack of the instruction/SCE or execution
+        // outside 64-bit mode is #UD. Only the CPL check and a noncanonical
+        // 64-bit return target are #GP conditions.
+        guard profile.supports(.syscall), mode == .long64,
+          state.control.efer & 1 != 0
         else {
+          return .exception(.init(kind: .invalidOpcode, vector: 6,
+            instructionPointer: originalRIP))
+        }
+        guard currentPrivilegeLevel(state, mode: mode) == 0 else {
+          return generalProtection(at: originalRIP)
+        }
+        let return64Bit = instruction.prefixes.rex?.w == true
+        let targetRIP = return64Bit
+          ? state.registers.rcx
+          : UInt64(UInt32(truncatingIfNeeded: state.registers.rcx))
+        guard !return64Bit || DoryX86ArchitecturalState.isCanonical(targetRIP) else {
           return generalProtection(at: originalRIP)
         }
         let requestedFlags = DoryX86RFLAGS(
@@ -3513,9 +3524,10 @@ public struct DoryX86Interpreter: Sendable {
         }
         state.rflags = validatedFlags
         let selector = UInt16(truncatingIfNeeded: state.modelSpecific.star >> 48) & 0xfffc
-        state.cs = .init(selector: (selector &+ 16) | 3, attributes: 0xA0FB, limit: .max, base: 0)
+        state.cs = .init(selector: (selector &+ 16) | 3,
+          attributes: return64Bit ? 0xA0FB : 0xC0FB, limit: .max, base: 0)
         state.ss = .init(selector: (selector &+ 8) | 3, attributes: 0xC0F3, limit: .max, base: 0)
-        nextRIP = state.registers.rcx
+        nextRIP = targetRIP
       }
       DoryX86LegacyFloatingPointPolicy.applyRetiredMMXEffects(instruction, state: &state.floatingPoint)
       if DoryX86FloatingPointEnvironment.isNonControl(instruction) {

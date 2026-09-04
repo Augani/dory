@@ -1796,7 +1796,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
 
     let sysretMemory = try DoryX86ByteArrayMemory(
       baseAddress: state.rip,
-      bytes: [0x0F, 0x07] + .init(repeating: 0, count: 16)
+      bytes: [0x48, 0x0F, 0x07] + .init(repeating: 0, count: 16)
     )
     state.registers.rcx = 0x7002
     state.registers.r11 =
