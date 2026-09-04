@@ -127,6 +127,10 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     if case .nan = kind { return true }
     return false
   }
+  var isSignalingNaN: Bool {
+    guard case .nan(let significand) = kind else { return false }
+    return significand & 0x4000_0000_0000_0000 == 0
+  }
   var isSubnormal: Bool { kind == .finite && significand != 0 && exponent < -16_382 }
 
   init(bytes: [UInt8]) {
@@ -152,7 +156,7 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       exponent = 0
       significand = 0
     case 0x7FFF:
-      kind = .nan(rawSignificand | 0xC000_0000_0000_0000)
+      kind = .nan(rawSignificand | 0x8000_0000_0000_0000)
       exponent = 0
       significand = 0
     default:
@@ -187,7 +191,7 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
       self.init(kind: .infinity, isNegative: negative, exponent: 0, significand: 0)
     case 0x7FF:
       self.init(
-        kind: .nan(0xC000_0000_0000_0000 | fraction << 11),
+        kind: .nan(0x8000_0000_0000_0000 | fraction << 11),
         isNegative: negative,
         exponent: 0,
         significand: 0
@@ -246,8 +250,8 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     case .infinity:
       rawSignificand = 0x8000_0000_0000_0000
       exponentField = 0x7FFF
-    case .nan(let payload):
-      rawSignificand = payload | 0xC000_0000_0000_0000
+    case .nan(let significand):
+      rawSignificand = significand | 0x8000_0000_0000_0000
       exponentField = 0x7FFF
     case .finite where significand == 0:
       rawSignificand = 0
@@ -292,10 +296,11 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     rounding: DoryX86FloatingRounding = .nearestEven,
     precision: Int = 64
   ) -> Self {
-    if isNaN { return self }
-    if rhs.isNaN { return rhs }
+    if let nan = propagatedNaN(with: rhs) { return nan }
     if isInfinite || rhs.isInfinite {
-      if isInfinite, rhs.isInfinite, isNegative != rhs.isNegative { return Self.nan() }
+      if isInfinite, rhs.isInfinite, isNegative != rhs.isNegative {
+        return Self.realIndefinite()
+      }
       return isInfinite ? self : rhs
     }
     if isZero, rhs.isZero {
@@ -338,7 +343,8 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     rounding: DoryX86FloatingRounding = .nearestEven,
     precision: Int = 64
   ) -> Self {
-    adding(rhs.negated(), rounding: rounding, precision: precision)
+    if let nan = propagatedNaN(with: rhs) { return nan }
+    return adding(rhs.negated(), rounding: rounding, precision: precision)
   }
 
   func multiplied(
@@ -346,9 +352,10 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     rounding: DoryX86FloatingRounding = .nearestEven,
     precision: Int = 64
   ) -> Self {
-    if isNaN { return self }
-    if rhs.isNaN { return rhs }
-    if (isZero && rhs.isInfinite) || (isInfinite && rhs.isZero) { return Self.nan() }
+    if let nan = propagatedNaN(with: rhs) { return nan }
+    if (isZero && rhs.isInfinite) || (isInfinite && rhs.isZero) {
+      return Self.realIndefinite()
+    }
     let negative = isNegative != rhs.isNegative
     if isInfinite || rhs.isInfinite {
       return .init(kind: .infinity, isNegative: negative, exponent: 0, significand: 0)
@@ -374,9 +381,10 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     rounding: DoryX86FloatingRounding = .nearestEven,
     precision: Int = 64
   ) -> Self {
-    if isNaN { return self }
-    if rhs.isNaN { return rhs }
-    if (isZero && rhs.isZero) || (isInfinite && rhs.isInfinite) { return Self.nan() }
+    if let nan = propagatedNaN(with: rhs) { return nan }
+    if (isZero && rhs.isZero) || (isInfinite && rhs.isInfinite) {
+      return Self.realIndefinite()
+    }
     let negative = isNegative != rhs.isNegative
     if isInfinite || rhs.isZero {
       return .init(kind: .infinity, isNegative: negative, exponent: 0, significand: 0)
@@ -654,7 +662,42 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     return sign | (maximumExponentField - 1) << UInt64(fractionBits) | maximumFraction
   }
 
-  private static func nan() -> Self {
+  private func propagatedNaN(with rhs: Self) -> Self? {
+    let lhsSignificand = nanSignificand
+    let rhsSignificand = rhs.nanSignificand
+    switch (lhsSignificand, rhsSignificand) {
+    case (nil, nil):
+      return nil
+    case (.some(_), nil):
+      return quietedNaN()
+    case (nil, .some(_)):
+      return rhs.quietedNaN()
+    case (.some(let lhs), .some(let right)):
+      let lhsIsQuiet = lhs & 0x4000_0000_0000_0000 != 0
+      let rhsIsQuiet = right & 0x4000_0000_0000_0000 != 0
+      if lhsIsQuiet != rhsIsQuiet {
+        return (lhsIsQuiet ? self : rhs).quietedNaN()
+      }
+      return (lhs >= right ? self : rhs).quietedNaN()
+    }
+  }
+
+  private var nanSignificand: UInt64? {
+    guard case .nan(let significand) = kind else { return nil }
+    return significand
+  }
+
+  private func quietedNaN() -> Self {
+    guard let significand = nanSignificand else { return self }
+    return .init(
+      kind: .nan(significand | 0x4000_0000_0000_0000),
+      isNegative: isNegative,
+      exponent: 0,
+      significand: 0
+    )
+  }
+
+  private static func realIndefinite() -> Self {
     .init(
       kind: .nan(0xC000_0000_0000_0000),
       isNegative: true,

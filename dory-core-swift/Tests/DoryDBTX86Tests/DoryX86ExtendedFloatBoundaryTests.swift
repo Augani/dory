@@ -154,9 +154,56 @@ import Testing
     }
   }
 
+  @Test func binary80NaNArithmeticUsesX87SelectionAndQuietingRules() {
+    // Intel SDM Vol. 1 Table 4-7: an SNaN is quieted; a QNaN wins over
+    // an SNaN; and among two NaNs of the same class, the larger
+    // significand wins. The selected operand's sign and payload survive.
+    let smallSignalingBytes = binary80Encoding(
+      significand: 0x8000_0000_0000_0011, signAndExponent: 0x7FFF)
+    let largeSignalingBytes = binary80Encoding(
+      significand: 0x8000_0000_0000_0022, signAndExponent: 0xFFFF)
+    let smallQuietBytes = binary80Encoding(
+      significand: 0xC000_0000_0000_0033, signAndExponent: 0x7FFF)
+    let largeQuietBytes = binary80Encoding(
+      significand: 0xC000_0000_0000_0044, signAndExponent: 0xFFFF)
+    let quietedSmallSignalingBytes = binary80Encoding(
+      significand: 0xC000_0000_0000_0011, signAndExponent: 0x7FFF)
+    let quietedLargeSignalingBytes = binary80Encoding(
+      significand: 0xC000_0000_0000_0022, signAndExponent: 0xFFFF)
+    let smallSignaling = DoryX86ExtendedFloat(bytes: smallSignalingBytes)
+    let largeSignaling = DoryX86ExtendedFloat(bytes: largeSignalingBytes)
+    let smallQuiet = DoryX86ExtendedFloat(bytes: smallQuietBytes)
+    let largeQuiet = DoryX86ExtendedFloat(bytes: largeQuietBytes)
+
+    #expect(smallSignaling.isSignalingNaN)
+    #expect(largeSignaling.isSignalingNaN)
+    #expect(!smallQuiet.isSignalingNaN)
+    #expect(!largeQuiet.isSignalingNaN)
+    #expect(smallSignaling.bytes() == smallSignalingBytes)
+
+    for result in [
+      smallSignaling.adding(.one),
+      DoryX86ExtendedFloat.one.subtracting(smallSignaling),
+      smallSignaling.multiplied(by: .one),
+      DoryX86ExtendedFloat.one.divided(by: smallSignaling),
+    ] {
+      #expect(result.bytes() == quietedSmallSignalingBytes)
+      #expect(!result.isSignalingNaN)
+    }
+
+    #expect(largeSignaling.adding(smallQuiet).bytes() == smallQuietBytes)
+    #expect(smallQuiet.multiplied(by: largeSignaling).bytes() == smallQuietBytes)
+    #expect(smallSignaling.adding(largeSignaling).bytes() == quietedLargeSignalingBytes)
+    #expect(smallQuiet.divided(by: largeQuiet).bytes() == largeQuietBytes)
+  }
+
   private func value(significand: UInt64, exponentField: UInt16) -> DoryX86ExtendedFloat {
-    let bytes = (0..<8).map { UInt8(truncatingIfNeeded: significand >> ($0 * 8)) }
-      + [UInt8(truncatingIfNeeded: exponentField), UInt8(truncatingIfNeeded: exponentField >> 8)]
-    return .init(bytes: bytes)
+    .init(bytes: binary80Encoding(significand: significand, signAndExponent: exponentField))
+  }
+
+  private func binary80Encoding(significand: UInt64, signAndExponent: UInt16) -> [UInt8] {
+    (0..<8).map { UInt8(truncatingIfNeeded: significand >> ($0 * 8)) }
+      + [UInt8(truncatingIfNeeded: signAndExponent),
+         UInt8(truncatingIfNeeded: signAndExponent >> 8)]
   }
 }
