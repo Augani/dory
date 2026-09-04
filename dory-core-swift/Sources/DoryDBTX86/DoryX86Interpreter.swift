@@ -6489,14 +6489,14 @@ public struct DoryX86Interpreter: Sendable {
     case .byte:
       break
     case .word:
-      let value = UInt64(bitPattern: Int64(Int8(bitPattern: UInt8(state.registers.rax))))
+      let value = UInt64(bitPattern: Int64(Int8(bitPattern: UInt8(truncatingIfNeeded: state.registers.rax))))
       state.registers.rax = (state.registers.rax & ~UInt64(0xffff)) | (value & 0xffff)
     case .doubleword:
       state.registers.rax = UInt64(
-        UInt32(bitPattern: Int32(Int16(bitPattern: UInt16(state.registers.rax)))))
+        UInt32(bitPattern: Int32(Int16(bitPattern: UInt16(truncatingIfNeeded: state.registers.rax)))))
     case .quadword:
       state.registers.rax = UInt64(
-        bitPattern: Int64(Int32(bitPattern: UInt32(state.registers.rax))))
+        bitPattern: Int64(Int32(bitPattern: UInt32(truncatingIfNeeded: state.registers.rax))))
     }
   }
 
