@@ -94,7 +94,7 @@ public enum DoryPCSMBIOSBuilder {
     }
     try validate(identity: identity)
 
-    let mappedRanges = DoryPCPVHBootBuilder.memoryMap(memoryBytes: UInt64(memoryBytes))
+    let mappedRanges = try DoryPCPVHBootBuilder.memoryMap(memoryBytes: UInt64(memoryBytes))
       .filter { $0.kind == .ram }
     var table: [UInt8] = []
     table += firmwareInformation()

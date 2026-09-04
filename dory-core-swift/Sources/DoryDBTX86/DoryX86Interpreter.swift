@@ -47,20 +47,17 @@ public struct DoryX86Interpreter: Sendable {
   public let decoder: DoryX86Decoder
   public let processorID: UInt32
   public let logicalProcessorCount: UInt16
-  public let xenMemoryMap: [DoryX86XenE820Entry]
 
   public init(
     profile: DoryX86CPUProfile = .compatibleV1,
     decoder: DoryX86Decoder = .init(),
     processorID: UInt32 = 0,
-    logicalProcessorCount: UInt16 = 1,
-    xenMemoryMap: [DoryX86XenE820Entry] = []
+    logicalProcessorCount: UInt16 = 1
   ) {
     self.profile = profile
     self.decoder = decoder
     self.processorID = processorID
     self.logicalProcessorCount = max(1, logicalProcessorCount)
-    self.xenMemoryMap = xenMemoryMap
   }
 
   public func step(
@@ -145,7 +142,7 @@ public struct DoryX86Interpreter: Sendable {
       switch instruction.operation {
       case .noOperation:
         break
-      case .undefinedInstruction:
+      case .undefinedInstruction, .unsupportedSystemInstruction:
         return invalidOpcode(at: originalRIP)
       case .halt:
         state.rip = nextRIP
@@ -2456,7 +2453,9 @@ public struct DoryX86Interpreter: Sendable {
           leaf: UInt32(truncatingIfNeeded: state.registers.rax),
           subleaf: UInt32(truncatingIfNeeded: state.registers.rcx),
           processorID: processorID,
-          logicalProcessorCount: logicalProcessorCount
+          logicalProcessorCount: logicalProcessorCount,
+          cr4: state.control.cr4,
+          xcr0: state.control.xcr0
         )
         state.registers.rax = UInt64(result.eax)
         state.registers.rbx = UInt64(result.ebx)
@@ -2499,7 +2498,9 @@ public struct DoryX86Interpreter: Sendable {
         guard profile.supports(.xsave), state.control.cr4 & (1 << 18) != 0 else {
           return invalidOpcode(at: originalRIP)
         }
-        guard state.registers.rcx == 0 else { return generalProtection(at: originalRIP) }
+        guard UInt32(truncatingIfNeeded: state.registers.rcx) == 0 else {
+          return generalProtection(at: originalRIP)
+        }
         state.registers.rax = UInt64(UInt32(truncatingIfNeeded: state.control.xcr0))
         state.registers.rdx = UInt64(UInt32(truncatingIfNeeded: state.control.xcr0 >> 32))
       case .writeExtendedControlRegister:
@@ -2511,7 +2512,7 @@ public struct DoryX86Interpreter: Sendable {
           | UInt64(UInt32(truncatingIfNeeded: state.registers.rdx)) << 32
         let supportedMask: UInt64 = profile.supports(.avx) ? 0x7 : 0x3
         guard currentPrivilegeLevel(state) == 0,
-          state.registers.rcx == 0,
+          UInt32(truncatingIfNeeded: state.registers.rcx) == 0,
           value & ~supportedMask == 0,
           value & 1 == 1,
           value & 4 == 0 || value & 2 != 0
@@ -2789,17 +2790,9 @@ public struct DoryX86Interpreter: Sendable {
           )
         }
       case .vmCall:
-        // VMCALL/VMMCALL: Xen hypercall. EAX = hypercall number,
-        // EBX/ECX/EDX/ESI/EDI = arguments. Return value in EAX.
-        guard currentPrivilegeLevel(state) == 0 else {
-          return generalProtection(at: originalRIP)
-        }
-        let hypercallNumber = UInt32(truncatingIfNeeded: state.registers.rax)
-        state.registers.rax = handleHypercall(
-          number: hypercallNumber,
-          state: &state,
-          memory: executionMemory
-        )
+        // Dory exposes neither VMX/SVM nor a Xen hypercall ABI. PVH boot receives
+        // its versioned memory map in start_info; an unsupported call must fault.
+        return invalidOpcode(at: originalRIP)
       case .clearTaskSwitched:
         guard currentPrivilegeLevel(state) == 0 else {
           return generalProtection(at: originalRIP)
@@ -2859,6 +2852,9 @@ public struct DoryX86Interpreter: Sendable {
           return generalProtection(at: originalRIP)
         }
       case .readTimestampCounter(let includeAuxiliary):
+        guard profile.supports(.tsc), !includeAuxiliary || profile.supports(.rdtscp) else {
+          return invalidOpcode(at: originalRIP)
+        }
         guard currentPrivilegeLevel(state) == 0 || state.control.cr4 & (1 << 2) == 0 else {
           return generalProtection(at: originalRIP)
         }
@@ -3090,12 +3086,6 @@ public struct DoryX86Interpreter: Sendable {
           instructionPointerMask(mode)
         }
       state.rip = nextRIP & finalMask
-      if state.rip == 0 {
-        print("[XEN] *** Jump to NULL from RIP=0x\(String(originalRIP, radix: 16)) ***")
-        print("[XEN]   RAX=0x\(String(state.registers.rax, radix: 16)) RBX=0x\(String(state.registers.rbx, radix: 16)) RCX=0x\(String(state.registers.rcx, radix: 16)) RDX=0x\(String(state.registers.rdx, radix: 16))")
-        print("[XEN]   RSI=0x\(String(state.registers.rsi, radix: 16)) RDI=0x\(String(state.registers.rdi, radix: 16)) RBP=0x\(String(state.registers.rbp, radix: 16)) RSP=0x\(String(state.registers.rsp, radix: 16))")
-        print("[XEN]   R08=0x\(String(state.registers.r8, radix: 16)) R09=0x\(String(state.registers.r9, radix: 16)) R10=0x\(String(state.registers.r10, radix: 16)) R11=0x\(String(state.registers.r11, radix: 16))")
-      }
       return .retired(instruction)
     } catch let partial as DoryX86PartialMemoryFault {
       state.rip = originalRIP
@@ -4092,196 +4082,6 @@ public struct DoryX86Interpreter: Sendable {
     UInt8(state.cs.selector & 3)
   }
 
-  /// Handles a Xen PVH hypercall. Returns the result in EAX.
-  /// Most hypercalls return 0 (success) since Dory is the hypervisor.
-  private func handleHypercall(
-    number: UInt32,
-    state: inout DoryX86ArchitecturalState,
-    memory: any DoryX86Memory
-  ) -> UInt64 {
-    print("[XEN] HYPERVISOR hypercall #\(number) called (RDI=0x\(String(state.registers.rdi, radix: 16)) RSI=0x\(String(state.registers.rsi, radix: 16)))")
-    switch number {
-    case 12:  // HYPERVISOR_memory_op
-      // Xen 64-bit hypercall convention: RDI = cmd, RSI = arg pointer.
-      // The kernel stub passes args via x86_64 ABI (RDI, RSI) which matches
-      // the Xen convention for the first two arguments.
-      let subOp = UInt32(truncatingIfNeeded: state.registers.rdi)
-      if subOp == 9 {  // XENMEM_memory_map
-        let result = handleXenMemoryMap(state: &state, memory: memory)
-        print("[XEN] XENMEM_memory_map called: result=\(result), entries=\(xenMemoryMap.count)")
-        for (i, entry) in xenMemoryMap.enumerated() {
-          print("[XEN]   e820[\(i)]: addr=0x\(String(entry.address, radix: 16)) size=0x\(String(entry.size, radix: 16)) type=\(entry.type)")
-        }
-        return result
-      }
-      if subOp == 7 {  // XENMEM_add_to_physmap
-        // struct xen_add_to_physmap { domid_t domid; uint16_t size; unsigned int space; xen_pfn_t idx; xen_pfn_t gpfn; }
-        let structBase = state.registers.rsi
-        if let data = try? memory.read(at: structBase, byteCount: 24) {
-          let domid = UInt16(data[0]) | UInt16(data[1]) << 8
-          let size = UInt16(data[2]) | UInt16(data[3]) << 8
-          let space = UInt32(data[4]) | UInt32(data[5]) << 8 | UInt32(data[6]) << 16 | UInt32(data[7]) << 24
-          let idx = UInt64(data[8]) | UInt64(data[9]) << 8 | UInt64(data[10]) << 16 | UInt64(data[11]) << 24
-            | UInt64(data[12]) << 32 | UInt64(data[13]) << 40 | UInt64(data[14]) << 48 | UInt64(data[15]) << 56
-          let gpfn = UInt64(data[16]) | UInt64(data[17]) << 8 | UInt64(data[18]) << 16 | UInt64(data[19]) << 24
-            | UInt64(data[20]) << 32 | UInt64(data[21]) << 40 | UInt64(data[22]) << 48 | UInt64(data[23]) << 56
-          print("[XEN] XENMEM_add_to_physmap: domid=\(domid) size=\(size) space=\(space) idx=0x\(String(idx, radix: 16)) gpfn=0x\(String(gpfn, radix: 16)) (phys=0x\(String(gpfn << 12, radix: 16)))")
-        }
-        return 0
-      }
-      if subOp == 5 {  // XENMEM_maximum_gpfn
-        print("[XEN] XENMEM_maximum_gpfn called")
-        return 0x3fffff  // highest GFN in 16GB RAM (0x400000000 - 0x1000) / 0x1000
-      }
-      if subOp == 3 {  // XENMEM_current_reservation
-        print("[XEN] XENMEM_current_reservation called")
-        return 0x400000  // 16GB in pages
-      }
-      if subOp == 4 {  // XENMEM_maximum_reservation
-        print("[XEN] XENMEM_maximum_reservation called")
-        return 0x400000  // 16GB in pages
-      }
-      print("[XEN] HYPERVISOR_memory_op unhandled subOp=\(subOp)")
-      return 0
-    case 17:  // HYPERVISOR_xen_version
-      let subOp = UInt32(truncatingIfNeeded: state.registers.rdi)
-      if subOp == 0 {  // XENVER_version → returns packed version (major << 16 | minor)
-        print("[XEN] XENVER_version called")
-        return UInt64(4 << 16 | 17)  // Xen 4.17
-      }
-      if subOp == 1 {  // XENVER_extraversion → writes string to RSI buffer
-        print("[XEN] XENVER_extraversion called")
-        let buf = state.registers.rsi
-        let extra = "xen-4.17\0"
-        var bytes = Array(extra.utf8)
-        while bytes.count < 16 { bytes.append(0) }
-        try? memory.write(at: buf, bytes: bytes)
-        return 0
-      }
-      if subOp == 6 {  // XENVER_get_features → fills xen_feature_info struct
-        // struct xen_feature_info { unsigned int submap_idx; uint32_t bits[4]; }
-        // Only write submap_idx (4 bytes) + bits[0] (4 bytes) = 8 bytes total.
-        // Writing the full 20 bytes can overwrite the return address on the stack
-        // because the kernel places this struct close to the hypercall stub's
-        // return address.
-        let buf = state.registers.rsi
-        if let info = try? memory.read(at: buf, byteCount: 4) {
-          let submapIdx = UInt32(info[0]) | UInt32(info[1]) << 8 | UInt32(info[2]) << 16 | UInt32(info[3]) << 24
-          print("[XEN] XENVER_get_features called: submap_idx=\(submapIdx)")
-          if submapIdx == 0 {
-            // PVH-relevant feature bits:
-            //   bit 2: XENFEAT_auto_translated_physmap (critical for PVH)
-            //   bit 7: XENFEAT_hvm_safe_pvclock
-            //   bit 8: XENFEAT_hvm_pirqs
-            let bits0: UInt32 = (1 << 2) | (1 << 7) | (1 << 8)
-            var featureBytes: [UInt8] = []
-            // submap_idx (unchanged)
-            for b in 0..<4 { featureBytes.append(UInt8(truncatingIfNeeded: submapIdx >> (b * 8))) }
-            // bits[0]
-            for b in 0..<4 { featureBytes.append(UInt8(truncatingIfNeeded: bits0 >> (b * 8))) }
-            try? memory.write(at: buf, bytes: featureBytes)
-          }
-        }
-        return 0
-      }
-      print("[XEN] HYPERVISOR_xen_version unhandled subOp=\(subOp)")
-      return 0
-    case 7:  // HYPERVISOR_platform_op
-      return 0
-    case 18:  // HYPERVISOR_console_io
-      let subOp = UInt32(truncatingIfNeeded: state.registers.rdi)
-      if subOp == 0 {  // CONSOLEIO_write
-        let buf = state.registers.rsi
-        let len = Int(state.registers.rdx)
-        if len > 0 && len < 4096 {
-          if let data = try? memory.read(at: buf, byteCount: len) {
-            let str = String(bytes: data, encoding: .utf8) ?? ""
-            print("[XEN CONSOLE] \(str)", terminator: "")
-          }
-        }
-        return UInt64(len)
-      }
-      return 0
-    case 31:  // HYPERVISOR_event_channel_op
-      return 0
-    case 32:  // HYPERVISOR_physdev_op
-      return 0
-    case 33:  // HYPERVISOR_hvm_op
-      return 0
-    case 20:  // HYPERVISOR_grant_table_op
-      return 0
-    case 24:  // HYPERVISOR_vcpu_op
-      return 0
-    case 29:  // HYPERVISOR_callback_op
-      return 0
-    case 34:  // HYPERVISOR_sysctl
-      return 0
-    case 35:  // HYPERVISOR_domctl
-      return 0
-    default:
-      // Return success for unknown hypercalls to avoid crashing the kernel.
-      return 0
-    }
-  }
-
-  /// Handles XENMEM_memory_map: fills the caller's e820 table with the
-  /// memory map entries known to the hypervisor (Dory).
-  private func handleXenMemoryMap(
-    state: inout DoryX86ArchitecturalState,
-    memory: any DoryX86Memory
-  ) -> UInt64 {
-    // RSI points to struct xen_memory_map {
-    //   uint32_t nr_entries;     // offset 0 (in: max entries, out: actual count)
-    //   uint32_t padding;        // offset 4
-    //   e820entry_t *entries;    // offset 8 (guest virtual pointer)
-    // };
-    let structBase = state.registers.rsi
-    guard structBase != 0 else { return UInt64(bitPattern: -1) }
-
-    // Read nr_entries (max entries the caller can accept)
-    guard let nrEntriesData = try? memory.read(at: structBase, byteCount: 4) else {
-      return UInt64(bitPattern: -1)
-    }
-    let maxEntries = UInt32(
-      truncatingIfNeeded: UInt64(nrEntriesData[0])
-        | UInt64(nrEntriesData[1]) << 8
-        | UInt64(nrEntriesData[2]) << 16
-        | UInt64(nrEntriesData[3]) << 24)
-
-    // Read entries pointer at offset 8
-    guard let entriesPtrData = try? memory.read(at: structBase + 8, byteCount: 8) else {
-      return UInt64(bitPattern: -1)
-    }
-    let entriesPtr = entriesPtrData.withUnsafeBufferPointer { buf -> UInt64 in
-      buf.baseAddress!.withMemoryRebound(to: UInt64.self, capacity: 1) { $0.pointee }
-    }
-
-    guard entriesPtr != 0 else { return UInt64(bitPattern: -1) }
-
-    // Fill in e820 entries from our memory map.
-    // Each e820entry is 20 bytes: uint64_t addr, uint64_t size, uint32_t type.
-    let entriesToWrite = min(UInt32(xenMemoryMap.count), maxEntries)
-    for i in 0..<Int(entriesToWrite) {
-      let entry = xenMemoryMap[i]
-      let entryAddr = entriesPtr + UInt64(i * 20)
-      var entryBytes: [UInt8] = []
-      // addr (8 bytes, little-endian)
-      for byte in 0..<8 { entryBytes.append(UInt8(truncatingIfNeeded: entry.address >> (byte * 8))) }
-      // size (8 bytes, little-endian)
-      for byte in 0..<8 { entryBytes.append(UInt8(truncatingIfNeeded: entry.size >> (byte * 8))) }
-      // type (4 bytes, little-endian)
-      for byte in 0..<4 { entryBytes.append(UInt8(truncatingIfNeeded: entry.type >> (byte * 8))) }
-      try? memory.write(at: entryAddr, bytes: entryBytes)
-    }
-
-    // Update nr_entries with the actual count
-    var nrBytes: [UInt8] = []
-    for byte in 0..<4 { nrBytes.append(UInt8(truncatingIfNeeded: entriesToWrite >> (byte * 8))) }
-    try? memory.write(at: structBase, bytes: nrBytes)
-
-    return 0  // success
-  }
-
   private func ioPort(
     _ operand: DoryX86IOPort,
     state: DoryX86ArchitecturalState
@@ -4527,9 +4327,6 @@ public struct DoryX86Interpreter: Sendable {
       state.fs.base = value
     case 0xC000_0101:
       guard DoryX86ArchitecturalState.isCanonical(value) else { return false }
-      if value >= 0xffff888000000000 && value < 0xffffc88000000000 {
-        print("[XEN] WRMSR GS_BASE = 0x\(String(value, radix: 16)) (direct map phys=0x\(String(value - 0xffff888000000000, radix: 16)))")
-      }
       state.modelSpecific.gsBase = value
       state.gs.base = value
     case 0xC000_0102:

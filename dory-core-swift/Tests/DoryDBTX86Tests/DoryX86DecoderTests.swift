@@ -175,6 +175,138 @@ import Testing
     )
   }
 
+  @Test func decodesEveryGroup0F01RegisterByteWithoutHypercallAliases() throws {
+    // Independently listed full ModRM encodings from Intel SDM group 7 / AMD SVM.
+    let unsupported: [UInt8: DoryX86UnsupportedSystemInstruction] = [
+      0xC0: .enclv, 0xC2: .vmLaunch, 0xC3: .vmResume, 0xC4: .vmxOff, 0xC5: .pconfig,
+      0xC6: .wrmsrns, 0xC7: .pbndkb,
+      0xC8: .monitor, 0xC9: .mwait, 0xCA: .clac, 0xCB: .stac, 0xCF: .encls,
+      0xD4: .vmFunc, 0xD5: .xend, 0xD6: .xtest, 0xD7: .enclu,
+      0xD8: .vmRun, 0xD9: .vmmCall, 0xDA: .vmLoad, 0xDB: .vmSave,
+      0xDC: .stgi, 0xDD: .clgi, 0xDE: .skinit, 0xDF: .invlpga,
+      0xE8: .serialize, 0xEE: .rdpkru, 0xEF: .wrpkru,
+      0xFA: .monitorx, 0xFB: .mwaitx, 0xFC: .clzero,
+      0xFD: .rdpru, 0xFE: .invlpgb, 0xFF: .tlbsync,
+    ]
+    for mode: DoryX86ExecutionMode in [.real16, .protected16, .protected32, .long64] {
+      for modRM in UInt8(0xC0)...0xFF {
+        let bytes: [UInt8] = [0x0F, 0x01, modRM]
+        if modRM == 0xF8, mode != .long64 {
+          #expect(throws: DoryX86DecodeError.self) {
+            try decoder.decode(bytes, at: 0x7000, mode: mode)
+          }
+          continue
+        }
+        let instruction = try decoder.decode(bytes, at: 0x7000, mode: mode)
+        #expect(instruction.length == 3)
+        if let known = unsupported[modRM] {
+          #expect(instruction.operation == .unsupportedSystemInstruction(known))
+        } else {
+          let expected: DoryX86InstructionOperation
+          switch modRM {
+          case 0xC1: expected = .vmCall
+          case 0xD0: expected = .readExtendedControlRegister
+          case 0xD1: expected = .writeExtendedControlRegister
+          case 0xE0...0xE7:
+            let width: DoryX86OperandWidth =
+              mode == .real16 || mode == .protected16 ? .word : .doubleword
+            expected = .machineStatusWord(
+              load: false,
+              operand: .register(DoryX86GeneralRegister.allCases[Int(modRM & 7)], width: width))
+          case 0xF0...0xF7:
+            expected = .machineStatusWord(
+              load: true,
+              operand: .register(DoryX86GeneralRegister.allCases[Int(modRM & 7)], width: .word))
+          case 0xF8: expected = .swapGS
+          case 0xF9: expected = .readTimestampCounter(includeAuxiliary: true)
+          default: expected = .undefinedInstruction
+          }
+          #expect(instruction.operation == expected)
+        }
+      }
+    }
+  }
+
+  @Test func systemGroupRejectsLockAndExtendedControlRefiningPrefixes() {
+    for modRM in UInt8(0xC0)...0xFF {
+      #expect(throws: DoryX86DecodeError.self) {
+        try decoder.decode([0xF0, 0x0F, 0x01, modRM], at: 0x7000, mode: .long64)
+      }
+    }
+    for prefix: UInt8 in [0x66, 0xF2, 0xF3] {
+      for modRM: UInt8 in [0xD0, 0xD1] {
+        #expect(throws: DoryX86DecodeError.self) {
+          try decoder.decode([prefix, 0x0F, 0x01, modRM], at: 0x7000, mode: .long64)
+        }
+      }
+    }
+  }
+
+  @Test func unsupportedPrefixRefinementsDoNotAliasBaseSystemForms() throws {
+    for (prefix, modRM): (UInt8, UInt8) in [
+      (0x66, 0xCC), (0x66, 0xCF), (0xF2, 0xC6), (0xF3, 0xC6),
+      (0xF2, 0xE8), (0xF2, 0xE9), (0xF3, 0xE8), (0xF3, 0xEE),
+      (0xF3, 0xD9), (0x66, 0xC1), (0xF3, 0xC1),
+    ] {
+      let instruction = try decoder.decode([prefix, 0x0F, 0x01, modRM], at: 0, mode: .long64)
+      #expect(instruction.length == 4)
+      #expect(instruction.operation == .undefinedInstruction)
+    }
+  }
+
+  @Test func systemStatusWordUsesArchitecturalRegisterAndMemorySizes() throws {
+    for (prefix, width): ([UInt8], DoryX86OperandWidth) in [
+      ([], .doubleword), ([0x66], .word), ([0x48], .quadword),
+    ] {
+      #expect(try decoder.decode(prefix + [0x0F, 0x01, 0xE0], at: 0, mode: .long64).operation
+        == .machineStatusWord(load: false, operand: .register(.rax, width: width)))
+      #expect(try decoder.decode(prefix + [0x0F, 0x01, 0xF0], at: 0, mode: .long64).operation
+        == .machineStatusWord(load: true, operand: .register(.rax, width: .word)))
+      #expect(try decoder.decode(prefix + [0x0F, 0x01, 0x20], at: 0, mode: .long64).operation
+        == .machineStatusWord(load: false, operand: .memory(.init(base: .rax, width: .word))))
+    }
+    #expect(try decoder.decode([0x49, 0x0F, 0x01, 0xE0], at: 0, mode: .long64).operation
+      == .machineStatusWord(load: false, operand: .register(.r8, width: .quadword)))
+  }
+
+  @Test func allMemorySystemGroupsStaySeparateFromRegisterEncodings() throws {
+    for modRM in UInt8(0)...0xBF {
+      // Zero SIB/displacements make every addressing form structurally complete.
+      let decoded = try decoder.decode(
+        [0x0F, 0x01, modRM] + [UInt8](repeating: 0, count: 8), at: 0, mode: .long64)
+      switch (modRM >> 3) & 7 {
+      case 0, 1, 2, 3:
+        guard case .descriptorTable = decoded.operation else {
+          Issue.record("Memory descriptor form decoded as \(decoded.operation)")
+          continue
+        }
+      case 4, 6:
+        guard case .machineStatusWord = decoded.operation else {
+          Issue.record("Memory status-word form decoded as \(decoded.operation)")
+          continue
+        }
+      case 7:
+        guard case .invalidatePage = decoded.operation else {
+          Issue.record("Memory invalidation form decoded as \(decoded.operation)")
+          continue
+        }
+      default:
+        #expect(decoded.operation == .undefinedInstruction)
+      }
+    }
+  }
+
+  @Test func unsupportedExtendedStateInstructionsRetainLengthWithoutNoOpSemantics() throws {
+    for (modRM, operation): (UInt8, DoryX86UnsupportedSystemInstruction) in [
+      (0xA0, .xsave), (0xA8, .xrstor), (0xB0, .xsaveopt),
+    ] {
+      let instruction = try decoder.decode(
+        [0x48, 0x0F, 0xAE, modRM, 0x78, 0x56, 0x34, 0x12], at: 0, mode: .long64)
+      #expect(instruction.length == 8)
+      #expect(instruction.operation == .unsupportedSystemInstruction(operation))
+    }
+  }
+
   @Test func decodesNearReturnWithStackCleanup() throws {
     #expect(
       try decoder.decode([0xC2, 0x34, 0x12], at: 0x7100, mode: .long64).operation

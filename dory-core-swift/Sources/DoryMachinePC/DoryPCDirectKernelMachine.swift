@@ -8,6 +8,9 @@ public enum DoryPCMachineError: Error, Sendable, Equatable {
   case invalidProcessorCount(Int)
   case alreadyLoaded
   case notLoaded
+  case invalidBootRange
+  case bootArtifactOutsideRAM
+  case overlappingBootArtifacts
 }
 
 public enum DoryPCExecutionTier: String, Codable, Sendable, Hashable {
@@ -337,7 +340,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     optimizingJITWarmupDispatches: UInt8 = 8,
     clockSource: DoryPCClockSource = .deterministic
   ) throws {
-    guard memoryBytes >= 1024 * 1024 else {
+    guard memoryBytes >= 1024 * 1024,
+      memoryBytes % (1024 * 1024) == 0,
+      UInt64(memoryBytes) <= DoryPCV1ABI.maximumMemoryBytes
+    else {
       throw DoryPCMachineError.invalidMemorySize(memoryBytes)
     }
     guard (1...255).contains(processorCount) else {
@@ -386,12 +392,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       smbiosEntryAddress: smbiosLayout.entryPoint
     )
     self.platformMMIODevices = [firmwareConfiguration] + platformMMIODevices
-    let sharedMemory: any DoryX86PhysicalRAM =
-      if memoryBytes >= 2 * 1024 * 1024 * 1024 {
-        DoryX86MmapMemory(byteCount: memoryBytes)
-      } else {
-        DoryX86ByteArrayMemory(byteCount: memoryBytes)
-      }
+    // Physical machines need a recoverable host allocation boundary at every size.
+    // Swift Array allocation traps on exhaustion; byte-array RAM remains a conformance fixture.
+    let sharedMemory: any DoryX86PhysicalRAM = try DoryX86MmapMemory(
+      validatingByteCount: memoryBytes
+    )
     memory = sharedMemory
     physicalMemories = (0..<processorCount).map {
       _ in DoryPCPhysicalMemoryBus(ram: sharedMemory)
@@ -508,8 +513,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         profile: interpreter.profile,
         decoder: interpreter.decoder,
         processorID: UInt32($0),
-        logicalProcessorCount: UInt16(processorCount),
-        xenMemoryMap: DoryPCPVHBootBuilder.xenE820MemoryMap(memoryBytes: UInt64(memoryBytes))
+        logicalProcessorCount: UInt16(processorCount)
       )
     }
     self.interpreter = interpreters[0]
@@ -532,7 +536,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public func load(
     kernel: Data,
     initrd: [UInt8] = [],
-    commandLine: String = "console=ttyS0 earlycon=uart,io,0x3f8,115200 earlyprintk=serial,ttyS0,115200 memblock=debug loglevel=8 e820=debug"
+    commandLine: String = "console=ttyS0 earlycon=uart,io,0x3f8,115200 panic=-1"
   ) throws {
     try lock.withLock {
       guard !consumedPayload else { throw DoryPCMachineError.alreadyLoaded }
@@ -541,31 +545,85 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         layout: acpiLayout,
         processorCount: UInt8(processorCount)
       )
+      let memoryMap = try DoryPCPVHBootBuilder.memoryMap(memoryBytes: UInt64(memoryByteCount))
       let bootImage = try DoryPCPVHBootBuilder.build(
         commandLine: commandLine,
         initrd: initrd,
-        memoryMap: DoryPCPVHBootBuilder.memoryMap(memoryBytes: UInt64(memoryByteCount)),
+        memoryMap: memoryMap,
         layout: bootLayout,
         rsdpPhysicalAddress: acpiLayout.rsdp
       )
-      consumedPayload = true
-      try kernelImage.load(into: memory)
-      do {
-        try bootImage.install(into: memory)
-        try acpi.install(into: memory)
-        try smbios.install(into: memory)
-      } catch {
-        // The machine cannot safely retry a partially loaded kernel with another payload.
-        throw error
-      }
-      loadedStates[0] = ProcessorState(
-        try bootImage.initialState(entryPoint: kernelImage.physicalEntryPoint)
+      let initialState = try bootImage.initialState(entryPoint: kernelImage.physicalEntryPoint)
+      try validateDirectBoot(
+        kernel: kernelImage, boot: bootImage, acpi: acpi, memoryMap: memoryMap
       )
+      // All static layout and memory-authority rejection happens before any write or
+      // consumption. An unexpected failure during installation remains non-retryable.
+      consumedPayload = true
+      try kernelImage.load(into: physicalMemory)
+      try bootImage.install(into: physicalMemory)
+      try acpi.install(into: physicalMemory)
+      try smbios.install(into: physicalMemory)
+      loadedStates[0] = ProcessorState(initialState)
       for index in 1..<processorCount {
         loadedStates[index] = ProcessorState(applicationProcessorResetState())
       }
       haltedProcessors = [Bool](repeating: false, count: processorCount)
     }
+  }
+
+  private func validateDirectBoot(
+    kernel: DoryPCPVHKernelImage,
+    boot: DoryPCPVHBootImage,
+    acpi: DoryPCACPITables,
+    memoryMap: [DoryPCMemoryMapEntry]
+  ) throws {
+    func range(_ address: UInt64, _ count: UInt64) throws -> Range<UInt64> {
+      let (end, overflow) = address.addingReportingOverflow(count)
+      guard count > 0, count <= UInt64(Int.max), !overflow else {
+        throw DoryPCMachineError.invalidBootRange
+      }
+      return address..<end
+    }
+    let ram = try memoryMap.filter { $0.kind == .ram }.map { try range($0.address, $0.size) }
+    let kernelRanges = try kernel.segments.filter { $0.memorySize > 0 }.map {
+      try range($0.physicalAddress, $0.memorySize)
+    }
+    // Segment writes include BSS. No part may cross a reserved hole or depend on
+    // the packed backing offsets used internally for RAM above four GiB.
+    guard kernelRanges.allSatisfy({ segment in
+      ram.contains { $0.lowerBound <= segment.lowerBound && segment.upperBound <= $0.upperBound }
+    }) else { throw DoryPCMachineError.bootArtifactOutsideRAM }
+
+    let artifacts: [(UInt64, [UInt8])] = [
+      (boot.layout.startInfo, boot.startInfo), (boot.layout.commandLine, boot.commandLine),
+      (boot.layout.modules, boot.modules), (boot.layout.memoryMap, boot.memoryMap),
+      (boot.layout.initrd, boot.initrd),
+      (acpi.layout.rsdp, acpi.rsdp), (acpi.layout.xsdt, acpi.xsdt),
+      (acpi.layout.madt, acpi.madt), (acpi.layout.hpet, acpi.hpet),
+      (acpi.layout.mcfg, acpi.mcfg), (acpi.layout.fadt, acpi.fadt),
+      (acpi.layout.facs, acpi.facs), (acpi.layout.dsdt, acpi.dsdt),
+      (smbios.layout.entryPoint, smbios.entryPoint),
+      (smbios.layout.structureTable, smbios.structureTable),
+    ]
+    let artifactRanges = try artifacts.filter { !$0.1.isEmpty }.map {
+      try range($0.0, UInt64($0.1.count))
+    }
+    // Preserve the legacy first page and the explicitly supplied initial stack.
+    let ranges = (kernelRanges + artifactRanges + [0..<0x1000, 0x7000..<0x8000])
+      .sorted { $0.lowerBound < $1.lowerBound }
+    guard !zip(ranges, ranges.dropFirst()).contains(where: { $0.0.overlaps($0.1) }) else {
+      throw DoryPCMachineError.overlappingBootArtifacts
+    }
+    for item in kernelRanges + artifactRanges {
+      // RAM-only validation rejects writable MMIO overlays as well as ROM, holes
+      // and unmapped addresses; preflight cannot trigger a device write.
+      try physicalMemory.validateDMA(
+        at: item.lowerBound, byteCount: Int(item.count), deviceWillWrite: true
+      )
+    }
+    try kernel.validate(into: physicalMemory)
+    try boot.validate(into: physicalMemory)
   }
 
   /// Installs firmware discovery tables and enters the architectural x86 reset state. Firmware
@@ -705,17 +763,6 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           jitInstructionBudget: jitInstructionBudget
         )
         completed += execution.instructionCount
-        // Temporary debug: check boot_pageset every 10M instructions
-        if completed / 10_000_000 != (completed - execution.instructionCount) / 10_000_000 {
-          let bpPhys: UInt64 = 0x44de080
-          if let data = try? physicalMemories[processor].read(at: bpPhys, byteCount: 32) {
-            let vals = (0..<4).map { i in
-              data[i*8..<i*8+8].withUnsafeBytes { $0.load(as: UInt64.self) }
-            }
-            let rip = processorState.value.rip
-            print("[DBG] instr=\(completed) RIP=0x\(String(rip, radix: 16)) boot_pageset: +0=0x\(String(vals[0], radix: 16)) +8=0x\(String(vals[1], radix: 16)) +10=0x\(String(vals[2], radix: 16)) +18=0x\(String(vals[3], radix: 16))")
-          }
-        }
         switch execution.jitTier {
         case .baseline:
           baselineJITInstructionCount &+= execution.instructionCount

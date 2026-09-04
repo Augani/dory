@@ -919,89 +919,108 @@ public struct DoryX86Decoder: Sendable {
       case 0x32:
         operation = .readModelSpecificRegister
       case 0x01:
-        if cursor.peek() == 0xD0 {
+        // Intel SDM group 7 and AMD SVM use the complete register ModRM byte.
+        // REG alone cannot distinguish a descriptor operation from VMX/SVM.
+        // Encoding reference: intelxed/xed datafiles/xed-isa.txt and amd/xed-amd-svm.txt.
+        if let modRM = cursor.peek(), modRM >> 6 == 3,
+          !((0xE0...0xE7).contains(modRM) || (0xF0...0xF7).contains(modRM))
+        {
           _ = try cursor.readByte()
-          operation = .readExtendedControlRegister
-        } else if cursor.peek() == 0xD1 {
-          _ = try cursor.readByte()
-          operation = .writeExtendedControlRegister
-        } else if cursor.peek() == 0xD5 {
-          // XEND (0F 01 D5): transactional end (always raises #GP in Dory).
-          _ = try cursor.readByte()
-          operation = .softwareInterrupt(vector: 13)
-        } else if cursor.peek() == 0xD6 {
-          // XTEST (0F 01 D6): test if in RTM transaction. Always sets ZF=1
-          // (not in a transaction) since Dory doesn't model RTM.
-          _ = try cursor.readByte()
-          operation = .noOperation
-        } else if cursor.peek() == 0xF8 {
-          _ = try cursor.readByte()
-          guard mode == .long64 else {
-            throw DoryX86DecodeError.invalidEncoding(
-              address: address,
-              detail: "SWAPGS requires 64-bit mode"
-            )
+          let unsupported: DoryX86UnsupportedSystemInstruction?
+          switch modRM {
+          case 0xC0: unsupported = .enclv
+          case 0xC2: unsupported = .vmLaunch
+          case 0xC3: unsupported = .vmResume
+          case 0xC4: unsupported = .vmxOff
+          case 0xC5: unsupported = .pconfig
+          case 0xC6: unsupported = .wrmsrns
+          case 0xC7: unsupported = .pbndkb
+          case 0xC8: unsupported = .monitor
+          case 0xC9: unsupported = .mwait
+          case 0xCA: unsupported = .clac
+          case 0xCB: unsupported = .stac
+          case 0xCF: unsupported = .encls
+          case 0xD4: unsupported = .vmFunc
+          case 0xD5: unsupported = .xend
+          case 0xD6: unsupported = .xtest
+          case 0xD7: unsupported = .enclu
+          case 0xD8: unsupported = .vmRun
+          case 0xD9: unsupported = .vmmCall
+          case 0xDA: unsupported = .vmLoad
+          case 0xDB: unsupported = .vmSave
+          case 0xDC: unsupported = .stgi
+          case 0xDD: unsupported = .clgi
+          case 0xDE: unsupported = .skinit
+          case 0xDF: unsupported = .invlpga
+          case 0xE8: unsupported = .serialize
+          case 0xEE: unsupported = .rdpkru
+          case 0xEF: unsupported = .wrpkru
+          case 0xFA: unsupported = .monitorx
+          case 0xFB: unsupported = .mwaitx
+          case 0xFC: unsupported = .clzero
+          case 0xFD: unsupported = .rdpru
+          case 0xFE: unsupported = .invlpgb
+          case 0xFF: unsupported = .tlbsync
+          default: unsupported = nil
           }
-          operation = .swapGS
-        } else if cursor.peek() == 0xF9 {
-          _ = try cursor.readByte()
-          operation = .readTimestampCounter(includeAuxiliary: true)
+          if let unsupported {
+            // Mandatory-prefix refinements name different, also unsupported
+            // facilities (for example WRMSRLIST and TSXLDTRK). Do not alias them.
+            operation = prefixes.repeatPrefix == nil && !prefixes.operandSizeOverride
+              ? .unsupportedSystemInstruction(unsupported) : .undefinedInstruction
+          } else {
+            switch modRM {
+            case 0xC1:
+              operation = prefixes.repeatPrefix == nil && !prefixes.operandSizeOverride
+                ? .vmCall : .undefinedInstruction
+            case 0xD0, 0xD1:
+              guard prefixes.repeatPrefix == nil, !prefixes.operandSizeOverride else {
+                throw DoryX86DecodeError.invalidEncoding(
+                  address: address, detail: "XGETBV/XSETBV do not accept refining prefixes")
+              }
+              operation = modRM == 0xD0 ? .readExtendedControlRegister : .writeExtendedControlRegister
+            case 0xF8:
+              guard mode == .long64 else {
+                throw DoryX86DecodeError.invalidEncoding(
+                  address: address, detail: "SWAPGS requires 64-bit mode")
+              }
+              operation = .swapGS
+            case 0xF9:
+              operation = .readTimestampCounter(includeAuxiliary: true)
+            default:
+              // Reserved or unmodeled facilities must never alias a successful operation.
+              operation = .undefinedInstruction
+            }
+          }
         } else {
           let operands = try decodeModRM(
-            cursor: &cursor,
-            width: .quadword,
-            prefixes: prefixes,
-            mode: mode
-          )
+            cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
           switch operands.group {
           case 4:
-            operation = .machineStatusWord(
-              load: false, operand: resizedOperand(operands.rm, to: .word))
+            let destination: DoryX86Operand
+            if case .memory = operands.rm {
+              destination = resizedOperand(operands.rm, to: .word)
+            } else {
+              destination = resizedOperand(operands.rm, to: width)
+            }
+            operation = .machineStatusWord(load: false, operand: destination)
           case 6:
             operation = .machineStatusWord(
               load: true, operand: resizedOperand(operands.rm, to: .word))
-          case 0, 1:
-            if case .register(_, _) = operands.rm {
-              // 0F 01 C1 = VMCALL, 0F 01 C2 = VMLAUNCH, 0F 01 C3 = VMRESUME,
-              // 0F 01 C4 = VMXOFF (Intel VMX instructions with mod=3, reg=0).
-              // 0F 01 D8-D F = SVM instructions (reg=3, mod=3).
-              // 0F 01 D9 = VMMCALL (AMD hypercall).
-              // For Xen PVH boot, VMCALL/VMMCALL are hypercall mechanisms.
-              if operands.group == 0 {
-                operation = .vmCall
-              } else {
-                operation = .noOperation
-              }
-            } else {
-              guard case .memory(let memory) = operands.rm else {
-                throw DoryX86DecodeError.invalidEncoding(
-                  address: address,
-                  detail: "0F 01 system-table instruction requires memory"
-                )
-              }
-              if operands.group == 0 {
-                operation = .descriptorTable(.global, load: false, address: memory)
-              } else {
-                operation = .descriptorTable(.interrupt, load: false, address: memory)
-              }
-            }
-          case 2, 3, 7:
+          case 0, 1, 2, 3, 7:
             guard case .memory(let memory) = operands.rm else {
               throw DoryX86DecodeError.invalidEncoding(
-                address: address,
-                detail: "0F 01 system-table instruction requires memory"
-              )
+                address: address, detail: "0F 01 system-table instruction requires memory")
             }
             switch operands.group {
+            case 0: operation = .descriptorTable(.global, load: false, address: memory)
+            case 1: operation = .descriptorTable(.interrupt, load: false, address: memory)
             case 2: operation = .descriptorTable(.global, load: true, address: memory)
             case 3: operation = .descriptorTable(.interrupt, load: true, address: memory)
             default: operation = .invalidatePage(memory)
             }
           default:
-            throw DoryX86DecodeError.invalidEncoding(
-              address: address,
-              detail: "unsupported 0F 01 system instruction"
-            )
+            operation = .undefinedInstruction
           }
         }
       case 0x02, 0x03:
@@ -1045,13 +1064,9 @@ public struct DoryX86Decoder: Sendable {
           case 1: operation = .restoreFloatingPointState(memory)
           case 2: operation = .loadMXCSR(operands.rm)
           case 3: operation = .storeMXCSR(operands.rm)
-          case 4:
-            // XSAVE (0F AE /4): save extended processor state to memory.
-            // Dory doesn't model XSAVE state; decode as no-op.
-            operation = .noOperation
-          case 5:
-            // XRSTOR (0F AE /5): restore extended processor state from memory.
-            operation = .noOperation
+          case 4: operation = .unsupportedSystemInstruction(.xsave)
+          case 5: operation = .unsupportedSystemInstruction(.xrstor)
+          case 6: operation = .unsupportedSystemInstruction(.xsaveopt)
           case 7:
             guard prefixes.repeatPrefix == nil, !prefixes.operandSizeOverride else {
               throw DoryX86DecodeError.invalidEncoding(

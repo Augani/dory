@@ -276,7 +276,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       ] + .init(repeating: 0, count: 16)
     )
     var state = try DoryX86ArchitecturalState(
-      registers: .init(rax: 3),
+      registers: .init(rax: 3, rcx: 1 << 32),
       rip: 0x2400,
       control: .init(cr4: 1 << 18)
     )
@@ -408,6 +408,14 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   @Test func executesControlMSRAndTimestampInstructionsAtRingZero() throws {
+    let baseline = DoryX86CPUProfile.compatibleV1
+    let interpreter = DoryX86Interpreter(profile: .init(
+      identifier: "test.rdtscp",
+      features: baseline.features.union([.rdtscp]),
+      physicalAddressBits: baseline.physicalAddressBits,
+      linearAddressBits: baseline.linearAddressBits,
+      virtualTSCFrequencyHz: baseline.virtualTSCFrequencyHz
+    ))
     // mov cr3,rbx; mov rcx,cr3; rdtscp
     let memory = DoryX86ByteArrayMemory(
       baseAddress: 0x5000,

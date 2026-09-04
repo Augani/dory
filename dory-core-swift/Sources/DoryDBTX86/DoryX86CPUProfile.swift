@@ -3,6 +3,7 @@ import Foundation
 public enum DoryX86Feature: String, Codable, CaseIterable, Sendable, Hashable {
   case x87
   case tsc
+  case rdtscp
   case msr
   case cmpxchg8b
   case apic
@@ -47,6 +48,8 @@ public struct DoryX86CPUIDResult: Codable, Sendable, Hashable {
 
 public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
   public static let compatibleV1Identifier = "dory.x86_64.compat-v1"
+  public static let maximumBasicCPUIDLeaf: UInt32 = 0xD
+  public static let maximumExtendedCPUIDLeaf: UInt32 = 0x8000_0008
 
   public let identifier: String
   public let features: Set<DoryX86Feature>
@@ -68,32 +71,51 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     self.virtualTSCFrequencyHz = virtualTSCFrequencyHz
   }
 
-  /// Candidate Linux profile. Features are added only after their interpreter semantics and
-  /// conformance tests land; the identifier is frozen at the Phase 4 exit gate, not before it.
+  /// Engineering candidate, not a qualified Linux or x86-64-v2 baseline. PAE/PSE/PGE
+  /// remain absent pending paging conformance; x86-64 Linux cannot qualify without PAE.
+  /// XSAVE/AVX are absent while extended-state save/restore remains unsupported.
+  /// A retirement counter is not an invariant-frequency architectural clock.
   public static let compatibleV1 = Self(
     identifier: compatibleV1Identifier,
     features: [
       .x87, .tsc, .msr, .cmpxchg8b, .apic, .sysenter, .cmov, .clflush, .mmx, .fxsave, .sse, .sse2, .cmpxchg16b,
-      .syscall, .executeDisable, .oneGiBPages, .longMode, .lahf64, .invariantTSC,
+      .syscall, .executeDisable, .oneGiBPages, .longMode, .lahf64,
     ],
     physicalAddressBits: 40,
     linearAddressBits: 48,
     virtualTSCFrequencyHz: 1_000_000_000
   )
 
-  public func supports(_ feature: DoryX86Feature) -> Bool { features.contains(feature) }
+  public func supports(_ feature: DoryX86Feature) -> Bool {
+    guard features.contains(feature) else { return false }
+    switch feature {
+    case .rdtscp, .invariantTSC: return supports(.tsc)
+    case .osxsave: return supports(.xsave)
+    case .sse2: return supports(.sse)
+    case .sse3, .ssse3, .sse41, .sse42: return supports(.sse2)
+    case .avx: return supports(.xsave) && supports(.sse2) && supports(.fxsave)
+    case .avx2: return supports(.avx)
+    default: return true
+    }
+  }
 
   public func cpuid(
     leaf: UInt32,
     subleaf: UInt32 = 0,
     processorID: UInt32 = 0,
-    logicalProcessorCount: UInt16 = 1
+    logicalProcessorCount: UInt16 = 1,
+    cr4: UInt64 = 0,
+    xcr0: UInt64 = 1
   ) -> DoryX86CPUIDResult {
-    let logicalCount = max(1, logicalProcessorCount)
+    // One package, one thread per core, with legacy eight-bit APIC identifiers.
+    // Clamp the supplied count consistently in both legacy and extended topology.
+    let logicalCount = min(255, max(1, logicalProcessorCount))
     switch (leaf, subleaf) {
     case (0, _):
       // "DoryDoryDory" in architectural EBX, EDX, ECX order.
-      return .init(eax: 0xD, ebx: 0x7972_6f44, ecx: 0x7972_6f44, edx: 0x7972_6f44)
+      return .init(
+        eax: Self.maximumBasicCPUIDLeaf,
+        ebx: 0x7972_6f44, ecx: 0x7972_6f44, edx: 0x7972_6f44)
     case (1, _):
       var ecx: UInt32 = 0
       var edx: UInt32 = 0
@@ -104,7 +126,8 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       set(.sse42, bit: 20, in: &ecx)
       set(.popcnt, bit: 23, in: &ecx)
       set(.xsave, bit: 26, in: &ecx)
-      set(.osxsave, bit: 27, in: &ecx)
+      // CPUID.1:ECX.OSXSAVE reports guest CR4.OSXSAVE, not a static profile bit.
+      if supports(.xsave), cr4 & (1 << 18) != 0 { ecx |= 1 << 27 }
       set(.avx, bit: 28, in: &ecx)
       set(.x87, bit: 0, in: &edx)
       set(.tsc, bit: 4, in: &edx)
@@ -121,7 +144,8 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       if logicalCount > 1 { edx |= 1 << 28 }
       return .init(
         eax: 0x0006_0f00,
-        ebx: 8 << 8 | UInt32(min(logicalCount, 255)) << 16 | (processorID & 0xFF) << 24,
+        ebx: (supports(.clflush) ? 8 << 8 : 0)
+          | UInt32(logicalCount) << 16 | (processorID & 0xFF) << 24,
         ecx: ecx,
         edx: edx
       )
@@ -131,7 +155,20 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       return .init(ebx: ebx)
     case (0xD, _):
       guard supports(.xsave) else { return .init() }
-      return subleaf == 0 ? .init(eax: supports(.avx) ? 0x7 : 0x3, ebx: 576, ecx: 576) : .init()
+      switch subleaf {
+      case 0:
+        // Standard XSAVE layout: 512-byte legacy area + 64-byte header,
+        // followed by the 256-byte YMM_Hi128 component when AVX is enabled.
+        let avx = supports(.avx)
+        return .init(
+          eax: avx ? 0x7 : 0x3,
+          ebx: avx && xcr0 & 4 != 0 ? 832 : 576,
+          ecx: avx ? 832 : 576)
+      case 2 where supports(.avx):
+        return .init(eax: 256, ebx: 576)
+      default:
+        return .init()
+      }
     case (0xB, 0):
       return .init(eax: 0, ebx: 1, ecx: 1 << 8, edx: processorID)
     case (0xB, 1):
@@ -143,9 +180,9 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
         edx: processorID
       )
     case (0xB, _):
-      return .init(edx: processorID)
+      return .init(ecx: subleaf & 0xFF, edx: processorID)
     case (0x8000_0000, _):
-      return .init(eax: 0x8000_0008)
+      return .init(eax: Self.maximumExtendedCPUIDLeaf)
     case (0x8000_0001, _):
       var ecx: UInt32 = 0
       var edx: UInt32 = 0
@@ -153,33 +190,16 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       set(.syscall, bit: 11, in: &edx)
       set(.executeDisable, bit: 20, in: &edx)
       set(.oneGiBPages, bit: 26, in: &edx)
+      set(.rdtscp, bit: 27, in: &edx)
       set(.longMode, bit: 29, in: &edx)
       return .init(ecx: ecx, edx: edx)
     case (0x8000_0007, _):
       return .init(edx: supports(.invariantTSC) ? 1 << 8 : 0)
     case (0x8000_0008, _):
       return .init(eax: UInt32(physicalAddressBits) | UInt32(linearAddressBits) << 8)
-    case (0x4000_0000, _):
-      // Xen hypervisor leaf: return "XenVMMXenVMM" signature so PVH-booted
-      // kernels recognize the environment and process the PVH start info.
-      // EBX, ECX, EDX contain the 12-byte vendor string in little-endian.
-      return .init(eax: 0x4000_0005, ebx: 0x566e_6558, ecx: 0x6558_4d4d, edx: 0x4d4d_566e)
-    case (0x4000_0001, _):
-      // Xen hypervisor leaf 1: basic version/feature info.
-      return .init(eax: 0, ebx: 0, ecx: 0, edx: 0)
-    case (0x4000_0002, _):
-      // Xen hypervisor leaf 2: system information.
-      return .init(eax: 0, ebx: 0, ecx: 0, edx: 0)
-    case (0x4000_0003, _):
-      // Xen hypervisor leaf 3: CPU topology info.
-      return .init(eax: 0, ebx: 0, ecx: 0, edx: 0)
-    case (0x4000_0004, _):
-      // Xen hypervisor leaf 4: APIC ID.
-      return .init(eax: 0, ebx: 0, ecx: 0, edx: 0)
-    case (0x4000_0005, _):
-      // Xen hypervisor leaf 5: max leaf.
-      return .init(eax: 0, ebx: 0, ecx: 0, edx: 0)
     default:
+      // No Xen/other hypervisor ABI, fabricated cache geometry or crystal/TSC
+      // frequency is exposed. The profile's configured TSC rate is not clock proof.
       return .init()
     }
   }

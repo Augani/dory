@@ -1,16 +1,14 @@
 import Foundation
 
-/// An E820 memory map entry used by the Xen PVH `XENMEM_memory_map` hypercall.
-public struct DoryX86XenE820Entry: Codable, Sendable, Hashable {
-  public let address: UInt64
-  public let size: UInt64
-  public let type: UInt32
-
-  public init(address: UInt64, size: UInt64, type: UInt32) {
-    self.address = address
-    self.size = size
-    self.type = type
-  }
+/// Recognized encodings whose facilities are not implemented or advertised by
+/// the candidate CPU. Recognition preserves diagnostics; execution raises #UD.
+public enum DoryX86UnsupportedSystemInstruction: String, Codable, Sendable, Hashable {
+  case enclv, vmLaunch, vmResume, vmxOff, pconfig, wrmsrns, pbndkb
+  case monitor, mwait, clac, stac, encls
+  case vmFunc, xend, xtest, enclu
+  case vmRun, vmmCall, vmLoad, vmSave, stgi, clgi, skinit, invlpga
+  case serialize, rdpkru, wrpkru, monitorx, mwaitx, clzero, rdpru, invlpgb, tlbsync
+  case xsave, xrstor, xsaveopt
 }
 
 public enum DoryX86ExecutionMode: String, Codable, Sendable, Hashable {
@@ -828,6 +826,7 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case farReturn(popBytes: UInt16, width: DoryX86OperandWidth)
   case machineStatusWord(load: Bool, operand: DoryX86Operand)
   case vmCall
+  case unsupportedSystemInstruction(DoryX86UnsupportedSystemInstruction)
   case clearTaskSwitched
   case storeSystemSegment(task: Bool, destination: DoryX86Operand)
   case loadSystemSegment(task: Bool, source: DoryX86Operand)
