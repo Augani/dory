@@ -447,6 +447,15 @@ public struct DoryX86Interpreter: Sendable {
         }
       case .compareExchange(let destination, let source):
         let execute = { (operationState: inout DoryX86ArchitecturalState) in
+          // CMPXCHG performs a destination write cycle even on mismatch. Check
+          // the whole memory write range before any read/flags/register effects.
+          if case .memory(let operand) = destination {
+            try validateCompareExchangeMemory(operand, byteCount: operand.width.byteCount,
+              instruction: instruction, state: operationState)
+          }
+          try preflightWrite(
+            to: destination, instruction: instruction, state: operationState,
+            memory: executionMemory)
           let destinationValue = try read(
             destination,
             instruction: instruction,
@@ -465,12 +474,6 @@ public struct DoryX86Interpreter: Sendable {
             flags: &operationState.rflags
           )
           if accumulator == destinationValue & mask(width) {
-            try preflightWrite(
-              to: destination,
-              instruction: instruction,
-              state: operationState,
-              memory: executionMemory
-            )
             try write(
               sourceValue,
               to: destination,
@@ -479,6 +482,10 @@ public struct DoryX86Interpreter: Sendable {
               memory: executionMemory
             )
           } else {
+            if isMemory(destination) {
+              try write(destinationValue, to: destination, instruction: instruction,
+                state: &operationState, memory: executionMemory)
+            }
             try writeAccumulator(
               destinationValue,
               width: width,
@@ -5792,6 +5799,25 @@ public struct DoryX86Interpreter: Sendable {
     writeStringRegister(register, value: next & mask(width), width: width, state: &state)
   }
 
+  private func validateCompareExchangeMemory(
+    _ operand: DoryX86MemoryOperand, byteCount: Int,
+    instruction: DoryX86DecodedInstruction, state: DoryX86ArchitecturalState
+  ) throws {
+    // Explicit RMW operands must fault before invoking the backing memory for
+    // noncanonical spans or unusable cached legacy data/stack segments.
+    if !operand.ignoresLegacySegmentBase, state.control.cr0 & 1 != 0,
+      !state.rflags.contains(.virtual8086)
+    {
+      let segment = segmentState(operand.segment, state: state)
+      guard segment.selector & ~UInt16(3) != 0, segment.attributes & 0x90 == 0x90 else {
+        throw operand.segment == .ss ? stackProtection(at: instruction.address)
+          : segmentProtection(at: instruction.address)
+      }
+    }
+    try validateFloatingPointTransfer(operand, byteCount: byteCount, write: true,
+      instruction: instruction, state: state)
+  }
+
   private func executeCompareExchangePair(
     destination: DoryX86MemoryOperand,
     doubleQuadword: Bool,
@@ -5801,6 +5827,8 @@ public struct DoryX86Interpreter: Sendable {
   ) throws {
     let byteCount = doubleQuadword ? 16 : 8
     let address = effectiveAddress(destination, instruction: instruction, state: state)
+    try validateCompareExchangeMemory(destination, byteCount: byteCount,
+      instruction: instruction, state: state)
     if doubleQuadword, address & 0xf != 0 {
       throw DoryX86Exception(
         kind: .generalProtection,
@@ -5810,6 +5838,7 @@ public struct DoryX86Interpreter: Sendable {
         linearAddress: address
       )
     }
+    try memory.validateWrite(at: address, byteCount: byteCount)
     let bytes = try memory.read(at: address, byteCount: byteCount)
     let firstQuadword = fromLittleEndian(Array(bytes[0..<8]))
     let memoryLow = doubleQuadword ? firstQuadword : firstQuadword & 0xffff_ffff
@@ -5833,14 +5862,12 @@ public struct DoryX86Interpreter: Sendable {
           | UInt64(UInt32(truncatingIfNeeded: state.registers.rcx)) << 32
         replacement = littleEndian(value, width: .quadword)
       }
-      try memory.validateWrite(at: address, byteCount: byteCount)
       try memory.write(at: address, bytes: replacement)
-    } else if doubleQuadword {
+    } else {
+      // SDM CMPXCHG8B/16B writes the original destination on a failed compare.
+      try memory.write(at: address, bytes: bytes)
       state.registers.rax = memoryLow
       state.registers.rdx = memoryHigh
-    } else {
-      state.registers.rax = UInt64(UInt32(truncatingIfNeeded: firstQuadword))
-      state.registers.rdx = UInt64(UInt32(truncatingIfNeeded: firstQuadword >> 32))
     }
   }
 
