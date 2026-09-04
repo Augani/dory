@@ -1,0 +1,46 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-glibc-cpu-dispatch-reduction",
+  "moduleSource": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-37-source-manifest.json.gz",
+    "sha256": "2067b929a70e005117d752d94693f9f7c527d819793a6f2b970d5957c09579c2"
+  },
+  "testSource": {
+    "run": 38,
+    "overlay": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-38-source-overlay.tar.gz",
+      "sha256": "1a0d1460b449a86c3054e76b5acc7e8843644052c69ce2699d66e8073f8a8892"
+    },
+    "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86GlibcCPUDetectionTests.swift",
+    "sha256": "e5a9b7c3dad0089d740b60254cd7aa7aef456f1f3a4ac9af134efccc8fa42ab8"
+  },
+  "finalTestSourceCommit": "ae06944360c9cc92be0ec2886411fb4e6b0def12",
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-cpu-replay-receipt.json",
+      "sha256": "1625f491e8457c3b625ab7d32ab52e10627bbaaed506cf1c1ec6be9c0fbe2f7d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-cpu-replay-command.json",
+      "sha256": "17655f8b56ad2c0239fd08fc78eeb85cfb72235a5656b3d67986fe882bc4202a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-cpu-replay-compile.log.gz",
+      "sha256": "b54f9c027c85a513537ca2a52d64315ffaa774e0370d472d6828e166df4f4ad5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-cpu-replay-run.log.gz",
+      "sha256": "209abab0a7d83e26ed05ae3ad7c3147509b1be525a6b19ed2d6ac921212dc72f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/glibc-cpu-replay.swift",
+      "sha256": "18e8d738962bf258d000fda8836cb90451a21a8ea588ee3155ed25bb79154561"
+    }
+  ],
+  "compileExitCode": 0,
+  "runExitCode": 0,
+  "observedOutcome": "Three bounded replay checks pass: original Dory-v1 vendor dispatch/zero ISA level; actual feature propagation and baseline check in interpreter/baseline/optimizing; controlled Intel vendor tuple selects family-aware dispatch.",
+  "finalFixtureCorrection": "Run39 initializes the preserved CPUID EBX result slot from EBX rather than EAX. Both runs pass; source38 and standalone proof bytes remain retained.",
+  "scope": "Actual pinned glibc2.39 loader instruction slices; synthetic bounded replay, not a complete loader or physical guest run. Historical per-object hashes are captured observations, not claims that the reusable build directory still contains those objects.",
+  "loaderELFSHA256": "1cd555ac46b7887edeaf3c42aac5408c8135e52f6b37870da2cf82d5fe14e829"
+}

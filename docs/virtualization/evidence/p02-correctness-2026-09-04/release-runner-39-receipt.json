@@ -1,0 +1,11 @@
+{
+  "runnerPath": "/tmp/dory-p02-runner-d0e61d7e0-release",
+  "runnerSHA256": "0eea45a55a46ad4e46cdf1283aee25a29f084a4893141125a8a6092ac6f7c4da",
+  "runnerBytes": 9019944,
+  "sourceManifest": "/tmp/dory-p02-correctness-manifest-39.json",
+  "implementationCommit": "d0e61d7e0f23a43d696fa05d6c6c69bbb5274d41",
+  "releaseBuildSeconds": 58.07,
+  "observedToolSession": 44302,
+  "completionChunk": "1c8aba",
+  "exitCode": 0
+}

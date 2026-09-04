@@ -1,0 +1,119 @@
+{
+  "acceptance": "Fresh matching UUID, all seven workloads, child exit 0, and independent host ACPI S5 poweroff",
+  "architecture": "x86_64",
+  "buildMetadataSHA256": "4c733c71c8b088b48f34d72b986272dd51fc648f65c325d7df4b3bb0f4bb0ae7",
+  "buildTrust": "Hashes and static ELF shape checked; supplied compiler provenance is not independently attested",
+  "builderSHA256": "5f12dcfffcf08fad3f788c41664aebc3439858408a4503325bf5c344f8f199ec",
+  "format": "newc; sorted names; uid/gid/mtime zero; sequential inodes; 512-byte padded; uncompressed",
+  "kernel": {
+    "filename": "x86_64-vmlinux",
+    "sha256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8"
+  },
+  "kind": "p02-userspace-stress-build",
+  "limitations": [
+    "No guest execution by preparer",
+    "Tmpfs does not qualify persistent block storage",
+    "No sustained device-backed network qualification"
+  ],
+  "localFiles": {
+    "Makefile": {
+      "bytes": 687,
+      "sha256": "883457297f94d47edab88bf7246af180f510da5b96a9baad140eebb9b73f73d4"
+    },
+    "init": {
+      "bytes": 2473,
+      "sha256": "8598bb35305dac249ee008be7b4914cf4f18625d3bf42f5c255e3db851807c63"
+    },
+    "stress.c": {
+      "bytes": 22248,
+      "sha256": "fc497442b7e0c13c6a1a1482e3a34bac5d96ed2f858565ef8c05c494c496bbb0"
+    }
+  },
+  "members": {
+    "usr/bin/busybox": "01a989eb4d1d04b0d146c790ac536abd88f374ec74a2e110c58910b840d42045",
+    "usr/lib/ld-musl-x86_64.so.1": "38d022ce7425ff105ccfb53598f606e6e5f5f0a34bfbc793d65e6f34c9d72806"
+  },
+  "observedStressELF": {
+    "embeddedSourceSHA256": "89f357e8d4d126998c0c563bec5675c5ea976d1abca00bcd83c6c070c12437f1",
+    "entry": 16789312,
+    "format": "ELF64 little-endian ET_EXEC x86-64",
+    "loadSegmentCount": 3,
+    "staticNoInterpreterOrDynamicTable": true
+  },
+  "outputBytes": 1535488,
+  "outputFilename": "x86_64-p02-userspace-stress-v1.cpio",
+  "outputSHA256": "b4f77cbb1d2e0f835d724110c307b0fd4d51b5c34afa50ace89ece005efb122c",
+  "qualification": "archive integrity and deterministic construction only; guest has not executed",
+  "recipeSHA256": "d6ef9d79e8ef37cb94e117beab2e925621e975e79fd4af35e2dabf307254dd74",
+  "requiredWorkloads": [
+    "stress.allocation_free",
+    "stress.mmap_protection",
+    "stress.process_exec_wait",
+    "stress.filesystem_roundtrip",
+    "stress.compression_checksum",
+    "stress.package_unpack",
+    "stress.monotonic_clock"
+  ],
+  "schemaVersion": 1,
+  "source": {
+    "filename": "x86_64-initramfs-virt",
+    "sha256": "4caf09640385525632f0a54dfeabd08b5bf5ceeb2b7d63e888fb858b7b3fa006"
+  },
+  "sourceArtifactID": "alpine-virt-3.24.1-x86_64",
+  "sourceArtifactSHA256": "e73a6241bd5f3c5c2d4d38c02cc52c378c0415a7c888bd292066bf36e0f41a39",
+  "suppliedBuildMetadata": {
+    "binary": {
+      "bytes": 55856,
+      "sha256": "87ce0be824de62928b075d9be1aa6a567cd3e287b66072e1feef3bc5b2754d18"
+    },
+    "commandTemplate": [
+      "zig",
+      "cc",
+      "-target",
+      "x86_64-linux-musl",
+      "-mcpu=baseline",
+      "-static",
+      "-std=c11",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-s",
+      "-ffile-prefix-map=<source-directory>=/dory/p02-userspace-stress",
+      "-fno-builtin-malloc",
+      "-fno-builtin-calloc",
+      "-fno-builtin-realloc",
+      "-fno-builtin-free",
+      "-DDORY_STRESS_SOURCE_SHA256=\"89f357e8d4d126998c0c563bec5675c5ea976d1abca00bcd83c6c070c12437f1\"",
+      "stress.c",
+      "-o",
+      "<build-directory>/p02-userspace-stress"
+    ],
+    "commandTemplateVariables": "Only source-directory and build-directory vary; flags and embedded source digest are literal",
+    "compiler": {
+      "name": "zig",
+      "version": "0.15.2"
+    },
+    "cpu": "baseline",
+    "executedGuestCode": false,
+    "kind": "p02-userspace-stress-cross-build",
+    "observedELF": {
+      "embeddedSourceSHA256": "89f357e8d4d126998c0c563bec5675c5ea976d1abca00bcd83c6c070c12437f1",
+      "entry": 16789312,
+      "format": "ELF64 little-endian ET_EXEC x86-64",
+      "loadSegmentCount": 3,
+      "staticNoInterpreterOrDynamicTable": true
+    },
+    "qualification": "Cross-compilation and static inspection only; no guest execution or workload qualification",
+    "reproducibility": {
+      "identicalELFBytes": true,
+      "scope": "Two source paths on the same macOS ARM64 host with Zig 0.15.2; cross-host and compiler-distribution reproducibility not established",
+      "verifiedDistinctLocalSourceDirectories": 2
+    },
+    "schemaVersion": 1,
+    "sourceDigestDefinition": "SHA-256 of stress.c bytes followed immediately by Makefile bytes",
+    "sourceSHA256": "89f357e8d4d126998c0c563bec5675c5ea976d1abca00bcd83c6c070c12437f1",
+    "stripped": true,
+    "target": "x86_64-linux-musl"
+  }
+}

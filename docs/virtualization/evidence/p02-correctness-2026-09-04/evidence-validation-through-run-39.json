@@ -1,0 +1,217 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-evidence-retention-validation",
+  "reviewSHA256": "ed9a20dd8a2c957e3a3992db429950280e7cbb0f709da60c2d75d1c1de85f36e",
+  "newArtifactsBeforeThisValidation": 49,
+  "distinctRepositoryArtifactReferencesVerified": 50,
+  "previousReviewHashVerified": true,
+  "envelopesSchemaValidated": 2,
+  "schemaPath": "Config/DoryVirtualizationEvidence.schema.json",
+  "schemaSHA256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb",
+  "sourceBindings": [
+    {
+      "run": 38,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "d0e61d7e0f23a43d696fa05d6c6c69bbb5274d41",
+      "trackedInputs": 700,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 104,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86GlibcCPUDetectionTests.swift",
+          "frozenSHA256": "e5a9b7c3dad0089d740b60254cd7aa7aef456f1f3a4ac9af134efccc8fa42ab8",
+          "commitSHA256": "df5d6393f9d696af95fdc9c28d6588994d8ceec674fe8b86fdcd9d039dbbd9bb"
+        }
+      ]
+    },
+    {
+      "run": 39,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "d0e61d7e0f23a43d696fa05d6c6c69bbb5274d41",
+      "trackedInputs": 700,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 104,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    }
+  ],
+  "strictLogCountsVerified": true,
+  "logCounts": [
+    {
+      "run": 38,
+      "swiftPassed": 801,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 802,
+      "swiftSuites": 94,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    },
+    {
+      "run": 39,
+      "swiftPassed": 801,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 802,
+      "swiftSuites": 94,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    }
+  ],
+  "releaseBuilds": [
+    {
+      "sourceCommit": "123b37c97cf05a6c555f36df8f30e56ac8cd3f40",
+      "runnerSHA256": "bfdf526df188b2d1c4064b3e73841a1f59c28680b31b7ee0a6f0bf91f6dbe808",
+      "buildExitCode": 0,
+      "copiedRunnerVerifiedAtRetention": true
+    },
+    {
+      "sourceCommit": "d0e61d7e0f23a43d696fa05d6c6c69bbb5274d41",
+      "runnerSHA256": "0eea45a55a46ad4e46cdf1283aee25a29f084a4893141125a8a6092ac6f7c4da",
+      "buildExitCode": 0,
+      "copiedRunnerVerifiedAtRetention": true
+    }
+  ],
+  "stressFixture": {
+    "sourceCommit": "4f5da73dfef57863b9e5586fdb4a217b6f3d5817",
+    "eightSourceFilesVerifiedAgainstGitAndArchive": true,
+    "offlineUnitTestsPassed": 49,
+    "twoCompiledELFOutputsIdentical": true,
+    "archiveSHA256": "b4f77cbb1d2e0f835d724110c307b0fd4d51b5c34afa50ace89ece005efb122c",
+    "deterministicCPIOEntriesChecked": 16,
+    "cpioAndBinaryLocallyVerifiedNotVendored": true,
+    "preparationReplayByteIdentical": true,
+    "scope": "No compiler, preparer or guest was executed by this independent validation."
+  },
+  "glibcReduction": {
+    "historicalSourceAndThreePASSLinesVerified": true,
+    "source38RegisterSlotFixtureCorrectionRetained": true,
+    "oldCachedObjectHashesAreHistoricalObservations": true
+  },
+  "probeConsistency": [
+    {
+      "name": "userspace-glibc-kernel-b-probe-3",
+      "checks": {
+        "completedSuccessAndHostPoweroff": true,
+        "runnerSourceAndHash": true,
+        "configurationBound": true,
+        "sevenNamedMatchingWorkloads": true,
+        "pinnedInputsAgree": true,
+        "retirementAndBudget": true,
+        "elapsedAndSummary": true,
+        "wholeReceiptAndAllResults": true,
+        "boundedDiagnostics": true,
+        "terminalTelemetrySample": true,
+        "boundedLiveSitesAndCounterScope": true,
+        "explicitVersionedProfile": true
+      },
+      "retiredInstructions": 755832609,
+      "elapsedNanoseconds": 445264365417,
+      "terminalJITSampleInstructionCount": 755832609,
+      "terminalJITSampleElapsedNanoseconds": 445263619750,
+      "liveNegativeCacheReasonKinds": [
+        "interpreterHelper",
+        "nativeEmitter"
+      ]
+    },
+    {
+      "name": "userspace-stress-baseline-jit-probe-1",
+      "checks": {
+        "completedSuccessAndHostPoweroff": true,
+        "runnerSourceAndHash": true,
+        "configurationBound": true,
+        "sevenNamedMatchingWorkloads": true,
+        "pinnedInputsAgree": true,
+        "retirementAndBudget": true,
+        "elapsedAndSummary": true,
+        "wholeReceiptAndAllResults": true,
+        "boundedDiagnostics": true,
+        "terminalTelemetrySample": true,
+        "boundedLiveSitesAndCounterScope": true,
+        "exactStressFixtureAndResults": true
+      },
+      "retiredInstructions": 1845469215,
+      "elapsedNanoseconds": 1547540538917,
+      "terminalJITSampleInstructionCount": 1845469215,
+      "terminalJITSampleElapsedNanoseconds": 1547539829583,
+      "liveNegativeCacheReasonKinds": [
+        "interpreterHelper",
+        "nativeEmitter"
+      ]
+    }
+  ],
+  "engineeringMeasurementChecks": [
+    {
+      "name": "userspace-glibc-kernel-b-probe-3",
+      "guestKernelInitLaunchSeconds": 63.40978,
+      "hostWholeRunNanoseconds": 445264365417,
+      "scope": "Guest boot-to-init timestamp and host whole cold-start/workload/poweroff duration remain separately labeled."
+    },
+    {
+      "name": "userspace-stress-baseline-jit-probe-1",
+      "guestKernelInitLaunchSeconds": 62.897449,
+      "hostWholeRunNanoseconds": 1547540538917,
+      "scope": "Guest boot-to-init timestamp and host whole cold-start/workload/poweroff duration remain separately labeled."
+    }
+  ],
+  "hostSample": {
+    "durationSeconds": 5,
+    "intervalMilliseconds": 5,
+    "runID": "9d6e44c5-0deb-4211-ad9e-8c8b8cc6022f",
+    "topStackRows": [
+      {
+        "symbol": "__workq_kernreturn  (in libsystem_kernel.dylib)",
+        "sampleCount": 755
+      },
+      {
+        "symbol": "_xzm_free_main  (in libsystem_malloc.dylib)",
+        "sampleCount": 38
+      },
+      {
+        "symbol": "swift_release  (in libswiftCore.dylib)",
+        "sampleCount": 34
+      },
+      {
+        "symbol": "_xzm_xzone_malloc_tiny  (in libsystem_malloc.dylib)",
+        "sampleCount": 28
+      },
+      {
+        "symbol": "_platform_memmove  (in libsystem_platform.dylib)",
+        "sampleCount": 27
+      },
+      {
+        "symbol": "specialized DoryX86Decoder.decode(_:at:mode:)  (in dory-p02-runner-123b37c97-release)",
+        "sampleCount": 25
+      },
+      {
+        "symbol": "swift_bridgeObjectRelease  (in libswiftCore.dylib)",
+        "sampleCount": 22
+      },
+      {
+        "symbol": "swift_beginAccess  (in libswiftCore.dylib)",
+        "sampleCount": 21
+      },
+      {
+        "symbol": "swift_retain  (in libswiftCore.dylib)",
+        "sampleCount": 21
+      },
+      {
+        "symbol": "mach_absolute_time  (in libsystem_kernel.dylib)",
+        "sampleCount": 19
+      }
+    ],
+    "scope": "Counts are sampled top-stack observations, not wall-time percentages. The first row is an idle workqueue thread; other rows include allocation/free, decoder and reference-count work. Inclusive caller stacks overlap."
+  },
+  "noUserHomePathsInNewArtifactTextOrMembers": true,
+  "tarOwnerAndTimeNormalizationVerified": true,
+  "pathNormalizedArtifacts": [
+    "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-repro-a.log.gz"
+  ],
+  "normalizationByThisValidation": "None; retained artifacts read-only. Source bytes and original digests checked independently.",
+  "qualification": "No new build or guest execution. Actual glibc and bounded tmpfs stress successes are retained; P02 remains open for systemd, physical reference, full CPU/FP/ISA, real block/network stress, hosted CI and release qualification."
+}

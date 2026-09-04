@@ -1,0 +1,159 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-stress-fixture-preparation-review",
+  "sourceCommit": "4f5da73dfef57863b9e5586fdb4a217b6f3d5817",
+  "scope": "Cross-compilation, static ELF checks and deterministic preparation only. Any completed VM result is recorded separately.",
+  "sourceFilesVerifiedAgainstCommit": [
+    {
+      "path": "scripts/prepare-virtualization-fixtures.py",
+      "bytes": 67707,
+      "sha256": "5f12dcfffcf08fad3f788c41664aebc3439858408a4503325bf5c344f8f199ec"
+    },
+    {
+      "path": "scripts/test-prepare-virtualization-fixtures.py",
+      "bytes": 61871,
+      "sha256": "8a62cf6521930f38d0aa97516c7bc077bda8ad0f179abc0b868b4a29a64a1240"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-stress/stress.c",
+      "bytes": 22248,
+      "sha256": "fc497442b7e0c13c6a1a1482e3a34bac5d96ed2f858565ef8c05c494c496bbb0"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-stress/Makefile",
+      "bytes": 687,
+      "sha256": "883457297f94d47edab88bf7246af180f510da5b96a9baad140eebb9b73f73d4"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-stress/README.md",
+      "bytes": 10801,
+      "sha256": "1e5d38a879e4834c3a90d06350a74cab092aa20f467793a7f013ab9a1ed53d08"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-stress/init",
+      "bytes": 2473,
+      "sha256": "8598bb35305dac249ee008be7b4914cf4f18625d3bf42f5c255e3db851807c63"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-stress/build.json",
+      "bytes": 1862,
+      "sha256": "4c733c71c8b088b48f34d72b986272dd51fc648f65c325d7df4b3bb0f4bb0ae7"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-stress/fixture.json",
+      "bytes": 2261,
+      "sha256": "d6ef9d79e8ef37cb94e117beab2e925621e975e79fd4af35e2dabf307254dd74"
+    }
+  ],
+  "sourceArchive": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-v1-fixture-source.tar.gz",
+    "sha256": "7770d8e105b9839187a8762e0ad056962789dbf1f4d6cb8d9b19e09db275b8b4"
+  },
+  "agentHandoff": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-fixture-agent-handoff.json",
+    "sha256": "24399d7baa0c18f49364752f07829165ba9527ea7f3d878f0219538b02e9a75d"
+  },
+  "logs": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-repro-a.log.gz",
+      "sha256": "aed1165a27b56aab29fab164e1c70370213f104fe891a4b9a5f86a27af546968"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-repro-b.log.gz",
+      "sha256": "dbfb294babacf097adf4006ffae3768836e3256fa0368010ff06dd485c9f423b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-zig-version.log.gz",
+      "sha256": "4653ad7c195007e1e1e35a39f387cd05707fd2a178bce952e5d444f9df717aff"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-preparer-tests-final.log.gz",
+      "sha256": "acd961d95c22de1f137eff46a2eb7c584c40f355f3a47bfb661624efcaa3ba80"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-init-shellcheck-final.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-fixture-preparation-1.json",
+      "sha256": "2e16a5c5d0bc353ed2d5eb0cd4c2302e7edcc343427c19d6583956ef486b29a3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-fixture-preparation-1.stderr.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-fixture-preparation-replay.json",
+      "sha256": "2e16a5c5d0bc353ed2d5eb0cd4c2302e7edcc343427c19d6583956ef486b29a3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-fixture-preparation-replay.stderr.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-legacy-archive-invariance.json",
+      "sha256": "c1516aaf01e32c218478aeb0715766ece80170ff2b594c98af48759051b5c9e8"
+    }
+  ],
+  "manifest": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/stress-v1-fixture-manifest.json",
+    "sha256": "d0188ac8a62fe0bf80c238f6a879e1061c7f3a60457c9aaaf5951b0191b004ec"
+  },
+  "archiveIdentity": {
+    "path": "/tmp/dory-p02-stress-fixture-reproduction-1/x86_64-p02-userspace-stress-v1.cpio",
+    "bytes": 1535488,
+    "sha256": "b4f77cbb1d2e0f835d724110c307b0fd4d51b5c34afa50ace89ece005efb122c",
+    "retention": "Locally SHA-verified output; binary not vendored. Reproduce from exact retained source, pinned input members, build command and manifest."
+  },
+  "crossBuildIdentities": [
+    {
+      "path": "/tmp/dory-p02-stress-repro-a/p02-userspace-stress",
+      "bytes": 55856,
+      "sha256": "87ce0be824de62928b075d9be1aa6a567cd3e287b66072e1feef3bc5b2754d18"
+    },
+    {
+      "path": "/tmp/dory-p02-stress-repro-b/p02-userspace-stress",
+      "bytes": 55856,
+      "sha256": "87ce0be824de62928b075d9be1aa6a567cd3e287b66072e1feef3bc5b2754d18"
+    }
+  ],
+  "crossBuildReproducibility": "Exact output equality from two source paths on one macOS ARM64 host using Zig 0.15.2; not a cross-host/toolchain-distribution claim",
+  "offlineUnitTests": {
+    "passed": 49,
+    "failed": 0,
+    "skipped": 0,
+    "elapsedSeconds": 0.331,
+    "exitCode": 0,
+    "observedToolChunk": "f3ad1c"
+  },
+  "preparationReplayByteIdentical": true,
+  "legacyOutputInvariance": {
+    "schemaVersion": 1,
+    "kind": "legacy-diagnostic-cpio-invariance",
+    "method": "Current generator functions with verified pinned ELF/data members read from previous retained CPIOs and unchanged local fixture sources; no extraction onto host or guest execution",
+    "archives": [
+      {
+        "kind": "p02-minimal-userspace",
+        "bytes": 1482752,
+        "sha256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+        "byteIdenticalToPreviouslyPinnedArchive": true
+      },
+      {
+        "kind": "p02-glibc-userspace",
+        "bytes": 2788352,
+        "sha256": "813de160103ef6179de5d3b6d9271ed8f9883d8c3fa7671a49254f0ec7cb9d24",
+        "byteIdenticalToPreviouslyPinnedArchive": true
+      },
+      {
+        "kind": "p02-systemd-userspace",
+        "bytes": 19935232,
+        "sha256": "3365a741cf5dcecd8675eed4da01b2ed31395f56125d026f461c8f48948f196a",
+        "byteIdenticalToPreviouslyPinnedArchive": true
+      }
+    ]
+  },
+  "limitations": [
+    "No physical reference, real block flush or sustained device network qualification from tmpfs stress.",
+    "The preparer does not execute guest code; two local compiler paths are not independent compiler distributions or hosts."
+  ]
+}

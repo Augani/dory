@@ -1,0 +1,18 @@
+{
+  "command": [
+    "/usr/bin/sample",
+    "36793",
+    "5",
+    "5",
+    "-file",
+    "/tmp/dory-p02-userspace-stress-baseline-jit-probe-1.host-sample.txt"
+  ],
+  "pid": 36793,
+  "executable": "/tmp/dory-p02-runner-123b37c97-release",
+  "durationSeconds": 5,
+  "intervalMilliseconds": 5,
+  "exitCode": 0,
+  "stdout": "",
+  "stderr": "Sampling process 36793 for 5 seconds with 5 milliseconds of run time between samples\nSampling completed, processing symbols...\nSample analysis of process 36793 written to file /tmp/dory-p02-userspace-stress-baseline-jit-probe-1.host-sample.txt\n",
+  "scope": "Bounded own diagnostic process host-stack sample during concurrent engineering work; no guest-memory read or performance qualification."
+}

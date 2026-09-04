@@ -1,0 +1,30 @@
+{
+  "sourceManifest": "/tmp/dory-p02-correctness-manifest-37.json",
+  "compileExit": 0,
+  "runExit": 0,
+  "sha256": {
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86GlibcCPUDetectionTests.swift": "e5a9b7c3dad0089d740b60254cd7aa7aef456f1f3a4ac9af134efccc8fa42ab8",
+    "/tmp/dory-p02-glibc-replay.swift": "18e8d738962bf258d000fda8836cb90451a21a8ea588ee3155ed25bb79154561",
+    "/tmp/dory-p02-glibc-replay-command.json": "17655f8b56ad2c0239fd08fc78eeb85cfb72235a5656b3d67986fe882bc4202a",
+    "/tmp/dory-p02-glibc-replay-compile.log": "5ced14946a97295b9bcbf7d64696966559720fc648267404f11da597c44eb95f",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryARM64BaselineJIT.swift.o": "d2f15bfc5e273e23ba9d9f9e33096fcb7d1083ffeb6ef50b0bf616f9ad6e92e5",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryDBTIR.swift.o": "054cbaae14d1c987912da8fc4359ca2d28e09319d431dff13139658d9074bb8a",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryIROptimizer.swift.o": "c3518a47f972ea144c525089b99e5eba4310ac7e125670d2652d773e9963aea1",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86ArchitecturalState.swift.o": "4c723318d24de92324c8ff24972e1646941501558d5edbf1762288ca85ff5aae",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86CPUProfile.swift.o": "c05417935f2b87bb2b0134d9a7cebfb594d1b00f054bb550e5ad9169da19878e",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86Decoder.swift.o": "85ce70e10f57d5cdfdd3600b68dfc800a59811ebe73de3a88117a0d89809b237",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86Differential.swift.o": "35277181dd312213d2b86a043f2e46b23936bf3cc0cbe6981b941bf773f357c2",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86ExtendedFloat.swift.o": "7f9e2379255b3f305c20aac61b4c91cddcba0e25a78d587a032355286b78e0b0",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86IO.swift.o": "d43b9e74904f5316652129bcc78506368fd9d358250722dfd70c9d1a97abf988",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86Instruction.swift.o": "4d8bbc9ff6f1ccb748fc277e299691cf060dd6615967beda044a9614e6428fce",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86InstructionFeaturePolicy.swift.o": "9ab7831050b6c0739df0658a0faee21d61b56fae69757cc726e2a30c08c0295c",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86Interpreter.swift.o": "44f32671e9129a6a2e6557bb4f9e6176ab4402525375b5e2307c28a2480bdf8d",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86Interrupts.swift.o": "78bd1a88b077a72c54377d9fa6c2b0b7dc1c98e687650218b2ca30e755a68566",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86Memory.swift.o": "c2f70ee892f7f0f18a5efe8798dafdef6d0db28593678a4f4b74dd1c104c6178",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86MmapMemory.swift.o": "13971a76fdde5694c85c16ffa2f5b1c2a96bf44b2d1736883345a1fc9a167eb9",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86Paging.swift.o": "5e14807459dc7a550be5ad14390d168368de7e6a202cc4bd52478588fff855ac",
+    "/tmp/dory-p02-correctness-build-1/arm64-apple-macosx/debug/DoryDBTX86.build/DoryX86Replay.swift.o": "69abbb37582a19b4b699c3ff9933787bb4b1027c9dae2eef976f2efbd47bf951",
+    "/tmp/dory-p02-glibc-replay": "f7b2dc120fb487f6c901f963c4fff5fedf8340c483bb20e0450e343b6f515752",
+    "/tmp/dory-p02-glibc-replay-run.log": "9f959fa2136db53dba2ec55c37fb41c7508c93b6f51fb18a5eaf983241834d15"
+  }
+}

@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "firmware",
+  "issueLabel": "subsystem:firmware",
+  "planItems": [
+    "P02-07",
+    "P02-22",
+    "P02-23"
+  ],
+  "sourceCommit": "d0e61d7e0f23a43d696fa05d6c6c69bbb5274d41",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Source38/39 bounded tests, explicit CPU identity and actual kernel-B glibc diagnostic success; stress preparation and bounded engineering host sample.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-39.json",
+      "sha256": "ed9a20dd8a2c957e3a3992db429950280e7cbb0f709da60c2d75d1c1de85f36e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-37.json",
+      "sha256": "8456ba3c7925467fb0c4a05449b486822f3d81d9ee07b74e45cf5aa379a8d73c"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete. Physical x86 reference, complete CPU/FP/ISA semantics, systemd acceptance, real block/network stress and hosted CI remain open.",
+    "Pass counts exclude the one disabled physical test and one optional XCTest skip, and are not summed across overlapping gates.",
+    "Original Dory-v1 identity is unchanged. The new explicitly selected Intel-compatible-v1 engineering profile changes vendor/signature, not advertised feature masks; no higher ISA level or physical CPU equivalence is claimed.",
+    "Glibc probe3 is a real source39/kernel6.18.36/glibc2.39 seven-workload success with host ACPI S5. This does not qualify systemd or all workloads, and is not an exact-state comparison with the earlier source32 musl pair.",
+    "All timings, JIT counters and the bounded host sample are engineering measurements on an experimental host with concurrent work. Live negative-cache reasons are capped site observations, not cumulative reason totals.",
+    "Stress fixture preparation checks alone do not imply successful guest stress, persistent storage durability or device-backed network acceptance."
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schemaVersion": 1,
+  "kind": "legacy-diagnostic-cpio-invariance",
+  "method": "Current generator functions with verified pinned ELF/data members read from previous retained CPIOs and unchanged local fixture sources; no extraction onto host or guest execution",
+  "archives": [
+    {
+      "kind": "p02-minimal-userspace",
+      "bytes": 1482752,
+      "sha256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+      "byteIdenticalToPreviouslyPinnedArchive": true
+    },
+    {
+      "kind": "p02-glibc-userspace",
+      "bytes": 2788352,
+      "sha256": "813de160103ef6179de5d3b6d9271ed8f9883d8c3fa7671a49254f0ec7cb9d24",
+      "byteIdenticalToPreviouslyPinnedArchive": true
+    },
+    {
+      "kind": "p02-systemd-userspace",
+      "bytes": 19935232,
+      "sha256": "3365a741cf5dcecd8675eed4da01b2ed31395f56125d026f461c8f48948f196a",
+      "byteIdenticalToPreviouslyPinnedArchive": true
+    }
+  ]
+}
