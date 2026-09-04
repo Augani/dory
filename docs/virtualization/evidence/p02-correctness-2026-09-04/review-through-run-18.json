@@ -1,0 +1,629 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-correctness-review",
+  "status": "in-progress",
+  "phaseComplete": false,
+  "releaseQualified": false,
+  "sourceCommit": "b13dd78467b40c15791e571401460a5212497b74",
+  "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+  "coverage": "Append-only frozen runs 16\u201318: retained incremental failures, clean rebuilt PAE/shared-backing/PM-timer gate, and bounded RAM/bus integrity fixes. Explicit historical Swift test counting correction. Retains source 17 probe 5 reaching the kernel /init launch announcement before an escaping page fault.",
+  "previousReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-15.json",
+    "sha256": "2df966a8e1fefe9e992ddf5e8d902a4fdcd39e0f7b43fcca3aa961ce1c679299"
+  },
+  "verificationCommand": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH=1 swift test --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 --jobs 3 --no-parallel --filter 'DoryX86|DoryPC|DoryARM64|PVHBootRunnerTests|ISAInventoryTests'",
+  "sourcePolicy": "Each run uses its own retained manifest and overlay. Run 16 retains uncommitted differences; runs 17/18 independently match committed tracked inputs. The optimized build and retained probe use source 17 only.",
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "runs": [
+    {
+      "run": 16,
+      "result": "failed",
+      "exitCode": 1,
+      "exitEvidence": "Parent-observed failed command exit 1; raw log retains independent XCTest crash and Swift Testing failures.",
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16.log.gz",
+        "sha256": "b6820810abad3aabb733dbea0f0009f0f3daabde8edb53d53cd1b9683b449c0f"
+      },
+      "buildElapsedSeconds": 29.6,
+      "buildKind": "incremental",
+      "sourceBinding": {
+        "kind": "base-and-exact-overlay",
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "comparisonCommit": "ac0a5aaa70c4e741b0e8093b670ed16640a5a629",
+        "fullTrackedSourceMatchesComparisonCommit": false,
+        "trackedInputs": 671,
+        "matchingComparisonCommitInputs": 668,
+        "totalInputs": 677,
+        "generatedIgnoredFFIInputs": 6,
+        "trackedDifferences": [
+          {
+            "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCDirectKernelMachine.swift",
+            "frozenSHA256": "5aeb0c7d9d1094325bc0190496ce2ed04fbdb1580b34668c96393f74518fd2d7",
+            "comparisonCommitSHA256": "a22d3a9f910108b96f2c8972bb1f027a9b17caf58653e6cce9aad07ca81f75ab"
+          },
+          {
+            "path": "dory-core-swift/Sources/DoryMachinePC/DoryPCPowerController.swift",
+            "frozenSHA256": "d50590a8d3d71ec8130175980b067dac5411393e478813a5b3411420500063f6",
+            "comparisonCommitSHA256": "86fa08e86e0c6c55957b9908cc31839a43e0d3b65a4e8ad204edc080bcfc1e31"
+          },
+          {
+            "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPAEExecutionBoundaryTests.swift",
+            "frozenSHA256": "b4d4e5d8a26bc06d86c209f7cae2bb52d7e0d04196f8c42963039759a5ba58bc",
+            "comparisonCommitSHA256": "0eb746dd92aa55e9ff3168a62b5f10adbffd9675eb32c4af714de56c7f1b32de"
+          }
+        ],
+        "sourceManifest": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-source-manifest.json.gz",
+          "sha256": "413816a90f44a526e716d3adc98be221bebb790f06505796653bb682ad73b146"
+        },
+        "sourceOverlay": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-source-overlay.tar.gz",
+          "sha256": "1a2d0359e58838361728b947fdb305924ae22f30364bc5435e5c510f7a1d9cbd"
+        },
+        "verification": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-18-source-verification.json",
+          "sha256": "cd2ff5139be633bdc0b795d28698a9f15a8a2db412dad2b51a0c5a42d4ce16c8"
+        },
+        "note": "Run 16 differs from the comparison commit in DirectKernelMachine, PowerController and its PAE test file; the base/overlay binding is authoritative."
+      },
+      "xctest": {
+        "status": "crashed",
+        "selectedCases": 11,
+        "completedPassedCases": 0,
+        "completedSkippedCases": 1,
+        "crashedDuringCase": "DoryPCRuntimeLaunchEnvelopeTests.testCanonicalRoundTripPinsPCDBTFirmwareAndPCIStorage",
+        "remainingCaseCompletionNotObserved": 9,
+        "aggregateCompletionSummaryAvailable": false,
+        "signal": "SIGSEGV",
+        "signalCode": 11,
+        "crashSummary": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-xctest-crash-summary.json",
+          "sha256": "6c3134cc2e21c08b1772a9741b748ba6072c0e4eab86012d5e2ae97f6cae68dc"
+        },
+        "optionalSkip": "Pinned PVH guest input paths/digests absent in the optional boot test."
+      },
+      "swiftTesting": {
+        "reportedTests": 632,
+        "reportedSuites": 69,
+        "result": "failed",
+        "elapsedSeconds": 2.502,
+        "issues": 11,
+        "passed": 630,
+        "failed": 1,
+        "disabled": 1,
+        "suiteResults": {
+          "passed": 68,
+          "failed": 1
+        },
+        "disabledTest": "DoryX86PhysicalReferenceTests.explicitlyImportedPhysicalReceiptMatchesInterpreter",
+        "disabledReason": "DORY_P02_X86_REFERENCE_RECEIPT was not supplied. The disabled test is included in reportedTests but never counted as a pass.",
+        "countVerification": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/swift-testing-count-correction-through-run-18.json",
+          "sha256": "dfb6e5d8aea0e165aa74143f99b6414cf5e46b3e5f037a04cbb2d00168faaf91"
+        },
+        "failedMethod": "DoryPCPAEExecutionBoundaryTests.selectedPhysicalWidthReachesBothJITsAndRunPreservesTheLoadedPDPTEs"
+      }
+    },
+    {
+      "run": 17,
+      "result": "passed",
+      "exitCode": 0,
+      "exitEvidence": "Parent-observed tool completion: session 83660 exit 0.",
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17.log.gz",
+        "sha256": "3f638e192dbb8ff895e39132fe3dcffb88f61388dc577b20341615a2005d60a1"
+      },
+      "buildElapsedSeconds": 113.79,
+      "buildKind": "clean after recorded scratch cleanup",
+      "sourceBinding": {
+        "kind": "verified-commit-and-exact-overlay",
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "comparisonCommit": "ac0a5aaa70c4e741b0e8093b670ed16640a5a629",
+        "fullTrackedSourceMatchesComparisonCommit": true,
+        "trackedInputs": 672,
+        "matchingComparisonCommitInputs": 672,
+        "totalInputs": 678,
+        "generatedIgnoredFFIInputs": 6,
+        "trackedDifferences": [],
+        "sourceManifest": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17-source-manifest.json.gz",
+          "sha256": "7ae6e57708a7228cb808f87d7438dbe2cb232364203b57b37bb5a2e3a5943c8c"
+        },
+        "sourceOverlay": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17-source-overlay.tar.gz",
+          "sha256": "0f87c26c0386815752d38414b00aa2d75a553cc171e461b842db3eefe85e50e8"
+        },
+        "verification": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-18-source-verification.json",
+          "sha256": "cd2ff5139be633bdc0b795d28698a9f15a8a2db412dad2b51a0c5a42d4ce16c8"
+        },
+        "note": "All tracked inputs match the comparison commit; six ignored FFI inputs remain separately hash-bound."
+      },
+      "xctest": {
+        "status": "passed",
+        "reportedCases": 11,
+        "passed": 10,
+        "skipped": 1,
+        "failures": 0,
+        "optionalSkip": "DoryPCLinuxBootTests.testPinnedLinuxReachesUserspaceAndPowersOff: pinned kernel/initrd input paths and SHA-256 environment variables absent."
+      },
+      "swiftTesting": {
+        "reportedTests": 637,
+        "reportedSuites": 70,
+        "result": "passed",
+        "elapsedSeconds": 2.522,
+        "issues": 0,
+        "passed": 636,
+        "failed": 0,
+        "disabled": 1,
+        "suiteResults": {
+          "passed": 70,
+          "failed": 0
+        },
+        "disabledTest": "DoryX86PhysicalReferenceTests.explicitlyImportedPhysicalReceiptMatchesInterpreter",
+        "disabledReason": "DORY_P02_X86_REFERENCE_RECEIPT was not supplied. The disabled test is included in reportedTests but never counted as a pass.",
+        "countVerification": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/swift-testing-count-correction-through-run-18.json",
+          "sha256": "dfb6e5d8aea0e165aa74143f99b6414cf5e46b3e5f037a04cbb2d00168faaf91"
+        }
+      }
+    },
+    {
+      "run": 18,
+      "result": "passed",
+      "exitCode": 0,
+      "exitEvidence": "Parent-observed tool completion: session 22592 exit 0.",
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-18.log.gz",
+        "sha256": "49e5951eea0127d3657f5280742fdee1dc7ee118ce328a2c473a1d823afd67ff"
+      },
+      "buildElapsedSeconds": 26.03,
+      "buildKind": "incremental",
+      "sourceBinding": {
+        "kind": "verified-commit-and-exact-overlay",
+        "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+        "comparisonCommit": "b13dd78467b40c15791e571401460a5212497b74",
+        "fullTrackedSourceMatchesComparisonCommit": true,
+        "trackedInputs": 673,
+        "matchingComparisonCommitInputs": 673,
+        "totalInputs": 679,
+        "generatedIgnoredFFIInputs": 6,
+        "trackedDifferences": [],
+        "sourceManifest": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-18-source-manifest.json.gz",
+          "sha256": "2cf6030066011ad86c807f4a31244e470fa060aa686fc147697bed82d91cf53f"
+        },
+        "sourceOverlay": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-18-source-overlay.tar.gz",
+          "sha256": "820439a8d892e3f7a7a09a9d9feec4a1d63cb29ea10229285f4fb64dfd49a82c"
+        },
+        "verification": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-18-source-verification.json",
+          "sha256": "cd2ff5139be633bdc0b795d28698a9f15a8a2db412dad2b51a0c5a42d4ce16c8"
+        },
+        "note": "All tracked inputs match the comparison commit; six ignored FFI inputs remain separately hash-bound."
+      },
+      "xctest": {
+        "status": "passed",
+        "reportedCases": 11,
+        "passed": 10,
+        "skipped": 1,
+        "failures": 0,
+        "optionalSkip": "DoryPCLinuxBootTests.testPinnedLinuxReachesUserspaceAndPowersOff: pinned kernel/initrd input paths and SHA-256 environment variables absent."
+      },
+      "swiftTesting": {
+        "reportedTests": 644,
+        "reportedSuites": 71,
+        "result": "passed",
+        "elapsedSeconds": 2.567,
+        "issues": 0,
+        "passed": 643,
+        "failed": 0,
+        "disabled": 1,
+        "suiteResults": {
+          "passed": 71,
+          "failed": 0
+        },
+        "disabledTest": "DoryX86PhysicalReferenceTests.explicitlyImportedPhysicalReceiptMatchesInterpreter",
+        "disabledReason": "DORY_P02_X86_REFERENCE_RECEIPT was not supplied. The disabled test is included in reportedTests but never counted as a pass.",
+        "countVerification": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/swift-testing-count-correction-through-run-18.json",
+          "sha256": "dfb6e5d8aea0e165aa74143f99b6414cf5e46b3e5f037a04cbb2d00168faaf91"
+        }
+      }
+    }
+  ],
+  "sourceVerification": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-18-source-verification.json",
+    "sha256": "cd2ff5139be633bdc0b795d28698a9f15a8a2db412dad2b51a0c5a42d4ce16c8"
+  },
+  "parentRun17CommitBinding": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17-commit-binding.json",
+    "sha256": "4ed641bfc9b93b0eeb61268aab7215621b0670a352bdd02ecd4db30aeeac5e3c"
+  },
+  "historicalCountCorrection": {
+    "receipt": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/swift-testing-count-correction-through-run-18.json",
+      "sha256": "dfb6e5d8aea0e165aa74143f99b6414cf5e46b3e5f037a04cbb2d00168faaf91"
+    },
+    "correctedRuns": [
+      12,
+      13,
+      14,
+      15
+    ],
+    "unchangedVerifiedRuns": [
+      9,
+      11
+    ],
+    "effect": "Corrects pass labels only; does not change exit statuses, raw logs, skipped behavior, guest outcomes or release qualification."
+  },
+  "cleanupBeforeRun17": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-17-command.json",
+    "sha256": "f54bb2de44a9d0f2763d098ef64af4ea56ce5c92a7d85c643b47541a14879172"
+  },
+  "failedGateInterpretation": {
+    "observed": "Run 16 XCTest faults in swift_retain while copying DoryPCUEFILaunchPlan; Swift Testing independently reports 11 issues in one PAE machine test.",
+    "hypothesis": "A transitive control-state layout change combined with omitted incremental recompilation of DoryOperations may explain the invalid retain.",
+    "limit": "The clean run 17 passes after recorded scratch cleanup and source/test corrections. This clears the current reproducibility failure but is not a controlled root-cause proof."
+  },
+  "componentChanges": [
+    {
+      "commit": "eea84c14fc38ae56761553a5247ef5a81e1fc464",
+      "firstVerifiedSuccessfulRun": 17,
+      "scope": "Legacy PAE PDPTE loading, physical-address width propagation, and atomic failure state with bounded interpreter/JIT/machine tests."
+    },
+    {
+      "commit": "579e35a21997379d7a24462b4af9878cea028879",
+      "firstVerifiedSuccessfulRun": 17,
+      "scope": "Existing RAM, MMIO and ROM routing cases run against both byte-array and mmap backends."
+    },
+    {
+      "commit": "ac0a5aaa70c4e741b0e8093b670ed16640a5a629",
+      "firstVerifiedSuccessfulRun": 17,
+      "scope": "ACPI PM timer scaling and 24-bit wrapping align with the advertised timer configuration."
+    },
+    {
+      "commit": "b13dd78467b40c15791e571401460a5212497b74",
+      "firstVerifiedSuccessfulRun": 18,
+      "scope": "Bounds-only RAM read validation avoids DMA payload allocation; bus faults preserve access kind, large executable-region fetches stay bounded, and overflowing high-RAM relocation rejects before publication."
+    }
+  ],
+  "optimizedRunnerBuilds": [
+    {
+      "sourceRun": 17,
+      "sourceCommit": "ac0a5aaa70c4e741b0e8093b670ed16640a5a629",
+      "configuration": "release",
+      "exitCode": 0,
+      "exitEvidence": "Parent-observed completion of exec session 58017 with exit_code 0.",
+      "elapsedSeconds": 54.43,
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift build --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 --jobs 3 -c release --product dory-pc-linux-boot-runner",
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17-release-runner-build.log.gz",
+        "sha256": "9e2475017993bc84e84b648239fba6742b72a0ad636bb9dde4766e7b8f612cd7"
+      },
+      "runnerSHA256": "76072ac6f85ce0446498a14be42611e99436f6bf731847dcfe0d01b371164f60",
+      "qualification": "Optimized diagnostic executable construction only; not a release qualification."
+    }
+  ],
+  "actualKernelProbes": [
+    {
+      "probe": 5,
+      "tier": "baseline-jit",
+      "sourceRun": 17,
+      "sourceSnapshotCommit": "ac0a5aaa70c4e741b0e8093b670ed16640a5a629",
+      "invocationImplementationCommit": "ac0a5aaa70c4e741b0e8093b670ed16640a5a629",
+      "sourceBindingNote": "This copied optimized executable is bound to frozen run 17/ac0a5aaa7, not the later run 18/b13dd7846 unit-test source.",
+      "runnerSHA256": "76072ac6f85ce0446498a14be42611e99436f6bf731847dcfe0d01b371164f60",
+      "configuration": {
+        "commandLine": "console=ttyS0 earlycon=uart,io,0x3f8,115200 panic=-1 rdinit=/init dory.pvh_run_id=0146dfb8-027b-4296-bfc3-17aa5b277688",
+        "diagnostics": "/tmp/dory-p02-userspace-baseline-jit-probe-5.json",
+        "initrd": "/tmp/dory-p00-guest-fixtures/x86_64-p02-minimal-userspace-v2.cpio",
+        "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+        "kernel": "/tmp/dory-p00-guest-fixtures/x86_64-vmlinux",
+        "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+        "maximumInstructions": 2000000000,
+        "memoryMiB": 512,
+        "runID": "0146dfb8-027b-4296-bfc3-17aa5b277688",
+        "symbols": "/tmp/dory-p00-guest-fixtures/x86_64-System.map-6.18.35",
+        "symbolsSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+        "tier": "baselineJIT",
+        "wallSeconds": 900,
+        "workloads": [
+          "bootstrap.filesystems",
+          "filesystem.write_read_sync",
+          "memory.allocation_copy",
+          "process.creation_exec_wait",
+          "signal.handler_return",
+          "syscall.identity",
+          "timer.sleep_elapsed"
+        ]
+      },
+      "exitCode": 1,
+      "exitEvidence": "Parent observed wrapper exec session 91422 complete with process exit 1; retained process-exit file agrees.",
+      "passed": false,
+      "result": "fixture-or-runner-error",
+      "hostError": "x86 page fault at 0x7f945cd7e64b with error code 0x14",
+      "retiredInstructions": 653896000,
+      "elapsedNanoseconds": 345250023791,
+      "guestReceiptSeen": false,
+      "receipt": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-5.json",
+        "sha256": "f5784d2aea18805d445dedd59cf2088b4e22689a29bb149cf5f08aa531d2ea1b"
+      },
+      "summary": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-5-summary.json",
+        "sha256": "a63743dc396e2b1b06b904c3bf0438c999926e45e5c03691d80eb91068db85ad"
+      },
+      "invocation": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-5-invocation.json",
+        "sha256": "dd97d8df3bfa3743fa5beeb344c77bdfba917cdefe0fe93fb7de94f99ecb03e0"
+      },
+      "processExit": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-5-exit.txt",
+        "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+      },
+      "lastCompletedRunnerExit": {
+        "elapsedNanoseconds": 345202929291,
+        "instructionCount": 1000,
+        "nearestSymbol": {
+          "name": "__rcu_read_lock",
+          "offset": 0,
+          "symbolAddress": 18446744071582655952
+        },
+        "reason": "instruction-quantum",
+        "rip": 18446744071582655952,
+        "totalInstructions": 653896000
+      },
+      "stateScope": "The saved state, retirement total and last-exit record describe the last completed 1000-instruction quantum. They are not the exact state at the escaping page fault.",
+      "observation": "The retained kernel console completes initramfs unpacking, reports kernel read-only protection and announces launching /init. The earlier APIC/PM-timer calibration warning is absent from this retained console. The host then reports a page fault before any accepted userspace workload receipt or ACPI poweroff.",
+      "causalLimit": "The cause of the escaping page fault is not established here. Neither a guest defect nor a JIT metadata-fetch defect is attributed without a separate reproducer.",
+      "measurementScope": "Experimental host; other bounded source/test work may run concurrently. No performance qualification."
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-18-source-verification.json",
+      "sha256": "cd2ff5139be633bdc0b795d28698a9f15a8a2db412dad2b51a0c5a42d4ce16c8",
+      "bytes": 6649,
+      "contentSHA256": "cd2ff5139be633bdc0b795d28698a9f15a8a2db412dad2b51a0c5a42d4ce16c8",
+      "normalization": "none; newly authored evidence receipt"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16.log.gz",
+      "sha256": "b6820810abad3aabb733dbea0f0009f0f3daabde8edb53d53cd1b9683b449c0f",
+      "bytes": 23396,
+      "contentSHA256": "3f0ccd68759674f1171d5b31b6a4e683cf39a2cfd45033c69dde22334c5a8c7f",
+      "originalFilename": "dory-p02-correctness-run-16.log",
+      "originalSHA256": "3f0ccd68759674f1171d5b31b6a4e683cf39a2cfd45033c69dde22334c5a8c7f",
+      "normalization": "none; original bytes retained after optional gzip decompression"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-source-manifest.json.gz",
+      "sha256": "413816a90f44a526e716d3adc98be221bebb790f06505796653bb682ad73b146",
+      "bytes": 36075,
+      "contentSHA256": "751141edfb4b2aa2a7feb713eccdf7af63486950fd7f66a4e5de0c09cca11511",
+      "originalFilename": "dory-p02-correctness-manifest-16.json",
+      "originalSHA256": "751141edfb4b2aa2a7feb713eccdf7af63486950fd7f66a4e5de0c09cca11511",
+      "normalization": "none; original bytes retained after optional gzip decompression"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-source-overlay.tar.gz",
+      "sha256": "1a2d0359e58838361728b947fdb305924ae22f30364bc5435e5c510f7a1d9cbd",
+      "bytes": 276160,
+      "contentSHA256": "1a2d0359e58838361728b947fdb305924ae22f30364bc5435e5c510f7a1d9cbd",
+      "originalFilename": "dory-p02-correctness-overlay-16.tar.gz",
+      "originalSHA256": "1a2d0359e58838361728b947fdb305924ae22f30364bc5435e5c510f7a1d9cbd",
+      "normalization": "none; original bytes retained after optional gzip decompression"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17.log.gz",
+      "sha256": "3f638e192dbb8ff895e39132fe3dcffb88f61388dc577b20341615a2005d60a1",
+      "bytes": 32492,
+      "contentSHA256": "2871cade81559ae2fdb3688a368698c5f6e8748cab6416e9bb552830455fd98e",
+      "originalFilename": "dory-p02-correctness-run-17.log",
+      "originalSHA256": "2871cade81559ae2fdb3688a368698c5f6e8748cab6416e9bb552830455fd98e",
+      "normalization": "none; original bytes retained after optional gzip decompression"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17-source-manifest.json.gz",
+      "sha256": "7ae6e57708a7228cb808f87d7438dbe2cb232364203b57b37bb5a2e3a5943c8c",
+      "bytes": 36154,
+      "contentSHA256": "47532600060a746c82f9409b83a983e2ad656726a8582a2b460c786381f8caf7",
+      "originalFilename": "dory-p02-correctness-manifest-17.json",
+      "originalSHA256": "47532600060a746c82f9409b83a983e2ad656726a8582a2b460c786381f8caf7",
+      "normalization": "none; original bytes retained after optional gzip decompression"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17-source-overlay.tar.gz",
+      "sha256": "0f87c26c0386815752d38414b00aa2d75a553cc171e461b842db3eefe85e50e8",
+      "bytes": 278957,
+      "contentSHA256": "0f87c26c0386815752d38414b00aa2d75a553cc171e461b842db3eefe85e50e8",
+      "originalFilename": "dory-p02-correctness-overlay-17.tar.gz",
+      "originalSHA256": "0f87c26c0386815752d38414b00aa2d75a553cc171e461b842db3eefe85e50e8",
+      "normalization": "none; original bytes retained after optional gzip decompression"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-18.log.gz",
+      "sha256": "49e5951eea0127d3657f5280742fdee1dc7ee118ce328a2c473a1d823afd67ff",
+      "bytes": 22615,
+      "contentSHA256": "7f43c441144a0861bd869f4a142fd235acc1c5a2518a4caaf7ad351ea8e19345",
+      "originalFilename": "dory-p02-correctness-run-18.log",
+      "originalSHA256": "7f43c441144a0861bd869f4a142fd235acc1c5a2518a4caaf7ad351ea8e19345",
+      "normalization": "none; original bytes retained after optional gzip decompression"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-18-source-manifest.json.gz",
+      "sha256": "2cf6030066011ad86c807f4a31244e470fa060aa686fc147697bed82d91cf53f",
+      "bytes": 36205,
+      "contentSHA256": "0ec529fa3af8092d2eca008ea2ac4b07aa3aec5aafd0d95819d792813305d71b",
+      "originalFilename": "dory-p02-correctness-manifest-18.json",
+      "originalSHA256": "0ec529fa3af8092d2eca008ea2ac4b07aa3aec5aafd0d95819d792813305d71b",
+      "normalization": "none; original bytes retained after optional gzip decompression"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-18-source-overlay.tar.gz",
+      "sha256": "820439a8d892e3f7a7a09a9d9feec4a1d63cb29ea10229285f4fb64dfd49a82c",
+      "bytes": 280945,
+      "contentSHA256": "820439a8d892e3f7a7a09a9d9feec4a1d63cb29ea10229285f4fb64dfd49a82c",
+      "originalFilename": "dory-p02-correctness-overlay-18.tar.gz",
+      "originalSHA256": "820439a8d892e3f7a7a09a9d9feec4a1d63cb29ea10229285f4fb64dfd49a82c",
+      "normalization": "none; original bytes retained after optional gzip decompression"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-9.log.gz",
+      "sha256": "d103e94822947c9631138668dfec15b1f19e260f2acf516ad74f8a502dc89bab",
+      "bytes": 17828,
+      "contentSHA256": "1b29e808bd47bb9fc297796c76ab3ec7471c49536d7f0faa547c6f6be9bebfad",
+      "normalization": "none; existing immutable gzip artifact reused unchanged"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-11.log.gz",
+      "sha256": "058c2e2fa62b6cc4d2268de314d8ff1314ac3df1882af89bb9beb9a6da7d81c4",
+      "bytes": 17992,
+      "contentSHA256": "c52f315102ccd8e13e6c6d14bfc1b0a5d40b5131a25183b37b2da278f0cbfd08",
+      "normalization": "none; existing immutable gzip artifact reused unchanged"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-12.log.gz",
+      "sha256": "3bef9b578f1b920339da238d23e1c12cb1aefd654658e421254978910974d165",
+      "bytes": 18414,
+      "contentSHA256": "1d5a4bfab6627b779996133c1d6b7ac7a79ed71a9e57bbe9ca9e0f68f3f5477e",
+      "normalization": "none; existing immutable gzip artifact reused unchanged"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-13.log.gz",
+      "sha256": "341918af770305f491a34a9e0dd1a36da42b6c1ce3169afab8746607dc647b9b",
+      "bytes": 20085,
+      "contentSHA256": "bb3599335a0938d61599e47d5d6e9d0d4ec2b5f5457d5f86e0263e5f7e9a7e9d",
+      "normalization": "none; existing immutable gzip artifact reused unchanged"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-14.log.gz",
+      "sha256": "8c6c9c7afa2851be1c9e7861989706b004e5d4f0885afb0df91b93015d5f86f3",
+      "bytes": 20903,
+      "contentSHA256": "df5d6f4337a2496f238372c19dbf453fa293e25fa1cc4c66ad3b7cd687ffbadb",
+      "normalization": "none; existing immutable gzip artifact reused unchanged"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-15.log.gz",
+      "sha256": "079b2d4217f6a61a048515f0b3cd135c01abd5a6844e8860114468e8ff2212c5",
+      "bytes": 21194,
+      "contentSHA256": "ef2031f4b9cdfd87de3f96b40c979666fc68181ff9425ba31f92c47709d72f1c",
+      "normalization": "none; existing immutable gzip artifact reused unchanged"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/swift-testing-count-correction-through-run-18.json",
+      "sha256": "dfb6e5d8aea0e165aa74143f99b6414cf5e46b3e5f037a04cbb2d00168faaf91",
+      "bytes": 102944,
+      "contentSHA256": "dfb6e5d8aea0e165aa74143f99b6414cf5e46b3e5f037a04cbb2d00168faaf91",
+      "normalization": "none; newly authored evidence receipt"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-xctest-crash-summary.json",
+      "sha256": "6c3134cc2e21c08b1772a9741b748ba6072c0e4eab86012d5e2ae97f6cae68dc",
+      "bytes": 2688,
+      "contentSHA256": "6c3134cc2e21c08b1772a9741b748ba6072c0e4eab86012d5e2ae97f6cae68dc",
+      "originalFilename": "dory-p02-correctness-run-16-xctest-crash-summary.json",
+      "originalSHA256": "6c3134cc2e21c08b1772a9741b748ba6072c0e4eab86012d5e2ae97f6cae68dc",
+      "normalization": "none; original bytes retained after optional gzip decompression"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17-commit-binding.json",
+      "sha256": "4ed641bfc9b93b0eeb61268aab7215621b0670a352bdd02ecd4db30aeeac5e3c",
+      "bytes": 642,
+      "contentSHA256": "4ed641bfc9b93b0eeb61268aab7215621b0670a352bdd02ecd4db30aeeac5e3c",
+      "originalFilename": "dory-p02-correctness-run-17-commit-binding.json",
+      "originalSHA256": "4ed641bfc9b93b0eeb61268aab7215621b0670a352bdd02ecd4db30aeeac5e3c",
+      "normalization": "none; original bytes retained after optional gzip decompression"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-17.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "bytes": 0,
+      "contentSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalFilename": "dory-p02-correctness-clean-before-17.log",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "normalization": "none; original bytes retained after optional gzip decompression"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-17-command.json",
+      "sha256": "f54bb2de44a9d0f2763d098ef64af4ea56ce5c92a7d85c643b47541a14879172",
+      "bytes": 802,
+      "contentSHA256": "f54bb2de44a9d0f2763d098ef64af4ea56ce5c92a7d85c643b47541a14879172",
+      "normalization": "none; newly authored evidence receipt"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17-release-runner-build.log.gz",
+      "sha256": "9e2475017993bc84e84b648239fba6742b72a0ad636bb9dde4766e7b8f612cd7",
+      "bytes": 2050,
+      "contentSHA256": "c8b0b4b3232a8e0dd6eb9b7bc5b6981dd441a7b82a8fc1138c4c75de4b02e960",
+      "originalFilename": "dory-p02-release-runner-build-17.log",
+      "originalSHA256": "c8b0b4b3232a8e0dd6eb9b7bc5b6981dd441a7b82a8fc1138c4c75de4b02e960",
+      "normalization": "none; original bytes retained after optional gzip decompression"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-5.json",
+      "sha256": "f5784d2aea18805d445dedd59cf2088b4e22689a29bb149cf5f08aa531d2ea1b",
+      "bytes": 27266,
+      "contentSHA256": "f5784d2aea18805d445dedd59cf2088b4e22689a29bb149cf5f08aa531d2ea1b",
+      "originalFilename": "dory-p02-userspace-baseline-jit-probe-5.json",
+      "originalSHA256": "f5784d2aea18805d445dedd59cf2088b4e22689a29bb149cf5f08aa531d2ea1b",
+      "normalization": "none; original bytes retained exactly"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-5-summary.json",
+      "sha256": "a63743dc396e2b1b06b904c3bf0438c999926e45e5c03691d80eb91068db85ad",
+      "bytes": 524,
+      "contentSHA256": "a63743dc396e2b1b06b904c3bf0438c999926e45e5c03691d80eb91068db85ad",
+      "originalFilename": "dory-p02-userspace-baseline-jit-probe-5.log",
+      "originalSHA256": "a63743dc396e2b1b06b904c3bf0438c999926e45e5c03691d80eb91068db85ad",
+      "normalization": "none; original bytes retained exactly"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-5-invocation.json",
+      "sha256": "dd97d8df3bfa3743fa5beeb344c77bdfba917cdefe0fe93fb7de94f99ecb03e0",
+      "bytes": 1652,
+      "contentSHA256": "dd97d8df3bfa3743fa5beeb344c77bdfba917cdefe0fe93fb7de94f99ecb03e0",
+      "originalFilename": "dory-p02-userspace-baseline-jit-probe-5.invocation.json",
+      "originalSHA256": "dd97d8df3bfa3743fa5beeb344c77bdfba917cdefe0fe93fb7de94f99ecb03e0",
+      "normalization": "none; original bytes retained exactly"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-5-exit.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "bytes": 2,
+      "contentSHA256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "originalFilename": "dory-p02-userspace-baseline-jit-probe-5.exit",
+      "originalSHA256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+      "normalization": "none; original bytes retained exactly"
+    }
+  ],
+  "normalizationPolicy": "Original bytes retained after optional deterministic gzip decompression. Crash summary is preserved exactly as provided; its full private report remains local. No private home paths were present and no further normalization was needed.",
+  "limitations": [
+    "P02 remains in progress. No full ISA, physical reference parity, userspace, glibc/systemd, long-running stress or release qualification is claimed.",
+    "Run 16 is a failed incremental gate: one Swift test method records 11 issues, and XCTest separately crashes. The later clean pass does not erase either failure.",
+    "Run 16 is bound to its exact base-plus-overlay snapshot, not claimed identical to a committed source tree. Three tracked inputs differ from the comparison commit.",
+    "Run 17 reports 637 Swift tests: 636 passed and 1 physical-reference test disabled. Run 18 reports 644: 643 passed and 1 disabled. Both XCTest gates complete 10 passes and 1 optional PVH boot skip.",
+    "Historical successful totals 580/590/605/612 in reviews through 13/15 were labeled as passes but include one disabled physical-reference test. The additive correction gives actual passes 579/589/604/611 and preserves all earlier receipts.",
+    "The clean-run result is consistent with stale incremental object layout contributing to the XCTest crash, but source/test differences also exist. This is an inference, not a controlled proof of the crash root cause.",
+    "The arm64 macOS 27 beta / Xcode 26.6 / SDK 26.5 tuple is experimental. Schema validity and optimized executable construction do not imply release qualification.",
+    "The source 17 optimized runner is bound to ac0a5aaa7; it does not include source 18 memory changes. Any retained guest probe must use its own exact implementation identity.",
+    "Generated FFI inputs and diagnostic executables are separately hash-bound without vendoring binary payloads.",
+    "Read-validation tests, typed allocation errors, exact logical bounds and ARC ownership checks do not claim OS resident-memory accounting or direct syscall-level munmap verification. Legacy ByteArray fixture allocation remains subject to Swift Array exhaustion.",
+    "Probe 5 uses source 17 and exits1 with an escaping page-fault error after the kernel announces /init. It supplies no userspace workload receipt or ACPI poweroff. Cached state is only the last completed quantum; no exact fault-state or causal diagnosis is claimed."
+  ],
+  "progressInterpretation": {
+    "classification": "Observed kernel-init progress, not userspace completion or qualification",
+    "observation": "The kernel announces launching /init; the host returns fixture-or-runner-error with a page-fault message. No matching seven-workload receipt or clean ACPI poweroff occurs.",
+    "stateLimitation": "Cached CPU state is the last completed runner quantum, not exact fault state; the error string and process outcome are preserved independently.",
+    "performanceLimitation": "This experimental-host run allowed concurrent bounded source/test work and is not a throughput benchmark."
+  }
+}

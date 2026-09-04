@@ -1,0 +1,168 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-02",
+    "P02-03",
+    "P02-04",
+    "P02-09",
+    "P02-12",
+    "P02-13",
+    "P02-18",
+    "P02-19",
+    "P02-08",
+    "P02-11",
+    "P02-14",
+    "P02-20",
+    "P02-21",
+    "P02-24"
+  ],
+  "sourceCommit": "b13dd78467b40c15791e571401460a5212497b74",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Partial P02 correctness through frozen runs 16\u201318, with failed incremental and clean successful gates, exact source provenance, corrected test counts and explicit exclusions. Source17 probe 5 reaches the /init launch announcement but exits with a host-reported page fault and no workload receipt.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-17-command.json",
+      "sha256": "f54bb2de44a9d0f2763d098ef64af4ea56ce5c92a7d85c643b47541a14879172"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-17.log",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-13.json",
+      "sha256": "b30ed3bf2d66e8f5562d25eb765f6b1af966c439e01688a94df2d3da92422e4a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-15.json",
+      "sha256": "2df966a8e1fefe9e992ddf5e8d902a4fdcd39e0f7b43fcca3aa961ce1c679299"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-18.json",
+      "sha256": "ddd10548ac2e095cc1a30cf829c4e942f138d5a7e77f40ced8f4b39c24510a3e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-11.log.gz",
+      "sha256": "058c2e2fa62b6cc4d2268de314d8ff1314ac3df1882af89bb9beb9a6da7d81c4"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-12.log.gz",
+      "sha256": "3bef9b578f1b920339da238d23e1c12cb1aefd654658e421254978910974d165"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-13.log.gz",
+      "sha256": "341918af770305f491a34a9e0dd1a36da42b6c1ce3169afab8746607dc647b9b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-14.log.gz",
+      "sha256": "8c6c9c7afa2851be1c9e7861989706b004e5d4f0885afb0df91b93015d5f86f3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-15.log.gz",
+      "sha256": "079b2d4217f6a61a048515f0b3cd135c01abd5a6844e8860114468e8ff2212c5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-18-source-verification.json",
+      "sha256": "cd2ff5139be633bdc0b795d28698a9f15a8a2db412dad2b51a0c5a42d4ce16c8"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-source-manifest.json.gz",
+      "sha256": "413816a90f44a526e716d3adc98be221bebb790f06505796653bb682ad73b146"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-source-overlay.tar.gz",
+      "sha256": "1a2d0359e58838361728b947fdb305924ae22f30364bc5435e5c510f7a1d9cbd"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-xctest-crash-summary.json",
+      "sha256": "6c3134cc2e21c08b1772a9741b748ba6072c0e4eab86012d5e2ae97f6cae68dc"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16.log.gz",
+      "sha256": "b6820810abad3aabb733dbea0f0009f0f3daabde8edb53d53cd1b9683b449c0f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17-commit-binding.json",
+      "sha256": "4ed641bfc9b93b0eeb61268aab7215621b0670a352bdd02ecd4db30aeeac5e3c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17-release-runner-build.log.gz",
+      "sha256": "9e2475017993bc84e84b648239fba6742b72a0ad636bb9dde4766e7b8f612cd7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17-source-manifest.json.gz",
+      "sha256": "7ae6e57708a7228cb808f87d7438dbe2cb232364203b57b37bb5a2e3a5943c8c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17-source-overlay.tar.gz",
+      "sha256": "0f87c26c0386815752d38414b00aa2d75a553cc171e461b842db3eefe85e50e8"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17.log.gz",
+      "sha256": "3f638e192dbb8ff895e39132fe3dcffb88f61388dc577b20341615a2005d60a1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-18-source-manifest.json.gz",
+      "sha256": "2cf6030066011ad86c807f4a31244e470fa060aa686fc147697bed82d91cf53f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-18-source-overlay.tar.gz",
+      "sha256": "820439a8d892e3f7a7a09a9d9feec4a1d63cb29ea10229285f4fb64dfd49a82c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-18.log.gz",
+      "sha256": "49e5951eea0127d3657f5280742fdee1dc7ee118ce328a2c473a1d823afd67ff"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-9.log.gz",
+      "sha256": "d103e94822947c9631138668dfec15b1f19e260f2acf516ad74f8a502dc89bab"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/swift-testing-count-correction-through-run-18.json",
+      "sha256": "dfb6e5d8aea0e165aa74143f99b6414cf5e46b3e5f037a04cbb2d00168faaf91"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-5-exit.txt",
+      "sha256": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-5-invocation.json",
+      "sha256": "dd97d8df3bfa3743fa5beeb344c77bdfba917cdefe0fe93fb7de94f99ecb03e0"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-5-summary.json",
+      "sha256": "a63743dc396e2b1b06b904c3bf0438c999926e45e5c03691d80eb91068db85ad"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-5.json",
+      "sha256": "f5784d2aea18805d445dedd59cf2088b4e22689a29bb149cf5f08aa531d2ea1b"
+    }
+  ],
+  "limitations": [
+    "P02 remains in progress. No full ISA, physical reference parity, userspace, glibc/systemd, long-running stress or release qualification is claimed.",
+    "Run 16 is a failed incremental gate: one Swift test method records 11 issues, and XCTest separately crashes. The later clean pass does not erase either failure.",
+    "Run 16 is bound to its exact base-plus-overlay snapshot, not claimed identical to a committed source tree. Three tracked inputs differ from the comparison commit.",
+    "Run 17 reports 637 Swift tests: 636 passed and 1 physical-reference test disabled. Run 18 reports 644: 643 passed and 1 disabled. Both XCTest gates complete 10 passes and 1 optional PVH boot skip.",
+    "Historical successful totals 580/590/605/612 in reviews through 13/15 were labeled as passes but include one disabled physical-reference test. The additive correction gives actual passes 579/589/604/611 and preserves all earlier receipts.",
+    "The clean-run result is consistent with stale incremental object layout contributing to the XCTest crash, but source/test differences also exist. This is an inference, not a controlled proof of the crash root cause.",
+    "The arm64 macOS 27 beta / Xcode 26.6 / SDK 26.5 tuple is experimental. Schema validity and optimized executable construction do not imply release qualification.",
+    "The source 17 optimized runner is bound to ac0a5aaa7; it does not include source 18 memory changes. Any retained guest probe must use its own exact implementation identity.",
+    "Generated FFI inputs and diagnostic executables are separately hash-bound without vendoring binary payloads.",
+    "Read-validation tests, typed allocation errors, exact logical bounds and ARC ownership checks do not claim OS resident-memory accounting or direct syscall-level munmap verification. Legacy ByteArray fixture allocation remains subject to Swift Array exhaustion.",
+    "Probe 5 uses source 17 and exits1 with an escaping page-fault error after the kernel announces /init. It supplies no userspace workload receipt or ACPI poweroff. Cached state is only the last completed quantum; no exact fault-state or causal diagnosis is claimed."
+  ]
+}

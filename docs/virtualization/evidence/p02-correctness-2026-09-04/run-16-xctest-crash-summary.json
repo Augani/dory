@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "sourceRun": 16,
+  "captureTime": "2026-09-04 13:03:47.2992 +0000",
+  "exception": {
+    "codes": "0x0000000000000001, 0x0000000030636970",
+    "rawCodes": [
+      1,
+      811821424
+    ],
+    "type": "EXC_BAD_ACCESS",
+    "signal": "SIGSEGV",
+    "subtype": "KERN_INVALID_ADDRESS at 0x0000000030636970"
+  },
+  "termination": {
+    "flags": 0,
+    "code": 11,
+    "namespace": "SIGNAL",
+    "indicator": "Segmentation fault: 11",
+    "byProc": "exc handler",
+    "byPid": 23922
+  },
+  "triggeredFrames": [
+    {
+      "symbol": "swift_retain",
+      "symbolLocation": 32,
+      "image": "libswiftCore.dylib"
+    },
+    {
+      "sourceFile": "/<compiler-generated>",
+      "symbol": "outlined init with copy of DoryPCUEFILaunchPlan",
+      "symbolLocation": 1004,
+      "image": "dory-core-swiftPackageTests"
+    },
+    {
+      "sourceLine": 200,
+      "sourceFile": "DoryPCRuntimeLaunchEnvelope.swift",
+      "symbol": "static DoryPCRuntimeLaunchEnvelope.resolvedUEFI(machineID:operationID:resolvedPlanSHA256:planRevision:executionComponentBuildIdentifier:virtualHardwareABIVersion:graphics:devices:portForwards:executionResources:resourceBudget:systemDiskCapacityBytes:systemDiskLogicalID:launchPlan:firmwareSBOMByteCount:installerMediaByteCount:installerMediaSHA256:installerMediaLogicalID:rendererBootstrapByteCount:rendererBootstrapSHA256:)",
+      "symbolLocation": 3508,
+      "image": "dory-core-swiftPackageTests"
+    },
+    {
+      "sourceLine": 171,
+      "sourceFile": "DoryPCRuntimeLaunchEnvelopeTests.swift",
+      "symbol": "DoryPCRuntimeLaunchEnvelopeTests.makeEnvelope(installer:directorySharing:)",
+      "symbolLocation": 4988,
+      "image": "dory-core-swiftPackageTests"
+    },
+    {
+      "sourceLine": 14,
+      "sourceFile": "DoryPCRuntimeLaunchEnvelopeTests.swift",
+      "symbol": "DoryPCRuntimeLaunchEnvelopeTests.testCanonicalRoundTripPinsPCDBTFirmwareAndPCIStorage()",
+      "symbolLocation": 224,
+      "image": "dory-core-swiftPackageTests"
+    },
+    {
+      "sourceFile": "/<compiler-generated>",
+      "symbol": "@objc DoryPCRuntimeLaunchEnvelopeTests.testCanonicalRoundTripPinsPCDBTFirmwareAndPCIStorage()",
+      "symbolLocation": 56,
+      "image": "dory-core-swiftPackageTests"
+    }
+  ],
+  "disposition": "Observed invalid retain while copying DoryPCUEFILaunchPlan following a transitive DoryX86ControlState layout change; no DoryOperations compile appears in incremental run16 log. Clean rebuild required to distinguish stale object layout from source defect.",
+  "fullReportRetainedLocally": "xctest-2026-09-04-130351.ips",
+  "privateDetails": "Full process environment and other threads excluded from public summary."
+}

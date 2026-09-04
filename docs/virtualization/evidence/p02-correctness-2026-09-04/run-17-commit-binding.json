@@ -1,0 +1,14 @@
+{
+  "sourceCommit": "ac0a5aaa70c4e741b0e8093b670ed16640a5a629",
+  "totalInputs": 678,
+  "trackedMatches": 672,
+  "separatelyBoundIgnoredInputs": [
+    "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+    "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+    "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+    "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+    "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+    "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a"
+  ],
+  "trackedDifferences": []
+}

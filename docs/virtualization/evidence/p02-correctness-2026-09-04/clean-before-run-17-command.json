@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift package --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 clean",
+  "stdoutStderrArtifact": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-17.log",
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  "exitCode": 0,
+  "exitEvidence": "Parent recorded write_stdin completion for exec session 25683 with exit_code 0 before freezing run 17. The empty log alone is not treated as proof of exit status.",
+  "scope": "Cleared the dedicated P02 build scratch before the fresh run-17 build; installed application lifecycle was not touched."
+}

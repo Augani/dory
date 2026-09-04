@@ -1,0 +1,4247 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-swift-testing-count-correction",
+  "scope": "Additive correction of pass labels in immutable reviews through runs 13 and 15. Their successful run totals included one disabled physical-reference test; this receipt distinguishes reported totals from individual test outcomes. Prior receipts are unchanged.",
+  "method": "Strict full-line regexes distinguish individual tests from global summaries; each individual outcome is assigned to its active suite and reconciled with both per-suite and global totals. Parameterized argument-start lines are not counted as completed tests.",
+  "regexes": {
+    "testPassed": "^\\S+  Test (?!run(?: |$)).+ passed after [0-9.]+ seconds\\.$",
+    "testFailed": "^\\S+  Test (?!run(?: |$)).+ failed after [0-9.]+ seconds with [0-9]+ issues?\\.$",
+    "testDisabled": "^\\S+  Test (?!run(?: |$)).+ skipped\\.$",
+    "suiteStarted": "^\\S+  Suite (.+) started\\.$",
+    "suitePassed": "^\\S+  Suite (.+) passed after [0-9.]+ seconds\\.$",
+    "suiteFailed": "^\\S+  Suite (.+) failed after [0-9.]+ seconds with [0-9]+ issues?\\.$",
+    "globalSummary": "^\\S+  Test run with ([0-9]+) tests? in ([0-9]+) suites? (passed|failed) after ([0-9.]+) seconds(?: with ([0-9]+) issues?)?\\.$"
+  },
+  "correctedHistoricalRuns": [
+    12,
+    13,
+    14,
+    15
+  ],
+  "unchangedVerifiedRuns": [
+    9,
+    11
+  ],
+  "runs": [
+    {
+      "run": 9,
+      "uncompressedLogSHA256": "1b29e808bd47bb9fc297796c76ab3ec7471c49536d7f0faa547c6f6be9bebfad",
+      "reportedTests": 565,
+      "reportedSuites": 56,
+      "result": "passed",
+      "elapsedSeconds": 1.574,
+      "issues": 0,
+      "passed": 565,
+      "failed": 0,
+      "disabled": 0,
+      "suiteResults": {
+        "passed": 56,
+        "failed": 0
+      },
+      "perSuite": [
+        {
+          "name": "DoryARM64BaselineJITTests",
+          "passed": 81,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64CanonicalFaultTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ArchitecturalStateTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86CPUProfileTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DecoderTests",
+          "passed": 40,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialIsolationTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ExtendedFloatTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86HypervisorBoundaryTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86IRTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterpreterTests",
+          "passed": 93,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterruptTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86MemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingTests",
+          "passed": 29,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PreciseFaultTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ReplayTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE2ScalarFPTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE3AndSSE4Tests",
+          "passed": 16,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SystemPrivilegeTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86VEXTests",
+          "passed": 15,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFILaunchPlanTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineCompositionTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIVariableBridgeMMIOTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCCameraBridgeTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "PVHBootRunnerTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCACPITests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCAPICTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCDirectKernelMachineTests",
+          "passed": 27,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareConfigurationTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareFlashTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCHPETTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLegacyInterruptTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLoadPreflightTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCMultiprocessorTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPCIExpressTests",
+          "passed": 12,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHBootTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHKernelTests",
+          "passed": 14,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPortIOTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPowerControllerTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCRTCTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCSMBIOSTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBHIDDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBUVCDeviceTests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCV1ABITests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioBlockPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioEntropyPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioGPUPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioInputPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioNetworkPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioPCITests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioSoundPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCXHCITests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "\"DoryPC UEFI tier qualification\"",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        }
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-9.log.gz",
+        "sha256": "d103e94822947c9631138668dfec15b1f19e260f2acf516ad74f8a502dc89bab"
+      }
+    },
+    {
+      "run": 11,
+      "uncompressedLogSHA256": "c52f315102ccd8e13e6c6d14bfc1b0a5d40b5131a25183b37b2da278f0cbfd08",
+      "reportedTests": 572,
+      "reportedSuites": 57,
+      "result": "passed",
+      "elapsedSeconds": 2.175,
+      "issues": 0,
+      "passed": 572,
+      "failed": 0,
+      "disabled": 0,
+      "suiteResults": {
+        "passed": 57,
+        "failed": 0
+      },
+      "perSuite": [
+        {
+          "name": "DoryARM64BaselineJITTests",
+          "passed": 81,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64CanonicalFaultTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ArchitecturalStateTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86CPUProfileTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DecoderTests",
+          "passed": 40,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialIsolationTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ExtendedFloatTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86HypervisorBoundaryTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86IRTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterpreterTests",
+          "passed": 93,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterruptTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86MemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingTests",
+          "passed": 29,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PreciseFaultTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ReplayTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE2ScalarFPTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE3AndSSE4Tests",
+          "passed": 16,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SystemPrivilegeTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86VEXTests",
+          "passed": 15,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFILaunchPlanTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineCompositionTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIVariableBridgeMMIOTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCCameraBridgeTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "PVHBootRunnerTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCACPITests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCAPICTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCDirectKernelMachineTests",
+          "passed": 27,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareConfigurationTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareFlashTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCHPETTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLegacyInterruptTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLoadPreflightTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCMultiprocessorTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPCIExpressTests",
+          "passed": 12,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHBootTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHKernelTests",
+          "passed": 14,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPortIOTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPowerControllerTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCRTCTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCSMBIOSTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBHIDDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBUVCDeviceTests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCV1ABITests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioBlockPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioEntropyPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioGPUPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioInputPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioNetworkPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioPCITests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioSoundPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCXHCITests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "\"DoryPC UEFI tier qualification\"",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "ISAInventoryTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        }
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-11.log.gz",
+        "sha256": "058c2e2fa62b6cc4d2268de314d8ff1314ac3df1882af89bb9beb9a6da7d81c4"
+      }
+    },
+    {
+      "run": 12,
+      "uncompressedLogSHA256": "1d5a4bfab6627b779996133c1d6b7ac7a79ed71a9e57bbe9ca9e0f68f3f5477e",
+      "reportedTests": 580,
+      "reportedSuites": 59,
+      "result": "passed",
+      "elapsedSeconds": 2.119,
+      "issues": 0,
+      "passed": 579,
+      "failed": 0,
+      "disabled": 1,
+      "suiteResults": {
+        "passed": 59,
+        "failed": 0
+      },
+      "perSuite": [
+        {
+          "name": "DoryARM64BaselineJITTests",
+          "passed": 81,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64CanonicalFaultTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64SegmentBaseTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ArchitecturalStateTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86CPUProfileTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DecoderTests",
+          "passed": 40,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialIsolationTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ExtendedFloatTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86HypervisorBoundaryTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86IRTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterpreterTests",
+          "passed": 93,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterruptTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86MemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingTests",
+          "passed": 29,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PhysicalReferenceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 1,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PreciseFaultTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ReplayTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE2ScalarFPTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE3AndSSE4Tests",
+          "passed": 16,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SystemPrivilegeTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86VEXTests",
+          "passed": 15,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFILaunchPlanTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineCompositionTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIVariableBridgeMMIOTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCCameraBridgeTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "PVHBootRunnerTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCACPITests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCAPICTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCDirectKernelMachineTests",
+          "passed": 27,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareConfigurationTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareFlashTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCHPETTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLegacyInterruptTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLoadPreflightTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCMultiprocessorTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPCIExpressTests",
+          "passed": 12,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHBootTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHKernelTests",
+          "passed": 14,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPortIOTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPowerControllerTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCRTCTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCSMBIOSTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBHIDDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBUVCDeviceTests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCV1ABITests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioBlockPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioEntropyPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioGPUPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioInputPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioNetworkPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioPCITests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioSoundPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCXHCITests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "\"DoryPC UEFI tier qualification\"",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "ISAInventoryTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        }
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-12.log.gz",
+        "sha256": "3bef9b578f1b920339da238d23e1c12cb1aefd654658e421254978910974d165"
+      }
+    },
+    {
+      "run": 13,
+      "uncompressedLogSHA256": "bb3599335a0938d61599e47d5d6e9d0d4ec2b5f5457d5f86e0263e5f7e9a7e9d",
+      "reportedTests": 590,
+      "reportedSuites": 61,
+      "result": "passed",
+      "elapsedSeconds": 2.137,
+      "issues": 0,
+      "passed": 589,
+      "failed": 0,
+      "disabled": 1,
+      "suiteResults": {
+        "passed": 61,
+        "failed": 0
+      },
+      "perSuite": [
+        {
+          "name": "DoryARM64BaselineJITTests",
+          "passed": 81,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64CanonicalFaultTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64SegmentBaseTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ArchitecturalStateTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86CPUProfileTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DecoderTests",
+          "passed": 40,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialIsolationTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ExtendedFloatTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86HypervisorBoundaryTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86IRTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterpreterTests",
+          "passed": 93,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterruptTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86MemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ModePrivilegeTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingTests",
+          "passed": 29,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PhysicalReferenceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 1,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PreciseFaultTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ReplayTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE2ScalarFPTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE3AndSSE4Tests",
+          "passed": 16,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SystemPrivilegeTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86VEXTests",
+          "passed": 15,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFILaunchPlanTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineCompositionTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIVariableBridgeMMIOTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCCameraBridgeTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "PVHBootRunnerTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCACPITests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCAPICTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCDirectKernelMachineTests",
+          "passed": 27,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareConfigurationTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareFlashTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCHPETTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCIOAPICMaskTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLegacyInterruptTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLoadPreflightTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCMultiprocessorTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPCIExpressTests",
+          "passed": 12,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHBootTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHKernelTests",
+          "passed": 14,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPortIOTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPowerControllerTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCRTCTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCSMBIOSTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBHIDDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBUVCDeviceTests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCV1ABITests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioBlockPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioEntropyPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioGPUPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioInputPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioNetworkPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioPCITests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioSoundPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCXHCITests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "\"DoryPC UEFI tier qualification\"",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "ISAInventoryTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        }
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-13.log.gz",
+        "sha256": "341918af770305f491a34a9e0dd1a36da42b6c1ce3169afab8746607dc647b9b"
+      }
+    },
+    {
+      "run": 14,
+      "uncompressedLogSHA256": "df5d6f4337a2496f238372c19dbf453fa293e25fa1cc4c66ad3b7cd687ffbadb",
+      "reportedTests": 605,
+      "reportedSuites": 64,
+      "result": "passed",
+      "elapsedSeconds": 2.517,
+      "issues": 0,
+      "passed": 604,
+      "failed": 0,
+      "disabled": 1,
+      "suiteResults": {
+        "passed": 64,
+        "failed": 0
+      },
+      "perSuite": [
+        {
+          "name": "DoryARM64BaselineJITTests",
+          "passed": 81,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64CanonicalFaultTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64SegmentBaseTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ArchitecturalStateTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86BoundedCorpusTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86CPUProfileTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DecoderTests",
+          "passed": 40,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialIsolationTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ExtendedFloatTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86HypervisorBoundaryTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86IRTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterpreterTests",
+          "passed": 93,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterruptTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86MemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ModePrivilegeTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingReservedBitsTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingTests",
+          "passed": 29,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PhysicalReferenceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 1,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PreciseFaultTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ReplayTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE2ScalarFPTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE3AndSSE4Tests",
+          "passed": 16,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SystemPrivilegeTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86VEXTests",
+          "passed": 15,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFILaunchPlanTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineCompositionTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIVariableBridgeMMIOTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCCameraBridgeTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "PVHBootRunnerTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCACPITests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCAPICTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCDirectKernelMachineTests",
+          "passed": 27,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareConfigurationTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareFlashTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCHPETTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCIOAPICMaskTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLegacyInterruptTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLoadPreflightTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCMultiprocessorTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPCIExpressTests",
+          "passed": 12,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHBootTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHKernelTests",
+          "passed": 14,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryConformanceTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPortIOTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPowerControllerTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCRTCTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCSMBIOSTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBHIDDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBUVCDeviceTests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCV1ABITests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioBlockPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioEntropyPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioGPUPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioInputPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioNetworkPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioPCITests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioSoundPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCXHCITests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "\"DoryPC UEFI tier qualification\"",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "ISAInventoryTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        }
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-14.log.gz",
+        "sha256": "8c6c9c7afa2851be1c9e7861989706b004e5d4f0885afb0df91b93015d5f86f3"
+      }
+    },
+    {
+      "run": 15,
+      "uncompressedLogSHA256": "ef2031f4b9cdfd87de3f96b40c979666fc68181ff9425ba31f92c47709d72f1c",
+      "reportedTests": 612,
+      "reportedSuites": 66,
+      "result": "passed",
+      "elapsedSeconds": 2.429,
+      "issues": 0,
+      "passed": 611,
+      "failed": 0,
+      "disabled": 1,
+      "suiteResults": {
+        "passed": 66,
+        "failed": 0
+      },
+      "perSuite": [
+        {
+          "name": "DoryARM64BaselineJITTests",
+          "passed": 81,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64CanonicalFaultTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64SegmentBaseTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ArchitecturalStateTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86BoundedCorpusTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86CPUProfileTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DecoderTests",
+          "passed": 40,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialIsolationTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ExtendedFloatTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86HypervisorBoundaryTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86IRTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterpreterTests",
+          "passed": 93,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterruptTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86MemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86MmapAllocationTests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ModePrivilegeTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingReservedBitsTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingTests",
+          "passed": 29,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PhysicalReferenceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 1,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PreciseFaultTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ReplayTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE2ScalarFPTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE3AndSSE4Tests",
+          "passed": 16,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SystemPrivilegeTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86VEXTests",
+          "passed": 15,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFILaunchPlanTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineCompositionTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIVariableBridgeMMIOTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCCameraBridgeTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "PVHBootRunnerTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCACPITests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCAPICTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCDirectKernelMachineTests",
+          "passed": 29,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareConfigurationTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareFlashTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCHPETTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCIOAPICMaskTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLegacyInterruptTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLoadPreflightTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCMultiprocessorTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPCIExpressTests",
+          "passed": 12,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHBootTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHKernelTests",
+          "passed": 14,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryConformanceTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPortIOTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPowerControllerTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCRAMConfigurationTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCRTCTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCSMBIOSTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBHIDDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBUVCDeviceTests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCV1ABITests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioBlockPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioEntropyPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioGPUPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioInputPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioNetworkPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioPCITests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioSoundPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCXHCITests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "\"DoryPC UEFI tier qualification\"",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "ISAInventoryTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        }
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-15.log.gz",
+        "sha256": "079b2d4217f6a61a048515f0b3cd135c01abd5a6844e8860114468e8ff2212c5"
+      }
+    },
+    {
+      "run": 16,
+      "uncompressedLogSHA256": "3f0ccd68759674f1171d5b31b6a4e683cf39a2cfd45033c69dde22334c5a8c7f",
+      "reportedTests": 632,
+      "reportedSuites": 69,
+      "result": "failed",
+      "elapsedSeconds": 2.502,
+      "issues": 11,
+      "passed": 630,
+      "failed": 1,
+      "disabled": 1,
+      "suiteResults": {
+        "passed": 68,
+        "failed": 1
+      },
+      "perSuite": [
+        {
+          "name": "DoryARM64BaselineJITTests",
+          "passed": 81,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64CanonicalFaultTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64PAELatchTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64SegmentBaseTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ArchitecturalStateTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86BoundedCorpusTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86CPUProfileTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DecoderTests",
+          "passed": 40,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialIsolationTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ExtendedFloatTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86HypervisorBoundaryTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86IRTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterpreterTests",
+          "passed": 93,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterruptTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86MemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86MmapAllocationTests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ModePrivilegeTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PAEPDPTELatchTests",
+          "passed": 15,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingReservedBitsTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingTests",
+          "passed": 29,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PhysicalReferenceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 1,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PreciseFaultTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ReplayTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE2ScalarFPTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE3AndSSE4Tests",
+          "passed": 16,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SystemPrivilegeTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86VEXTests",
+          "passed": 15,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFILaunchPlanTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineCompositionTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIVariableBridgeMMIOTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCCameraBridgeTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "PVHBootRunnerTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCACPITests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCAPICTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCDirectKernelMachineTests",
+          "passed": 29,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareConfigurationTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareFlashTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCHPETTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCIOAPICMaskTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLegacyInterruptTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLoadPreflightTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCMultiprocessorTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPAEExecutionBoundaryTests",
+          "passed": 1,
+          "failed": 1,
+          "disabled": 0,
+          "result": "failed"
+        },
+        {
+          "name": "DoryPCPCIExpressTests",
+          "passed": 12,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHBootTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHKernelTests",
+          "passed": 14,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryConformanceTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPortIOTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPowerControllerTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCRAMConfigurationTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCRTCTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCSMBIOSTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBHIDDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBUVCDeviceTests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCV1ABITests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioBlockPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioEntropyPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioGPUPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioInputPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioNetworkPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioPCITests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioSoundPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCXHCITests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "\"DoryPC UEFI tier qualification\"",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "ISAInventoryTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        }
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16.log.gz",
+        "sha256": "b6820810abad3aabb733dbea0f0009f0f3daabde8edb53d53cd1b9683b449c0f"
+      }
+    },
+    {
+      "run": 17,
+      "uncompressedLogSHA256": "2871cade81559ae2fdb3688a368698c5f6e8748cab6416e9bb552830455fd98e",
+      "reportedTests": 637,
+      "reportedSuites": 70,
+      "result": "passed",
+      "elapsedSeconds": 2.522,
+      "issues": 0,
+      "passed": 636,
+      "failed": 0,
+      "disabled": 1,
+      "suiteResults": {
+        "passed": 70,
+        "failed": 0
+      },
+      "perSuite": [
+        {
+          "name": "DoryARM64BaselineJITTests",
+          "passed": 81,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64CanonicalFaultTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64PAELatchTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64SegmentBaseTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ArchitecturalStateTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86BoundedCorpusTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86CPUProfileTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DecoderTests",
+          "passed": 40,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialIsolationTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ExtendedFloatTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86HypervisorBoundaryTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86IRTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterpreterTests",
+          "passed": 93,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterruptTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86MemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86MmapAllocationTests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ModePrivilegeTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PAEPDPTELatchTests",
+          "passed": 15,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingReservedBitsTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingTests",
+          "passed": 29,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PhysicalReferenceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 1,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PreciseFaultTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ReplayTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE2ScalarFPTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE3AndSSE4Tests",
+          "passed": 16,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SystemPrivilegeTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86VEXTests",
+          "passed": 15,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFILaunchPlanTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineCompositionTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIVariableBridgeMMIOTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCCameraBridgeTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "PVHBootRunnerTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCACPITests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCAPICTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCDirectKernelMachineTests",
+          "passed": 29,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareConfigurationTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareFlashTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCHPETTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCIOAPICMaskTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLegacyInterruptTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLoadPreflightTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCMultiprocessorTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPAEExecutionBoundaryTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPCIExpressTests",
+          "passed": 12,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPMTimerCoherenceTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHBootTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHKernelTests",
+          "passed": 14,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryConformanceTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPortIOTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPowerControllerTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCRAMConfigurationTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCRTCTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCSMBIOSTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBHIDDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBUVCDeviceTests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCV1ABITests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioBlockPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioEntropyPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioGPUPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioInputPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioNetworkPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioPCITests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioSoundPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCXHCITests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "\"DoryPC UEFI tier qualification\"",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "ISAInventoryTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        }
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-17.log.gz",
+        "sha256": "3f638e192dbb8ff895e39132fe3dcffb88f61388dc577b20341615a2005d60a1"
+      }
+    },
+    {
+      "run": 18,
+      "uncompressedLogSHA256": "7f43c441144a0861bd869f4a142fd235acc1c5a2518a4caaf7ad351ea8e19345",
+      "reportedTests": 644,
+      "reportedSuites": 71,
+      "result": "passed",
+      "elapsedSeconds": 2.567,
+      "issues": 0,
+      "passed": 643,
+      "failed": 0,
+      "disabled": 1,
+      "suiteResults": {
+        "passed": 71,
+        "failed": 0
+      },
+      "perSuite": [
+        {
+          "name": "DoryARM64BaselineJITTests",
+          "passed": 81,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64CanonicalFaultTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64PAELatchTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryARM64SegmentBaseTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ArchitecturalStateTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86BoundedCorpusTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86CPUProfileTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DecoderTests",
+          "passed": 40,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialIsolationTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86DifferentialTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ExtendedFloatTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86HypervisorBoundaryTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86IRTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterpreterTests",
+          "passed": 93,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86InterruptTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86MemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86MmapAllocationTests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ModePrivilegeTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PAEPDPTELatchTests",
+          "passed": 15,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingReservedBitsTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PagingTests",
+          "passed": 29,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PhysicalReferenceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 1,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86PreciseFaultTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86ReplayTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE2ScalarFPTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SSE3AndSSE4Tests",
+          "passed": 16,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86SystemPrivilegeTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryX86VEXTests",
+          "passed": 15,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFILaunchPlanTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineCompositionTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIVariableBridgeMMIOTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCCameraBridgeTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "PVHBootRunnerTests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCACPITests",
+          "passed": 9,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCAPICTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCDirectKernelMachineTests",
+          "passed": 29,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareConfigurationTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCFirmwareFlashTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCHPETTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCIOAPICMaskTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLegacyInterruptTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCLoadPreflightTests",
+          "passed": 5,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCMultiprocessorTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPAEExecutionBoundaryTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPCIExpressTests",
+          "passed": 12,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPMTimerCoherenceTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHBootTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPVHKernelTests",
+          "passed": 14,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryBoundaryTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryConformanceTests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPhysicalMemoryTests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPortIOTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCPowerControllerTests",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCRAMConfigurationTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCRTCTests",
+          "passed": 8,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCSMBIOSTests",
+          "passed": 6,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUEFIMachineTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBHIDDeviceTests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCUSBUVCDeviceTests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCV1ABITests",
+          "passed": 3,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioBlockPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioEntropyPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioGPUPCITests",
+          "passed": 2,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioInputPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioNetworkPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioPCITests",
+          "passed": 10,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCVirtioSoundPCITests",
+          "passed": 1,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "DoryPCXHCITests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "\"DoryPC UEFI tier qualification\"",
+          "passed": 4,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        },
+        {
+          "name": "ISAInventoryTests",
+          "passed": 7,
+          "failed": 0,
+          "disabled": 0,
+          "result": "passed"
+        }
+      ],
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-18.log.gz",
+        "sha256": "49e5951eea0127d3657f5280742fdee1dc7ee118ce328a2c473a1d823afd67ff"
+      }
+    }
+  ],
+  "qualification": "Counting verification only; disabled tests remain unexecuted and this does not change any failed guest or release outcome.",
+  "affectedImmutableReviews": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-13.json",
+      "sha256": "b30ed3bf2d66e8f5562d25eb765f6b1af966c439e01688a94df2d3da92422e4a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-15.json",
+      "sha256": "2df966a8e1fefe9e992ddf5e8d902a4fdcd39e0f7b43fcca3aa961ce1c679299"
+    }
+  ]
+}

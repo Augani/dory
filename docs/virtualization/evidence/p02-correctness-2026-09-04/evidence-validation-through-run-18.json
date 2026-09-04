@@ -1,0 +1,131 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-evidence-validation",
+  "scope": "Read-only schema, strict individual/per-suite/global test-count reconciliation, retained artifact SHA-256 and outcome/source consistency. No new build, VM execution or behavioral qualification.",
+  "command": "uv run --offline --with jsonschema python /tmp/dory-p02-validate-through-18.py",
+  "schema": {
+    "path": "Config/DoryVirtualizationEvidence.schema.json",
+    "sha256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb"
+  },
+  "schemaEnvelopes": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/cpu-envelope-through-run-18.json",
+      "sha256": "4796ec7348b6f3700b850a9661485956cfed2795d8b39da2b2fb8555b1fadfae"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/firmware-envelope-through-run-18.json",
+      "sha256": "27ee9685c3b9a5856b17684dafee10e8d78a07baf6789e46ee095108f7dfe6ea"
+    }
+  ],
+  "review": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-18.json",
+    "sha256": "ddd10548ac2e095cc1a30cf829c4e942f138d5a7e77f40ced8f4b39c24510a3e"
+  },
+  "sourceVerification": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-16-18-source-verification.json",
+    "sha256": "cd2ff5139be633bdc0b795d28698a9f15a8a2db412dad2b51a0c5a42d4ce16c8"
+  },
+  "strictCountCorrection": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/swift-testing-count-correction-through-run-18.json",
+    "sha256": "dfb6e5d8aea0e165aa74143f99b6414cf5e46b3e5f037a04cbb2d00168faaf91"
+  },
+  "uniqueArtifactReferences": 29,
+  "artifactReferenceOccurrences": 122,
+  "agentNewFilesChecked": 23,
+  "hashMismatches": 0,
+  "schemaErrors": 0,
+  "privateHomePathsInNewArtifacts": 0,
+  "verifiedCounts": [
+    {
+      "run": 9,
+      "reported": 565,
+      "passed": 565,
+      "failed": 0,
+      "disabled": 0,
+      "suites": 56,
+      "issues": 0
+    },
+    {
+      "run": 11,
+      "reported": 572,
+      "passed": 572,
+      "failed": 0,
+      "disabled": 0,
+      "suites": 57,
+      "issues": 0
+    },
+    {
+      "run": 12,
+      "reported": 580,
+      "passed": 579,
+      "failed": 0,
+      "disabled": 1,
+      "suites": 59,
+      "issues": 0
+    },
+    {
+      "run": 13,
+      "reported": 590,
+      "passed": 589,
+      "failed": 0,
+      "disabled": 1,
+      "suites": 61,
+      "issues": 0
+    },
+    {
+      "run": 14,
+      "reported": 605,
+      "passed": 604,
+      "failed": 0,
+      "disabled": 1,
+      "suites": 64,
+      "issues": 0
+    },
+    {
+      "run": 15,
+      "reported": 612,
+      "passed": 611,
+      "failed": 0,
+      "disabled": 1,
+      "suites": 66,
+      "issues": 0
+    },
+    {
+      "run": 16,
+      "reported": 632,
+      "passed": 630,
+      "failed": 1,
+      "disabled": 1,
+      "suites": 69,
+      "issues": 11
+    },
+    {
+      "run": 17,
+      "reported": 637,
+      "passed": 636,
+      "failed": 0,
+      "disabled": 1,
+      "suites": 70,
+      "issues": 0
+    },
+    {
+      "run": 18,
+      "reported": 644,
+      "passed": 643,
+      "failed": 0,
+      "disabled": 1,
+      "suites": 71,
+      "issues": 0
+    }
+  ],
+  "sourceBindingSummary": {
+    "run16": "671 tracked inputs reconstructed from base plus exact overlay; 668 match comparison commit and 3 differ; 6 generated inputs separately verified.",
+    "run17": "All 672 tracked inputs match ac0a5aaa7; 6 generated inputs separately verified.",
+    "run18": "All 673 tracked inputs match b13dd7846; 6 generated inputs separately verified."
+  },
+  "realKernelProbesRetained": 1,
+  "realKernelProbesPassed": 0,
+  "probeOutcome": "Source 17 probe 5 exits 1 with fixture-or-runner-error after the kernel /init launch announcement; no workload receipt; cached state describes the last completed quantum.",
+  "gitDiffCheckExitCode": 0,
+  "releaseQualified": false
+}
