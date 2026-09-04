@@ -4386,19 +4386,59 @@ public struct DoryX86Interpreter: Sendable {
         state.x87StatusWord |= 0x0400
       }
     case .loadOne:
-      pushX87(1, state: &state)
+      pushX87(DoryX86ExtendedFloat.one, state: &state)
     case .loadLog2Ten:
-      pushX87(Foundation.log2(10), state: &state)
+      pushX87(
+        positiveX87Constant(
+          lowerSignificand: 0xD49A_784B_CD1B_8AFE,
+          nearestSignificand: 0xD49A_784B_CD1B_8AFE,
+          exponentField: 0x4000,
+          state: state
+        ),
+        state: &state
+      )
     case .loadLog2E:
-      pushX87(Foundation.log2(M_E), state: &state)
+      pushX87(
+        positiveX87Constant(
+          lowerSignificand: 0xB8AA_3B29_5C17_F0BB,
+          nearestSignificand: 0xB8AA_3B29_5C17_F0BC,
+          exponentField: 0x3FFF,
+          state: state
+        ),
+        state: &state
+      )
     case .loadPi:
-      pushX87(.pi, state: &state)
+      pushX87(
+        positiveX87Constant(
+          lowerSignificand: 0xC90F_DAA2_2168_C234,
+          nearestSignificand: 0xC90F_DAA2_2168_C235,
+          exponentField: 0x4000,
+          state: state
+        ),
+        state: &state
+      )
     case .loadLog10Two:
-      pushX87(Foundation.log10(2), state: &state)
+      pushX87(
+        positiveX87Constant(
+          lowerSignificand: 0x9A20_9A84_FBCF_F798,
+          nearestSignificand: 0x9A20_9A84_FBCF_F799,
+          exponentField: 0x3FFD,
+          state: state
+        ),
+        state: &state
+      )
     case .loadLnTwo:
-      pushX87(Foundation.log(2), state: &state)
+      pushX87(
+        positiveX87Constant(
+          lowerSignificand: 0xB172_17F7_D1CF_79AB,
+          nearestSignificand: 0xB172_17F7_D1CF_79AC,
+          exponentField: 0x3FFE,
+          state: state
+        ),
+        state: &state
+      )
     case .loadZero:
-      pushX87(0, state: &state)
+      pushX87(DoryX86ExtendedFloat.zero, state: &state)
     case .twoToXMinusOne:
       writeX87Register(0, value: Foundation.pow(2, x) - 1, state: &state)
     case .yLog2X:
@@ -4467,6 +4507,30 @@ public struct DoryX86Interpreter: Sendable {
       guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
       writeX87Register(0, value: Foundation.cos(x), state: &state)
     }
+  }
+
+  /// Intel SDM092 Vol. 1 §8.3.4: the five irrational load constants are
+  /// held more precisely than binary80, then rounded only by RC. PC is ignored,
+  /// and this rounding neither raises #P nor reports a rounded-up result in C1.
+  private func positiveX87Constant(
+    lowerSignificand: UInt64,
+    nearestSignificand: UInt64,
+    exponentField: UInt16,
+    state: DoryX86FloatingPointState
+  ) -> DoryX86ExtendedFloat {
+    let significand: UInt64 =
+      switch x87Rounding(state) {
+      case .nearestEven:
+        nearestSignificand
+      case .up:
+        lowerSignificand + 1
+      case .down, .towardZero:
+        lowerSignificand
+      }
+    var bytes = (0..<8).map { UInt8(truncatingIfNeeded: significand >> UInt64($0 * 8)) }
+    bytes.append(UInt8(truncatingIfNeeded: exponentField))
+    bytes.append(UInt8(truncatingIfNeeded: exponentField >> 8))
+    return DoryX86ExtendedFloat(bytes: bytes)
   }
 
   private func x87Rounding(_ state: DoryX86FloatingPointState) -> DoryX86FloatingRounding {
