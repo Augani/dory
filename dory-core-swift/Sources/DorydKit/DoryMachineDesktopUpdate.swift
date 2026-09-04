@@ -72,7 +72,9 @@ struct DoryMachineDesktopUpdateJournal: Codable, Sendable, Equatable {
               workspace.definition.platform == nil || plan.platform == workspace.definition.platform,
               plan.virtualHardwareABIVersion == workspace.definition.virtualHardwareABIVersion,
               operation.source.definitionRevision == workspace.definition.lifecycle.revision,
-              operation.target.definitionRevision == workspace.definition.lifecycle.revision + 1,
+              workspace.legacyConfigurationSHA256 != nil
+                ? operation.target.definitionRevision == nil
+                : operation.target.definitionRevision == workspace.definition.lifecycle.revision + 1,
               operation.source.configurationAuthority?.legacyConfigurationSHA256 == Self.sha256(sourceConfigurationData),
               operation.source.configurationAuthority?.canonicalDefinitionSHA256 == (try Self.digest(workspace.definition)),
               operation.source.runtime == expectedRuntime,

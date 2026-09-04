@@ -10,7 +10,7 @@ struct DoryMachineDesktopUpdateTests {
             "configuration", "workspace", "request-id", "request-version", "component",
             "observed-before-apply", "snapshot", "source-helper", "runtime-plan",
             "runtime-definition", "runtime-machine", "native-environment", "source-isa", "source-distro",
-            "source-cpu", "timestamp-exhaustion",
+            "source-cpu", "timestamp-exhaustion", "native-target-revision",
           ])
     func rejectsCrossedAuthority(mutation: String) throws {
         var fixture = try DesktopUpdateContractFixture()
@@ -28,6 +28,8 @@ struct DoryMachineDesktopUpdateTests {
             )
         case "request-id":
             fixture.update.request.operationID = UUID()
+        case "native-target-revision":
+            fixture.operation.target.definitionRevision = nil
         case "request-version":
             fixture.update.request.version = "different-release"
         case "component":
@@ -176,6 +178,7 @@ struct DoryMachineDesktopUpdateTests {
                                           legacyMigrationFactsSHA256: desktopDigest("c"))
         )
         fixture.operation.source.configurationAuthority?.legacyConfigurationSHA256 = sourceSHA256
+        fixture.operation.target.definitionRevision = nil
         fixture.operation.desktopUpdateSpecificationDigest = try DoryOperationSpecification(canonical: fixture.update).digest
         try fixture.update.validate(operation: fixture.operation)
         let installed = try fixture.update.installedConfiguration(inputSHA256: desktopDigest("a"))
@@ -193,6 +196,37 @@ struct DoryMachineDesktopUpdateTests {
         )
         try rollback.validate(update: fixture.update, rollback: true)
         #expect(try rollback.configuration.environment == source.environment)
+    }
+
+    @Test("a same-component legacy reinstall does not promise an invented definition revision")
+    func sameComponentLegacyReinstallDefersRevision() throws {
+        var fixture = try DesktopUpdateContractFixture()
+        let source = try fixture.update.installedConfiguration(inputSHA256: desktopDigest("a"))
+        fixture.update.sourceConfigurationData = try DoryMachineDesktopUpdateJournal.canonicalData(source)
+        let sourceSHA256 = DoryMachineDesktopUpdateJournal.sha256(fixture.update.sourceConfigurationData)
+        let definition = try fixture.update.sourceWorkspace.definition
+        fixture.update.sourceWorkspaceData = try DoryMachineDesktopUpdateJournal.canonicalData(
+            DoryWorkspaceRepositoryRecord(definition: definition,
+                                          legacyConfigurationSHA256: sourceSHA256,
+                                          legacyMigrationFactsSHA256: desktopDigest("c"))
+        )
+        fixture.operation.source.configurationAuthority?.legacyConfigurationSHA256 = sourceSHA256
+        fixture.operation.target.definitionRevision = nil
+        fixture.operation.desktopUpdateSpecificationDigest = try DoryOperationSpecification(canonical: fixture.update).digest
+        try fixture.update.validate(operation: fixture.operation)
+        let repeated = try fixture.update.installedConfiguration(inputSHA256: desktopDigest("a"))
+        #expect(try DoryMachineDesktopUpdateJournal.canonicalData(repeated) == fixture.update.sourceConfigurationData)
+        let publication = DoryMachineDesktopUpdatePublication(
+            configurationData: fixture.update.sourceConfigurationData,
+            nativeDefinition: nil, expectedWorkspaceRevision: definition.lifecycle.revision
+        )
+        try publication.validate(update: fixture.update, rollback: false)
+        try withLease(fixture) { _, lease in
+            let replayed = try DoryMachineDesktopUpdateJournal.read(from: lease)
+            #expect(replayed == fixture.update)
+        }
+        fixture.operation.target.definitionRevision = definition.lifecycle.revision + 1
+        #expect(throws: (any Error).self) { try fixture.update.validate(operation: fixture.operation) }
     }
 
     @Test("private update bytes and immutable checkpoints survive exact replay and reject replacement")

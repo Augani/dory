@@ -277,7 +277,10 @@ public struct DoryWorkspaceLifecycleCondition: Codable, Sendable, Equatable {
         let desktopUpdateIsValid = desktopUpdate.map {
             $0.isValid && runtime == nil && plannedRuntime == nil && configurationAuthority == nil
         } ?? false
-        return definitionRevision.map { $0 > 0 } == true
+        // A desktop target binds selected component intent before guest-observed output
+        // determines whether a legacy projection changes its definition revision.
+        let revisionIsValid = definitionRevision.map { $0 > 0 } ?? desktopUpdateIsValid
+        return revisionIsValid
             && (runtime?.isValid ?? true)
             && (plannedRuntime == nil || futureRuntimeIsValid)
             && (desktopUpdate == nil || desktopUpdateIsValid)
@@ -649,7 +652,8 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
             && source.runtime?.authorizationState == .resolvedPlan
             && target.desktopUpdate?.virtualHardwareABIVersion == source.runtime?.virtualHardwareABIVersion
             && source.definitionRevision.map {
-                $0 <= UInt64.max - 2 && target.definitionRevision == $0 + 1
+                $0 <= UInt64.max - 2
+                    && (target.definitionRevision == nil || target.definitionRevision == $0 + 1)
             } == true
             && [.created, .stopped, .running, .paused].contains(source.state)
             && target.state == ([.running, .paused].contains(source.state) ? source.state : .stopped)

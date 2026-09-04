@@ -27,7 +27,7 @@ struct DoryDesktopUpdateOperationTests {
           arguments: [
             "configuration-spec", "runtime-target", "configuration-target", "planned-target",
             "source-postcondition", "source-replanning", "abi", "missing-spec", "missing-readiness",
-            "optional-readiness", "revision-exhaustion", "target-revision",
+            "optional-readiness", "revision-exhaustion", "target-revision", "target-zero-revision",
           ])
     func rejectsAuthoritySubstitution(mutation: String) throws {
         var operation = makeOperation(sourceState: .stopped)
@@ -57,6 +57,8 @@ struct DoryDesktopUpdateOperationTests {
             operation.target.definitionRevision = UInt64.max
         case "target-revision":
             operation.target.definitionRevision = 100
+        case "target-zero-revision":
+            operation.target.definitionRevision = 0
         default:
             Issue.record("unknown test mutation")
         }
@@ -64,6 +66,27 @@ struct DoryDesktopUpdateOperationTests {
         #expect(throws: DoryOperationJournalError.self) {
             try operation.journalSpecification()
         }
+    }
+
+    @Test("only a future desktop target may defer its output definition revision")
+    func legacyFutureRevisionDoesNotBecomeLaunchAuthority() throws {
+        var operation = makeOperation(sourceState: .stopped)
+        operation.target.definitionRevision = nil
+        #expect(operation.validate().isEmpty)
+        #expect(try JSONDecoder().decode(
+            DoryWorkspaceLifecycleOperation.self, from: JSONEncoder().encode(operation)
+        ) == operation)
+        for kind in [DoryWorkspaceMutationKind.starting, .restarting, .resuming, .restoring, .snapshotting] {
+            var changed = operation
+            changed.kind = kind
+            #expect(!changed.validate().isEmpty)
+        }
+        var missingSource = operation
+        missingSource.source.definitionRevision = nil
+        #expect(!missingSource.validate().isEmpty)
+        var missingFuture = operation
+        missingFuture.target.desktopUpdate = nil
+        #expect(!missingFuture.validate().isEmpty)
     }
 
     @Test("the private desktop specification is required and content-bound before journal publication")
