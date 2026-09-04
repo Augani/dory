@@ -634,7 +634,7 @@ struct DoryX86ExtendedFloat: Sendable, Hashable {
     let roundedUp = inexact && rounded.low != truncated
     if rounded >= DoryX86WideUnsigned(1) << fractionBits {
       return .init(bits: sign | UInt64(1) << UInt64(fractionBits),
-        inexact: inexact, tiny: true, overflow: false, roundedUp: roundedUp)
+        inexact: inexact, tiny: false, overflow: false, roundedUp: roundedUp)
     }
     return .init(bits: sign | rounded.low, inexact: inexact, tiny: true,
       overflow: false, roundedUp: roundedUp)

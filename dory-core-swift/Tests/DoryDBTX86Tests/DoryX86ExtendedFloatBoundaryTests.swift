@@ -104,6 +104,33 @@ import Testing
     }
   }
 
+  @Test func narrowingThatRoundsToMinimumNormalDoesNotReportUnderflow() {
+    // Intel SDM 092 Vol. 1 §4.9.1.5 detects x87 tininess after rounding to
+    // destination precision with an unbounded exponent. The threshold is strict:
+    // a result rounded to 1.0 * 2^-126 is normal even when its input was smaller.
+    let halfwayToFloat32MinimumNormal = value(
+      significand: 0xFFFF_FF00_0000_0000,
+      exponentField: UInt16(16_383 - 127)
+    )
+
+    let conversion = halfwayToFloat32MinimumNormal.float32Conversion()
+    #expect(conversion.bits == 0x0080_0000)
+    #expect(conversion.inexact && conversion.roundedUp)
+    #expect(!conversion.tiny && !conversion.overflow)
+
+    // Leave #U unmasked. Because the rounded result is normal, FST still stores
+    // it and reports only #P instead of suppressing the write with a false #U.
+    let stored = DoryX86X87Transfer.store(
+      bytes: halfwayToFloat32MinimumNormal.bytes(),
+      format: .float32,
+      truncate: false,
+      controlWord: 0x036F
+    )
+    #expect(stored.bytes == [0, 0, 0x80, 0])
+    #expect(stored.flags == 0x20)
+    #expect(stored.roundedUp && !stored.suppressWriteAndPop)
+  }
+
   private func value(significand: UInt64, exponentField: UInt16) -> DoryX86ExtendedFloat {
     let bytes = (0..<8).map { UInt8(truncatingIfNeeded: significand >> ($0 * 8)) }
       + [UInt8(truncatingIfNeeded: exponentField), UInt8(truncatingIfNeeded: exponentField >> 8)]
