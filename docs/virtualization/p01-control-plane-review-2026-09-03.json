@@ -6386,6 +6386,24 @@
           "sha256": "4d45e61b14b7192cb17946ed88a6090ac48d1358fd9aceb88906b120b29fa0a6"
         }
       ]
+    },
+    {
+      "campaign": "compound-lifecycle-production-review",
+      "receipt": "docs/virtualization/evidence/p01-compound-review-2026-09-04/campaign.json",
+      "phaseComplete": false,
+      "sourceScope": "Individually frozen sources; public snapshot/restore/create integration and final combined gate remain underway.",
+      "commits": [
+        "e1fb03ebe",
+        "a5ff20151",
+        "0eb66d7e7",
+        "1720a9095",
+        "63427e7d8",
+        "e2b914b6c",
+        "be87cc325",
+        "a80062888",
+        "139b26b28",
+        "cf14acc4e"
+      ]
     }
   ]
 }

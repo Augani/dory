@@ -1,0 +1,9 @@
+Release doryd contains startResolvedMachine.
+Absent diagnostic symbols:
+startLegacyMachine
+prepareLegacyRawHVInstalledLinuxBootIfNeeded
+materializeInstalledLinuxBootRuntimeIfNeeded
+qualificationBootstrapRuntimeAuthority
+qualificationBootstrapDoryPCRuntimeAuthority
+diagnosticConfiguration
+Debug MachineManager.swift.o contains40matching diagnostic symbols.

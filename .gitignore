@@ -156,6 +156,13 @@ docs/
 !/docs/virtualization/
 /docs/virtualization/*
 !/docs/virtualization/no-qemu-source-debt.json
+!/docs/virtualization/p01-control-plane-review-2026-09-03.json
+!/docs/virtualization/evidence/
+/docs/virtualization/evidence/*
+!/docs/virtualization/evidence/p01-control-plane-2026-09-03/
+!/docs/virtualization/evidence/p01-control-plane-2026-09-04/
+!/docs/virtualization/evidence/p01-parallel-review-2026-09-04/
+!/docs/virtualization/evidence/p01-compound-review-2026-09-04/
 !/docs/architecture-gates/
 /docs/architecture-gates/*
 !/docs/architecture-gates/virtiofs-worker-xpc.json

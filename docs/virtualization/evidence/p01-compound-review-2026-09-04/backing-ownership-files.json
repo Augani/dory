@@ -1,0 +1,26 @@
+[
+  {
+    "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineArtifactAuthority.swift",
+    "before": "/tmp/dory-p01-backing-ownership-before/DoryVirtualMachineArtifactAuthority.swift",
+    "beforeSHA256": "10595702e48bb565706afaccbc46774f48875160b2a0851db6012fb8ef32294a",
+    "afterSHA256": "da7bae815dc62a7f1482dd0d2f2651dd7e28efbb47c874bd34298ec20d492a4a"
+  },
+  {
+    "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionPlanningController.swift",
+    "before": "/tmp/dory-p01-backing-ownership-before/DoryDaemonVirtualMachineProductionPlanningController.swift",
+    "beforeSHA256": "20bc61996121e03f2ec9d83740a93b8c712591ae445d387bcd4be47cc975780a",
+    "afterSHA256": "afab1658d3f85fa09a2d0cc470ff878735247c373246eda1b259b79a41d1cec6"
+  },
+  {
+    "path": "dory-core-swift/Tests/DoryOperationsTests/DoryArtifactBackingOwnershipTests.swift",
+    "before": null,
+    "beforeSHA256": null,
+    "afterSHA256": "2122dab3ad05bc30c15992f89839f14707975fcca524b919ed335b079666b8b0"
+  },
+  {
+    "path": "dory-core-swift/Tests/DorydKitTests/DoryPlanningBackingOwnershipTests.swift",
+    "before": null,
+    "beforeSHA256": null,
+    "afterSHA256": "5255c3fc7ac13394c1a84a5ec38d1a54b54285868049024f1594bebd9c63a305"
+  }
+]

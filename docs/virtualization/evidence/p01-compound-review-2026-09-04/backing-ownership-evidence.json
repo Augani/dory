@@ -1,0 +1,49 @@
+{
+  "scope": "Compiling diagnostic-launch frozen package plus exact current backing authority/controller and two new test overlays. Root MachineManager integration is owned and verified separately by parent.",
+  "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backing-ownership-source-manifest.json",
+  "manifestSHA256": "2dd45f5300292feecbb4755af6a11d7349409ff29658ca9322a56154593f8174",
+  "sourceFiles": 659,
+  "unchangedInputs": true,
+  "changedInputs": [],
+  "ownedFiles": [
+    {
+      "path": "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineArtifactAuthority.swift",
+      "sha256": "da7bae815dc62a7f1482dd0d2f2651dd7e28efbb47c874bd34298ec20d492a4a",
+      "matchesLive": true
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionPlanningController.swift",
+      "sha256": "afab1658d3f85fa09a2d0cc470ff878735247c373246eda1b259b79a41d1cec6",
+      "matchesLive": true
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryOperationsTests/DoryArtifactBackingOwnershipTests.swift",
+      "sha256": "2122dab3ad05bc30c15992f89839f14707975fcca524b919ed335b079666b8b0",
+      "matchesLive": true
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/DoryPlanningBackingOwnershipTests.swift",
+      "sha256": "5255c3fc7ac13394c1a84a5ec38d1a54b54285868049024f1594bebd9c63a305",
+      "matchesLive": true
+    }
+  ],
+  "tests": {
+    "total": 27,
+    "xctest": 12,
+    "swiftTesting": 15,
+    "focusedLog": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backing-ownership-tests.log.gz",
+    "productionStrictStartLog": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backing-ownership-strict-start.log.gz",
+    "focusedBuildSeconds": 71.04
+  },
+  "api": "DoryDaemonVirtualMachineProductionPlanningControlling.validateBackingOwnership(of: DoryResolvedMachineLaunchArtifact, atPath: String) throws -> Void",
+  "claims": [
+    "Mutable writes preserve published device/inode/length and exact persisted provenance; check returns no fresh launch evidence.",
+    "Immutable bytes retain strict digest and length verification.",
+    "Authority publication files unchanged by successful and rejected validation.",
+    "Ordinary production pre-spawn still rejects changed mutable storage."
+  ],
+  "patch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backing-ownership-agent-only.patch.gz",
+  "patchSHA256": "08864e7d25e9af7f5cddf3d7d79232e38613bd18a724d04e13fac087726407a5",
+  "preimages": "/tmp/dory-p01-backing-ownership-before",
+  "files": "docs/virtualization/evidence/p01-compound-review-2026-09-04/backing-ownership-files.json"
+}

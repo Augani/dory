@@ -1,0 +1,26 @@
+{
+  "scope": "Frozen previously verified exec-cancellation source plus diagnostic-launch-only patch and constructor migrations; verification-only bootstrap stage forwarder. Not a full live MachineManager gate.",
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/diagnostic-launch-source-manifest.json",
+  "manifestSHA256": "90b3dd688fd5bfde207904dd86bb7fb7500b0ca5f89b9ce499f865b1d9f42bcf",
+  "sourceFileCount": 657,
+  "tests": {
+    "xctest": 127,
+    "swiftTesting": 91,
+    "total": 218,
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/diagnostic-launch-debug-tests.log.gz",
+    "buildSeconds": 83.61
+  },
+  "release": {
+    "product": "doryd",
+    "passed": true,
+    "seconds": 222.31,
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/diagnostic-launch-release-build.log.gz",
+    "symbolEvidence": "docs/virtualization/evidence/p01-compound-review-2026-09-04/diagnostic-launch-release-symbol-evidence.txt"
+  },
+  "packaging": {
+    "passed": true,
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/diagnostic-launch-build-components.log.gz"
+  },
+  "agentPatch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/diagnostic-launch-agent-only.patch.gz",
+  "patchSHA256": "61ca0027e7a0d9c043294355ed09cfa96d3706bfd4132f7cb00f61fafb028580"
+}

@@ -1,0 +1,53 @@
+{
+  "testHostPath": "/tmp/dory-p01-app-isolated-3hcfjpzm/DoryP01Tests.app",
+  "xctestrun": "/tmp/dory-p01-app-isolated-3hcfjpzm/DoryP01.xctestrun",
+  "originalBundleIdentifier": "com.pythonxi.Dory",
+  "testBundleIdentifier": "com.pythonxi.Dory.P01Tests",
+  "signingCommandArguments": [
+    "codesign",
+    "--force",
+    "--sign",
+    "-",
+    "--preserve-metadata=entitlements,flags,runtime",
+    "/tmp/dory-p01-app-isolated-3hcfjpzm/DoryP01Tests.app"
+  ],
+  "commandArguments": [
+    "xcodebuild",
+    "test-without-building",
+    "-xctestrun",
+    "/tmp/dory-p01-app-isolated-3hcfjpzm/DoryP01.xctestrun",
+    "-destination",
+    "platform=macOS",
+    "-parallel-testing-enabled",
+    "NO",
+    "-resultBundlePath",
+    "/tmp/dory-p01-app-isolated-3hcfjpzm/Results.xcresult",
+    "-only-testing:DoryTests/DorydClientTests",
+    "-only-testing:DoryTests/MachineRuntimeProjectionTests"
+  ],
+  "scope": "DorydClientTests and MachineRuntimeProjectionTests in a copied Debug app, with a separate test-host bundle identity, preserved entitlements and ad-hoc signing. DORY_UI_TEST=1 disables app instance management and startup side effects. This does not qualify the original bundle identity, app UI automation, physical guests or release signing. App source is frozen with snapshot, restore, creation and clone UUID transport. Later live changes are excluded.",
+  "copyComparison": {
+    "identicalRegularFiles": 133,
+    "changedFiles": [
+      {
+        "path": "Contents/Info.plist",
+        "originalSHA256": "ac28528333c37c471e01c81ab85a6ca0f3b60ce5b10ec5e582fb7853233967c4",
+        "testHostSHA256": "16d377ea7b348c5ac51de7e1d7a1fecbb1663d8fb24b537d75286696419c6701"
+      },
+      {
+        "path": "Contents/MacOS/Dory",
+        "originalSHA256": "292d5afefd027f944ff76c9e2605c6815a7769cfb621d6cad5294a8a883726ef",
+        "testHostSHA256": "3cec10afae1dcdda540eecdf3ef8407995b8f46bb57eca013dcb61614c44d95f"
+      }
+    ],
+    "meaning": "The app debug dylib, test bundle and embedded dependencies remain byte-identical; only the host identity and its signature changed.",
+    "hostExecutablePayload": {
+      "sha256": "af2b6216aafae7972e2ab5c530175f558bcfc5ed404c6521e3eb4e8347739a3a",
+      "bytes": 97831216,
+      "meaning": "Identical Mach-O bytes after the header/load commands and before LC_CODE_SIGNATURE; bundle/signature metadata is excluded."
+    }
+  },
+  "sourceSnapshotManifestPath": "docs/virtualization/evidence/p01-compound-review-2026-09-04/final-client-source-manifest.json",
+  "sourceSnapshotManifestSHA256": "29ad4e5e5f18a6f53351337dc7764d8a846b80956961eaa0c2aeececc68ff9dd",
+  "exitCode": 0
+}

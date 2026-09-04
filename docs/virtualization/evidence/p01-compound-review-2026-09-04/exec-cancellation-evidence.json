@@ -1,0 +1,101 @@
+{
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/exec-cancellation-source-manifest.json",
+  "sourceManifestSHA256": "bf54eb4472fe884e9572ce8720085daa2d78b832029ef3eef1e07056dc82caee",
+  "sourceFiles": 735,
+  "ownedFiles": [
+    {
+      "path": "dory-core/ffi/src/agent_forward.rs",
+      "sha256": "1bdfc6dd9a8c9b68369e70171157bb372d35beb2cc80bd3f4eeef84f3398fd50"
+    },
+    {
+      "path": "dory-core/ffi/src/exec_control.rs",
+      "sha256": "9436024a211363627d39bdd4da1ff2b87a7a0912047e85978c129285c08f2943"
+    },
+    {
+      "path": "dory-core/ffi/src/exec_control_tests.rs",
+      "sha256": "3c3fdc6f180e00cba28e0dc09dfdd66cc50631979058d06b18bcd36ffe1b4cb7"
+    },
+    {
+      "path": "dory-core/ffi/src/lib.rs",
+      "sha256": "c79cef952981cc70ec0f06264e8601a0c748c814e1eab00c7d66f16c4d13a75a"
+    },
+    {
+      "path": "dory-core/proto/src/mux.rs",
+      "sha256": "9d80489b9afe2a53e0174ef9e651af9e1df1bfbd0b298b1478a87a415ebda386"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/DoryCore.swift",
+      "sha256": "e32033ddc3dc3a7ad182ec3b6d7334c86b0544d87cce491286a533d763fca46b"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/DoryExecControl.swift",
+      "sha256": "9005f0aea720e4c5049360abea1af4d6c2c2491485c9fd9b7fb88723ca5e8a39"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+      "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+    },
+    {
+      "path": "dory-core-swift/Sources/DorydKit/AgentControl.swift",
+      "sha256": "9aedf9c340a55b42d8ffb089460098ce2a3bd25c1a24aebb2380f6e07b01cf36"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryCoreTests/DoryExecControlFFITests.swift",
+      "sha256": "fa38e49c35cf9e1270640efded641991b91e916550098fa4a1816504905d503d"
+    },
+    {
+      "path": "dory-core-swift/Tests/DorydKitTests/AgentExecCancellationTests.swift",
+      "sha256": "52caa927c7433e9b050ac21077cc75cbecb7fadba7614b2bae272db4f80ae23c"
+    }
+  ],
+  "verifiedInstalledArtifact": [
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+      "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+      "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+      "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+    },
+    {
+      "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+      "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+    }
+  ],
+  "agentOnlyPatch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/exec-cancellation-agent-only.patch.gz",
+  "agentOnlyPatchSHA256": "f4e59ff6dbacdd58191dd8bf05cfee4c983a02ba777e0234c2204b2d13881c9a",
+  "gates": [
+    {
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/exec-cancel-ffi-tests.log.gz",
+      "passed": 15,
+      "seconds": 3.46
+    },
+    {
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/exec-cancel-mux-tests.log.gz",
+      "passed": 4,
+      "seconds": 0.05
+    },
+    {
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/exec-cancel-swift-tests-2.log.gz",
+      "xctestPassed": 28,
+      "swiftTestingPassed": 4,
+      "buildSeconds": 74.55,
+      "seconds": 0.026
+    },
+    {
+      "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/exec-cancel-ffi-build.log.gz",
+      "result": "Universal release xcframework and generated Swift bindings built and installed"
+    }
+  ],
+  "notes": [
+    "Root integration requires authenticated helper stop and observed termination before rollback; cancellation proves only host wait ended.",
+    "Existing exec timeout/clamp/deadline code unchanged; real-agent controlled timeout and binary stdin verified.",
+    "No MachineManager or ProductionTrustTests changes.",
+    "First Swift scratch attempt rejected copied module cache absolute path; moved old generated cache aside and complete second build/test gate passed.",
+    "Preexisting ffi/Cargo.toml and ffi/src/uniffi_bindgen.rs changes are not in this agent patch."
+  ]
+}

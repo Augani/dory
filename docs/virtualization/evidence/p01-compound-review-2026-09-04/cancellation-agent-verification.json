@@ -1,0 +1,13 @@
+{
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/cancellation-agent-tests-1.log.gz",
+  "source_manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/cancellation-agent-source-manifest-1.json",
+  "manifest_sha256": "55d25d77085509cfd653025d42c0251289db5c97346e071ff4af4b71ffff4670",
+  "build_seconds": 96.32,
+  "test_seconds": 95.577,
+  "tests": 1,
+  "exit_code": 0,
+  "changed_inputs": [],
+  "scope": "Public production signed update + stop cancellation with authenticated helper/controlled guest fixture; helper gone before rollback publication, original paused power restored before terminal stop, old/invalid UUID do not cancel. Real FFI cancellation separately tested by authority agent.",
+  "indexed_patch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/cancellation-index.patch.gz",
+  "indexed_postimage_compiled": false
+}

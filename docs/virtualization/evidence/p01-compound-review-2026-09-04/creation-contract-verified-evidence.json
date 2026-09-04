@@ -1,0 +1,11 @@
+{
+  "scope": "Exact frozen current core with only public snapshot implementation restored from HEAD 0eb66d7e7 to exclude parent snapshot WIP; creation and new snapshot lifecycle contracts use live implementation. Structural tests, not physical guest qualification.",
+  "snapshot": "/tmp/dory-p01-creation-contract-verified-snapshot",
+  "manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-contract-verified-manifest.json",
+  "manifestSHA256": "2e244478f7a66914eb707ed05b75fdb7942e8bc529fab26731840edb3aa3af52",
+  "files": 664,
+  "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/creation-live-agent-tests-4.log.gz",
+  "exitCode": 0,
+  "swiftTests": 34,
+  "suites": 6
+}

@@ -1,0 +1,57 @@
+{
+  "success": {
+    "cases": 3,
+    "duration_seconds": 129.757,
+    "exit_code": 0,
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/desktop-root-agent-tests-8.log.gz",
+    "source_manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/desktop-root-source-manifest-8.json",
+    "changed_inputs": []
+  },
+  "rollback": {
+    "cases": 6,
+    "duration_seconds": 581.554,
+    "exit_code": 0,
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/desktop-root-agent-tests-7.log.gz",
+    "source_manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/desktop-root-source-manifest-7.json",
+    "archived_overlay_directory": "/tmp/dory-p01-desktop-root-source-versions/7",
+    "source_verification": {
+      "resolved_count": 599,
+      "unavailable": []
+    }
+  },
+  "scope": "Production trust/planning/lifecycle with authenticated XCTest subprocess runtime and supplied guest-agent fixture; no physical guest or desktop/workload qualification claimed.",
+  "exclusions": [
+    "DoryMachineSnapshotRestore.swift ongoing draft was not present when snapshot8 was copied; later root work is excluded."
+  ],
+  "completion_replay": {
+    "cases": 3,
+    "duration_seconds": 136.064,
+    "exit_code": 0,
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/desktop-root-agent-tests-9-completion.log.gz",
+    "source_manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/desktop-root-source-manifest-8.json",
+    "changed_inputs": []
+  },
+  "interrupted_rollback": {
+    "cases": 4,
+    "duration_seconds": 644.817,
+    "exit_code": 0,
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/desktop-root-agent-tests-9-rollback-recovery.log.gz",
+    "source_manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/desktop-root-source-manifest-9.json",
+    "changed_inputs": []
+  },
+  "fault_recovery": {
+    "cases": 14,
+    "duration_seconds": 861.85,
+    "exit_code": 0,
+    "log": "docs/virtualization/evidence/p01-compound-review-2026-09-04/desktop-root-agent-tests-10-fault-recovery.log.gz",
+    "source_manifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/desktop-root-source-manifest-8.json",
+    "changed_inputs": []
+  },
+  "total_cases": 30,
+  "later_unverified_live_test_changes": [
+    "Controlled guest exec fixture overload and invocation assertions",
+    "Cleared final operation and failure projections assertions"
+  ],
+  "desktop_boundary": "/tmp/dory-p01-desktop-agent-final-boundary",
+  "verified_owned_patch": "docs/virtualization/evidence/p01-compound-review-2026-09-04/desktop-agent-verified-owned.patch.gz"
+}

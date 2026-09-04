@@ -1,0 +1,18 @@
+{
+  "scope": "Exact staged cancellation extraction and required restart XPC declaration; all staged source bytes match tested frozen package.",
+  "sourceManifest": "docs/virtualization/evidence/p01-compound-review-2026-09-04/cancellation-index-source-manifest.json",
+  "sourceManifestSHA256": "6f8d520bf82232b59471b94612bea8d0dac80e01414ebf98fc5068184bd28e04",
+  "sourceFiles": 662,
+  "buildLog": "docs/virtualization/evidence/p01-compound-review-2026-09-04/cancellation-index-build.log.gz",
+  "testLog": "docs/virtualization/evidence/p01-compound-review-2026-09-04/cancellation-index-tests-2.log.gz",
+  "passedTests": 1,
+  "testSeconds": 97.711,
+  "testBuildSeconds": 49.99,
+  "selectedTest": "productionDesktopControlledCancellation",
+  "stagedFiles": [
+    "dory-core-swift/Sources/DorydKit/DoryMachineDesktopUpdate.swift",
+    "dory-core-swift/Sources/DorydKit/DorydControl.swift",
+    "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+    "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift"
+  ]
+}
