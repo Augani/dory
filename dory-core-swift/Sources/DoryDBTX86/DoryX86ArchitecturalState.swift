@@ -5,6 +5,7 @@ public enum DoryX86StateError: Error, Sendable, Equatable, CustomStringConvertib
   case invalidRFLAGS(UInt64)
   case invalidRegisterPayload(expected: Int, actual: Int)
   case invalidX87RegisterCount(Int)
+  case invalidX87Opcode(UInt16)
   case invalidVectorRegisterCount(Int)
   case invalidXCR0(UInt64)
   case invalidPhysicalAddressBits(UInt8)
@@ -20,6 +21,8 @@ public enum DoryX86StateError: Error, Sendable, Equatable, CustomStringConvertib
       "x86 register payload contains \(actual) bytes; expected \(expected)"
     case .invalidX87RegisterCount(let count):
       "x86 state contains \(count) x87 registers; expected 8"
+    case .invalidX87Opcode(let value):
+      "x87 last opcode exceeds 11 bits: 0x\(String(value, radix: 16))"
     case .invalidVectorRegisterCount(let count):
       "x86 state contains \(count) vector registers; expected 16"
     case .invalidXCR0(let value):
@@ -393,6 +396,11 @@ public struct DoryX86FloatingPointState: Codable, Sendable, Hashable {
   public var x87ControlWord: UInt16
   public var x87StatusWord: UInt16
   public var x87TagWord: UInt16
+  public var x87InstructionPointer: UInt64
+  public var x87InstructionSelector: UInt16
+  public var x87DataPointer: UInt64
+  public var x87DataSelector: UInt16
+  public var x87Opcode: UInt16
   public var mxcsr: UInt32
   public var mxcsrMask: UInt32
 
@@ -403,9 +411,15 @@ public struct DoryX86FloatingPointState: Codable, Sendable, Hashable {
     x87StatusWord: UInt16 = 0,
     x87TagWord: UInt16 = 0xffff,
     mxcsr: UInt32 = 0x1f80,
-    mxcsrMask: UInt32 = 0xffff
+    mxcsrMask: UInt32 = 0xffff,
+    x87InstructionPointer: UInt64 = 0,
+    x87InstructionSelector: UInt16 = 0,
+    x87DataPointer: UInt64 = 0,
+    x87DataSelector: UInt16 = 0,
+    x87Opcode: UInt16 = 0
   ) throws {
     guard x87.count == 8 else { throw DoryX86StateError.invalidX87RegisterCount(x87.count) }
+    guard x87Opcode <= 0x7ff else { throw DoryX86StateError.invalidX87Opcode(x87Opcode) }
     guard ymm.count == 16 else { throw DoryX86StateError.invalidVectorRegisterCount(ymm.count) }
     for register in x87 {
       guard register.bytes.count == 10 else {
@@ -422,12 +436,18 @@ public struct DoryX86FloatingPointState: Codable, Sendable, Hashable {
     self.x87ControlWord = x87ControlWord
     self.x87StatusWord = x87StatusWord
     self.x87TagWord = x87TagWord
+    self.x87InstructionPointer = x87InstructionPointer
+    self.x87InstructionSelector = x87InstructionSelector
+    self.x87DataPointer = x87DataPointer
+    self.x87DataSelector = x87DataSelector
+    self.x87Opcode = x87Opcode
     self.mxcsr = mxcsr
     self.mxcsrMask = mxcsrMask
   }
 
   private enum CodingKeys: String, CodingKey {
     case x87, ymm, x87ControlWord, x87StatusWord, x87TagWord, mxcsr, mxcsrMask
+    case x87InstructionPointer, x87InstructionSelector, x87DataPointer, x87DataSelector, x87Opcode
   }
 
   public init(from decoder: Decoder) throws {
@@ -439,8 +459,32 @@ public struct DoryX86FloatingPointState: Codable, Sendable, Hashable {
       x87StatusWord: values.decode(UInt16.self, forKey: .x87StatusWord),
       x87TagWord: values.decode(UInt16.self, forKey: .x87TagWord),
       mxcsr: values.decode(UInt32.self, forKey: .mxcsr),
-      mxcsrMask: values.decode(UInt32.self, forKey: .mxcsrMask)
+      mxcsrMask: values.decode(UInt32.self, forKey: .mxcsrMask),
+      x87InstructionPointer: values.decodeIfPresent(UInt64.self, forKey: .x87InstructionPointer) ?? 0,
+      x87InstructionSelector: values.decodeIfPresent(UInt16.self, forKey: .x87InstructionSelector) ?? 0,
+      x87DataPointer: values.decodeIfPresent(UInt64.self, forKey: .x87DataPointer) ?? 0,
+      x87DataSelector: values.decodeIfPresent(UInt16.self, forKey: .x87DataSelector) ?? 0,
+      x87Opcode: values.decodeIfPresent(UInt16.self, forKey: .x87Opcode) ?? 0
     )
+  }
+
+  public func encode(to encoder: Encoder) throws {
+    guard x87Opcode <= 0x7ff else { throw DoryX86StateError.invalidX87Opcode(x87Opcode) }
+    var values = encoder.container(keyedBy: CodingKeys.self)
+    try values.encode(x87, forKey: .x87)
+    try values.encode(ymm, forKey: .ymm)
+    try values.encode(x87ControlWord, forKey: .x87ControlWord)
+    try values.encode(x87StatusWord, forKey: .x87StatusWord)
+    try values.encode(x87TagWord, forKey: .x87TagWord)
+    try values.encode(mxcsr, forKey: .mxcsr)
+    try values.encode(mxcsrMask, forKey: .mxcsrMask)
+    // Keep the reset snapshot shape compatible with snapshots predating these
+    // registers; missing fields decode to the architectural reset value.
+    if x87InstructionPointer != 0 { try values.encode(x87InstructionPointer, forKey: .x87InstructionPointer) }
+    if x87InstructionSelector != 0 { try values.encode(x87InstructionSelector, forKey: .x87InstructionSelector) }
+    if x87DataPointer != 0 { try values.encode(x87DataPointer, forKey: .x87DataPointer) }
+    if x87DataSelector != 0 { try values.encode(x87DataSelector, forKey: .x87DataSelector) }
+    if x87Opcode != 0 { try values.encode(x87Opcode, forKey: .x87Opcode) }
   }
 }
 

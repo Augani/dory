@@ -133,6 +133,7 @@ public struct DoryX86Interpreter: Sendable {
     }
     let instruction: DoryX86DecodedInstruction
     let originalCodeSegment = state.cs
+    let originalX87StatusWord = state.floatingPoint.x87StatusWord
     do {
       let maximumFetchByteCount = try instructionFetchByteCount(
         state: state,
@@ -618,11 +619,15 @@ public struct DoryX86Interpreter: Sendable {
         break
       case .initializeFloatingPoint:
         // Intel SDM Vol. 2A FINIT/FNINIT preserves the physical data registers
-        // (including their MMX aliases) while marking every tag empty. The x87
-        // instruction/data pointers and last opcode are not yet modeled here.
+        // (including their MMX aliases) while marking every tag empty.
         state.floatingPoint.x87ControlWord = 0x037F
         state.floatingPoint.x87StatusWord = 0
         state.floatingPoint.x87TagWord = 0xFFFF
+        state.floatingPoint.x87InstructionPointer = 0
+        state.floatingPoint.x87InstructionSelector = 0
+        state.floatingPoint.x87DataPointer = 0
+        state.floatingPoint.x87DataSelector = 0
+        state.floatingPoint.x87Opcode = 0
       case .loadX87ControlWord(let source):
         state.floatingPoint.x87ControlWord = UInt16(
           truncatingIfNeeded: try read(
@@ -736,28 +741,31 @@ public struct DoryX86Interpreter: Sendable {
       case .x87Special(let operation):
         executeX87Special(operation, state: &state.floatingPoint)
       case .loadX87Environment(let source):
-        let byteCount = mode == .real16 || mode == .protected16 ? 14 : 28
-        try validateSegmentAccess(
+        let byteCount = DoryX86FloatingPointEnvironment.byteCount(
+          mode: mode, operandSizeOverride: instruction.prefixes.operandSizeOverride,
+          rexW: instruction.prefixes.rex?.w == true)
+        try validateFloatingPointTransfer(
           source,
           byteCount: byteCount,
           write: false,
           instruction: instruction,
           state: state
         )
-        let bytes = try executionMemory.read(
-          at: effectiveAddress(source, instruction: instruction, state: state),
-          byteCount: byteCount
-        )
-        state.floatingPoint.x87ControlWord = UInt16(fromLittleEndian(Array(bytes[0..<2])))
-        state.floatingPoint.x87StatusWord = UInt16(fromLittleEndian(Array(bytes[2..<4])))
-        state.floatingPoint.x87TagWord = UInt16(fromLittleEndian(Array(bytes[4..<6])))
+        let address = effectiveAddress(source, instruction: instruction, state: state)
+        let bytes = try executionMemory.read(at: address, byteCount: byteCount)
+        DoryX86FloatingPointEnvironment.load(bytes,
+          realFormat: DoryX86FloatingPointEnvironment.usesRealFormat(
+            mode: mode, virtual8086: state.rflags.contains(.virtual8086) && state.control.efer & (1 << 10) == 0), into: &state.floatingPoint)
         DoryX86LegacyFloatingPointPolicy.updateExceptionSummary(state: &state.floatingPoint)
       case .storeX87Environment(let destination):
-        let byteCount = mode == .real16 || mode == .protected16 ? 14 : 28
-        var bytes = [UInt8](repeating: 0, count: byteCount)
-        replaceLittleEndian(state.floatingPoint.x87ControlWord, in: &bytes, at: 0)
-        replaceLittleEndian(state.floatingPoint.x87StatusWord, in: &bytes, at: 2)
-        replaceLittleEndian(state.floatingPoint.x87TagWord, in: &bytes, at: 4)
+        let byteCount = DoryX86FloatingPointEnvironment.byteCount(
+          mode: mode, operandSizeOverride: instruction.prefixes.operandSizeOverride,
+          rexW: instruction.prefixes.rex?.w == true)
+        let bytes = DoryX86FloatingPointEnvironment.save(state.floatingPoint, byteCount: byteCount,
+          realFormat: DoryX86FloatingPointEnvironment.usesRealFormat(
+            mode: mode, virtual8086: state.rflags.contains(.virtual8086) && state.control.efer & (1 << 10) == 0))
+        try validateFloatingPointTransfer(destination, byteCount: byteCount, write: true,
+          instruction: instruction, state: state)
         try writeX87Memory(
           bytes,
           to: destination,
@@ -830,14 +838,15 @@ public struct DoryX86Interpreter: Sendable {
       case .saveFloatingPointState(let destination):
         let address = effectiveAddress(destination, instruction: instruction, state: state)
         guard address & 0xF == 0 else { return generalProtection(at: originalRIP) }
-        try validateSegmentAccess(
+        try validateFloatingPointTransfer(
           destination,
           byteCount: 512,
           write: true,
           instruction: instruction,
           state: state
         )
-        let bytes = floatingPointSaveArea(state.floatingPoint, mode: mode)
+        let bytes = floatingPointSaveArea(state.floatingPoint, mode: mode,
+          widePointers: mode == .long64 && instruction.prefixes.rex?.w == true)
         try executionMemory.validateWrite(at: address, byteCount: bytes.count)
         try executionMemory.write(
           at: address,
@@ -846,7 +855,7 @@ public struct DoryX86Interpreter: Sendable {
       case .restoreFloatingPointState(let source):
         let address = effectiveAddress(source, instruction: instruction, state: state)
         guard address & 0xF == 0 else { return generalProtection(at: originalRIP) }
-        try validateSegmentAccess(
+        try validateFloatingPointTransfer(
           source,
           byteCount: 512,
           write: false,
@@ -859,6 +868,7 @@ public struct DoryX86Interpreter: Sendable {
           let restored = try restoredFloatingPointState(
             from: bytes,
             mode: mode,
+            widePointers: mode == .long64 && instruction.prefixes.rex?.w == true,
             preserving: state.floatingPoint
           )
         else { return generalProtection(at: originalRIP) }
@@ -3248,6 +3258,20 @@ public struct DoryX86Interpreter: Sendable {
         nextRIP = state.registers.rcx
       }
       DoryX86LegacyFloatingPointPolicy.applyRetiredMMXEffects(instruction, state: &state.floatingPoint)
+      if DoryX86FloatingPointEnvironment.isNonControl(instruction) {
+        // Publish only after every operand access succeeded. Memory faults must
+        // preserve the previous x87 environment along with the physical data.
+        state.floatingPoint.x87InstructionPointer = instruction.address
+        state.floatingPoint.x87InstructionSelector = state.cs.selector
+        if let operand = DoryX86FloatingPointEnvironment.memoryOperand(instruction) {
+          state.floatingPoint.x87DataPointer = mode == .long64
+            ? effectiveAddress(operand, instruction: instruction, state: state)
+            : effectiveOffset(operand, instruction: instruction, state: state)
+          state.floatingPoint.x87DataSelector = segmentState(operand.segment, state: state).selector
+        }
+        DoryX86FloatingPointEnvironment.recordOpcodeIfNewUnmaskedException(
+          instruction, previousStatus: originalX87StatusWord, state: &state.floatingPoint)
+      }
       let finalMask: UInt64 =
         if mode == .protected16 || mode == .protected32, state.cs != originalCodeSegment {
           if state.cs.attributes & 0x2000 != 0 {
@@ -3388,7 +3412,8 @@ public struct DoryX86Interpreter: Sendable {
 
   private func floatingPointSaveArea(
     _ floatingPoint: DoryX86FloatingPointState,
-    mode: DoryX86ExecutionMode
+    mode: DoryX86ExecutionMode,
+    widePointers: Bool
   ) -> [UInt8] {
     var bytes = [UInt8](repeating: 0, count: floatingPointTransferByteCount(mode: mode))
     replaceLittleEndian(floatingPoint.x87ControlWord, in: &bytes, at: 0)
@@ -3401,10 +3426,22 @@ public struct DoryX86Interpreter: Sendable {
       abridgedTag |= UInt8(1) << UInt8(index)
     }
     bytes[4] = abridgedTag
+    replaceLittleEndian(floatingPoint.x87Opcode & 0x7FF, in: &bytes, at: 6)
+    if widePointers {
+      replaceLittleEndian(floatingPoint.x87InstructionPointer, in: &bytes, at: 8)
+      replaceLittleEndian(floatingPoint.x87DataPointer, in: &bytes, at: 16)
+    } else {
+      replaceLittleEndian(UInt32(truncatingIfNeeded: floatingPoint.x87InstructionPointer), in: &bytes, at: 8)
+      replaceLittleEndian(floatingPoint.x87InstructionSelector, in: &bytes, at: 12)
+      replaceLittleEndian(UInt32(truncatingIfNeeded: floatingPoint.x87DataPointer), in: &bytes, at: 16)
+      replaceLittleEndian(floatingPoint.x87DataSelector, in: &bytes, at: 20)
+    }
     replaceLittleEndian(floatingPoint.mxcsr, in: &bytes, at: 24)
     replaceLittleEndian(floatingPoint.mxcsrMask, in: &bytes, at: 28)
     for index in 0..<8 {
-      bytes.replaceSubrange(32 + index * 16..<42 + index * 16, with: floatingPoint.x87[index].bytes)
+      // Data slots are logical ST(i); abridged tags above remain physical R(i).
+      let physicalIndex = (Int(floatingPoint.x87StatusWord >> 11) + index) & 7
+      bytes.replaceSubrange(32 + index * 16..<42 + index * 16, with: floatingPoint.x87[physicalIndex].bytes)
     }
     let vectorCount = mode == .long64 ? 16 : 8
     for index in 0..<vectorCount {
@@ -3419,22 +3456,24 @@ public struct DoryX86Interpreter: Sendable {
   private func restoredFloatingPointState(
     from bytes: [UInt8],
     mode: DoryX86ExecutionMode,
+    widePointers: Bool,
     preserving floatingPoint: DoryX86FloatingPointState
   ) throws -> DoryX86FloatingPointState? {
     precondition(bytes.count == floatingPointTransferByteCount(mode: mode))
     let mxcsr = UInt32(fromLittleEndian(Array(bytes[24..<28])))
     guard mxcsr & ~floatingPoint.mxcsrMask == 0 else { return nil }
     let abridgedTag = bytes[4]
+    let status = UInt16(fromLittleEndian(Array(bytes[2..<4])))
     var tagWord: UInt16 = 0
-    var x87: [DoryX86RegisterBytes] = []
+    var x87 = floatingPoint.x87
     for index in 0..<8 {
       tagWord |=
         UInt16(abridgedTag & (UInt8(1) << UInt8(index)) == 0 ? 3 : 0)
         << UInt16(index * 2)
-      x87.append(
-        try .init(bytes: Array(bytes[32 + index * 16..<42 + index * 16]), expectedByteCount: 10)
-      )
+      let physicalIndex = (Int(status >> 11) + index) & 7
+      x87[physicalIndex] = try .init(bytes: Array(bytes[32 + index * 16..<42 + index * 16]), expectedByteCount: 10)
     }
+    tagWord = DoryX86FloatingPointEnvironment.classifiedTags(emptyTags: tagWord, registers: x87)
     // FXRSTOR loads SSE state, not the AVX upper halves. In non-64-bit modes
     // it also leaves XMM8...15 unchanged (Intel SDM Vol. 1 §10.5.1.2).
     var ymm = floatingPoint.ymm
@@ -3448,10 +3487,15 @@ public struct DoryX86Interpreter: Sendable {
       x87: x87,
       ymm: ymm,
       x87ControlWord: UInt16(fromLittleEndian(Array(bytes[0..<2]))),
-      x87StatusWord: UInt16(fromLittleEndian(Array(bytes[2..<4]))),
+      x87StatusWord: status,
       x87TagWord: tagWord,
       mxcsr: mxcsr,
-      mxcsrMask: floatingPoint.mxcsrMask
+      mxcsrMask: floatingPoint.mxcsrMask,
+      x87InstructionPointer: fromLittleEndian(Array(bytes[8..<(widePointers ? 16 : 12)])),
+      x87InstructionSelector: widePointers ? 0 : UInt16(fromLittleEndian(Array(bytes[12..<14]))),
+      x87DataPointer: fromLittleEndian(Array(bytes[16..<(widePointers ? 24 : 20)])),
+      x87DataSelector: widePointers ? 0 : UInt16(fromLittleEndian(Array(bytes[20..<22]))),
+      x87Opcode: UInt16(fromLittleEndian(Array(bytes[6..<8]))) & 0x7FF
     )
   }
 

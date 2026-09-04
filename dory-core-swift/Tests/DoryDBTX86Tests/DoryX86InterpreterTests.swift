@@ -828,7 +828,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     )
 
     _ = interpreter.step(state: &state, memory: memory, mode: .long64)
-    #expect(try memory.read(at: 0x1120, byteCount: 6) == [0x7F, 0x02, 0, 0, 0xFF, 0xFF])
+    #expect(try memory.read(at: 0x1120, byteCount: 10) == [0x7F, 0x02, 0, 0, 0, 0, 0, 0, 0xFF, 0xFF])
     state.floatingPoint.x87ControlWord = 0
     state.floatingPoint.x87StatusWord = 0xFFFF
     state.floatingPoint.x87TagWord = 0
@@ -1047,7 +1047,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     }
     #expect(state.floatingPoint.x87ControlWord == 0x027F)
     #expect(state.floatingPoint.x87StatusWord == 0x3800)
-    #expect(state.floatingPoint.x87TagWord == 0xFFFC)
+    #expect(state.floatingPoint.x87TagWord == 0xFFFE) // Unsupported binary80 encoding is special.
     #expect(state.floatingPoint.x87[0].bytes == Array(0x20..<0x2A))
     #expect(
       state.floatingPoint.ymm[15].bytes == Array(0x40..<0x50) + Array(repeating: 0, count: 16))

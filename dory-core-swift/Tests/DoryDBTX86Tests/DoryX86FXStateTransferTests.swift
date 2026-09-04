@@ -6,7 +6,7 @@ import Testing
 // https://cdrdv2-public.intel.com/843827/253665-sdm-vol-1-dec-24.pdf
 // https://cdrdv2-public.intel.com/812383/253666-sdm-vol-2a.pdf
 // These tests qualify the represented transfer fields and access boundaries, not
-// the missing x87 pointers/opcode, full tag reconstruction, or task-switch rules.
+// pointer/opcode layout and tag reconstruction (covered by the environment suite), or task-switch rules.
 @Suite struct DoryX86FXStateTransferTests {
   private let modes: [DoryX86ExecutionMode] = [.real16, .protected16, .protected32, .long64]
 

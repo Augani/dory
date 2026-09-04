@@ -3,8 +3,8 @@ import Testing
 @testable import DoryDBTX86
 
 // Intel SDM 092 Vol. 2A FINIT/FNINIT and FCLEX/FNCLEX, pages 3-345/3-346
-// and 3-320. This covers only represented state: x87 pointers/selectors and last
-// opcode are absent from DoryX86FloatingPointState and are not qualified here.
+// and 3-320. Pointer/opcode reset coverage is in the environment transfer suite;
+// these cases cover physical register preservation and defined reset flag bits.
 // https://cdrdv2-public.intel.com/922480/253666-092-sdm-vol-2a.pdf
 @Suite struct DoryX86LegacyFloatingPointResetTests {
   @Test func fninitResetsOnlyModeledControlStatusAndTagsInEveryExecutionMode() throws {
