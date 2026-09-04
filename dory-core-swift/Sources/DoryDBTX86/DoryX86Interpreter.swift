@@ -208,6 +208,17 @@ public struct DoryX86Interpreter: Sendable {
         )
       case .alu(let operation, let destination, let source):
         let execute = { (operationState: inout DoryX86ArchitecturalState) in
+          // A memory-destination ALU instruction is a read-modify-write even
+          // without LOCK. Prove the complete write before an MMIO/backing read
+          // or any flags become architecturally visible.
+          if operation != .compare, operation != .test {
+            try preflightWrite(
+              to: destination,
+              instruction: instruction,
+              state: operationState,
+              memory: executionMemory
+            )
+          }
           let lhs = try read(
             destination, instruction: instruction, state: operationState, memory: executionMemory)
           let rhs = try read(
@@ -216,12 +227,6 @@ public struct DoryX86Interpreter: Sendable {
           let result = executeALU(
             operation, lhs: lhs, rhs: rhs, width: width, flags: &operationState.rflags)
           if operation != .compare, operation != .test {
-            try preflightWrite(
-              to: destination,
-              instruction: instruction,
-              state: operationState,
-              memory: executionMemory
-            )
             try write(
               result, to: destination, instruction: instruction, state: &operationState,
               memory: executionMemory)
@@ -234,6 +239,12 @@ public struct DoryX86Interpreter: Sendable {
         }
       case .unary(let operation, let operand):
         let execute = { (operationState: inout DoryX86ArchitecturalState) in
+          try preflightWrite(
+            to: operand,
+            instruction: instruction,
+            state: operationState,
+            memory: executionMemory
+          )
           let value = try read(
             operand, instruction: instruction, state: operationState, memory: executionMemory)
           let width = operandWidth(operand)
@@ -255,12 +266,6 @@ public struct DoryX86Interpreter: Sendable {
             result = executeALU(
               .subtract, lhs: 0, rhs: value, width: width, flags: &operationState.rflags)
           }
-          try preflightWrite(
-            to: operand,
-            instruction: instruction,
-            state: operationState,
-            memory: executionMemory
-          )
           try write(
             result,
             to: operand,
@@ -430,14 +435,14 @@ public struct DoryX86Interpreter: Sendable {
         signExtendAccumulator(width: width, intoHighHalf: intoHighHalf, state: &state)
       case .exchange(let lhs, let rhs):
         let execute = { (operationState: inout DoryX86ArchitecturalState) in
-          let left = try read(
-            lhs, instruction: instruction, state: operationState, memory: executionMemory)
-          let right = try read(
-            rhs, instruction: instruction, state: operationState, memory: executionMemory)
           try preflightWrite(
             to: lhs, instruction: instruction, state: operationState, memory: executionMemory)
           try preflightWrite(
             to: rhs, instruction: instruction, state: operationState, memory: executionMemory)
+          let left = try read(
+            lhs, instruction: instruction, state: operationState, memory: executionMemory)
+          let right = try read(
+            rhs, instruction: instruction, state: operationState, memory: executionMemory)
           try write(
             right,
             to: lhs,
@@ -515,6 +520,12 @@ public struct DoryX86Interpreter: Sendable {
         }
       case .exchangeAdd(let destination, let source):
         let execute = { (operationState: inout DoryX86ArchitecturalState) in
+          try preflightWrite(
+            to: destination,
+            instruction: instruction,
+            state: operationState,
+            memory: executionMemory
+          )
           let destinationValue = try read(
             destination,
             instruction: instruction,
@@ -529,12 +540,6 @@ public struct DoryX86Interpreter: Sendable {
             rhs: sourceValue,
             width: operandWidth(destination),
             flags: &operationState.rflags
-          )
-          try preflightWrite(
-            to: destination,
-            instruction: instruction,
-            state: operationState,
-            memory: executionMemory
           )
           try write(
             destinationValue, to: source, instruction: instruction, state: &operationState,
@@ -6036,17 +6041,44 @@ public struct DoryX86Interpreter: Sendable {
     instruction: DoryX86DecodedInstruction,
     state: DoryX86ArchitecturalState
   ) throws {
-    guard !operand.ignoresLegacySegmentBase else { return }
-    let segment = segmentState(operand.segment, state: state)
     let offset = effectiveOffset(
       operand,
       instruction: instruction,
       state: state
     )
+    try validateSegmentAccess(
+      operand,
+      effectiveOffset: offset,
+      byteCount: byteCount,
+      write: write,
+      instruction: instruction,
+      state: state
+    )
+  }
+
+  private func validateSegmentAccess(
+    _ operand: DoryX86MemoryOperand,
+    effectiveOffset offset: UInt64,
+    byteCount: Int,
+    write: Bool,
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState
+  ) throws {
     let fault =
       operand.segment == .ss
       ? stackProtection(at: instruction.address)
       : segmentProtection(at: instruction.address)
+    if operand.ignoresLegacySegmentBase {
+      guard byteCount > 0 else { throw fault }
+      let address = linearAddress(operand, effectiveOffset: offset, state: state)
+      let last = address.addingReportingOverflow(UInt64(byteCount - 1))
+      guard !last.overflow,
+        DoryX86ArchitecturalState.isCanonical(address),
+        DoryX86ArchitecturalState.isCanonical(last.partialValue)
+      else { throw fault }
+      return
+    }
+    let segment = segmentState(operand.segment, state: state)
     try validateSegmentBounds(
       segment,
       offset: offset,
@@ -6145,22 +6177,26 @@ public struct DoryX86Interpreter: Sendable {
     }
 
     if case .memory(let memoryOperand) = base {
-      try validateSegmentAccess(
-        memoryOperand,
-        byteCount: width.byteCount,
-        write: operation != .test,
-        instruction: instruction,
-        state: state
-      )
       var elementOffset = bitIndex / bitCount
       var bitOffset = bitIndex % bitCount
       if bitOffset < 0 {
         bitOffset += bitCount
         elementOffset -= 1
       }
-      let baseAddress = effectiveAddress(
+      let baseOffset = effectiveOffset(
         memoryOperand, instruction: instruction, state: state)
-      let address = baseAddress &+ UInt64(bitPattern: elementOffset * Int64(width.byteCount))
+      let byteOffset = UInt64(bitPattern: elementOffset * Int64(width.byteCount))
+      let adjustedOffset = (baseOffset &+ byteOffset) & mask(memoryOperand.addressWidth)
+      try validateSegmentAccess(
+        memoryOperand,
+        effectiveOffset: adjustedOffset,
+        byteCount: width.byteCount,
+        write: operation != .test,
+        instruction: instruction,
+        state: state
+      )
+      let address = linearAddress(
+        memoryOperand, effectiveOffset: adjustedOffset, state: state)
       try validateAlignmentCheck(
         address: address,
         byteCount: width.byteCount,
@@ -6170,6 +6206,12 @@ public struct DoryX86Interpreter: Sendable {
         state: state,
         memory: memory
       )
+      if operation != .test {
+        // BTS/BTR/BTC are memory read-modify-write operations. The adjusted
+        // element can lie outside the ModRM operand's first word, so preflight
+        // that exact element before observing backing data or changing CF.
+        try memory.validateWrite(at: address, byteCount: width.byteCount)
+      }
       let value = fromLittleEndian(try memory.read(at: address, byteCount: width.byteCount))
       let bit = UInt64(1) << UInt64(bitOffset)
       setFlag(.carry, value & bit != 0, in: &state.rflags)
@@ -6181,7 +6223,6 @@ public struct DoryX86Interpreter: Sendable {
         case .complement: value ^ bit
         }
       if operation != .test {
-        try memory.validateWrite(at: address, byteCount: width.byteCount)
         try memory.write(at: address, bytes: littleEndian(result, width: width))
       }
       return
@@ -6835,6 +6876,14 @@ public struct DoryX86Interpreter: Sendable {
     state: DoryX86ArchitecturalState
   ) -> UInt64 {
     let offset = effectiveOffset(operand, instruction: instruction, state: state)
+    return linearAddress(operand, effectiveOffset: offset, state: state)
+  }
+
+  private func linearAddress(
+    _ operand: DoryX86MemoryOperand,
+    effectiveOffset offset: UInt64,
+    state: DoryX86ArchitecturalState
+  ) -> UInt64 {
     let segmentBase: UInt64
     if operand.ignoresLegacySegmentBase,
       operand.segment != .fs,
