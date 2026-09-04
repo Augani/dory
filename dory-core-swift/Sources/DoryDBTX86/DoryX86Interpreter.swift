@@ -2284,12 +2284,13 @@ public struct DoryX86Interpreter: Sendable {
           memory: executionMemory
         ) { return fault }
       case .scalarConvert:
-        try executeLegacySIMDScalarConversion(
+        if let fault = try executeLegacySIMDScalarConversion(
           instruction.operation,
           instruction: instruction,
+          originalRIP: originalRIP,
           state: &state,
           memory: executionMemory
-        )
+        ) { return fault }
       case .scalarSquareRoot:
         if let fault = try executeLegacySIMDSquareRoot(
           instruction.operation,
@@ -5113,9 +5114,10 @@ public struct DoryX86Interpreter: Sendable {
   private func executeLegacySIMDScalarConversion(
     _ operation: DoryX86InstructionOperation,
     instruction: DoryX86DecodedInstruction,
+    originalRIP: UInt64,
     state: inout DoryX86ArchitecturalState,
     memory: any DoryX86Memory
-  ) throws {
+  ) throws -> DoryX86InterpreterResult? {
     guard case .scalarConvert(let direction, let destination, let source) = operation
     else { preconditionFailure("unexpected legacy SIMD scalar conversion") }
     // CVTSD2SS / CVTSS2SD: convert scalar double↔single.
@@ -5127,21 +5129,25 @@ public struct DoryX86Interpreter: Sendable {
       memory: memory
     )
     var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+    let exceptions: UInt32
     switch direction {
     case .doubleToSingle:
-      let doubleValue = Double(bitPattern: fromLittleEndian(sourceBytes))
-      let singleValue = Float(doubleValue)
-      let singleBits = littleEndian(UInt64(singleValue.bitPattern), width: .doubleword)
-      registerBytes.replaceSubrange(0..<4, with: singleBits)
+      let converted = packedDoubleToSingleResult(
+        fromLittleEndian(sourceBytes), mxcsr: state.floatingPoint.mxcsr)
+      replaceLittleEndian(converted.value, in: &registerBytes, at: 0)
+      exceptions = converted.exceptions
     case .singleToDouble:
-      let singleValue = Float(
-        bitPattern: UInt32(truncatingIfNeeded: fromLittleEndian(sourceBytes)))
-      let doubleValue = Double(singleValue)
-      let doubleBits = littleEndian(doubleValue.bitPattern, width: .quadword)
-      registerBytes.replaceSubrange(0..<8, with: doubleBits)
+      let converted = packedSingleToDoubleResult(
+        UInt32(fromLittleEndian(sourceBytes)), mxcsr: state.floatingPoint.mxcsr)
+      replaceLittleEndian(converted.value, in: &registerBytes, at: 0)
+      exceptions = converted.exceptions
     }
+    if let fault = publishSIMDExceptions(
+      exceptions, originalRIP: originalRIP, state: &state
+    ) { return fault }
     state.floatingPoint.ymm[Int(destination)] = try .init(
       bytes: registerBytes, expectedByteCount: 32)
+    return nil
   }
 
   private func executeLegacySIMDSquareRoot(
