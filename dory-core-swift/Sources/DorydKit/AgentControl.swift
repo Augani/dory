@@ -77,9 +77,31 @@ public protocol AgentControlClient: Sendable {
         outputLimitBytes: UInt64
     ) throws -> DoryExecResult
     func close()
+    func exec(
+        argv: [String], cwd: String, env: [DoryExecEnvironment], timeoutMs: UInt64,
+        outputLimitBytes: UInt64, control: DoryExecControl
+    ) throws -> DoryExecResult
+    func execWithInput(
+        argv: [String], stdin: Data, cwd: String, env: [DoryExecEnvironment], timeoutMs: UInt64,
+        outputLimitBytes: UInt64, control: DoryExecControl
+    ) throws -> DoryExecResult
 }
 
 public extension AgentControlClient {
+    func exec(
+        argv: [String], cwd: String, env: [DoryExecEnvironment], timeoutMs: UInt64,
+        outputLimitBytes: UInt64, control: DoryExecControl
+    ) throws -> DoryExecResult {
+        throw AgentControlError.capabilityUnavailable("exec-control")
+    }
+
+    func execWithInput(
+        argv: [String], stdin: Data, cwd: String, env: [DoryExecEnvironment], timeoutMs: UInt64,
+        outputLimitBytes: UInt64, control: DoryExecControl
+    ) throws -> DoryExecResult {
+        throw AgentControlError.capabilityUnavailable("exec-control")
+    }
+
     func usbVhciAttach(
         busID: String,
         port: UInt32,
@@ -383,6 +405,33 @@ public final class AgentControl: @unchecked Sendable {
             env: env,
             timeoutMs: timeoutMs,
             outputLimitBytes: outputLimitBytes
+        )
+    }
+
+    /// Cancellation interrupts the host wait; callers must observe VM termination before rollback.
+    public func exec(
+        argv: [String], cwd: String = "", env: [DoryExecEnvironment] = [],
+        timeoutMs: UInt64 = 30_000, outputLimitBytes: UInt64 = 1024 * 1024,
+        control: DoryExecControl
+    ) throws -> DoryExecResult {
+        guard !control.isCancelled else { throw DoryExecControlError.cancelledGuestStateUnknown }
+        return try client(requiring: "exec").exec(
+            argv: argv, cwd: cwd, env: env, timeoutMs: timeoutMs,
+            outputLimitBytes: outputLimitBytes, control: control
+        )
+    }
+
+    public func execWithInput(
+        argv: [String], stdin: Data, cwd: String = "", env: [DoryExecEnvironment] = [],
+        timeoutMs: UInt64 = 30_000, outputLimitBytes: UInt64 = 1024 * 1024,
+        control: DoryExecControl
+    ) throws -> DoryExecResult {
+        guard !control.isCancelled else { throw DoryExecControlError.cancelledGuestStateUnknown }
+        let client = try client(requiring: "exec")
+        try requireCapability("exec-stdin", from: client)
+        return try client.execWithInput(
+            argv: argv, stdin: stdin, cwd: cwd, env: env, timeoutMs: timeoutMs,
+            outputLimitBytes: outputLimitBytes, control: control
         )
     }
 

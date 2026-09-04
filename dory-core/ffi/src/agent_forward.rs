@@ -16,6 +16,7 @@ use dory_remote::{
 };
 use tokio::net::UnixStream;
 
+use crate::exec_control::{ExecControl, ExecWaitError};
 use crate::remote::{
     exec_result, AgentCapabilityFfi, AgentInfoFfi, ExecEnvFfi, ExecResultFfi, PullControl,
     PullStatsFfi, PushControl, PushStatsFfi, RemoteFfiError, TelemetryFfi,
@@ -446,6 +447,53 @@ impl AgentControl {
         ))?;
         Ok(exec_result(out))
     }
+
+    /// Interrupt only this host wait. The owner must stop and observe the VM before rollback;
+    /// abandoning a mux response is never proof that a guest command has stopped executing.
+    pub fn exec_controlled(
+        &self,
+        argv: Vec<String>,
+        cwd: String,
+        env: Vec<ExecEnvFfi>,
+        timeout_ms: u64,
+        output_limit_bytes: u64,
+        stdin: Vec<u8>,
+        control: Arc<ExecControl>,
+    ) -> Result<ExecResultFfi, ExecWaitError> {
+        control.claim()?;
+        // Existing methods serialize through this mutex. A cancelled exec queued behind one
+        // must also return promptly instead of waiting for the unrelated RPC's deadline.
+        let guard = loop {
+            control.require_active()?;
+            match self.runtime.try_lock() {
+                Ok(guard) => break guard,
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    std::thread::sleep(std::time::Duration::from_millis(5));
+                }
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err(ExecWaitError::Failed {
+                        message: "agent runtime lock is poisoned".into(),
+                    });
+                }
+            }
+        };
+        let runtime = guard.as_ref().ok_or_else(|| ExecWaitError::Failed {
+            message: "agent control already shut down".into(),
+        })?;
+        runtime.block_on(async {
+            tokio::select! {
+                biased;
+                _ = control.cancelled() => Err(ExecWaitError::CancelledGuestStateUnknown),
+                result = self.client.exec_with_input(
+                    argv, cwd,
+                    env.into_iter().map(|item| (item.key, item.value)).collect(),
+                    timeout_ms, output_limit_bytes, stdin,
+                ) => result.map(exec_result).map_err(|error| ExecWaitError::Failed {
+                    message: error.to_string(),
+                }),
+            }
+        })
+    }
 }
 
 fn snapshot_quiesce(
@@ -494,6 +542,10 @@ fn shutdown_error() -> RemoteFfiError {
         message: "agent control already shut down".into(),
     }
 }
+
+#[cfg(test)]
+#[path = "exec_control_tests.rs"]
+mod exec_control_tests;
 
 #[cfg(test)]
 mod tests {

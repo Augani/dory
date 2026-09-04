@@ -881,6 +881,41 @@ public final class DoryAgentControlHandle: @unchecked Sendable {
         return DoryExecResult(raw)
     }
 
+    public func exec(
+        argv: [String],
+        cwd: String = "",
+        env: [DoryExecEnvironment] = [],
+        timeoutMs: UInt64 = 30_000,
+        outputLimitBytes: UInt64 = 1024 * 1024,
+        control: DoryExecControl
+    ) throws -> DoryExecResult {
+        try execWithInput(argv: argv, stdin: Data(), cwd: cwd, env: env,
+                          timeoutMs: timeoutMs, outputLimitBytes: outputLimitBytes, control: control)
+    }
+
+    public func execWithInput(
+        argv: [String],
+        stdin: Data,
+        cwd: String = "",
+        env: [DoryExecEnvironment] = [],
+        timeoutMs: UInt64 = 30_000,
+        outputLimitBytes: UInt64 = 1024 * 1024,
+        control: DoryExecControl
+    ) throws -> DoryExecResult {
+        do {
+            let raw = try withControl {
+                try $0.execControlled(argv: argv, cwd: cwd, env: env.map(\.ffiValue),
+                                      timeoutMs: timeoutMs, outputLimitBytes: outputLimitBytes,
+                                      stdin: stdin, control: control.raw)
+            }
+            return DoryExecResult(raw)
+        } catch ExecWaitError.CancelledGuestStateUnknown {
+            throw DoryExecControlError.cancelledGuestStateUnknown
+        } catch ExecWaitError.AlreadyUsed {
+            throw DoryExecControlError.alreadyUsed
+        }
+    }
+
     public func close() {
         lock.lock()
         control = nil

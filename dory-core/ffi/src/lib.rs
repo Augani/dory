@@ -16,6 +16,7 @@
 uniffi::setup_scaffolding!();
 
 mod agent_forward;
+mod exec_control;
 pub(crate) mod remote;
 
 const COLD_WAKE_BACKEND_RETRY: std::time::Duration = std::time::Duration::from_secs(210);

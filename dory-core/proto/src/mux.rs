@@ -64,6 +64,19 @@ fn decode_msg(frame: &[u8]) -> Option<(u64, u8, &[u8])> {
 
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Vec<u8>>>>>;
 
+/// Dropped host futures (deadline or explicit wait cancellation) must release their response
+/// slot even when a connected guest never sends a reply. A late reply is ignored by its old ID.
+struct PendingCall {
+    pending: Pending,
+    id: u64,
+}
+
+impl Drop for PendingCall {
+    fn drop(&mut self) {
+        self.pending.lock().unwrap().remove(&self.id);
+    }
+}
+
 /// A live multiplexed connection. Cloneable is not needed — share via `Arc<Mux>`.
 pub struct Mux {
     next_id: AtomicU64,
@@ -168,6 +181,10 @@ impl Mux {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         self.pending.lock().unwrap().insert(id, tx);
+        let _pending_call = PendingCall {
+            pending: self.pending.clone(),
+            id,
+        };
         // Close and insertion can cross. Recheck after publication so a reader/writer that already
         // drained the map cannot leave this new waiter stranded forever.
         if self.closed.load(Ordering::Acquire) {
@@ -220,6 +237,34 @@ mod tests {
                 resp
             })
         })
+    }
+
+    #[tokio::test]
+    async fn cancelled_call_removes_pending_slot_and_late_reply_is_ignored() {
+        let (a, b) = duplex(64 * 1024);
+        let client = Mux::client(a);
+        let (started, mut requests) = mpsc::unbounded_channel();
+        let release = Arc::new(Notify::new());
+        let gate = release.clone();
+        let _server = Mux::start(b, Arc::new(move |request| {
+            let started = started.clone();
+            let gate = gate.clone();
+            Box::pin(async move {
+                started.send(request.clone()).unwrap();
+                if request == b"cancelled" { gate.notified().await; }
+                request
+            })
+        }));
+        let owner = client.clone();
+        let call = tokio::spawn(async move { owner.call(b"cancelled").await });
+        assert_eq!(requests.recv().await.unwrap(), b"cancelled");
+        assert_eq!(client.pending.lock().unwrap().len(), 1);
+        call.abort();
+        assert!(call.await.unwrap_err().is_cancelled());
+        assert!(client.pending.lock().unwrap().is_empty());
+        release.notify_one();
+        assert_eq!(client.call(b"next").await.unwrap(), b"next");
+        assert!(client.pending.lock().unwrap().is_empty());
     }
 
     #[tokio::test]
