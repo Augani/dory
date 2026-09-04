@@ -892,6 +892,8 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case convertPackedDoubleToSingle(destination: UInt8, source: DoryX86VectorOperand)
   /// CVTDQ2PS (0F 5B): convert four signed dwords from XMM/m128 to four singles.
   case convertPackedDwordToSingle(destination: UInt8, source: DoryX86VectorOperand)
+  /// POP SS (17): pop a selector using the current legacy stack width.
+  case popSegment(DoryX86SegmentRegister, width: DoryX86OperandWidth)
 }
 
 public struct DoryX86DecodedInstruction: Codable, Sendable, Hashable {

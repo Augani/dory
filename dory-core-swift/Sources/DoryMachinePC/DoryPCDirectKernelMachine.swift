@@ -884,7 +884,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     let mode = executionMode(state)
     if let jit = selectedJIT(for: state, mode: mode),
       mode == .long64 || (mode == .protected32 && state.cs.base == 0),
-      !state.rflags.contains(.trap)
+      !state.rflags.contains(.trap),
+      state.interruptShadow == nil
     {
       let budget = jitInstructionBudget ?? 1
       let translatedMemory = translatedMemories[processor]
@@ -1108,7 +1109,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       if !timer.masked, timer.currentCount > 0,
         apic.canAccept(
           vector: timer.vector,
-          interruptsEnabled: state.rflags.contains(.interruptEnable),
+          interruptsEnabled: maskableInterruptsEnabled(state),
           externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
         )
       {
@@ -1124,7 +1125,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       }
     }
     if let bsp = loadedStates[0]?.value {
-      let interruptsEnabled = bsp.rflags.contains(.interruptEnable)
+      let interruptsEnabled = maskableInterruptsEnabled(bsp)
       let pit = legacyPIT.snapshot()
       let picAcceptsTimer = legacyPIC.canAccept(irq: 0, interruptsEnabled: interruptsEnabled)
       let ioAPICAcceptsTimer = ioAPICCanAccept(pin: 2)
@@ -1180,7 +1181,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     else { return false }
     return localAPICs[index].canAccept(
       vector: route.vector,
-      interruptsEnabled: state.rflags.contains(.interruptEnable),
+      interruptsEnabled: maskableInterruptsEnabled(state),
       externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
     )
   }
@@ -1232,12 +1233,20 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       else { continue }
       let source: DoryX86InterruptSource
       let vector: UInt8?
-      if pendingNMIs.remove(index) != nil {
+      if pendingNMIs.contains(index), !processorState.value.nmiBlocked,
+        processorState.value.interruptShadow != .movSS
+      {
+        // Recognition consumes the coalesced request before delivery. NMI
+        // blocking has already been checked, so a deferred request remains
+        // queued and retains priority as soon as IRET unblocks the processor.
+        pendingNMIs.remove(index)
         source = .nonMaskable
         vector = 2
       } else {
         source = .externalMaskable
-        let enabled = processorState.value.rflags.contains(.interruptEnable)
+        // Acknowledgement consumes controller state. Keep the vector pending
+        // while STI/MOV SS inhibition prevents the processor accepting it.
+        let enabled = maskableInterruptsEnabled(processorState.value)
         vector =
           localAPICs[index].acknowledge(
             interruptsEnabled: enabled,
@@ -1263,6 +1272,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       }
     }
     return nil
+  }
+
+  private func maskableInterruptsEnabled(_ state: DoryX86ArchitecturalState) -> Bool {
+    state.interruptShadow == nil && state.rflags.contains(.interruptEnable)
   }
 
   private func nextRunnableProcessor() -> Int? {

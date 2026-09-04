@@ -34,11 +34,25 @@ public struct DoryX86InterruptDelivery: Sendable {
     pagingUnit: DoryX86PagingUnit? = nil,
     mode: DoryX86ExecutionMode
   ) throws {
+    if source == .nonMaskable {
+      // Intel SDM Vol. 3A §7.7.2: NMI blocking is established before the
+      // processor commences delivery, and therefore survives a nested fault.
+      // MOV/POP SS inhibition also blocks NMI recognition for the protected
+      // following instruction; STI inhibition applies only to maskable events.
+      guard !state.nmiBlocked, state.interruptShadow != .movSS else { return }
+    }
     if source == .externalMaskable {
-      guard state.rflags.contains(.interruptEnable), UInt64(vector >> 4) > state.control.cr8 else {
+      guard state.interruptShadow == nil,
+        state.rflags.contains(.interruptEnable), UInt64(vector >> 4) > state.control.cr8
+      else {
         return
       }
     }
+    // Recognition of any accepted event ends STI/MOV SS inhibition. Clear the
+    // state before gate or frame access so a nested delivery fault cannot keep
+    // an expired shadow alive.
+    state.interruptShadow = nil
+    if source == .nonMaskable { state.nmiBlocked = true }
     if mode == .real16 {
       try deliverRealMode(
         vector: vector,
@@ -201,6 +215,9 @@ public struct DoryX86InterruptDelivery: Sendable {
     mode: DoryX86ExecutionMode,
     operandSizeOverride: Bool = false
   ) throws {
+    // Intel unblocks NMI on the attempted IRET boundary, including when frame
+    // validation later faults. The interpreter preserves this one transition.
+    state.nmiBlocked = false
     if mode == .real16 {
       try interruptReturnRealMode(state: &state, memory: physicalMemory,
         width: operandSizeOverride ? .doubleword : .word)

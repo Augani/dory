@@ -11,12 +11,29 @@ import Testing
     #expect(state.cs.base == 0xffff_0000)
     #expect(state.control.cr0 == 0x6000_0010)
     #expect(state.rflags == .reset)
+    #expect(!state.nmiBlocked)
     #expect(state.floatingPoint.x87.count == 8)
     #expect(state.floatingPoint.ymm.count == 16)
 
     let encoded = try JSONEncoder().encode(state)
     let decoded = try JSONDecoder().decode(DoryX86ArchitecturalState.self, from: encoded)
     #expect(decoded == state)
+  }
+
+  @Test func nmiBlockingRoundTripsAndDefaultsFalseForOlderSnapshots() throws {
+    var blocked = DoryX86ArchitecturalState.reset()
+    blocked.nmiBlocked = true
+    let encoded = try JSONEncoder().encode(blocked)
+    #expect(try JSONDecoder().decode(DoryX86ArchitecturalState.self, from: encoded) == blocked)
+
+    var oldObject = try #require(
+      JSONSerialization.jsonObject(with: encoded) as? [String: Any]
+    )
+    oldObject.removeValue(forKey: "nmiBlocked")
+    let oldSnapshot = try JSONSerialization.data(withJSONObject: oldObject)
+    let restoredOld = try JSONDecoder().decode(
+      DoryX86ArchitecturalState.self, from: oldSnapshot)
+    #expect(!restoredOld.nmiBlocked)
   }
 
   @Test func registerFileUsesArchitecturalEncodingOrder() {

@@ -264,8 +264,8 @@ import Testing
         executionTier: .baselineJIT,
         baselineJITMaximumCodeBytes: 16 * 1024
       )
-      // STI retires through the precise path, then the hot loop receives only the three machine
-      // ticks remaining before this accepted local-APIC deadline.
+      // STI and its protected following instruction retire through the precise path. The hot loop
+      // then receives only the two machine ticks remaining before the accepted local-APIC deadline.
       try machine.load(kernel: makeELF(code: [0xFB, 0xEB, 0xFE]), commandLine: "x")
       try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
       try machine.localAPIC.configureTimer(
@@ -277,11 +277,11 @@ import Testing
 
       #expect(try machine.run(maximumInstructions: 4) == .instructionBudget(4))
       let diagnostics = try #require(machine.baselineJITDiagnostics)
-      // The first four-instruction request declines STI to the interpreter. The second request is
-      // capped to the three ticks remaining until the now-accepted timer deadline.
+      // The first four-instruction request declines STI to the interpreter. The shadow forces the
+      // following jump through the interpreter, then the second request is capped to two ticks.
       #expect(diagnostics.chainedExecutionCalls == 2)
-      #expect(diagnostics.chainedRequestedInstructions == 7)
-      #expect(diagnostics.chainedRetiredInstructions == 3)
+      #expect(diagnostics.chainedRequestedInstructions == 6)
+      #expect(diagnostics.chainedRetiredInstructions == 2)
     #endif
   }
 

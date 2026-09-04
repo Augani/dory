@@ -161,6 +161,12 @@ public struct DoryX86Decoder: Sendable {
     case 0x58...0x5F:
       let register = register(Int(opcode - 0x58), extensionBit: prefixes.rex?.b == true)
       operation = .pop(.register(register, width: stackWidth(mode: mode, prefixes: prefixes)))
+    case 0x17:
+      guard mode != .long64 else {
+        throw DoryX86DecodeError.invalidEncoding(
+          address: address, detail: "POP SS is invalid in 64-bit mode")
+      }
+      operation = .popSegment(.ss, width: stackWidth(mode: mode, prefixes: prefixes))
     case 0x8F:
       let targetWidth = stackWidth(mode: mode, prefixes: prefixes)
       let operands = try decodeModRM(

@@ -488,6 +488,14 @@ public struct DoryX86FloatingPointState: Codable, Sendable, Hashable {
   }
 }
 
+/// The one-instruction external-interrupt inhibition established by STI or an
+/// SS load. The source remains explicit because MOV/POP SS also suppress debug
+/// traps on real processors, even though Dory does not model that debug engine.
+public enum DoryX86InterruptShadow: String, Codable, Sendable, Hashable {
+  case sti
+  case movSS
+}
+
 public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
   public var registers: DoryX86GeneralRegisters
   public var rip: UInt64
@@ -506,6 +514,12 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
   public var debug: DoryX86DebugState
   public var modelSpecific: DoryX86ModelSpecificRegisterState
   public var floatingPoint: DoryX86FloatingPointState
+  /// Inhibits recognition of external maskable interrupts until one following
+  /// instruction retires or another event is accepted for delivery.
+  public var interruptShadow: DoryX86InterruptShadow?
+  /// True from recognition of an NMI until the next attempted IRET. This is
+  /// processor-internal interruptibility state, rather than an RFLAGS bit.
+  public var nmiBlocked: Bool
   public var tsc: UInt64
   public var tscAux: UInt32
 
@@ -528,6 +542,8 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
     debug: DoryX86DebugState = .init(),
     modelSpecific: DoryX86ModelSpecificRegisterState = .init(),
     floatingPoint: DoryX86FloatingPointState = try! .init(),
+    interruptShadow: DoryX86InterruptShadow? = nil,
+    nmiBlocked: Bool = false,
     tsc: UInt64 = 0,
     tscAux: UInt32 = 0
   ) throws {
@@ -556,6 +572,8 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
     self.debug = debug
     self.modelSpecific = modelSpecific
     self.floatingPoint = floatingPoint
+    self.interruptShadow = interruptShadow
+    self.nmiBlocked = nmiBlocked
     self.tsc = tsc
     self.tscAux = tscAux
   }
@@ -564,7 +582,7 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
 
   private enum CodingKeys: String, CodingKey {
     case registers, rip, rflags, cs, ds, es, fs, gs, ss, tr, ldtr, gdtr, idtr
-    case control, debug, modelSpecific, floatingPoint, tsc, tscAux
+    case control, debug, modelSpecific, floatingPoint, interruptShadow, nmiBlocked, tsc, tscAux
   }
 
   public init(from decoder: Decoder) throws {
@@ -587,6 +605,9 @@ public struct DoryX86ArchitecturalState: Codable, Sendable, Hashable {
       debug: values.decode(DoryX86DebugState.self, forKey: .debug),
       modelSpecific: values.decode(DoryX86ModelSpecificRegisterState.self, forKey: .modelSpecific),
       floatingPoint: values.decode(DoryX86FloatingPointState.self, forKey: .floatingPoint),
+      interruptShadow: values.decodeIfPresent(
+        DoryX86InterruptShadow.self, forKey: .interruptShadow),
+      nmiBlocked: values.decodeIfPresent(Bool.self, forKey: .nmiBlocked) ?? false,
       tsc: values.decode(UInt64.self, forKey: .tsc),
       tscAux: values.decode(UInt32.self, forKey: .tscAux)
     )

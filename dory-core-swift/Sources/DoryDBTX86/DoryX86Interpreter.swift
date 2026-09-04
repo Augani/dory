@@ -73,6 +73,7 @@ public struct DoryX86Interpreter: Sendable {
     translatedMemory: DoryX86TranslatedMemory? = nil,
     ioBus: (any DoryX86IOBus)? = nil
   ) -> DoryX86InterpreterResult {
+    let priorInterruptShadow = state.interruptShadow
     var candidate = state
     let result = executeStep(
       state: &candidate,
@@ -84,9 +85,16 @@ public struct DoryX86Interpreter: Sendable {
     )
     switch result {
     case .retired, .yielded, .halted:
+      // The shadow protects exactly one following instruction. A second STI or
+      // SS load does not extend a shadow that was already active on entry.
+      if priorInterruptShadow != nil { candidate.interruptShadow = nil }
       state = candidate
     case .exception(let exception):
       if exception.commitsPartialProgress { state = candidate }
+      // IRET removes NMI blocking before validating its frame. Preserve only
+      // that true-to-false transition when the rest of a faulting candidate is
+      // discarded; no other instruction clears this processor-internal state.
+      if state.nmiBlocked, !candidate.nmiBlocked { state.nmiBlocked = false }
       // A general-detect #DB is fault-like, but its debug-status effects survive.
       // Do not publish the candidate RIP, operands, or ordinary instruction state.
       if exception.kind == .debug { state.debug = candidate.debug }
@@ -2485,6 +2493,40 @@ public struct DoryX86Interpreter: Sendable {
         )
         try write(
           value, to: operand, instruction: instruction, state: &state, memory: executionMemory)
+      case .popSegment(let segment, let width):
+        let popped = try readStack(
+          width: width,
+          instruction: instruction,
+          mode: mode,
+          state: state,
+          memory: executionMemory
+        )
+        let selector = UInt16(truncatingIfNeeded: popped.value)
+        let loaded: DoryX86SegmentState
+        if segment == .ss {
+          loaded = try loadStackSegment(
+            selector: selector,
+            mode: mode,
+            state: state,
+            memory: executionMemory
+          )
+        } else {
+          guard
+            let ordinarySegment = try loadSegment(
+              segment,
+              selector: selector,
+              mode: mode,
+              state: state,
+              memory: executionMemory
+            )
+          else { return generalProtection(at: originalRIP) }
+          loaded = ordinarySegment
+        }
+        // Publish the descriptor, stack advance, and interruptibility state
+        // together only after both the stack read and descriptor load succeed.
+        setSegment(segment, value: loaded, state: &state)
+        writeStackPointer(popped.nextOffset, mode: mode, state: &state)
+        if segment == .ss { state.interruptShadow = .movSS }
       case .call(let relative):
         let returnWidth = nearTransferWidth(instruction, mode: mode)
         let target = addRelative(nextRIP, relative) & mask(returnWidth)
@@ -2818,16 +2860,28 @@ public struct DoryX86Interpreter: Sendable {
         let selector = UInt16(
           truncatingIfNeeded: try read(
             source, instruction: instruction, state: state, memory: executionMemory))
-        guard
-          let loaded = try loadSegment(
-            segment,
+        let loaded: DoryX86SegmentState
+        if segment == .ss {
+          loaded = try loadStackSegment(
             selector: selector,
             mode: mode,
             state: state,
             memory: executionMemory
           )
-        else { return generalProtection(at: originalRIP) }
+        } else {
+          guard
+            let ordinarySegment = try loadSegment(
+              segment,
+              selector: selector,
+              mode: mode,
+              state: state,
+              memory: executionMemory
+            )
+          else { return generalProtection(at: originalRIP) }
+          loaded = ordinarySegment
+        }
         setSegment(segment, value: loaded, state: &state)
+        if segment == .ss { state.interruptShadow = .movSS }
       case .farJump(let offset, let selector):
         guard
           let loaded = try loadSegment(
@@ -3250,7 +3304,9 @@ public struct DoryX86Interpreter: Sendable {
             ))
         }
         if enabled {
+          let wasEnabled = state.rflags.contains(.interruptEnable)
           state.rflags.insert(.interruptEnable)
+          if !wasEnabled { state.interruptShadow = .sti }
         } else {
           state.rflags.remove(.interruptEnable)
         }
@@ -6418,6 +6474,76 @@ public struct DoryX86Interpreter: Sendable {
     let current = currentPrivilegeLevel(state, mode: mode)
     guard register == .cs ? privilege == current : max(current, UInt8(selector & 3)) <= privilege
     else { return nil }
+    var base = (raw >> 16) & 0xffff
+    base |= ((raw >> 32) & 0xff) << 16
+    base |= ((raw >> 56) & 0xff) << 24
+    var limit = UInt32(raw & 0xffff) | UInt32((raw >> 48) & 0x0f) << 16
+    if raw & (1 << 55) != 0 { limit = (limit << 12) | 0xfff }
+    let attributes = UInt16(access) | UInt16((raw >> 48) & 0xf0) << 8
+    return .init(selector: selector, attributes: attributes, limit: limit, base: base)
+  }
+
+  /// Loads SS under the stricter descriptor and fault rules shared by MOV SS and POP SS.
+  /// Descriptor-table reads are implicit supervisor accesses; the selector operand or stack
+  /// access that supplied the selector remains in the instruction's ordinary memory view.
+  private func loadStackSegment(
+    selector: UInt16,
+    mode: DoryX86ExecutionMode,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> DoryX86SegmentState {
+    let virtual8086 = mode != .long64 && state.control.efer & (1 << 10) == 0
+      && state.rflags.contains(.virtual8086)
+    if mode == .real16 || virtual8086 {
+      return .init(selector: selector, attributes: 0x93, limit: 0xffff,
+        base: UInt64(selector) << 4)
+    }
+
+    let current = currentPrivilegeLevel(state, mode: mode)
+    let requested = UInt8(selector & 3)
+    if selector & 0xfffc == 0 {
+      // A null SS selector is accepted only in 64-bit mode below CPL 3, with RPL=CPL.
+      guard mode == .long64, current < 3, requested == current else {
+        throw DoryX86Exception(
+          kind: .generalProtection, vector: 13, errorCode: 0,
+          instructionPointer: state.rip)
+      }
+      return .init(selector: selector)
+    }
+
+    let selectorError = UInt32(selector & 0xfffc)
+    func fault(_ kind: DoryX86Exception.Kind) -> DoryX86Exception {
+      .init(
+        kind: kind,
+        vector: kind == .stackSegment ? 12 : 13,
+        errorCode: selectorError,
+        instructionPointer: state.rip
+      )
+    }
+
+    let usesLDT = selector & 4 != 0
+    guard !usesLDT || state.ldtr.selector & 0xfffc != 0 else {
+      throw fault(.generalProtection)
+    }
+    let tableBase = usesLDT ? state.ldtr.base : state.gdtr.base
+    let tableLimit = usesLDT ? UInt64(state.ldtr.limit) : UInt64(state.gdtr.limit)
+    let offset = UInt64(selector >> 3) * 8
+    guard offset + 7 <= tableLimit else { throw fault(.generalProtection) }
+    let descriptorMemory =
+      (memory as? DoryX86TranslatedMemory)?.implicitSupervisorMemory() ?? memory
+    let bytes = try descriptorMemory.read(at: tableBase &+ offset, byteCount: 8)
+    let raw = bytes.enumerated().reduce(UInt64(0)) {
+      $0 | UInt64($1.element) << UInt64($1.offset * 8)
+    }
+    let access = UInt8(truncatingIfNeeded: raw >> 40)
+    let type = access & 0x0f
+    let descriptorPrivilege = (access >> 5) & 3
+    // SS accepts only writable data with RPL=CPL=DPL. Readable code remains invalid.
+    guard access & 0x10 != 0, type & 8 == 0, type & 2 != 0,
+      requested == current, descriptorPrivilege == current
+    else { throw fault(.generalProtection) }
+    guard access & 0x80 != 0 else { throw fault(.stackSegment) }
+
     var base = (raw >> 16) & 0xffff
     base |= ((raw >> 32) & 0xff) << 16
     base |= ((raw >> 56) & 0xff) << 24
