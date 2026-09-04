@@ -527,12 +527,14 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
     destination: UInt8,
     source: DoryX86VectorOperand
   )
-  /// CVTTPD2DQ/CVTPD2DQ/CVTDQ2PD (66/F3/F2 0F E6): convert packed double ↔ dword.
+  /// CVTTPD2DQ/CVTPD2DQ (66/F2 0F E6): convert two packed doubles to signed dwords.
   case convertPackedDoubleToDword(
     truncated: Bool,
     destination: UInt8,
     source: DoryX86VectorOperand
   )
+  /// CVTDQ2PD (F3 0F E6): convert two signed dwords from XMM/m64 to doubles.
+  case convertPackedDwordToDouble(destination: UInt8, source: DoryX86VectorOperand)
   /// PCMPISTRI (66 0F 3A 63): SSE4.2 packed compare implicit-length strings,
   /// producing a byte or word index in ECX. The immediate encodes data size,
   /// aggregation, polarity, and output selection.

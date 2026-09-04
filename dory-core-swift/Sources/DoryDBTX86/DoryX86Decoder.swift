@@ -1211,15 +1211,23 @@ public struct DoryX86Decoder: Sendable {
           index: index,
           mmx: false)
       case 0xE6:
-        // CVTTPD2DQ (66 0F E6): convert truncated packed double to packed dword.
-        // CVTDQ2PD (F2 0F E6): convert packed dword to packed double.
-        // CVTPD2DQ (F3 0F E6): convert packed double to packed dword (rounded).
+        guard (prefixes.operandSizeOverride && prefixes.repeatPrefix == nil)
+          || (!prefixes.operandSizeOverride
+            && (prefixes.repeatPrefix == 0xF2 || prefixes.repeatPrefix == 0xF3))
+        else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "packed conversion requires exactly one of 66/F2/F3")
+        }
         let operands = try decodeModRM(
           cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-        operation = .convertPackedDoubleToDword(
-          truncated: prefixes.repeatPrefix != 0xF3,
-          destination: vectorRegister(operands.reg),
-          source: vectorOperand(operands.rm))
+        if prefixes.repeatPrefix == 0xF3 {
+          operation = .convertPackedDwordToDouble(
+            destination: vectorRegister(operands.reg), source: vectorOperand(operands.rm))
+        } else {
+          operation = .convertPackedDoubleToDword(
+            truncated: prefixes.operandSizeOverride,
+            destination: vectorRegister(operands.reg), source: vectorOperand(operands.rm))
+        }
       case 0x2E, 0x2F:
         guard prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(

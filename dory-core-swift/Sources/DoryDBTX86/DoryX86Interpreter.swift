@@ -9,6 +9,7 @@ public struct DoryX86Exception: Error, Codable, Sendable, Hashable {
     case stackSegment
     case generalProtection
     case pageFault
+    case simdFloatingPoint
   }
 
   public let kind: Kind
@@ -87,6 +88,12 @@ public struct DoryX86Interpreter: Sendable {
       // A general-detect #DB is fault-like, but its debug-status effects survive.
       // Do not publish the candidate RIP, operands, or ordinary instruction state.
       if exception.kind == .debug { state.debug = candidate.debug }
+      // Intel SDM Vol. 1 §11.5.3.2 sets numeric status before selecting #XM or
+      // #UD (CR4.OSXMMEXCPT=0). Only sticky status survives, not the destination
+      // or MXCSR controls. Other #UD paths do not produce candidate status bits.
+      if exception.kind == .simdFloatingPoint || exception.kind == .invalidOpcode {
+        state.floatingPoint.mxcsr |= candidate.floatingPoint.mxcsr & 0x3F
+      }
       if exception.kind == .pageFault {
         state.control.cr2 = exception.linearAddress ?? 0
       }
@@ -1274,30 +1281,49 @@ public struct DoryX86Interpreter: Sendable {
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
       case .convertPackedDoubleToDword(let truncated, let destination, let source):
-        // CVTTPD2DQ (truncated) / CVTPD2DQ (rounded): convert 2 doubles to 2 dwords.
+        if case .memory(let operand) = source {
+          try validateSegmentAccess(
+            operand, byteCount: 16, write: false, instruction: instruction, state: state)
+          guard effectiveAddress(operand, instruction: instruction, state: state) & 0xF == 0 else {
+            return generalProtection(at: originalRIP)
+          }
+        }
         let sourceBytes = try readVectorBytes(
           source, byteCount: 16, instruction: instruction,
           state: state, memory: executionMemory)
         var result = [UInt8](repeating: 0, count: 16)
+        var exceptions: UInt32 = 0
         for lane in 0..<2 {
           let offset = lane * 8
-          let doubleValue = Double(bitPattern: fromLittleEndian(
-            Array(sourceBytes[offset..<offset + 8])))
-          let intValue: Int32
-          if truncated {
-            intValue = Int32(doubleValue.rounded(.towardZero))
-          } else {
-            intValue = Int32(doubleValue.rounded(.toNearestOrEven))
-          }
-          let bits = UInt32(bitPattern: intValue)
-          for i in 0..<4 {
-            result[lane * 4 + i] = UInt8(truncatingIfNeeded: bits >> UInt32(i * 8))
-          }
+          let converted = packedDoubleToDwordResult(
+            fromLittleEndian(Array(sourceBytes[offset..<offset + 8])),
+            truncated: truncated, mxcsr: state.floatingPoint.mxcsr)
+          replaceLittleEndian(converted.value, in: &result, at: lane * 4)
+          exceptions |= converted.exceptions
         }
-        // Upper 8 bytes are zeroed
+        // Invalid is pre-computation; an unmasked invalid lane prevents the
+        // packed instruction from reaching another lane's precision phase.
+        let masks = (state.floatingPoint.mxcsr >> 7) & 0x3F
+        if exceptions & 1 != 0, masks & 1 == 0 { exceptions &= ~UInt32(1 << 5) }
+        state.floatingPoint.mxcsr |= exceptions
+        if exceptions & ~masks != 0 {
+          if state.control.cr4 & (1 << 10) == 0 { return invalidOpcode(at: originalRIP) }
+          return .exception(.init(kind: .simdFloatingPoint, vector: 19, instructionPointer: originalRIP))
+        }
         var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        // Legacy SSE clears XMM[127:64] and preserves YMM[255:128].
         registerBytes.replaceSubrange(0..<16, with: result)
-        registerBytes.replaceSubrange(16..<32, with: repeatElement(0, count: 16))
+        state.floatingPoint.ymm[Int(destination)] = try .init(
+          bytes: registerBytes, expectedByteCount: 32)
+      case .convertPackedDwordToDouble(let destination, let source):
+        let sourceBytes = try readVectorBytes(
+          source, byteCount: 8, instruction: instruction, state: state, memory: executionMemory)
+        var registerBytes = state.floatingPoint.ymm[Int(destination)].bytes
+        for lane in 0..<2 {
+          let offset = lane * 4
+          let value = Int32(bitPattern: UInt32(fromLittleEndian(Array(sourceBytes[offset..<offset + 4]))))
+          replaceLittleEndian(Double(value).bitPattern, in: &registerBytes, at: lane * 8)
+        }
         state.floatingPoint.ymm[Int(destination)] = try .init(
           bytes: registerBytes, expectedByteCount: 32)
       case .packedCompareStringIndex(let destination, let source, let immediate):
@@ -4147,6 +4173,36 @@ public struct DoryX86Interpreter: Sendable {
       return Array(lhs[lhsLane * 8..<lhsLane * 8 + 8])
         + Array(rhs[rhsLane * 8..<rhsLane * 8 + 8])
     }
+  }
+
+  private func packedDoubleToDwordResult(
+    _ bitPattern: UInt64,
+    truncated: Bool,
+    mxcsr: UInt32
+  ) -> (value: UInt32, exceptions: UInt32) {
+    // Intel SDM Vol. 1 §11.5.2.2: these conversions do not raise #D, but DAZ
+    // still substitutes signed zero. Invalid conversion produces integer indefinite.
+    var value = Double(bitPattern: bitPattern)
+    if mxcsr & (1 << 6) != 0, value.isSubnormal {
+      value = Double(bitPattern: bitPattern & (1 << 63))
+    }
+    guard value.isFinite else { return (0x8000_0000, 1) }
+    let rule: FloatingPointRoundingRule =
+      if truncated {
+        .towardZero
+      } else {
+        switch (mxcsr >> 13) & 3 {
+        case 0: .toNearestOrEven
+        case 1: .down
+        case 2: .up
+        default: .towardZero
+        }
+      }
+    let rounded = value.rounded(rule)
+    guard rounded.isFinite, rounded >= -2_147_483_648.0, rounded < 2_147_483_648.0 else {
+      return (0x8000_0000, 1)
+    }
+    return (UInt32(bitPattern: Int32(rounded)), rounded == value ? 0 : 1 << 5)
   }
 
   private func floatingIntegerResult<T: BinaryFloatingPoint>(
