@@ -707,7 +707,10 @@ public struct DoryX86IRTranslator: Sendable {
       displacement: source.displacement,
       instructionRelativeBase: source.ripRelative ? instructionRelativeBase : nil,
       addressWidth: irWidth(source.addressWidth),
-      segment: source.ignoresLegacySegmentBase ? nil : source.segment.rawValue
+      // Long mode ignores legacy segment bases, but FS/GS still contribute their bases.
+      // Preserve those segments so a backend without segment support declines the access.
+      segment: source.ignoresLegacySegmentBase && source.segment != .fs && source.segment != .gs
+        ? nil : source.segment.rawValue
     )
   }
 
