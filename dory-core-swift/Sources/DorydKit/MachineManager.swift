@@ -6337,6 +6337,55 @@ public final class MachineManager: @unchecked Sendable {
 
     /// Validate a live generation before an operation resumes or stops it. This consumes only
     /// a quiescence preflight grant; any replacement launch obtains fresh spawn authority.
+    private func validateSnapshotRestoreSourceOwnership(
+        _ entry: MachineEntry, sourceData: Data
+    ) throws {
+        let id = entry.configuration.id
+        guard let infrastructure = resolvedLaunchInfrastructureSnapshot(),
+              (try JSONDecoder().decode(DoryMachineConfiguration.self, from: sourceData)) == entry.configuration,
+              entry.runtimeIdentity.validate().isEmpty,
+              entry.runtimeIdentity.mode != .legacyCompatibility,
+              try runtimeIdentityStore.readIfPresent(machineID: id,
+                authoritativeLegacyData: sourceData, allowRecovery: false) == entry.runtimeIdentity else {
+            throw MachineManagerError.persistence("snapshot restore source runtime authority changed")
+        }
+        let workspace = try workspaceAuthority(machine: entry.configuration,
+            authoritativeLegacyData: sourceData, allowReconciliation: false)
+        try validateManagedMachineArtifacts(entry.configuration)
+        if let plan = entry.runtimeIdentity.resolvedPlan {
+            guard plan == (try infrastructure.planStore.read(id: id)),
+                  let controller = productionAdmissionComponentsSnapshot().controller else {
+                throw MachineManagerError.persistence("snapshot restore source plan changed")
+            }
+            let bindings = Dictionary(grouping: workspace.artifactBindings, by: \.reference)
+            for artifact in plan.launchArtifacts {
+                guard let matches = bindings[artifact.resolverReference], matches.count == 1,
+                      let binding = matches.first else {
+                    throw MachineManagerError.persistence("source backing has no exact managed path")
+                }
+                try controller.validateBackingOwnership(of: artifact, atPath: binding.path)
+            }
+        }
+        if [.running, .paused].contains(entry.state) {
+            let reconnect = try runtimeReconnectStore.read(machineID: id)
+            guard let process = entry.process, process.isRunning,
+                  reconnect.processIdentity?.processIdentifier == process.pid,
+                  reconnect.processIdentity?.matchesCurrentProcess() == true,
+                  reconnect.launchIdentity.resolvedPlanSHA256 == entry.runtimeIdentity.resolvedPlanSHA256,
+                  entry.handoff?.ready.operationID == reconnect.launchIdentity.operationID,
+                  entry.activeResolvedPlan == entry.runtimeIdentity.resolvedPlan,
+                  lock.withLock({ machines[id]?.process === process && machines[id]?.state == entry.state
+                    && machines[id]?.runtimeIdentity == entry.runtimeIdentity }) else {
+                throw MachineManagerError.persistence("snapshot restore source helper generation changed")
+            }
+        } else {
+            guard entry.process == nil, entry.handoffServer == nil,
+                  try !liveResolvedHelperExists(machineID: id) else {
+                throw MachineManagerError.persistence("snapshot restore source has an unowned helper")
+            }
+        }
+    }
+
     private func validateLiveMachineBeforeQuiescence(_ entry: MachineEntry) throws {
         let id = entry.configuration.id
         guard [.running, .paused].contains(entry.state), let sourceProcess = entry.process else {
@@ -6345,6 +6394,13 @@ public final class MachineManager: @unchecked Sendable {
         let runtimeIdentity = entry.runtimeIdentity
         let plan = entry.activeResolvedPlan ?? runtimeIdentity.resolvedPlan
         try Self.validateProductCell(entry.configuration)
+        if launchPolicy == .perWorkspaceAuthority {
+            guard let data = Self.readPrivateMetadata(path: machineConfigPath(id: id)) else {
+                throw MachineManagerError.persistence("live source metadata is unavailable")
+            }
+            try validateSnapshotRestoreSourceOwnership(entry, sourceData: data)
+            return
+        }
         if runtimeIdentity.mode == .resolvedPlan {
             guard let infrastructure = resolvedLaunchInfrastructureSnapshot() else {
                 throw MachineManagerError.persistence("resolved live-source validation infrastructure is not installed")
