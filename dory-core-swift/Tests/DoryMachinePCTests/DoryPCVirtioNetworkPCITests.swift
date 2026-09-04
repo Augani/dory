@@ -46,11 +46,11 @@ import Testing
     backend.injectReceivedFrame(frame)
 
     #expect(
-      try machine.physicalMemory.read(at: 0x4000, byteCount: 10) == [UInt8](repeating: 0, count: 10)
+      try machine.physicalMemory.read(at: 0x4000, byteCount: 12) == [UInt8](repeating: 0, count: 10) + [1, 0]
     )
-    #expect(try machine.physicalMemory.read(at: 0x400A, byteCount: frame.count) == frame)
+    #expect(try machine.physicalMemory.read(at: 0x400C, byteCount: frame.count) == frame)
     #expect(read16(try machine.physicalMemory.read(at: 0x3002, byteCount: 2)) == 1)
-    #expect(read32(try machine.physicalMemory.read(at: 0x3008, byteCount: 4)) == 74)
+    #expect(read32(try machine.physicalMemory.read(at: 0x3008, byteCount: 4)) == 76)
     #expect(machine.localAPIC.snapshot().interruptRequest.contains(0x76))
     #expect(read16(try network.readConfiguration(offset: 2, byteCount: 2)) == 0x1041)
 

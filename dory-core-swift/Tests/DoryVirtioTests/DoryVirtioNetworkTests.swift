@@ -12,11 +12,11 @@ import Testing
     )
     let memory = NetworkGuestMemory(byteCount: 0x1000)
     let frame = ethernetFrame(payloadByte: 0x5A, count: 64)
-    memory.put([UInt8](repeating: 0, count: 10) + Array(frame.prefix(20)), at: 0x100)
+    memory.put([UInt8](repeating: 0, count: 12) + Array(frame.prefix(20)), at: 0x100)
     memory.put(Array(frame.dropFirst(20)), at: 0x200)
 
     let transmit = chain([
-      descriptor(0x100, 30, writable: false),
+      descriptor(0x100, 32, writable: false),
       descriptor(0x200, UInt32(frame.count - 20), writable: false),
     ])
     #expect(try device.processTransmit(transmit, memory: memory) == 0)
@@ -27,10 +27,10 @@ import Testing
       descriptor(0x400, 32, writable: true),
       descriptor(0x500, 128, writable: true),
     ])
-    #expect(try device.processReceive(receive, memory: memory) == UInt32(10 + frame.count))
-    #expect(try memory.read(at: 0x400, byteCount: 10) == [UInt8](repeating: 0, count: 10))
-    let firstFramePart = try memory.read(at: 0x40A, byteCount: 22)
-    let secondFramePart = try memory.read(at: 0x500, byteCount: frame.count - 22)
+    #expect(try device.processReceive(receive, memory: memory) == UInt32(12 + frame.count))
+    #expect(try memory.read(at: 0x400, byteCount: 12) == [UInt8](repeating: 0, count: 10) + [1, 0])
+    let firstFramePart = try memory.read(at: 0x40C, byteCount: 20)
+    let secondFramePart = try memory.read(at: 0x500, byteCount: frame.count - 20)
     #expect(firstFramePart + secondFramePart == frame)
     #expect(device.pendingReceiveCount == 0)
   }
@@ -48,18 +48,18 @@ import Testing
     #expect(!device.receive(frame: frame))
     #expect(device.droppedReceiveCount == 1)
 
-    #expect(throws: DoryVirtioNetworkError.receiveBufferTooSmall(required: 70, available: 69)) {
+    #expect(throws: DoryVirtioNetworkError.receiveBufferTooSmall(required: 72, available: 71)) {
       try device.processReceive(
-        chain([descriptor(0x100, 69, writable: true)]),
+        chain([descriptor(0x100, 71, writable: true)]),
         memory: memory
       )
     }
     #expect(device.pendingReceiveCount == 1)
 
-    memory.put([1] + [UInt8](repeating: 0, count: 9) + frame, at: 0x200)
+    memory.put([1] + [UInt8](repeating: 0, count: 11) + frame, at: 0x200)
     #expect(throws: DoryVirtioNetworkError.malformedHeader) {
       try device.processTransmit(
-        chain([descriptor(0x200, UInt32(10 + frame.count), writable: false)]),
+        chain([descriptor(0x200, UInt32(12 + frame.count), writable: false)]),
         memory: memory
       )
     }

@@ -21,10 +21,13 @@ public enum DoryVirtioNetworkError: Error, Sendable, Equatable {
   case noReceivedFrame
 }
 
-/// Transport-neutral two-queue VirtIO network device with bounded host ingress and no implicit
-/// offloads. Queue 0 receives complete Ethernet frames; queue 1 transmits them.
+/// Modern two-queue VirtIO network device with bounded host ingress and no implicit offloads.
+/// Queue 0 receives complete Ethernet frames; queue 1 transmits them. The current PCI adapter
+/// requires VERSION_1; the shorter legacy interface is not implemented.
 public final class DoryVirtioNetworkDevice: @unchecked Sendable {
-  public static let headerSize = 10
+  // VirtIO 1.2 §5.1.6 includes num_buffers even without MRG_RXBUF. Only the legacy
+  // interface (§5.1.6.1) omits those two bytes when merged receive buffers are disabled.
+  public static let headerSize = 12
   public static let receiveQueue: UInt16 = 0
   public static let transmitQueue: UInt16 = 1
 
@@ -152,9 +155,11 @@ public final class DoryVirtioNetworkDevice: @unchecked Sendable {
         deviceWillWrite: true
       )
     }
-    try scatter(
-      [UInt8](repeating: 0, count: Self.headerSize) + frame, into: chain.descriptors, memory: memory
-    )
+    var header = [UInt8](repeating: 0, count: Self.headerSize)
+    // §5.1.6.4.1 requires one used buffer when MRG_RXBUF was not negotiated. The
+    // single available descriptor chain can still scatter that buffer across elements.
+    header[10] = 1
+    try scatter(header + frame, into: chain.descriptors, memory: memory)
     lock.withLock {
       if pendingReceiveFrames.first == frame { pendingReceiveFrames.removeFirst() }
     }
