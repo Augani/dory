@@ -2901,7 +2901,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       let bulkMemory = memory as? any DoryX86BulkMemory,
       state.rip == guestStart
     else { return nil }
-    let bytes = try byteProvider(guestStart, Self.qwordCopyLoopBytes.count)
+    let bytes = try speculativeInstructionBytes(
+      using: { try byteProvider(guestStart, $0) },
+      maximumCount: Self.qwordCopyLoopBytes.count
+    )
     guard bytes == Self.qwordCopyLoopBytes,
       recognizesQwordCopyLoop(bytes, at: guestStart)
     else { return nil }
@@ -3114,7 +3117,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         return cached
       }
       if cached.memoryCodeGeneration != nil { codeGenerationMismatchCount &+= 1 }
-      let currentBytes = try byteProvider(byteCount)
+      let currentBytes = try speculativeInstructionBytes(using: byteProvider, maximumCount: byteCount)
       guard currentBytes.count == byteCount else { return nil }
       let generation = Self.fingerprint(bytes: currentBytes, mode: mode)
       if generation == cached.codeGeneration {
@@ -3136,7 +3139,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     ) {
       return nil
     }
-    let bytes = try byteProvider(maximumInstructions * 15)
+    let bytes = try speculativeInstructionBytes(
+      using: byteProvider, maximumCount: maximumInstructions * 15)
     if let shared = sharedCodeEntries[makeSharedCodeKey(from: key)],
       shared.block.guestInstructionCount <= maximumInstructions,
       !shared.block.requiresMemoryCallbacks || memory != nil
@@ -3190,6 +3194,19 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     return nil
   }
 
+  private func speculativeInstructionBytes(
+    using provider: (Int) throws -> [UInt8],
+    maximumCount: Int
+  ) throws -> [UInt8] {
+    do { return try provider(maximumCount) }
+    catch is DoryX86MemoryError {
+      // Guest fetch failures decline native execution, including when a preceding
+      // block in the chain already committed stores. The caller publishes that
+      // prefix before the interpreter retries the fetch at the faulting RIP.
+      return []
+    }
+  }
+
   private func compileResident(
     key: LookupKey,
     bytes: [UInt8],
@@ -3202,10 +3219,19 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     guard !bytes.isEmpty else {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
-    let translated = try DoryX86IRTranslator(
-      decoder: decoder,
-      instructionBudget: maximumInstructions
-    ).translate(bytes, at: guestStart, mode: mode)
+    let translated: DoryIRBasicBlock
+    do {
+      translated = try DoryX86IRTranslator(
+        decoder: decoder,
+        instructionBudget: maximumInstructions
+      ).translate(bytes, at: guestStart, mode: mode)
+    } catch is DoryX86DecodeError {
+      // Speculative bytes may stop inside the first instruction at a page boundary.
+      // Decline this block without caching that incomplete view. The chain caller
+      // publishes completed prefixes before the interpreter performs its precise
+      // fetch, distinguishing a missing page from an invalid instruction.
+      return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
+    }
     let block = optimization == .optimizing ? optimizer.optimize(translated).block : translated
     // The native context carries GPRs/RIP/flags, but cannot raise a privileged
     // instruction fault. Let the interpreter deliver #GP at the original HLT.
