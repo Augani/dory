@@ -23,6 +23,7 @@ CATALOG = Path(__file__).resolve().parent.parent / "Config/DoryVirtualizationGue
 DIAGNOSTIC_DIRECTORY = Path(__file__).resolve().parent.parent / "guest/diagnostics/p02-minimal-userspace"
 GLIBC_DIAGNOSTIC_DIRECTORY = DIAGNOSTIC_DIRECTORY.with_name("p02-glibc-userspace")
 SYSTEMD_DIAGNOSTIC_DIRECTORY = DIAGNOSTIC_DIRECTORY.with_name("p02-systemd-userspace")
+STRESS_DIAGNOSTIC_DIRECTORY = DIAGNOSTIC_DIRECTORY.with_name("p02-userspace-stress")
 CHUNK_BYTES = 64 * 1024
 MAX_DOWNLOAD_BYTES = 32 * 1024**3
 MAX_MEMBER_BYTES = 512 * 1024**2
@@ -931,6 +932,168 @@ def prepare_systemd_diagnostic(artifact, cache, directory=SYSTEMD_DIAGNOSTIC_DIR
             "qualification": manifest["qualification"]}
 
 
+STRESS_WORKLOADS = ["stress.allocation_free", "stress.mmap_protection", "stress.process_exec_wait",
+                   "stress.filesystem_roundtrip", "stress.compression_checksum",
+                   "stress.package_unpack", "stress.monotonic_clock"]
+STRESS_SOURCE_FILES = ("stress.c", "Makefile", "init")
+
+
+def stress_static_elf(data, source_digest):
+    """Inspect a supplied static Linux executable; never compile or execute guest bytes."""
+    require(len(data) >= 64 and data[:7] == b"\x7fELF\x02\x01\x01" and data[7] in (0, 3)
+            and struct.unpack_from("<HHI", data, 16) == (2, 62, 1),
+            "stress binary must be ET_EXEC ELF64 little-endian x86-64")
+    entry, phoff = struct.unpack_from("<QQ", data, 24)
+    ehsize, phsize, count = struct.unpack_from("<HHH", data, 52)
+    require(ehsize == 64 and phsize == 56 and 1 <= count <= 64
+            and phoff >= 64 and phoff + count * phsize <= len(data), "invalid stress ELF headers")
+    loads, executable_entry = [], False
+    for index in range(count):
+        kind, flags, offset, address, _, size, memory_size, alignment = struct.unpack_from(
+            "<IIQQQQQQ", data, phoff + index * phsize)
+        require(kind not in (2, 3), "stress binary must have no dynamic table or interpreter")
+        require(offset + size <= len(data), "stress ELF segment extends beyond file")
+        if kind != 1:
+            continue
+        require(flags & ~7 == 0 and size <= memory_size <= 64 * 1024**2
+                and address + memory_size < 2**64, "invalid stress ELF load segment")
+        require(alignment in (0, 1) or (alignment <= 2**32 and alignment & (alignment - 1) == 0
+                and address % alignment == offset % alignment), "invalid stress ELF alignment")
+        if memory_size:
+            require(all(address + memory_size <= start or end <= address for start, end in loads),
+                    "overlapping stress ELF load segments")
+            loads.append((address, address + memory_size))
+        if flags & 1 and address <= entry < address + size:
+            executable_entry = True
+    require(loads and executable_entry, "stress ELF entry is not file-backed executable memory")
+    require(isinstance(source_digest, str) and SHA256.fullmatch(source_digest)
+            and source_digest.encode("ascii") in data, "stress ELF embedded source digest differs")
+    return {"format": "ELF64 little-endian ET_EXEC x86-64", "entry": entry,
+            "loadSegmentCount": len(loads), "staticNoInterpreterOrDynamicTable": True,
+            "embeddedSourceSHA256": source_digest}
+
+
+def stress_diagnostic_cpio(init, executable, members):
+    entries = {
+        "init": (stat.S_IFREG | 0o755, init, 0, 0),
+        "bin/p02-userspace-stress": (stat.S_IFREG | 0o755, executable, 0, 0),
+        "bin/busybox": (stat.S_IFREG | 0o755, members["usr/bin/busybox"], 0, 0),
+        "bin/sh": (stat.S_IFLNK | 0o777, b"busybox", 0, 0),
+        "lib/ld-musl-x86_64.so.1": (stat.S_IFREG | 0o755, members["usr/lib/ld-musl-x86_64.so.1"], 0, 0),
+        "lib/libc.musl-x86_64.so.1": (stat.S_IFLNK | 0o777, b"ld-musl-x86_64.so.1", 0, 0),
+        "dev/console": (stat.S_IFCHR | 0o600, b"", 5, 1),
+        "dev/null": (stat.S_IFCHR | 0o666, b"", 1, 3),
+        "dev/zero": (stat.S_IFCHR | 0o666, b"", 1, 5)}
+    return newc_archive(entries, {"bin", "dev", "lib", "proc", "run", "sys", "tmp"})
+
+
+def prepare_stress_diagnostic(artifact, cache, binary_path, build_path, directory=STRESS_DIAGNOSTIC_DIRECTORY):
+    recipe_bytes = read_diagnostic_source(directory / "fixture.json", 64 * 1024)
+    recipe = json.loads(recipe_bytes, object_pairs_hook=unique_object)
+    require(isinstance(recipe, dict) and type(recipe.get("schemaVersion")) is int
+            and recipe["schemaVersion"] == 1 and recipe.get("kind") == "p02-userspace-stress"
+            and recipe.get("architecture") == "x86_64", "unsupported stress diagnostic recipe")
+    require(recipe.get("artifactID") == artifact["id"], "stress diagnostic artifact differs")
+    require(recipe.get("requiredWorkloads") == STRESS_WORKLOADS, "stress workload set differs")
+    source_specs = recipe.get("localFiles")
+    require(isinstance(source_specs, dict) and set(source_specs) == set(STRESS_SOURCE_FILES),
+            "stress local source set differs")
+    local_files = {}
+    for name in STRESS_SOURCE_FILES:
+        expected = source_specs[name]
+        require(isinstance(expected, dict), "invalid stress local source recipe")
+        size = bounded_integer(expected.get("bytes"), 256 * 1024, "stress local source bytes")
+        data = read_diagnostic_source(directory / name, 256 * 1024)
+        require(len(data) == size and hashlib.sha256(data).hexdigest() == expected.get("sha256"),
+                "stress local source size or SHA differs: " + name)
+        local_files[name] = data
+    source_digest = hashlib.sha256(local_files["stress.c"] + local_files["Makefile"]).hexdigest()
+    build_bytes = read_diagnostic_source(build_path, 64 * 1024)
+    require(hashlib.sha256(build_bytes).hexdigest() == recipe.get("buildMetadataSHA256"),
+            "stress build metadata SHA differs")
+    build = json.loads(build_bytes, object_pairs_hook=unique_object)
+    require(isinstance(build, dict) and type(build.get("schemaVersion")) is int
+            and build["schemaVersion"] == 1 and build.get("kind") == "p02-userspace-stress-cross-build"
+            and build.get("sourceSHA256") == source_digest, "stress build source identity differs")
+    require(build.get("compiler") == {"name": "zig", "version": "0.15.2"}
+            and build.get("target") == "x86_64-linux-musl" and build.get("cpu") == "baseline"
+            and build.get("stripped") is True and build.get("executedGuestCode") is False,
+            "stress build configuration differs")
+    binary_spec = build.get("binary")
+    require(isinstance(binary_spec, dict), "invalid stress binary record")
+    maximum = bounded_integer(binary_spec.get("bytes"), 8 * 1024**2, "stress binary bytes")
+    binary = read_diagnostic_source(binary_path, 8 * 1024**2)
+    binary_digest = hashlib.sha256(binary).hexdigest()
+    require(len(binary) == maximum and binary_digest == binary_spec.get("sha256"),
+            "stress binary size or SHA differs")
+    observed = stress_static_elf(binary, source_digest)
+    inputs = {}
+    for key in ("source", "kernel"):
+        spec = recipe.get(key)
+        require(isinstance(spec, dict), "invalid stress " + key + " recipe")
+        matches = [item for item in artifact.get("extractions", [])
+                   if item["filename"] == spec.get("filename") and item["sha256"] == spec.get("sha256")]
+        require(len(matches) == 1, "stress " + key + " must match pinned catalog extraction")
+        inputs[key] = matches[0]
+    kernel = cache.open_verified(inputs["kernel"]["filename"], inputs["kernel"]["sha256"],
+                                 inputs["kernel"]["maximumBytes"])
+    require(kernel is not None, "required stress kernel is missing; use --extract")
+    os.close(kernel)
+    member_specs = recipe.get("members")
+    require(isinstance(member_specs, dict) and set(member_specs) == {
+        "usr/bin/busybox", "usr/lib/ld-musl-x86_64.so.1"}, "stress member set differs")
+    maximum = bounded_integer(recipe.get("maximumExpandedBytes"), 64 * 1024**2, "stress expanded bytes")
+    archive = cache.open_verified(inputs["source"]["filename"], inputs["source"]["sha256"],
+                                  inputs["source"]["maximumBytes"])
+    require(archive is not None, "required stress source is missing; use --extract")
+    try:
+        members = diagnostic_members(diagnostic_archive(archive, maximum), member_specs)
+    finally:
+        os.close(archive)
+    for name, data in members.items():
+        require(hashlib.sha256(data).hexdigest() == member_specs[name], "stress member SHA differs: " + name)
+        require(len(data) >= 64 and data[:7] == b"\x7fELF\x02\x01\x01"
+                and int.from_bytes(data[18:20], "little") == 62, "stress member is not x86-64 ELF")
+    output = stress_diagnostic_cpio(local_files["init"], binary, members)
+    output_digest = hashlib.sha256(output).hexdigest()
+    expected_bytes = bounded_integer(recipe.get("outputBytes"), 12 * 1024**2, "stress output bytes")
+    require(len(output) == expected_bytes and output_digest == recipe.get("outputSHA256"),
+            "stress output size or SHA differs")
+    filename = safe_name(recipe.get("outputFilename"))
+    manifest = {"schemaVersion": 1, "kind": "p02-userspace-stress-build", "architecture": "x86_64",
+        "qualification": "archive integrity and deterministic construction only; guest has not executed",
+        "sourceArtifactID": artifact["id"], "sourceArtifactSHA256": artifact["sha256"],
+        "source": recipe["source"], "kernel": recipe["kernel"], "members": member_specs,
+        "localFiles": source_specs, "suppliedBuildMetadata": build,
+        "buildMetadataSHA256": recipe["buildMetadataSHA256"], "observedStressELF": observed,
+        "buildTrust": "Hashes and static ELF shape checked; supplied compiler provenance is not independently attested",
+        "recipeSHA256": hashlib.sha256(recipe_bytes).hexdigest(),
+        "builderSHA256": hashlib.sha256(read_diagnostic_source(Path(__file__), 1024**2)).hexdigest(),
+        "outputFilename": filename, "outputSHA256": output_digest, "outputBytes": len(output),
+        "requiredWorkloads": STRESS_WORKLOADS,
+        "acceptance": "Fresh matching UUID, all seven workloads, child exit 0, and independent host ACPI S5 poweroff",
+        "limitations": ["No guest execution by preparer", "Tmpfs does not qualify persistent block storage",
+                        "No sustained device-backed network qualification"],
+        "format": "newc; sorted names; uid/gid/mtime zero; sequential inodes; 512-byte padded; uncompressed"}
+    manifest_bytes = (json.dumps(manifest, sort_keys=True, indent=2) + "\n").encode()
+    manifest_digest = hashlib.sha256(manifest_bytes).hexdigest()
+    manifest_name = filename + ".manifest.json"
+    # Preflight both existing records, so mismatched provenance cannot publish a new CPIO.
+    missing = []
+    for name, data, digest in ((filename, output, output_digest), (manifest_name, manifest_bytes, manifest_digest)):
+        descriptor = cache.open_verified(name, digest, len(data), len(data))
+        if descriptor is not None:
+            os.close(descriptor)
+        else:
+            missing.append((name, data, digest))
+    for name, data, digest in missing:
+        cache.publish(name, digest, len(data),
+                      (data[offset:offset + CHUNK_BYTES] for offset in range(0, len(data), CHUNK_BYTES)), len(data))
+    return {"filename": filename, "sha256": output_digest, "bytes": len(output),
+            "manifestFilename": manifest_name, "manifestSHA256": manifest_digest,
+            "qualification": manifest["qualification"]}
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--catalog", type=Path, default=CATALOG)
@@ -946,11 +1109,16 @@ def main(argv=None):
                         help="derive the pinned P02 x86-64 BusyBox/glibc workload (requires --extract)")
     parser.add_argument("--systemd-diagnostic-initramfs", action="store_true",
                         help="derive pinned P02 x86-64 systemd PID 1 and supervised workloads (requires --extract)")
+    parser.add_argument("--stress-diagnostic-initramfs", action="store_true",
+                        help="derive pinned P02 stress workload from explicitly supplied verified static ELF")
+    parser.add_argument("--stress-binary", type=Path, help="prebuilt static stress ELF; never compiled or executed here")
+    parser.add_argument("--stress-build-metadata", type=Path, help="pinned stress cross-build JSON record")
     arguments = parser.parse_args(argv)
     if arguments.list:
         if (arguments.id or arguments.cache_directory or arguments.verify_only or arguments.extract
                 or arguments.diagnostic_initramfs or arguments.glibc_diagnostic_initramfs
-                or arguments.systemd_diagnostic_initramfs):
+                or arguments.systemd_diagnostic_initramfs or arguments.stress_diagnostic_initramfs
+                or arguments.stress_binary or arguments.stress_build_metadata):
             parser.error("--list cannot be combined with preparation options")
     elif not arguments.id or arguments.cache_directory is None:
         parser.error("preparation requires explicit --id and --cache-directory")
@@ -963,7 +1131,15 @@ def main(argv=None):
         require(len(set(arguments.id)) == len(arguments.id), "duplicate requested artifact ID")
         require(all(identity in by_id for identity in arguments.id), "unknown requested artifact ID")
         require(sum((arguments.diagnostic_initramfs, arguments.glibc_diagnostic_initramfs,
-                     arguments.systemd_diagnostic_initramfs)) <= 1, "select only one diagnostic initramfs")
+                     arguments.systemd_diagnostic_initramfs, arguments.stress_diagnostic_initramfs)) <= 1,
+                "select only one diagnostic initramfs")
+        require(arguments.stress_diagnostic_initramfs or
+                (arguments.stress_binary is None and arguments.stress_build_metadata is None),
+                "stress binary and metadata require --stress-diagnostic-initramfs")
+        if arguments.stress_diagnostic_initramfs:
+            require(arguments.extract and arguments.id == ["alpine-virt-3.24.1-x86_64"]
+                    and arguments.stress_binary is not None and arguments.stress_build_metadata is not None,
+                    "stress diagnostic requires --extract, sole Alpine x86-64 ID, --stress-binary and --stress-build-metadata")
         if arguments.diagnostic_initramfs:
             require(arguments.extract and arguments.id == ["alpine-virt-3.24.1-x86_64"],
                     "diagnostic initramfs requires --extract and only --id alpine-virt-3.24.1-x86_64")
@@ -985,6 +1161,9 @@ def main(argv=None):
                 diagnostic = prepare_glibc_diagnostic(by_id[arguments.id[0]], cache)
             if arguments.systemd_diagnostic_initramfs:
                 diagnostic = prepare_systemd_diagnostic(by_id[arguments.id[0]], cache)
+            if arguments.stress_diagnostic_initramfs:
+                diagnostic = prepare_stress_diagnostic(by_id[arguments.id[0]], cache,
+                    arguments.stress_binary, arguments.stress_build_metadata)
         print(json.dumps({"schemaVersion": 1, "kind": "virtualization-fixture-preparation",
                           "cacheDirectory": str(arguments.cache_directory.absolute()),
                           "qualification": "input integrity only; no guest boot or workload qualification",

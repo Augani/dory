@@ -827,5 +827,224 @@ class SystemdDiagnosticTests(unittest.TestCase):
         self.assertFalse((self.root / "unused-cache").exists())
 
 
+class StressDiagnosticTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.directory = self.root / "source"
+        self.directory.mkdir()
+        self.cache_path = self.root / "cache"
+        self.cache_path.mkdir()
+        self.binary_path = self.root / "stress.elf"
+        self.build_path = self.root / "build.json"
+        self.sources = {"stress.c": b"synthetic C inspection fixture\n", "Makefile": b"synthetic Makefile\n",
+                        "init": b"#!/bin/sh\n# synthetic; never executed\n"}
+        for name, data in self.sources.items():
+            (self.directory / name).write_bytes(data)
+        self.source_sha = digest(self.sources["stress.c"] + self.sources["Makefile"])
+        self.binary = self.elf(self.source_sha)
+        self.binary_path.write_bytes(self.binary)
+        self.members = {"usr/bin/busybox": self.elf("1" * 64),
+                        "usr/lib/ld-musl-x86_64.so.1": self.elf("2" * 64)}
+        archive = gzip.compress(DiagnosticInitramfsTests.cpio(list(self.members.items())))
+        (self.cache_path / "input.gz").write_bytes(archive)
+        (self.cache_path / "kernel").write_bytes(b"synthetic kernel")
+        self.artifact = {"id": "synthetic-stress-parser", "sha256": digest(b"synthetic ISO"),
+            "extractions": [{"filename": "input.gz", "sha256": digest(archive), "maximumBytes": len(archive)},
+                            {"filename": "kernel", "sha256": digest(b"synthetic kernel"), "maximumBytes": 100}]}
+        self.build = {"schemaVersion": 1, "kind": "p02-userspace-stress-cross-build",
+            "sourceSHA256": self.source_sha, "compiler": {"name": "zig", "version": "0.15.2"},
+            "target": "x86_64-linux-musl", "cpu": "baseline", "stripped": True,
+            "executedGuestCode": False, "binary": {"bytes": len(self.binary), "sha256": digest(self.binary)}}
+        output = fixture.stress_diagnostic_cpio(self.sources["init"], self.binary, self.members)
+        self.recipe = {"schemaVersion": 1, "kind": "p02-userspace-stress", "architecture": "x86_64",
+            "artifactID": self.artifact["id"], "requiredWorkloads": fixture.STRESS_WORKLOADS,
+            "localFiles": {name: {"bytes": len(data), "sha256": digest(data)} for name, data in self.sources.items()},
+            "source": {"filename": "input.gz", "sha256": digest(archive)},
+            "kernel": {"filename": "kernel", "sha256": digest(b"synthetic kernel")},
+            "members": {name: digest(data) for name, data in self.members.items()}, "maximumExpandedBytes": 65536,
+            "outputFilename": "stress.cpio", "outputBytes": len(output), "outputSHA256": digest(output)}
+        self.save_build()
+
+    @staticmethod
+    def elf(source_digest):
+        # A single executable PT_LOAD with a file-backed entry and embedded identity.
+        data = bytearray(1024)
+        data[:7] = b"\x7fELF\x02\x01\x01"
+        struct.pack_into("<HHIQQ", data, 16, 2, 62, 1, 0x400100, 64)
+        struct.pack_into("<HHH", data, 52, 64, 56, 1)
+        struct.pack_into("<IIQQQQQQ", data, 64, 1, 5, 0, 0x400000, 0, len(data), len(data), 4096)
+        data[256:320] = source_digest.encode("ascii")
+        return bytes(data)
+
+    def save_recipe(self):
+        (self.directory / "fixture.json").write_text(json.dumps(self.recipe))
+
+    def save_build(self):
+        self.build_path.write_text(json.dumps(self.build))
+        self.recipe["buildMetadataSHA256"] = digest(self.build_path.read_bytes())
+        self.save_recipe()
+
+    def prepare(self):
+        with fixture.Cache(self.cache_path) as cache, \
+             mock.patch.object(fixture.subprocess, "Popen", side_effect=AssertionError("compiler or guest execution")), \
+             mock.patch.object(fixture, "download_chunks", side_effect=AssertionError("network")):
+            return fixture.prepare_stress_diagnostic(self.artifact, cache, self.binary_path,
+                                                     self.build_path, self.directory)
+
+    def test_reproducible_archive_exact_static_binary_and_build_manifest(self):
+        result = self.prepare()
+        self.assertEqual(self.prepare(), result)
+        raw = (self.cache_path / result["filename"]).read_bytes()
+        self.assertEqual(len(raw) % 512, 0)
+        members = fixture.diagnostic_members(raw, {"init", "bin/p02-userspace-stress", "bin/busybox"})
+        self.assertEqual(members["bin/p02-userspace-stress"], self.binary)
+        self.assertEqual(members["bin/busybox"], self.members["usr/bin/busybox"])
+        self.assertEqual(members["init"], self.sources["init"])
+        manifest = json.loads((self.cache_path / result["manifestFilename"]).read_text())
+        self.assertEqual(manifest["suppliedBuildMetadata"], self.build)
+        self.assertEqual(manifest["requiredWorkloads"], fixture.STRESS_WORKLOADS)
+        self.assertTrue(manifest["observedStressELF"]["staticNoInterpreterOrDynamicTable"])
+        self.assertIn("not independently attested", manifest["buildTrust"])
+        self.assertIn("guest has not executed", manifest["qualification"])
+
+    def test_source_metadata_and_binary_tampering_never_publish(self):
+        paths = [self.directory / "stress.c", self.directory / "Makefile", self.directory / "init",
+                 self.build_path, self.binary_path]
+        for path in paths:
+            original = path.read_bytes()
+            path.write_bytes(original + b"altered")
+            with self.subTest(path=path.name), self.assertRaises(fixture.FixtureError):
+                self.prepare()
+            path.write_bytes(original)
+            self.assertFalse((self.cache_path / "stress.cpio").exists())
+
+    def test_missing_or_symlinked_external_build_inputs_reject(self):
+        for path in (self.binary_path, self.build_path):
+            original = path.read_bytes()
+            path.unlink()
+            with self.subTest(path=path.name), self.assertRaises(OSError):
+                self.prepare()
+            target = self.root / (path.name + ".target")
+            target.write_bytes(original)
+            path.symlink_to(target)
+            with self.assertRaises(OSError):
+                self.prepare()
+            path.unlink()
+            path.write_bytes(original)
+        self.assertFalse((self.cache_path / "stress.cpio").exists())
+
+    def test_static_elf_rejects_dynamic_wrong_arch_truncation_entry_and_embedded_source(self):
+        mutations = [(18, "<H", 183), (16, "<H", 3), (24, "<Q", 0x500000),
+                     (32, "<Q", len(self.binary)), (64, "<I", 2), (64, "<I", 3),
+                     (68, "<I", 4), (64 + 32, "<Q", len(self.binary) + 1),
+                     (64 + 40, "<Q", 1), (64 + 48, "<Q", 3)]
+        for offset, fmt, value in mutations:
+            data = bytearray(self.binary)
+            struct.pack_into(fmt, data, offset, value)
+            with self.subTest(offset=offset, value=value), self.assertRaises(fixture.FixtureError):
+                fixture.stress_static_elf(data, self.source_sha)
+        with self.assertRaises(fixture.FixtureError):
+            fixture.stress_static_elf(self.binary[:100], self.source_sha)
+        with self.assertRaises(fixture.FixtureError):
+            fixture.stress_static_elf(self.binary, "f" * 64)
+
+    def test_invalid_build_configuration_and_source_binding_reject(self):
+        original = json.dumps(self.build)
+        for key, value in (("target", "aarch64-linux-musl"), ("sourceSHA256", "0" * 64),
+                           ("stripped", False), ("executedGuestCode", True),
+                           ("compiler", {"name": "zig", "version": "unverified"})):
+            self.build = json.loads(original)
+            self.build[key] = value
+            self.save_build()
+            with self.subTest(key=key), self.assertRaises(fixture.FixtureError):
+                self.prepare()
+        self.assertFalse((self.cache_path / "stress.cpio").exists())
+
+    def test_missing_kernel_wrong_member_output_and_unsafe_name_fail_without_publication(self):
+        kernel = self.cache_path / "kernel"
+        data = kernel.read_bytes()
+        kernel.unlink()
+        with self.assertRaisesRegex(fixture.FixtureError, "kernel is missing"):
+            self.prepare()
+        kernel.write_bytes(data)
+        original = json.dumps(self.recipe)
+        for key, value in (("outputFilename", "../escape.cpio"), ("outputSHA256", "0" * 64),
+                           ("members", {name: "0" * 64 for name in self.members}),
+                           ("requiredWorkloads", fixture.STRESS_WORKLOADS[:-1])):
+            self.recipe = json.loads(original)
+            self.recipe[key] = value
+            self.save_recipe()
+            with self.subTest(key=key), self.assertRaises(fixture.FixtureError):
+                self.prepare()
+        self.assertFalse((self.cache_path / "stress.cpio").exists())
+        self.assertFalse((self.root / "escape.cpio").exists())
+
+    def test_corrupt_archive_or_manifest_preserved_before_any_new_publication(self):
+        for filename in ("stress.cpio", "stress.cpio.manifest.json"):
+            path = self.cache_path / filename
+            path.write_bytes(b"preserve mismatched previous output")
+            with self.subTest(filename=filename), self.assertRaises(fixture.FixtureError):
+                self.prepare()
+            self.assertEqual(path.read_bytes(), b"preserve mismatched previous output")
+            self.assertEqual(set(p.name for p in self.cache_path.iterdir()), {"kernel", "input.gz", filename})
+            path.unlink()
+
+    def test_cli_requires_explicit_binary_metadata_and_exclusive_alpine_selection(self):
+        base = ["--id", "alpine-virt-3.24.1-x86_64", "--cache-directory", str(self.root / "unused")]
+        invalid = [["--stress-binary", "missing"], ["--stress-build-metadata", "missing"],
+                   ["--stress-diagnostic-initramfs"],
+                   ["--stress-diagnostic-initramfs", "--extract", "--stress-binary", "missing"],
+                   ["--stress-diagnostic-initramfs", "--extract", "--stress-binary", "missing",
+                    "--stress-build-metadata", "missing", "--diagnostic-initramfs"]]
+        for arguments in invalid:
+            with self.subTest(arguments=arguments), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(fixture.main(base + arguments), 1)
+        self.assertFalse((self.root / "unused").exists())
+
+    def test_init_output_gate_never_publishes_success_for_failed_child_or_sync(self):
+        source = (fixture.STRESS_DIAGNOSTIC_DIRECTORY / "init").read_text()
+        body = source.split("\npublish_workload_output() {\n", 1)[1].split("\n}\n", 1)[0]
+        # Only the extracted output gate runs. Mock sync; never mount, power off or run the C guest.
+        command = r'''
+BB=mock_busybox
+mock_busybox() {
+    applet=$1
+    shift
+    case "$applet" in
+        sync) return "$SYNC_STATUS" ;;
+        wc) wc "$@" ;;
+        sed) sed "$@" ;;
+        cat) cat "$@"; return "$CAT_STATUS" ;;
+        *) return 99 ;;
+    esac
+}
+'''
+        command += "publish_workload_output() {\n" + body + "\n}\n"
+        command += 'publish_workload_output "$1" "$2"; status=$?; printf "%s\\n" "$receipt_publication_started" >&2; exit "$status"\n'
+        output = self.root / "output"
+        receipt = '{"doryPVHBoot":"userspace-ready","workloadsPassed":true}\n'
+        result_line = 'DORY_P02_RESULT {"status":"pass"}\n'
+        for child, sync, cat, content, passed, published in [
+            (0, 0, 0, result_line + receipt, True, "yes"),
+            (1, 0, 0, result_line + receipt, False, "no"),
+            (0, 1, 0, result_line + receipt, False, "no"),
+            (0, 0, 0, "", False, "no"),
+            (0, 0, 0, "x" * 16385, False, "no"),
+            (0, 0, 1, result_line + receipt, False, "yes")]:
+            output.write_text(content)
+            reply = subprocess.run(["/bin/sh", "-c", command, "gate-test", str(child), str(output)],
+                env={**os.environ, "SYNC_STATUS": str(sync), "CAT_STATUS": str(cat)},
+                check=False, capture_output=True, text=True, timeout=5)
+            with self.subTest(child=child, sync=sync, cat=cat, bytes=len(content)):
+                self.assertEqual(reply.returncode == 0, passed)
+                self.assertEqual(reply.stderr, published + "\n")
+                if published == "no":
+                    self.assertNotIn('"doryPVHBoot"', reply.stdout)
+                if passed:
+                    self.assertEqual(reply.stdout, content)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
