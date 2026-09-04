@@ -214,6 +214,10 @@ public struct DoryX86IRTranslator: Sendable {
     _ instruction: DoryX86DecodedInstruction,
     mode: DoryX86ExecutionMode
   ) -> (statements: [DoryIRStatement], terminator: DoryIRTerminator?) {
+    if DoryX86LegacyFloatingPointPolicy.isX87NoOperation(instruction) {
+      // FNOP is still an x87 instruction: preserve its feature and EM/TS checks.
+      return fallback(instruction, reason: .interpreter)
+    }
     switch instruction.operation {
     case .noOperation, .processorPause:
       return ([], nil)

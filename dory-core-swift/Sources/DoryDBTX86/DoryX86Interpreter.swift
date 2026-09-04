@@ -162,6 +162,9 @@ public struct DoryX86Interpreter: Sendable {
     guard DoryX86InstructionFeaturePolicy.permits(instruction, profile: profile) else {
       return invalidOpcode(at: originalRIP)
     }
+    if let fault = DoryX86LegacyFloatingPointPolicy.executionFault(instruction, state: state) {
+      return .exception(fault)
+    }
     if let fault = simdExecutionStateFault(instruction, state: state, mode: mode) {
       return fault
     }

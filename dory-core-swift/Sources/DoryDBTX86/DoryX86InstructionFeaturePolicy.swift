@@ -5,6 +5,9 @@
 /// and VEX encoding tables: https://cdrdv2-public.intel.com/774492/325383-sdm-vol-2abcd.pdf
 enum DoryX86InstructionFeaturePolicy {
   static func permits(_ instruction: DoryX86DecodedInstruction, profile: DoryX86CPUProfile) -> Bool {
+    guard DoryX86LegacyFloatingPointPolicy.permitsFeatures(instruction, profile: profile) else {
+      return false
+    }
     switch instruction.operation {
     case .flaglessShift, .vexMaskMove:
       // SHLX/SHRX/SARX are BMI2, not AVX. No BMI2 feature or AVX-512 mask state is
