@@ -1,0 +1,38 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "devices",
+  "issueLabel": "subsystem:devices",
+  "planItems": [
+    "P02-25"
+  ],
+  "sourceCommit": "862383b91c2e5b7ef1b6c78ddd17aef60be8a1db",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Source50 real-mode IRET and split-queue available-event regressions; widened shared VirtIO gate and optimized build. No new guest acceptance claim.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-50.json",
+      "sha256": "6e9d25fa5a2f0606f31709755b72bdc7f3c32612ddedf834a7ca65a87fe4ac13"
+    }
+  ],
+  "limitations": [
+    "No checkpoint is newly closed. P02 remains incomplete: physical reference, full CPU/FPU/mode/paging/fault qualification and device-backed stability stress remain open.",
+    "The final test-filter term widens from DoryVirtioNetworkTests to DoryVirtio, covering existing shared virtqueue and device suites. Increased totals are not all new tests.",
+    "One disabled physical-reference method and one optional XCTest boot-fixture skip remain excluded from pass counts; overlapping runs are not summed.",
+    "The EVENT_IDX defect matches Linux notification arithmetic and eight bounded regressions pass, but its causality for IO1 remains inferred; actual guest replay is outside this source gate.",
+    "Seven real-mode IRET methods cover specified width/flag/frame/fault cases, not full interrupt/mode qualification or physical-hardware reference.",
+    "Experimental host with concurrent work; durations are engineering observations, not P14 qualification."
+  ]
+}

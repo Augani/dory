@@ -1,0 +1,110 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-io-available-event-candidate-reduction",
+  "observedFailure": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-1-failure-review.json",
+    "sha256": "c276904b52445b96c553a9825398e54aef83499782169eada7fef9565bb8a414"
+  },
+  "failureValidation": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-1-failure-validation.json",
+    "sha256": "5fd79430e41145291b7e350ba1b92a29df9928ed7134e1fedcb811fd61e4e90a"
+  },
+  "failedGuestSourceCommit": "3337bd44235c45820d1ee6ffe3579b4a70d085e1",
+  "correctedSourceCommit": "862383b91c2e5b7ef1b6c78ddd17aef60be8a1db",
+  "observedFailureScope": "One4096-byte backend read, no writes/flushes/network frames, no guest receipt or poweroff; instruction-budget exhaustion. No guest negotiated-feature or ring snapshot was retained.",
+  "codeDefect": "Previous split-queue pop path did not advance the device-owned avail_event field despite offered EVENT_IDX and notification-driven PCI processing. A stale zero threshold suppresses the next sequential kick.",
+  "linuxKickFormula": "UInt16(newIndex - eventIndex - 1) < UInt16(newIndex - oldIndex)",
+  "boundedArithmeticCounterexample": [
+    {
+      "oldIndex": 0,
+      "newIndex": 1,
+      "eventIndex": 0,
+      "notify": true
+    },
+    {
+      "oldIndex": 1,
+      "newIndex": 2,
+      "eventIndex": 0,
+      "notify": false
+    },
+    {
+      "oldIndex": 1,
+      "newIndex": 2,
+      "eventIndex": 1,
+      "notify": true
+    }
+  ],
+  "correctedPolicy": "Write next available consumer index at usedRingBase+4+8*queueSize, set used.flags0, synchronize and recheck before idling. Initialize only negotiated EVENT_IDX queues after both queue-enable and DRIVER_OK requirements hold.",
+  "regressionEvidence": [
+    {
+      "path": "dory-core-swift/Tests/DoryVirtioTests/DoryVirtioAvailableEventTests.swift",
+      "sha256": "7d8f39e3d6159299f9ff35d90ad4f2460474b4c86332111f547aaf1bf95e3e62",
+      "passedMethods": [
+        "eventThresholdRequestsEachSuccessiveEntryAcrossIndexWrap",
+        "idleRearmRechecksWorkPublishedAtTheNotificationBarrier",
+        "eventWriteFailureDoesNotConsumeHeadOrPublishPartialNotificationState",
+        "eventIndexDisabledNeverAccessesTheOptionalUsedRingTail"
+      ],
+      "run": 50,
+      "sourceOverlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-source-overlay.tar.gz",
+        "sha256": "f8cf7ebc1dd65049814861793ae8eb0e85718d1c825bfaee2ef5ab4e837ccef6"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50.log.gz",
+        "sha256": "6b28f10fd73df341ae0fc639d24832266652919b61170975d527b6f1fd7bef14"
+      }
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCVirtioAvailableEventTests.swift",
+      "sha256": "3d08de7abb4c1cf31e4a8d7b1611a57943ec8c74676976240fb11be6caf8795c",
+      "passedMethods": [
+        "negotiatedEventIndexDrivesReadWriteAndFlushAsSuccessiveRequests",
+        "initialArmCoversBothReadyOrdersBlockedReceiveQueuesAndResetReuse",
+        "rejectedDriverReadyTransitionDoesNotArmOrConsumeQueue",
+        "ordinaryQueuesWithStagedWorkStillWaitForTheirExplicitNotification"
+      ],
+      "run": 50,
+      "sourceOverlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-source-overlay.tar.gz",
+        "sha256": "f8cf7ebc1dd65049814861793ae8eb0e85718d1c825bfaee2ef5ab4e837ccef6"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50.log.gz",
+        "sha256": "6b28f10fd73df341ae0fc639d24832266652919b61170975d527b6f1fd7bef14"
+      }
+    }
+  ],
+  "testsPassed": 8,
+  "testCoverage": [
+    "65,538 actual pop/complete cycles through16-bit wrap in bounded memory",
+    "Producer publication at idle-notification barrier",
+    "Event-tail write-preflight rejection preserves queue state",
+    "Unnegotiated EVENT_IDX never accesses optional tail",
+    "Sequential Linux-style conditional kicks for PCI block read/write/flush, with blockFlush negotiated and MSI-X APIC delivery/ack/EOI",
+    "Initial stale tail, both ready orders, blocked RX and reset reuse",
+    "Rejected DRIVER_OK transition leaves queues untouched",
+    "Ordinary non-EVENT_IDX staged work retains explicit-notification behavior"
+  ],
+  "preFixReducerExecuted": false,
+  "relationshipToIOFailure": "Source defect and passing bounded reducer are established; causality for the real IO1 stall remains inferred until the unchanged pinned guest fixture completes under an updated runner.",
+  "primaryReferences": [
+    {
+      "title": "VirtIO1.2 sections2.7.10 and2.7.13",
+      "url": "https://docs.oasis-open.org/virtio/virtio/v1.2/virtio-v1.2.html"
+    },
+    {
+      "title": "Linuxv6.18.35 vring_need_event",
+      "url": "https://raw.githubusercontent.com/gregkh/linux/v6.18.35/include/uapi/linux/virtio_ring.h"
+    },
+    {
+      "title": "Linuxv6.18.35 virtqueue_kick_prepare_split",
+      "url": "https://raw.githubusercontent.com/gregkh/linux/v6.18.35/drivers/virtio/virtio_ring.c"
+    }
+  ],
+  "limitations": [
+    "No actual replay result or P02-25 closure in this record.",
+    "A backend read callback does not establish guest completion or interrupt delivery; the prior probe did not sample its ring state.",
+    "Authored sequential and injected-race tests do not qualify all concurrent/deferred queues, transports, physical storage or network behavior."
+  ]
+}

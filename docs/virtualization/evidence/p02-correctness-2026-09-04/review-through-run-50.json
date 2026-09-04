@@ -1,0 +1,242 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-correctness-review",
+  "status": "in-progress",
+  "phaseComplete": false,
+  "releaseQualified": false,
+  "sourceCommit": "862383b91c2e5b7ef1b6c78ddd17aef60be8a1db",
+  "previousReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-49.json",
+    "sha256": "20dab26bf5feea2d24f3fdecdbcfcc34a02ee4e1b101c87426671f0ff0647920"
+  },
+  "latestCompletedGuestReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-2-review.json",
+    "sha256": "3e4f48a718a0e15fe1b33c2e02c470f13c0958ea78091aebc8ae27d63b20f986"
+  },
+  "latestIOFailure": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-1-failure-review.json",
+    "sha256": "c276904b52445b96c553a9825398e54aef83499782169eada7fef9565bb8a414"
+  },
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "testCommand": {
+    "environment": {
+      "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+      "SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH": "1",
+      "DORY_ISA_EVIDENCE_ROOT": "/tmp/dory-p02-inventory-evidence"
+    },
+    "arguments": [
+      "swift",
+      "test",
+      "--package-path",
+      "/tmp/dory-p02-correctness-source-1/dory-core-swift",
+      "--scratch-path",
+      "/tmp/dory-p02-correctness-build-1",
+      "--jobs",
+      "3",
+      "--no-parallel",
+      "--filter",
+      "DoryX86|DoryPC|DoryARM64|PVHBootRunnerTests|PVHJITDiagnosticsTests|PVHStress|ISAInventoryTests|DoryVirtio"
+    ]
+  },
+  "filterChange": "Final term DoryVirtioNetworkTests widened to DoryVirtio; existing shared queue and all VirtIO suite matches now included.",
+  "buildMode": "Incremental debug test gate and optimized source50 runner build; no new clean command recorded.",
+  "runs": [
+    {
+      "run": 50,
+      "comparisonCommit": "862383b91c2e5b7ef1b6c78ddd17aef60be8a1db",
+      "observedToolSession": 98058,
+      "completionChunk": "bdcda5",
+      "exitCode": 0,
+      "buildElapsedSeconds": 24.23,
+      "sourceBinding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-commit-binding.json",
+        "sha256": "2d76852ae1d6cb9bb42dab3a45c67e31cf5eb4ed6bdfe4ec5d93791237789b87"
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-source-manifest.json.gz",
+        "sha256": "c81266357ad310b335803f8d97c59b938b41c0327841fa01695d2b440ea99ef7"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-source-overlay.tar.gz",
+        "sha256": "f8cf7ebc1dd65049814861793ae8eb0e85718d1c825bfaee2ef5ab4e837ccef6"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50.log.gz",
+        "sha256": "6b28f10fd73df341ae0fc639d24832266652919b61170975d527b6f1fd7bef14"
+      },
+      "swiftTesting": {
+        "reported": 953,
+        "passed": 952,
+        "failed": 0,
+        "disabledPhysicalReference": 1,
+        "suites": 123,
+        "elapsedSeconds": 7.483
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    }
+  ],
+  "componentChanges": [
+    {
+      "commit": "c9128fbd782d59c3b24b604cc03c4afef16f77cc",
+      "scope": "Real-mode IRET honors decoded operand width, independent stack-address width, real-mode flag masks and complete frame bounds before state publication.",
+      "regressionEvidence": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86RealIRETTests.swift",
+          "sha256": "77d72ef3b8e54e44f34f7b03dd92fac6a544c0d8c7806969d0866d015311b4b4",
+          "passedMethods": [
+            "decodedOperandWidthAndStackAddressSizeAreIndependentOfAddressOverride",
+            "flagsUseRealModeMasksAndIgnoreReservedBitsInThePoppedImage",
+            "shortOrWrappingFramesRaiseSSBeforeReadsThroughBothEntryPoints",
+            "anExactlyFittingFrameMayWrapTheFinalStackPointerAfterTheLastPop",
+            "iretdRejectsOutOfRangeEIPWithoutTruncationOrPartialState",
+            "aLateBackingReadFailureDoesNotPublishEarlierPoppedSlots",
+            "ordinaryRealModeInterruptEntryStillRoundTripsThroughDecodedIRET16"
+          ],
+          "run": 50,
+          "sourceOverlay": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-source-overlay.tar.gz",
+            "sha256": "f8cf7ebc1dd65049814861793ae8eb0e85718d1c825bfaee2ef5ab4e837ccef6"
+          },
+          "log": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50.log.gz",
+            "sha256": "6b28f10fd73df341ae0fc639d24832266652919b61170975d527b6f1fd7bef14"
+          }
+        }
+      ]
+    },
+    {
+      "commit": "862383b91c2e5b7ef1b6c78ddd17aef60be8a1db",
+      "scope": "Rearm device-owned avail_event for successive split-queue requests, including initial ready/enable ordering, blocked RX queues, idle barrier recheck and16-bit wrap.",
+      "regressionEvidence": [
+        {
+          "path": "dory-core-swift/Tests/DoryVirtioTests/DoryVirtioAvailableEventTests.swift",
+          "sha256": "7d8f39e3d6159299f9ff35d90ad4f2460474b4c86332111f547aaf1bf95e3e62",
+          "passedMethods": [
+            "eventThresholdRequestsEachSuccessiveEntryAcrossIndexWrap",
+            "idleRearmRechecksWorkPublishedAtTheNotificationBarrier",
+            "eventWriteFailureDoesNotConsumeHeadOrPublishPartialNotificationState",
+            "eventIndexDisabledNeverAccessesTheOptionalUsedRingTail"
+          ],
+          "run": 50,
+          "sourceOverlay": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-source-overlay.tar.gz",
+            "sha256": "f8cf7ebc1dd65049814861793ae8eb0e85718d1c825bfaee2ef5ab4e837ccef6"
+          },
+          "log": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50.log.gz",
+            "sha256": "6b28f10fd73df341ae0fc639d24832266652919b61170975d527b6f1fd7bef14"
+          }
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCTests/DoryPCVirtioAvailableEventTests.swift",
+          "sha256": "3d08de7abb4c1cf31e4a8d7b1611a57943ec8c74676976240fb11be6caf8795c",
+          "passedMethods": [
+            "negotiatedEventIndexDrivesReadWriteAndFlushAsSuccessiveRequests",
+            "initialArmCoversBothReadyOrdersBlockedReceiveQueuesAndResetReuse",
+            "rejectedDriverReadyTransitionDoesNotArmOrConsumeQueue",
+            "ordinaryQueuesWithStagedWorkStillWaitForTheirExplicitNotification"
+          ],
+          "run": 50,
+          "sourceOverlay": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-source-overlay.tar.gz",
+            "sha256": "f8cf7ebc1dd65049814861793ae8eb0e85718d1c825bfaee2ef5ab4e837ccef6"
+          },
+          "log": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50.log.gz",
+            "sha256": "6b28f10fd73df341ae0fc639d24832266652919b61170975d527b6f1fd7bef14"
+          }
+        }
+      ]
+    }
+  ],
+  "ioCandidateReduction": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-available-event-reduction-through-run-50.json",
+    "sha256": "e29abf7daf6c283e57140440b06e9ea27e087814a3988a46def8923bbe1c2f1e"
+  },
+  "releaseBuild": {
+    "sourceCommit": "862383b91c2e5b7ef1b6c78ddd17aef60be8a1db",
+    "sourceManifest": "/tmp/dory-p02-correctness-manifest-50.json",
+    "runner": "/tmp/dory-p02-runner-862383b91-release",
+    "runnerSHA256": "53484152cc6ab1f8bce276d87bc65af5172b48a96ca9516460d430ecae779257",
+    "runnerBytes": 9167864,
+    "buildLog": "/tmp/dory-p02-release-runner-build-50.log",
+    "buildElapsedSeconds": 54.0,
+    "exitCode": 0,
+    "observedToolSession": 59007,
+    "completionChunk": "288f58",
+    "sourceManifestSHA256": "810ee8402f6902805ae12faa08d6b6d56abbfc41cc9056376e11b7275436d9b1",
+    "buildLogSHA256": "622b961726594f34380ba3b82a41f4fe97713665be1b660cc34422286ded92bf",
+    "sourceBinding": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-commit-binding.json",
+      "sha256": "2d76852ae1d6cb9bb42dab3a45c67e31cf5eb4ed6bdfe4ec5d93791237789b87"
+    },
+    "receipt": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-50-receipt.json",
+      "sha256": "13a4130c3491964908b50c46da93bf9289bde150d891fc45fafc1513cc13c709"
+    },
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-build-50.log.gz",
+      "sha256": "355dae36905faad84a84039306eb64ecbed4ed574626a5f703c12df2408951fb"
+    },
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift build --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 --jobs 3 -c release --product dory-pc-linux-boot-runner",
+    "scope": "Immutable source50 copied runner hash verified locally; binary not vendored. Optimized build is not a guest acceptance result."
+  },
+  "retentionTransformations": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-retention-transformations.json",
+    "sha256": "aa0935b5d0f059ff84648280666c570a484d6cdb39a045bcd2e2ac0767a3cb46"
+  },
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-source-overlay.tar.gz",
+      "sha256": "f8cf7ebc1dd65049814861793ae8eb0e85718d1c825bfaee2ef5ab4e837ccef6"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-commit-binding.json",
+      "sha256": "2d76852ae1d6cb9bb42dab3a45c67e31cf5eb4ed6bdfe4ec5d93791237789b87"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-source-manifest.json.gz",
+      "sha256": "c81266357ad310b335803f8d97c59b938b41c0327841fa01695d2b440ea99ef7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50.log.gz",
+      "sha256": "6b28f10fd73df341ae0fc639d24832266652919b61170975d527b6f1fd7bef14"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-available-event-reduction-through-run-50.json",
+      "sha256": "e29abf7daf6c283e57140440b06e9ea27e087814a3988a46def8923bbe1c2f1e"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-50-receipt.json",
+      "sha256": "13a4130c3491964908b50c46da93bf9289bde150d891fc45fafc1513cc13c709"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-build-50.log.gz",
+      "sha256": "355dae36905faad84a84039306eb64ecbed4ed574626a5f703c12df2408951fb"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-50-retention-transformations.json",
+      "sha256": "aa0935b5d0f059ff84648280666c570a484d6cdb39a045bcd2e2ac0767a3cb46"
+    }
+  ],
+  "limitations": [
+    "No checkpoint is newly closed. P02 remains incomplete: physical reference, full CPU/FPU/mode/paging/fault qualification and device-backed stability stress remain open.",
+    "The final test-filter term widens from DoryVirtioNetworkTests to DoryVirtio, covering existing shared virtqueue and device suites. Increased totals are not all new tests.",
+    "One disabled physical-reference method and one optional XCTest boot-fixture skip remain excluded from pass counts; overlapping runs are not summed.",
+    "The EVENT_IDX defect matches Linux notification arithmetic and eight bounded regressions pass, but its causality for IO1 remains inferred; actual guest replay is outside this source gate.",
+    "Seven real-mode IRET methods cover specified width/flag/frame/fault cases, not full interrupt/mode qualification or physical-hardware reference.",
+    "Experimental host with concurrent work; durations are engineering observations, not P14 qualification."
+  ]
+}
