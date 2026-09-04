@@ -3,6 +3,7 @@ import Foundation
 public struct DoryX86Exception: Error, Codable, Sendable, Hashable {
   public enum Kind: String, Codable, Sendable, Hashable {
     case divideError
+    case debug
     case invalidOpcode
     case stackSegment
     case generalProtection
@@ -82,6 +83,9 @@ public struct DoryX86Interpreter: Sendable {
       state = candidate
     case .exception(let exception):
       if exception.commitsPartialProgress { state = candidate }
+      // A general-detect #DB is fault-like, but its debug-status effects survive.
+      // Do not publish the candidate RIP, operands, or ordinary instruction state.
+      if exception.kind == .debug { state.debug = candidate.debug }
       if exception.kind == .pageFault {
         state.control.cr2 = exception.linearAddress ?? 0
       }
@@ -2502,19 +2506,27 @@ public struct DoryX86Interpreter: Sendable {
           return generalProtection(at: originalRIP)
         }
       case .readDebugRegister(let index, let destination):
-        guard currentPrivilegeLevel(state, mode: mode) == 0 else {
-          return generalProtection(at: originalRIP)
-        }
-        guard let value = readDebugRegister(index, state: state) else {
+        guard let register = normalizedDebugRegister(index, state: state) else {
           return invalidOpcode(at: originalRIP)
         }
-        state.registers[destination] = value
+        if let fault = debugRegisterAccessFault(state: &state, mode: mode, at: originalRIP) {
+          return fault
+        }
+        guard let value = readDebugRegister(register, state: state) else {
+          return invalidOpcode(at: originalRIP)
+        }
+        // Intel SDM Vol. 3A 2.8.5: non-64-bit transfers are always 32 bits.
+        state.registers[destination] = mode == .long64 ? value : value & 0xffff_ffff
       case .writeDebugRegister(let index, let source):
-        guard currentPrivilegeLevel(state, mode: mode) == 0 else {
-          return generalProtection(at: originalRIP)
-        }
-        guard writeDebugRegister(index, value: state.registers[source], state: &state) else {
+        guard let register = normalizedDebugRegister(index, state: state) else {
           return invalidOpcode(at: originalRIP)
+        }
+        if let fault = debugRegisterAccessFault(state: &state, mode: mode, at: originalRIP) {
+          return fault
+        }
+        let value = mode == .long64 ? state.registers[source] : state.registers[source] & 0xffff_ffff
+        guard writeDebugRegister(register, value: value, state: &state) else {
+          return generalProtection(at: originalRIP)
         }
       case .readExtendedControlRegister:
         guard profile.supports(.xsave), state.control.cr4 & (1 << 18) != 0 else {
@@ -4229,7 +4241,7 @@ public struct DoryX86Interpreter: Sendable {
     _ index: UInt8,
     state: DoryX86ArchitecturalState
   ) -> UInt64? {
-    switch normalizedDebugRegister(index, state: state) {
+    switch index {
     case 0: state.debug.dr0
     case 1: state.debug.dr1
     case 2: state.debug.dr2
@@ -4245,7 +4257,12 @@ public struct DoryX86Interpreter: Sendable {
     value: UInt64,
     state: inout DoryX86ArchitecturalState
   ) -> Bool {
-    switch normalizedDebugRegister(index, state: state) {
+    // This receives an already-normalized index and a mode-width value. DR4/5
+    // aliases therefore receive the same reserved-high-bit check as DR6/7.
+    if index == 6 || index == 7 {
+      guard value >> 32 == 0 else { return false }
+    }
+    switch index {
     case 0: state.debug.dr0 = value
     case 1: state.debug.dr1 = value
     case 2: state.debug.dr2 = value
@@ -4261,11 +4278,35 @@ public struct DoryX86Interpreter: Sendable {
     _ index: UInt8,
     state: DoryX86ArchitecturalState
   ) -> UInt8? {
+    guard index < 8 else { return nil }
     if index == 4 || index == 5 {
       guard state.control.cr4 & (1 << 3) == 0 else { return nil }
       return index + 2
     }
     return index
+  }
+
+  private func debugRegisterAccessFault(
+    state: inout DoryX86ArchitecturalState,
+    mode: DoryX86ExecutionMode,
+    at instructionPointer: UInt64
+  ) -> DoryX86InterpreterResult? {
+    // Dory's narrow MOV DR policy adopts the Intel ordering #UD > #DB > #GP.
+    // The SDM specifies the individual faults, but not the GD/CPL overlap.
+    // Christopherson's Intel Skylake/Icelake/Emerald Rapids observations place
+    // GD ahead of CPL #GP; AMD differs. This is not local physical qualification:
+    // https://lore.kernel.org/all/20260612230113.684301-6-seanjc@google.com/
+    if state.debug.dr7 & (1 << 13) != 0 {
+      // SDM Vol. 3B 20.2.3/4 and 20.3.1.3: set BD and non-RTM status, clear GD.
+      // No instruction has retired; the step boundary publishes only debug state.
+      state.debug.dr6 |= (1 << 13) | (1 << 16)
+      state.debug.dr7 &= ~UInt64(1 << 13)
+      return .exception(.init(kind: .debug, vector: 1, instructionPointer: instructionPointer))
+    }
+    if currentPrivilegeLevel(state, mode: mode) != 0 {
+      return generalProtection(at: instructionPointer)
+    }
+    return nil
   }
 
   private func readControlRegister(
