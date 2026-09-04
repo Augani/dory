@@ -1,0 +1,268 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-correctness-review",
+  "status": "in-progress",
+  "phaseComplete": false,
+  "releaseQualified": false,
+  "sourceCommit": "8a907374a50c647cd04171cabfa2922ec6c3d378",
+  "previousReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-47.json",
+    "sha256": "5bf34a698aacae07eed9d6c9d304103d76c4112fe6a3cc0a35e12ec0d5638dcb"
+  },
+  "latestCompletedGuestReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-2-review.json",
+    "sha256": "3e4f48a718a0e15fe1b33c2e02c470f13c0958ea78091aebc8ae27d63b20f986"
+  },
+  "latestIOFailure": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-1-failure-review.json",
+    "sha256": "c276904b52445b96c553a9825398e54aef83499782169eada7fef9565bb8a414"
+  },
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "testCommand": {
+    "environment": {
+      "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+      "SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH": "1",
+      "DORY_ISA_EVIDENCE_ROOT": "/tmp/dory-p02-inventory-evidence"
+    },
+    "arguments": [
+      "swift",
+      "test",
+      "--package-path",
+      "/tmp/dory-p02-correctness-source-1/dory-core-swift",
+      "--scratch-path",
+      "/tmp/dory-p02-correctness-build-1",
+      "--jobs",
+      "3",
+      "--no-parallel",
+      "--filter",
+      "DoryX86|DoryPC|DoryARM64|PVHBootRunnerTests|PVHJITDiagnosticsTests|PVHStress|ISAInventoryTests|DoryVirtioNetworkTests"
+    ]
+  },
+  "buildMode": "Incremental debug test gates; no new clean or optimized build in this batch.",
+  "runs": [
+    {
+      "run": 48,
+      "comparisonCommit": "8a907374a50c647cd04171cabfa2922ec6c3d378",
+      "observedToolSession": 96712,
+      "completionChunk": "c356d5",
+      "exitCode": 1,
+      "buildElapsedSeconds": 13.65,
+      "sourceBinding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48-commit-binding.json",
+        "sha256": "36f03acd121494e5b0e6693a7e818b7574f4f45617934c946365f734d9924e22"
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48-source-manifest.json.gz",
+        "sha256": "3b2820dc5322766762f72d36a62d375df2a1e0cbe7dd4758e1e719ea2010a83c"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48-source-overlay.tar.gz",
+        "sha256": "e3c49d52c5f43665a6b1ecedc5e5fbb1623198caee3ab543290957568bfddb2b"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48.log.gz",
+        "sha256": "c14e67fdb30a100e727a85a6339c11a89fd1f02ea0f61e276a66fafec1e9a407"
+      },
+      "swiftTesting": {
+        "reported": 907,
+        "passed": 902,
+        "failed": 4,
+        "disabledPhysicalReference": 1,
+        "suites": 112,
+        "elapsedSeconds": 6.864
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    },
+    {
+      "run": 49,
+      "comparisonCommit": "8a907374a50c647cd04171cabfa2922ec6c3d378",
+      "observedToolSession": 35279,
+      "completionChunk": "dfddbb",
+      "exitCode": 0,
+      "buildElapsedSeconds": 5.29,
+      "sourceBinding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49-commit-binding.json",
+        "sha256": "03fd1f4b4f72f94ea698619c8452f6437dc55a029e7fc951d7104713c5c18f07"
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49-source-manifest.json.gz",
+        "sha256": "43a3bdb8315e2a43bf293fa03cea24eebdce025aa7a009daf6a6a33ea3bfe46b"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49-source-overlay.tar.gz",
+        "sha256": "5f1ca159cec6e8d0c7101fc3135e0283141b513fa008048dcbb41155d5729e96"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49.log.gz",
+        "sha256": "af00265615025f9f8ca34fe4eaa1fcecf8cef2ca293f954cc9859dadc015db36"
+      },
+      "swiftTesting": {
+        "reported": 907,
+        "passed": 906,
+        "failed": 0,
+        "disabledPhysicalReference": 1,
+        "suites": 112,
+        "elapsedSeconds": 6.906
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    }
+  ],
+  "componentChanges": [
+    {
+      "commit": "6593d25b8d27c8b3123dc90883652a90373eab0a",
+      "scope": "Bound scale/remainder host integer conversions; preserve signed zeros and avoid double rounding of binary80 scale operands.",
+      "regressionEvidence": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86FloatingHostBoundaryTests.swift",
+          "sha256": "7cde353d222c342d703c5ef1d5080ea4bf8e3839169eede530338edff3a832a4",
+          "passedMethods": [
+            "finiteScalePowersOutsideHostIntegerRangeCannotTrapOrDestroyZeros",
+            "scaleTruncatesBinary80WithoutDoubleRoundingAndRetainsWideFiniteOperands",
+            "remainderQuotientAtPositiveTwoTo63DoesNotNarrowThroughInt64"
+          ],
+          "run": 49,
+          "sourceOverlay": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49-source-overlay.tar.gz",
+            "sha256": "5f1ca159cec6e8d0c7101fc3135e0283141b513fa008048dcbb41155d5729e96"
+          },
+          "log": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49.log.gz",
+            "sha256": "af00265615025f9f8ca34fe4eaa1fcecf8cef2ca293f954cc9859dadc015db36"
+          }
+        }
+      ]
+    },
+    {
+      "commit": "a6010658490fb10e2dc52e4a2f1e48d9dba15344",
+      "scope": "Apply MMX tags/TOP effects only after successful retirement, including read/store-only forms and EMMS; preserve fault atomicity and keep XMM neighbors separate.",
+      "regressionEvidence": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86MMXStateEffectsTests.swift",
+          "sha256": "af67ae9aa343c34e086fb790ca27ae996f23c9f1935a639b616b7b1d36c2eb40",
+          "passedMethods": [
+            "representedMMXWritersSetAllTagsAndClearEveryInitialTOP",
+            "readOnlyFormsKeepPhysicalBytesAndReadMM3IndependentlyOfTOP",
+            "storeOnlyFormsCommitMemoryThenSetTagsWithoutChangingAnyPhysicalRegister",
+            "emmsEmptiesTagsAndClearsTOPWithoutAlteringRegisterPayloads",
+            "faultsCannotPublishMMXTagsTOPOrDataWrites",
+            "xmmNearNeighborsNeverAcquireMMXTagOrTOPEffects",
+            "bothNativeTiersDeclineEveryRepresentedMMXCategory",
+            "nativePrefixFallbackAndRetryDoNotDuplicateRetirementEffects"
+          ],
+          "run": 49,
+          "sourceOverlay": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49-source-overlay.tar.gz",
+            "sha256": "5f1ca159cec6e8d0c7101fc3135e0283141b513fa008048dcbb41155d5729e96"
+          },
+          "log": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49.log.gz",
+            "sha256": "af00265615025f9f8ca34fe4eaa1fcecf8cef2ca293f954cc9859dadc015db36"
+          }
+        }
+      ]
+    },
+    {
+      "commit": "8a907374a50c647cd04171cabfa2922ec6c3d378",
+      "scope": "Preserve/update carry for masked scalar rotates as specified and preflight complete writable shift destinations before effects; retain native fallback boundaries.",
+      "regressionEvidence": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ScalarShiftBoundaryTests.swift",
+          "sha256": "0d51e3ac23a4aa8317b0ae3ab06730230b7155c5030184847b1524e6d566da09",
+          "passedMethods": [
+            "fullByteAndWordRotationsUpdateCarryFromTheUnchangedDestination",
+            "maskedZeroCountsPreserveFlagsForEveryRotateWidth",
+            "throughCarryFullRotationsPreserveBothDataAndFlags",
+            "maskedOneCountsProduceDefinedCarryAndOverflow",
+            "crossPageShiftFaultsPreserveTheEntireDestinationAndInstructionState",
+            "zeroCountMemoryOperandsStillValidateTheFullWritableRange",
+            "bothNativeTiersDeclineAffectedRotatesAndMemoryShiftsWithoutEffects"
+          ],
+          "run": 49,
+          "sourceOverlay": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49-source-overlay.tar.gz",
+            "sha256": "5f1ca159cec6e8d0c7101fc3135e0283141b513fa008048dcbb41155d5729e96"
+          },
+          "log": {
+            "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49.log.gz",
+            "sha256": "af00265615025f9f8ca34fe4eaa1fcecf8cef2ca293f954cc9859dadc015db36"
+          }
+        }
+      ]
+    }
+  ],
+  "fixtureCorrection": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48-49-scalar-shift-fixture-correction.json",
+    "sha256": "da0bbd47b22ada1a118684afb0ff669cd5eb6700702068eb29d7215ea02e5b44"
+  },
+  "retentionTransformations": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48-49-retention-transformations.json",
+    "sha256": "09b09777b553064bf3fcd964eb26b58a796007cbeb2b9a097153987a6c81f93a"
+  },
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48-source-overlay.tar.gz",
+      "sha256": "e3c49d52c5f43665a6b1ecedc5e5fbb1623198caee3ab543290957568bfddb2b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48-commit-binding.json",
+      "sha256": "36f03acd121494e5b0e6693a7e818b7574f4f45617934c946365f734d9924e22"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48-source-manifest.json.gz",
+      "sha256": "3b2820dc5322766762f72d36a62d375df2a1e0cbe7dd4758e1e719ea2010a83c"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48.log.gz",
+      "sha256": "c14e67fdb30a100e727a85a6339c11a89fd1f02ea0f61e276a66fafec1e9a407"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49-source-overlay.tar.gz",
+      "sha256": "5f1ca159cec6e8d0c7101fc3135e0283141b513fa008048dcbb41155d5729e96"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49-commit-binding.json",
+      "sha256": "03fd1f4b4f72f94ea698619c8452f6437dc55a029e7fc951d7104713c5c18f07"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49-source-manifest.json.gz",
+      "sha256": "43a3bdb8315e2a43bf293fa03cea24eebdce025aa7a009daf6a6a33ea3bfe46b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49.log.gz",
+      "sha256": "af00265615025f9f8ca34fe4eaa1fcecf8cef2ca293f954cc9859dadc015db36"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48-49-scalar-shift-fixture-correction.json",
+      "sha256": "da0bbd47b22ada1a118684afb0ff669cd5eb6700702068eb29d7215ea02e5b44"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48-49-retention-transformations.json",
+      "sha256": "09b09777b553064bf3fcd964eb26b58a796007cbeb2b9a097153987a6c81f93a"
+    }
+  ],
+  "limitations": [
+    "No checkpoint is newly closed. P02 remains incomplete: physical reference, complete CPU/FPU/mode/paging/fault qualification and device-backed stability stress remain open.",
+    "Run48 is retained as failed: four new register-shift tests used the architectural default RIP instead of their byte-array code address. Run49 changes only five fixture RIP arguments; no architectural failure or product correction is inferred from that retry.",
+    "One disabled physical-reference method and one optional XCTest boot-fixture skip in each run are excluded from pass totals. Overlapping runs are not summed.",
+    "Three floating-host boundary methods, eight MMX state-effect methods and seven scalar-shift methods are bounded authored regressions, not comprehensive or physical-reference qualification.",
+    "These incremental test gates add no optimized build or new guest outcome. The source43 IO failure and source45 systemd success remain separately retained; any proposed IO cause/fix is outside this evidence.",
+    "Experimental host with concurrent work; durations are engineering observations, not P14 qualification."
+  ]
+}

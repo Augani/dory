@@ -2,9 +2,9 @@
 
 This records bounded architectural corrections and their retained regression evidence, not P02 completion or full Linux CPU-profile qualification. The original `compatibleV1` identity and the explicitly selected `intelCompatibleV1` identity remain engineering candidates. PAE, PSE and PGE stay unadvertised; implementing a paging mechanism does not by itself qualify its CPUID feature.
 
-## Review through run 47
+## Review through run 49
 
-The [retained source-47 review](evidence/p02-correctness-2026-09-04/review-through-run-47.json) and [independent validation](evidence/p02-correctness-2026-09-04/evidence-validation-through-run-47.json) bind all 716 tracked inputs to `07fc927e5`, plus six identified generated FFI inputs. The gate is an incremental Debug test run; it introduces no optimized executable or guest outcome. The [through-46 review](evidence/p02-correctness-2026-09-04/review-through-run-46.json) retains its three exact sources and the distinct source-45 optimized runner. [Systemd probe 2](evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-2-review.json) remains a source-45 success. The separately retained [first I/O probe failure](evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-1-failure-review.json) remains bound to source 43.
+The [retained source-48/49 review](evidence/p02-correctness-2026-09-04/review-through-run-49.json) and [independent validation](evidence/p02-correctness-2026-09-04/evidence-validation-through-run-49.json) bind run 49's 719 tracked inputs to `8a907374a`, plus six identified generated FFI inputs. Run 48 has the same input set and differs only in five missing fixture RIP arguments in `DoryX86ScalarShiftBoundaryTests.swift`. These incremental Debug gates introduce no optimized executable or guest outcome. The [through-47 review](evidence/p02-correctness-2026-09-04/review-through-run-47.json) retains the preceding source gate. [Systemd probe 2](evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-2-review.json) remains a source-45 success; the [first I/O probe failure](evidence/p02-correctness-2026-09-04/io-stress-baseline-jit-probe-1-failure-review.json) remains bound to source 43.
 
 | Run | Swift passes | Swift failures | Disabled physical test | XCTest passes / optional skips |
 | --- | ---: | ---: | ---: | ---: |
@@ -25,6 +25,8 @@ The [retained source-47 review](evidence/p02-correctness-2026-09-04/review-throu
 | 45 | 853 | 0 | 1 | 10 / 1 |
 | 46 | 875 | 0 | 1 | 10 / 1 |
 | 47 | 888 | 0 | 1 | 10 / 1 |
+| 48 | 902 | 4 | 1 | 10 / 1 |
+| 49 | 906 | 0 | 1 | 10 / 1 |
 
 These are individual result counts, not sums across overlapping runs. Run 33's failure was a fixture expectation that PMOVZXBQ decoded; run 34 correctly expects `#UD` under both default and synthetic profiles. Run 36's escaping-symlink test used a nonexistent outside target; run 37 creates a real outside file and verifies the containment error. Neither fixture correction changed production behavior. Run 39 corrects the reduced glibc proof's initialization of a CPUID EBX slot from EAX to EBX; both versions pass and the distinct source hashes remain recorded.
 
@@ -42,6 +44,10 @@ Runs 44–46 add bounded corrections with exact source/log bindings:
 | Protected interrupt paging, `73072d019` | Eleven methods cover translated system tables and stacks, user/supervisor permissions, implicit SMAP, return descriptors and full-frame write preflight. | Full interrupt priority, privilege-transition and fault qualification remains open. |
 
 Run 47 adds five [floating-point reset tests](../../dory-core-swift/Tests/DoryDBTX86Tests/DoryX86LegacyFloatingPointResetTests.swift): FNINIT preserves register data/MMX aliases and unrelated SIMD state, while FNCLEX clears the modeled exception/busy bits without disturbing other state. Eight [IRET width tests](../../dory-core-swift/Tests/DoryDBTX86Tests/DoryX86IRETWidthTests.swift) cover operand width independent of stack-address size, outer frames, privilege/flag merging, complete stack bounds and exact page-fault/CR2 behavior. The existing ten-method paging-feature suite passes with updated precise-fault expectations. These 13 new methods and ten revalidated methods are counted separately; P02-11/12/15 stay open for broader qualification.
+
+Run 48 retains four scalar-shift setup failures: full rotations (96 issues), masked-zero counts (64), through-carry rotations (16) and masked-one counts (30). The [exact fixture correction](evidence/p02-correctness-2026-09-04/run-48-49-scalar-shift-fixture-correction.json) inserts `rip: 0` in five constructors because the byte-array code starts at zero; the architectural default is `0xfff0`. Every product-source byte and semantic assertion is unchanged. This is a test setup failure, not evidence of an architectural regression. All 18 new methods pass in run 49; 14 already passed in run 48.
+
+Those 18 methods comprise three [floating-point host-boundary tests](../../dory-core-swift/Tests/DoryDBTX86Tests/DoryX86FloatingHostBoundaryTests.swift), eight [MMX state-effect tests](../../dory-core-swift/Tests/DoryDBTX86Tests/DoryX86MMXStateEffectsTests.swift) and seven [scalar-shift tests](../../dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ScalarShiftBoundaryTests.swift). They check large scale/remainder conversions without host integer traps, MMX tag/TOP effects at retirement and fault preservation, rotate carry behavior, and complete writable-range preflight for memory shifts. Full floating-point, scalar and precise-fault qualification remains open. No unverified I/O root cause or proposed device fix is included in these source gates.
 
 The following narrower checkpoints are closed without claiming physical-reference, hosted-CI or whole-phase qualification:
 

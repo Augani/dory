@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-evidence-retention-validation",
+  "reviewSHA256": "20dab26bf5feea2d24f3fdecdbcfcc34a02ee4e1b101c87426671f0ff0647920",
+  "newArtifactsBeforeThisValidation": 12,
+  "distinctRepositoryArtifactReferencesVerified": 14,
+  "previousReviewHashVerified": true,
+  "envelopesSchemaValidated": 1,
+  "schemaPath": "Config/DoryVirtualizationEvidence.schema.json",
+  "schemaSHA256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb",
+  "sourceBindings": [
+    {
+      "run": 48,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "8a907374a50c647cd04171cabfa2922ec6c3d378",
+      "trackedInputs": 719,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 128,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ScalarShiftBoundaryTests.swift",
+          "frozenSHA256": "c65ce8f178647e878a57e37a5d764889bc38c1ccc5a0a592107a097b83999e43",
+          "commitSHA256": "0d51e3ac23a4aa8317b0ae3ab06730230b7155c5030184847b1524e6d566da09"
+        }
+      ]
+    },
+    {
+      "run": 49,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "8a907374a50c647cd04171cabfa2922ec6c3d378",
+      "trackedInputs": 719,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 128,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    }
+  ],
+  "strictLogCountsVerified": true,
+  "logCounts": [
+    {
+      "run": 48,
+      "swiftPassed": 902,
+      "swiftFailed": 4,
+      "swiftDisabled": 1,
+      "swiftReported": 907,
+      "swiftSuites": 112,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": [
+        "\udbc2\udc84  Test fullByteAndWordRotationsUpdateCarryFromTheUnchangedDestination() failed after 0.021 seconds with 96 issues.",
+        "\udbc2\udc84  Test maskedZeroCountsPreserveFlagsForEveryRotateWidth() failed after 0.025 seconds with 64 issues.",
+        "\udbc2\udc84  Test throughCarryFullRotationsPreserveBothDataAndFlags() failed after 0.006 seconds with 16 issues.",
+        "\udbc2\udc84  Test maskedOneCountsProduceDefinedCarryAndOverflow() failed after 0.004 seconds with 30 issues."
+      ]
+    },
+    {
+      "run": 49,
+      "swiftPassed": 906,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 907,
+      "swiftSuites": 112,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    }
+  ],
+  "componentRegressionSourcesAndPassedLines": [
+    {
+      "commit": "6593d25b8d27c8b3123dc90883652a90373eab0a",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86FloatingHostBoundaryTests.swift",
+          "sha256": "7cde353d222c342d703c5ef1d5080ea4bf8e3839169eede530338edff3a832a4",
+          "run": 49,
+          "passedMethods": 3
+        }
+      ]
+    },
+    {
+      "commit": "a6010658490fb10e2dc52e4a2f1e48d9dba15344",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86MMXStateEffectsTests.swift",
+          "sha256": "af67ae9aa343c34e086fb790ca27ae996f23c9f1935a639b616b7b1d36c2eb40",
+          "run": 49,
+          "passedMethods": 8
+        }
+      ]
+    },
+    {
+      "commit": "8a907374a50c647cd04171cabfa2922ec6c3d378",
+      "tests": [
+        {
+          "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ScalarShiftBoundaryTests.swift",
+          "sha256": "0d51e3ac23a4aa8317b0ae3ab06730230b7155c5030184847b1524e6d566da09",
+          "run": 49,
+          "passedMethods": 7
+        }
+      ]
+    }
+  ],
+  "newRegressionMethods": 18,
+  "fixtureFailure": {
+    "correctionReference": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48-49-scalar-shift-fixture-correction.json",
+      "sha256": "da0bbd47b22ada1a118684afb0ff669cd5eb6700702068eb29d7215ea02e5b44"
+    },
+    "changedFiles": [
+      "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ScalarShiftBoundaryTests.swift"
+    ],
+    "exactConstructorRIPInsertions": 5,
+    "instructionAddress": 0,
+    "previousDefaultRIP": 65520,
+    "productSourceAndSemanticExpectationsUnchanged": true,
+    "failedMethods": [
+      {
+        "method": "fullByteAndWordRotationsUpdateCarryFromTheUnchangedDestination()",
+        "issues": 96
+      },
+      {
+        "method": "maskedZeroCountsPreserveFlagsForEveryRotateWidth()",
+        "issues": 64
+      },
+      {
+        "method": "throughCarryFullRotationsPreserveBothDataAndFlags()",
+        "issues": 16
+      },
+      {
+        "method": "maskedOneCountsProduceDefinedCarryAndOverflow()",
+        "issues": 30
+      }
+    ],
+    "totalIssues": 206,
+    "otherNewMethodsAlreadyPassedInRun48": 14,
+    "all18NewMethodsPassInRun49": true,
+    "classification": "Fixture instruction-pointer setup; not an architectural regression."
+  },
+  "noUserHomePathsInNewArtifactTextOrMembers": true,
+  "tarOwnerAndTimeNormalizationVerified": true,
+  "pathNormalizedArtifacts": [],
+  "normalizationByThisValidation": "None; all retained inputs read-only.",
+  "qualification": "Source48/49 incremental gates only. No new clean, optimized build, guest execution, physical reference or checkpoint closure; IO cause/fix outside this record."
+}

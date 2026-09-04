@@ -1,0 +1,41 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-test-fixture-correction",
+  "failedRun": 48,
+  "passingRun": 49,
+  "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ScalarShiftBoundaryTests.swift",
+  "failedSourceSHA256": "c65ce8f178647e878a57e37a5d764889bc38c1ccc5a0a592107a097b83999e43",
+  "passingSourceSHA256": "0d51e3ac23a4aa8317b0ae3ab06730230b7155c5030184847b1524e6d566da09",
+  "failedOverlay": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-48-source-overlay.tar.gz",
+    "sha256": "e3c49d52c5f43665a6b1ecedc5e5fbb1623198caee3ab543290957568bfddb2b"
+  },
+  "passingOverlay": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-49-source-overlay.tar.gz",
+    "sha256": "5f1ca159cec6e8d0c7101fc3135e0283141b513fa008048dcbb41155d5729e96"
+  },
+  "exactChange": "Five explicit rip:0 constructor arguments, matching byte-array instruction address0. The architectural state default is0xfff0. No semantic expectations or product source bytes changed.",
+  "explicitRIPInsertions": 5,
+  "semanticExpectationsUnchanged": true,
+  "productSourceUnchanged": true,
+  "failedMethods": [
+    {
+      "method": "fullByteAndWordRotationsUpdateCarryFromTheUnchangedDestination()",
+      "issues": 96
+    },
+    {
+      "method": "maskedZeroCountsPreserveFlagsForEveryRotateWidth()",
+      "issues": 64
+    },
+    {
+      "method": "throughCarryFullRotationsPreserveBothDataAndFlags()",
+      "issues": 16
+    },
+    {
+      "method": "maskedOneCountsProduceDefinedCarryAndOverflow()",
+      "issues": 30
+    }
+  ],
+  "totalIssues": 206,
+  "scope": "Test setup failure; these four failures are not evidence of a guest architectural regression. The other three shift methods, all eight MMX methods and all three floating-host boundary methods already pass in run48."
+}
