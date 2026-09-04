@@ -1823,9 +1823,13 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: false)
         var hasher = SHA256()
         while true {
-            let data = try handle.read(upToCount: 1_048_576) ?? Data()
-            if data.isEmpty { break }
-            hasher.update(data: data)
+            let readChunk = try autoreleasepool {
+                let data = try handle.read(upToCount: 1_048_576) ?? Data()
+                guard !data.isEmpty else { return false }
+                hasher.update(data: data)
+                return true
+            }
+            if !readChunk { break }
         }
         var after = stat()
         guard fstat(descriptor, &after) == 0,

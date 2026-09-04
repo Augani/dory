@@ -1099,8 +1099,14 @@ public struct DorydEnvironment: Sendable {
         let handle = try FileHandle(forReadingFrom: source)
         defer { try? handle.close() }
         var hasher = SHA256()
-        while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty {
-            hasher.update(data: data)
+        while true {
+            // Foundation can retain the read buffer until its autorelease pool drains.
+            let readChunk = try autoreleasepool {
+                guard let data = try handle.read(upToCount: 1_048_576), !data.isEmpty else { return false }
+                hasher.update(data: data)
+                return true
+            }
+            if !readChunk { break }
         }
         let digest = hasher.finalize().map { String(format: "%02x", $0) }.joined()
         return "sha256:\(digest)"

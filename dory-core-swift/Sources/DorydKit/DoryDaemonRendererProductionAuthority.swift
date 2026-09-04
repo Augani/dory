@@ -610,17 +610,21 @@ enum DoryDaemonRendererProductionAuthority {
         var byteCount: UInt64 = 0
         var hasher = SHA256()
         while true {
-            let chunk = try handle.read(upToCount: 1_048_576) ?? Data()
-            if chunk.isEmpty { break }
-            let (nextCount, overflow) = byteCount.addingReportingOverflow(
-                UInt64(chunk.count)
-            )
-            guard !overflow, nextCount <= maximumBytes else {
-                throw DoryDaemonRendererProductionAuthorityError.inventoryInvalid
+            let readChunk = try autoreleasepool {
+                let chunk = try handle.read(upToCount: 1_048_576) ?? Data()
+                guard !chunk.isEmpty else { return false }
+                let (nextCount, overflow) = byteCount.addingReportingOverflow(
+                    UInt64(chunk.count)
+                )
+                guard !overflow, nextCount <= maximumBytes else {
+                    throw DoryDaemonRendererProductionAuthorityError.inventoryInvalid
+                }
+                byteCount = nextCount
+                hasher.update(data: chunk)
+                try consume(chunk)
+                return true
             }
-            byteCount = nextCount
-            hasher.update(data: chunk)
-            try consume(chunk)
+            if !readChunk { break }
         }
         var after = stat()
         guard fstat(descriptor, &after) == 0,

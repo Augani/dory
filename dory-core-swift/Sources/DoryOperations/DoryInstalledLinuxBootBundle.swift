@@ -417,11 +417,13 @@ public enum DoryInstalledLinuxBootBundle {
         var remaining = byteCount
         var hasher = SHA256()
         while remaining > 0 {
-            let count = Int(min(UInt64(copyChunkBytes), remaining))
-            let data = try readExactly(from: input, count: count)
-            try output.write(contentsOf: data)
-            hasher.update(data: data)
-            remaining -= UInt64(data.count)
+            try autoreleasepool {
+                let count = Int(min(UInt64(copyChunkBytes), remaining))
+                let data = try readExactly(from: input, count: count)
+                try output.write(contentsOf: data)
+                hasher.update(data: data)
+                remaining -= UInt64(data.count)
+            }
         }
         return Data(hasher.finalize())
     }
@@ -433,10 +435,12 @@ public enum DoryInstalledLinuxBootBundle {
         var remaining = byteCount
         var hasher = SHA256()
         while remaining > 0 {
-            let count = Int(min(UInt64(copyChunkBytes), remaining))
-            let data = try readExactly(from: input, count: count)
-            hasher.update(data: data)
-            remaining -= UInt64(data.count)
+            try autoreleasepool {
+                let count = Int(min(UInt64(copyChunkBytes), remaining))
+                let data = try readExactly(from: input, count: count)
+                hasher.update(data: data)
+                remaining -= UInt64(data.count)
+            }
         }
         return Data(hasher.finalize())
     }
