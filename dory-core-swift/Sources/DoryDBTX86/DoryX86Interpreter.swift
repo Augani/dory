@@ -997,7 +997,7 @@ public struct DoryX86Interpreter: Sendable {
           state: &state.floatingPoint
         )
       case .emptyMMXState:
-        state.floatingPoint.x87TagWord = 0xFFFF
+        break // The common retirement effect updates tags and TOP.
       case .moveVector128(let destination, let source, let requiresAlignment):
         let bytes: [UInt8]
         switch source {
@@ -3226,6 +3226,7 @@ public struct DoryX86Interpreter: Sendable {
         state.ss = .init(selector: (selector &+ 8) | 3, attributes: 0xC0F3, limit: .max, base: 0)
         nextRIP = state.registers.rcx
       }
+      DoryX86LegacyFloatingPointPolicy.applyRetiredMMXEffects(instruction, state: &state.floatingPoint)
       let finalMask: UInt64 =
         if mode == .protected16 || mode == .protected32, state.cs != originalCodeSegment {
           if state.cs.attributes & 0x2000 != 0 {
@@ -3507,7 +3508,6 @@ public struct DoryX86Interpreter: Sendable {
     payload[8] = 0xFF
     payload[9] = 0xFF
     state.x87[Int(register)] = try! .init(bytes: payload, expectedByteCount: 10)
-    state.x87TagWord = 0
   }
 
   private func readX87(

@@ -60,6 +60,22 @@ enum DoryX86LegacyFloatingPointPolicy {
       ? .init(kind: .deviceNotAvailable, vector: 7, instructionPointer: instruction.address) : nil
   }
 
+  /// Apply only after all operands complete successfully. Intel SDM 092 Vol. 3A
+  /// section 15.2/Table 15-2 includes read-only MMX instructions and EMMS: every
+  /// form clears TOP; EMMS empties tags while the others mark every tag valid.
+  /// No other status bits or physical register bytes are changed by this effect.
+  static func applyRetiredMMXEffects(
+    _ instruction: DoryX86DecodedInstruction, state: inout DoryX86FloatingPointState
+  ) {
+    guard case .mmx = stateUse(instruction) else { return }
+    if case .emptyMMXState = instruction.operation {
+      state.x87TagWord = 0xFFFF
+    } else {
+      state.x87TagWord = 0
+    }
+    state.x87StatusWord &= ~UInt16(0x3800)
+  }
+
   static func isX87NoOperation(_ instruction: DoryX86DecodedInstruction) -> Bool {
     guard instruction.prefixes.vex == nil, case .noOperation = instruction.operation else { return false }
     // Examine only the opcode after leading prefixes. A multi-byte integer NOP's
