@@ -200,7 +200,8 @@ import Testing
   private func profile(removing: Set<DoryX86Feature> = []) -> DoryX86CPUProfile {
     .init(identifier: "test-only.legacy-floating-admission",
       features: DoryX86CPUProfile.compatibleV1.features.union([.sse3]).subtracting(removing),
-      physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000)
+      physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000,
+      allowingUnqualifiedSIMDAndExtendedState: true)
   }
 
   private func state(mode: DoryX86ExecutionMode = .long64, cr0: UInt64 = 0x11) throws -> DoryX86ArchitecturalState {

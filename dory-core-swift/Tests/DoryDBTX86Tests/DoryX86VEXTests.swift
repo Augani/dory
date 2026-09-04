@@ -13,7 +13,8 @@ import Testing
   private let interpreter = DoryX86Interpreter(profile: .init(
     identifier: "test-only.avx-avx2-semantics",
     features: DoryX86CPUProfile.compatibleV1.features.union([.xsave, .avx, .avx2]),
-    physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000))
+    physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000,
+    allowingUnqualifiedSIMDAndExtendedState: true))
 
   private func state(
     rip: UInt64 = 0x1000,

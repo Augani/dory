@@ -166,9 +166,19 @@ import Testing
         state: &state, mode: .long64)
     }
     let baseline = DoryX86CPUProfile.compatibleV1
+    let publicRequest = DoryX86CPUProfile(identifier: "control-transition-public-xsave-request",
+      features: baseline.features.union([.xsave, .osxsave, .avx]),
+      physicalAddressBits: baseline.physicalAddressBits,
+      linearAddressBits: baseline.linearAddressBits,
+      virtualTSCFrequencyHz: baseline.virtualTSCFrequencyHz)
+    var publicState = try makeState(activeLong: true, mode: .long64)
+    try rejectControl(4, value: publicState.control.cr4 | (1 << 18), state: &publicState,
+      mode: .long64, profile: publicRequest)
+
     let xsave = DoryX86CPUProfile(identifier: "control-transition-xsave",
       features: baseline.features.union([.xsave]), physicalAddressBits: baseline.physicalAddressBits,
-      linearAddressBits: baseline.linearAddressBits, virtualTSCFrequencyHz: baseline.virtualTSCFrequencyHz)
+      linearAddressBits: baseline.linearAddressBits, virtualTSCFrequencyHz: baseline.virtualTSCFrequencyHz,
+      allowingUnqualifiedSIMDAndExtendedState: true)
     var state = try makeState(activeLong: true, mode: .long64)
     try writeControl(4, value: state.control.cr4 | (1 << 18), state: &state,
       mode: .long64, profile: xsave)

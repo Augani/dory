@@ -350,7 +350,8 @@ import Testing
   private var interpreter: DoryX86Interpreter {
     .init(profile: .init(identifier: "test-only.x87-numeric-transfer",
       features: DoryX86CPUProfile.compatibleV1.features.union([.sse3]),
-      physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000))
+      physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000,
+      allowingUnqualifiedSIMDAndExtendedState: true))
   }
 
   private func makeState(

@@ -4,13 +4,52 @@ import Testing
 @testable import DoryDBTX86
 
 @Suite struct DoryX86CPUProfileTests {
-  private func profile(_ features: Set<DoryX86Feature>) -> DoryX86CPUProfile {
-    .init(
+  private func profile(
+    _ features: Set<DoryX86Feature>, allowingUnqualifiedSIMDAndExtendedState: Bool = false
+  ) -> DoryX86CPUProfile {
+    if allowingUnqualifiedSIMDAndExtendedState {
+      return .init(
+        identifier: "test.cpuid",
+        features: features,
+        physicalAddressBits: 40,
+        linearAddressBits: 48,
+        virtualTSCFrequencyHz: 1_000_000_000,
+        allowingUnqualifiedSIMDAndExtendedState: true)
+    }
+    return .init(
       identifier: "test.cpuid",
       features: features,
       physicalAddressBits: 40,
       linearAddressBits: 48,
       virtualTSCFrequencyHz: 1_000_000_000)
+  }
+
+  @Test func publicAndDecodedProfilesMaskUnqualifiedSIMDAndExtendedState() throws {
+    let requested = DoryX86CPUProfile.compatibleV1.features.union([
+      .sse3, .ssse3, .sse41, .sse42, .xsave, .osxsave, .avx, .avx2,
+    ])
+    let publicProfile = profile(requested)
+    let unqualified: Set<DoryX86Feature> = [
+      .sse3, .ssse3, .sse41, .sse42, .xsave, .osxsave, .avx, .avx2,
+    ]
+
+    #expect(publicProfile.features.isDisjoint(with: unqualified))
+    for feature in unqualified {
+      #expect(!publicProfile.supports(feature))
+    }
+    #expect(publicProfile.cpuid(leaf: 1, cr4: 1 << 18).ecx
+      & ((1 << 0) | (1 << 9) | (3 << 19) | (7 << 26)) == 0)
+    #expect(publicProfile.cpuid(leaf: 7).ebx & (1 << 5) == 0)
+    #expect(publicProfile.cpuid(leaf: 0xD, xcr0: 7) == .init())
+
+    let encodedUnqualified = try JSONEncoder().encode(profile(
+      requested, allowingUnqualifiedSIMDAndExtendedState: true))
+    let decoded = try JSONDecoder().decode(DoryX86CPUProfile.self, from: encodedUnqualified)
+    #expect(decoded.features.isDisjoint(with: unqualified))
+    #expect(decoded.cpuid(leaf: 1, cr4: 1 << 18).ecx
+      & ((1 << 0) | (1 << 9) | (3 << 19) | (7 << 26)) == 0)
+    #expect(decoded.cpuid(leaf: 7).ebx & (1 << 5) == 0)
+    #expect(decoded.cpuid(leaf: 0xD, xcr0: 7) == .init())
   }
 
   @Test func candidateIdentityDoesNotInventAHypervisorABI() {
@@ -104,7 +143,7 @@ import Testing
   }
 
   @Test func osxsaveReflectsGuestControlStateRatherThanRequestedFeature() {
-    let cpu = profile([.xsave])
+    let cpu = profile([.xsave], allowingUnqualifiedSIMDAndExtendedState: true)
     #expect(cpu.cpuid(leaf: 1).ecx & (1 << 26) != 0)
     #expect(cpu.cpuid(leaf: 1).ecx & (1 << 27) == 0)
     #expect(cpu.cpuid(leaf: 1, cr4: 1 << 18).ecx & (1 << 27) != 0)
@@ -112,7 +151,9 @@ import Testing
   }
 
   @Test func extendedStateSizesFollowEnabledComponents() {
-    let cpu = profile([.x87, .fxsave, .sse, .sse2, .xsave, .avx, .avx2])
+    let cpu = profile(
+      [.x87, .fxsave, .sse, .sse2, .xsave, .avx, .avx2],
+      allowingUnqualifiedSIMDAndExtendedState: true)
     #expect(cpu.cpuid(leaf: 1).ecx & (1 << 28) != 0)
     #expect(cpu.cpuid(leaf: 7).ebx == 1 << 5)
     #expect(cpu.cpuid(leaf: 0xD, xcr0: 1) == .init(eax: 7, ebx: 576, ecx: 832))
@@ -122,7 +163,7 @@ import Testing
     for subleaf: UInt32 in [1, 3, 63, .max] {
       #expect(cpu.cpuid(leaf: 0xD, subleaf: subleaf) == .init())
     }
-    let legacy = profile([.xsave])
+    let legacy = profile([.xsave], allowingUnqualifiedSIMDAndExtendedState: true)
     #expect(legacy.cpuid(leaf: 0xD, xcr0: 7) == .init(eax: 3, ebx: 576, ecx: 576))
     #expect(legacy.cpuid(leaf: 0xD, subleaf: 2) == .init())
   }

@@ -72,6 +72,16 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
   public let virtualTSCFrequencyHz: UInt64
   public let identity: DoryX86CPUIdentity
 
+  /// Optional SIMD and extended-state advertisement remain unavailable until
+  /// XSAVE/XRSTOR and the complete optional SIMD/VEX surface have architectural qualification.
+  /// Keep these values decodable for profile compatibility, but never retain
+  /// them through the public construction boundary.
+  private static let unqualifiedSIMDAndExtendedStateFeatures: Set<DoryX86Feature> = [
+    .sse3, .ssse3, .sse41, .sse42, .xsave, .osxsave, .avx, .avx2,
+  ]
+
+  /// Creates a guest profile, omitting optional SIMD and extended-state
+  /// capabilities that are not part of Dory's qualified public CPU contract.
   public init(
     identifier: String,
     features: Set<DoryX86Feature>,
@@ -80,8 +90,32 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     virtualTSCFrequencyHz: UInt64,
     identity: DoryX86CPUIdentity = .legacyDoryV1
   ) {
+    self.init(
+      identifier: identifier,
+      features: features,
+      physicalAddressBits: physicalAddressBits,
+      linearAddressBits: linearAddressBits,
+      virtualTSCFrequencyHz: virtualTSCFrequencyHz,
+      identity: identity,
+      allowingUnqualifiedSIMDAndExtendedState: false)
+  }
+
+  /// Module-internal semantic-test boundary. Production and decoded profiles
+  /// must use the public initializer so unqualified SIMD and extended state cannot be
+  /// exposed to a guest or select an optimized instruction path.
+  init(
+    identifier: String,
+    features: Set<DoryX86Feature>,
+    physicalAddressBits: UInt8,
+    linearAddressBits: UInt8,
+    virtualTSCFrequencyHz: UInt64,
+    identity: DoryX86CPUIdentity = .legacyDoryV1,
+    allowingUnqualifiedSIMDAndExtendedState: Bool
+  ) {
     self.identifier = identifier
-    self.features = features
+    self.features = allowingUnqualifiedSIMDAndExtendedState
+      ? features
+      : features.subtracting(Self.unqualifiedSIMDAndExtendedStateFeatures)
     self.physicalAddressBits = physicalAddressBits
     self.linearAddressBits = linearAddressBits
     self.virtualTSCFrequencyHz = virtualTSCFrequencyHz

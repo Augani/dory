@@ -58,6 +58,36 @@ import Testing
     }
   }
 
+  @Test func publicCustomProfileCannotAdmitUnqualifiedSIMDOrVEX() throws {
+    let requested = DoryX86CPUProfile(
+      identifier: "test.public-requested-simd",
+      features: DoryX86CPUProfile.compatibleV1.features.union([
+        .sse3, .ssse3, .sse41, .sse42, .xsave, .osxsave, .avx, .avx2,
+      ]),
+      physicalAddressBits: 40,
+      linearAddressBits: 48,
+      virtualTSCFrequencyHz: 1_000_000_000)
+    for bytes: [UInt8] in [
+      [0xF2, 0x0F, 0x12, 0x03], // MOVDDUP [RBX]
+      [0x66, 0x0F, 0x38, 0x17, 0x03], // PTEST [RBX]
+      [0xC5, 0xF8, 0x10, 0x03], // VMOVUPS [RBX]
+      [0xC5, 0xFD, 0xEF, 0x03], // VPXOR YMM0,YMM0,[RBX]
+    ] {
+      let instruction = try decoder.decode(bytes, at: 0x1000, mode: .long64)
+      #expect(!DoryX86InstructionFeaturePolicy.permits(instruction, profile: requested))
+      try expectPreciseInvalidOpcode(bytes, profile: requested)
+    }
+    for bytes: [UInt8] in [
+      [0x0F, 0xAE, 0x23], // XSAVE [RBX]
+      [0x0F, 0xAE, 0x2B], // XRSTOR [RBX]
+      [0x0F, 0xAE, 0x33], // XSAVEOPT [RBX]
+      [0x0F, 0x01, 0xD0], // XGETBV
+      [0x0F, 0x01, 0xD1], // XSETBV
+    ] {
+      try expectPreciseInvalidOpcode(bytes, profile: requested)
+    }
+  }
+
   @Test func fencesUseSSEForStoreAndSSE2ForLoadOrFullWithoutPrematureCallbacks() throws {
     for (modRM, feature): (UInt8, DoryX86Feature) in [(0xF8, .sse), (0xE8, .sse2), (0xF0, .sse2)] {
       let bytes: [UInt8] = [0x0F, 0xAE, modRM]
@@ -169,7 +199,8 @@ import Testing
   ) -> DoryX86CPUProfile {
     .init(identifier: "test-only.optional-instruction-policy",
       features: DoryX86CPUProfile.compatibleV1.features.union(adding).subtracting(removing),
-      physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000)
+      physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000,
+      allowingUnqualifiedSIMDAndExtendedState: true)
   }
 
   private func expectPreciseInvalidOpcode(_ bytes: [UInt8], profile: DoryX86CPUProfile) throws {

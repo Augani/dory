@@ -262,7 +262,8 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       features: [.xsave, .osxsave],
       physicalAddressBits: 40,
       linearAddressBits: 48,
-      virtualTSCFrequencyHz: 1_000_000_000
+      virtualTSCFrequencyHz: 1_000_000_000,
+      allowingUnqualifiedSIMDAndExtendedState: true
     )
     let interpreter = DoryX86Interpreter(profile: profile)
     let memory = try DoryX86ByteArrayMemory(

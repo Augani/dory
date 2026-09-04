@@ -10,7 +10,8 @@ import Testing
   private let profile = DoryX86CPUProfile(identifier: "test-only.simd-enable-state",
     features: DoryX86CPUProfile.compatibleV1.features.union([
       .sse3, .ssse3, .sse41, .sse42, .xsave, .avx, .avx2,
-    ]), physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000)
+    ]), physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000,
+    allowingUnqualifiedSIMDAndExtendedState: true)
 
   private let legacy: [[UInt8]] = [
     [0x0F, 0x10, 0x03], [0x0F, 0x29, 0x03], // MOVUPS load / MOVAPS store

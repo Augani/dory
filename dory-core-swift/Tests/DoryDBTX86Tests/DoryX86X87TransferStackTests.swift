@@ -313,7 +313,8 @@ import Testing
     // FISTTP tests require an explicit synthetic SSE3 opt-in profile.
     .init(profile: .init(identifier: "test-only.x87-stack-transfers",
       features: DoryX86CPUProfile.compatibleV1.features.union([.sse3]),
-      physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000))
+      physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000,
+      allowingUnqualifiedSIMDAndExtendedState: true))
   }
 
   private func makeState(mode: DoryX86ExecutionMode = .long64, top: Int, masked: Bool) throws

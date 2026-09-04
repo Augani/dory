@@ -10,7 +10,8 @@ import Testing
     features: DoryX86CPUProfile.compatibleV1.features.union([.sse42]),
     physicalAddressBits: 40,
     linearAddressBits: 48,
-    virtualTSCFrequencyHz: 1_000_000_000)
+    virtualTSCFrequencyHz: 1_000_000_000,
+    allowingUnqualifiedSIMDAndExtendedState: true)
 
   @Test func equalAnyUsesSecondOperandResultBitsAndSelectsRequestedEnd() throws {
     let lhs: [UInt8] = [20, 40, 0]

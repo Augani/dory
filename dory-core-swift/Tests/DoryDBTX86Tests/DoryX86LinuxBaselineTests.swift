@@ -63,7 +63,8 @@ import Testing
       features: Set(DoryX86Feature.allCases),
       physicalAddressBits: 40,
       linearAddressBits: 48,
-      virtualTSCFrequencyHz: 1_000_000_000
+      virtualTSCFrequencyHz: 1_000_000_000,
+      allowingUnqualifiedSIMDAndExtendedState: true
     )
     for level in DoryX86LinuxISALevel.allCases {
       let assessment = synthetic.linuxBaselineAssessment(for: level)

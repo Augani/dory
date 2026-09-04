@@ -7,7 +7,8 @@ import Testing
     let interpreter = DoryX86Interpreter(profile: .init(
       identifier: "test.xstate-query",
       features: [.x87, .fxsave, .sse, .sse2, .xsave, .avx],
-      physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000
+      physicalAddressBits: 40, linearAddressBits: 48, virtualTSCFrequencyHz: 1_000_000_000,
+      allowingUnqualifiedSIMDAndExtendedState: true
     ))
     for (leaf, xcr0, expected): (UInt64, UInt64, UInt64) in [(1, 1, 1 << 27), (13, 1, 576), (13, 7, 832)] {
       let memory = try DoryX86ByteArrayMemory(bytes: [0x0F, 0xA2])

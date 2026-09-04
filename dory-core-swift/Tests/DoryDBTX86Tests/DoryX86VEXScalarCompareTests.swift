@@ -8,7 +8,8 @@ import Testing
       identifier: "test-only.avx-scalar-compare-semantics",
       features: DoryX86CPUProfile.compatibleV1.features.union([.xsave, .avx]),
       physicalAddressBits: 40, linearAddressBits: 48,
-      virtualTSCFrequencyHz: 1_000_000_000))
+      virtualTSCFrequencyHz: 1_000_000_000,
+      allowingUnqualifiedSIMDAndExtendedState: true))
 
   @Test func ordinaryComparisonsSetOnlyZFPFCFAndPreserveOtherFlags() throws {
     let cases: [(Bool, UInt64, UInt64, DoryX86RFLAGS)] = [

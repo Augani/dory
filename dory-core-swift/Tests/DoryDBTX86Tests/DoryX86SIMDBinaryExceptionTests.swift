@@ -290,7 +290,8 @@ import Testing
         identifier: "test-only.avx-simd-binary",
         features: DoryX86CPUProfile.compatibleV1.features.union([.xsave, .avx]),
         physicalAddressBits: 40, linearAddressBits: 48,
-        virtualTSCFrequencyHz: 1_000_000_000)
+        virtualTSCFrequencyHz: 1_000_000_000,
+        allowingUnqualifiedSIMDAndExtendedState: true)
       : .compatibleV1
     let memory = try! DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: code)
     return DoryX86Interpreter(profile: profile).step(
