@@ -2729,7 +2729,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state: inout DoryX86ArchitecturalState,
     memory: (any DoryX86Memory)? = nil
   ) throws -> DoryARM64ExecutionSummary? {
-    guard maximumInstructions > 0, !state.rflags.contains(.virtual8086) else { return nil }
+    guard maximumInstructions > 0, !state.rflags.contains(.virtual8086),
+      mode == .long64 || (mode == .protected32 && state.cs.base == 0 && state.cs.limit == .max)
+    else { return nil }
     // Fall back before fetch, optimized copies or native state publication. The interpreter
     // reports the precise fault for a malformed/missing legacy PAE latch.
     do { try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits) }
@@ -3041,7 +3043,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state: inout DoryX86ArchitecturalState,
     memory: (any DoryX86Memory)?
   ) throws -> ResidentExecution? {
-    guard maximumInstructions > 0, !state.rflags.contains(.virtual8086) else { return nil }
+    guard maximumInstructions > 0, !state.rflags.contains(.virtual8086),
+      mode == .long64 || (mode == .protected32 && state.cs.base == 0 && state.cs.limit == .max)
+    else { return nil }
     do { try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits) }
     catch { return nil }
     return try lock.withLock { () -> ResidentExecution? in

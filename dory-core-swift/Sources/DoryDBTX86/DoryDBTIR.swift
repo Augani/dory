@@ -397,8 +397,8 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
-    case .jump(let relative):
-      return ([], .branch(addRelative(instruction.nextInstructionAddress, relative)))
+    case .jump(let relative) where mode == .long64 || mode == .protected32:
+      return ([], .branch(nearRelativeTarget(instruction, relative: relative, mode: mode)))
     case .call(let relative) where mode == .long64:
       return (
         [],
@@ -426,13 +426,13 @@ public struct DoryX86IRTranslator: Sendable {
       return ([], .returnFromCall(popBytes: 0))
     case .returnAndPop(let popBytes) where mode == .long64:
       return ([], .returnFromCall(popBytes: popBytes))
-    case .conditionalJump(let condition, let relative):
+    case .conditionalJump(let condition, let relative) where mode == .long64 || mode == .protected32:
       return (
         [],
         .conditional(
           condition: conditionName(condition),
-          taken: addRelative(instruction.nextInstructionAddress, relative),
-          notTaken: instruction.nextInstructionAddress
+          taken: nearRelativeTarget(instruction, relative: relative, mode: mode),
+          notTaken: instruction.nextInstructionAddress & (mode == .long64 ? .max : 0xFFFF_FFFF)
         )
       )
     case .halt:
@@ -806,6 +806,16 @@ public struct DoryX86IRTranslator: Sendable {
     case .lessOrEqual: "x86.condition.14"
     case .greater: "x86.condition.15"
     }
+  }
+
+  // Non-flat legacy code is rejected by the executor before cache/trace entry.
+  // Preserve native flat32 branches, including16-bit operand overrides.
+  private func nearRelativeTarget(
+    _ instruction: DoryX86DecodedInstruction, relative: Int64, mode: DoryX86ExecutionMode
+  ) -> UInt64 {
+    let target = addRelative(instruction.nextInstructionAddress, relative)
+    if mode == .long64 { return target }
+    return target & (instruction.prefixes.operandSizeOverride ? 0xFFFF : 0xFFFF_FFFF)
   }
 
   private func addRelative(_ address: UInt64, _ displacement: Int64) -> UInt64 {

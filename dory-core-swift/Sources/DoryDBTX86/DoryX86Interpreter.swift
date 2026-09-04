@@ -2422,11 +2422,9 @@ public struct DoryX86Interpreter: Sendable {
         try write(
           value, to: operand, instruction: instruction, state: &state, memory: executionMemory)
       case .call(let relative):
-        let target = addRelative(nextRIP, relative)
-        try validateNearBranchTarget(target, mode: mode, instruction: instruction)
-        let returnWidth: DoryX86OperandWidth =
-          mode == .long64
-          ? .quadword : (mode == .real16 || mode == .protected16 ? .word : .doubleword)
+        let returnWidth = nearTransferWidth(instruction, mode: mode)
+        let target = addRelative(nextRIP, relative) & mask(returnWidth)
+        try validateNearBranchTarget(target, mode: mode, instruction: instruction, state: state)
         try pushStack(
           nextRIP,
           width: returnWidth,
@@ -2439,8 +2437,8 @@ public struct DoryX86Interpreter: Sendable {
       case .callIndirect(let operand):
         let target = try read(
           operand, instruction: instruction, state: state, memory: executionMemory)
-        try validateNearBranchTarget(target, mode: mode, instruction: instruction)
-        let width = stackWidth(mode)
+        try validateNearBranchTarget(target, mode: mode, instruction: instruction, state: state)
+        let width = operandWidth(operand)
         try pushStack(
           nextRIP,
           width: width,
@@ -2451,9 +2449,7 @@ public struct DoryX86Interpreter: Sendable {
         )
         nextRIP = target
       case .return:
-        let returnWidth: DoryX86OperandWidth =
-          mode == .long64
-          ? .quadword : (mode == .real16 || mode == .protected16 ? .word : .doubleword)
+        let returnWidth = nearTransferWidth(instruction, mode: mode)
         nextRIP = try popStack(
           width: returnWidth,
           instruction: instruction,
@@ -2461,11 +2457,9 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
-        try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction)
+        try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction, state: state)
       case .returnAndPop(let popBytes):
-        let returnWidth: DoryX86OperandWidth =
-          mode == .long64
-          ? .quadword : (mode == .real16 || mode == .protected16 ? .word : .doubleword)
+        let returnWidth = nearTransferWidth(instruction, mode: mode)
         nextRIP = try popStack(
           width: returnWidth,
           instruction: instruction,
@@ -2473,22 +2467,22 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
-        try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction)
+        try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction, state: state)
         let adjustedStack =
           (stackPointerOffset(mode: mode, state: state) &+ UInt64(popBytes))
           & mask(stackPointerWidth(mode: mode, state: state))
         writeStackPointer(adjustedStack, mode: mode, state: &state)
       case .jump(let relative):
-        nextRIP = addRelative(nextRIP, relative)
-        try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction)
+        nextRIP = addRelative(nextRIP, relative) & mask(nearTransferWidth(instruction, mode: mode))
+        try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction, state: state)
       case .jumpIndirect(let operand):
         nextRIP = try read(
           operand, instruction: instruction, state: state, memory: executionMemory)
-        try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction)
+        try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction, state: state)
       case .conditionalJump(let condition, let relative):
         if evaluate(condition, flags: state.rflags) {
-          nextRIP = addRelative(nextRIP, relative)
-          try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction)
+          nextRIP = addRelative(nextRIP, relative) & mask(nearTransferWidth(instruction, mode: mode))
+          try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction, state: state)
         }
       case .loop(let condition, let relative, let counterWidth):
         var count = stringRegister(.rcx, width: counterWidth, state: state)
@@ -2509,8 +2503,8 @@ public struct DoryX86Interpreter: Sendable {
           case .countZero: count == 0
           }
         if branches {
-          nextRIP = addRelative(nextRIP, relative)
-          try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction)
+          nextRIP = addRelative(nextRIP, relative) & mask(nearTransferWidth(instruction, mode: mode))
+          try validateNearBranchTarget(nextRIP, mode: mode, instruction: instruction, state: state)
         }
       case .enter(let allocation, let nesting, let width):
         try executeEnter(
@@ -4784,7 +4778,7 @@ public struct DoryX86Interpreter: Sendable {
   ) -> UInt64 {
     switch mode {
     case .real16: state.cs.base &+ (state.rip & 0xffff)
-    case .protected16: state.cs.base &+ (state.rip & 0xffff)
+    case .protected16: state.cs.base &+ (state.rip & 0xffff_ffff)
     case .protected32: state.cs.base &+ (state.rip & 0xffff_ffff)
     case .long64: state.rip
     }
@@ -4793,7 +4787,7 @@ public struct DoryX86Interpreter: Sendable {
   private func instructionPointerMask(_ mode: DoryX86ExecutionMode) -> UInt64 {
     switch mode {
     case .real16: 0xffff
-    case .protected16: 0xffff
+    case .protected16: 0xffff_ffff
     case .protected32: 0xffff_ffff
     case .long64: .max
     }
@@ -5019,12 +5013,29 @@ public struct DoryX86Interpreter: Sendable {
     )
   }
 
+  // CS.D chooses the default operand width, not the width of the EIP register.
+  // Legacy near transfers with a 16-bit operand clear EIP[31:16]; 66 toggles it.
+  // Near CALL in 64-bit mode remains 64 bits even with 66 (SDM Vol. 2A CALL).
+  private func nearTransferWidth(
+    _ instruction: DoryX86DecodedInstruction, mode: DoryX86ExecutionMode
+  ) -> DoryX86OperandWidth {
+    guard mode != .long64 else { return .quadword }
+    let default16 = mode == .real16 || mode == .protected16
+    return default16 != instruction.prefixes.operandSizeOverride ? .word : .doubleword
+  }
+
   private func validateNearBranchTarget(
     _ target: UInt64,
     mode: DoryX86ExecutionMode,
-    instruction: DoryX86DecodedInstruction
+    instruction: DoryX86DecodedInstruction,
+    state: DoryX86ArchitecturalState
   ) throws {
-    if mode == .long64, !DoryX86ArchitecturalState.isCanonical(target) {
+    if mode == .long64 {
+      guard DoryX86ArchitecturalState.isCanonical(target) else {
+        throw segmentProtection(at: instruction.address)
+      }
+    } else if target > UInt64(state.cs.limit) || (mode == .real16 && target > 0xFFFF) {
+      // Fault at the transfer, before CALL's push, rather than at the next fetch.
       throw segmentProtection(at: instruction.address)
     }
   }

@@ -496,7 +496,7 @@ public struct DoryX86Decoder: Sendable {
       operation = .leave(width: stackWidth(mode: mode, prefixes: prefixes))
     case 0xE8:
       operation = .call(
-        relative: Int64(try cursor.readSigned(byteCount: width == .word ? 2 : 4)))
+        relative: Int64(try cursor.readSigned(byteCount: mode != .long64 && width == .word ? 2 : 4)))
     case 0xC3:
       operation = .return
     case 0xC2:
@@ -524,7 +524,7 @@ public struct DoryX86Decoder: Sendable {
       operation = .softwareInterrupt(vector: 1)
     case 0xE9:
       operation = .jump(
-        relative: Int64(try cursor.readSigned(byteCount: width == .word ? 2 : 4)))
+        relative: Int64(try cursor.readSigned(byteCount: mode != .long64 && width == .word ? 2 : 4)))
     case 0xEB:
       operation = .jump(relative: Int64(try cursor.readSigned(byteCount: 1)))
     case 0xE0...0xE3:
@@ -1844,7 +1844,7 @@ public struct DoryX86Decoder: Sendable {
       case 0x80...0x8F:
         operation = .conditionalJump(
           DoryX86Condition(rawValue: second - 0x80)!,
-          relative: Int64(try cursor.readSigned(byteCount: width == .word ? 2 : 4))
+          relative: Int64(try cursor.readSigned(byteCount: mode != .long64 && width == .word ? 2 : 4))
         )
       case 0x90...0x9F:
         let operands = try decodeModRM(
