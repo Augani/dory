@@ -1,0 +1,107 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-02",
+    "P02-03",
+    "P02-04",
+    "P02-09",
+    "P02-12",
+    "P02-13",
+    "P02-18",
+    "P02-19",
+    "P02-08",
+    "P02-11",
+    "P02-14",
+    "P02-20",
+    "P02-21",
+    "P02-24"
+  ],
+  "sourceCommit": "f12f30d4f934842e9044092391bd1e7c813a7d8a",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Partial P02 correctness through frozen runs 14\u201315, with explicit overlay provenance, optional/physical-test exclusions, and bounded RAM/router, corpus, timer and diagnostic coverage. Real baseline-JIT probe 4 reaches later kernel initialization but times out before userspace.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-13.json",
+      "sha256": "b30ed3bf2d66e8f5562d25eb765f6b1af966c439e01688a94df2d3da92422e4a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-15.json",
+      "sha256": "2df966a8e1fefe9e992ddf5e8d902a4fdcd39e0f7b43fcca3aa961ce1c679299"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-14-15-source-verification.json",
+      "sha256": "269e0493a9403dca30cea2081fd880091402a6e1406a4c09f3ba5a4280e48083"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-14-source-manifest.json.gz",
+      "sha256": "31d9473b545fd521f880adfb9dbcbec9373e0633016e8e7eca8aa7ba17103f7b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-14-source-overlay.tar.gz",
+      "sha256": "c96b5086a74287c3026e9def735a37c03f61bceb46016813944813425ffd076a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-14.log.gz",
+      "sha256": "8c6c9c7afa2851be1c9e7861989706b004e5d4f0885afb0df91b93015d5f86f3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-15-release-runner-build.log.gz",
+      "sha256": "2727241ff4a7076a34f02fb8813be7d692c5c228fd5c5b0190799f2257c3bae7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-15-source-manifest.json.gz",
+      "sha256": "069499fa04006b594f41f9c5adf9ff7600221780799b664f030c3d516dd35056"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-15-source-overlay.tar.gz",
+      "sha256": "8e3bc10742629a445246e4ad1dd9d29d27bd5dc74a8684a9f4aba33b05bb0a37"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-15.log.gz",
+      "sha256": "079b2d4217f6a61a048515f0b3cd135c01abd5a6844e8860114468e8ff2212c5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-4-exit.txt",
+      "sha256": "ca2ebdf97d7469496b1f4b78958f9dc8447efdcb623953fee7b6996b762f6fff"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-4-invocation.json",
+      "sha256": "186800aac38feaad80e0a14c5f23fe4a5c777f2d9cb4e9837794f4bc070a6cf5"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-4-summary.json",
+      "sha256": "f19bb14fc086514705c33d682b028f9c8a1dc263e06c3cdcd7eeecb3cb777bbe"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/userspace-baseline-jit-probe-4.json",
+      "sha256": "b1ef91e7fd63f1bc5ae66a09e4759967543f9f5c401af0cec28a4d767382b40a"
+    }
+  ],
+  "limitations": [
+    "P02 remains in progress. Bounded tests and source validation do not qualify full ISA, physical reference parity, userspace, glibc/systemd, stress, or release behavior.",
+    "Each run reports 11 XCTest cases with one optional PVH boot skip, plus one separately disabled physical-reference Swift test. These exclusions are not hidden in the successful Swift test counts.",
+    "Run 14 is not a clean committed-source gate: two interim PIT diagnostic files are retained exactly in its base-plus-overlay binding.",
+    "Run 15 is bound to f12f30d4f plus six separately hashed generated FFI inputs. Later live source changes, including PAE work, are excluded.",
+    "The arm64 macOS 27 beta / Xcode 26.6 / SDK 26.5 host tuple is experimental. Optimized executable construction and envelope schema validity do not imply release qualification.",
+    "HPET evidence covers selected routing and deadline behavior only; it does not qualify full comparator, periodic, wraparound, physical PIT/RTC suppression, ExtINT, or logical APIC semantics.",
+    "ByteArray is a bounded test/conformance fixture and Swift Array allocation failure is not made recoverable by the production mmap constructor fixes.",
+    "Generated FFI binaries and the optimized runner are identity-bound without vendoring their executable bytes.",
+    "Guest-handled exceptions are only visible when reported by the guest console; bounded runner diagnostics are not exhaustive fault history.",
+    "The newly retained baseline-JIT probe times out after 300 seconds without userspace or ACPI poweroff. Later kernel progress and timer diagnostics are observations, not successful boot, interpreter parity, or timer calibration qualification."
+  ]
+}

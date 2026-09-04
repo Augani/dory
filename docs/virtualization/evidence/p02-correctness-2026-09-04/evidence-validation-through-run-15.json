@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-evidence-validation",
+  "scope": "Read-only schema, retained artifact SHA-256, normalized-path scan, recorded source/count/outcome consistency. No new source build, VM run, or behavioral qualification.",
+  "command": "uv run --offline --with jsonschema python /tmp/dory-p02-validate-through-15.py",
+  "schema": {
+    "path": "Config/DoryVirtualizationEvidence.schema.json",
+    "sha256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb"
+  },
+  "schemaEnvelopes": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/cpu-envelope-through-run-15.json",
+      "sha256": "17a31decfb43d0905eec123c714c9e48a5facd8f628a56bcf6a40fea622a22e1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/firmware-envelope-through-run-15.json",
+      "sha256": "da65f9dbce43ed226ef09b9dd4879f9e69e93b89ae0811c20d072f43edec0c09"
+    }
+  ],
+  "review": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-15.json",
+    "sha256": "2df966a8e1fefe9e992ddf5e8d902a4fdcd39e0f7b43fcca3aa961ce1c679299"
+  },
+  "sourceVerification": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-14-15-source-verification.json",
+    "sha256": "269e0493a9403dca30cea2081fd880091402a6e1406a4c09f3ba5a4280e48083"
+  },
+  "uniqueArtifactReferences": 14,
+  "artifactReferenceOccurrences": 55,
+  "agentNewFilesChecked": 12,
+  "parentProvidedFilesChecked": 3,
+  "hashMismatches": 0,
+  "schemaErrors": 0,
+  "privateHomePathsInNewArtifacts": 0,
+  "runCountsVerified": [
+    {
+      "run": 14,
+      "swiftTestingPassed": 605,
+      "swiftTestingSuites": 64,
+      "swiftTestingSeparatelyDisabled": 1,
+      "xctestReported": 11,
+      "xctestSkipped": 1
+    },
+    {
+      "run": 15,
+      "swiftTestingPassed": 612,
+      "swiftTestingSuites": 66,
+      "swiftTestingSeparatelyDisabled": 1,
+      "xctestReported": 11,
+      "xctestSkipped": 1
+    }
+  ],
+  "sourceBindingSummary": {
+    "run14": "666 tracked inputs reconstructed from base plus exact overlay; 664 match comparison commit and two interim diagnostic files differ; six generated inputs separately verified.",
+    "run15": "All 668 tracked inputs match f12f30d4f; six generated inputs separately verified."
+  },
+  "realKernelProbesRetained": 1,
+  "realKernelProbesPassed": 0,
+  "probeOutcome": "wall-budget; exit 124; no userspace receipt",
+  "gitDiffCheckExitCode": 0,
+  "releaseQualified": false
+}

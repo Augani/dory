@@ -1,0 +1,91 @@
+{
+  "schemaVersion": 1,
+  "runs": [
+    {
+      "run": 14,
+      "comparisonCommit": "7c349be299555aecafb6451309f68b742511581b",
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "manifestFileCount": 672,
+      "overlayFileCount": 54,
+      "basePlusOverlayMatchingTrackedFiles": 666,
+      "matchingTrackedFileCount": 664,
+      "trackedDifferences": [
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCLinuxBootRunner/PVHBootRunnerSupport.swift",
+          "frozenSHA256": "f3dbf557c6a9beb719e571c6d0789576a528c0bbd547bd3defa49a3de64e8f76",
+          "commitSHA256": "d21347cdcbf4e3377723aa353a2b788695a0fbe46a4d75b09541cb33209d4794"
+        },
+        {
+          "path": "dory-core-swift/Tests/DoryMachinePCLinuxBootRunner/main.swift",
+          "frozenSHA256": "7b25956d284a2080ce67b2b4de87b1eb8d0fcc6659e4c5c3e432b27809a46645",
+          "commitSHA256": "c25e9abcf755c09e33e86ecc7ce3e25d712cedfcaecfe0efc4fa3ba5f957f1e0"
+        }
+      ],
+      "untrackedDependencyFiles": [
+        {
+          "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+          "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+        },
+        {
+          "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+          "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+          "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+          "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+          "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+          "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+        }
+      ],
+      "generatedInputVerification": "All six ignored FFI inputs match their frozen manifest SHA-256 in the retained source directory. They are not Git or source-overlay contents."
+    },
+    {
+      "run": 15,
+      "comparisonCommit": "f12f30d4f934842e9044092391bd1e7c813a7d8a",
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "manifestFileCount": 674,
+      "overlayFileCount": 61,
+      "basePlusOverlayMatchingTrackedFiles": 668,
+      "matchingTrackedFileCount": 668,
+      "trackedDifferences": [],
+      "untrackedDependencyFiles": [
+        {
+          "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+          "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+        },
+        {
+          "path": "dory-core-swift/artifacts/.dory-ffi-input.sha256",
+          "sha256": "2f62409898728d1c8e273badcf65e8aadb17908d8f9fea874426fb6e5be33b8f"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+          "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+          "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+          "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+          "sha256": "cbd6bfcadc52c41e3653d1a81ecec3a70b6fdc4340da492e40f5a5d67321fab0"
+        }
+      ],
+      "generatedInputVerification": "All six ignored FFI inputs match their frozen manifest SHA-256 in the retained source directory. They are not Git or source-overlay contents."
+    }
+  ],
+  "verificationMethod": "For each frozen manifest entry, read the corresponding Git blob from the comparison commit with git cat-file --batch and compare SHA-256. Independently reconstruct tracked content using the base Git blob overridden by exact overlay archive members; compare every hash. Verify the six ignored generated FFI files against retained frozen source-directory bytes separately. No live worktree source is used for tracked source equality."
+}
