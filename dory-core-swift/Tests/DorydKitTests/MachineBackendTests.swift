@@ -16,17 +16,11 @@ final class MachineBackendTests: XCTestCase {
 
         let vz = VirtualizationFrameworkLinuxMachineBackend.backendDescriptor
         XCTAssertEqual(vz.identity, .appleVirtualizationFramework)
-        XCTAssertEqual(vz.guestFamilies, [.linux, .macOS])
+        XCTAssertEqual(vz.guestFamilies, [.macOS])
         XCTAssertEqual(vz.guestArchitectures, [.arm64])
         XCTAssertEqual(
             vz.bootMediaKinds,
-            [
-                .linuxKernel,
-                .installedLinuxBootBundle,
-                .installerISO,
-                .virtualDisk,
-                .macOSRestoreImage,
-            ]
+            [.macOSRestoreImage, .virtualDisk]
         )
         XCTAssertTrue(vz.lifecycle.pause)
         XCTAssertTrue(vz.lifecycle.resume)
@@ -134,7 +128,7 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(recorder.runtimeRequests.map(\.operationID), [stopOperationID])
     }
 
-    func testRegistryPlansVZInstallerWithPlannerSelection() throws {
+    func testRegistryRejectsLinuxVZInstallerSelection() throws {
         let registry = try BackendRegistry(backends: [
             availableVZBackend(operations: recordingOperations().operations),
         ])
@@ -146,26 +140,16 @@ final class MachineBackendTests: XCTestCase {
             )
         ))
 
-        XCTAssertTrue(result.isSuccess)
-        XCTAssertEqual(result.plan?.backend.identity, .appleVirtualizationFramework)
-        XCTAssertEqual(result.plan?.capability.request.bootMedia.kind, .installerISO)
+        XCTAssertFalse(result.isSuccess)
+        XCTAssertEqual(result.failure?.code, .guestUnsupported)
+        XCTAssertEqual(result.failure?.backend, .appleVirtualizationFramework)
     }
 
     func testRegistryPlansNativeMacRestoreWithPreparedBundle() throws {
         let registry = try BackendRegistry(backends: [
             availableVZBackend(operations: recordingOperations().operations),
         ])
-        let machine = DoryMachineConfiguration(
-            id: "native-mac",
-            guestFamily: .macOS,
-            guestArchitecture: .arm64,
-            kernelPath: "",
-            rootfsPath: "",
-            bootMode: .macOSRestore,
-            macOSRestoreImagePath: "/fixture/Restore.ipsw",
-            macOSMachineBundlePath: "/fixture/native-mac.dorymac",
-            displayMode: .desktop
-        )
+        let machine = nativeMacRestoreMachine()
         let result = registry.plan(MachineBackendPlanRequest(
             machine: machine,
             capabilityPlan: capabilityPlan(
@@ -182,17 +166,7 @@ final class MachineBackendTests: XCTestCase {
 
     func testNativeMacPlanRejectsLinuxOrMissingDisplayContract() {
         let backend = availableVZBackend(operations: recordingOperations().operations)
-        let machine = DoryMachineConfiguration(
-            id: "native-mac",
-            guestFamily: .macOS,
-            guestArchitecture: .arm64,
-            kernelPath: "",
-            rootfsPath: "",
-            bootMode: .macOSRestore,
-            macOSRestoreImagePath: "/fixture/Restore.ipsw",
-            macOSMachineBundlePath: "/fixture/native-mac.dorymac",
-            displayMode: .desktop
-        )
+        let machine = nativeMacRestoreMachine()
         var wrongFamily = capabilityPlan(
             backend: .appleVirtualizationFramework,
             media: .macOSRestoreImage
@@ -200,7 +174,7 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(backend.plan(MachineBackendPlanRequest(
             machine: machine,
             capabilityPlan: wrongFamily
-        )).failure?.code, .machineConfigurationIncompatible)
+        )).failure?.code, .guestUnsupported)
 
         let request = DoryVirtualMachineCapabilityRequest(
             guest: DoryGuestPlatform(family: .macOS, architecture: .arm64),
@@ -229,7 +203,7 @@ final class MachineBackendTests: XCTestCase {
         )).failure?.code, .machineConfigurationIncompatible)
     }
 
-    func testRegistryPlansVZInstalledLinuxBundleWithPlannerSelection() throws {
+    func testRegistryRejectsVZInstalledLinuxBundleSelection() throws {
         let bundle = FileManager.default.temporaryDirectory.appendingPathComponent(
             "dory-vz-direct-\(UUID().uuidString).boot"
         )
@@ -262,9 +236,9 @@ final class MachineBackendTests: XCTestCase {
             )
         ))
 
-        XCTAssertTrue(result.isSuccess)
-        XCTAssertEqual(result.plan?.backend.identity, .appleVirtualizationFramework)
-        XCTAssertEqual(result.plan?.capability.request.bootMedia.kind, .installedLinuxBootBundle)
+        XCTAssertFalse(result.isSuccess)
+        XCTAssertEqual(result.failure?.code, .guestUnsupported)
+        XCTAssertEqual(result.failure?.backend, .appleVirtualizationFramework)
     }
 
     func testPlanningFailsClosedWhenProductPlannerHasNoSelection() throws {
@@ -359,15 +333,16 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(result.failure?.code, .machineConfigurationIncompatible)
     }
 
-    func testVZInstallerPlanRequiresAttachedInstallerMedia() {
+    func testNativeMacRestorePlanRequiresAttachedRestoreImage() {
         let backend = availableVZBackend(operations: recordingOperations().operations)
-        var machine = vzInstallerMachine()
-        machine.installerISOPath = nil
+        var machine = nativeMacRestoreMachine()
+        machine.macOSRestoreImagePath = nil
         let result = backend.plan(MachineBackendPlanRequest(
             machine: machine,
             capabilityPlan: capabilityPlan(
                 backend: .appleVirtualizationFramework,
-                media: .installerISO
+                media: .macOSRestoreImage,
+                family: .macOS
             )
         ))
 
@@ -462,10 +437,11 @@ final class MachineBackendTests: XCTestCase {
     func testBackendPlanRoundTripsWithPlannerCapabilityEvidence() throws {
         let backend = availableVZBackend(operations: recordingOperations().operations)
         let plan = try XCTUnwrap(backend.plan(MachineBackendPlanRequest(
-            machine: vzInstallerMachine(),
+            machine: nativeMacRestoreMachine(),
             capabilityPlan: capabilityPlan(
                 backend: .appleVirtualizationFramework,
-                media: .installerISO
+                media: .macOSRestoreImage,
+                family: .macOS
             )
         )).plan)
 
@@ -499,6 +475,20 @@ final class MachineBackendTests: XCTestCase {
             kernelPath: "/fixture/direct-kernel",
             rootfsPath: "/fixture/linux.raw",
             bootMode: .linuxKernel,
+            displayMode: .desktop
+        )
+    }
+
+    private func nativeMacRestoreMachine() -> DoryMachineConfiguration {
+        DoryMachineConfiguration(
+            id: "native-mac",
+            guestFamily: .macOS,
+            guestArchitecture: .arm64,
+            kernelPath: "",
+            rootfsPath: "",
+            bootMode: .macOSRestore,
+            macOSRestoreImagePath: "/fixture/Restore.ipsw",
+            macOSMachineBundlePath: "/fixture/native-mac.dorymac",
             displayMode: .desktop
         )
     }

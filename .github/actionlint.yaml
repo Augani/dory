@@ -1,5 +1,7 @@
 self-hosted-runner:
   labels:
-    - intel
     - dory
     - release
+    - benchmark
+    - sonoma
+    - lan

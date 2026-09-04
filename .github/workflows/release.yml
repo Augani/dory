@@ -45,8 +45,8 @@ name: Release
 #   DORY_BENCH_DOWNLOAD_URL         credential-free controlled fixed-byte HTTPS payload
 #   DORY_BENCH_DOWNLOAD_BYTES       exact payload byte count
 #
-# NOTE: Dory.app targets macOS 14+ and the public production track is Apple Silicon first.
-# Intel jobs are roadmap-only and never block or contribute artifacts to the public release.
+# NOTE: Dory.app targets macOS 14+ on Apple Silicon; no Intel-host job contributes artifacts
+# or release evidence.
 # The full bundle includes a built-in engine on macOS 14+: Sonoma uses the bundled
 # Virtualization.framework dory-vmm tier, while supported macOS 15+ hosts use dory-hv.
 # Guest kernels/initfs are rebuilt from this commit in architecture-native jobs and passed to the
@@ -1886,8 +1886,7 @@ jobs:
           body="$RUNNER_TEMP/dory-release-body.md"
           cat > "$body" <<'EOF'
           Native Docker & Linux containers for Apple Silicon, a free, open-source alternative to
-          OrbStack and Docker Desktop. Intel support is planned after the Apple Silicon production
-          contract is complete.
+          OrbStack and Docker Desktop.
 
           **0.4 trust release**
 

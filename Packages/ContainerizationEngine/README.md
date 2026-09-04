@@ -6,15 +6,18 @@ local engine and launches this helper on supported hosts; macOS 14 selects the `
 Virtualization.framework fallback from `dory-core-swift`.
 
 The full process, storage, networking, and trust-boundary contract is documented in the
-[architecture guide](https://augani.github.io/dory/docs/architecture.md).
+[delivery plan](../../PLAN.md). This package implements the Dory-owned Linux helper for Apple
+Silicon hosts; macOS ARM64 guests use the supported VZMac path in `dory-core-swift`.
 
 ## What ships here
 
-- Arm64 and x86_64 raw-HV boot/device implementations. Public 0.4 releases remain Apple-silicon
-  only until an Intel candidate passes dedicated physical qualification.
+- Arm64 raw-HV boot/device implementation for native Linux on Apple Silicon, plus DoryPC
+  boot/device scaffolding for translated x86_64 Linux. Intel hosts, Windows guests, and macOS
+  x86_64 are outside this delivery programme.
 - Virtio block, network, vsock, rng, balloon, VirGL/Venus GPU, and VirtioFS devices.
 - A copyless guest networking path through the provenance-pinned `gvproxy` helper.
-- Host-share coherence, bounded FSEvents batching, queue/backpressure telemetry, and recovery.
+- VirtioFS host sharing with a correctness-first zero-TTL baseline, isolated worker authority,
+  bounded FSEvents batching for invalidation delivery, queue/backpressure telemetry, and recovery.
 - Published-port, SSH-agent, host-AI, and guest-control bridges.
 - USB host discovery, bounded host-device access, a USB/IP bridge, and authenticated Dory Tools
   `usb-vhci@1` attach/detach. Linux camera sharing uses that same production path to expose the

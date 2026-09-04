@@ -1444,8 +1444,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         for request: DoryVirtualMachineCapabilityRequest
     ) -> DoryCapabilitySupportTier? {
         switch (request.guest.family, request.backend) {
-        case (.linux, .doryHypervisor),
-             (.linux, .appleVirtualizationFramework):
+        case (.linux, .doryHypervisor):
             return .supported
         case (.macOS, .appleVirtualizationFramework):
             return .experimental
@@ -1478,11 +1477,6 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                 || request.bootMedia.kind == .installerISO
                 || request.bootMedia.kind == .virtualDisk
                 || request.bootMedia.kind == .installedLinuxBootBundle
-        case (.linux, .appleVirtualizationFramework):
-            return request.bootMedia.kind == .linuxKernel
-                || request.bootMedia.kind == .installerISO
-                || request.bootMedia.kind == .virtualDisk
-                || request.bootMedia.kind == .installedLinuxBootBundle
         case (.macOS, .appleVirtualizationFramework):
             return request.bootMedia.kind == .macOSRestoreImage || request.bootMedia.kind == .virtualDisk
         default:
@@ -1500,7 +1494,8 @@ public enum DoryAppleSiliconCapabilityEvaluator {
             // RawHV currently exposes only software scanout or the authenticated renderer-worker
             // 3D contract; advertising this intermediate level made the planner select a mode
             // DesktopMode always rejects. Apple graphics owns the intermediate display mode.
-            return request.backend == .appleVirtualizationFramework
+            return request.guest.family == .macOS
+                && request.backend == .appleVirtualizationFramework
         case .hardwareAccelerated3D:
             // DoryARMVirt UEFI installer/disk launch currently implements software scanout.
             // Hardware 3D is the installed-bundle/direct-kernel contract.
@@ -1657,7 +1652,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         trustedQualification: DoryTrustedVirtualMachineRuntimeQualification?
     ) -> DoryCapabilityAvailability? {
         guard let trustedQualification else {
-            // A structurally inspected ARM64 EFI Linux image on Virtualization.framework is a
+            // A structurally inspected ARM64 EFI Linux image on Dory's raw-HV runtime is a
             // portable boot baseline, not an experimental backend. Exact qualification still
             // controls support claims for a particular distro/runtime tuple, but its absence must
             // not prevent a user-provided ISO from reaching the standard VirtIO 2D desktop. Known
@@ -1757,8 +1752,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         _ request: DoryVirtualMachineCapabilityRequest
     ) -> Bool {
         guard request.guest == DoryGuestPlatform(family: .linux, architecture: .arm64),
-              request.backend == .doryHypervisor
-                || request.backend == .appleVirtualizationFramework,
+              request.backend == .doryHypervisor,
               (request.bootMedia.kind == .installerISO
                 || request.bootMedia.kind == .virtualDisk),
               request.bootMedia.source == .userProvided else {
@@ -1771,8 +1765,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         _ request: DoryVirtualMachineCapabilityRequest
     ) -> Bool {
         request.guest == DoryGuestPlatform(family: .linux, architecture: .arm64)
-            && (request.backend == .doryHypervisor
-                || request.backend == .appleVirtualizationFramework)
+            && request.backend == .doryHypervisor
             && (request.bootMedia.kind == .installerISO
                 || request.bootMedia.kind == .virtualDisk)
             && (request.bootMedia.source != .userProvided
@@ -1891,8 +1884,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
             break
         case .disconnected:
             guard request.guest.family == .linux,
-                  request.backend == .appleVirtualizationFramework
-                    || request.backend == .doryHypervisor else {
+                  request.backend == .doryHypervisor else {
                 return unavailable(
                     tier: tier,
                     code: .networkAttachmentUnsupported,
@@ -1901,8 +1893,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
             }
         case .isolated:
             guard request.guest.family == .linux,
-                  request.backend == .appleVirtualizationFramework
-                    || request.backend == .doryHypervisor else {
+                  request.backend == .doryHypervisor else {
                 return unavailable(
                     tier: tier,
                     code: .networkAttachmentUnsupported,
@@ -1936,13 +1927,10 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                     : "The selected backend supports exactly one display for graphical guests."
             )
         }
-        let isLinuxVZ = request.guest.family == .linux
-            && request.backend == .appleVirtualizationFramework
         let isLinuxRawHV = request.guest.family == .linux
             && request.backend == .doryHypervisor
-        let isLinuxDesktopRuntime = isGraphical && (isLinuxVZ || isLinuxRawHV)
-        let audioIsImplemented = isLinuxVZ && isGraphical
-            || isLinuxRawHV && isGraphical
+        let isLinuxDesktopRuntime = isGraphical && isLinuxRawHV
+        let audioIsImplemented = isLinuxRawHV && isGraphical
         if devices.audioInput, !audioIsImplemented {
             return unavailable(
                 tier: tier,
@@ -1968,8 +1956,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
 
         let hasImplementedInput = isGraphical && (
             (request.guest.family == .linux
-                && (request.backend == .doryHypervisor
-                    || request.backend == .appleVirtualizationFramework))
+                && request.backend == .doryHypervisor)
                 || (request.guest.family == .macOS
                     && request.backend == .appleVirtualizationFramework)
 
@@ -1991,8 +1978,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
 
         if devices.directorySharing,
            !(request.guest.family == .linux
-                && (request.backend == .doryHypervisor
-                    || request.backend == .appleVirtualizationFramework)) {
+                && request.backend == .doryHypervisor) {
             return unavailable(
                 tier: tier,
                 code: .directorySharingUnsupported,
@@ -2021,8 +2007,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         }
         if devices.clockSynchronization {
             guard request.guest.family == .linux,
-                  request.backend == .doryHypervisor
-                    || request.backend == .appleVirtualizationFramework else {
+                  request.backend == .doryHypervisor else {
                 return unavailable(
                     tier: tier,
                     code: .clockSynchronizationUnsupported,
@@ -2039,8 +2024,7 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         }
         if devices.gracefulShutdown {
             guard request.guest.family == .linux,
-                  request.backend == .doryHypervisor
-                    || request.backend == .appleVirtualizationFramework else {
+                  request.backend == .doryHypervisor else {
                 return unavailable(
                     tier: tier,
                     code: .gracefulShutdownUnsupported,
@@ -2049,15 +2033,11 @@ public enum DoryAppleSiliconCapabilityEvaluator {
             }
         }
         if devices.intelApplicationTranslation {
-            guard request.guest.family == .linux,
-                  request.backend == .appleVirtualizationFramework,
-                  host.linuxIntelApplicationTranslationAvailable == true else {
-                return unavailable(
-                    tier: tier,
-                    code: .intelApplicationTranslationUnavailable,
-                    message: "Intel Linux application translation is not installed or is unavailable for the selected guest/backend contract."
-                )
-            }
+            return unavailable(
+                tier: tier,
+                code: .intelApplicationTranslationUnavailable,
+                message: "Intel Linux application translation through Apple Virtualization.framework is not part of the supported production matrix."
+            )
         }
         if devices.removableUSBHotplug,
            !(request.guest.family == .linux && request.backend == .doryHypervisor) {

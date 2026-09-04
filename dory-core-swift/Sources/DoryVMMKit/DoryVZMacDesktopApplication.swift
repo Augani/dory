@@ -12,6 +12,39 @@ public enum DoryVZMacDesktopOperation: String, Sendable, Equatable {
     case resume
 }
 
+@MainActor
+final class DoryVZMacDesktopInstallLifecycle {
+    private enum Phase {
+        case idle
+        case installingRestore
+        case startingFirstBoot
+    }
+
+    private var phase: Phase = .idle
+
+    func installThenStart(
+        install: @MainActor () async throws -> Void,
+        start: @MainActor () async throws -> Void
+    ) async throws {
+        phase = .installingRestore
+        do {
+            try await install()
+            phase = .startingFirstBoot
+            try await start()
+            phase = .idle
+        } catch {
+            phase = .idle
+            throw error
+        }
+    }
+
+    func shouldFinishStoppedObservation(
+        operation: DoryVZMacDesktopOperation
+    ) -> Bool {
+        !(operation == .install && phase == .installingRestore)
+    }
+}
+
 public struct DoryVZMacDesktopArguments: Sendable, Equatable {
     public var operation: DoryVZMacDesktopOperation
     public var machineBundleURL: URL
@@ -273,6 +306,7 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
     private var stopRequested = false
     private var controlServer: DoryVZMacControlServer?
     private var handoffPublished = false
+    private let installLifecycle = DoryVZMacDesktopInstallLifecycle()
 
     init(application: NSApplication, arguments: DoryVZMacDesktopArguments) throws {
         self.application = application
@@ -323,16 +357,19 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
                     guard let operationID = arguments.operationID else {
                         throw DoryVZMacDesktopArgumentError.incompleteManagedLifecycleContract
                     }
-                    try await adapter.install(
-                        from: restoreImageURL,
-                        operationID: operationID
-                    ) { [weak self] fraction in
-                        self?.window.title = "\(self?.machineName ?? "macOS") — Installing macOS \(Int(fraction * 100))%"
+                    try await installLifecycle.installThenStart {
+                        try await adapter.install(
+                            from: restoreImageURL,
+                            operationID: operationID
+                        ) { [weak self] fraction in
+                            self?.window.title = "\(self?.machineName ?? "macOS") — Installing macOS \(Int(fraction * 100))%"
+                        }
+                    } start: {
+                        // Apple's installer leaves the VM stopped after restore. Keep creation and
+                        // first boot one supervised operation and publish readiness only after the
+                        // installed guest is actually running.
+                        try await adapter.start()
                     }
-                    // Apple's installer leaves the VM stopped after restore. Keep creation and
-                    // first boot one supervised operation and publish readiness only after the
-                    // installed guest is actually running.
-                    try await adapter.start()
                 case .run:
                     try await adapter.start()
                 case .resume:
@@ -385,7 +422,11 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
         case .stopping:
             window.title = "\(machineName) — Shutting down macOS"
         case .stopped:
-            finish()
+            if installLifecycle.shouldFinishStoppedObservation(operation: arguments.operation) {
+                finish()
+            } else {
+                window.title = "\(machineName) — Starting macOS"
+            }
         case .installFailed, .failed:
             terminalError = NSError(
                 domain: "DoryVZMacDesktop",

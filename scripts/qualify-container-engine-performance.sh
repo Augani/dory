@@ -1,8 +1,8 @@
 #!/bin/bash
 # Destructive clean-account exact-candidate container-engine performance campaign. Runs
 # isolated/default and matched/interleaved comparisons, verifies every raw result, cleans all
-# selected engine state, and produces the stable release evidence ZIP described by
-# PLAN.md. This does not qualify a full Linux VM.
+# selected engine state, and produces the stable release evidence ZIP. This does
+# not qualify a full Linux VM.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -429,7 +429,6 @@ with open(path, "w", encoding="utf-8") as handle:
     handle.write("\n")
 PY
 
-cp "$ROOT/PLAN.md" "$WORKROOT/package/"
 cp "$WORKROOT/logs/"*.log "$RAW/"
 (cd "$WORKROOT/package" && find . -type f ! -name sha256.txt -print | LC_ALL=C sort \
   | while IFS= read -r path; do shasum -a 256 "${path#./}"; done > sha256.txt)

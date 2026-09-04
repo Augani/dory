@@ -420,9 +420,11 @@ public enum DoryInstallerISOInspector {
     ) -> DoryInstallerISOCompatibility {
         switch (normalizedHostArchitecture(hostArchitecture), architecture) {
         case ("arm64", .x86_64):
-            .incompatible("This ISO is Intel x86_64-only. Apple Silicon requires an arm64 EFI ISO.")
+            .incompatible(
+                "This ISO is x86_64-only. Apple Silicon can admit it only through Dory's translated x86_64 Linux path."
+            )
         case ("x86_64", .arm64):
-            .incompatible("This ISO is arm64-only. This Intel Mac requires an x86_64 EFI ISO.")
+            .incompatible("This ISO is arm64-only. The current product supports Apple Silicon hosts only.")
         case (_, .unknown):
             .unknown
         default:
@@ -433,8 +435,6 @@ public enum DoryInstallerISOInspector {
     public static var currentHostArchitecture: String {
         #if arch(arm64)
         "arm64"
-        #elseif arch(x86_64)
-        "x86_64"
         #else
         "unknown"
         #endif

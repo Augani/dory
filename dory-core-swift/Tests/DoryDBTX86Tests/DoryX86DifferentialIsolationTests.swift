@@ -120,35 +120,7 @@ import Testing
       let source = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: [0x90])
       let result = try DoryX86DifferentialHarness().compare(
         bytes: [0x90], initialState: state(), memory: source, mode: .long64)
-      #expect(result.agrees)
-      func replacing(
-        state: DoryX86ArchitecturalState? = nil,
-        memory: DoryX86DifferentialMemoryState? = nil,
-        exit: DoryJITExitCode? = nil
-      ) -> DoryX86DifferentialResult {
-        .init(
-          block: result.block, compiled: result.compiled,
-          interpreterState: result.interpreterState, jitState: state ?? result.jitState,
-          interpreterResult: result.interpreterResult,
-          interpreterRetiredInstructionCount: result.interpreterRetiredInstructionCount,
-          interpreterMemory: result.interpreterMemory, jitMemory: memory ?? result.jitMemory,
-          interpreterMemoryFault: result.interpreterMemoryFault,
-          jitMemoryFault: result.jitMemoryFault, jitExit: exit ?? result.jitExit)
-      }
-      let perturbations: [(inout DoryX86ArchitecturalState) -> Void] = [
-        { $0.control.cr2 = 1 }, { $0.debug.dr0 = 1 }, { $0.fs.base = 1 },
-        { $0.gdtr.base = 1 }, { $0.modelSpecific.fsBase = 1 },
-        { $0.floatingPoint.mxcsr ^= 1 }, { $0.tsc = 1 }, { $0.tscAux = 1 },
-      ]
-      for perturb in perturbations {
-        var changed = result.jitState
-        perturb(&changed)
-        #expect(!replacing(state: changed).agrees)
-      }
-      #expect(!replacing(memory: .init(memory: [0xF4])).agrees)
-      #expect(!replacing(memory: .init(memory: [0x90], devices: [1])).agrees)
-      #expect(!replacing(exit: .interpreter).agrees)
-      #expect(!replacing(exit: .halt).agrees)
+      expectAgreementIncludesExtendedStateMemoryDevicesAndExit(result)
     #endif
   }
 
@@ -166,6 +138,71 @@ import Testing
       #expect(!result.agrees)
     #endif
   }
+}
+
+private enum DifferentialStatePerturbation: CaseIterable {
+  case cr2
+  case debugRegister
+  case fsBase
+  case descriptorTable
+  case modelSpecificFSBase
+  case mxcsr
+  case tsc
+  case tscAux
+
+  func apply(to state: inout DoryX86ArchitecturalState) {
+    switch self {
+    case .cr2: state.control.cr2 = 1
+    case .debugRegister: state.debug.dr0 = 1
+    case .fsBase: state.fs.base = 1
+    case .descriptorTable: state.gdtr.base = 1
+    case .modelSpecificFSBase: state.modelSpecific.fsBase = 1
+    case .mxcsr: state.floatingPoint.mxcsr ^= 1
+    case .tsc: state.tsc = 1
+    case .tscAux: state.tscAux = 1
+    }
+  }
+}
+
+/// Keep this helper out of the Swift Testing worker frame: the x86 decoder already
+/// pushes the cooperative-thread stack guard in Debug builds, and combining the
+/// synthetic perturbation table with the decode path reproduced a SIGBUS there.
+@inline(never)
+private func expectAgreementIncludesExtendedStateMemoryDevicesAndExit(
+  _ result: DoryX86DifferentialResult
+) {
+  #expect(result.agrees)
+  for perturbation in DifferentialStatePerturbation.allCases {
+    var changed = result.jitState
+    perturbation.apply(to: &changed)
+    #expect(!differentialResult(result, replacingState: changed).agrees)
+  }
+  #expect(!differentialResult(result, replacingMemory: .init(memory: [0xF4])).agrees)
+  #expect(!differentialResult(result, replacingMemory: .init(memory: [0x90], devices: [1])).agrees)
+  #expect(!differentialResult(result, replacingExit: .interpreter).agrees)
+  #expect(!differentialResult(result, replacingExit: .halt).agrees)
+}
+
+@inline(never)
+private func differentialResult(
+  _ result: DoryX86DifferentialResult,
+  replacingState state: DoryX86ArchitecturalState? = nil,
+  replacingMemory memory: DoryX86DifferentialMemoryState? = nil,
+  replacingExit exit: DoryJITExitCode? = nil
+) -> DoryX86DifferentialResult {
+  .init(
+    block: result.block,
+    compiled: result.compiled,
+    interpreterState: result.interpreterState,
+    jitState: state ?? result.jitState,
+    interpreterResult: result.interpreterResult,
+    interpreterRetiredInstructionCount: result.interpreterRetiredInstructionCount,
+    interpreterMemory: result.interpreterMemory,
+    jitMemory: memory ?? result.jitMemory,
+    interpreterMemoryFault: result.interpreterMemoryFault,
+    jitMemoryFault: result.jitMemoryFault,
+    jitExit: exit ?? result.jitExit
+  )
 }
 
 /// A small explicitly clonable MMIO fixture. Its read counter represents device state that must

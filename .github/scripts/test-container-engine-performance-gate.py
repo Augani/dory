@@ -82,7 +82,6 @@ class ContainerEnginePerformanceGateTests(unittest.TestCase):
             'LIMA_COLIMA_STATE="$HOME/.lima/colima"',
             "host rebooted during the performance campaign",
             "engine_state_removed=PASS",
-            "PLAN.md",
             "dev.dory.container-engine-performance-qualification",
             "cannot authorize Linux VM support or",
         ):

@@ -43,27 +43,6 @@ grep -F 'DorydXPCSecurity.productionDaemonRequirement' \
   dory-core-swift/Sources/dorydctl/main.swift >/dev/null \
   || fail "production dorydctl does not pin doryd's signature"
 
-for usb_ui_contract in \
-  'static func attachSupported(for status: DorydMachineStatus?) -> Bool' \
-  'status.state == "running"' \
-  'status.runtimeIdentity.backend == "dory-hypervisor"' \
-  'status.runtimeIdentity.authorizesRemovableUSBHotplug'; do
-  grep -F "$usb_ui_contract" Dory/Net/UsbPassthroughAvailability.swift >/dev/null \
-    || fail "USB passthrough UI lost fail-closed runtime contract: $usb_ui_contract"
-done
-grep -F 'UsbPassthroughAvailability.attachSupported(for: selectedMachine)' \
-  Dory/Features/Settings/UsbDevicesView.swift >/dev/null \
-  || fail "USB passthrough UI no longer uses signed-plan availability"
-grep -F 'public func machineUSBAttach(' \
-  dory-core-swift/Sources/DorydKit/DorydService.swift >/dev/null \
-  || fail "doryd lost the authenticated USB attach RPC"
-grep -F 'public func attachResolvedUSBDevice(' \
-  dory-core-swift/Sources/DorydKit/MachineManager.swift >/dev/null \
-  || fail "machine manager lost resolved-plan USB authorization"
-grep -F 'try await ensureSupported()' \
-  Packages/ContainerizationEngine/Sources/DoryHV/Usb/UsbControlHandler.swift >/dev/null \
-  || fail "host USB can be opened before the guest usb-vhci capability is proved"
-
 for kernel_contract in \
   'CONFIG_NETFILTER_XT_MATCH_OWNER=y' \
   'CONFIG_IP6_NF_FILTER=y' \

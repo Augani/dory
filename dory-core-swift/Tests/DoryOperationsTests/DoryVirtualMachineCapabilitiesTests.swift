@@ -95,7 +95,7 @@ struct VirtualMachineCapabilitiesTests {
         }
     }
 
-    @Test("Intel application translation is exact, installed, Linux, and VZ-only")
+    @Test("Intel application translation is outside the supported product matrix")
     func intelApplicationTranslationCapability() {
         let devices = DoryVirtualMachineDeviceCapabilityRequest(
             intelApplicationTranslation: true
@@ -133,10 +133,10 @@ struct VirtualMachineCapabilitiesTests {
             devices: devices
         )
 
-        #expect(virtualizationFramework.availability.isUsable)
-        #expect(virtualizationFramework.resolvedDevices?.intelApplicationTranslation == true)
+        #expect(virtualizationFramework.availability.reason?.code
+            == .backendDoesNotSupportGuest)
         #expect(missingHostRuntime.availability.reason?.code
-            == .intelApplicationTranslationUnavailable)
+            == .backendDoesNotSupportGuest)
         #expect(rawHV.availability.reason?.code == .intelApplicationTranslationUnavailable)
         #expect(!devices.matchesRuntimeQualificationContract(.minimumBootable))
     }
@@ -166,7 +166,7 @@ struct VirtualMachineCapabilitiesTests {
         #expect(rawHV.availability.isUsable)
         #expect(rawHV.resolvedDevices?.removableUSBHotplug == true)
         #expect(virtualizationFramework.availability.reason?.code
-            == .removableUSBHotplugUnsupported)
+            == .backendDoesNotSupportGuest)
         #expect(!devices.matchesRuntimeQualificationContract(.minimumBootable))
     }
     private static let qualifiedLinuxGraphics = DoryTrustedGuestImageGraphicsQualification(
@@ -331,7 +331,7 @@ struct VirtualMachineCapabilitiesTests {
         )
 
         #expect(native.availability.isUsable)
-        #expect(installer.availability.isUsable)
+        #expect(installer.availability.reason?.code == .backendDoesNotSupportGuest)
     }
 
     @Test("non-DBT backends reject x86_64 execution on Apple Silicon")
@@ -485,8 +485,8 @@ struct VirtualMachineCapabilitiesTests {
         #expect(linuxRestore.availability.reason?.code == .bootMediaDoesNotSupportGuest)
     }
 
-    @Test("VZ direct-kernel lifecycle devices remain exact pending qualification")
-    func vzDirectKernelLifecycleDevices() {
+    @Test("Linux VZ lifecycle devices fail closed outside the supported matrix")
+    func linuxVZLifecycleDevicesFailClosed() {
         let devices = DoryVirtualMachineDeviceCapabilityRequest(
             clockSynchronization: true,
             gracefulShutdown: true
@@ -500,9 +500,9 @@ struct VirtualMachineCapabilitiesTests {
             devices: devices
         )
 
-        #expect(descriptor.availability.isUsable)
-        #expect(descriptor.resolvedDevices == devices)
-        #expect(descriptor.availability.reason?.code == .runtimeQualificationUnavailable)
+        #expect(!descriptor.availability.isUsable)
+        #expect(descriptor.resolvedDevices == nil)
+        #expect(descriptor.availability.reason?.code == .backendDoesNotSupportGuest)
     }
 
     @Test("missing renderer blocks accelerated native graphics but not software graphics")
@@ -791,13 +791,13 @@ struct VirtualMachineCapabilitiesTests {
         #expect(!descriptor.availability.isUsable)
     }
 
-    @Test("structural ARM64 EFI ISO inspection admits the portable VZ baseline")
+    @Test("structural ARM64 EFI ISO inspection admits the portable raw-HV baseline")
     func structuralISOWithoutRuntimeQualificationUsesPortableBaseline() {
         let descriptor = evaluate(
             family: .linux,
             media: .installerISO,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             automaticallyQualifyRuntime: false
         )
@@ -810,13 +810,13 @@ struct VirtualMachineCapabilitiesTests {
         #expect(descriptor.runtimeQualificationEvidence == nil)
     }
 
-    @Test("portable VZ baseline continues from the installed EFI disk")
+    @Test("portable raw-HV baseline continues from the installed EFI disk")
     func installedEFIDiskWithoutRuntimeQualificationUsesPortableBaseline() {
         let descriptor = evaluate(
             family: .linux,
             media: .virtualDisk,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             automaticallyQualifyRuntime: false
         )
@@ -828,34 +828,35 @@ struct VirtualMachineCapabilitiesTests {
         #expect(descriptor.runtimeQualificationEvidence == nil)
     }
 
-    @Test("portable admission cannot claim accelerated display without exact qualification")
+    @Test("portable raw-HV admission rejects unsupported accelerated display")
     func acceleratedPortableCandidateRequiresExactQualification() {
         let descriptor = evaluate(
             family: .linux,
             media: .installerISO,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .hostAcceleratedDisplay,
             automaticallyQualifyRuntime: false
         )
 
         #expect(!descriptor.availability.isUsable)
-        #expect(descriptor.availability.reason?.code == .runtimeQualificationUnavailable)
+        #expect(descriptor.availability.reason?.code == .graphicsModeUnsupported)
     }
 
-    @Test("portable admission cannot claim managed media without exact qualification")
+    @Test("portable raw-HV admission cannot claim managed media without exact qualification")
     func managedPortableCandidateRequiresExactQualification() {
         let descriptor = evaluate(
             family: .linux,
             media: .installerISO,
             source: .vendorDownload,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             automaticallyQualifyRuntime: false
         )
 
         #expect(!descriptor.availability.isUsable)
-        #expect(descriptor.availability.reason?.code == .runtimeQualificationUnavailable)
+        #expect(descriptor.availability.reason?.code
+            == .trustedGuestImageGraphicsQualificationUnavailable)
     }
 
     @Test("an explicitly failed runtime qualification still blocks the portable baseline")
@@ -867,7 +868,7 @@ struct VirtualMachineCapabilitiesTests {
                 source: .userProvided,
                 artifactSHA256: Self.linuxISOArtifactSHA256
             ),
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             devices: .minimumBootable,
             virtualHardwareABIVersion: 1
@@ -905,7 +906,7 @@ struct VirtualMachineCapabilitiesTests {
                 source: .userProvided,
                 artifactSHA256: Self.linuxISOArtifactSHA256
             ),
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             devices: .minimumBootable,
             virtualHardwareABIVersion: 1
@@ -956,7 +957,7 @@ struct VirtualMachineCapabilitiesTests {
             family: .linux,
             media: .virtualDisk,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             mediaArtifactSHA256: String(repeating: "8", count: 64),
             automaticallyResolveMutableProvenance: false,
@@ -966,7 +967,7 @@ struct VirtualMachineCapabilitiesTests {
             family: .linux,
             media: .virtualDisk,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             automaticallyQualifyRuntime: false
         )
@@ -1007,7 +1008,7 @@ struct VirtualMachineCapabilitiesTests {
             family: .linux,
             media: .installerISO,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             automaticallyTrustBootMedia: false,
             trustedBootMediaInspection: x86Inspection
@@ -1016,7 +1017,7 @@ struct VirtualMachineCapabilitiesTests {
             family: .linux,
             media: .installerISO,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             automaticallyTrustBootMedia: false,
             trustedBootMediaInspection: nonEFI
@@ -1025,7 +1026,7 @@ struct VirtualMachineCapabilitiesTests {
             family: .linux,
             media: .installerISO,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             automaticallyTrustBootMedia: false
         )
@@ -1092,7 +1093,7 @@ struct VirtualMachineCapabilitiesTests {
             family: .linux,
             media: .virtualDisk,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             devices: .minimumBootable
         )
@@ -1100,7 +1101,7 @@ struct VirtualMachineCapabilitiesTests {
             family: .linux,
             media: .virtualDisk,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             devices: DoryVirtualMachineDeviceCapabilityRequest(networkAttachment: .disconnected)
         )
@@ -1108,7 +1109,7 @@ struct VirtualMachineCapabilitiesTests {
             family: .linux,
             media: .virtualDisk,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             devices: DoryVirtualMachineDeviceCapabilityRequest(networkAttachment: .isolated)
         )
@@ -1116,7 +1117,7 @@ struct VirtualMachineCapabilitiesTests {
             family: .linux,
             media: .virtualDisk,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             devices: DoryVirtualMachineDeviceCapabilityRequest(directorySharing: true)
         )
@@ -1176,20 +1177,6 @@ struct VirtualMachineCapabilitiesTests {
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             devices: DoryVirtualMachineDeviceCapabilityRequest(audioOutput: true)
         )
-        let unsupportedVZCamera = evaluate(
-            family: .linux,
-            media: .virtualDisk,
-            source: .userProvided,
-            backend: .appleVirtualizationFramework,
-            graphics: .software,
-            devices: DoryVirtualMachineDeviceCapabilityRequest(
-                display: DoryVirtualMachineDisplayCapabilityRequest(
-                    widthPixels: 1_920,
-                    heightPixels: 1_080
-                ),
-                cameraInput: true
-            )
-        )
         let unsupportedHeadlessCamera = evaluate(
             family: .linux,
             media: .installedLinuxBootBundle,
@@ -1207,7 +1194,7 @@ struct VirtualMachineCapabilitiesTests {
             family: .linux,
             media: .virtualDisk,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             devices: directionalClipboard
         )
@@ -1215,7 +1202,7 @@ struct VirtualMachineCapabilitiesTests {
             family: .linux,
             media: .virtualDisk,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             devices: DoryVirtualMachineDeviceCapabilityRequest(
                 clipboard: false,
@@ -1226,7 +1213,7 @@ struct VirtualMachineCapabilitiesTests {
             family: .linux,
             media: .virtualDisk,
             source: .userProvided,
-            backend: .appleVirtualizationFramework,
+            backend: .doryHypervisor,
             graphics: .software,
             devices: DoryVirtualMachineDeviceCapabilityRequest(
                 clipboard: true,
@@ -1254,7 +1241,6 @@ struct VirtualMachineCapabilitiesTests {
         #expect(outputOnlyAudio.availability.isUsable)
         #expect(outputOnlyAudio.resolvedDevices?.audioOutput == true)
         #expect(outputOnlyAudio.resolvedDevices?.audioInput == false)
-        #expect(unsupportedVZCamera.availability.reason?.code == .cameraInputUnsupported)
         #expect(unsupportedHeadlessCamera.availability.reason?.code == .cameraInputUnsupported)
         #expect(qualifiedDirectionalClipboard.availability.isUsable)
         #expect(qualifiedDirectionalClipboard.resolvedDevices == directionalClipboard)
@@ -1327,7 +1313,7 @@ struct VirtualMachineCapabilitiesTests {
 
         #expect(rawHV.availability.isUsable)
         #expect(rawHV.resolvedDevices?.displays == displays)
-        #expect(vz.availability.reason?.code == .displayTopologyUnsupported)
+        #expect(vz.availability.reason?.code == .backendDoesNotSupportGuest)
 
         var duplicate = devices
         duplicate.displays[1].id = "display-0"
@@ -1550,8 +1536,7 @@ struct VirtualMachineCapabilitiesTests {
         host: DoryAppleSiliconHostFacts
     ) -> DoryTrustedVirtualMachineRuntimeQualification? {
         guard request.guest.family == .linux,
-              request.backend == .doryHypervisor
-                || request.backend == .appleVirtualizationFramework,
+              request.backend == .doryHypervisor,
               let hostContext = host.runtimeQualificationContext else {
             return nil
         }

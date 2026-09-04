@@ -15,7 +15,7 @@
 #   READINESS_WORKDIR, READINESS_SETTLE, READINESS_DOCKER_BIN
 #   READINESS_ALPINE_IMAGE (exact digest reference)
 #   READINESS_BUILD_CONTEXT_MB for the BuildKit streaming build payload (default: 32)
-#   READINESS_NONNATIVE_BUILD_IMAGE for the non-native BuildKit qemu/npm probe (exact digest)
+#   READINESS_NONNATIVE_BUILD_IMAGE for the non-native BuildKit npm probe (exact digest)
 #   RUN_MEMORY=0|1, RUN_NONNATIVE_ARCH=0|1, RUN_AMD64=0|1 (legacy alias), RUN_ONLINE=0|1, RUN_DOMAINS=0|1, RUN_DIRECT_IP=0|1, RUN_FILE_WATCH=0|1, RUN_K8S=0|1, RUN_MACHINES=0|1, RUN_MACHINE_RECIPE=0|1, RUN_USB=0|1, RUN_VPN=0|1
 #   DORY_DIRECT_IP_INTERFACE_FILE points at the helper-written utun interface file
 #   READINESS_FILE_WATCH_IMAGE for --file-watch (default: alpine image)
@@ -27,7 +27,6 @@
 #   RUN_USB=1 records unsupported until the agent has a vhci attach RPC (fails in strict mode)
 #   DORY_REQUIRE_VPN=1 makes --vpn fail when no active VPN-like interface or route is detected
 #   READINESS_STRICT=1 turns unavailable requested engines/probes into failures
-#   READINESS_REQUIRE_PHYSICAL_INTEL=1 requires this run to execute on a physical Intel Mac
 #   READINESS_REQUIRE_COMPETITOR=1 requires OrbStack or Docker Desktop in --engines
 #   STOP_ORBSTACK=1 to quit OrbStack before running Dory-only checks
 set -u
@@ -52,7 +51,6 @@ RUN_MACHINE_RECIPE="${RUN_MACHINE_RECIPE:-0}"
 RUN_BRIDGE="${RUN_BRIDGE:-0}"
 RUN_GUEST_AGENT="${RUN_GUEST_AGENT:-0}"
 RUN_DAX="${RUN_DAX:-0}"
-RUN_ROSETTA="${RUN_ROSETTA:-0}"
 RUN_USB="${RUN_USB:-0}"
 RUN_VPN="${RUN_VPN:-0}"
 RUN_DEBUG_SHELL="${RUN_DEBUG_SHELL:-0}"
@@ -60,9 +58,7 @@ RUN_CLOCK_SYNC="${RUN_CLOCK_SYNC:-0}"
 CLOCK_SYNC_TOLERANCE_MS="${DORY_CLOCK_SYNC_TOLERANCE_MS:-100}"
 STOP_ORBSTACK="${STOP_ORBSTACK:-0}"
 STRICT="${READINESS_STRICT:-0}"
-REQUIRE_PHYSICAL_INTEL="${READINESS_REQUIRE_PHYSICAL_INTEL:-0}"
 REQUIRE_COMPETITOR="${READINESS_REQUIRE_COMPETITOR:-0}"
-PHYSICAL_INTEL_CONFIRMED="${READINESS_PHYSICAL_INTEL_CONFIRMED:-0}"
 
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 RUN_SLUG="$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]' | tr -cd '[:alnum:]_.-')"
@@ -104,15 +100,12 @@ Options:
   --bridge             Run guest→host bridge (dory-open) check
   --guest-agent        Run dory-hv guest-agent vsock smoke (requires DORY_GUEST_KERNEL and DORY_GUEST_INITFS)
   --dax                Run the low-level DAX mapping probe only (production host-share DAX is rejected)
-  --rosetta            Record the Rosetta application-only boundary (no Intel VM/ISO boot)
   --usb                Record the unavailable guest USB attach/detach RPC explicitly
   --vpn                Record route/DNS state and run userspace networking checks during VPN coexistence testing
   --debug-shell        Record the unavailable agent namespace-debug RPC explicitly
   --clock-sync         Run the typed doryd host-wake clock synchronization path
   --stop-orbstack      Quit OrbStack before Dory-only runs
   --strict             Fail when a requested engine, tool, or enabled probe is unavailable
-  --require-physical-intel
-                       Require this run to execute on a physical Intel Mac (implies --strict)
   --require-competitor Require OrbStack or Docker Desktop in --engines (implies --strict)
   -h, --help           Show this help
 
@@ -124,9 +117,6 @@ doryd VM machine env:
   DORYD_MACHINE_KERNEL, DORYD_MACHINE_ROOTFS
   DORYD_MACHINE_MEMORY_MB, DORYD_MACHINE_CPUS
 
-External release gates:
-  READINESS_PHYSICAL_INTEL_CONFIRMED=1 may only be set on a physical Intel Mac after host facts
-  have been recorded. Emulation, Rosetta, and hosted nested-virtualization runs do not qualify.
 EOF
 }
 
@@ -151,28 +141,26 @@ while [ "$#" -gt 0 ]; do
     --bridge) RUN_BRIDGE=1; shift ;;
     --guest-agent) RUN_GUEST_AGENT=1; shift ;;
     --dax) RUN_DAX=1; shift ;;
-    --rosetta) RUN_ROSETTA=1; shift ;;
     --usb) RUN_USB=1; shift ;;
     --vpn) RUN_VPN=1; shift ;;
     --debug-shell) RUN_DEBUG_SHELL=1; shift ;;
     --clock-sync) RUN_CLOCK_SYNC=1; shift ;;
     --stop-orbstack) STOP_ORBSTACK=1; shift ;;
     --strict) STRICT=1; shift ;;
-    --require-physical-intel) REQUIRE_PHYSICAL_INTEL=1; STRICT=1; shift ;;
     --require-competitor) REQUIRE_COMPETITOR=1; STRICT=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "unknown option: $1" >&2; usage; exit 2 ;;
   esac
 done
 
-for value_name in STRICT REQUIRE_PHYSICAL_INTEL REQUIRE_COMPETITOR PHYSICAL_INTEL_CONFIRMED; do
+for value_name in STRICT REQUIRE_COMPETITOR; do
   value="${!value_name}"
   case "$value" in
     0|1) ;;
     *) echo "$value_name must be 0 or 1" >&2; exit 2 ;;
   esac
 done
-if [ "$REQUIRE_PHYSICAL_INTEL" = "1" ] || [ "$REQUIRE_COMPETITOR" = "1" ]; then
+if [ "$REQUIRE_COMPETITOR" = "1" ]; then
   STRICT=1
 fi
 
@@ -238,28 +226,8 @@ engine_list_has_competitor() {
   return 1
 }
 
-physical_intel_host_confirmed() {
-  local translated nested arm64_capable
-  [ "$(host_guest_arch)" = "amd64" ] || return 1
-  [ "$PHYSICAL_INTEL_CONFIRMED" = "1" ] || return 1
-  translated="$(sysctl -in sysctl.proc_translated 2>/dev/null || printf '0')"
-  nested="$(sysctl -in kern.hv_vmm_present 2>/dev/null || printf '0')"
-  arm64_capable="$(sysctl -in hw.optional.arm64 2>/dev/null || printf '0')"
-  [ "$translated" != "1" ] && [ "$nested" != "1" ] && [ "$arm64_capable" != "1" ]
-}
-
 record_external_coverage() {
   local competitor_state
-  if physical_intel_host_confirmed; then
-    record PASS "coverage" "physical Intel hardware gate" "confirmed physical Intel host"
-  elif [ "$REQUIRE_PHYSICAL_INTEL" = "1" ]; then
-    required_unavailable_case "coverage" "physical Intel hardware gate" \
-      "EXTERNAL GATE NOT COVERED — requires a confirmed physical Intel Mac; emulation/Rosetta is not evidence"
-  else
-    skip_case "coverage" "physical Intel hardware gate" \
-      "EXTERNAL GATE NOT COVERED — requires READINESS_PHYSICAL_INTEL_CONFIRMED=1 on a physical Intel Mac"
-  fi
-
   if engine_list_has_competitor; then
     competitor_state="$(awk -F '\t' '
       $2 ~ /^(orbstack|docker-desktop|desktop)$/ {
@@ -301,13 +269,16 @@ host_guest_arch() {
 }
 
 nonnative_guest_arch() {
-  [ "$(host_guest_arch)" = "amd64" ] && printf '%s\n' "arm64" || printf '%s\n' "amd64"
+  [ "$(host_guest_arch)" = "arm64" ] || {
+    echo "non-native Linux translation is only supported from Apple Silicon hosts" >&2
+    return 2
+  }
+  printf '%s\n' "amd64"
 }
 
 binfmt_handler_for_arch() {
   case "$1" in
     amd64) printf '%s\n' "FEX-x86_64" ;;
-    arm64) printf '%s\n' "qemu-aarch64" ;;
     *) echo "unsupported arch: $1" >&2; return 2 ;;
   esac
 }
@@ -1415,14 +1386,6 @@ run_engine() {
     skip_case "$CURRENT_ENGINE" "dory-hv low-level DAX mapping probe" "enable with --dax (production host-share DAX remains disabled)"
   fi
 
-  if [ "$RUN_ROSETTA" = "1" ]; then
-    required_unavailable_case "$CURRENT_ENGINE" "Rosetta x86_64 Linux application translation boundary" \
-      "Rosetta translates applications only inside an eligible ARM64 Linux VM; it cannot boot an Intel ISO, Dory exposes no partial x86 VM mode, and future whole-system support requires a packaged QEMU TCG backend"
-  else
-    skip_case "$CURRENT_ENGINE" "Rosetta x86_64 Linux application translation boundary" \
-      "not a whole-system VM probe; enable with --rosetta to record the unsupported Intel ISO boundary"
-  fi
-
   if [ "$RUN_CLOCK_SYNC" = "1" ] && [ "$CURRENT_ENGINE" != "doryd" ]; then
     required_unavailable_case "$CURRENT_ENGINE" "host wake clock sync" "typed clock-sync readiness is supported by the doryd engine only"
   elif [ "$RUN_CLOCK_SYNC" = "1" ]; then
@@ -1453,14 +1416,14 @@ run_engine() {
 
 write_summary() {
   python3 - "$SUMMARY_JSON" "$RUN_ID" "$ENGINES" "$STRICT" \
-      "$REQUIRED_UNAVAILABLE_COUNT" "$REQUIRE_PHYSICAL_INTEL" "$REQUIRE_COMPETITOR" \
+      "$REQUIRED_UNAVAILABLE_COUNT" "$REQUIRE_COMPETITOR" \
       "$PASS_COUNT" "$FAIL_COUNT" "$SKIP_COUNT" "$RESULTS" "$MEMORY_RESULTS" <<'PY'
 import json
 import pathlib
 import sys
 
 (
-    output, run_id, engines, strict, required_unavailable, physical, competitor,
+    output, run_id, engines, strict, required_unavailable, competitor,
     passed, failed, skipped, results, memory,
 ) = sys.argv[1:]
 payload = {
@@ -1468,7 +1431,6 @@ payload = {
     "engines": engines,
     "strict": strict == "1",
     "requiredUnavailable": int(required_unavailable),
-    "physicalIntelRequired": physical == "1",
     "competitorRequired": competitor == "1",
     "pass": int(passed),
     "fail": int(failed),
@@ -1484,8 +1446,8 @@ validate_configuration() {
   local value_name value engine old_ifs resolved item name rest minimum maximum
   for value_name in RUN_MEMORY RUN_NONNATIVE_ARCH RUN_ONLINE RUN_DOMAINS RUN_DIRECT_IP \
       RUN_FILE_WATCH RUN_K8S RUN_MACHINES RUN_MACHINE_RECIPE RUN_BRIDGE RUN_GUEST_AGENT \
-      RUN_DAX RUN_ROSETTA RUN_USB RUN_VPN RUN_DEBUG_SHELL RUN_CLOCK_SYNC STOP_ORBSTACK \
-      STRICT REQUIRE_PHYSICAL_INTEL REQUIRE_COMPETITOR PHYSICAL_INTEL_CONFIRMED; do
+      RUN_DAX RUN_USB RUN_VPN RUN_DEBUG_SHELL RUN_CLOCK_SYNC STOP_ORBSTACK \
+      STRICT REQUIRE_COMPETITOR; do
     value="${!value_name}"
     case "$value" in 0|1) ;; *) echo "$value_name must be 0 or 1" >&2; return 2 ;; esac
   done
@@ -1581,16 +1543,6 @@ PY
   done
   IFS="$old_ifs"
 
-  if [ "$REQUIRE_PHYSICAL_INTEL" = "1" ]; then
-    [ "$(printf '%s' "$ENGINES" | tr -d '[:space:]')" = dory ] || {
-      echo "physical Intel qualification must target exactly the Dory engine" >&2
-      return 2
-    }
-    physical_intel_host_confirmed || {
-      echo "physical Intel qualification requires independently confirmed native Intel host facts" >&2
-      return 2
-    }
-  fi
   if [ "$REQUIRE_COMPETITOR" = "1" ]; then
     engine_list_has_competitor || {
       echo "competitor qualification requires OrbStack or Docker Desktop in --engines" >&2

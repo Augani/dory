@@ -1131,10 +1131,10 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
         return guest.architecture == .arm64 ? .armVirtV1 : .pcV1
     }
 
-    /// The current resolved Linux VZ implementation uses a file-handle attachment for every
-    /// connected exact NIC. Apple rejects that attachment below 1500 bytes. Keep the generic
-    /// 1280-byte device minimum for other backends and detached NICs, but never persist a VZ plan
-    /// that its selected helper cannot construct exactly.
+    /// The current resolved VZ implementation uses a file-handle attachment for every connected
+    /// exact NIC. Apple rejects that attachment below 1500 bytes. Keep the generic 1280-byte
+    /// device minimum for other backends and detached NICs, but never persist a VZ plan that its
+    /// selected helper cannot construct exactly.
     private func validateNetworkDatapath(
         into issues: inout [DoryResolvedMachinePlanValidationIssue]
     ) {
@@ -1306,14 +1306,6 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
                 || bootMedia.media.kind == .installerISO
                 || bootMedia.media.kind == .virtualDisk
                 || bootMedia.media.kind == .installedLinuxBootBundle
-        case (.linux, .appleVirtualizationFramework):
-            runtimeCombinationIsImplemented = bootMedia.media.kind == .linuxKernel
-                || bootMedia.media.kind == .installerISO
-                || bootMedia.media.kind == .virtualDisk
-                || bootMedia.media.kind == .installedLinuxBootBundle
-        case (.windows, .qemuHypervisorFramework):
-            runtimeCombinationIsImplemented = bootMedia.media.kind == .installerISO
-                || bootMedia.media.kind == .virtualDisk
         case (.macOS, .appleVirtualizationFramework):
             runtimeCombinationIsImplemented = bootMedia.media.kind == .macOSRestoreImage
                 || bootMedia.media.kind == .virtualDisk
@@ -1608,8 +1600,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     /// provenance), a verified helper build, and the exact software-only device contract.
     private var usesPortableLinuxEFIBaseline: Bool {
         guard guest == DoryGuestPlatform(family: .linux, architecture: .arm64),
-              (backend == .doryHypervisor
-                || backend == .appleVirtualizationFramework),
+              backend == .doryHypervisor,
               graphics == .software,
               supportTier == .supported,
               bootMedia.media.source == .userProvided,

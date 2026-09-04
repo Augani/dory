@@ -46,4 +46,84 @@ final class DoryVZMacAdapterTests: XCTestCase {
             "VZMac is running; expected stopped or suspended"
         )
     }
+
+    @MainActor
+    func testInstallLifecycleIgnoresInstallerStoppedAndStartsFirstBoot() async throws {
+        let lifecycle = DoryVZMacDesktopInstallLifecycle()
+        var finishCount = 0
+        var startCount = 0
+
+        try await lifecycle.installThenStart {
+            if lifecycle.shouldFinishStoppedObservation(operation: .install) {
+                finishCount += 1
+            }
+        } start: {
+            startCount += 1
+        }
+
+        XCTAssertEqual(finishCount, 0)
+        XCTAssertEqual(startCount, 1)
+        XCTAssertTrue(lifecycle.shouldFinishStoppedObservation(operation: .install))
+    }
+
+    @MainActor
+    func testInstallLifecycleDoesNotConsumeFirstBootOnDuplicateInstallerStops() async throws {
+        let lifecycle = DoryVZMacDesktopInstallLifecycle()
+        var finishCount = 0
+        var startCount = 0
+
+        try await lifecycle.installThenStart {
+            for _ in 0..<2 {
+                if lifecycle.shouldFinishStoppedObservation(operation: .install) {
+                    finishCount += 1
+                }
+            }
+        } start: {
+            startCount += 1
+        }
+
+        XCTAssertEqual(finishCount, 0)
+        XCTAssertEqual(startCount, 1)
+        XCTAssertTrue(lifecycle.shouldFinishStoppedObservation(operation: .install))
+    }
+
+    @MainActor
+    func testInstallLifecycleResetsAfterStartFailure() async {
+        struct StartFailure: Error, Equatable {}
+        let lifecycle = DoryVZMacDesktopInstallLifecycle()
+        var finishCount = 0
+        var startCount = 0
+
+        do {
+            try await lifecycle.installThenStart {
+                if lifecycle.shouldFinishStoppedObservation(operation: .install) {
+                    finishCount += 1
+                }
+            } start: {
+                startCount += 1
+                throw StartFailure()
+            }
+            XCTFail("expected first boot start failure")
+        } catch is StartFailure {
+        } catch {
+            XCTFail("unexpected error: \(error)")
+        }
+
+        XCTAssertEqual(finishCount, 0)
+        XCTAssertEqual(startCount, 1)
+        XCTAssertTrue(lifecycle.shouldFinishStoppedObservation(operation: .install))
+    }
+
+    @MainActor
+    func testInstallLifecycleFinishesRealPostbootStoppedObservation() async throws {
+        let lifecycle = DoryVZMacDesktopInstallLifecycle()
+
+        try await lifecycle.installThenStart {
+            XCTAssertFalse(lifecycle.shouldFinishStoppedObservation(operation: .install))
+        } start: {}
+
+        XCTAssertTrue(lifecycle.shouldFinishStoppedObservation(operation: .install))
+        XCTAssertTrue(lifecycle.shouldFinishStoppedObservation(operation: .run))
+        XCTAssertTrue(lifecycle.shouldFinishStoppedObservation(operation: .resume))
+    }
 }

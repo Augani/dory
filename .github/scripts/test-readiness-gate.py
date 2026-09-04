@@ -26,19 +26,9 @@ class ReadinessGateTests(unittest.TestCase):
             "readiness fixture images must be exact digest references",
             "READINESS_NONNATIVE_BUILD_IMAGE must be an exact digest reference",
             "READINESS_WORKDIR must not be a symlink",
-            "physical Intel qualification must target exactly the Dory engine",
-            "independently confirmed native Intel host facts",
             "READINESS_STOP_ORBSTACK_CONFIRMED=STOP-ORBSTACK-FOR-READINESS",
-            "Rosetta translates applications only inside an eligible ARM64 Linux VM",
-            "Dory exposes no partial x86 VM mode",
-            "packaged QEMU TCG backend",
             'stat -f %u "$ENGINE_SOCK"',
             'docker_e image inspect "$ALPINE_IMAGE"',
-            "container lifecycle + logs + exec + stats",
-            "BuildKit npm ci + build + test",
-            "memory/cpu resource limits + update",
-            "same-host competitor correctness gate",
-            "json.dumps(payload, indent=2, sort_keys=True)",
             "Content-Length: 14",
         ):
             self.assertIn(proof, text, proof)
@@ -48,8 +38,6 @@ class ReadinessGateTests(unittest.TestCase):
             "node:20-alpine",
             "FROM ubuntu:24.04",
             "docker_e pull",
-            "pending dory-vmm Rosetta",
-            "Rosetta x86-64 machine execution",
         ):
             self.assertNotIn(stale, text, stale)
 
@@ -61,7 +49,7 @@ class ReadinessGateTests(unittest.TestCase):
 set -euo pipefail
 READINESS_SOURCE_ONLY=1 READINESS_WORKDIR={str(evidence)!r} source {str(GATE)!r}
 test "$(binfmt_handler_for_arch amd64)" = FEX-x86_64
-test "$(binfmt_handler_for_arch arm64)" = qemu-aarch64
+! binfmt_handler_for_arch arm64
 test ! -e {str(evidence)!r}
 SUMMARY_JSON={str(summary)!r}
 RESULTS={str(pathlib.Path(temporary) / 'results.tsv')!r}
@@ -74,16 +62,7 @@ write_summary
             payload = json.loads(summary.read_text(encoding="utf-8"))
             self.assertEqual(payload["runId"], 'quoted"run')
             self.assertEqual(payload["engines"], 'dory,"other')
-
-    def test_x86_guest_boundary_has_no_partial_vm_claim(self) -> None:
-        app_store = (ROOT / "Dory/Models/AppStore.swift").read_text(encoding="utf-8")
-        for stale in (
-            "Dory's built-in Intel engine needs",
-            "one-off `dory vm --rosetta` path",
-            "x86/amd64 emulation enabled",
-        ):
-            self.assertNotIn(stale, app_store, stale)
-        self.assertIn("x86_64 Linux applications inside Dory's ARM64 container", app_store)
+            self.assertNotIn("physicalIntelRequired", payload)
 
     def test_mutable_fixture_fails_before_docker_or_socket_access(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

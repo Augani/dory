@@ -1922,8 +1922,7 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
             metalAvailable: frameworkAvailable(
                 "/System/Library/Frameworks/Metal.framework/Metal"
             ),
-            linuxIntelApplicationTranslationAvailable:
-                linuxIntelApplicationTranslationAvailable(),
+            linuxIntelApplicationTranslationAvailable: false,
             resources: DoryVMHostResources(
                 logicalCPUCount: UInt64(process.activeProcessorCount),
                 physicalMemoryBytes: process.physicalMemory,
@@ -1949,11 +1948,4 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
         return true
     }
 
-    private static func linuxIntelApplicationTranslationAvailable() -> Bool {
-        #if arch(arm64)
-        VZLinuxRosettaDirectoryShare.availability == .installed
-        #else
-        false
-        #endif
-    }
 }

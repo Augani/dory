@@ -527,20 +527,14 @@ public final class RawHVLinuxMachineBackend: MachineBackend, @unchecked Sendable
     public func resume(_ request: MachineBackendRuntimeRequest) -> MachineBackendOperationResult { core.resume(request) }
 }
 
-/// Compatibility adapter for the current Virtualization.framework EFI Linux helper path.
+/// Compatibility adapter for the current Virtualization.framework macOS helper path.
 public final class VirtualizationFrameworkLinuxMachineBackend: MachineBackend, @unchecked Sendable {
     public static let backendDescriptor = MachineBackendDescriptor(
         identity: .appleVirtualizationFramework,
         implementationIdentifier: "dory.vz-machine.v2",
-        guestFamilies: [.linux, .macOS],
+        guestFamilies: [.macOS],
         guestArchitectures: [.arm64],
-        bootMediaKinds: [
-            .linuxKernel,
-            .installedLinuxBootBundle,
-            .installerISO,
-            .virtualDisk,
-            .macOSRestoreImage,
-        ],
+        bootMediaKinds: [.macOSRestoreImage, .virtualDisk],
         lifecycle: .currentMachineManager
     )
 
@@ -577,52 +571,7 @@ public final class VirtualizationFrameworkLinuxMachineBackend: MachineBackend, @
                     }
                     return nil
                 }
-                guard machine.guestFamily == .linux else {
-                    return "The selected guest family is not implemented by this Virtualization.framework adapter."
-                }
-                if machine.displayMode == .headless,
-                   capability.request.devices.display != nil {
-                    return "A headless VZ machine cannot attach a resolved display."
-                }
-                if let display = capability.request.devices.display, !display.isValid {
-                    return "The VZ display geometry is outside the supported pixel bounds."
-                }
-                switch capability.request.bootMedia.kind {
-                case .linuxKernel:
-                    guard machine.bootMode == .linuxKernel,
-                          machine.installerISOPath == nil,
-                          !DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) else {
-                        return "A direct Linux kernel plan requires one raw kernel without installer media."
-                    }
-                case .installedLinuxBootBundle:
-                    guard machine.bootMode == .efi,
-                          machine.installerISOPath == nil,
-                          DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) else {
-                        return "An installed Linux VZ plan requires a verified boot bundle without installer media."
-                    }
-                case .installerISO:
-                    guard machine.bootMode == .efi, machine.displayMode == .desktop,
-                          machine.installerISOPath?.isEmpty == false else {
-                        return "An installer capability requires attached installer media."
-                    }
-                case .virtualDisk:
-                    guard machine.bootMode == .efi, machine.displayMode == .desktop,
-                          machine.installerISOPath == nil else {
-                        return "A virtual-disk capability cannot retain attached installer media."
-                    }
-                    if DoryInstalledLinuxBootBundle.isBundle(atPath: machine.kernelPath) {
-                        do {
-                            guard try DoryDesktopVMMPreference(environment: machine.environment) == .compatible else {
-                                return "An installed-Linux boot bundle must explicitly select the compatibility path to use this adapter."
-                            }
-                        } catch {
-                            return "The machine contains an invalid desktop backend preference."
-                        }
-                    }
-                default:
-                    return "The selected media is not implemented by the Virtualization.framework Linux adapter."
-                }
-                return nil
+                return "The selected media is not implemented by this Virtualization.framework adapter."
             }
         )
     }

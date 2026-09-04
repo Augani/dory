@@ -210,7 +210,7 @@ final class DoryInstallerISOTests: XCTestCase {
         ) else {
             return XCTFail("x86_64 media should be incompatible with Apple Silicon")
         }
-        XCTAssertTrue(message.contains("Intel x86_64-only"))
+        XCTAssertTrue(message.contains("x86_64-only"))
         XCTAssertTrue(message.contains("Apple Silicon"))
     }
 
@@ -420,7 +420,7 @@ final class DoryInstallerISOTests: XCTestCase {
             stagingDirectory: stagingDirectory,
             hostArchitecture: "arm64"
         )) { error in
-            XCTAssertTrue(String(describing: error).contains("Intel x86_64-only"))
+            XCTAssertTrue(String(describing: error).contains("x86_64-only"))
         }
         XCTAssertFalse(FileManager.default.fileExists(atPath: stagingDirectory.path))
     }
@@ -517,7 +517,7 @@ final class DoryInstallerISOTests: XCTestCase {
             }
             XCTAssertEqual(
                 message,
-                "This ISO is Intel x86_64-only. Apple Silicon requires an arm64 EFI ISO."
+                "This ISO is x86_64-only. Apple Silicon can admit it only through Dory's translated x86_64 Linux path."
             )
         }
         XCTAssertFalse(

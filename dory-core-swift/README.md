@@ -1,12 +1,16 @@
 # dory-core-swift
 
-The Swift control plane and macOS 14 VM tier of Dory's production architecture. `doryd` is the
-per-user launchd daemon; it links the Rust `dory-ffi` static library as `DoryFFI.xcframework`, owns
-the local engine lifecycle, and serves an authenticated XPC control protocol. `dory-vmm` is the
-Virtualization.framework fallback selected on macOS 14.
+Dory's Swift control plane, VM contracts, Linux x86-to-ARM translator and Apple macOS guest adapter.
+`doryd` is the per-user daemon; it links the Rust `dory-ffi` static library as
+`DoryFFI.xcframework`, owns lifecycle and policy, and serves an authenticated XPC protocol.
 
-See the [architecture guide](https://augani.github.io/dory/docs/architecture.md) for the
-authoritative process, storage, networking, update, and trust-boundary contract.
+The VM product targets Apple Silicon hosts with Linux ARM64, Linux x86_64 and macOS ARM64 guests.
+Production ARM Linux execution lives in `Packages/ContainerizationEngine`; x86 Linux uses
+DoryDBT/DoryPC; macOS ARM64 uses VZMac. The older macOS 14 `dory-vmm` Linux fallback remains a
+compatibility path, not the target VM composition.
+
+See [PLAN.md](../PLAN.md) for current architecture, implementation status and qualification gaps.
+Package tests and diagnostic boots do not establish release support for a guest cell.
 
 ## Build
 
