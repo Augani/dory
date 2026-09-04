@@ -246,15 +246,20 @@ mod tests {
         let (started, mut requests) = mpsc::unbounded_channel();
         let release = Arc::new(Notify::new());
         let gate = release.clone();
-        let _server = Mux::start(b, Arc::new(move |request| {
-            let started = started.clone();
-            let gate = gate.clone();
-            Box::pin(async move {
-                started.send(request.clone()).unwrap();
-                if request == b"cancelled" { gate.notified().await; }
-                request
-            })
-        }));
+        let _server = Mux::start(
+            b,
+            Arc::new(move |request| {
+                let started = started.clone();
+                let gate = gate.clone();
+                Box::pin(async move {
+                    started.send(request.clone()).unwrap();
+                    if request == b"cancelled" {
+                        gate.notified().await;
+                    }
+                    request
+                })
+            }),
+        );
         let owner = client.clone();
         let call = tokio::spawn(async move { owner.call(b"cancelled").await });
         assert_eq!(requests.recv().await.unwrap(), b"cancelled");

@@ -433,9 +433,7 @@ fn nudge_exact(path: &Path) -> io::Result<()> {
     let metadata = std::fs::symlink_metadata(path)?;
     let metadata_mode = metadata.permissions().mode();
     let metadata_kind = metadata_mode & mode_bits(libc::S_IFMT);
-    if metadata_kind != mode_bits(libc::S_IFREG)
-        && metadata_kind != mode_bits(libc::S_IFDIR)
-    {
+    if metadata_kind != mode_bits(libc::S_IFREG) && metadata_kind != mode_bits(libc::S_IFDIR) {
         // Opening a FIFO, socket, or device through VirtioFS can block in the host filesystem
         // before Linux's O_NONBLOCK semantics are applied. Reject unsupported nodes from metadata
         // alone so the caller can nudge their directory parent without ever opening the node.
