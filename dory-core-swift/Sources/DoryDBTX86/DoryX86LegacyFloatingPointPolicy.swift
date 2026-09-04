@@ -6,7 +6,7 @@
 /// Existing pending summary status is reported at waiting boundaries when NE=1.
 /// Arithmetic exception generation and legacy NE=0 FERR/IGNNE remain separate.
 enum DoryX86LegacyFloatingPointPolicy {
-  private enum StateUse { case x87, mmx, wait, fxState }
+  private enum StateUse { case x87, mmx, mmxAndSSE, wait, fxState }
 
   static func permitsFeatures(
     _ instruction: DoryX86DecodedInstruction, profile: DoryX86CPUProfile
@@ -21,7 +21,7 @@ enum DoryX86LegacyFloatingPointPolicy {
         return profile.supports(.cmov)
       default: return true
       }
-    case .mmx:
+    case .mmx, .mmxAndSSE:
       // SSE/SSE2 extensions using MMX registers also retain their per-instruction
       // extension requirement in DoryX86InstructionFeaturePolicy.
       return profile.supports(.mmx)
@@ -46,6 +46,13 @@ enum DoryX86LegacyFloatingPointPolicy {
     case .mmx:
       // Table 15-1 gives EM's #UD precedence with TS marked irrelevant.
       if em { return .init(kind: .invalidOpcode, vector: 6, instructionPointer: instruction.address) }
+      unavailable = ts
+    case .mmxAndSSE:
+      // MOVQ2DQ/MOVDQ2Q use both MMX and XMM state. Vol. 2B specifies #UD
+      // when EM=1 or OSFXSR=0, ahead of TS (#NM) and a pending x87 #MF.
+      if em || state.control.cr4 & (1 << 9) == 0 {
+        return .init(kind: .invalidOpcode, vector: 6, instructionPointer: instruction.address)
+      }
       unavailable = ts
     case .wait:
       unavailable = ts && state.control.cr0 & 2 != 0 // MP; EM has no effect on WAIT.
@@ -73,7 +80,7 @@ enum DoryX86LegacyFloatingPointPolicy {
         return nil // Represented FN forms do not wait for pending exceptions.
       default: break // FNOP, despite its spelling, is a waiting instruction.
       }
-    case .mmx, .wait:
+    case .mmx, .mmxAndSSE, .wait:
       break
     case .fxState, nil:
       return nil
@@ -97,7 +104,10 @@ enum DoryX86LegacyFloatingPointPolicy {
   static func applyRetiredMMXEffects(
     _ instruction: DoryX86DecodedInstruction, state: inout DoryX86FloatingPointState
   ) {
-    guard case .mmx = stateUse(instruction) else { return }
+    switch stateUse(instruction) {
+    case .mmx, .mmxAndSSE: break
+    default: return
+    }
     if case .emptyMMXState = instruction.operation {
       state.x87TagWord = 0xFFFF
     } else {
@@ -135,6 +145,8 @@ enum DoryX86LegacyFloatingPointPolicy {
     case .moveMMX, .moveIntegerToMMX, .moveMMXToInteger, .mmxBitwise,
       .mmxIntegerBinary, .mmxIntegerShift, .mmxIntegerInterleave, .mmxIntegerPack, .emptyMMXState:
       return .mmx
+    case .moveMMXToVector, .moveVectorToMMX:
+      return .mmxAndSSE
     case .insertPackedWord(_, _, _, true), .extractPackedWord(_, _, _, true),
       .moveVectorMask(_, _, _, 8):
       return .mmx

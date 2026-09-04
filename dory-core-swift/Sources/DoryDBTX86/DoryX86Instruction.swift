@@ -894,6 +894,12 @@ public enum DoryX86InstructionOperation: Codable, Sendable, Hashable {
   case convertPackedDwordToSingle(destination: UInt8, source: DoryX86VectorOperand)
   /// POP SS (17): pop a selector using the current legacy stack width.
   case popSegment(DoryX86SegmentRegister, width: DoryX86OperandWidth)
+  /// `MOVQ2DQ xmm, mm`: copy the source MMX payload into the low quadword of
+  /// the XMM destination, clear its next quadword, and preserve upper YMM state.
+  case moveMMXToVector(destination: UInt8, source: UInt8)
+  /// `MOVDQ2Q mm, xmm`: copy the low quadword of the XMM source into the MMX
+  /// destination. Normal MMX retirement effects are applied after the copy.
+  case moveVectorToMMX(destination: UInt8, source: UInt8)
 }
 
 public struct DoryX86DecodedInstruction: Codable, Sendable, Hashable {

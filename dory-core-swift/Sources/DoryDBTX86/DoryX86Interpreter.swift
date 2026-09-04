@@ -1004,6 +1004,18 @@ public struct DoryX86Interpreter: Sendable {
           state: &state,
           memory: executionMemory
         )
+      case .moveMMXToVector(let destination, let source):
+        var bytes = state.floatingPoint.ymm[Int(destination)].bytes
+        bytes.replaceSubrange(0..<8, with: state.floatingPoint.x87[Int(source)].bytes.prefix(8))
+        bytes.replaceSubrange(8..<16, with: repeatElement(UInt8(0), count: 8))
+        state.floatingPoint.ymm[Int(destination)] = try DoryX86RegisterBytes(
+          bytes: bytes, expectedByteCount: 32)
+      case .moveVectorToMMX(let destination, let source):
+        writeMMXRegister(
+          destination,
+          bytes: Array(state.floatingPoint.ymm[Int(source)].bytes.prefix(8)),
+          state: &state.floatingPoint
+        )
       case .mmxBitwise(let operation, let destination, let source):
         let rhs = try readMMXBytes(
           source,
@@ -3452,7 +3464,8 @@ public struct DoryX86Interpreter: Sendable {
         .insertPackedQword, .unpackVector, .convertPackedDoubleToDword, .convertPackedSingleToDword,
         .convertPackedDwordToDouble, .convertPackedSingleToDouble,
         .convertPackedDoubleToSingle, .convertPackedDwordToSingle,
-        .packedCompareStringIndex, .moveIntegerToVector, .moveVectorToInteger, .vectorBitwise,
+        .packedCompareStringIndex, .moveIntegerToVector, .moveVectorToInteger,
+        .moveMMXToVector, .moveVectorToMMX, .vectorBitwise,
         .vectorFloatingBinary, .scalarCompare, .scalarConvert, .scalarSquareRoot,
         .vectorIntegerBinary, .vectorIntegerShift, .vectorByteShift, .vectorFloatingCompare,
         .vectorIntegerInterleave, .vectorIntegerPack, .vectorShuffle,

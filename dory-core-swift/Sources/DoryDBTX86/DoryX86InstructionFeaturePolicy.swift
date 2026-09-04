@@ -80,7 +80,8 @@ enum DoryX86InstructionFeaturePolicy {
     case .scalarConvert, .convertPackedDoubleToDword, .convertPackedSingleToDword,
       .convertPackedDwordToDouble, .convertPackedSingleToDouble,
       .convertPackedDoubleToSingle, .convertPackedDwordToSingle,
-      .moveIntegerToVector, .moveVectorToInteger, .vectorIntegerBinary, .vectorIntegerShift,
+      .moveIntegerToVector, .moveVectorToInteger, .moveMMXToVector, .moveVectorToMMX,
+      .vectorIntegerBinary, .vectorIntegerShift,
       .vectorByteShift, .vectorIntegerInterleave, .vectorIntegerPack:
       return profile.supports(.sse2)
     case .vectorShuffle(let format, _, _, _):

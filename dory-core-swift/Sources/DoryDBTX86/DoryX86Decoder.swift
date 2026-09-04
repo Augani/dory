@@ -1857,14 +1857,39 @@ public struct DoryX86Decoder: Sendable {
         }
         operation = .emptyMMXState
       case 0xD6:
-        guard prefixes.operandSizeOverride, prefixes.repeatPrefix == nil else {
-          throw DoryX86DecodeError.invalidEncoding(
-            address: address, detail: "MOVQ from XMM requires 66 prefix")
-        }
         let operands = try decodeModRM(
           cursor: &cursor, width: .quadword, prefixes: prefixes, mode: mode)
-        operation = .moveVectorToInteger(
-          destination: operands.rm, source: vectorRegister(operands.reg))
+        if prefixes.operandSizeOverride, prefixes.repeatPrefix == nil {
+          // 66 0F D6 /r is MOVQ xmm2/m64,xmm1. Unlike 66 0F 7E, a register
+          // destination names XMM state rather than a general-purpose register.
+          operation = .moveVectorScalar(
+            destination: vectorOperand(operands.rm),
+            source: vectorOperand(operands.reg),
+            byteCount: 8,
+            upperPolicy: .zero
+          )
+        } else if !prefixes.operandSizeOverride, prefixes.repeatPrefix == 0xF3 {
+          guard case .register = operands.rm else {
+            throw DoryX86DecodeError.invalidEncoding(
+              address: address, detail: "MOVQ2DQ requires an MMX register source")
+          }
+          operation = .moveMMXToVector(
+            destination: vectorRegister(operands.reg),
+            source: try mmxRegister(operands.rm, address: address)
+          )
+        } else if !prefixes.operandSizeOverride, prefixes.repeatPrefix == 0xF2 {
+          guard case .register = operands.rm else {
+            throw DoryX86DecodeError.invalidEncoding(
+              address: address, detail: "MOVDQ2Q requires an XMM register source")
+          }
+          operation = .moveVectorToMMX(
+            destination: try mmxRegister(operands.reg, address: address),
+            source: vectorRegister(operands.rm)
+          )
+        } else {
+          throw DoryX86DecodeError.invalidEncoding(
+            address: address, detail: "unsupported 0F D6 mandatory prefix")
+        }
       case 0xC6:
         guard prefixes.repeatPrefix == nil else {
           throw DoryX86DecodeError.invalidEncoding(
