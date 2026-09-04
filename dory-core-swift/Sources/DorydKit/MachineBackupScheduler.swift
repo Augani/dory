@@ -1,4 +1,5 @@
 import Darwin
+import DoryOperations
 import Foundation
 
 public enum DoryMachineBackupFrequency: String, Codable, CaseIterable, Sendable {
@@ -186,6 +187,7 @@ public protocol MachineBackupManaging: Sendable {
     func snapshot(id: String, note: String, createdISO: String, snapshotID: String?) throws -> DoryMachineSnapshot
     func listSnapshots(machineID: String?) throws -> [DoryMachineSnapshot]
     func cloneSnapshot(machineID: String, snapshotID: String, newID: String) throws -> DoryMachineStatus
+    func start(id: String, operationID: UUID?) throws -> DoryMachineStatus
     func stop(id: String) throws -> DoryMachineStatus
     func delete(id: String) throws
     func deleteSnapshot(machineID: String, snapshotID: String) throws
@@ -476,17 +478,21 @@ private extension MachineBackupScheduler {
             let shouldBootVerify = runNumber == 1 || runNumber % schedule.verifyEveryRuns == 0
             if shouldBootVerify, let importedSnapshot {
                 let verifyID = "backup-verify-\(UUID().uuidString.lowercased().prefix(12))"
-                verificationMachineID = verifyID
-                let status = try machines.cloneSnapshot(
+                let clone = try machines.cloneSnapshot(
                     machineID: importedSnapshot.machineID,
                     snapshotID: importedSnapshot.id,
                     newID: verifyID
                 )
-                guard status.state == .running else {
+                guard clone.id == verifyID,
+                      clone.state == .created || clone.state == .stopped else {
                     throw MachineBackupSchedulerError.verificationFailed(
-                        "disposable restore \(verifyID) did not reach running"
+                        "disposable restore did not publish the requested workspace"
                     )
                 }
+                // Clone publishes a planned workspace. Start owns its separate launch and
+                // readiness operation; a clone receipt alone is not a boot verification.
+                verificationMachineID = verifyID
+                try bootVerificationMachine(id: verifyID)
                 _ = try machines.stop(id: verifyID)
                 try machines.delete(id: verifyID)
                 verificationMachineID = nil
@@ -535,6 +541,39 @@ private extension MachineBackupScheduler {
                 snapshotID: snapshot.id
             )
             throw error
+        }
+    }
+
+    private func bootVerificationMachine(id: String) throws {
+        let operationID = UUID()
+        var observation = try machines.start(id: id, operationID: operationID)
+        let deadline = ProcessInfo.processInfo.systemUptime + DoryMachineControlTiming.startSeconds
+        while true {
+            guard observation.id == id else {
+                throw MachineBackupSchedulerError.verificationFailed("disposable start returned another workspace")
+            }
+            // Completion clears the operation projection just before publishing running.
+            // Allow that short transition while rejecting a different active owner in any state.
+            guard observation.activeOperationID == nil
+                    || observation.activeOperationID == operationID.uuidString.lowercased() else {
+                throw MachineBackupSchedulerError.verificationFailed("disposable start has another active owner")
+            }
+            if observation.state == .running { return }
+            guard observation.state == .starting || observation.state == .recovering else {
+                throw MachineBackupSchedulerError.verificationFailed(
+                    "disposable restore \(id) did not reach running (\(observation.state.rawValue))"
+                )
+            }
+            guard ProcessInfo.processInfo.systemUptime < deadline else {
+                throw MachineBackupSchedulerError.verificationFailed(
+                    "disposable restore \(id) did not complete its start operation"
+                )
+            }
+            Thread.sleep(forTimeInterval: 0.05)
+            guard let current = machines.status(id: id) else {
+                throw MachineBackupSchedulerError.verificationFailed("disposable restore disappeared during start")
+            }
+            observation = current
         }
     }
 

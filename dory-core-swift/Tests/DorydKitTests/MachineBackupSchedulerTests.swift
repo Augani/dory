@@ -34,7 +34,7 @@ final class MachineBackupSchedulerTests: XCTestCase {
         )
 
         let scheduler = try MachineBackupScheduler(
-            machines: manager,
+            manager: DiagnosticMachineBackupManager(manager: manager),
             rootDirectory: base + "/backups",
             now: { Date(timeIntervalSince1970: 1_783_392_000) }
         )
@@ -99,7 +99,7 @@ final class MachineBackupSchedulerTests: XCTestCase {
             rootfsPath: rootfs
         ))
         let scheduler = try MachineBackupScheduler(
-            machines: manager,
+            manager: DiagnosticMachineBackupManager(manager: manager),
             rootDirectory: base + "/backups",
             now: { Date(timeIntervalSince1970: 1_783_392_000) }
         )
@@ -163,6 +163,10 @@ final class MachineBackupSchedulerTests: XCTestCase {
         XCTAssertEqual(status.retainedArchives, 2)
         XCTAssertEqual(fixture.manager.bootVerificationCount, 2, "the first and every second run must boot-check")
         XCTAssertEqual(fixture.manager.importCount, 3, "every bundle must pass the real import reader")
+        XCTAssertEqual(fixture.manager.cloneCount, 2)
+        XCTAssertEqual(fixture.manager.verificationObservationCount, 4, "start must wait through completion before running publication")
+        XCTAssertEqual(fixture.manager.deletedMachineIDs.count, 2)
+        XCTAssertFalse(fixture.manager.deletedMachineIDs.contains("dev"))
         XCTAssertTrue(fixture.manager.snapshotNotes.contains("manual snapshot"))
         XCTAssertEqual(
             fixture.manager.snapshotNotes.filter { $0.hasPrefix(MachineBackupScheduler.managedNotePrefix) }.count,
@@ -206,6 +210,47 @@ final class MachineBackupSchedulerTests: XCTestCase {
         XCTAssertNotNil(reloaded?.lastError)
     }
 
+    func testVerificationRejectsFailedReadinessAndDeletesOnlyItsClone() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        fixture.manager.failReadiness = true
+        let scheduler = try fixture.scheduler()
+        _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev"))
+        XCTAssertThrowsError(try scheduler.runNow(machineID: "dev"))
+        XCTAssertEqual(fixture.manager.cloneCount, 1)
+        XCTAssertEqual(fixture.manager.bootVerificationCount, 1)
+        XCTAssertEqual(fixture.manager.verificationObservationCount, 1)
+        XCTAssertEqual(fixture.manager.deletedMachineIDs.count, 1)
+        XCTAssertTrue(fixture.manager.deletedMachineIDs.allSatisfy { $0.hasPrefix("backup-verify-") })
+        XCTAssertEqual(scheduler.list().first?.successfulRuns, 0)
+    }
+
+    func testVerificationRejectsForeignCloneWithoutStartingOrDeletingIt() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        fixture.manager.returnForeignClone = true
+        let scheduler = try fixture.scheduler()
+        _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev"))
+        XCTAssertThrowsError(try scheduler.runNow(machineID: "dev"))
+        XCTAssertEqual(fixture.manager.bootVerificationCount, 0)
+        XCTAssertTrue(fixture.manager.deletedMachineIDs.isEmpty)
+        XCTAssertEqual(scheduler.list().first?.successfulRuns, 0)
+    }
+
+    func testVerificationRejectsRunningObservationOwnedByAnotherStart() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        fixture.manager.returnForeignStartOperation = true
+        let scheduler = try fixture.scheduler()
+        _ = try scheduler.upsert(DoryMachineBackupSchedule(machineID: "dev"))
+        XCTAssertThrowsError(try scheduler.runNow(machineID: "dev"))
+        XCTAssertEqual(fixture.manager.bootVerificationCount, 1)
+        XCTAssertEqual(fixture.manager.verificationObservationCount, 0)
+        XCTAssertEqual(fixture.manager.deletedMachineIDs.count, 1)
+        XCTAssertTrue(fixture.manager.deletedMachineIDs.allSatisfy { $0.hasPrefix("backup-verify-") })
+        XCTAssertEqual(scheduler.list().first?.successfulRuns, 0)
+    }
+
     func testInterruptedRunRecoversAsVisibleFailure() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }
@@ -241,6 +286,38 @@ final class MachineBackupSchedulerTests: XCTestCase {
     }
 }
 
+/// Keeps the tiny bundle/ABI fixture on the explicit diagnostic staging path. Public
+/// production clone still requires its real planner; the scheduler always receives a stopped clone.
+private struct DiagnosticMachineBackupManager: MachineBackupManaging {
+    let manager: MachineManager
+
+    func status(id: String) -> DoryMachineStatus? { manager.status(id: id) }
+    func snapshot(id: String, note: String, createdISO: String, snapshotID: String?) throws -> DoryMachineSnapshot {
+        try manager.snapshot(id: id, note: note, createdISO: createdISO, snapshotID: snapshotID)
+    }
+    func listSnapshots(machineID: String?) throws -> [DoryMachineSnapshot] {
+        try manager.listSnapshots(machineID: machineID)
+    }
+    func cloneSnapshot(machineID: String, snapshotID: String, newID: String) throws -> DoryMachineStatus {
+        _ = try manager.stageCloneSnapshotForBootstrap(machineID: machineID, snapshotID: snapshotID, newID: newID)
+        return try manager.stop(id: newID)
+    }
+    func start(id: String, operationID: UUID?) throws -> DoryMachineStatus {
+        try manager.start(id: id, operationID: operationID)
+    }
+    func stop(id: String) throws -> DoryMachineStatus { try manager.stop(id: id) }
+    func delete(id: String) throws { try manager.delete(id: id) }
+    func deleteSnapshot(machineID: String, snapshotID: String) throws {
+        try manager.deleteSnapshot(machineID: machineID, snapshotID: snapshotID)
+    }
+    func exportSnapshot(machineID: String, snapshotID: String, toPath path: String) throws {
+        try manager.exportSnapshot(machineID: machineID, snapshotID: snapshotID, toPath: path)
+    }
+    func importSnapshot(fromPath path: String) throws -> DoryMachineSnapshot {
+        try manager.importSnapshot(fromPath: path)
+    }
+}
+
 private final class BackupClock: @unchecked Sendable {
     private let lock = NSLock()
     private var value = Date(timeIntervalSince1970: 1_783_392_000)
@@ -260,7 +337,16 @@ private final class FakeMachineBackupManager: MachineBackupManaging, @unchecked 
     private var _exportCount = 0
     private var _importCount = 0
     private var _bootVerificationCount = 0
+    private var _cloneCount = 0
+    private var _verificationObservationCount = 0
+    private var _deletedMachineIDs: [String] = []
+    private var clonedMachineIDs = Set<String>()
+    private var startedMachineIDs = Set<String>()
+    private var pendingReadinessPublicationIDs = Set<String>()
     var failBootVerification = false
+    var failReadiness = false
+    var returnForeignClone = false
+    var returnForeignStartOperation = false
 
     init(directory: String) {
         self.directory = directory
@@ -269,6 +355,9 @@ private final class FakeMachineBackupManager: MachineBackupManaging, @unchecked 
     var exportCount: Int { lock.withLock { _exportCount } }
     var importCount: Int { lock.withLock { _importCount } }
     var bootVerificationCount: Int { lock.withLock { _bootVerificationCount } }
+    var cloneCount: Int { lock.withLock { _cloneCount } }
+    var verificationObservationCount: Int { lock.withLock { _verificationObservationCount } }
+    var deletedMachineIDs: [String] { lock.withLock { _deletedMachineIDs } }
     var snapshotNotes: [String] { lock.withLock { snapshots.map(\.note) } }
 
     func addManualSnapshot() {
@@ -278,7 +367,16 @@ private final class FakeMachineBackupManager: MachineBackupManaging, @unchecked 
     }
 
     func status(id: String) -> DoryMachineStatus? {
-        DoryMachineStatus(id: id, state: .running)
+        lock.withLock {
+            if id == "dev" { return DoryMachineStatus(id: id, state: .running) }
+            guard clonedMachineIDs.contains(id) else { return nil }
+            guard startedMachineIDs.contains(id) else { return DoryMachineStatus(id: id, state: .stopped) }
+            _verificationObservationCount += 1
+            if !failReadiness, pendingReadinessPublicationIDs.remove(id) != nil {
+                return DoryMachineStatus(id: id, state: .starting)
+            }
+            return DoryMachineStatus(id: id, state: failReadiness ? .failed : .running)
+        }
     }
 
     func snapshot(
@@ -300,12 +398,31 @@ private final class FakeMachineBackupManager: MachineBackupManaging, @unchecked 
     }
 
     func cloneSnapshot(machineID: String, snapshotID: String, newID: String) throws -> DoryMachineStatus {
+        lock.withLock {
+            _cloneCount += 1
+            if returnForeignClone { return DoryMachineStatus(id: "foreign", state: .stopped) }
+            clonedMachineIDs.insert(newID)
+            return DoryMachineStatus(id: newID, state: .stopped)
+        }
+    }
+
+    func start(id: String, operationID: UUID?) throws -> DoryMachineStatus {
         try lock.withLock {
+            guard clonedMachineIDs.contains(id), let operationID else {
+                throw MachineBackupSchedulerError.verificationFailed("start requires its cloned workspace and UUID")
+            }
+            _bootVerificationCount += 1
             if failBootVerification {
                 throw MachineBackupSchedulerError.verificationFailed("injected boot failure")
             }
-            _bootVerificationCount += 1
-            return DoryMachineStatus(id: newID, state: .running)
+            if returnForeignStartOperation {
+                return DoryMachineStatus(id: id, state: .running,
+                    activeOperationID: UUID().uuidString.lowercased(), activeOperationKind: "starting")
+            }
+            startedMachineIDs.insert(id)
+            pendingReadinessPublicationIDs.insert(id)
+            return DoryMachineStatus(id: id, state: .starting,
+                activeOperationID: operationID.uuidString.lowercased(), activeOperationKind: "starting")
         }
     }
 
@@ -313,7 +430,14 @@ private final class FakeMachineBackupManager: MachineBackupManaging, @unchecked 
         DoryMachineStatus(id: id, state: .stopped)
     }
 
-    func delete(id: String) throws {}
+    func delete(id: String) throws {
+        lock.withLock {
+            _deletedMachineIDs.append(id)
+            clonedMachineIDs.remove(id)
+            startedMachineIDs.remove(id)
+            pendingReadinessPublicationIDs.remove(id)
+        }
+    }
 
     func deleteSnapshot(machineID: String, snapshotID: String) throws {
         lock.withLock { snapshots.removeAll { $0.id == snapshotID } }
