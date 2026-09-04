@@ -187,7 +187,8 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
         path: String,
         kind: DoryBootMediaKind,
         source: DoryBootMediaSource,
-        expectedAuthorityRevision: UInt64? = nil
+        expectedAuthorityRevision: UInt64? = nil,
+        expectedSHA256: String? = nil
     ) throws -> DoryVerifiedVirtualMachineArtifact {
         try withExclusiveAccess {
             let path = try Self.validatedPath(path)
@@ -196,6 +197,14 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
                 hashContents: true,
                 progressInjector: inspectionProgressInjector
             )
+            let digest = try Self.requiredDigest(file)
+            // A caller authorizing replacement must bind the bytes from this inspection,
+            // not a separate preflight hash that could change before publication.
+            if let expectedSHA256 {
+                guard Self.isSHA256(expectedSHA256), digest == expectedSHA256 else {
+                    throw DoryVirtualMachineArtifactAuthorityError.artifactChanged
+                }
+            }
             let current = try readIfPresent(reference)
             try Self.validateExpectedRevision(expectedAuthorityRevision, current: current)
             let revision = try Self.nextRevision(current)
@@ -205,7 +214,7 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
                 kind: kind,
                 source: source,
                 identity: .immutable(
-                    sha256: try Self.requiredDigest(file),
+                    sha256: digest,
                     byteCount: file.byteCount
                 ),
                 authorityRevision: revision
@@ -272,7 +281,7 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
         kind: DoryBootMediaKind,
         source: DoryBootMediaSource
     ) throws -> DoryVerifiedVirtualMachineArtifact {
-        try withExclusiveAccess {
+        try withExclusiveAccess(readOnly: true) {
             guard let record = try readIfPresent(reference) else {
                 throw DoryVirtualMachineArtifactAuthorityError.artifactMissing
             }
@@ -675,6 +684,10 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
                 "create artifact authority directory: errno \(errno)"
             )
         }
+        try validatePrivateDirectory(path)
+    }
+
+    private static func validatePrivateDirectory(_ path: String) throws {
         var status = stat()
         guard lstat(path, &status) == 0,
               status.st_mode & S_IFMT == S_IFDIR,
@@ -703,12 +716,13 @@ public final class DoryVirtualMachineArtifactAuthority: @unchecked Sendable {
         }
     }
 
-    private func withExclusiveAccess<T>(_ body: () throws -> T) throws -> T {
+    private func withExclusiveAccess<T>(readOnly: Bool = false, _ body: () throws -> T) throws -> T {
         try lock.withLock {
-            try Self.ensurePrivateDirectory(root)
+            if readOnly { try Self.validatePrivateDirectory(root) }
+            else { try Self.ensurePrivateDirectory(root) }
             let lockPath = root + "/" + Self.lockFilename
             let descriptor = lockPath.withCString {
-                open($0, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))
+                open($0, (readOnly ? O_RDONLY : O_RDWR | O_CREAT) | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK, mode_t(0o600))
             }
             guard descriptor >= 0 else {
                 throw DoryVirtualMachineArtifactAuthorityError.filesystem(

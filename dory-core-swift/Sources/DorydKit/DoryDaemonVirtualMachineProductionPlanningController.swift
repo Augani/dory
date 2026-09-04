@@ -28,6 +28,41 @@ public struct DoryDaemonVirtualMachineProductionPlanningControllerFailure:
     }
 }
 
+/// Checkpoint-bound authority minted by the desktop root after validating its private journal.
+/// This proof is neither Codable nor available through the public planning input initializer.
+struct DoryDaemonImmutableArtifactReplacementProof: Sendable, Equatable {
+    let operationID: UUID
+    let reference: DoryVMResolverReference
+    let path: String
+    let expectedAuthorityRevision: UInt64
+    let sha256: String
+
+    init(
+        operationID: UUID,
+        reference: DoryVMResolverReference,
+        path: String,
+        expectedAuthorityRevision: UInt64,
+        sha256: String
+    ) throws {
+        guard operationID.uuidString != "00000000-0000-0000-0000-000000000000",
+              reference.isValidForPersistence,
+              path.hasPrefix("/"), path != "/", !path.contains("\0"),
+              URL(fileURLWithPath: path).standardizedFileURL.path == path,
+              expectedAuthorityRevision > 0,
+              sha256.utf8.count == 64,
+              sha256.utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }) else {
+            throw DoryDaemonVirtualMachineProductionPlanningControllerFailure(
+                code: .invalidRequest, message: "Immutable replacement proof is invalid."
+            )
+        }
+        self.operationID = operationID
+        self.reference = reference
+        self.path = path
+        self.expectedAuthorityRevision = expectedAuthorityRevision
+        self.sha256 = sha256
+    }
+}
+
 /// Daemon-local path binding supplied only after MachineManager has staged the artifact into its
 /// private workspace. This value is intentionally non-Codable: host paths never become API or
 /// desired-state authority.
@@ -43,6 +78,7 @@ public struct DoryDaemonVirtualMachinePlanningArtifactPublication: Sendable, Equ
     public var source: DoryBootMediaSource
     public var mutability: Mutability
     public var expectedAuthorityRevision: UInt64?
+    var immutableReplacementProof: DoryDaemonImmutableArtifactReplacementProof?
 
     public init(
         reference: DoryVMResolverReference,
@@ -62,9 +98,14 @@ public struct DoryDaemonVirtualMachinePlanningArtifactPublication: Sendable, Equ
 }
 
 public protocol DoryDaemonVirtualMachinePlanningTransactionCoordinating: Sendable {
+    func recoveryDescriptor(for machineID: String) throws -> DoryDaemonVirtualMachinePlanningRecoveryDescriptor?
     func resolveReserveAndPublish(
         _ request: DoryDaemonVirtualMachinePlanningTransactionRequest
     ) throws -> DoryDaemonVirtualMachinePlanningTransactionResult
+}
+
+extension DoryDaemonVirtualMachinePlanningTransactionCoordinating {
+    public func recoveryDescriptor(for machineID: String) throws -> DoryDaemonVirtualMachinePlanningRecoveryDescriptor? { nil }
 }
 
 extension DoryDaemonVirtualMachinePlanningTransactionCoordinator:
@@ -74,11 +115,16 @@ extension DoryDaemonVirtualMachinePlanningTransactionCoordinator:
 /// trusted artifact/repository graph; tests can inject only an observer/rejector and therefore
 /// cannot manufacture a resolved runtime identity.
 public protocol DoryDaemonVirtualMachineProductionPlanningControlling: Sendable {
+    func recoveryDescriptor(for machineID: String) throws -> DoryDaemonVirtualMachinePlanningRecoveryDescriptor?
     func authorityRevision(for reference: DoryVMResolverReference) throws -> UInt64?
     func publishResolvedPlan(
         _ request: DoryDaemonVirtualMachinePlanningTransactionRequest,
         artifacts: [DoryDaemonVirtualMachinePlanningArtifactPublication]
     ) throws
+}
+
+extension DoryDaemonVirtualMachineProductionPlanningControlling {
+    public func recoveryDescriptor(for machineID: String) throws -> DoryDaemonVirtualMachinePlanningRecoveryDescriptor? { nil }
 }
 
 /// The sole production entry for a manager-owned native create/update/replan transaction. It
@@ -91,6 +137,9 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
 {
     private let artifactAuthority: DoryVirtualMachineArtifactAuthority
     private let coordinator: any DoryDaemonVirtualMachinePlanningTransactionCoordinating
+    private let resolveValidatedTransaction: @Sendable (
+        DoryDaemonValidatedPlanningTransaction
+    ) throws -> DoryDaemonVirtualMachinePlanningTransactionResult
     private let workspaces: DoryWorkspaceRepository
     private let plans: DoryResolvedMachinePlanRepository
 
@@ -99,6 +148,8 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
     ) {
         artifactAuthority = planning.artifactAuthority
         coordinator = planning.coordinator
+        let concreteCoordinator = planning.coordinator
+        resolveValidatedTransaction = { try concreteCoordinator.resolveReserveAndPublish($0) }
         workspaces = planning.workspaces
         plans = planning.plans
     }
@@ -111,18 +162,24 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
     ) {
         self.artifactAuthority = artifactAuthority
         self.coordinator = coordinator
+        // An independently supplied protocol implementation owns its public input boundary.
+        // Only the concrete production composition receives the internal validated handoff.
+        resolveValidatedTransaction = { try coordinator.resolveReserveAndPublish($0.request) }
         self.workspaces = workspaces
         self.plans = plans
+    }
+
+    public func recoveryDescriptor(for machineID: String) throws -> DoryDaemonVirtualMachinePlanningRecoveryDescriptor? {
+        try coordinator.recoveryDescriptor(for: machineID)
     }
 
     public func resolveReserveAndPublish(
         _ request: DoryDaemonVirtualMachinePlanningTransactionRequest,
         artifacts publications: [DoryDaemonVirtualMachinePlanningArtifactPublication]
     ) throws -> DoryDaemonVirtualMachinePlanningTransactionResult {
-        guard request.planning.machine.id == request.planning.definition.identity.id,
-              let requirements = DoryDaemonVirtualMachinePlanningCoordinator
-                .launchArtifactRequirements(for: request.planning.definition),
-              requirements.count == publications.count,
+        let validated = try DoryDaemonValidatedPlanningTransaction(request)
+        let requirements = validated.planning.inventoryRequest.launchArtifacts
+        guard requirements.count == publications.count,
               Set(publications.map(\.reference)).count == publications.count else {
             throw failure(.invalidRequest, "Planning artifacts do not match desired-state authority.")
         }
@@ -145,11 +202,11 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
                     "Planning artifact path, kind, provenance, or mutability is not exact."
                 )
             }
-            try establishArtifactAuthority(publication)
+            try establishArtifactAuthority(publication, operationID: request.operationID)
         }
 
         let result: DoryDaemonVirtualMachinePlanningTransactionResult
-        do { result = try coordinator.resolveReserveAndPublish(request) }
+        do { result = try resolveValidatedTransaction(validated) }
         catch let transaction as DoryDaemonVirtualMachinePlanningTransactionFailure {
             throw failure(
                 .transactionRejected,
@@ -260,11 +317,26 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
     }
 
     private func establishArtifactAuthority(
-        _ publication: DoryDaemonVirtualMachinePlanningArtifactPublication
+        _ publication: DoryDaemonVirtualMachinePlanningArtifactPublication,
+        operationID: UUID
     ) throws {
         let current: DoryVirtualMachineArtifactAuthorityRecord?
         do { current = try artifactAuthority.authorityRecord(reference: publication.reference) }
         catch { throw failure(.mediaAuthorityConflict, "Media authority cannot be inspected.") }
+
+        if let proof = publication.immutableReplacementProof {
+            guard proof.operationID == operationID,
+                  proof.reference == publication.reference, proof.path == publication.path,
+                  publication.mutability == .immutable,
+                  publication.kind == .linuxKernel || publication.kind == .installedLinuxBootBundle,
+                  publication.expectedAuthorityRevision == proof.expectedAuthorityRevision,
+                  let current, current.authorityRevision == proof.expectedAuthorityRevision,
+                  current.path == publication.path, current.kind == publication.kind,
+                  current.source == publication.source,
+                  case .immutable = current.identity else {
+                throw failure(.mediaAuthorityConflict, "Immutable replacement authority is not exact.")
+            }
+        }
 
         if let current {
             if current.path == URL(fileURLWithPath: publication.path).standardizedFileURL.path,
@@ -273,10 +345,16 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
                    reference: publication.reference,
                    kind: publication.kind,
                    source: publication.source
-               )) != nil {
+               )) != nil,
+               publication.immutableReplacementProof.map({ proof in
+                   if case let .immutable(sha256, _) = current.identity {
+                       return sha256 == proof.sha256
+                   }
+                   return false
+               }) ?? true {
                 return
             }
-            guard publication.mutability == .mutable,
+            guard publication.mutability == .mutable || publication.immutableReplacementProof != nil,
                   publication.expectedAuthorityRevision == current.authorityRevision else {
                 throw failure(.mediaAuthorityConflict, "Existing media authority is not exact.")
             }
@@ -292,7 +370,8 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
                     path: publication.path,
                     kind: publication.kind,
                     source: publication.source,
-                    expectedAuthorityRevision: publication.expectedAuthorityRevision
+                    expectedAuthorityRevision: publication.expectedAuthorityRevision,
+                    expectedSHA256: publication.immutableReplacementProof?.sha256
                 )
             case .mutable:
                 _ = try artifactAuthority.publishMutable(
@@ -353,6 +432,7 @@ final class DoryDaemonVirtualMachineProductionRecoveryProvider:
         }
         let machine = try readMachine(id: descriptor.machineID)
         let request = DoryDaemonVirtualMachinePlanningTransactionRequest(
+            operationID: descriptor.operationID,
             planning: DoryDaemonVirtualMachinePlanningRequest(
                 definition: descriptor.definition,
                 canonicalDefinitionData: DoryDaemonVirtualMachinePlanningCoordinator

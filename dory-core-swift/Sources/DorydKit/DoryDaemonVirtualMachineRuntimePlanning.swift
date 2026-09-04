@@ -279,6 +279,61 @@ public struct DoryDaemonVirtualMachinePlanningRequest: Sendable {
     }
 }
 
+/// Validates caller-owned immutable intent once. The captured value and its derived inventory
+/// request are non-Codable and read-only; fresh trust, workspace and publication checks remain
+/// with their respective owners. Independently callable planning APIs construct this value too.
+struct DoryDaemonValidatedPlanningRequest: Sendable {
+    let request: DoryDaemonVirtualMachinePlanningRequest
+    let inventoryRequest: DoryDaemonVirtualMachineInventoryRequest
+
+    init(_ input: DoryDaemonVirtualMachinePlanningRequest) throws {
+        let definition = input.definition
+        try DoryDaemonVirtualMachinePlanningCoordinator.validateProductDefinition(definition)
+        guard !input.canonicalDefinitionData.isEmpty else {
+            throw DoryDaemonVirtualMachinePlanningFailure(
+                code: .emptyDefinitionAuthority, message: "Definition authority bytes are required."
+            )
+        }
+        guard input.canonicalDefinitionData == DoryDaemonVirtualMachinePlanningCoordinator
+            .canonicalDefinitionData(definition) else {
+            throw DoryDaemonVirtualMachinePlanningFailure(
+                code: .definitionAuthorityMismatch,
+                message: "Definition bytes are not the canonical encoding of the supplied workspace."
+            )
+        }
+        guard input.machine.id == definition.identity.id else {
+            throw DoryDaemonVirtualMachinePlanningFailure(
+                code: .machineIdentityMismatch, message: "Legacy machine and workspace identities differ."
+            )
+        }
+        guard let bootReference = DoryDaemonVirtualMachinePlanningCoordinator.primaryBootMedia(in: definition) else {
+            throw DoryDaemonVirtualMachinePlanningFailure(
+                code: .bootMediaUnavailable, message: "The workspace has no primary boot device."
+            )
+        }
+        let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition)
+        guard let launchArtifactRequirements = DoryDaemonVirtualMachinePlanningCoordinator.launchArtifactRequirements(
+            for: definition
+        ) else {
+            throw DoryDaemonVirtualMachinePlanningFailure(
+                code: .invalidDefinition, message: "Launch artifact requirements conflict."
+            )
+        }
+        inventoryRequest = DoryDaemonVirtualMachineInventoryRequest(
+            machineID: definition.identity.id,
+            definitionRevision: definition.lifecycle.revision,
+            guest: definition.guest,
+            bootMedia: bootReference,
+            launchArtifacts: launchArtifactRequirements,
+            resources: definition.resources,
+            devices: devices,
+            acceptableGraphics: definition.graphics.acceptableLevels,
+            virtualHardwareABIVersion: definition.virtualHardwareABIVersion
+        )
+        request = input
+    }
+}
+
 public struct DoryDaemonVirtualMachinePlanningResult: Sendable {
     public var plannerRequest: DoryVirtualMachineBackendPlanRequest
     public var plannerResult: DoryVirtualMachineBackendPlanResult
@@ -357,40 +412,18 @@ public final class DoryDaemonVirtualMachinePlanningCoordinator: @unchecked Senda
     public func resolveAndPersist(
         _ input: DoryDaemonVirtualMachinePlanningRequest
     ) throws -> DoryDaemonVirtualMachinePlanningResult {
+        try resolveAndPersist(DoryDaemonValidatedPlanningRequest(input))
+    }
+
+    func resolveAndPersist(
+        _ validated: DoryDaemonValidatedPlanningRequest
+    ) throws -> DoryDaemonVirtualMachinePlanningResult {
+        let input = validated.request
         let definition = input.definition
-        try Self.validateProductDefinition(definition)
-        guard !input.canonicalDefinitionData.isEmpty else {
-            throw failure(.emptyDefinitionAuthority, "Definition authority bytes are required.")
-        }
-        guard input.canonicalDefinitionData == Self.canonicalDefinitionData(definition) else {
-            throw failure(
-                .definitionAuthorityMismatch,
-                "Definition bytes are not the canonical encoding of the supplied workspace."
-            )
-        }
-        guard input.machine.id == definition.identity.id else {
-            throw failure(.machineIdentityMismatch, "Legacy machine and workspace identities differ.")
-        }
-        guard let bootReference = Self.primaryBootMedia(in: definition) else {
-            throw failure(.bootMediaUnavailable, "The workspace has no primary boot device.")
-        }
-        let devices = Self.devices(for: definition)
-        guard let launchArtifactRequirements = Self.launchArtifactRequirements(
-            for: definition
-        ) else {
-            throw failure(.invalidDefinition, "Launch artifact requirements conflict.")
-        }
-        let inventoryRequest = DoryDaemonVirtualMachineInventoryRequest(
-            machineID: definition.identity.id,
-            definitionRevision: definition.lifecycle.revision,
-            guest: definition.guest,
-            bootMedia: bootReference,
-            launchArtifacts: launchArtifactRequirements,
-            resources: definition.resources,
-            devices: devices,
-            acceptableGraphics: definition.graphics.acceptableLevels,
-            virtualHardwareABIVersion: definition.virtualHardwareABIVersion
-        )
+        let inventoryRequest = validated.inventoryRequest
+        let bootReference = inventoryRequest.bootMedia
+        let devices = inventoryRequest.devices
+        let launchArtifactRequirements = inventoryRequest.launchArtifacts
         let snapshot: DoryDaemonVirtualMachineTrustedInventorySnapshot
         do {
             snapshot = try inventory.planningInventory(for: inventoryRequest)

@@ -12,21 +12,82 @@ public enum DoryDaemonVirtualMachineWorkspacePublication: Codable, Sendable, Equ
 }
 
 public struct DoryDaemonVirtualMachinePlanningTransactionRequest: Sendable {
+    /// Root operation identity. Retries must reuse this UUID; it is also the journal idempotency
+    /// key and is propagated into any backend-specific typed payload.
+    public var operationID: UUID
     public var planning: DoryDaemonVirtualMachinePlanningRequest
     public var workspacePublication: DoryDaemonVirtualMachineWorkspacePublication
     public var resourceRequirements: [DoryVMResourceRequirement]
     public var startingLeaseDurationMilliseconds: Int64
 
     public init(
+        operationID: UUID = UUID(),
         planning: DoryDaemonVirtualMachinePlanningRequest,
         workspacePublication: DoryDaemonVirtualMachineWorkspacePublication,
         resourceRequirements: [DoryVMResourceRequirement] = [],
         startingLeaseDurationMilliseconds: Int64 = 120_000
     ) {
+        self.operationID = operationID
         self.planning = planning
         self.workspacePublication = workspacePublication
         self.resourceRequirements = resourceRequirements
         self.startingLeaseDurationMilliseconds = startingLeaseDurationMilliseconds
+    }
+}
+
+/// Captures transaction intent with the already validated planning value. Only this initializer
+/// can create the internal handoff; callers cannot pair proof with a different mutable request.
+struct DoryDaemonValidatedPlanningTransaction: Sendable {
+    let planning: DoryDaemonValidatedPlanningRequest
+    private let operationID: UUID
+    private let workspacePublication: DoryDaemonVirtualMachineWorkspacePublication
+    private let resourceRequirements: [DoryVMResourceRequirement]
+    private let startingLeaseDurationMilliseconds: Int64
+
+    init(_ request: DoryDaemonVirtualMachinePlanningTransactionRequest) throws {
+        do { planning = try DoryDaemonValidatedPlanningRequest(request.planning) }
+        catch let error as DoryDaemonVirtualMachinePlanningFailure {
+            switch error.code {
+            case .unsupportedProductCell, .invalidDefinition: throw error
+            default:
+                throw DoryDaemonVirtualMachinePlanningTransactionFailure(
+                    code: .invalidRequest, message: "Planning transaction request is inconsistent."
+                )
+            }
+        }
+        guard DoryOperationIdentity.canonical(request.operationID)
+                != "00000000-0000-0000-0000-000000000000",
+              request.startingLeaseDurationMilliseconds > 0 else {
+            throw DoryDaemonVirtualMachinePlanningTransactionFailure(
+                code: .invalidRequest, message: "Planning transaction request is inconsistent."
+            )
+        }
+        switch request.workspacePublication {
+        case .create:
+            guard request.planning.definition.lifecycle.revision == 1 else {
+                throw DoryDaemonVirtualMachinePlanningTransactionFailure(
+                    code: .invalidRequest, message: "Created workspace must start at revision one."
+                )
+            }
+        case let .replace(expected):
+            guard expected < .max,
+                  request.planning.definition.lifecycle.revision == expected + 1 else {
+                throw DoryDaemonVirtualMachinePlanningTransactionFailure(
+                    code: .invalidRequest, message: "Workspace replacement revision is invalid."
+                )
+            }
+        case .retainExistingExact: break
+        }
+        operationID = request.operationID
+        workspacePublication = request.workspacePublication
+        resourceRequirements = request.resourceRequirements
+        startingLeaseDurationMilliseconds = request.startingLeaseDurationMilliseconds
+    }
+
+    var request: DoryDaemonVirtualMachinePlanningTransactionRequest {
+        .init(operationID: operationID, planning: planning.request,
+              workspacePublication: workspacePublication, resourceRequirements: resourceRequirements,
+              startingLeaseDurationMilliseconds: startingLeaseDurationMilliseconds)
     }
 }
 
@@ -35,6 +96,7 @@ public struct DoryDaemonVirtualMachinePlanningTransactionRequest: Sendable {
 /// provider must re-read those values from its own MachineManager authority and prove that the
 /// resulting request matches every digest and publication decision below.
 public struct DoryDaemonVirtualMachinePlanningRecoveryDescriptor: Sendable, Equatable {
+    public var operationID: UUID
     public var machineID: String
     public var definition: DoryVirtualMachineDefinition
     public var definitionSHA256: String
@@ -47,6 +109,8 @@ public struct DoryDaemonVirtualMachinePlanningRecoveryDescriptor: Sendable, Equa
     public var experimentalAuthorization: DoryResolvedExperimentalSupportAuthorization?
     public var requestSHA256: String
     public var machineAuthoritySHA256: String
+    public var isComplete: Bool = false
+    public var isAborted: Bool = false
 
     public func matches(
         _ request: DoryDaemonVirtualMachinePlanningTransactionRequest
@@ -54,6 +118,7 @@ public struct DoryDaemonVirtualMachinePlanningRecoveryDescriptor: Sendable, Equa
         let definitionData = DoryDaemonVirtualMachinePlanningCoordinator
             .canonicalDefinitionData(request.planning.definition)
         return request.planning.definition == definition
+            && request.operationID == operationID
             && request.planning.canonicalDefinitionData == definitionData
             && DoryDaemonVirtualMachinePlanningCoordinator.sha256(definitionData)
                 == definitionSHA256
@@ -260,6 +325,7 @@ public final class DoryDaemonVirtualMachinePlanningMutationFence: @unchecked Sen
 
 public protocol DoryDaemonVirtualMachinePlanningMutationAuthorizing: Sendable {
     func acquirePlanningMutationFence(
+        operationID: UUID,
         machine: DoryMachineConfiguration,
         definition: DoryVirtualMachineDefinition,
         canonicalDefinitionData: Data
@@ -541,9 +607,15 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
     public func resolveReserveAndPublish(
         _ request: DoryDaemonVirtualMachinePlanningTransactionRequest
     ) throws -> DoryDaemonVirtualMachinePlanningTransactionResult {
+        try resolveReserveAndPublish(DoryDaemonValidatedPlanningTransaction(request))
+    }
+
+    func resolveReserveAndPublish(
+        _ validated: DoryDaemonValidatedPlanningTransaction
+    ) throws -> DoryDaemonVirtualMachinePlanningTransactionResult {
         try instanceLock.withLock {
-            try withWorkspaceLock(machineID: request.planning.definition.identity.id) {
-                try execute(request)
+            try withWorkspaceLock(machineID: validated.planning.request.definition.identity.id) {
+                try execute(validated)
             }
         }
     }
@@ -557,6 +629,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
             try withWorkspaceLock(machineID: machineID) {
                 guard let journal = try readJournal(machineID: machineID) else { return nil }
                 return DoryDaemonVirtualMachinePlanningRecoveryDescriptor(
+                    operationID: DoryOperationIdentity.parseCanonical(journal.transactionID)!,
                     machineID: journal.definition.identity.id,
                     definition: journal.definition,
                     definitionSHA256: journal.definitionSHA256,
@@ -569,21 +642,23 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
                     fallbackAuthorization: journal.fallbackAuthorization,
                     experimentalAuthorization: journal.experimentalAuthorization,
                     requestSHA256: journal.requestSHA256,
-                    machineAuthoritySHA256: journal.machineAuthoritySHA256
+                    machineAuthoritySHA256: journal.machineAuthoritySHA256,
+                    isComplete: journal.phase == .complete,
+                    isAborted: journal.phase == .aborted
                 )
             }
         }
     }
 
     private func execute(
-        _ request: DoryDaemonVirtualMachinePlanningTransactionRequest
+        _ validated: DoryDaemonValidatedPlanningTransaction
     ) throws -> DoryDaemonVirtualMachinePlanningTransactionResult {
-        try validate(request)
-        let canonicalDefinition = DoryDaemonVirtualMachinePlanningCoordinator
-            .canonicalDefinitionData(request.planning.definition)
+        let request = validated.request
+        let canonicalDefinition = validated.planning.request.canonicalDefinitionData
         let mutationFence: DoryDaemonVirtualMachinePlanningMutationFence
         do {
             mutationFence = try mutationAuthority.acquirePlanningMutationFence(
+                operationID: request.operationID,
                 machine: request.planning.machine,
                 definition: request.planning.definition,
                 canonicalDefinitionData: canonicalDefinition
@@ -639,7 +714,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         default: break
         }
 
-        let inventoryRequest = try makeInventoryRequest(request.planning.definition)
+        let inventoryRequest = validated.planning.inventoryRequest
         let preparation: DoryDaemonVirtualMachinePlanningTrustPreparation
         do { preparation = try trust.preparePlanningTrust(for: inventoryRequest) }
         catch {
@@ -658,7 +733,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         let planning: DoryDaemonVirtualMachinePlanningResult
         do {
             planning = try constructOrRecoverCandidate(
-                request,
+                validated,
                 journal: &journal,
                 admission: lease.evidence,
                 preparation: preparation
@@ -795,7 +870,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
             }
         }
         let journal = Journal(
-            transactionID: "planning-transaction-\(UUID().uuidString.lowercased())",
+            transactionID: DoryOperationIdentity.canonical(request.operationID),
             phase: .prepared,
             requestSHA256: requestDigest,
             machineAuthoritySHA256: machineAuthoritySHA256,
@@ -815,7 +890,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
             sourceDefinitionRevision: existingDefinition?.lifecycle.revision,
             workspacePublication: request.workspacePublication,
             planPublication: PlanPublicationRecord(request.planning.publication),
-            sourcePlanSHA256: sourcePlan.map(DoryDaemonVirtualMachinePlanningCoordinator.planSHA256),
+            sourcePlanSHA256: try sourcePlan.map { try $0.canonicalSHA256() },
             sourcePlanRevision: sourcePlan?.planRevision,
             plannedAtUnixMilliseconds: timestamp,
             leaseID: nil,
@@ -958,11 +1033,12 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
     }
 
     private func constructOrRecoverCandidate(
-        _ request: DoryDaemonVirtualMachinePlanningTransactionRequest,
+        _ validated: DoryDaemonValidatedPlanningTransaction,
         journal: inout Journal,
         admission: DoryResolvedMachineResourceAdmissionEvidence,
         preparation: DoryDaemonVirtualMachinePlanningTrustPreparation
     ) throws -> DoryDaemonVirtualMachinePlanningResult {
+        let request = validated.request
         if journal.candidatePlanData != nil {
             return try planningResultFromCandidate(request, journal: journal)
         }
@@ -976,7 +1052,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
             now: { plannedAt }
         )
         let result: DoryDaemonVirtualMachinePlanningResult
-        do { result = try coordinator.resolveAndPersist(request.planning) }
+        do { result = try coordinator.resolveAndPersist(validated.planning) }
         catch let planning as DoryDaemonVirtualMachinePlanningFailure {
             throw failure(
                 .planConstructionRejected,
@@ -986,7 +1062,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         } catch {
             throw failure(.planConstructionRejected, "Exact trusted facts could not construct a plan.")
         }
-        let candidateData = Self.canonicalData(result.resolvedPlan)
+        let candidateData = try result.resolvedPlan.canonicalData()
         guard !candidateData.isEmpty, Self.sha256(candidateData) == result.resolvedPlanSHA256 else {
             throw failure(.planConstructionRejected, "Candidate plan encoding is not deterministic.")
         }
@@ -1110,7 +1186,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
                     try plans.create(planning.resolvedPlan)
                 case let .replace(expected):
                     guard let current,
-                          DoryDaemonVirtualMachinePlanningCoordinator.planSHA256(current)
+                          (try? current.canonicalSHA256())
                             == journal.sourcePlanSHA256 else {
                         throw failure(.transactionConflict, "Resolved plan source changed during planning.")
                     }
@@ -1218,7 +1294,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
 
         let currentPlan = try plans.readIfPresent(id: journal.definition.identity.id)
         let planIsTarget = currentPlan.map {
-            DoryDaemonVirtualMachinePlanningCoordinator.planSHA256($0) == candidateDigest
+            (try? $0.canonicalSHA256()) == candidateDigest
         } ?? false
         let planIsSource: Bool
         switch journal.planPublication {
@@ -1226,7 +1302,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
             planIsSource = currentPlan == nil
         case .replace:
             planIsSource = currentPlan.map {
-                DoryDaemonVirtualMachinePlanningCoordinator.planSHA256($0)
+                (try? $0.canonicalSHA256())
                     == journal.sourcePlanSHA256
             } ?? false
         }
@@ -1308,52 +1384,6 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         try publishJournal(journal)
     }
 
-    private func validate(
-        _ request: DoryDaemonVirtualMachinePlanningTransactionRequest
-    ) throws {
-        guard request.planning.canonicalDefinitionData
-                == DoryDaemonVirtualMachinePlanningCoordinator
-                    .canonicalDefinitionData(request.planning.definition),
-              request.planning.machine.id == request.planning.definition.identity.id,
-              request.startingLeaseDurationMilliseconds > 0 else {
-            throw failure(.invalidRequest, "Planning transaction request is inconsistent.")
-        }
-        switch request.workspacePublication {
-        case .create:
-            guard request.planning.definition.lifecycle.revision == 1 else {
-                throw failure(.invalidRequest, "Created workspace must start at revision one.")
-            }
-        case let .replace(expected):
-            guard expected < .max,
-                  request.planning.definition.lifecycle.revision == expected + 1 else {
-                throw failure(.invalidRequest, "Workspace replacement revision is invalid.")
-            }
-        case .retainExistingExact: break
-        }
-    }
-
-    private func makeInventoryRequest(
-        _ definition: DoryVirtualMachineDefinition
-    ) throws -> DoryDaemonVirtualMachineInventoryRequest {
-        guard let boot = DoryDaemonVirtualMachinePlanningCoordinator
-            .primaryBootMedia(in: definition),
-              let launchArtifacts = DoryDaemonVirtualMachinePlanningCoordinator
-                .launchArtifactRequirements(for: definition) else {
-            throw failure(.invalidRequest, "Workspace has no primary boot media.")
-        }
-        return DoryDaemonVirtualMachineInventoryRequest(
-            machineID: definition.identity.id,
-            definitionRevision: definition.lifecycle.revision,
-            guest: definition.guest,
-            bootMedia: boot,
-            launchArtifacts: launchArtifacts,
-            resources: definition.resources,
-            devices: DoryDaemonVirtualMachinePlanningCoordinator.devices(for: definition),
-            acceptableGraphics: definition.graphics.acceptableLevels,
-            virtualHardwareABIVersion: definition.virtualHardwareABIVersion
-        )
-    }
-
     private static func plannedPlanRevision(
         _ publication: DoryDaemonVirtualMachinePlanPublication
     ) -> UInt64 {
@@ -1369,6 +1399,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
         machineAuthoritySHA256: String
     ) -> String {
         struct DigestInput: Codable {
+            var operationID: UUID
             var definitionSHA256: String
             var machineSHA256: String
             var machineAuthoritySHA256: String
@@ -1380,6 +1411,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
             var experimentalAuthorization: DoryResolvedExperimentalSupportAuthorization?
         }
         return sha256(canonicalData(DigestInput(
+            operationID: request.operationID,
             definitionSHA256: sha256(canonicalDefinition),
             machineSHA256: sha256(canonicalData(request.planning.machine)),
             machineAuthoritySHA256: machineAuthoritySHA256,
@@ -1526,9 +1558,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
     private func validate(_ journal: Journal) throws {
         guard journal.schemaVersion == Journal.schemaVersion,
               Self.isValidMachineID(journal.definition.identity.id),
-              journal.transactionID.wholeMatch(
-                of: /planning-transaction-[0-9a-f-]{36}/
-              ) != nil,
+              DoryOperationIdentity.parseCanonical(journal.transactionID) != nil,
               Self.isSHA256(journal.requestSHA256),
               Self.isSHA256(journal.machineAuthoritySHA256),
               Self.isSHA256(journal.machineSHA256),
@@ -1553,7 +1583,7 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
            let digest = journal.candidatePlanSHA256 {
             guard Self.isSHA256(digest), Self.sha256(data) == digest,
                   let plan = try? JSONDecoder().decode(DoryResolvedMachinePlan.self, from: data),
-                  Self.canonicalData(plan) == data,
+                  (try? plan.canonicalData()) == data,
                   plan.machineID == journal.definition.identity.id,
                   plan.definitionSHA256 == journal.definitionSHA256,
                   plan.planRevision == Self.plannedPlanRevision(
@@ -1650,6 +1680,8 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
     ) -> Bool {
         lhs.logicalCPUCount == rhs.logicalCPUCount
             && lhs.physicalMemoryBytes == rhs.physicalMemoryBytes
+            && lhs.engineAdmittedVirtualCPUCount == rhs.engineAdmittedVirtualCPUCount
+            && lhs.engineAdmittedMemoryBytes == rhs.engineAdmittedMemoryBytes
     }
 
     private static func isSHA256(_ value: String) -> Bool {
