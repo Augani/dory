@@ -220,13 +220,13 @@ import Testing
     #expect(state == initial && backing.snapshot() == snapshot)
   }
 
-  @Test func translatedProtectedStackPreflightPreservesBackingWriteAuthorityAndFrameAtomicity() throws {
+  @Test func translatedProtectedStackPreflightPreservesLinearFaultIdentityAndFrameAtomicity() throws {
     let backing = try memory()
     let physical = DeniedInterruptTailMemory(backing: backing, denied: 0x7FF8..<0x7FFC)
     var state = try userState()
     let initial = state
     let stackBefore = try backing.read(at: 0x7000, byteCount: 0x1000)
-    #expect(throws: DoryX86MemoryError.unmapped(address: 0x7FF8, byteCount: 4, access: .write)) {
+    #expect(throws: DoryX86MemoryError.pageFault(address: 0x30FF8, errorCode: 2)) {
       try DoryX86InterruptDelivery().deliver(vector: 0x80, source: .software,
         state: &state, physicalMemory: physical, pagingUnit: DoryX86PagingUnit(), mode: .protected32)
     }
