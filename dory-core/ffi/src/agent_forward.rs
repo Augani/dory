@@ -450,6 +450,9 @@ impl AgentControl {
 
     /// Interrupt only this host wait. The owner must stop and observe the VM before rollback;
     /// abandoning a mux response is never proof that a guest command has stopped executing.
+    // Keep the exported UniFFI signature aligned with exec_with_input plus its cancellation
+    // control; grouping arguments here would change the generated cross-language API.
+    #[allow(clippy::too_many_arguments)]
     pub fn exec_controlled(
         &self,
         argv: Vec<String>,

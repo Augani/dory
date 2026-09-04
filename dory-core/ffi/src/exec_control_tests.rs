@@ -2,6 +2,7 @@ use super::*;
 use crate::exec_control::new_exec_control;
 use std::os::fd::IntoRawFd;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -14,9 +15,11 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
-            "dory-exec-control-{}-{}",
+            "dory-exec-control-{}-{}-{}",
             std::process::id(),
+            NEXT_FIXTURE.fetch_add(1, Ordering::Relaxed),
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .unwrap()
