@@ -169,7 +169,13 @@ public struct DoryX86InterruptDelivery: Sendable {
     frame.append(returnInstructionPointer ?? original.rip)
     if let errorCode { frame.append(UInt64(errorCode)) }
 
-    let addresses = frame.indices.map { alignedTargetStack &- UInt64(($0 + 1) * 8) }
+    let addresses = try frame.indices.map { index in
+      let address = alignedTargetStack &- UInt64((index + 1) * 8)
+      guard DoryX86ArchitecturalState.isCanonical(address) else {
+        throw DoryX86InterruptDeliveryError.stackAddress
+      }
+      return address
+    }
     for address in addresses {
       try stackMemory.validateWrite(at: address, byteCount: 8)
     }
@@ -714,6 +720,7 @@ public struct DoryX86InterruptDelivery: Sendable {
       stack: targetStack & pointerMask,
       pointerMask: pointerMask,
       segment: targetStackSegment,
+      failure: switchesPrivilege ? .stackSegment(targetStackSegment.selector) : .stackAddress,
       memory: stackMemory
     )
 
@@ -948,6 +955,7 @@ public struct DoryX86InterruptDelivery: Sendable {
     stack: UInt64,
     pointerMask: UInt64,
     segment: DoryX86SegmentState,
+    failure: DoryX86InterruptDeliveryError,
     memory: any DoryX86Memory
   ) throws -> UInt64 {
     var offsets: [UInt64] = []
@@ -955,7 +963,7 @@ public struct DoryX86InterruptDelivery: Sendable {
     for _ in values {
       next = (next &- UInt64(width.byteCount)) & pointerMask
       guard next + UInt64(width.byteCount - 1) <= UInt64(segment.limit) else {
-        throw DoryX86InterruptDeliveryError.stackSegment(segment.selector)
+        throw failure
       }
       offsets.append(next)
       try memory.validateWrite(at: segment.base &+ next, byteCount: width.byteCount)
