@@ -1,9 +1,26 @@
-/// Feature/encoding admission for the SIMD instructions currently decoded by Dory.
+/// Feature/encoding admission for the instructions currently decoded by Dory.
 /// This is not full ISA qualification or the CR0/CR4/XCR0 execution-state checks. In
 /// particular, synthetic test profiles opting into AVX do not qualify XSAVE or AVX state.
 /// Instruction requirements: Intel SDM Vol. 2, the named instruction's CPUID Feature Flag
 /// and VEX encoding tables: https://cdrdv2-public.intel.com/774492/325383-sdm-vol-2abcd.pdf
 enum DoryX86InstructionFeaturePolicy {
+  /// Most absent instruction features fault with #UD. Intel separately specifies
+  /// #GP(0) for CMPXCHG16B when CPUID.01H:ECX.CX16 is clear (SDM 092 Vol. 2A,
+  /// page 3-198). Keep that fault distinct and ahead of data/alignment checks.
+  /// https://cdrdv2-public.intel.com/922480/253666-092-sdm-vol-2a.pdf
+  static func executionFault(
+    _ instruction: DoryX86DecodedInstruction, profile: DoryX86CPUProfile
+  ) -> DoryX86Exception? {
+    guard !permits(instruction, profile: profile) else { return nil }
+    if case .compareExchangePair(_, true) = instruction.operation,
+      !profile.supports(.cmpxchg16b)
+    {
+      return .init(kind: .generalProtection, vector: 13, errorCode: 0,
+        instructionPointer: instruction.address)
+    }
+    return .init(kind: .invalidOpcode, vector: 6, instructionPointer: instruction.address)
+  }
+
   static func permits(_ instruction: DoryX86DecodedInstruction, profile: DoryX86CPUProfile) -> Bool {
     guard DoryX86LegacyFloatingPointPolicy.permitsFeatures(instruction, profile: profile) else {
       return false
@@ -20,6 +37,10 @@ enum DoryX86InstructionFeaturePolicy {
       return permitsVEX(instruction, vex: vex, profile: profile)
     }
     switch instruction.operation {
+    case .conditionalMove:
+      return profile.supports(.cmov)
+    case .compareExchangePair(_, let doubleQuadword):
+      return profile.supports(doubleQuadword ? .cmpxchg16b : .cmpxchg8b)
     case .duplicateVectorScalar:
       return profile.supports(.sse3)
     case .shufflePackedBytes, .alignPackedBytes:

@@ -160,8 +160,8 @@ public struct DoryX86Interpreter: Sendable {
       return .exception(.init(kind: .invalidOpcode, vector: 6, instructionPointer: originalRIP))
     }
 
-    guard DoryX86InstructionFeaturePolicy.permits(instruction, profile: profile) else {
-      return invalidOpcode(at: originalRIP)
+    if let fault = DoryX86InstructionFeaturePolicy.executionFault(instruction, profile: profile) {
+      return .exception(fault)
     }
     if let fault = DoryX86LegacyFloatingPointPolicy.executionFault(instruction, state: state) {
       return .exception(fault)

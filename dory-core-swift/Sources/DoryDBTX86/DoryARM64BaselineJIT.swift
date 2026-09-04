@@ -2488,6 +2488,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let decoder: DoryX86Decoder
   private let cpuProfileIdentifier: String
   private let physicalAddressBits: UInt8
+  private let profile: DoryX86CPUProfile
   private let emitter: DoryARM64BaselineEmitter
   private let optimization: DoryARM64JITOptimization
   private let optimizer: DoryIROptimizer
@@ -2525,6 +2526,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     decoder: DoryX86Decoder = .init(),
     cpuProfileIdentifier: String = DoryX86CPUProfile.compatibleV1Identifier,
     physicalAddressBits: UInt8 = DoryX86CPUProfile.compatibleV1.physicalAddressBits,
+    profile: DoryX86CPUProfile = .compatibleV1,
     emitter: DoryARM64BaselineEmitter = .init(),
     optimization: DoryARM64JITOptimization = .baseline,
     optimizer: DoryIROptimizer = .init()
@@ -2536,6 +2538,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     self.decoder = decoder
     self.cpuProfileIdentifier = cpuProfileIdentifier
     self.physicalAddressBits = physicalAddressBits
+    self.profile = profile
     self.emitter = emitter
     self.optimization = optimization
     self.optimizer = optimizer
@@ -3230,6 +3233,16 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       // Decline this block without caching that incomplete view. The chain caller
       // publishes completed prefixes before the interpreter performs its precise
       // fetch, distinguishing a missing page from an invalid instruction.
+      return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
+    }
+    // CMOV is the feature-dependent integer operation currently emitted natively.
+    // Reject before optimization can erase it and before any block prefix executes.
+    // The immutable profile applies to every resident/shared/trace cache in this
+    // executor, so a masked profile cannot reuse code compiled with CMOV enabled.
+    if !profile.supports(.cmov), translated.statements.contains(where: {
+      if case .conditionalMove = $0 { return true }
+      return false
+    }) {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
     let block = optimization == .optimizing ? optimizer.optimize(translated).block : translated

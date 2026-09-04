@@ -360,6 +360,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           decoder: interpreter.decoder,
           cpuProfileIdentifier: interpreter.profile.identifier,
           physicalAddressBits: interpreter.profile.physicalAddressBits,
+          profile: interpreter.profile,
           optimization: .baseline
         )
       case .optimizingJIT:
@@ -368,6 +369,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           decoder: interpreter.decoder,
           cpuProfileIdentifier: interpreter.profile.identifier,
           physicalAddressBits: interpreter.profile.physicalAddressBits,
+          profile: interpreter.profile,
           optimization: .baseline
         )
       }
@@ -381,6 +383,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           decoder: interpreter.decoder,
           cpuProfileIdentifier: interpreter.profile.identifier,
           physicalAddressBits: interpreter.profile.physicalAddressBits,
+          profile: interpreter.profile,
           optimization: .optimizing
         )
       }
