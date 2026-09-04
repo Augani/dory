@@ -1,0 +1,33 @@
+  private func signExtendAccumulator(
+    width: DoryX86OperandWidth,
+    intoHighHalf: Bool,
+    state: inout DoryX86ArchitecturalState
+  ) {
+    if intoHighHalf {
+      let sign = accumulatorLow(width: width, state: state) & signBit(width) != 0
+      let high = sign ? mask(width) : 0
+      if width == .byte {
+        state.registers.rax = (state.registers.rax & ~UInt64(0xff00)) | (high << 8)
+      } else if width == .word {
+        state.registers.rdx = (state.registers.rdx & ~UInt64(0xffff)) | high
+      } else if width == .doubleword {
+        state.registers.rdx = high
+      } else {
+        state.registers.rdx = high
+      }
+      return
+    }
+    switch width {
+    case .byte:
+      break
+    case .word:
+      let value = UInt64(bitPattern: Int64(Int8(bitPattern: UInt8(state.registers.rax))))
+      state.registers.rax = (state.registers.rax & ~UInt64(0xffff)) | (value & 0xffff)
+    case .doubleword:
+      state.registers.rax = UInt64(
+        UInt32(bitPattern: Int32(Int16(bitPattern: UInt16(state.registers.rax)))))
+    case .quadword:
+      state.registers.rax = UInt64(
+        bitPattern: Int64(Int32(bitPattern: UInt32(state.registers.rax))))
+    }
+  }

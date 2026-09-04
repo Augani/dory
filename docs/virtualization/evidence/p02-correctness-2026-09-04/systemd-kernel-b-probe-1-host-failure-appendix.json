@@ -1,0 +1,88 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-systemd-host-failure-appendix",
+  "sourceCommit": "d0e61d7e0f23a43d696fa05d6c6c69bbb5274d41",
+  "sourceBinding": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-39-commit-binding.json",
+    "sha256": "2af36260eb1f3a6d60cff44469fb87af06abdbeee8380014daa25cec4361542c"
+  },
+  "review": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-host-failure-review.json",
+    "sha256": "bb5aa0d583347d03b0c189df853b0f962fc43a3e71a554cd0bd71789d5c6cc7c"
+  },
+  "retentionTransformations": [
+    {
+      "originalPath": "/tmp/dory-p02-systemd-host-trap-evidence/host-crash-selection.json",
+      "originalSHA256": "57105a8fad9f0620f09b55ae6f3f912a80358057d44735c50ab44ba890718dd8",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-host-crash-selection.json",
+        "sha256": "57105a8fad9f0620f09b55ae6f3f912a80358057d44735c50ab44ba890718dd8"
+      },
+      "transformation": "Selected artifact bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-systemd-host-trap-evidence/host-disassembly.txt",
+      "originalSHA256": "ffe4f0504c617381b52722f8a84f80b7631ffe66cbcffaf124d8f542b0edce57",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-host-disassembly.txt.gz",
+        "sha256": "18518611bbab950636d6c723bf95c09b5dfdc6a00afcf0c0e9e12859e85a70e0"
+      },
+      "transformation": "Selected artifact bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-systemd-host-trap-evidence/source39-sign-extend-accumulator.swift.txt",
+      "originalSHA256": "7f2012b8aeecd40052e17dfbef669756530be315fd76e75c1ba8f523a68be456",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-source39-accumulator.txt",
+        "sha256": "7f2012b8aeecd40052e17dfbef669756530be315fd76e75c1ba8f523a68be456"
+      },
+      "transformation": "Selected artifact bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-systemd-host-trap-evidence/probe.invocation.json",
+      "originalSHA256": "eb39fbea273e7e81d8bbd779e93ef747481637266a5dffc490cd211f770b1e19",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-invocation.json",
+        "sha256": "eb39fbea273e7e81d8bbd779e93ef747481637266a5dffc490cd211f770b1e19"
+      },
+      "transformation": "Selected artifact bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-systemd-host-trap-evidence/probe.exit",
+      "originalSHA256": "0b2f06dddfa807ee574a78468d3a05904873b97f44377eb93481e091c257b800",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1.exit",
+        "sha256": "0b2f06dddfa807ee574a78468d3a05904873b97f44377eb93481e091c257b800"
+      },
+      "transformation": "Selected artifact bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-systemd-host-trap-evidence/probe.log",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1.log.gz",
+        "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+      },
+      "transformation": "Selected artifact bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-systemd-host-trap-evidence/host-failure-review.json",
+      "originalSHA256": "25009a6245f85782d5ce005adcc4c9b6b49fb8dd504f63b4cc7151304cbcadd3",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-host-failure-review.json",
+        "sha256": "bb5aa0d583347d03b0c189df853b0f962fc43a3e71a554cd0bd71789d5c6cc7c"
+      },
+      "transformation": "Rewrite selected-artifact paths, hashes and retained byte counts to repository-relative identities; uncompressed"
+    }
+  ],
+  "validation": {
+    "selectedOriginalReportHashVerified": true,
+    "source39FileAndExcerptHashesVerified": true,
+    "copiedRunnerUUIDMatched": true,
+    "subprocessReturnCode": -5,
+    "hostSignal": "SIGTRAP",
+    "logBytes": 0,
+    "diagnosticJSONProduced": false
+  },
+  "scope": "Failed actual source39 systemd probe only. Selected runner host stack/disassembly and immutable source evidence; no guest memory read, successful receipt, or source44/45 gate claimed. Proposed three-site narrowing correction is described but neither its patch nor tests are part of this appendix. No unrelated application crash retained."
+}

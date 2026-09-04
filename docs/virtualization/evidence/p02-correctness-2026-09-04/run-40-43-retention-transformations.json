@@ -1,0 +1,320 @@
+{
+  "kind": "p02-evidence-retention-transformations",
+  "artifacts": [
+    {
+      "originalPath": "/tmp/dory-p02-correctness-overlay-40.tar.gz",
+      "originalSHA256": "ce61c32007c5064c683208fb0c0c83bb7afad06d9ef7e6eb8a3892fb11b1fb34",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-40-source-overlay.tar.gz",
+        "sha256": "68a014c649800065c8081e79617ba4a67ca5a5f26cd3035842ea4f2e2fed5df3"
+      },
+      "transformation": "Tar owner/timestamps normalized; member names, modes and bytes unchanged",
+      "memberCount": 108
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-manifest-40.json",
+      "originalSHA256": "ff6c97f6691a86bd3db41ff4d349158c8bdf69f797c305e31495d82c6c3eebb8",
+      "originalBytes": 137664,
+      "normalizedSHA256": "ff6c97f6691a86bd3db41ff4d349158c8bdf69f797c305e31495d82c6c3eebb8",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-40-source-manifest.json.gz",
+        "sha256": "2f4a2713103d13517cc7bac9f778cec5d1776fc1ec694238babf85e8cdf4c600"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-run-40.log",
+      "originalSHA256": "0c215c8769763a12ff7a40114d15186a626c1986f6ae21f20c96c55868899b70",
+      "originalBytes": 354590,
+      "normalizedSHA256": "0c215c8769763a12ff7a40114d15186a626c1986f6ae21f20c96c55868899b70",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-40.log.gz",
+        "sha256": "ed8e60db311adc5a66012185782faa9f3e5ce1548474fe956433e5a5f2036fb7"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-overlay-41.tar.gz",
+      "originalSHA256": "87cf4984e0cc3bfa626974e6f137470775a076541cb1220aa67e558780d24fae",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-41-source-overlay.tar.gz",
+        "sha256": "177b8819a11ce362cad65ea43641fbc9c5869f0d7aa0e4ab508b1ab41b609a08"
+      },
+      "transformation": "Tar owner/timestamps normalized; member names, modes and bytes unchanged",
+      "memberCount": 109
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-manifest-41.json",
+      "originalSHA256": "7098cefec3ad54e6bdd79454efa74744965ac5c45da2b2452ca542debb109cf8",
+      "originalBytes": 137940,
+      "normalizedSHA256": "7098cefec3ad54e6bdd79454efa74744965ac5c45da2b2452ca542debb109cf8",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-41-source-manifest.json.gz",
+        "sha256": "c92bca67600bd6ecf68dd286db7e933f7f816d07f3374c15dac458c4bf05ef70"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-run-41.log",
+      "originalSHA256": "6aadd7007cd405c8df0551b370d177cd0baa873d733b7d789c09a7759cad5dab",
+      "originalBytes": 201876,
+      "normalizedSHA256": "6aadd7007cd405c8df0551b370d177cd0baa873d733b7d789c09a7759cad5dab",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-41.log.gz",
+        "sha256": "321acdc012d1722ef888ba9fabaf4eae13e52074afeea4c551a13c6b1f0ba49d"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-overlay-42.tar.gz",
+      "originalSHA256": "2a746bbe51922571d4ed523692e8df870333ee3e91c6d5102e9dbc20de9c746c",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-42-source-overlay.tar.gz",
+        "sha256": "7b956133722d18f71a3e092587015dda5c541f0aef133babb9e4898d85f0127d"
+      },
+      "transformation": "Tar owner/timestamps normalized; member names, modes and bytes unchanged",
+      "memberCount": 110
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-manifest-42.json",
+      "originalSHA256": "1df0db8925caa932c355c770e166221a4019c6b601a3e41b1fe6b3cbdc99368b",
+      "originalBytes": 138009,
+      "normalizedSHA256": "1df0db8925caa932c355c770e166221a4019c6b601a3e41b1fe6b3cbdc99368b",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-42-source-manifest.json.gz",
+        "sha256": "c325640bdd892c1338e4a8f43dc52abc5b94db5a6a8d31472ff3d1d173d43d41"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-run-42.log",
+      "originalSHA256": "c15641a4250a72c848f6168aa6579f17421d2444bf2a895e05043a4170aa1875",
+      "originalBytes": 172410,
+      "normalizedSHA256": "c15641a4250a72c848f6168aa6579f17421d2444bf2a895e05043a4170aa1875",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-42.log.gz",
+        "sha256": "aefdc752759fc570f2d5b76e008bb7bfd7c1d20f7912456de22d889f691f5375"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-overlay-43.tar.gz",
+      "originalSHA256": "c2d69d23f171ee5a591098504a0a527ef139374c5c168905e12bbe4173395207",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-43-source-overlay.tar.gz",
+        "sha256": "2cb689d62a0894f5bc82794cb93cf4badeafcd233efd724abf140ef339bb4b2a"
+      },
+      "transformation": "Tar owner/timestamps normalized; member names, modes and bytes unchanged",
+      "memberCount": 114
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-manifest-43.json",
+      "originalSHA256": "1ea140925e8e158ee98b4196888524a1106d0e8f25330fae61934a6a1370f84e",
+      "originalBytes": 138519,
+      "normalizedSHA256": "1ea140925e8e158ee98b4196888524a1106d0e8f25330fae61934a6a1370f84e",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-43-source-manifest.json.gz",
+        "sha256": "8c69146c4f34c043eda7f4cca0fd9c88860eb34078627ef04fe7b09a932bbaf3"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-run-43.log",
+      "originalSHA256": "75979a604a0de4679a302ae6632b78730d4f5a361e7080656af3f3e306bce739",
+      "originalBytes": 174487,
+      "normalizedSHA256": "75979a604a0de4679a302ae6632b78730d4f5a361e7080656af3f3e306bce739",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-43.log.gz",
+        "sha256": "a885c61719d62ec660c61e7b3491030463d9ee50114ec4f9facf8dec841e8d64"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-correctness-clean-before-40.log",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalBytes": 0,
+      "normalizedSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-40.log.gz",
+        "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-release-runner-43-receipt.json",
+      "originalSHA256": "f240f5ce355ff16546e76d7e72d3bad6dec8b806e49a576b7149f6f71ed07ac7",
+      "originalBytes": 649,
+      "normalizedSHA256": "f240f5ce355ff16546e76d7e72d3bad6dec8b806e49a576b7149f6f71ed07ac7",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-43-receipt.json",
+        "sha256": "f240f5ce355ff16546e76d7e72d3bad6dec8b806e49a576b7149f6f71ed07ac7"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-release-runner-build-43.log",
+      "originalSHA256": "7f245929b0e98e41768d9f3530e1c30471ae39e56f44c78605d57dba09b1a948",
+      "originalBytes": 10986,
+      "normalizedSHA256": "7f245929b0e98e41768d9f3530e1c30471ae39e56f44c78605d57dba09b1a948",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-build-43.log.gz",
+        "sha256": "d4fce0cb62773b3b6862b92758006b13e0fe9fd08cc3d8588a4df6dd0672c3e1"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-io-stress-repro-a.log",
+      "originalSHA256": "d04d9c412b0603d3307845b898abe5e3eabce88adb5d5aa8b162e4af357061b4",
+      "originalBytes": 451,
+      "normalizedSHA256": "e821ef14c291b1cfa91f8279e7068a1b48e8507ec669e3f36860ef24cad8ddbe",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-repro-a.log.gz",
+        "sha256": "9ed00ebd59c1e408e00061cae5cd840575d0557f3bc9eef79243828526b77abd"
+      },
+      "transformation": "Checkout/home path replaced by ${REPO_ROOT}/${HOME}; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-io-stress-repro-b.log",
+      "originalSHA256": "59d4a15e1d591c930e95d55c2c3bb28d13b7ab8280234c84e8ba26af4a60da7b",
+      "originalBytes": 423,
+      "normalizedSHA256": "59d4a15e1d591c930e95d55c2c3bb28d13b7ab8280234c84e8ba26af4a60da7b",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-repro-b.log.gz",
+        "sha256": "8fb0779e8dc2b8f9963332a51120b627c888a0b8ad61030ac818cd9942827156"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-io-stress-zig-version.log",
+      "originalSHA256": "355a2e14f6a7f2cb387d9d3b75a3550980d020ee1d005b139b62290c1645068a",
+      "originalBytes": 7,
+      "normalizedSHA256": "355a2e14f6a7f2cb387d9d3b75a3550980d020ee1d005b139b62290c1645068a",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-zig-version.log.gz",
+        "sha256": "4653ad7c195007e1e1e35a39f387cd05707fd2a178bce952e5d444f9df717aff"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-io-stress-preparer-tests-final.log",
+      "originalSHA256": "ea33fb0ba9e7c15ce54f27b2ebee70e3b4940b75f191613b32818de2a613b520",
+      "originalBytes": 5513,
+      "normalizedSHA256": "ea33fb0ba9e7c15ce54f27b2ebee70e3b4940b75f191613b32818de2a613b520",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-preparer-tests-final.log.gz",
+        "sha256": "811b888e6235cbd786bdcc02c1d1a0f944157a7221ec651a86da1a47c8218c02"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-io-stress-init-shellcheck-final.log",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalBytes": 0,
+      "normalizedSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-init-shellcheck-final.log.gz",
+        "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-io-stress-fixture-preparation-1.json",
+      "originalSHA256": "def78e1994e4214a0297ac5af0a32e8f6d643669e291a1028eeb6f993aa4ffa3",
+      "originalBytes": 1872,
+      "normalizedSHA256": "def78e1994e4214a0297ac5af0a32e8f6d643669e291a1028eeb6f993aa4ffa3",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-preparation-1.json",
+        "sha256": "def78e1994e4214a0297ac5af0a32e8f6d643669e291a1028eeb6f993aa4ffa3"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-io-stress-fixture-preparation-1.stderr",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalBytes": 0,
+      "normalizedSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-preparation-1.stderr.gz",
+        "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-io-stress-fixture-preparation-replay.json",
+      "originalSHA256": "def78e1994e4214a0297ac5af0a32e8f6d643669e291a1028eeb6f993aa4ffa3",
+      "originalBytes": 1872,
+      "normalizedSHA256": "def78e1994e4214a0297ac5af0a32e8f6d643669e291a1028eeb6f993aa4ffa3",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-preparation-replay.json",
+        "sha256": "def78e1994e4214a0297ac5af0a32e8f6d643669e291a1028eeb6f993aa4ffa3"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-io-stress-fixture-preparation-replay.stderr",
+      "originalSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "originalBytes": 0,
+      "normalizedSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-preparation-replay.stderr.gz",
+        "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-io-stress-v1-invariance.json",
+      "originalSHA256": "1d3727677a0d7a3c7b8eb0f18a4030c9f49bb12dcfbea21c23fdbcd111411e51",
+      "originalBytes": 1664,
+      "normalizedSHA256": "1d3727677a0d7a3c7b8eb0f18a4030c9f49bb12dcfbea21c23fdbcd111411e51",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-v1-invariance.json",
+        "sha256": "1d3727677a0d7a3c7b8eb0f18a4030c9f49bb12dcfbea21c23fdbcd111411e51"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-alpine-module-closure.json",
+      "originalSHA256": "cd36561127482d168836eb5b279d805d4ff2c186b91a2cdfa72bcccc099c7b48",
+      "originalBytes": 14515,
+      "normalizedSHA256": "cd36561127482d168836eb5b279d805d4ff2c186b91a2cdfa72bcccc099c7b48",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-module-closure.json",
+        "sha256": "cd36561127482d168836eb5b279d805d4ff2c186b91a2cdfa72bcccc099c7b48"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-io-stress-fixture-reproduction-1/x86_64-p02-userspace-io-stress-v1.cpio.manifest.json",
+      "originalSHA256": "d30ac7846f8bd0ef321f007a0d3b4f26578c397e7b4538175f2e4ac99f787176",
+      "originalBytes": 5252,
+      "normalizedSHA256": "d30ac7846f8bd0ef321f007a0d3b4f26578c397e7b4538175f2e4ac99f787176",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-v1-fixture-manifest.json",
+        "sha256": "d30ac7846f8bd0ef321f007a0d3b4f26578c397e7b4538175f2e4ac99f787176"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-io-stress-parent-preparer-tests.log",
+      "originalSHA256": "b529382fd53743e121c6d33294cf4bd86c26a07f20f256d7ebf5836de1dbb262",
+      "originalBytes": 5513,
+      "normalizedSHA256": "b529382fd53743e121c6d33294cf4bd86c26a07f20f256d7ebf5836de1dbb262",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-parent-preparer-tests.log.gz",
+        "sha256": "7fd308dfa7a6a85cdd77216e81a42781f2a62ba36c1bc740ee2fef08024de093"
+      },
+      "transformation": "Text bytes unchanged; gzip mtime zero"
+    },
+    {
+      "originalPath": "/tmp/dory-p02-io-stress-fixture-agent-handoff.json",
+      "originalSHA256": "bb39550744ea2b324978650a32359e93e529d1b17f16d7b73bda517249f7186a",
+      "originalBytes": 10736,
+      "normalizedSHA256": "bb39550744ea2b324978650a32359e93e529d1b17f16d7b73bda517249f7186a",
+      "retained": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-agent-handoff.json",
+        "sha256": "bb39550744ea2b324978650a32359e93e529d1b17f16d7b73bda517249f7186a"
+      },
+      "transformation": "Text bytes unchanged; uncompressed"
+    }
+  ]
+}

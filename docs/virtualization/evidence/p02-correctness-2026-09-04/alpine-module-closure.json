@@ -1,0 +1,403 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-alpine-block-network-module-closure-audit",
+  "scope": "Pinned artifact inspection only; no module loading or guest I/O execution",
+  "source": {
+    "schemaVersion": 1,
+    "kind": "pinned-alpine-module-input-inspection",
+    "sourceArtifact": "alpine-virt-3.24.1-x86_64",
+    "sourceISOFilename": "alpine-virt-3.24.1-x86_64.iso",
+    "sourceISOSHA256": "e73a6241bd5f3c5c2d4d38c02cc52c378c0415a7c888bd292066bf36e0f41a39",
+    "sourceISOBytes": 69206016,
+    "members": [
+      {
+        "sourceISOMember": "boot/config-6.18.35-0-virt",
+        "path": "/tmp/dory-p02-alpine-module-inspection/config-6.18.35-0-virt",
+        "bytes": 151801,
+        "sha256": "bc34b9908e38508d9b98cbd2d1c6a7a13fc70b734cad4782de5b92d69b59cc77"
+      },
+      {
+        "sourceISOMember": "boot/modloop-virt",
+        "path": "/tmp/dory-p02-alpine-module-inspection/modloop-virt",
+        "bytes": 22867968,
+        "sha256": "78907e7cc812d555f08d4e1133d090cf11fa197370882adfe67b0a5986ccb3f9"
+      }
+    ],
+    "scope": "Bounded selected-member reads only; no guest execution"
+  },
+  "initramfs": {
+    "filename": "x86_64-initramfs-virt",
+    "sha256": "4caf09640385525632f0a54dfeabd08b5bf5ceeb2b7d63e888fb858b7b3fa006"
+  },
+  "kernel": {
+    "release": "6.18.35-0-virt",
+    "filename": "x86_64-vmlinux",
+    "sha256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8"
+  },
+  "configuration": {
+    "CONFIG_PCI": "y",
+    "CONFIG_PCI_DIRECT": "y",
+    "CONFIG_PCI_MMCONFIG": "y",
+    "CONFIG_PCI_MSI": "y",
+    "CONFIG_VIRTIO": "y",
+    "CONFIG_VIRTIO_PCI": "y",
+    "CONFIG_VIRTIO_PCI_LIB": "y",
+    "CONFIG_VIRTIO_PCI_LIB_LEGACY": "y",
+    "CONFIG_VIRTIO_PCI_LEGACY": "y",
+    "CONFIG_VIRTIO_MMIO": "y",
+    "CONFIG_VIRTIO_BLK": "m",
+    "CONFIG_VIRTIO_NET": "m",
+    "CONFIG_FAILOVER": "m",
+    "CONFIG_NET_FAILOVER": "m",
+    "CONFIG_BLOCK": "y",
+    "CONFIG_NET": "y",
+    "CONFIG_INET": "y",
+    "CONFIG_IPV6": "y",
+    "CONFIG_PACKET": "m",
+    "CONFIG_PAGE_POOL": "y",
+    "CONFIG_EXT4_FS": "m",
+    "CONFIG_JBD2": "m",
+    "CONFIG_FS_MBCACHE": "m",
+    "CONFIG_CRC16": "m",
+    "CONFIG_CRC32": "y",
+    "CONFIG_CRC32_ARCH": "y",
+    "CONFIG_MODULES": "y",
+    "CONFIG_MODULE_SIG": "y",
+    "CONFIG_MODULE_SIG_FORCE": "n",
+    "CONFIG_MODULE_COMPRESS_GZIP": "y",
+    "CONFIG_MODULE_DECOMPRESS": "n",
+    "CONFIG_MODVERSIONS": "y"
+  },
+  "builtinModuleNames": [
+    "kernel/drivers/virtio/virtio.ko",
+    "kernel/drivers/virtio/virtio_ring.ko",
+    "kernel/drivers/virtio/virtio_pci_modern_dev.ko",
+    "kernel/drivers/virtio/virtio_pci_legacy_dev.ko",
+    "kernel/drivers/virtio/virtio_mmio.ko",
+    "kernel/drivers/virtio/virtio_pci.ko",
+    "kernel/drivers/char/virtio_console.ko"
+  ],
+  "modules": [
+    {
+      "name": "virtio_blk",
+      "sourceInitramfsMember": "usr/lib/modules/6.18.35-0-virt/kernel/drivers/block/virtio_blk.ko",
+      "proposedGuestPath": "/lib/modules/6.18.35-0-virt/kernel/drivers/block/virtio_blk.ko",
+      "sourceModloopMember": "modules/6.18.35-0-virt/kernel/drivers/block/virtio_blk.ko",
+      "bytes": 74215,
+      "sha256": "2229ae30e4205a9ddb57ffb242517c1108f9ddb31fc481ca5d68f1335637cd5f",
+      "fileFormat": "Uncompressed ELF64 ET_REL x86-64 kernel module; signature trailer present but not cryptographically checked",
+      "elfModinfo": {
+        "name": [
+          "virtio_blk"
+        ],
+        "vermagic": [
+          "6.18.35-0-virt SMP preempt mod_unload modversions "
+        ],
+        "depends": [
+          ""
+        ],
+        "license": [
+          "GPL"
+        ],
+        "intree": [
+          "Y"
+        ]
+      },
+      "modulesDep": [],
+      "byteIdenticalInVerifiedInitramfsAndModloop": true,
+      "temporaryInspectedPath": "/tmp/dory-p02-alpine-module-inspection/virtio_blk.ko"
+    },
+    {
+      "name": "failover",
+      "sourceInitramfsMember": "usr/lib/modules/6.18.35-0-virt/kernel/net/core/failover.ko",
+      "proposedGuestPath": "/lib/modules/6.18.35-0-virt/kernel/net/core/failover.ko",
+      "sourceModloopMember": "modules/6.18.35-0-virt/kernel/net/core/failover.ko",
+      "bytes": 33343,
+      "sha256": "0515e4062176bdb30b6e90e98c8ce7c34056da3969892eb6457dd90be1734167",
+      "fileFormat": "Uncompressed ELF64 ET_REL x86-64 kernel module; signature trailer present but not cryptographically checked",
+      "elfModinfo": {
+        "name": [
+          "failover"
+        ],
+        "vermagic": [
+          "6.18.35-0-virt SMP preempt mod_unload modversions "
+        ],
+        "depends": [
+          ""
+        ],
+        "license": [
+          "GPL v2"
+        ],
+        "intree": [
+          "Y"
+        ]
+      },
+      "modulesDep": [],
+      "byteIdenticalInVerifiedInitramfsAndModloop": true,
+      "temporaryInspectedPath": "/tmp/dory-p02-alpine-module-inspection/failover.ko"
+    },
+    {
+      "name": "net_failover",
+      "sourceInitramfsMember": "usr/lib/modules/6.18.35-0-virt/kernel/drivers/net/net_failover.ko",
+      "proposedGuestPath": "/lib/modules/6.18.35-0-virt/kernel/drivers/net/net_failover.ko",
+      "sourceModloopMember": "modules/6.18.35-0-virt/kernel/drivers/net/net_failover.ko",
+      "bytes": 56711,
+      "sha256": "7a96f35ee688156e44583627144496cce1803e1c1490d2a03850dbf78c73f0b6",
+      "fileFormat": "Uncompressed ELF64 ET_REL x86-64 kernel module; signature trailer present but not cryptographically checked",
+      "elfModinfo": {
+        "name": [
+          "net_failover"
+        ],
+        "vermagic": [
+          "6.18.35-0-virt SMP preempt mod_unload modversions "
+        ],
+        "depends": [
+          "failover"
+        ],
+        "license": [
+          "GPL v2"
+        ],
+        "intree": [
+          "Y"
+        ]
+      },
+      "modulesDep": [
+        "kernel/net/core/failover.ko"
+      ],
+      "byteIdenticalInVerifiedInitramfsAndModloop": true,
+      "temporaryInspectedPath": "/tmp/dory-p02-alpine-module-inspection/net_failover.ko"
+    },
+    {
+      "name": "virtio_net",
+      "sourceInitramfsMember": "usr/lib/modules/6.18.35-0-virt/kernel/drivers/net/virtio_net.ko",
+      "proposedGuestPath": "/lib/modules/6.18.35-0-virt/kernel/drivers/net/virtio_net.ko",
+      "sourceModloopMember": "modules/6.18.35-0-virt/kernel/drivers/net/virtio_net.ko",
+      "bytes": 273055,
+      "sha256": "64924824bd3c079e78824610bf568186be17362552f899b87217caaae54310c7",
+      "fileFormat": "Uncompressed ELF64 ET_REL x86-64 kernel module; signature trailer present but not cryptographically checked",
+      "elfModinfo": {
+        "name": [
+          "virtio_net"
+        ],
+        "vermagic": [
+          "6.18.35-0-virt SMP preempt mod_unload modversions "
+        ],
+        "depends": [
+          "net_failover"
+        ],
+        "license": [
+          "GPL"
+        ],
+        "intree": [
+          "Y"
+        ]
+      },
+      "modulesDep": [
+        "kernel/drivers/net/net_failover.ko",
+        "kernel/net/core/failover.ko"
+      ],
+      "byteIdenticalInVerifiedInitramfsAndModloop": true,
+      "temporaryInspectedPath": "/tmp/dory-p02-alpine-module-inspection/virtio_net.ko"
+    },
+    {
+      "name": "crc16",
+      "sourceInitramfsMember": "usr/lib/modules/6.18.35-0-virt/kernel/lib/crc/crc16.ko",
+      "proposedGuestPath": "/lib/modules/6.18.35-0-virt/kernel/lib/crc/crc16.ko",
+      "sourceModloopMember": "modules/6.18.35-0-virt/kernel/lib/crc/crc16.ko",
+      "bytes": 11503,
+      "sha256": "1b5fd1173215d9c04e6a64e62898a6e531680dd16523da080a28227b28c38423",
+      "fileFormat": "Uncompressed ELF64 ET_REL x86-64 kernel module; signature trailer present but not cryptographically checked",
+      "elfModinfo": {
+        "name": [
+          "crc16"
+        ],
+        "vermagic": [
+          "6.18.35-0-virt SMP preempt mod_unload modversions "
+        ],
+        "depends": [
+          ""
+        ],
+        "license": [
+          "GPL"
+        ],
+        "intree": [
+          "Y"
+        ]
+      },
+      "modulesDep": [],
+      "byteIdenticalInVerifiedInitramfsAndModloop": true,
+      "temporaryInspectedPath": "/tmp/dory-p02-alpine-module-inspection/crc16.ko"
+    },
+    {
+      "name": "mbcache",
+      "sourceInitramfsMember": "usr/lib/modules/6.18.35-0-virt/kernel/fs/mbcache.ko",
+      "proposedGuestPath": "/lib/modules/6.18.35-0-virt/kernel/fs/mbcache.ko",
+      "sourceModloopMember": "modules/6.18.35-0-virt/kernel/fs/mbcache.ko",
+      "bytes": 34263,
+      "sha256": "8298471918ce32a480952a419865571b4373d338ed76226f8b8dc7c0f018110e",
+      "fileFormat": "Uncompressed ELF64 ET_REL x86-64 kernel module; signature trailer present but not cryptographically checked",
+      "elfModinfo": {
+        "name": [
+          "mbcache"
+        ],
+        "vermagic": [
+          "6.18.35-0-virt SMP preempt mod_unload modversions "
+        ],
+        "depends": [
+          ""
+        ],
+        "license": [
+          "GPL"
+        ],
+        "intree": [
+          "Y"
+        ]
+      },
+      "modulesDep": [],
+      "byteIdenticalInVerifiedInitramfsAndModloop": true,
+      "temporaryInspectedPath": "/tmp/dory-p02-alpine-module-inspection/mbcache.ko"
+    },
+    {
+      "name": "jbd2",
+      "sourceInitramfsMember": "usr/lib/modules/6.18.35-0-virt/kernel/fs/jbd2/jbd2.ko",
+      "proposedGuestPath": "/lib/modules/6.18.35-0-virt/kernel/fs/jbd2/jbd2.ko",
+      "sourceModloopMember": "modules/6.18.35-0-virt/kernel/fs/jbd2/jbd2.ko",
+      "bytes": 424879,
+      "sha256": "55c21d077817dbcc3d58b9d9c352f9ace2527b17a054f1749385735ddd5f65cd",
+      "fileFormat": "Uncompressed ELF64 ET_REL x86-64 kernel module; signature trailer present but not cryptographically checked",
+      "elfModinfo": {
+        "name": [
+          "jbd2"
+        ],
+        "vermagic": [
+          "6.18.35-0-virt SMP preempt mod_unload modversions "
+        ],
+        "depends": [
+          ""
+        ],
+        "license": [
+          "GPL"
+        ],
+        "intree": [
+          "Y"
+        ]
+      },
+      "modulesDep": [],
+      "byteIdenticalInVerifiedInitramfsAndModloop": true,
+      "temporaryInspectedPath": "/tmp/dory-p02-alpine-module-inspection/jbd2.ko"
+    },
+    {
+      "name": "ext4",
+      "sourceInitramfsMember": "usr/lib/modules/6.18.35-0-virt/kernel/fs/ext4/ext4.ko",
+      "proposedGuestPath": "/lib/modules/6.18.35-0-virt/kernel/fs/ext4/ext4.ko",
+      "sourceModloopMember": "modules/6.18.35-0-virt/kernel/fs/ext4/ext4.ko",
+      "bytes": 2412567,
+      "sha256": "39468e84954c533d4857401ce78609ad45fadafedd0fef4b2fb0919b1e3de35e",
+      "fileFormat": "Uncompressed ELF64 ET_REL x86-64 kernel module; signature trailer present but not cryptographically checked",
+      "elfModinfo": {
+        "name": [
+          "ext4"
+        ],
+        "vermagic": [
+          "6.18.35-0-virt SMP preempt mod_unload modversions "
+        ],
+        "depends": [
+          "jbd2,crc16,mbcache"
+        ],
+        "license": [
+          "GPL"
+        ],
+        "intree": [
+          "Y"
+        ]
+      },
+      "modulesDep": [
+        "kernel/lib/crc/crc16.ko",
+        "kernel/fs/mbcache.ko",
+        "kernel/fs/jbd2/jbd2.ko"
+      ],
+      "byteIdenticalInVerifiedInitramfsAndModloop": true,
+      "temporaryInspectedPath": "/tmp/dory-p02-alpine-module-inspection/ext4.ko"
+    },
+    {
+      "name": "af_packet",
+      "sourceInitramfsMember": "usr/lib/modules/6.18.35-0-virt/kernel/net/packet/af_packet.ko",
+      "proposedGuestPath": "/lib/modules/6.18.35-0-virt/kernel/net/packet/af_packet.ko",
+      "sourceModloopMember": "modules/6.18.35-0-virt/kernel/net/packet/af_packet.ko",
+      "bytes": 153431,
+      "sha256": "b28eb4e5a18d1c9071c3111dd0836ffcad5b2e6d1188a9343c5bb142f9687fe3",
+      "fileFormat": "Uncompressed ELF64 ET_REL x86-64 kernel module; signature trailer present but not cryptographically checked",
+      "elfModinfo": {
+        "name": [
+          "af_packet"
+        ],
+        "vermagic": [
+          "6.18.35-0-virt SMP preempt mod_unload modversions "
+        ],
+        "depends": [
+          ""
+        ],
+        "license": [
+          "GPL"
+        ],
+        "intree": [
+          "Y"
+        ]
+      },
+      "modulesDep": [],
+      "byteIdenticalInVerifiedInitramfsAndModloop": true,
+      "temporaryInspectedPath": "/tmp/dory-p02-alpine-module-inspection/af_packet.ko"
+    }
+  ],
+  "loadOrder": {
+    "rawBlock": [
+      "virtio_blk"
+    ],
+    "network": [
+      "failover",
+      "net_failover",
+      "virtio_net"
+    ],
+    "optionalExt4": [
+      "crc16",
+      "mbcache",
+      "jbd2",
+      "ext4"
+    ],
+    "rawEthernetNetwork": [
+      "failover",
+      "net_failover",
+      "virtio_net",
+      "af_packet"
+    ]
+  },
+  "baseBlockAndNetworkBytes": 437324,
+  "optionalExt4Bytes": 2883212,
+  "recommendation": "Select and SHA-256 verify these exact members from the already catalog-pinned initramfs. Package uncompressed .ko bytes and explicitly insmod the listed dependency order; no depmod, modprobe database, gzip support or new modloop input is needed for this fixed closure. Fail a guest stage if insmod, expected PCI/device enumeration or link/block setup fails. Modules alone do not establish transport correctness.",
+  "limits": [
+    "Raw block checks still need explicit bounded host-backed PCI block device and restart/persistence verification",
+    "Filesystem checks need a separately pinned disk filesystem image and optional ext4 module closure",
+    "Network checks need an explicit PCI network device, controlled reachable endpoint, byte-count/checksum validation and host evidence",
+    "PCI, virtio core/ring and modern/legacy PCI transport are built in; do not add nonexistent virtio_pci.ko or virtio_ring.ko payloads",
+    "The driver module bytes are uncompressed despite CONFIG_MODULE_COMPRESS_GZIP=y; preserve exact bytes without recompression",
+    "AF_INET/AF_INET6 sockets use built-in kernel support; packet-socket tools would additionally need af_packet.ko because CONFIG_PACKET=m"
+  ],
+  "baseBlockAndRawEthernetBytes": 590755,
+  "configurationSources": [
+    {
+      "path": "/tmp/dory-p02-alpine-module-inspection/config-6.18.35-0-virt",
+      "bytes": 151801,
+      "sha256": "bc34b9908e38508d9b98cbd2d1c6a7a13fc70b734cad4782de5b92d69b59cc77"
+    },
+    {
+      "path": "/tmp/dory-p02-alpine-module-inspection/modules.builtin",
+      "bytes": 4448,
+      "sha256": "3894f0e6493a68b360108ec2299da577093f9ae9c8a50d1230851c1857dff8f1"
+    },
+    {
+      "path": "/tmp/dory-p02-alpine-module-inspection/initramfs-modules.dep",
+      "bytes": 10327,
+      "sha256": "bea75dd45c976ec49bb9a587e218fa35b86fd1db726ba33fe70f722bb8279a78"
+    }
+  ]
+}

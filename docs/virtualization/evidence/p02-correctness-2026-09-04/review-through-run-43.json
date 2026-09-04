@@ -1,0 +1,432 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.p02-correctness-review",
+  "status": "in-progress",
+  "phaseComplete": false,
+  "releaseQualified": false,
+  "sourceCommit": "3337bd44235c45820d1ee6ffe3579b4a70d085e1",
+  "previousReview": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-39.json",
+    "sha256": "ed9a20dd8a2c957e3a3992db429950280e7cbb0f709da60c2d75d1c1de85f36e"
+  },
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "testCommands": {
+    "runs40Through42": {
+      "environment": {
+        "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+        "SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH": "1",
+        "DORY_ISA_EVIDENCE_ROOT": "/tmp/dory-p02-inventory-evidence"
+      },
+      "arguments": [
+        "swift",
+        "test",
+        "--package-path",
+        "/tmp/dory-p02-correctness-source-1/dory-core-swift",
+        "--scratch-path",
+        "/tmp/dory-p02-correctness-build-1",
+        "--jobs",
+        "3",
+        "--no-parallel",
+        "--filter",
+        "DoryX86|DoryPC|DoryARM64|PVHBootRunnerTests|PVHJITDiagnosticsTests|PVHStress|ISAInventoryTests"
+      ]
+    },
+    "run43": {
+      "environment": {
+        "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+        "SWT_EXPERIMENTAL_MAXIMUM_PARALLELIZATION_WIDTH": "1",
+        "DORY_ISA_EVIDENCE_ROOT": "/tmp/dory-p02-inventory-evidence"
+      },
+      "arguments": [
+        "swift",
+        "test",
+        "--package-path",
+        "/tmp/dory-p02-correctness-source-1/dory-core-swift",
+        "--scratch-path",
+        "/tmp/dory-p02-correctness-build-1",
+        "--jobs",
+        "3",
+        "--no-parallel",
+        "--filter",
+        "DoryX86|DoryPC|DoryARM64|PVHBootRunnerTests|PVHJITDiagnosticsTests|PVHStress|ISAInventoryTests|DoryVirtioNetworkTests"
+      ]
+    }
+  },
+  "cleanBeforeRun40": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-40-command.json",
+    "sha256": "d83fc660fa32bedcef8008b6f473ac4e360d843fbeb08205b5d2039908526535"
+  },
+  "runs": [
+    {
+      "run": 40,
+      "comparisonCommit": "d62ce590308aeb514655c38cd2eb029007ab74dd",
+      "observedToolSession": 46376,
+      "completionChunk": "643558",
+      "exitCode": 0,
+      "buildElapsedSeconds": 110.85,
+      "sourceBinding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-40-commit-binding.json",
+        "sha256": "a652c7cad084c31c33a6cc2033d048de243de3ca64bc9a656a88e5f2fbecad1f"
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-40-source-manifest.json.gz",
+        "sha256": "2f4a2713103d13517cc7bac9f778cec5d1776fc1ec694238babf85e8cdf4c600"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-40-source-overlay.tar.gz",
+        "sha256": "68a014c649800065c8081e79617ba4a67ca5a5f26cd3035842ea4f2e2fed5df3"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-40.log.gz",
+        "sha256": "ed8e60db311adc5a66012185782faa9f3e5ce1548474fe956433e5a5f2036fb7"
+      },
+      "swiftTesting": {
+        "reported": 824,
+        "passed": 823,
+        "failed": 0,
+        "disabledPhysicalReference": 1,
+        "suites": 97,
+        "elapsedSeconds": 6.948
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    },
+    {
+      "run": 41,
+      "comparisonCommit": "0e035a4ae99dcf76f4ebd9af2a72a90328adae85",
+      "observedToolSession": 27095,
+      "completionChunk": "d6737c",
+      "exitCode": 1,
+      "buildElapsedSeconds": 6.49,
+      "sourceBinding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-41-commit-binding.json",
+        "sha256": "328e310897998cc9f6fe9e2052766326862db1994900fe5bff1eb690712d1440"
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-41-source-manifest.json.gz",
+        "sha256": "c92bca67600bd6ecf68dd286db7e933f7f816d07f3374c15dac458c4bf05ef70"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-41-source-overlay.tar.gz",
+        "sha256": "177b8819a11ce362cad65ea43641fbc9c5869f0d7aa0e4ab508b1ab41b609a08"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-41.log.gz",
+        "sha256": "321acdc012d1722ef888ba9fabaf4eae13e52074afeea4c551a13c6b1f0ba49d"
+      },
+      "swiftTesting": {
+        "reported": 829,
+        "passed": 823,
+        "failed": 5,
+        "disabledPhysicalReference": 1,
+        "suites": 98,
+        "elapsedSeconds": 6.865
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      },
+      "failure": "Five exact binary80 regression methods expose 121 assertion issues in the unchanged prior numeric helper. Run42 corrects comparison ordering, huge integer rejection, zero signs, precision-control double rounding and directed binary80 overflow; all five unchanged tests then pass."
+    },
+    {
+      "run": 42,
+      "comparisonCommit": "0e035a4ae99dcf76f4ebd9af2a72a90328adae85",
+      "observedToolSession": 54709,
+      "completionChunk": "425bc3",
+      "exitCode": 0,
+      "buildElapsedSeconds": 8.15,
+      "sourceBinding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-42-commit-binding.json",
+        "sha256": "854cf8a48472c50329b804e89a6e0a964cec95c610654395e8da548ae1876926"
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-42-source-manifest.json.gz",
+        "sha256": "c325640bdd892c1338e4a8f43dc52abc5b94db5a6a8d31472ff3d1d173d43d41"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-42-source-overlay.tar.gz",
+        "sha256": "7b956133722d18f71a3e092587015dda5c541f0aef133babb9e4898d85f0127d"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-42.log.gz",
+        "sha256": "aefdc752759fc570f2d5b76e008bb7bfd7c1d20f7912456de22d889f691f5375"
+      },
+      "swiftTesting": {
+        "reported": 829,
+        "passed": 828,
+        "failed": 0,
+        "disabledPhysicalReference": 1,
+        "suites": 98,
+        "elapsedSeconds": 6.85
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    },
+    {
+      "run": 43,
+      "comparisonCommit": "3337bd44235c45820d1ee6ffe3579b4a70d085e1",
+      "observedToolSession": 63005,
+      "completionChunk": "4de5b9",
+      "exitCode": 0,
+      "buildElapsedSeconds": 9.47,
+      "sourceBinding": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-43-commit-binding.json",
+        "sha256": "6472c0f54a6274af1f60b843b5bff0262c1dd0a1368ba8bc03f76a2dd2195e60"
+      },
+      "manifest": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-43-source-manifest.json.gz",
+        "sha256": "8c69146c4f34c043eda7f4cca0fd9c88860eb34078627ef04fe7b09a932bbaf3"
+      },
+      "overlay": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-43-source-overlay.tar.gz",
+        "sha256": "2cb689d62a0894f5bc82794cb93cf4badeafcd233efd724abf140ef339bb4b2a"
+      },
+      "log": {
+        "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-43.log.gz",
+        "sha256": "a885c61719d62ec660c61e7b3491030463d9ee50114ec4f9facf8dec841e8d64"
+      },
+      "swiftTesting": {
+        "reported": 835,
+        "passed": 834,
+        "failed": 0,
+        "disabledPhysicalReference": 1,
+        "suites": 100,
+        "elapsedSeconds": 6.581
+      },
+      "xctest": {
+        "reported": 11,
+        "passed": 10,
+        "optionalPVHFixtureSkipped": 1,
+        "failed": 0
+      }
+    }
+  ],
+  "releaseBuild": {
+    "sourceCommit": "3337bd44235c45820d1ee6ffe3579b4a70d085e1",
+    "sourceManifest": "/tmp/dory-p02-correctness-manifest-43.json",
+    "sourceManifestSHA256": "1ea140925e8e158ee98b4196888524a1106d0e8f25330fae61934a6a1370f84e",
+    "runner": "/tmp/dory-p02-runner-3337bd442-release",
+    "runnerSHA256": "c27f38e51be5686b18040b0a090b1d3aeee1dc7bcb7399b1aa8eea852266d29b",
+    "runnerBytes": 9163624,
+    "buildLog": "/tmp/dory-p02-release-runner-build-43.log",
+    "buildLogSHA256": "7f245929b0e98e41768d9f3530e1c30471ae39e56f44c78605d57dba09b1a948",
+    "buildElapsedSeconds": 56.21,
+    "exitCode": 0,
+    "observedToolSession": 4746,
+    "completionChunk": "d69d56",
+    "sourceBinding": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-43-commit-binding.json",
+      "sha256": "6472c0f54a6274af1f60b843b5bff0262c1dd0a1368ba8bc03f76a2dd2195e60"
+    },
+    "receipt": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-43-receipt.json",
+      "sha256": "f240f5ce355ff16546e76d7e72d3bad6dec8b806e49a576b7149f6f71ed07ac7"
+    },
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-build-43.log.gz",
+      "sha256": "d4fce0cb62773b3b6862b92758006b13e0fe9fd08cc3d8588a4df6dd0672c3e1"
+    },
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift build --package-path /tmp/dory-p02-correctness-source-1/dory-core-swift --scratch-path /tmp/dory-p02-correctness-build-1 --jobs 3 -c release --product dory-pc-linux-boot-runner",
+    "scope": "Immutable copied runner hash verified locally; binary not vendored."
+  },
+  "ioFixturePreparation": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-v1-fixture-preparation-review.json",
+    "sha256": "4adbf5fdfdc65e46c2ab63bb17e205bb591e19c357ef07c5b1028bfe87f0eb48"
+  },
+  "componentChanges": [
+    {
+      "commit": "8ef20fa39f566dd6934549b2676de5ed1bb73b9a",
+      "scope": "Baseline SSE/SSE2 feature admission and MMX PINSRW bank/alias correction;131 admitted-form vectors."
+    },
+    {
+      "commit": "d62ce590308aeb514655c38cd2eb029007ab74dd",
+      "scope": "Fresh bounded file-backed block and isolated Ethernet peer; exact post-poweroff verification and14 host/runner tests."
+    },
+    {
+      "commit": "0e035a4ae99dcf76f4ebd9af2a72a90328adae85",
+      "scope": "Five reproduced binary80 boundary failures corrected with unchanged exact expected encodings."
+    },
+    {
+      "commit": "3337bd44235c45820d1ee6ffe3579b4a70d085e1",
+      "scope": "Modern VERSION_1 VirtIO network header12bytes and RX num_buffers1, with negotiated PCI regressions."
+    }
+  ],
+  "retentionTransformations": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-40-43-retention-transformations.json",
+    "sha256": "087ac2397c47c6e0d85d21e5df4f8013c66e486dfbb3da41bda18fccb5f6ec95"
+  },
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-40-source-overlay.tar.gz",
+      "sha256": "68a014c649800065c8081e79617ba4a67ca5a5f26cd3035842ea4f2e2fed5df3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-40-commit-binding.json",
+      "sha256": "a652c7cad084c31c33a6cc2033d048de243de3ca64bc9a656a88e5f2fbecad1f"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-40-source-manifest.json.gz",
+      "sha256": "2f4a2713103d13517cc7bac9f778cec5d1776fc1ec694238babf85e8cdf4c600"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-40.log.gz",
+      "sha256": "ed8e60db311adc5a66012185782faa9f3e5ce1548474fe956433e5a5f2036fb7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-41-source-overlay.tar.gz",
+      "sha256": "177b8819a11ce362cad65ea43641fbc9c5869f0d7aa0e4ab508b1ab41b609a08"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-41-commit-binding.json",
+      "sha256": "328e310897998cc9f6fe9e2052766326862db1994900fe5bff1eb690712d1440"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-41-source-manifest.json.gz",
+      "sha256": "c92bca67600bd6ecf68dd286db7e933f7f816d07f3374c15dac458c4bf05ef70"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-41.log.gz",
+      "sha256": "321acdc012d1722ef888ba9fabaf4eae13e52074afeea4c551a13c6b1f0ba49d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-42-source-overlay.tar.gz",
+      "sha256": "7b956133722d18f71a3e092587015dda5c541f0aef133babb9e4898d85f0127d"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-42-commit-binding.json",
+      "sha256": "854cf8a48472c50329b804e89a6e0a964cec95c610654395e8da548ae1876926"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-42-source-manifest.json.gz",
+      "sha256": "c325640bdd892c1338e4a8f43dc52abc5b94db5a6a8d31472ff3d1d173d43d41"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-42.log.gz",
+      "sha256": "aefdc752759fc570f2d5b76e008bb7bfd7c1d20f7912456de22d889f691f5375"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-43-source-overlay.tar.gz",
+      "sha256": "2cb689d62a0894f5bc82794cb93cf4badeafcd233efd724abf140ef339bb4b2a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-43-commit-binding.json",
+      "sha256": "6472c0f54a6274af1f60b843b5bff0262c1dd0a1368ba8bc03f76a2dd2195e60"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-43-source-manifest.json.gz",
+      "sha256": "8c69146c4f34c043eda7f4cca0fd9c88860eb34078627ef04fe7b09a932bbaf3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-43.log.gz",
+      "sha256": "a885c61719d62ec660c61e7b3491030463d9ee50114ec4f9facf8dec841e8d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-40.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/clean-before-run-40-command.json",
+      "sha256": "d83fc660fa32bedcef8008b6f473ac4e360d843fbeb08205b5d2039908526535"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-43-receipt.json",
+      "sha256": "f240f5ce355ff16546e76d7e72d3bad6dec8b806e49a576b7149f6f71ed07ac7"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/release-runner-build-43.log.gz",
+      "sha256": "d4fce0cb62773b3b6862b92758006b13e0fe9fd08cc3d8588a4df6dd0672c3e1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-v1-fixture-source.tar.gz",
+      "sha256": "f2cf7c3bf061defdb0b39beccd5285ed0aeffb07e8718847bb7187f161c719db"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-repro-a.log.gz",
+      "sha256": "9ed00ebd59c1e408e00061cae5cd840575d0557f3bc9eef79243828526b77abd"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-repro-b.log.gz",
+      "sha256": "8fb0779e8dc2b8f9963332a51120b627c888a0b8ad61030ac818cd9942827156"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-zig-version.log.gz",
+      "sha256": "4653ad7c195007e1e1e35a39f387cd05707fd2a178bce952e5d444f9df717aff"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-preparer-tests-final.log.gz",
+      "sha256": "811b888e6235cbd786bdcc02c1d1a0f944157a7221ec651a86da1a47c8218c02"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-init-shellcheck-final.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-preparation-1.json",
+      "sha256": "def78e1994e4214a0297ac5af0a32e8f6d643669e291a1028eeb6f993aa4ffa3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-preparation-1.stderr.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-preparation-replay.json",
+      "sha256": "def78e1994e4214a0297ac5af0a32e8f6d643669e291a1028eeb6f993aa4ffa3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-preparation-replay.stderr.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-v1-invariance.json",
+      "sha256": "1d3727677a0d7a3c7b8eb0f18a4030c9f49bb12dcfbea21c23fdbcd111411e51"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-module-closure.json",
+      "sha256": "cd36561127482d168836eb5b279d805d4ff2c186b91a2cdfa72bcccc099c7b48"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-v1-fixture-manifest.json",
+      "sha256": "d30ac7846f8bd0ef321f007a0d3b4f26578c397e7b4538175f2e4ac99f787176"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-parent-preparer-tests.log.gz",
+      "sha256": "7fd308dfa7a6a85cdd77216e81a42781f2a62ba36c1bc740ee2fef08024de093"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-agent-handoff.json",
+      "sha256": "bb39550744ea2b324978650a32359e93e529d1b17f16d7b73bda517249f7186a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-v1-fixture-preparation-review.json",
+      "sha256": "4adbf5fdfdc65e46c2ab63bb17e205bb591e19c357ef07c5b1028bfe87f0eb48"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/run-40-43-retention-transformations.json",
+      "sha256": "087ac2397c47c6e0d85d21e5df4f8013c66e486dfbb3da41bda18fccb5f6ec95"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete: physical x86 reference, full CPU/FPU/mode/paging qualification, successful systemd and real IO stress remain open.",
+    "Run41 is retained as failing; no failed or skipped test is counted as passed. Overlapping run totals are not summed.",
+    "IO fixture cross-builds and host-unit tests do not establish guest device execution, physical disk durability or external networking.",
+    "The new numeric tests are exact authored boundary vectors, not physical-hardware reference results or comprehensive x87 status/exception qualification.",
+    "Experimental host and concurrent work; all timings are engineering measurements, not P14 qualification."
+  ]
+}

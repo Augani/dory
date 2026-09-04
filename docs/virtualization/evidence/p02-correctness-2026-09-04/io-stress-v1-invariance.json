@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "kind": "stress-v1-preservation",
+  "sourceFiles": [
+    {
+      "path": "guest/diagnostics/p02-userspace-stress/stress.c",
+      "sha256": "fc497442b7e0c13c6a1a1482e3a34bac5d96ed2f858565ef8c05c494c496bbb0",
+      "byteIdenticalToCommit": "4f5da73df"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-stress/Makefile",
+      "sha256": "883457297f94d47edab88bf7246af180f510da5b96a9baad140eebb9b73f73d4",
+      "byteIdenticalToCommit": "4f5da73df"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-stress/README.md",
+      "sha256": "1e5d38a879e4834c3a90d06350a74cab092aa20f467793a7f013ab9a1ed53d08",
+      "byteIdenticalToCommit": "4f5da73df"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-stress/init",
+      "sha256": "8598bb35305dac249ee008be7b4914cf4f18625d3bf42f5c255e3db851807c63",
+      "byteIdenticalToCommit": "4f5da73df"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-stress/build.json",
+      "sha256": "4c733c71c8b088b48f34d72b986272dd51fc648f65c325d7df4b3bb0f4bb0ae7",
+      "byteIdenticalToCommit": "4f5da73df"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-stress/fixture.json",
+      "sha256": "d6ef9d79e8ef37cb94e117beab2e925621e975e79fd4af35e2dabf307254dd74",
+      "byteIdenticalToCommit": "4f5da73df"
+    }
+  ],
+  "cpio": {
+    "filename": "x86_64-p02-userspace-stress-v1.cpio",
+    "bytes": 1535488,
+    "sha256": "b4f77cbb1d2e0f835d724110c307b0fd4d51b5c34afa50ace89ece005efb122c",
+    "byteIdenticalAfterIOPreparerExtension": true
+  },
+  "manifestNotice": "Builder SHA changes with the new option; old provenance manifests are preserved, not overwritten."
+}

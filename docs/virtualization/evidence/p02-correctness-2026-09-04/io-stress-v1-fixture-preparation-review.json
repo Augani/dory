@@ -1,0 +1,208 @@
+{
+  "kind": "p02-io-stress-fixture-preparation-review",
+  "sourceCommit": "731967f5a6202034b59f145afa992d6f9f6e31c8",
+  "sourceFiles": [
+    {
+      "path": "scripts/prepare-virtualization-fixtures.py",
+      "bytes": 70138,
+      "sha256": "65257a516b2825912e4e71d683bf1ee9d8c290a726c2f17d28c035f19a17ca6e"
+    },
+    {
+      "path": "scripts/test-prepare-virtualization-fixtures.py",
+      "bytes": 66901,
+      "sha256": "e6d65d79498d845361126aa78c311640fb8cd289bafe9a00985b86292bfe6692"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-io-stress/stress.c",
+      "bytes": 14601,
+      "sha256": "272b0d1a94d916572d5f0e2680f3e61ba12614d2eb449d23077589c6e203d45d"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-io-stress/Makefile",
+      "bytes": 601,
+      "sha256": "0ca8db0c09d9ae15225077c5a4af03745d2f7d4bc26c5767110b27de7dc78a78"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-io-stress/README.md",
+      "bytes": 7661,
+      "sha256": "64ffc3208fc732054eddb622946808f3bf296eadaa3ec85fbc497b5213397c9c"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-io-stress/init",
+      "bytes": 3842,
+      "sha256": "3bc80218652d81080e91bf5844a28dbe1d5e7257f5a708b9fcfb2d2a849bc6d9"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-io-stress/build.json",
+      "bytes": 1764,
+      "sha256": "58c7bdf268ce381b3a4c21fe00f5ce2a2af215e7e08ca05135f8817437ef3385"
+    },
+    {
+      "path": "guest/diagnostics/p02-userspace-io-stress/fixture.json",
+      "bytes": 4307,
+      "sha256": "f65bb7c1ac5b9a7d69ec605f21536772c33dca3ecca8ffa95246d42918fcd1cd"
+    }
+  ],
+  "sourceArchive": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-v1-fixture-source.tar.gz",
+    "sha256": "f2cf7c3bf061defdb0b39beccd5285ed0aeffb07e8718847bb7187f161c719db"
+  },
+  "crossBuilds": [
+    {
+      "path": "/tmp/dory-p02-io-stress-repro-a/p02-userspace-io-stress",
+      "bytes": 40712,
+      "sha256": "72eee711647f609d8f7dac5b87429038d7f2fdb97d7ba6d1240532add7a5f9b5"
+    },
+    {
+      "path": "/tmp/dory-p02-io-stress-repro-b/p02-userspace-io-stress",
+      "bytes": 40712,
+      "sha256": "72eee711647f609d8f7dac5b87429038d7f2fdb97d7ba6d1240532add7a5f9b5"
+    }
+  ],
+  "fixtureArchive": {
+    "path": "/tmp/dory-p02-io-stress-fixture-reproduction-1/x86_64-p02-userspace-io-stress-v1.cpio",
+    "bytes": 2114560,
+    "sha256": "cbd5f9a8716052abfe710da732b70e6a2e8b038c7603387e943787b051578a35"
+  },
+  "fixtureManifest": {
+    "path": "/tmp/dory-p02-io-stress-fixture-reproduction-1/x86_64-p02-userspace-io-stress-v1.cpio.manifest.json",
+    "bytes": 5252,
+    "sha256": "d30ac7846f8bd0ef321f007a0d3b4f26578c397e7b4538175f2e4ac99f787176"
+  },
+  "commands": [
+    {
+      "command": "make -j1 -C guest/diagnostics/p02-userspace-io-stress BUILD_DIR=/tmp/dory-p02-io-stress-repro-a > /tmp/dory-p02-io-stress-repro-a.log 2>&1",
+      "exitCode": 0,
+      "chunk": "f7f1a6"
+    },
+    {
+      "command": "make -j1 -C /tmp/dory-p02-io-stress-repro-source-b BUILD_DIR=/tmp/dory-p02-io-stress-repro-b > /tmp/dory-p02-io-stress-repro-b.log 2>&1",
+      "exitCode": 0,
+      "chunk": "58cb33",
+      "sourceCopy": "Exact stress.c and Makefile bytes copied into the different source directory before the command"
+    },
+    {
+      "command": "python3 scripts/test-prepare-virtualization-fixtures.py > /tmp/dory-p02-io-stress-preparer-tests-final.log 2>&1",
+      "exitCode": 0,
+      "chunk": "fa0c72",
+      "testMethods": 53,
+      "newIOTestMethods": 4
+    },
+    {
+      "command": "/bin/sh -n guest/diagnostics/p02-userspace-io-stress/init && shellcheck -s sh guest/diagnostics/p02-userspace-io-stress/init > /tmp/dory-p02-io-stress-init-shellcheck-final.log 2>&1",
+      "exitCode": 0,
+      "chunk": "1ae86c"
+    },
+    {
+      "command": "python3 scripts/prepare-virtualization-fixtures.py --id alpine-virt-3.24.1-x86_64 --cache-directory /tmp/dory-p02-io-stress-fixture-reproduction-1 --verify-only --extract --io-stress-diagnostic-initramfs --stress-binary /tmp/dory-p02-io-stress-repro-a/p02-userspace-io-stress --stress-build-metadata guest/diagnostics/p02-userspace-io-stress/build.json > /tmp/dory-p02-io-stress-fixture-preparation-1.json 2> /tmp/dory-p02-io-stress-fixture-preparation-1.stderr",
+      "exitCode": 0,
+      "chunk": "60518a",
+      "cacheSetup": "New cache with hard links to pinned Alpine ISO/extractions; the preparer independently reverified all hashes"
+    },
+    {
+      "command": "python3 scripts/prepare-virtualization-fixtures.py --id alpine-virt-3.24.1-x86_64 --cache-directory /tmp/dory-p02-io-stress-fixture-reproduction-1 --verify-only --extract --io-stress-diagnostic-initramfs --stress-binary /tmp/dory-p02-io-stress-repro-b/p02-userspace-io-stress --stress-build-metadata guest/diagnostics/p02-userspace-io-stress/build.json > /tmp/dory-p02-io-stress-fixture-preparation-replay.json 2> /tmp/dory-p02-io-stress-fixture-preparation-replay.stderr",
+      "exitCode": 0,
+      "chunk": "4357d1"
+    }
+  ],
+  "parentPreparationTests": {
+    "command": "python3 scripts/test-prepare-virtualization-fixtures.py > /tmp/dory-p02-io-stress-parent-preparer-tests.log 2>&1",
+    "exitCode": 0,
+    "completionChunk": "cf51d0",
+    "passed": 53,
+    "elapsedSeconds": 0.496
+  },
+  "ioContract": {
+    "block": {
+      "device": "/dev/vda",
+      "deviceBytes": 33554432,
+      "offset": 1048576,
+      "bytes": 131072,
+      "rounds": 8,
+      "pattern": "(i*37+(i>>8))&255 for zero-based i within region",
+      "minimumHostFlushes": 1,
+      "hostReopenedFileVerificationRequired": true
+    },
+    "ethernet": {
+      "interface": "eth0",
+      "etherType": 34997,
+      "guestMAC": "02:d0:52:00:00:01",
+      "peerMAC": "02:d0:52:00:00:02",
+      "frameBytes": 1024,
+      "dataBytes": 980,
+      "minimumFrames": 4096,
+      "maximumFrames": 16384,
+      "minimumElapsedNanoseconds": 5000000000,
+      "maximumElapsedNanoseconds": 30000000000,
+      "maximumIrrelevantFrames": 64,
+      "maximumOutstandingFrames": 1,
+      "receiptField": "ioNetwork",
+      "bytesAccounting": "frames*1024, full Ethernet frames, not TX+RX doubled",
+      "reply": "Only swap source and destination MACs; all other bytes unchanged"
+    }
+  },
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-repro-a.log.gz",
+      "sha256": "9ed00ebd59c1e408e00061cae5cd840575d0557f3bc9eef79243828526b77abd"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-repro-b.log.gz",
+      "sha256": "8fb0779e8dc2b8f9963332a51120b627c888a0b8ad61030ac818cd9942827156"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-zig-version.log.gz",
+      "sha256": "4653ad7c195007e1e1e35a39f387cd05707fd2a178bce952e5d444f9df717aff"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-preparer-tests-final.log.gz",
+      "sha256": "811b888e6235cbd786bdcc02c1d1a0f944157a7221ec651a86da1a47c8218c02"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-init-shellcheck-final.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-preparation-1.json",
+      "sha256": "def78e1994e4214a0297ac5af0a32e8f6d643669e291a1028eeb6f993aa4ffa3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-preparation-1.stderr.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-preparation-replay.json",
+      "sha256": "def78e1994e4214a0297ac5af0a32e8f6d643669e291a1028eeb6f993aa4ffa3"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-preparation-replay.stderr.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-v1-invariance.json",
+      "sha256": "1d3727677a0d7a3c7b8eb0f18a4030c9f49bb12dcfbea21c23fdbcd111411e51"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/alpine-module-closure.json",
+      "sha256": "cd36561127482d168836eb5b279d805d4ff2c186b91a2cdfa72bcccc099c7b48"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-v1-fixture-manifest.json",
+      "sha256": "d30ac7846f8bd0ef321f007a0d3b4f26578c397e7b4538175f2e4ac99f787176"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-parent-preparer-tests.log.gz",
+      "sha256": "7fd308dfa7a6a85cdd77216e81a42781f2a62ba36c1bc740ee2fef08024de093"
+    },
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-fixture-agent-handoff.json",
+      "sha256": "bb39550744ea2b324978650a32359e93e529d1b17f16d7b73bda517249f7186a"
+    }
+  ],
+  "limitations": [
+    "Not physical-media durability, filesystem recovery or VM-restart qualification",
+    "Not TCP/IP, host networking, external endpoint or physical-NIC qualification",
+    "Module loading/device enumeration and actual IO are unverified until guest execution",
+    "No successful IO guest run is claimed by this preparation/source receipt."
+  ]
+}

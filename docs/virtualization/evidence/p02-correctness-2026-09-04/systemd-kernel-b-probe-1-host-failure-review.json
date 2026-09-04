@@ -1,0 +1,93 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-systemd-host-sigtrap-reduction",
+  "scope": "Source39 actual runner host crash; no successful guest outcome or diagnostic JSON exists. Read-only report/binary/source inspection; no guest memory read, VM or replay run.",
+  "implementationCommit": "d0e61d7e0f23a43d696fa05d6c6c69bbb5274d41",
+  "runnerSHA256": "0eea45a55a46ad4e46cdf1283aee25a29f084a4893141125a8a6092ac6f7c4da",
+  "runnerMachOUUID": "6ba313ba-f083-3ebe-9089-09074e10862c",
+  "probeArtifacts": {
+    "invocation": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-invocation.json",
+      "sha256": "eb39fbea273e7e81d8bbd779e93ef747481637266a5dffc490cd211f770b1e19",
+      "bytes": 2007
+    },
+    "exit": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1.exit",
+      "sha256": "0b2f06dddfa807ee574a78468d3a05904873b97f44377eb93481e091c257b800",
+      "bytes": 3
+    },
+    "log": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1.log.gz",
+      "sha256": "9ceffb7310338057cfe71a4ae1e2c98d2c485d81cdef906532a801f457a38d64",
+      "bytes": 20
+    },
+    "diagnosticJSONProduced": false
+  },
+  "completion": {
+    "observedToolSession": 31842,
+    "toolExitCode": 251,
+    "completionChunk": "da7d24",
+    "subprocessReturnCode": -5,
+    "signal": "SIGTRAP"
+  },
+  "crash": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-host-crash-selection.json",
+    "sha256": "57105a8fad9f0620f09b55ae6f3f912a80358057d44735c50ab44ba890718dd8",
+    "bytes": 3693
+  },
+  "disassembly": {
+    "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-host-disassembly.txt.gz",
+    "sha256": "18518611bbab950636d6c723bf95c09b5dfdc6a00afcf0c0e9e12859e85a70e0",
+    "bytes": 1455
+  },
+  "disassemblyCommand": [
+    "xcrun",
+    "llvm-objdump",
+    "--disassemble",
+    "--start-address=0x10010deec",
+    "--stop-address=0x10010e030",
+    "/tmp/dory-p02-runner-d0e61d7e0-release"
+  ],
+  "source": {
+    "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift",
+    "wholeFileSHA256": "e7f9476cbc9135101a4b90612ce3c10e58a2553f4c18fb636626ded91b8a693d",
+    "firstLine": 6461,
+    "lastLine": 6493,
+    "excerpt": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-source39-accumulator.txt",
+      "sha256": "7f2012b8aeecd40052e17dfbef669756530be315fd76e75c1ba8f523a68be456",
+      "bytes": 1180
+    }
+  },
+  "cause": "CDQE narrows full RAX with checked UInt32 rather than taking EAX. Host x8 is0xffffffffffffffe7; lsr x9,x8,#32 produces0xffffffff; cbnz takes brk1 before sxtw. CBW/CWDE have analogous checked UInt8/UInt16 traps.",
+  "exactInstructions": [
+    {
+      "unslidAddress": "0x10010dff0",
+      "word": "d360fd09",
+      "instruction": "lsr x9, x8, #32"
+    },
+    {
+      "unslidAddress": "0x10010dff4",
+      "word": "b50001a9",
+      "instruction": "cbnz x9, 0x10010e028"
+    },
+    {
+      "unslidAddress": "0x10010dff8",
+      "word": "93407d08",
+      "instruction": "sxtw x8, w8"
+    },
+    {
+      "unslidAddress": "0x10010e028",
+      "word": "d4200020",
+      "instruction": "brk #1"
+    }
+  ],
+  "reducer": {
+    "mode": "long64",
+    "bytesHex": "4898",
+    "RAXBefore": "ffffffffffffffe7",
+    "RAXExpectedAfter": "ffffffffffffffe7",
+    "note": "A newly authored minimal reproducer of the host narrowing path. Exact guest instruction bytes were not sampled; width3/intoHighHalf0 arguments and the decoded helper path identify CDQE."
+  },
+  "proposedFix": "Use truncatingIfNeeded for the three source-width integer conversions. Preserve register-write masks, flags and every other helper behavior."
+}

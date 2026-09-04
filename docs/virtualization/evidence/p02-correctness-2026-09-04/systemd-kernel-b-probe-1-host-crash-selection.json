@@ -1,0 +1,120 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-selected-host-crash-evidence",
+  "originalReport": {
+    "path": "${HOME}/Library/Logs/DiagnosticReports/dory-p02-runner-d0e61d7e0-release-2026-09-04-155911.ips",
+    "sha256": "39bb84e1d43eded47129635a83aa0baa9a036ccbabafa257241d0aeaa4fb6d9d",
+    "bytes": 7251
+  },
+  "transformation": "Select only this runner process identity, signal, triggered thread frames, and host x0/x1/x8/x9/pc/esr registers. Omit other threads, images and all unrelated report fields; replace home prefix in original path. No guest memory was read.",
+  "process": {
+    "procName": "dory-p02-runner-d0e61d7e0-release",
+    "procPath": "/private/tmp/dory-p02-runner-d0e61d7e0-release",
+    "pid": 66241,
+    "procLaunch": "2026-09-04 15:52:43.5449 +0000",
+    "captureTime": "2026-09-04 15:59:10.5347 +0000"
+  },
+  "exception": {
+    "codes": "0x0000000000000001, 0x0000000100276028",
+    "rawCodes": [
+      1,
+      4297547816
+    ],
+    "type": "EXC_BREAKPOINT",
+    "signal": "SIGTRAP"
+  },
+  "termination": {
+    "flags": 0,
+    "code": 5,
+    "namespace": "SIGNAL",
+    "indicator": "Trace/BPT trap: 5",
+    "byProc": "exc handler",
+    "byPid": 66241
+  },
+  "runnerImage": {
+    "source": "P",
+    "arch": "arm64",
+    "base": 4296441856,
+    "size": 2719744,
+    "uuid": "6ba313ba-f083-3ebe-9089-09074e10862c",
+    "path": "/private/tmp/dory-p02-runner-d0e61d7e0-release",
+    "name": "dory-p02-runner-d0e61d7e0-release"
+  },
+  "triggeredThread": {
+    "id": 4641840,
+    "queue": "com.apple.main-thread",
+    "frames": [
+      {
+        "imageOffset": 1105960,
+        "symbol": "specialized DoryX86Interpreter.signExtendAccumulator(width:intoHighHalf:state:)",
+        "symbolLocation": 316,
+        "imageIndex": 0
+      },
+      {
+        "imageOffset": 1047288,
+        "symbol": "specialized DoryX86Interpreter.executeStep(state:memory:mode:pagingUnit:translatedMemory:ioBus:)",
+        "symbolLocation": 10296,
+        "imageIndex": 0
+      },
+      {
+        "imageOffset": 1036672,
+        "symbol": "specialized DoryX86Interpreter.step(state:memory:mode:pagingUnit:translatedMemory:ioBus:)",
+        "symbolLocation": 160,
+        "imageIndex": 0
+      },
+      {
+        "imageOffset": 1025364,
+        "symbol": "DoryX86Interpreter.step(state:memory:mode:pagingUnit:translatedMemory:ioBus:)",
+        "symbolLocation": 120,
+        "imageIndex": 0
+      },
+      {
+        "imageOffset": 1608968,
+        "symbol": "specialized DoryPCDirectKernelMachine.execute(processor:state:maximumInstructions:jitInstructionBudget:)",
+        "symbolLocation": 464,
+        "imageIndex": 0
+      },
+      {
+        "imageOffset": 1546864,
+        "symbol": "closure #1 in DoryPCDirectKernelMachine.run(maximumInstructions:exceptionPolicy:)",
+        "symbolLocation": 1420,
+        "imageIndex": 0
+      },
+      {
+        "imageOffset": 1545344,
+        "symbol": "DoryPCDirectKernelMachine.run(maximumInstructions:exceptionPolicy:)",
+        "symbolLocation": 80,
+        "imageIndex": 0
+      },
+      {
+        "imageOffset": 2086296,
+        "symbol": "run(_:)",
+        "symbolLocation": 3428,
+        "imageIndex": 0
+      },
+      {
+        "imageOffset": 2082720,
+        "symbol": "dory_pc_linux_boot_runner_main",
+        "symbolLocation": 760,
+        "imageIndex": 0
+      },
+      {
+        "imageOffset": 204424,
+        "symbol": "start",
+        "symbolLocation": 6688,
+        "imageIndex": 1
+      }
+    ],
+    "hostRegisters": {
+      "x0": 3,
+      "x1": 0,
+      "x8": 18446744073709551591,
+      "x9": 4294967295,
+      "pc": 4297547816,
+      "esr": {
+        "value": 4060086273,
+        "description": "(Breakpoint) brk 1"
+      }
+    }
+  }
+}

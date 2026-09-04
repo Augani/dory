@@ -1,0 +1,49 @@
+{
+  "schemaVersion": 1,
+  "kind": "virtualization-fixture-preparation",
+  "cacheDirectory": "/tmp/dory-p02-io-stress-fixture-reproduction-1",
+  "qualification": "input integrity only; no guest boot or workload qualification",
+  "artifacts": [
+    {
+      "id": "alpine-virt-3.24.1-x86_64",
+      "filename": "alpine-virt-3.24.1-x86_64.iso",
+      "sha256": "e73a6241bd5f3c5c2d4d38c02cc52c378c0415a7c888bd292066bf36e0f41a39",
+      "bytes": 69206016,
+      "action": "verified-cache",
+      "extractions": [
+        {
+          "filename": "x86_64-initramfs-virt",
+          "sha256": "4caf09640385525632f0a54dfeabd08b5bf5ceeb2b7d63e888fb858b7b3fa006",
+          "bytes": 9828707,
+          "action": "verified-cache"
+        },
+        {
+          "filename": "x86_64-vmlinuz-virt",
+          "sha256": "1e6bf9027720c75c3ed0d79171f21b5791ee40ca9795d07c7c6e04dc5ea2ae90",
+          "bytes": 12575744,
+          "action": "verified-cache"
+        },
+        {
+          "filename": "x86_64-vmlinux",
+          "sha256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+          "bytes": 39274268,
+          "action": "verified-cache"
+        },
+        {
+          "filename": "x86_64-System.map-6.18.35",
+          "sha256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+          "bytes": 6391693,
+          "action": "verified-cache"
+        }
+      ]
+    }
+  ],
+  "diagnosticInitramfs": {
+    "filename": "x86_64-p02-userspace-io-stress-v1.cpio",
+    "sha256": "cbd5f9a8716052abfe710da732b70e6a2e8b038c7603387e943787b051578a35",
+    "bytes": 2114560,
+    "manifestFilename": "x86_64-p02-userspace-io-stress-v1.cpio.manifest.json",
+    "manifestSHA256": "d30ac7846f8bd0ef321f007a0d3b4f26578c397e7b4538175f2e4ac99f787176",
+    "qualification": "archive integrity and deterministic construction only; guest has not executed"
+  }
+}

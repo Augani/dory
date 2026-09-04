@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.virtualization-evidence",
+  "subsystem": "cpu",
+  "issueLabel": "subsystem:cpu",
+  "planItems": [
+    "P02-09",
+    "P02-15",
+    "P02-16"
+  ],
+  "sourceCommit": "3337bd44235c45820d1ee6ffe3579b4a70d085e1",
+  "cells": [
+    "linux-x86_64-translated"
+  ],
+  "host": {
+    "architecture": "arm64",
+    "version": "27.0",
+    "build": "26A5425a",
+    "classification": "experimental",
+    "xcodeBuild": "17F109",
+    "sdk": "26.5"
+  },
+  "status": "baseline-recorded",
+  "scope": "Bounded source40\u201343 correctness gates, numeric failure reduction and IO fixture preparation; no new guest acceptance claim.",
+  "releaseQualified": false,
+  "artifacts": [
+    {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/review-through-run-43.json",
+      "sha256": "5860c3ca8ffb8e60346f9360d44684c0565d6279203f84e941df0687d117ad74"
+    }
+  ],
+  "limitations": [
+    "P02 remains incomplete: physical x86 reference, full CPU/FPU/mode/paging qualification, successful systemd and real IO stress remain open.",
+    "Run41 is retained as failing; no failed or skipped test is counted as passed. Overlapping run totals are not summed.",
+    "IO fixture cross-builds and host-unit tests do not establish guest device execution, physical disk durability or external networking.",
+    "The new numeric tests are exact authored boundary vectors, not physical-hardware reference results or comprehensive x87 status/exception qualification.",
+    "Experimental host and concurrent work; all timings are engineering measurements, not P14 qualification."
+  ]
+}

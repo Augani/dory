@@ -1,0 +1,115 @@
+{
+  "acceptance": "Fresh matching UUID, both IO workloads, child exit 0, reconciled ioNetwork counters, host reopened block bytes and actual flush, and independent host ACPI S5 poweroff",
+  "architecture": "x86_64",
+  "buildMetadataSHA256": "58c7bdf268ce381b3a4c21fe00f5ce2a2af215e7e08ca05135f8817437ef3385",
+  "buildTrust": "Hashes and static ELF shape checked; supplied compiler provenance is not independently attested",
+  "builderSHA256": "65257a516b2825912e4e71d683bf1ee9d8c290a726c2f17d28c035f19a17ca6e",
+  "format": "newc; sorted names; uid/gid/mtime zero; sequential inodes; 512-byte padded; uncompressed",
+  "kernel": {
+    "filename": "x86_64-vmlinux",
+    "sha256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8"
+  },
+  "kind": "p02-userspace-io-stress-build",
+  "limitations": [
+    "No guest execution by preparer",
+    "Raw block/backend verification is not physical-media durability",
+    "Isolated Ethernet frames do not qualify TCP/IP, external networks or physical NICs"
+  ],
+  "localFiles": {
+    "Makefile": {
+      "bytes": 601,
+      "sha256": "0ca8db0c09d9ae15225077c5a4af03745d2f7d4bc26c5767110b27de7dc78a78"
+    },
+    "init": {
+      "bytes": 3842,
+      "sha256": "3bc80218652d81080e91bf5844a28dbe1d5e7257f5a708b9fcfb2d2a849bc6d9"
+    },
+    "stress.c": {
+      "bytes": 14601,
+      "sha256": "272b0d1a94d916572d5f0e2680f3e61ba12614d2eb449d23077589c6e203d45d"
+    }
+  },
+  "members": {
+    "usr/bin/busybox": "01a989eb4d1d04b0d146c790ac536abd88f374ec74a2e110c58910b840d42045",
+    "usr/lib/ld-musl-x86_64.so.1": "38d022ce7425ff105ccfb53598f606e6e5f5f0a34bfbc793d65e6f34c9d72806",
+    "usr/lib/modules/6.18.35-0-virt/kernel/drivers/block/virtio_blk.ko": "2229ae30e4205a9ddb57ffb242517c1108f9ddb31fc481ca5d68f1335637cd5f",
+    "usr/lib/modules/6.18.35-0-virt/kernel/drivers/net/net_failover.ko": "7a96f35ee688156e44583627144496cce1803e1c1490d2a03850dbf78c73f0b6",
+    "usr/lib/modules/6.18.35-0-virt/kernel/drivers/net/virtio_net.ko": "64924824bd3c079e78824610bf568186be17362552f899b87217caaae54310c7",
+    "usr/lib/modules/6.18.35-0-virt/kernel/net/core/failover.ko": "0515e4062176bdb30b6e90e98c8ce7c34056da3969892eb6457dd90be1734167",
+    "usr/lib/modules/6.18.35-0-virt/kernel/net/packet/af_packet.ko": "b28eb4e5a18d1c9071c3111dd0836ffcad5b2e6d1188a9343c5bb142f9687fe3"
+  },
+  "observedStressELF": {
+    "embeddedSourceSHA256": "420f9bb6b699dc8043d76568f8076254fd799e39ee85a181f9a771c81e711dcc",
+    "entry": 16787808,
+    "format": "ELF64 little-endian ET_EXEC x86-64",
+    "loadSegmentCount": 3,
+    "staticNoInterpreterOrDynamicTable": true
+  },
+  "outputBytes": 2114560,
+  "outputFilename": "x86_64-p02-userspace-io-stress-v1.cpio",
+  "outputSHA256": "cbd5f9a8716052abfe710da732b70e6a2e8b038c7603387e943787b051578a35",
+  "qualification": "archive integrity and deterministic construction only; guest has not executed",
+  "recipeSHA256": "f65bb7c1ac5b9a7d69ec605f21536772c33dca3ecca8ffa95246d42918fcd1cd",
+  "requiredWorkloads": [
+    "io.block_flush_reopen",
+    "io.ethernet_frame_roundtrip"
+  ],
+  "schemaVersion": 1,
+  "source": {
+    "filename": "x86_64-initramfs-virt",
+    "sha256": "4caf09640385525632f0a54dfeabd08b5bf5ceeb2b7d63e888fb858b7b3fa006"
+  },
+  "sourceArtifactID": "alpine-virt-3.24.1-x86_64",
+  "sourceArtifactSHA256": "e73a6241bd5f3c5c2d4d38c02cc52c378c0415a7c888bd292066bf36e0f41a39",
+  "suppliedBuildMetadata": {
+    "binary": {
+      "bytes": 40712,
+      "sha256": "72eee711647f609d8f7dac5b87429038d7f2fdb97d7ba6d1240532add7a5f9b5"
+    },
+    "commandTemplate": [
+      "zig",
+      "cc",
+      "-target",
+      "x86_64-linux-musl",
+      "-mcpu=baseline",
+      "-static",
+      "-std=c11",
+      "-O2",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-s",
+      "-ffile-prefix-map=<source-directory>=/dory/p02-userspace-io-stress",
+      "-DDORY_STRESS_SOURCE_SHA256=\"420f9bb6b699dc8043d76568f8076254fd799e39ee85a181f9a771c81e711dcc\"",
+      "stress.c",
+      "-o",
+      "<build-directory>/p02-userspace-io-stress"
+    ],
+    "commandTemplateVariables": "Only source-directory and build-directory vary; flags and embedded source digest are literal",
+    "compiler": {
+      "name": "zig",
+      "version": "0.15.2"
+    },
+    "cpu": "baseline",
+    "executedGuestCode": false,
+    "kind": "p02-userspace-io-stress-cross-build",
+    "observedELF": {
+      "embeddedSourceSHA256": "420f9bb6b699dc8043d76568f8076254fd799e39ee85a181f9a771c81e711dcc",
+      "entry": 16787808,
+      "format": "ELF64 little-endian ET_EXEC x86-64",
+      "loadSegmentCount": 3,
+      "staticNoInterpreterOrDynamicTable": true
+    },
+    "qualification": "Cross-compilation and static inspection only; no guest execution or workload qualification",
+    "reproducibility": {
+      "identicalELFBytes": true,
+      "scope": "Two source paths on the same macOS ARM64 host with Zig 0.15.2; cross-host and compiler-distribution reproducibility not established",
+      "verifiedDistinctLocalSourceDirectories": 2
+    },
+    "schemaVersion": 1,
+    "sourceDigestDefinition": "SHA-256 of stress.c bytes followed immediately by Makefile bytes",
+    "sourceSHA256": "420f9bb6b699dc8043d76568f8076254fd799e39ee85a181f9a771c81e711dcc",
+    "stripped": true,
+    "target": "x86_64-linux-musl"
+  }
+}

@@ -1,0 +1,222 @@
+{
+  "schemaVersion": 1,
+  "kind": "p02-evidence-retention-validation",
+  "reviewSHA256": "5860c3ca8ffb8e60346f9360d44684c0565d6279203f84e941df0687d117ad74",
+  "newArtifactsBeforeThisValidation": 40,
+  "distinctRepositoryArtifactReferencesVerified": 47,
+  "previousReviewHashVerified": true,
+  "envelopesSchemaValidated": 2,
+  "schemaPath": "Config/DoryVirtualizationEvidence.schema.json",
+  "schemaSHA256": "cca4d087db6738fccf5b9c9561a8b17962be57b71f861a56dafb154c7db293fb",
+  "sourceBindings": [
+    {
+      "run": 40,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "d62ce590308aeb514655c38cd2eb029007ab74dd",
+      "trackedInputs": 704,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 108,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    },
+    {
+      "run": 41,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "0e035a4ae99dcf76f4ebd9af2a72a90328adae85",
+      "trackedInputs": 705,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 109,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": [
+        {
+          "path": "dory-core-swift/Sources/DoryDBTX86/DoryX86ExtendedFloat.swift",
+          "frozenSHA256": "d760a87389cc41c8241d8ecdff75c9d6d7d18f54b27e7092017bd7d1d7302706",
+          "commitSHA256": "e00da8e65c3ac04b60bd8ad600ee8952484913fdc5ce19710a4062388949e3bb"
+        }
+      ]
+    },
+    {
+      "run": 42,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "0e035a4ae99dcf76f4ebd9af2a72a90328adae85",
+      "trackedInputs": 705,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 110,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    },
+    {
+      "run": 43,
+      "baseCommit": "f657c52d16f8d4a947430747c28e025c5972a2da",
+      "comparisonCommit": "3337bd44235c45820d1ee6ffe3579b4a70d085e1",
+      "trackedInputs": 706,
+      "generatedFFIInputs": 6,
+      "overlayMembers": 114,
+      "basePlusOverlayReconstructed": true,
+      "trackedDifferences": []
+    }
+  ],
+  "strictLogCountsVerified": true,
+  "logCounts": [
+    {
+      "run": 40,
+      "swiftPassed": 823,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 824,
+      "swiftSuites": 97,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    },
+    {
+      "run": 41,
+      "swiftPassed": 823,
+      "swiftFailed": 5,
+      "swiftDisabled": 1,
+      "swiftReported": 829,
+      "swiftSuites": 98,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": [
+        "\udbc2\udc84  Test infinitiesZerosAndFiniteValuesHaveNumericOrder() failed after 0.001 seconds with 12 issues.",
+        "\udbc2\udc84  Test largeIntegerConversionsRejectBeforeWideShiftTruncation() failed after 0.003 seconds with 96 issues.",
+        "\udbc2\udc84  Test exactCancellationAndMixedZerosUseTheRoundingDirection() failed after 0.001 seconds with 7 issues.",
+        "\udbc2\udc84  Test precisionControlRoundsOnceAtAnExactHalfwayBoundary() failed after 0.001 seconds with 2 issues.",
+        "\udbc2\udc84  Test binary80OverflowUsesTheGuestRoundingDirection() failed after 0.001 seconds with 4 issues."
+      ]
+    },
+    {
+      "run": 42,
+      "swiftPassed": 828,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 829,
+      "swiftSuites": 98,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    },
+    {
+      "run": 43,
+      "swiftPassed": 834,
+      "swiftFailed": 0,
+      "swiftDisabled": 1,
+      "swiftReported": 835,
+      "swiftSuites": 100,
+      "xctestPassed": 10,
+      "xctestSkipped": 1,
+      "xctestFailed": 0,
+      "failureLines": []
+    }
+  ],
+  "numericFailure": {
+    "failedMethods": 5,
+    "issues": 121,
+    "exactFailures": [
+      {
+        "method": "infinitiesZerosAndFiniteValuesHaveNumericOrder()",
+        "issues": 12
+      },
+      {
+        "method": "largeIntegerConversionsRejectBeforeWideShiftTruncation()",
+        "issues": 96
+      },
+      {
+        "method": "exactCancellationAndMixedZerosUseTheRoundingDirection()",
+        "issues": 7
+      },
+      {
+        "method": "precisionControlRoundsOnceAtAnExactHalfwayBoundary()",
+        "issues": 2
+      },
+      {
+        "method": "binary80OverflowUsesTheGuestRoundingDirection()",
+        "issues": 4
+      }
+    ],
+    "unchangedRegressionTestPath": "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86ExtendedFloatBoundaryTests.swift",
+    "testSHA256": "8327953e8bc04a42844a0e16e15ea77662c3c51dfb9cfce5fe58359c3cd24186",
+    "allFivePassAfterSource42Correction": true
+  },
+  "hostIOTestDeclarationsAndPassedLines": [
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCLinuxBootRunnerTests/PVHStressIOTests.swift",
+      "passedMethods": 12,
+      "sha256": "a7632f0624996ea195924515836aa636307a43f45f622e359b085c68de8ac072"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryMachinePCLinuxBootRunnerTests/PVHStressIOConfigurationTests.swift",
+      "passedMethods": 2,
+      "sha256": "82c13c89a71374329a07557ebe928e703d6b24721649c65456d0c586101b7c32"
+    }
+  ],
+  "baselineFeaturePolicy": {
+    "testMethodsPassed": 8,
+    "loopFormCounts": [
+      42,
+      24,
+      25,
+      8,
+      3
+    ],
+    "explicitFormCount": 29,
+    "admittedEncodingCount": 131,
+    "scope": "Exact decoded/feature-policy forms and masked execution fault attempts; not131 successfully retired forms or physical-reference cases."
+  },
+  "ioFixture": {
+    "sourceCommit": "731967f5a6202034b59f145afa992d6f9f6e31c8",
+    "sourceFilesVerified": 8,
+    "crossBuildOutputsIdentical": true,
+    "archiveSHA256": "cbd5f9a8716052abfe710da732b70e6a2e8b038c7603387e943787b051578a35",
+    "cpioEntriesChecked": 30,
+    "pinnedELFAndModuleMembersChecked": 7,
+    "binaryOutputsVerifiedLocallyNotVendored": true,
+    "scriptUnitCounts": [
+      {
+        "log": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-parent-preparer-tests.log.gz",
+          "sha256": "7fd308dfa7a6a85cdd77216e81a42781f2a62ba36c1bc740ee2fef08024de093"
+        },
+        "passed": 53
+      },
+      {
+        "log": {
+          "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-preparer-tests-final.log.gz",
+          "sha256": "811b888e6235cbd786bdcc02c1d1a0f944157a7221ec651a86da1a47c8218c02"
+        },
+        "passed": 53
+      }
+    ],
+    "preparationReplayIdentical": true
+  },
+  "releaseRunner": {
+    "sourceCommit": "3337bd44235c45820d1ee6ffe3579b4a70d085e1",
+    "sha256": "c27f38e51be5686b18040b0a090b1d3aeee1dc7bcb7399b1aa8eea852266d29b",
+    "byteCount": 9163624,
+    "buildExitCode": 0
+  },
+  "noUserHomePathsInNewArtifactTextOrMembers": true,
+  "tarOwnerAndTimeNormalizationVerified": true,
+  "pathNormalizedArtifacts": [
+    "docs/virtualization/evidence/p02-correctness-2026-09-04/io-stress-repro-a.log.gz"
+  ],
+  "systemdHostFailureAppendix": {
+    "reference": {
+      "path": "docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-1-host-failure-appendix.json",
+      "sha256": "b5397a9753b233e7f5f988da0858bed0d98c0d1adf24734972857b7bbac0e60e"
+    },
+    "artifactsVerified": 8,
+    "sourceCommit": "d0e61d7e0f23a43d696fa05d6c6c69bbb5274d41",
+    "signal": "SIGTRAP",
+    "subprocessReturnCode": -5,
+    "selectedReportOriginalHashAndFramesVerified": true,
+    "sourceExcerptVerified": true,
+    "successfulGuestReceiptOrFixGateClaimed": false
+  },
+  "normalizationByThisValidation": "None; all retained inputs read-only.",
+  "qualification": "Source40\u201343, fixture provenance and existing logs only. No new build, guest execution, physical reference or full P02/P14 qualification. Systemd and real IO stress have no accepted outcome in this receipt."
+}
