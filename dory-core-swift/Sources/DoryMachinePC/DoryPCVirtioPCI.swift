@@ -346,9 +346,12 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     }
   }
 
-  private func drain(queue index: UInt16) {
+  private func drain(queue index: UInt16, armNotifications: Bool = false) {
     let snapshot = deviceState.snapshot()
     guard snapshot.status.contains(.driverOK) else { return }
+    // Readiness-triggered draining exists to initialize the negotiated event
+    // field. Preserve the existing notification path for ordinary queues.
+    if armNotifications, !snapshot.negotiatedFeatures.contains(.eventIndex) { return }
     let processing = lock.withLock {
       (guestMemory, queueCanProcess, queueProcessor, deferredQueueProcessor)
     }
@@ -359,10 +362,16 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
     defer { processingLock.unlock() }
     do {
       let queue = try queue(at: index)
+      if armNotifications, snapshot.negotiatedFeatures.contains(.eventIndex) {
+        // Initialize the device-owned event field before the driver's first
+        // kick, even when an RX backend has no frame available to consume.
+        try queue.requestAvailableNotification(memory: memory)
+      }
       while processing.1(index),
         let chain = try queue.popAvailable(
           memory: memory,
-          allowIndirectDescriptors: snapshot.negotiatedFeatures.contains(.indirectDescriptors)
+          allowIndirectDescriptors: snapshot.negotiatedFeatures.contains(.indirectDescriptors),
+          eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
         )
       {
         if let processor = processing.2 {
@@ -438,6 +447,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       }
     case (0x14, 1):
       let status = DoryVirtioDeviceStatus(rawValue: bytes[0])
+      let wasReady = deviceState.snapshot().status.contains(.driverOK)
       deviceState.writeStatus(status)
       if status.isEmpty {
         lock.withLock {
@@ -450,6 +460,11 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
             queues[index].queue.reset()
           }
         }
+      } else if !wasReady, deviceState.snapshot().status.contains(.driverOK) {
+        let enabledQueues = lock.withLock {
+          queues.indices.filter { queues[$0].enabled }.map { UInt16($0) }
+        }
+        for index in enabledQueues { drain(queue: index, armNotifications: true) }
       }
     case (0x16, 2): lock.withLock { selectedQueue = uint16(bytes) }
     case (0x18, 2): try updateSelectedQueue { if !$0.enabled { $0.size = uint16(bytes) } }
@@ -460,6 +475,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       }
     case (0x1C, 2):
       let enable = uint16(bytes) & 1 != 0
+      var activatedQueue: UInt16?
       try updateSelectedQueue { queue in
         guard enable, !queue.enabled else { return }
         do {
@@ -472,10 +488,12 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
           )
           queue.enabled = true
           queue.generation &+= 1
+          activatedQueue = selectedQueue
         } catch {
           deviceState.markDeviceNeedsReset()
         }
       }
+      if let activatedQueue { drain(queue: activatedQueue, armNotifications: true) }
     default: break
     }
   }

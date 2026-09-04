@@ -138,16 +138,30 @@ public final class DoryVirtioSplitQueue: @unchecked Sendable {
     }
   }
 
+  /// Initialize or re-arm a negotiated EVENT_IDX queue without consuming a
+  /// buffer. The caller must recheck/drain available work after the barrier.
+  public func requestAvailableNotification(memory: any DoryVirtioGuestMemory) throws {
+    try lock.withLock {
+      try armAvailableNotification(lastAvailableIndex,
+        configuration: activeConfigurationLocked(), memory: memory)
+    }
+  }
+
   public func popAvailable(
     memory: any DoryVirtioGuestMemory,
-    allowIndirectDescriptors: Bool
+    allowIndirectDescriptors: Bool,
+    eventIndexNegotiated: Bool = false
   ) throws -> DoryVirtioDescriptorChain? {
     try lock.withLock {
       let configuration = try activeConfigurationLocked()
-      let availableIndex = try readUInt16(
-        memory,
-        at: try checkedAddress(configuration.driverAddress, adding: 2)
-      )
+      let availableIndexAddress = try checkedAddress(configuration.driverAddress, adding: 2)
+      var availableIndex = try readUInt16(memory, at: availableIndexAddress)
+      if eventIndexNegotiated, availableIndex == lastAvailableIndex {
+        // A driver can add work while notifications are suppressed. Publish the
+        // next index we need, then recheck after a barrier before becoming idle.
+        try armAvailableNotification(lastAvailableIndex, configuration: configuration, memory: memory)
+        availableIndex = try readUInt16(memory, at: availableIndexAddress)
+      }
       let delta = availableIndex &- lastAvailableIndex
       guard delta > 0 else { return nil }
       guard delta <= configuration.size else {
@@ -170,7 +184,11 @@ public final class DoryVirtioSplitQueue: @unchecked Sendable {
         allowIndirectDescriptors: allowIndirectDescriptors,
         indirect: false
       )
-      lastAvailableIndex &+= 1
+      let nextAvailableIndex = lastAvailableIndex &+ 1
+      if eventIndexNegotiated {
+        try armAvailableNotification(nextAvailableIndex, configuration: configuration, memory: memory)
+      }
+      lastAvailableIndex = nextAvailableIndex
       outstandingHeads.insert(head)
       return .init(
         headIndex: head,
@@ -183,6 +201,24 @@ public final class DoryVirtioSplitQueue: @unchecked Sendable {
         }
       )
     }
+  }
+
+  /// VirtIO 1.2 section 2.7.10: avail_event belongs to the device, at the end
+  /// of the used ring. Leaving it at zero suppresses every sequential kick
+  /// after the first until the 16-bit index wraps. Request the very next entry;
+  /// this transport does not poll guest queues while idle.
+  private func armAvailableNotification(
+    _ index: UInt16,
+    configuration: Configuration,
+    memory: any DoryVirtioGuestMemory
+  ) throws {
+    let eventAddress = try checkedAddress(
+      configuration.deviceAddress, adding: 4 + UInt64(configuration.size) * 8)
+    try memory.validate(at: configuration.deviceAddress, byteCount: 2, deviceWillWrite: true)
+    try memory.validate(at: eventAddress, byteCount: 2, deviceWillWrite: true)
+    try memory.write(at: configuration.deviceAddress, bytes: [0, 0])
+    try memory.write(at: eventAddress, bytes: littleEndian(index))
+    memory.synchronize()
   }
 
   /// Publishes a used element and returns whether the driver requested an interrupt.
