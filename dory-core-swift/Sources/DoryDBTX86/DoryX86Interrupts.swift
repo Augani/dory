@@ -512,18 +512,22 @@ public struct DoryX86InterruptDelivery: Sendable {
 
     let restoredStack = try readReturn64(stack + 24)
     let stackSelector = UInt16(truncatingIfNeeded: try readReturn64(stack + 32))
-    guard DoryX86ArchitecturalState.isCanonical(restoredStack),
-      (stackSelector == 0 && targetCPL == 0) || stackSelector & 3 == targetCPL
-    else {
-      throw DoryX86InterruptDeliveryError.invalidReturnFrame
+    guard DoryX86ArchitecturalState.isCanonical(restoredStack) else {
+      throw DoryX86Exception(
+        kind: .generalProtection,
+        vector: 13,
+        errorCode: 0,
+        instructionPointer: state.rip
+      )
     }
-    state.registers.rsp = restoredStack
-    state.ss = .init(
+    let restoredStackSegment = try readLongReturnStackSegment(
       selector: stackSelector,
-      attributes: targetCPL == 3 ? 0xC0F3 : 0xC093,
-      limit: .max,
-      base: 0
+      targetCPL: targetCPL,
+      state: state,
+      memory: systemMemory
     )
+    state.registers.rsp = restoredStack
+    state.ss = restoredStackSegment
     state.rip = instructionPointer
     state.cs = code.segment
     state.cs.selector = codeSelector
@@ -1106,6 +1110,82 @@ public struct DoryX86InterruptDelivery: Sendable {
         base: base
       ),
       descriptorPrivilegeLevel: dpl
+    )
+  }
+
+  /// Validates the SS image popped by an IRET that began in 64-bit mode.
+  /// Intel SDM 092 Vol. 2A IRETQ requires every non-null selector to name a
+  /// present writable data segment whose RPL and DPL equal the return CPL.
+  /// A non-present return stack is #SS(0); all other descriptor failures are
+  /// #GP(selector). A null SS is permitted only for a non-CPL3 64-bit return
+  /// when its RPL already equals the return CPL.
+  private func readLongReturnStackSegment(
+    selector: UInt16,
+    targetCPL: UInt8,
+    state: DoryX86ArchitecturalState,
+    memory: any DoryX86Memory
+  ) throws -> DoryX86SegmentState {
+    let selectorRPL = UInt8(selector & 3)
+    if selector & 0xfff8 == 0 {
+      guard targetCPL != 3, selectorRPL == targetCPL else {
+        throw DoryX86Exception(
+          kind: .generalProtection,
+          vector: 13,
+          errorCode: 0,
+          instructionPointer: state.rip
+        )
+      }
+      return .init(selector: selector)
+    }
+
+    let tableBase = selector & 4 == 0 ? state.gdtr.base : state.ldtr.base
+    let tableLimit = selector & 4 == 0 ? UInt64(state.gdtr.limit) : UInt64(state.ldtr.limit)
+    let offset = UInt64(selector & 0xfff8)
+    guard offset + 7 <= tableLimit else {
+      throw DoryX86Exception(
+        kind: .generalProtection,
+        vector: 13,
+        errorCode: UInt32(selector & 0xfffc),
+        instructionPointer: state.rip
+      )
+    }
+    let raw = try read64(memory, tableBase &+ offset)
+    let access = UInt8(truncatingIfNeeded: raw >> 40)
+    let flags = UInt8(truncatingIfNeeded: raw >> 52) & 0x0f
+    let descriptorPrivilegeLevel = (access >> 5) & 3
+    let type = access & 0x0f
+    guard selectorRPL == targetCPL,
+      descriptorPrivilegeLevel == targetCPL,
+      access & 0x10 != 0,
+      type & 8 == 0,
+      type & 2 != 0
+    else {
+      throw DoryX86Exception(
+        kind: .generalProtection,
+        vector: 13,
+        errorCode: UInt32(selector & 0xfffc),
+        instructionPointer: state.rip
+      )
+    }
+    guard access & 0x80 != 0 else {
+      throw DoryX86Exception(
+        kind: .stackSegment,
+        vector: 12,
+        errorCode: 0,
+        instructionPointer: state.rip
+      )
+    }
+    let base =
+      ((raw >> 16) & 0xffff)
+      | ((raw >> 32) & 0xff) << 16
+      | ((raw >> 56) & 0xff) << 24
+    var limit = UInt32(raw & 0xffff) | UInt32((raw >> 48) & 0x0f) << 16
+    if flags & 8 != 0 { limit = (limit << 12) | 0xfff }
+    return .init(
+      selector: selector,
+      attributes: UInt16(access) | UInt16(flags) << 12,
+      limit: limit,
+      base: base
     )
   }
 

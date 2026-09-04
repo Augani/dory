@@ -134,7 +134,7 @@ import Testing
     )
     try write64(memory, 0x3004, 0x5000)
     try memory.write(at: 0x7000, bytes: [0xCD, 0x80])
-    try memory.write(at: 0x8000, bytes: [0xCF])
+    try memory.write(at: 0x8000, bytes: [0x48, 0xCF])
 
     var registers = DoryX86GeneralRegisters()
     registers.rsp = 0x6000
@@ -145,7 +145,7 @@ import Testing
       cs: .init(selector: 0x1B, attributes: 0xA0FB, limit: .max),
       ss: .init(selector: 0x23, attributes: 0xC0F3, limit: .max),
       tr: .init(selector: 0x28, attributes: 0x008B, limit: 0x67, base: 0x3000),
-      gdtr: .init(limit: 0x1F, base: 0x1000),
+      gdtr: .init(limit: 0x27, base: 0x1000),
       idtr: .init(limit: 0x0FFF, base: 0x2000)
     )
     let interpreter = DoryX86Interpreter()
@@ -257,6 +257,7 @@ import Testing
   private func installSegments(_ memory: DoryX86ByteArrayMemory) throws {
     try write64(memory, 0x1008, 0x00AF_9A00_0000_FFFF)
     try write64(memory, 0x1018, 0x00AF_FA00_0000_FFFF)
+    try write64(memory, 0x1020, 0x00CF_F300_0000_FFFF)
   }
 
   private func installGate(
