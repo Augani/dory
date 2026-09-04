@@ -88,7 +88,10 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     above4GRAMStart: UInt64
   ) throws {
     guard ram.baseAddress == 0, ram.byteCount > 0, mmioHoleStart > 0,
-      above4GRAMStart > mmioHoleStart
+      above4GRAMStart > mmioHoleStart,
+      !above4GRAMStart.addingReportingOverflow(
+        UInt64(ram.byteCount) > mmioHoleStart ? UInt64(ram.byteCount) - mmioHoleStart : 0
+      ).overflow
     else {
       throw DoryPCPhysicalMemoryError.invalidRAMConfiguration(
         base: ram.baseAddress, byteCount: ram.byteCount,
@@ -161,7 +164,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
         maximumCount: min(maximumCount, resolved.availableByteCount)
       )
     }
-    if let resolved = try resolve(address: address, byteCount: 1) {
+    if let resolved = try resolve(address: address, byteCount: 1, access: .instructionFetch) {
       guard resolved.device.allowsInstructionFetch else {
         throw DoryX86MemoryError.unmapped(
           address: address,
@@ -169,10 +172,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
           access: .instructionFetch
         )
       }
-      let available = resolved.device.byteCount - resolved.offset
       return try resolved.device.read(
         offset: resolved.offset,
-        byteCount: min(maximumCount, Int(available))
+        byteCount: Int(min(UInt64(maximumCount), resolved.availableByteCount))
       )
     }
     let resolved = try resolveRAM(
@@ -194,7 +196,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
       return try ram.read(at: resolved.backingAddress, byteCount: byteCount)
     }
-    if let resolved = try resolve(address: address, byteCount: byteCount) {
+    if let resolved = try resolve(address: address, byteCount: byteCount, access: .read) {
       return try resolved.device.read(offset: resolved.offset, byteCount: byteCount)
     }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
@@ -209,7 +211,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
       return try ram.codeGeneration(at: resolved.backingAddress, byteCount: byteCount)
     }
-    if let resolved = try resolve(address: address, byteCount: byteCount) {
+    if let resolved = try resolve(address: address, byteCount: byteCount, access: .instructionFetch) {
       guard resolved.device.allowsInstructionFetch else { return nil }
       return try resolved.device.codeGeneration(
         offset: resolved.offset,
@@ -231,7 +233,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
       return try ram.readScalar(at: resolved.backingAddress, byteCount: byteCount)
     }
-    if let resolved = try resolve(address: address, byteCount: byteCount) {
+    if let resolved = try resolve(address: address, byteCount: byteCount, access: .read) {
       return try resolved.device.read(
         offset: resolved.offset, byteCount: byteCount
       ).enumerated().reduce(0) {
@@ -248,7 +250,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       try ram.write(at: resolved.backingAddress, bytes: bytes)
       return
     }
-    if let resolved = try resolve(address: address, byteCount: bytes.count) {
+    if let resolved = try resolve(address: address, byteCount: bytes.count, access: .write) {
       try resolved.device.write(offset: resolved.offset, bytes: bytes)
       return
     }
@@ -264,7 +266,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       try ram.writeScalar(at: resolved.backingAddress, value: value, byteCount: byteCount)
       return
     }
-    if let resolved = try resolve(address: address, byteCount: byteCount) {
+    if let resolved = try resolve(address: address, byteCount: byteCount, access: .write) {
       let bytes = (0..<byteCount).map {
         UInt8(truncatingIfNeeded: value >> UInt64($0 * 8))
       }
@@ -285,7 +287,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       try ram.validateWrite(at: resolved.backingAddress, byteCount: byteCount)
       return
     }
-    if let resolved = try resolve(address: address, byteCount: byteCount) {
+    if let resolved = try resolve(address: address, byteCount: byteCount, access: .write) {
       try resolved.device.validateWrite(offset: resolved.offset, byteCount: byteCount)
       return
     }
@@ -302,7 +304,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   /// VirtIO DMA is deliberately RAM-only. A descriptor can never trigger an APIC, PCI, or other
   /// MMIO register read as a side effect of validation or device processing.
   public func validateDMA(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
-    guard try resolve(address: address, byteCount: byteCount) == nil else {
+    guard try resolve(
+      address: address, byteCount: byteCount, access: deviceWillWrite ? .write : .read
+    ) == nil else {
       throw DoryX86MemoryError.unmapped(
         address: address,
         byteCount: byteCount,
@@ -314,7 +318,7 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
       try ram.validateWrite(at: resolved.backingAddress, byteCount: byteCount)
     } else {
       let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .read)
-      _ = try ram.read(at: resolved.backingAddress, byteCount: byteCount)
+      try ram.validateRead(at: resolved.backingAddress, byteCount: byteCount)
     }
   }
 
@@ -406,8 +410,9 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
 
   private func resolve(
     address: UInt64,
-    byteCount: Int
-  ) throws -> (device: any DoryPCMMIODevice, offset: UInt64)? {
+    byteCount: Int,
+    access: DoryX86MemoryAccessKind
+  ) throws -> (device: any DoryPCMMIODevice, offset: UInt64, availableByteCount: UInt64)? {
     guard byteCount >= 0 else {
       throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
     }
@@ -424,10 +429,10 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
         throw DoryX86MemoryError.unmapped(
           address: address,
           byteCount: byteCount,
-          access: .read
+          access: access
         )
       }
-      return (mapping.device, address - mapping.lowerBound)
+      return (mapping.device, address - mapping.lowerBound, mapping.upperBound - address)
     }
   }
 
@@ -465,7 +470,7 @@ extension DoryPCPhysicalMemoryBus: DoryX86RestartableScalarMemory {
     if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
       return try ram.readScalar(at: resolved.backingAddress, byteCount: byteCount)
     }
-    if let resolved = try resolve(address: address, byteCount: byteCount) {
+    if let resolved = try resolve(address: address, byteCount: byteCount, access: .read) {
       return try resolved.device.readRestartableScalar(
         offset: resolved.offset,
         byteCount: byteCount

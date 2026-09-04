@@ -116,6 +116,16 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
     try readScalar(at: address, byteCount: byteCount)
   }
 
+  public func validateRead(at address: UInt64, byteCount: Int) throws {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
+    guard byteCount > 0 else { return }
+    try lock.withLock {
+      _ = try checkedOffset(address: address, byteCount: byteCount, access: .read)
+    }
+  }
+
   public func write(at address: UInt64, bytes: [UInt8]) throws {
     guard !bytes.isEmpty else { return }
     lock.lock()

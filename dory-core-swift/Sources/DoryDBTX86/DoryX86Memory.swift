@@ -55,6 +55,8 @@ public protocol DoryX86Memory: AnyObject, Sendable {
   /// at the mapping boundary. The decoder decides whether the returned instruction is truncated.
   func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8]
   func read(at address: UInt64, byteCount: Int) throws -> [UInt8]
+  /// Checks read permissions without requiring ordinary RAM to allocate or copy the range.
+  func validateRead(at address: UInt64, byteCount: Int) throws
   func write(at address: UInt64, bytes: [UInt8]) throws
   /// Proves that a complete write can commit before an instruction exposes any memory changes.
   func validateWrite(at address: UInt64, byteCount: Int) throws
@@ -135,6 +137,10 @@ public protocol DoryX86PhysicalRAM:
 }
 
 extension DoryX86Memory {
+  public func validateRead(at address: UInt64, byteCount: Int) throws {
+    _ = try read(at: address, byteCount: byteCount)
+  }
+
   public func validateWrite(at address: UInt64, byteCount: Int) throws {
     _ = try read(at: address, byteCount: byteCount)
   }
@@ -250,6 +256,16 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, @unchecked Sendab
       value |= UInt64(storage[offset + index]) << UInt64(index * 8)
     }
     return value
+  }
+
+  public func validateRead(at address: UInt64, byteCount: Int) throws {
+    guard byteCount >= 0 else {
+      throw DoryX86MemoryError.addressOverflow(address: address, byteCount: byteCount)
+    }
+    guard byteCount > 0 else { return }
+    try lock.withLock {
+      _ = try checkedOffset(address: address, byteCount: byteCount, access: .read)
+    }
   }
 
   public func write(at address: UInt64, bytes: [UInt8]) throws {
