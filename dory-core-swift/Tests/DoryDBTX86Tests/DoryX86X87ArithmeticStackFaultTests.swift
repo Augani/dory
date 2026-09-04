@@ -146,6 +146,38 @@ import Testing
     #expect(top(state.floatingPoint) == 0)
   }
 
+  @Test func testEmptyStackUsesTheMaskedAndUnmaskedUnderflowResponse() throws {
+    for masked in [false, true] {
+      var state = try makeState(masked: masked, top: 4)
+      empty(0, in: &state.floatingPoint)
+      let beforeCodes = state.floatingPoint.x87StatusWord & 0x4500
+
+      try retire(&state, code: [0xD9, 0xE4]) // FTST
+      expectUnderflow(state.floatingPoint, masked: masked)
+      #expect(state.floatingPoint.x87StatusWord & 0x0200 == 0)
+      #expect(state.floatingPoint.x87StatusWord & 0x4500
+        == (masked ? 0x4500 : beforeCodes))
+      #expect(top(state.floatingPoint) == 4)
+    }
+  }
+
+  @Test func examineClassifiesEmptyWithoutRaisingAStackException() throws {
+    for negative in [false, true] {
+      var state = try makeState(masked: false, top: 5)
+      let physical = 5
+      state.floatingPoint.x87[physical] = try .init(
+        bytes: DoryX86ExtendedFloat(Int64(negative ? -1 : 1)).bytes(),
+        expectedByteCount: 10)
+      empty(0, in: &state.floatingPoint)
+
+      try retire(&state, code: [0xD9, 0xE5]) // FXAM
+      #expect(state.floatingPoint.x87StatusWord & 0x4700
+        == 0x4100 | (negative ? 0x0200 : 0))
+      #expect(state.floatingPoint.x87StatusWord & 0x00C1 == 0)
+      #expect(top(state.floatingPoint) == 5)
+    }
+  }
+
   private func makeState(
     masked: Bool, top: Int, rflags: DoryX86RFLAGS = [.reservedOne]
   ) throws -> DoryX86ArchitecturalState {

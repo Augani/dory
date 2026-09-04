@@ -855,6 +855,23 @@ public struct DoryX86Interpreter: Sendable {
           }
           break
         }
+        if DoryX86X87Stack.isEmpty(0, state: state.floatingPoint) {
+          if operation == .test {
+            if DoryX86X87Stack.record(
+              .underflow, instruction: instruction, state: &state.floatingPoint
+            ) {
+              setX87ComparisonStatus(.unordered, state: &state.floatingPoint)
+            }
+            break
+          }
+          if operation == .examine {
+            let physical = physicalX87Register(0, state: state.floatingPoint)
+            let negative = state.floatingPoint.x87[physical].bytes[9] & 0x80 != 0
+            state.floatingPoint.x87StatusWord &= ~UInt16(0x4700)
+            state.floatingPoint.x87StatusWord |= 0x4100 | (negative ? 0x0200 : 0)
+            break
+          }
+        }
         let testOperand = readX87Register(0, state: state.floatingPoint)
         if operation == .test,
           testOperand.isUnsupported || testOperand.isNaN {
@@ -4394,7 +4411,7 @@ public struct DoryX86Interpreter: Sendable {
     _ relation: FloatingComparison,
     state: inout DoryX86FloatingPointState
   ) {
-    state.x87StatusWord &= ~UInt16(0x4500)
+    state.x87StatusWord &= ~UInt16(0x4700)
     switch relation {
     case .greater:
       break
