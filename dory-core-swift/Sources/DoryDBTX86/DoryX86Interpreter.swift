@@ -999,6 +999,16 @@ public struct DoryX86Interpreter: Sendable {
         if pop { popX87(state: &state.floatingPoint) }
       case .conditionalMoveX87(let condition, let source):
         if evaluate(condition, flags: state.rflags) {
+          if let fault = DoryX86X87Stack.binaryFault(
+            destination: 0, source: .register(source), state: state.floatingPoint
+          ) {
+            guard DoryX86X87Stack.record(
+              fault, instruction: instruction, state: &state.floatingPoint
+            ) else { break }
+            writeX87Register(
+              0, value: DoryX86X87Stack.indefinite, state: &state.floatingPoint)
+            break
+          }
           writeX87Register(
             0,
             value: readX87Register(source, state: state.floatingPoint),

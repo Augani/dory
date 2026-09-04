@@ -178,6 +178,42 @@ import Testing
     }
   }
 
+  @Test func takenConditionalMovesHonorMaskedAndUnmaskedStackUnderflow() throws {
+    for emptyLogical in [0, 1] {
+      for masked in [false, true] {
+        var state = try makeState(
+          masked: masked, top: 3, rflags: [.reservedOne, .carry])
+        empty(emptyLogical, in: &state.floatingPoint)
+        let before = state.floatingPoint
+
+        try retire(&state, code: [0xDA, 0xC1]) // FCMOVB ST(0), ST(1)
+        expectUnderflow(state.floatingPoint, masked: masked)
+        #expect(state.floatingPoint.x87StatusWord & 0x0200 == 0)
+        #expect(top(state.floatingPoint) == 3)
+        if masked {
+          #expect(state.floatingPoint.x87[3].bytes == indefinite)
+          #expect(tag(3, in: state.floatingPoint) == 2)
+        } else {
+          #expect(state.floatingPoint.x87 == before.x87)
+          #expect(state.floatingPoint.x87TagWord == before.x87TagWord)
+        }
+      }
+    }
+  }
+
+  @Test func untakenConditionalMoveDoesNotConsumeEmptyRegisters() throws {
+    var state = try makeState(masked: false, top: 3)
+    empty(0, in: &state.floatingPoint)
+    empty(1, in: &state.floatingPoint)
+    let before = state.floatingPoint
+
+    try retire(&state, code: [0xDA, 0xC1]) // FCMOVB with CF=0
+    #expect(state.floatingPoint.x87StatusWord & 0x82C1 == before.x87StatusWord & 0x82C1)
+    #expect(state.floatingPoint.x87 == before.x87)
+    #expect(state.floatingPoint.x87TagWord == before.x87TagWord)
+    #expect(top(state.floatingPoint) == 3)
+  }
+
   private func makeState(
     masked: Bool, top: Int, rflags: DoryX86RFLAGS = [.reservedOne]
   ) throws -> DoryX86ArchitecturalState {
