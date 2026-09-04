@@ -6070,9 +6070,13 @@ public final class MachineManager: @unchecked Sendable {
            active.operation.desktopUpdateSpecificationDigest != nil
             || active.operation.creationSpecificationDigest != nil
             || active.operation.snapshotSpecificationDigest != nil
+            || active.operation.configurationUpdateSpecificationDigest != nil
             || active.operation.snapshotRestoreSpecificationDigest != nil {
             _ = active.requestCancellation()
         }
+#if DEBUG
+        try injectLifecycleFault(.stopAfterCancellationRequest)
+#endif
         let mutationLease = mutationCoordinator.acquire(workspaceID: id)
         defer { mutationLease.release() }
         try requireNoActivePlanningMutation(id: id)
@@ -7750,6 +7754,25 @@ public final class MachineManager: @unchecked Sendable {
         let mutationLease = mutationCoordinator.acquire(workspaceID: id)
         defer { mutationLease.release() }
         try requireNoActivePlanningMutation(id: id)
+        let productionPlanningController = productionPlanningController
+            ?? managerStateLock.withLock { self.productionPlanningController }
+        if launchPolicy == .perWorkspaceAuthority {
+            guard productionPlanningController != nil else {
+                throw MachineManagerError.persistence("configuration update requires production planning authority")
+            }
+            // Older direct callers use update's media argument. Enter the same root as the
+            // explicit media API unless that root is already executing its private stage.
+            if let installerMediaAttached,
+               activeLifecycleOperation(machineID: id) == nil {
+                guard memoryMB == nil, cpuCount == nil, !updatesAddress, !updatesShares,
+                      !updatesEnvironment, typedSettingsPatch?.isEmpty != false else {
+                    throw MachineManagerError.persistence(
+                        "installer attach/eject must be its own lifecycle transaction")
+                }
+                return try transitionInstallerMedia(id: id, attached: installerMediaAttached,
+                    operationID: operationID, productionPlanningController: productionPlanningController)
+            }
+        }
         let journalsConfiguration = launchPolicy == .perWorkspaceAuthority
             && installerMediaAttached == nil && productionPlanningController != nil
         let request = DoryMachineConfigurationUpdateRequest(
@@ -7831,6 +7854,7 @@ public final class MachineManager: @unchecked Sendable {
 #if DEBUG
                 if lifecycle != nil { try injectLifecycleFault(.configurationUpdateBeforeStop) }
 #endif
+                if let lifecycle { try closeCancellationBeforeSourceMutation(lifecycle) }
                 if wasRunning || lifecycle != nil {
                     _ = try stopImplementation(
                         id: id, journalLifecycle: lifecycle == nil,
@@ -23558,6 +23582,7 @@ enum MachineLifecycleFaultPoint: Sendable, Equatable {
     case startAfterPlanning
     case restartBeforeStop
     case configurationUpdateBeforeStop
+    case stopAfterCancellationRequest
     case configurationUpdateAfterMetadata
     case configurationUpdateAfterWorkspace
     case installerAfterFirmwareCheckpoint

@@ -657,7 +657,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
     @Test("activated production graph publishes and runs a headless create plan through XPC authority")
     func activatedGraphPlansHeadlessCreate() throws {
         try withProductionIntegrationTestStack {
-        let fixture = try ProductionTrustFixture()
+        let fixture = try authenticatedProductionTrustFixture()
         defer { fixture.cleanup() }
         guard case let .activated(context) = fixture.factory.activate(
             store: fixture.store,
@@ -669,6 +669,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             Issue.record("Expected production activation")
             return
         }
+        defer { context.machineManager.stopAll() }
         let service = DorydService(
             socketPath: fixture.root.appendingPathComponent("doryd.sock").path,
             machineManager: context.machineManager,
@@ -705,7 +706,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(plan.launchArtifacts.count == 2)
         #expect(plan.devices.clockSynchronization)
         #expect(plan.devices.gracefulShutdown)
-        let started = try context.machineManager.start(id: "qualified-headless")
+        let started = try startAuthenticatedProductionMachine(context.machineManager, id: "qualified-headless")
         #expect(started.state == .running)
         #expect(try context.planning.resourceLedger.snapshot().leases.first {
             $0.binding.machineID == "qualified-headless"
@@ -714,7 +715,8 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             if paused { _ = try context.machineManager.pause(id: "qualified-headless") }
             let previousPID = try #require(context.machineManager.status(id: "qualified-headless")?.pid)
             let operationID = UUID()
-            let replacement = try context.machineManager.restart(id: "qualified-headless", operationID: operationID)
+            _ = try context.machineManager.restart(id: "qualified-headless", operationID: operationID)
+            let replacement = try waitForAuthenticatedProductionMachine(context.machineManager, id: "qualified-headless")
             #expect(replacement.state == .running)
             #expect(replacement.pid != previousPID)
             #expect(try context.planning.plans.read(id: "qualified-headless") == plan)
@@ -733,7 +735,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(try context.planning.resourceLedger.snapshot().leases.first {
             $0.binding.machineID == "qualified-headless"
         }?.state == .stopped)
-        let restarted = try context.machineManager.start(id: "qualified-headless")
+        let restarted = try startAuthenticatedProductionMachine(context.machineManager, id: "qualified-headless")
         #expect(restarted.state == .running)
         #expect(try context.planning.plans.read(id: "qualified-headless").planRevision == 2)
         #expect(try context.planning.resourceLedger.snapshot().leases.first {
@@ -758,12 +760,13 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
     @Test("configuration update has one caller journal through stop and replacement planning", arguments: ["created", "stopped", "running", "paused"])
     func configurationUpdateOwnsPlanning(sourceState: String) throws {
         try withProductionIntegrationTestStack {
-            let fixture = try ProductionTrustFixture()
+            let fixture = try authenticatedProductionTrustFixture()
             defer { fixture.cleanup() }
             guard case let .activated(context) = fixture.factory.activate(
                 store: fixture.store, machineConfiguration: fixture.machineConfiguration,
                 appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
             ) else { Issue.record("Expected production activation"); return }
+            defer { context.machineManager.stopAll() }
             let id = "configuration-update"
             let service = DorydService(
                 socketPath: fixture.root.appendingPathComponent("doryd.sock").path,
@@ -771,7 +774,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
                 productionPlanningController: context.planningController
             )
             try createUpdateFixture(id: id, fixture: fixture, service: service)
-            if sourceState != "created" { _ = try context.machineManager.start(id: id) }
+            if sourceState != "created" { _ = try startAuthenticatedProductionMachine(context.machineManager, id: id) }
             if sourceState == "stopped" { _ = try context.machineManager.stop(id: id) }
             if sourceState == "paused" { _ = try context.machineManager.pause(id: id) }
             let original = try context.planning.plans.read(id: id)
@@ -824,19 +827,20 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
     ], [false, true])
     func configurationUpdateRecovers(point: MachineLifecycleFaultPoint, nativeOnly: Bool) throws {
         try withProductionIntegrationTestStack {
-            let fixture = try ProductionTrustFixture()
+            let fixture = try authenticatedProductionTrustFixture()
             defer { fixture.cleanup() }
             guard case let .activated(context) = fixture.factory.activate(
                 store: fixture.store, machineConfiguration: fixture.machineConfiguration,
                 appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
             ) else { Issue.record("Expected production activation"); return }
+            defer { context.machineManager.stopAll() }
             let id = "update-recovery"
             let service = DorydService(
                 socketPath: fixture.root.appendingPathComponent("doryd.sock").path,
                 machineManager: context.machineManager, productionPlanningController: context.planningController
             )
             try createUpdateFixture(id: id, fixture: fixture, service: service)
-            if point != .configurationUpdateBeforeStop { _ = try context.machineManager.start(id: id) }
+            if point != .configurationUpdateBeforeStop { _ = try startAuthenticatedProductionMachine(context.machineManager, id: id) }
             let original = try context.planning.plans.read(id: id)
             let operationID = UUID()
             let observedFault = ConfigurationUpdateFaultObservation()
@@ -890,19 +894,20 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
     @Test("missing planning and malformed update UUID are rejected before stopping a helper")
     func configurationUpdatePreflightRejectsWithoutStop() throws {
         try withProductionIntegrationTestStack {
-            let fixture = try ProductionTrustFixture()
+            let fixture = try authenticatedProductionTrustFixture()
             defer { fixture.cleanup() }
             guard case let .activated(context) = fixture.factory.activate(
                 store: fixture.store, machineConfiguration: fixture.machineConfiguration,
                 appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
             ) else { Issue.record("Expected production activation"); return }
+            defer { context.machineManager.stopAll() }
             let id = "update-preflight"
             let service = DorydService(
                 socketPath: fixture.root.appendingPathComponent("doryd.sock").path,
                 machineManager: context.machineManager, productionPlanningController: context.planningController
             )
             try createUpdateFixture(id: id, fixture: fixture, service: service)
-            let started = try context.machineManager.start(id: id)
+            let started = try startAuthenticatedProductionMachine(context.machineManager, id: id)
             let path = fixture.machineConfiguration.stateDirectory + "/" + id + "/machine.json"
             let original = try Data(contentsOf: URL(fileURLWithPath: path))
             let missingController = DorydService(socketPath: "/unused", machineManager: context.machineManager)
@@ -992,7 +997,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
     ], ["created", "stopped", "running"])
     func desktopUpdatePreflightPreservesSource(fault: String, sourceState: String) throws {
         try withProductionIntegrationTestStack {
-            let fixture = try ProductionTrustFixture()
+            let fixture = try authenticatedProductionTrustFixture()
             defer { fixture.cleanup() }
             guard case let .activated(context) = fixture.factory.activate(
                 store: fixture.store, machineConfiguration: fixture.machineConfiguration,
@@ -1017,7 +1022,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             try #require(create.value.ok, Comment(rawValue: create.value.message))
             defer { try? context.machineManager.delete(id: id) }
             if sourceState != "created" {
-                _ = try context.machineManager.start(id: id)
+                _ = try startAuthenticatedProductionMachine(context.machineManager, id: id)
                 if sourceState == "stopped" { _ = try context.machineManager.stop(id: id) }
                 else {
                     _ = try context.machineManager.pause(id: id)
@@ -1073,12 +1078,13 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
     ], [false, true])
     func installerPreflightPreservesSource(fault: String, paused: Bool) throws {
         try withProductionIntegrationTestStack {
-            let fixture = try ProductionTrustFixture()
+            let fixture = try authenticatedProductionTrustFixture()
             defer { fixture.cleanup() }
             guard case let .activated(context) = fixture.factory.activate(
                 store: fixture.store, machineConfiguration: fixture.machineConfiguration,
                 appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
             ) else { Issue.record("Expected production activation"); return }
+            defer { context.machineManager.stopAll() }
             let id = "installer-preflight"
             let service = DorydService(
                 socketPath: fixture.root.appendingPathComponent("doryd.sock").path,
@@ -1086,7 +1092,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             )
             try createPortableEFIFixture(id: id, fixture: fixture, service: service)
             defer { try? context.machineManager.delete(id: id) }
-            _ = try context.machineManager.start(id: id)
+            _ = try startAuthenticatedProductionMachine(context.machineManager, id: id)
             let directory = fixture.machineConfiguration.stateDirectory + "/" + id
             let nvram = directory + "/NVRAM.installer"
             let machineIdentifier = directory + "/MachineIdentifier"
@@ -1200,17 +1206,18 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
     ], [false, true])
     func installerPublicationRecovers(point: MachineLifecycleFaultPoint, paused: Bool) throws {
         try withProductionIntegrationTestStack {
-            let fixture = try ProductionTrustFixture()
+            let fixture = try authenticatedProductionTrustFixture()
             defer { fixture.cleanup() }
             guard case let .activated(context) = fixture.factory.activate(
                 store: fixture.store, machineConfiguration: fixture.machineConfiguration,
                 appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
             ) else { Issue.record("Expected production activation"); return }
+            defer { context.machineManager.stopAll() }
             let id = "installer-recovery"
             let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
                                        productionPlanningController: context.planningController)
             try createPortableEFIFixture(id: id, fixture: fixture, service: service)
-            _ = try context.machineManager.start(id: id)
+            _ = try startAuthenticatedProductionMachine(context.machineManager, id: id)
             if paused { _ = try context.machineManager.pause(id: id) }
             for (name, bytes) in [("NVRAM.installer", "original-installer-state"), ("MachineIdentifier", "stable-machine-id")] {
                 let path = fixture.machineConfiguration.stateDirectory + "/" + id + "/" + name
@@ -1255,18 +1262,19 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
     @Test("installer reattachment owns publication and optional restart", arguments: ["stopped", "running", "paused"])
     func installerAttachmentOwnsRestart(sourceState: String) throws {
         try withProductionIntegrationTestStack {
-            let fixture = try ProductionTrustFixture()
+            let fixture = try authenticatedProductionTrustFixture()
             defer { fixture.cleanup() }
             guard case let .activated(context) = fixture.factory.activate(
                 store: fixture.store, machineConfiguration: fixture.machineConfiguration,
                 appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
             ) else { Issue.record("Expected production activation"); return }
+            defer { context.machineManager.stopAll() }
             let id = "installer-attach"
             let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
                                        productionPlanningController: context.planningController)
             try createPortableEFIFixture(id: id, fixture: fixture, service: service)
             defer { try? context.machineManager.delete(id: id) }
-            _ = try context.machineManager.start(id: id)
+            _ = try startAuthenticatedProductionMachine(context.machineManager, id: id)
             let directory = fixture.machineConfiguration.stateDirectory + "/" + id
             for name in ["NVRAM.installer", "MachineIdentifier"] {
                 let path = directory + "/" + name
@@ -1301,18 +1309,19 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
     @Test("installer replay before quiescence preserves the original live helper", arguments: [false, true])
     func installerPreStopReplay(paused: Bool) throws {
         try withProductionIntegrationTestStack {
-            let fixture = try ProductionTrustFixture()
+            let fixture = try authenticatedProductionTrustFixture()
             defer { fixture.cleanup() }
             guard case let .activated(context) = fixture.factory.activate(
                 store: fixture.store, machineConfiguration: fixture.machineConfiguration,
                 appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
             ) else { Issue.record("Expected production activation"); return }
+            defer { context.machineManager.stopAll() }
             let id = "installer-pre-stop"
             let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
                                        productionPlanningController: context.planningController)
             try createPortableEFIFixture(id: id, fixture: fixture, service: service)
             defer { try? context.machineManager.delete(id: id) }
-            _ = try context.machineManager.start(id: id)
+            _ = try startAuthenticatedProductionMachine(context.machineManager, id: id)
             if paused { _ = try context.machineManager.pause(id: id) }
             let directory = fixture.machineConfiguration.stateDirectory + "/" + id
             for name in ["NVRAM.installer", "MachineIdentifier"] {
@@ -1358,17 +1367,18 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         let rollbackFault: MachineLifecycleFaultPoint = scenario >= 4
             ? .configurationUpdateAfterMetadata : .installerAfterRollbackPublication
         try withProductionIntegrationTestStack {
-            let fixture = try ProductionTrustFixture()
+            let fixture = try authenticatedProductionTrustFixture()
             defer { fixture.cleanup() }
             guard case let .activated(context) = fixture.factory.activate(
                 store: fixture.store, machineConfiguration: fixture.machineConfiguration,
                 appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
             ) else { Issue.record("Expected production activation"); return }
+            defer { context.machineManager.stopAll() }
             let id = "installer-rollback"
             let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
                                        productionPlanningController: context.planningController)
             try createPortableEFIFixture(id: id, fixture: fixture, service: service)
-            _ = try context.machineManager.start(id: id)
+            _ = try startAuthenticatedProductionMachine(context.machineManager, id: id)
             if paused { _ = try context.machineManager.pause(id: id) }
             let directory = fixture.machineConfiguration.stateDirectory + "/" + id
             let originalFirmware = Data("original-installer-state".utf8)
@@ -1456,18 +1466,19 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
     ])
     func installerFirstBootReplay(point: MachineLifecycleFaultPoint) throws {
         try withProductionIntegrationTestStack {
-            let fixture = try ProductionTrustFixture()
+            let fixture = try authenticatedProductionTrustFixture()
             defer { fixture.cleanup() }
             guard case let .activated(context) = fixture.factory.activate(
                 store: fixture.store, machineConfiguration: fixture.machineConfiguration,
                 appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
             ) else { Issue.record("Expected production activation"); return }
+            defer { context.machineManager.stopAll() }
             let id = "installer-replay"
             let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
                                        productionPlanningController: context.planningController)
             try createPortableEFIFixture(id: id, fixture: fixture, service: service)
             defer { try? context.machineManager.delete(id: id) }
-            _ = try context.machineManager.start(id: id)
+            _ = try startAuthenticatedProductionMachine(context.machineManager, id: id)
             for name in ["NVRAM.installer", "MachineIdentifier"] {
                 let path = fixture.machineConfiguration.stateDirectory + "/" + id + "/" + name
                 try Data("original-\(name)".utf8).write(to: URL(fileURLWithPath: path))
@@ -1503,7 +1514,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
     @Test("activated production graph runs the portable EFI install and cold-boot path", arguments: [false, true])
     func activatedGraphRunsPortableEFILifecycle(paused: Bool) throws {
         try withProductionIntegrationTestStack {
-            let fixture = try ProductionTrustFixture()
+            let fixture = try authenticatedProductionTrustFixture()
             defer { fixture.cleanup() }
             guard case let .activated(context) = fixture.factory.activate(
                 store: fixture.store,
@@ -1515,6 +1526,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
                 Issue.record("Expected production activation")
                 return
             }
+            defer { context.machineManager.stopAll() }
             let service = DorydService(
                 socketPath: fixture.root.appendingPathComponent("doryd.sock").path,
                 machineManager: context.machineManager,
@@ -1548,7 +1560,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             #expect(plan.bootMedia.media.kind == .installerISO)
             #expect(plan.bootMedia.media.source == .userProvided)
 
-            let started = try context.machineManager.start(id: "portable-efi")
+            let started = try startAuthenticatedProductionMachine(context.machineManager, id: "portable-efi")
             #expect(started.state == .running)
             #expect(started.installerMediaAttached)
             let installerPID = try #require(started.pid)
@@ -2028,6 +2040,34 @@ func withProductionIntegrationTestStack(
     thread.stackSize = 8 * 1_024 * 1_024
     thread.start()
     try completion.wait()
+}
+
+/// Source-preserving mutations require the same authenticated ready generation as production.
+/// The signed helper supplies control-plane receipts; it does not qualify a physical guest.
+private func authenticatedProductionTrustFixture() throws -> ProductionTrustFixture {
+    let agent = ProductionDesktopAgent(failApply: false, duplicateReceipt: false, snapshotQuiesceFailure: false)
+    return try ProductionTrustFixture(authenticatedRuntime: true, agentConnector: { _ in agent })
+}
+
+@discardableResult
+private func startAuthenticatedProductionMachine(_ manager: MachineManager, id: String) throws -> DoryMachineStatus {
+    _ = try manager.start(id: id)
+    return try waitForAuthenticatedProductionMachine(manager, id: id)
+}
+
+private func waitForAuthenticatedProductionMachine(_ manager: MachineManager, id: String) throws -> DoryMachineStatus {
+    let deadline = Date().addingTimeInterval(15)
+    while let status = manager.status(id: id) {
+        if status.state == .running {
+            _ = try manager.exec(id: id, argv: ["/usr/bin/true"])
+            return try #require(manager.status(id: id))
+        }
+        guard status.state != .failed, Date() < deadline else {
+            throw MachineManagerError.persistence(status.lastError ?? "authenticated fixture did not become ready")
+        }
+        Thread.sleep(forTimeInterval: 0.01)
+    }
+    throw MachineManagerError.unknownMachine(id)
 }
 
 private struct DesktopPreflightArtifactProbe: DoryDesktopUpdateArtifactResolving {
@@ -2834,8 +2874,10 @@ final class DoryProductionDesktopRuntimeTests: XCTestCase {
             agentCapabilities: ProductionDesktopAgent.capabilities(
                 snapshotQuiesceFailure: environment["DORY_DESKTOP_TEST_SNAPSHOT_QUIESCE_FAILURE"] == "1"),
             agentSocketPath: "/run/dory-desktop-agent.sock", controlSocketPath: controlSocket,
-            graphicsSelection: .resolvedSoftware(operationID: operationID,
-                resolvedPlanSHA256: identity.resolvedPlanSHA256, planRevision: identity.planRevision),
+            graphicsSelection: environment["DORY_DESKTOP_TEST_VZ_RUNTIME"] == "1"
+                || environment["DORY_DESKTOP_TEST_DISPLAY_MODE"] == "headless" ? nil :
+                .resolvedSoftware(operationID: operationID,
+                    resolvedPlanSHA256: identity.resolvedPlanSHA256, planRevision: identity.planRevision),
             guestBooted: true, toolsConnected: true
         ), fileDescriptors: [])
         _ = signal(SIGTERM, SIG_DFL)
@@ -3428,6 +3470,8 @@ final class ProductionTrustFixture: @unchecked Sendable {
             while [ "$#" -gt 0 ]; do
                 case "$1" in
                     --handoff-sock) shift; export DORY_DESKTOP_TEST_HANDOFF_SOCKET="$1" ;;
+                    --resolved-graphics) shift; export DORY_DESKTOP_TEST_VZ_RUNTIME=1 ;;
+                    --display-mode) shift; export DORY_DESKTOP_TEST_DISPLAY_MODE="$1" ;;
                 esac
                 shift
             done
@@ -4096,4 +4140,202 @@ private func productionTrustRawHVTopology() -> DoryARMVirtV1Topology {
             mmioSlot: 8
         ),
     ])
+}
+
+extension DoryDaemonVirtualMachineProductionTrustTests {
+    @Test("Stop cancels direct configuration update before source quiescence")
+    func productionConfigurationCancellation() throws {
+        try withProductionIntegrationTestStack {
+            let harness = try ProductionDesktopUpdateHarness(sourceState: "running")
+            defer { harness.cleanup() }
+            try verifyPreQuiescenceCancellation(manager: harness.context.machineManager,
+                id: harness.id, root: harness.fixture.machineConfiguration.stateDirectory,
+                journal: harness.journal, point: .configurationUpdateBeforeStop) { operationID in
+                // Direct callers must use the installed authority and own the same root as XPC.
+                try harness.context.machineManager.update(id: harness.id, memoryMB: 5_120,
+                    operationID: operationID)
+            }
+        }
+    }
+
+    @Test("Stop cancels legacy direct installer argument inside the production media root")
+    func productionInstallerCancellation() throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try authenticatedProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case .activated(let context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { throw MachineManagerError.persistence("installer cancellation activation failed") }
+            defer { context.machineManager.stopAll() }
+            let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
+                productionPlanningController: context.planningController)
+            let id = "installer-cancellation"
+            try createPortableEFIFixture(id: id, fixture: fixture, service: service)
+            _ = try startAuthenticatedProductionMachine(context.machineManager, id: id)
+            _ = try context.machineManager.pause(id: id)
+            for name in ["NVRAM.installer", "MachineIdentifier"] {
+                let path = fixture.machineConfiguration.stateDirectory + "/" + id + "/" + name
+                try Data("original-\(name)".utf8).write(to: URL(fileURLWithPath: path))
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
+            }
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            let before = try journal.list().count
+            let original = try #require(context.machineManager.status(id: id))
+            #expect(throws: (any Error).self) {
+                _ = try context.machineManager.update(id: id, memoryMB: 5_120, installerMediaAttached: false)
+            }
+            #expect(try journal.list().count == before)
+            #expect(context.machineManager.status(id: id)?.runtimeIdentity == original.runtimeIdentity)
+            #expect(context.machineManager.status(id: id)?.memoryMB == original.memoryMB)
+            try verifyPreQuiescenceCancellation(manager: context.machineManager, id: id,
+                root: fixture.machineConfiguration.stateDirectory, journal: journal,
+                point: .configurationUpdateBeforeStop) { operationID in
+                try context.machineManager.update(id: id, installerMediaAttached: false,
+                    operationID: operationID)
+            }
+        }
+    }
+
+    @Test("Stop cancels snapshot restore before touching the source or making backups")
+    func productionRestoreCancellation() throws {
+        try withProductionIntegrationTestStack {
+            let harness = try ProductionDesktopUpdateHarness(sourceState: "stopped")
+            defer { harness.cleanup() }
+            let snapshot = try harness.prepareRestoreSource(state: "stopped")
+            try verifyPreQuiescenceCancellation(manager: harness.context.machineManager,
+                id: harness.id, root: harness.fixture.machineConfiguration.stateDirectory,
+                journal: harness.journal, point: .restoreBeforeStop) { operationID in
+                try harness.context.machineManager.restoreSnapshot(machineID: harness.id,
+                    snapshotID: snapshot.id, operationID: operationID)
+            }
+            #expect(try harness.diskPrefix().starts(with: Data("workload-after-snapshot".utf8)))
+            #expect(try FileManager.default.contentsOfDirectory(atPath: harness.directory)
+                .allSatisfy { !$0.hasPrefix(".restore-") })
+        }
+    }
+
+    private func verifyPreQuiescenceCancellation(
+        manager: MachineManager, id: String, root: String, journal: DoryOperationJournalStore,
+        point: MachineLifecycleFaultPoint,
+        operation: @escaping @Sendable (UUID) throws -> DoryMachineStatus
+    ) throws {
+        let source = try #require(manager.status(id: id))
+        let configurationURL = URL(fileURLWithPath: root + "/" + id + "/machine.json")
+        let configuration = try Data(contentsOf: configurationURL)
+        let workspace = try DoryWorkspaceRepository(root: root).readPersistedRecord(id: id)
+        let operationID = UUID()
+        let entered = DispatchSemaphore(value: 0)
+        let resume = DispatchSemaphore(value: 0)
+        defer { resume.signal(); manager.installLifecycleFaultInjectorForTesting { _ in } }
+        manager.installLifecycleFaultInjectorForTesting { current in
+            if current == point {
+                entered.signal()
+                guard resume.wait(timeout: .now() + 30) == .success else {
+                    throw MachineManagerError.persistence("cancellation test did not release mutation")
+                }
+            }
+        }
+        let result = ProductionDesktopCompletion<DoryMachineStatus>()
+        let worker = Thread { result.finish(Result { try operation(operationID) }) }
+        worker.stackSize = 8 * 1_024 * 1_024
+        worker.start()
+        let entryDeadline = Date().addingTimeInterval(120)
+        var reachedBoundary = false
+        repeat {
+            reachedBoundary = entered.wait(timeout: .now() + 0.01) == .success
+        } while !reachedBoundary && result.result == nil && Date() < entryDeadline
+        guard reachedBoundary else {
+            throw MachineManagerError.persistence(
+                "operation failed before cancellation boundary: \(String(describing: result.result))")
+        }
+        let stopped = ProductionDesktopCompletion<DoryMachineStatus>()
+        let stopID = UUID()
+        let stopper = Thread { stopped.finish(Result { try manager.stop(id: id, operationID: stopID) }) }
+        stopper.stackSize = 8 * 1_024 * 1_024
+        stopper.start()
+        let deadline = Date().addingTimeInterval(15)
+        while !manager.lifecycleCancellationRequestedForTesting(id: id, operationID: operationID), Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        #expect(manager.lifecycleCancellationRequestedForTesting(id: id, operationID: operationID))
+        // The competing Stop has only signalled; the original owner still holds its source.
+        #expect(manager.status(id: id)?.pid == source.pid)
+        #expect(try Data(contentsOf: configurationURL) == configuration)
+        resume.signal()
+        let finishedDeadline = Date().addingTimeInterval(60)
+        while (result.result == nil || stopped.result == nil), Date() < finishedDeadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        let completed = try #require(result.result)
+        if case .success = completed { Issue.record("cancelled operation unexpectedly succeeded") }
+        #expect(try #require(stopped.result).get().state == .stopped)
+        #expect(try Data(contentsOf: configurationURL) == configuration)
+        #expect(try DoryWorkspaceRepository(root: root).readPersistedRecord(id: id) == workspace)
+        #expect(manager.status(id: id)?.runtimeIdentity == source.runtimeIdentity)
+        #expect(manager.status(id: id)?.activeOperationID == nil)
+        let record = try journal.read(operationID)
+        #expect(record.state.status == .failed)
+        #expect(record.state.result == .cancelled)
+        #expect(throws: (any Error).self) { _ = try operation(operationID) }
+        #expect(try journal.read(operationID).state == record.state)
+        // Reacquisition proves the original owner released its journal and mutation leases.
+        _ = try journal.acquire(operationID)
+    }
+}
+
+extension DoryDaemonVirtualMachineProductionTrustTests {
+    @Test("Stop waits for committed configuration publication after cancellation closes")
+    func productionConfigurationClosedCancellationWindow() throws {
+        try withProductionIntegrationTestStack {
+            let harness = try ProductionDesktopUpdateHarness(sourceState: "stopped")
+            defer { harness.cleanup() }
+            let manager = harness.context.machineManager
+            let operationID = UUID()
+            let published = DispatchSemaphore(value: 0)
+            let resume = DispatchSemaphore(value: 0)
+            let stopRequested = DispatchSemaphore(value: 0)
+            defer { resume.signal(); manager.installLifecycleFaultInjectorForTesting { _ in } }
+            manager.installLifecycleFaultInjectorForTesting { point in
+                if point == .configurationUpdateAfterMetadata {
+                    published.signal()
+                    guard resume.wait(timeout: .now() + 30) == .success else {
+                        throw MachineManagerError.persistence("closed-window test did not release publication")
+                    }
+                } else if point == .stopAfterCancellationRequest { stopRequested.signal() }
+            }
+            let updated = ProductionDesktopCompletion<DoryMachineStatus>()
+            let updater = Thread {
+                updated.finish(Result { try manager.update(id: harness.id, memoryMB: 5_120,
+                    operationID: operationID) })
+            }
+            updater.stackSize = 8 * 1_024 * 1_024
+            updater.start()
+            guard published.wait(timeout: .now() + 30) == .success else {
+                throw MachineManagerError.persistence("configuration did not publish: \(String(describing: updated.result))")
+            }
+            let stopped = ProductionDesktopCompletion<DoryMachineStatus>()
+            let stopper = Thread { stopped.finish(Result { try manager.stop(id: harness.id) }) }
+            stopper.stackSize = 8 * 1_024 * 1_024
+            stopper.start()
+            try #require(stopRequested.wait(timeout: .now() + 15) == .success)
+            #expect(!manager.lifecycleCancellationRequestedForTesting(id: harness.id, operationID: operationID))
+            #expect(stopped.result == nil)
+            resume.signal()
+            let deadline = Date().addingTimeInterval(60)
+            while (updated.result == nil || stopped.result == nil), Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            #expect(try #require(updated.result).get().memoryMB == 5_120)
+            #expect(try #require(stopped.result).get().state == .stopped)
+            let record = try harness.journal.read(operationID)
+            #expect(record.state.status == .completed && record.state.result == .succeeded)
+            #expect(manager.status(id: harness.id)?.memoryMB == 5_120)
+            #expect(try harness.context.planning.plans.read(id: harness.id)
+                == manager.status(id: harness.id)?.runtimeIdentity.resolvedPlan)
+            #expect(try harness.context.planning.resourceLedger.snapshot().leases.first {
+                $0.binding.machineID == harness.id
+            }?.state == .stopped)
+        }
+    }
 }
