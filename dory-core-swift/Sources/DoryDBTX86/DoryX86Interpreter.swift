@@ -879,6 +879,16 @@ public struct DoryX86Interpreter: Sendable {
           }
           break
         }
+        if operation == .squareRoot,
+          testOperand.isUnsupported || testOperand.isSignalingNaN
+            || (!testOperand.isNaN && testOperand.isNegative && !testOperand.isZero)
+        {
+          if recordX87Exceptions(1, state: &state.floatingPoint) {
+            writeX87Register(
+              0, value: DoryX86X87Stack.indefinite, state: &state.floatingPoint)
+          }
+          break
+        }
         executeX87Special(operation, state: &state.floatingPoint)
       case .loadX87Environment(let source):
         let byteCount = DoryX86FloatingPointEnvironment.byteCount(
@@ -4400,7 +4410,6 @@ public struct DoryX86Interpreter: Sendable {
       writeX87Register(1, value: y * Foundation.log2(x + 1), state: &state)
       popX87(state: &state)
     case .squareRoot:
-      if x < 0 { state.x87StatusWord |= 1 }
       writeX87Register(0, value: Foundation.sqrt(x), state: &state)
     case .sineCosine:
       guard x87TrigonometricArgumentIsInRange(x, state: &state) else { return }
