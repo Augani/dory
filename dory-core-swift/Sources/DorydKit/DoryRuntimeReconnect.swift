@@ -374,6 +374,50 @@ public final class DoryRuntimeReconnectRecordStore: @unchecked Sendable {
         }
     }
 
+    /// Persist a renderer renewal after the caller authenticates the live runtime and admits
+    /// the daemon-issued worker generation. This cannot change launch or endpoint authority.
+    public func renewLiveReadiness(
+        machineID: String,
+        launchIdentity: DoryRuntimeReconnectLaunchIdentity,
+        processIdentity: DoryHostProcessIdentity,
+        readiness: VmmReadyMessage
+    ) throws -> DoryRuntimeReconnectRecord {
+        try lock.withLock {
+            var record = try readUnlocked(machineID: machineID)
+            guard record.state == .live,
+                  record.backend == .doryHypervisor,
+                  record.launchIdentity == launchIdentity,
+                  record.processIdentity == processIdentity,
+                  try DoryHostProcessIdentity.capture(
+                    processIdentifier: processIdentity.processIdentifier
+                  ) == processIdentity,
+                  let previousReady = record.readiness,
+                  let previous = previousReady.graphicsSelection,
+                  let replacement = readiness.graphicsSelection,
+                  previous.isValid, replacement.isValid,
+                  previous.operationID == launchIdentity.operationID,
+                  previous.resolvedPlanSHA256 == launchIdentity.resolvedPlanSHA256,
+                  previous.planRevision == launchIdentity.planRevision,
+                  let oldGeneration = previous.rendererGeneration,
+                  let newGeneration = replacement.rendererGeneration,
+                  newGeneration > oldGeneration else {
+                throw DoryRuntimeReconnectError.invalidIdentity
+            }
+            var expectedGraphics = previous
+            expectedGraphics.rendererGeneration = replacement.rendererGeneration
+            expectedGraphics.rendererWorkerReceiptSHA256 = replacement.rendererWorkerReceiptSHA256
+            expectedGraphics.guestProducerFenceProofSHA256 = replacement.guestProducerFenceProofSHA256
+            var expectedReadiness = previousReady
+            expectedReadiness.graphicsSelection = replacement
+            guard replacement == expectedGraphics, readiness == expectedReadiness else {
+                throw DoryRuntimeReconnectError.invalidIdentity
+            }
+            record.readiness = readiness
+            try writeUnlocked(record)
+            return record
+        }
+    }
+
     public func read(machineID: String) throws -> DoryRuntimeReconnectRecord {
         try lock.withLock { try readUnlocked(machineID: machineID) }
     }

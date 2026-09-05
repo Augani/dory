@@ -120,6 +120,68 @@ final class DoryRuntimeReconnectTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: path))
     }
 
+    func testRendererRenewalPersistsOnlyForExactLiveRuntimeAndPreservesEndpoints() throws {
+        let root = temporaryDirectory()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let identity = makeIdentity()
+        let store = DoryRuntimeReconnectRecordStore(root: root)
+        let process = try DoryHostProcessIdentity.capture()
+        var ready = VmmReadyMessage(
+            machineID: identity.machineID, operationID: identity.operationID,
+            agentSocketPath: root + "/agent.sock", controlSocketPath: root + "/control.sock",
+            graphicsSelection: DoryRuntimeGraphicsSelection(
+                operationID: identity.operationID, resolvedPlanSHA256: identity.resolvedPlanSHA256,
+                planRevision: identity.planRevision, accelerationLevel: .hardwareAccelerated3D,
+                backend: .virgl, rendererGeneration: 1,
+                rendererWorkerReceiptSHA256: String(repeating: "a", count: 64),
+                guestProducerFenceProofSHA256: String(repeating: "b", count: 64)))
+        try store.publishPending(identity: identity, backend: .doryHypervisor, executablePath: "/bin/sleep")
+        XCTAssertThrowsError(try store.renewLiveReadiness(
+            machineID: identity.machineID, launchIdentity: identity,
+            processIdentity: process, readiness: ready))
+        let original = try store.publishLive(
+            machineID: identity.machineID, operationID: XCTUnwrap(UUID(uuidString: identity.operationID)),
+            processIdentifier: process.processIdentifier, readiness: ready)
+        ready.graphicsSelection?.rendererGeneration = 2
+        ready.graphicsSelection?.rendererWorkerReceiptSHA256 = String(repeating: "c", count: 64)
+        let renewed = try store.renewLiveReadiness(
+            machineID: identity.machineID, launchIdentity: identity,
+            processIdentity: process, readiness: ready)
+        XCTAssertEqual(renewed.launchIdentity, original.launchIdentity)
+        XCTAssertEqual(renewed.processIdentity, original.processIdentity)
+        XCTAssertEqual(renewed.backend, original.backend)
+        XCTAssertEqual(renewed.executablePath, original.executablePath)
+        XCTAssertEqual(renewed.readiness, ready)
+        XCTAssertEqual(try DoryRuntimeReconnectRecordStore(root: root).read(machineID: identity.machineID), renewed)
+
+        var candidate = ready
+        candidate.graphicsSelection?.rendererGeneration = 3
+        var wrongLaunch = identity
+        wrongLaunch.secret = String(repeating: "0", count: 64)
+        var wrongProcess = process
+        wrongProcess.startTimeMicroseconds &+= 1
+        for (launch, peer) in [(wrongLaunch, process), (identity, wrongProcess)] {
+            XCTAssertThrowsError(try store.renewLiveReadiness(
+                machineID: identity.machineID, launchIdentity: launch,
+                processIdentity: peer, readiness: candidate))
+        }
+        var wrongEndpoint = candidate
+        wrongEndpoint.controlSocketPath = root + "/substituted.sock"
+        var wrongPlan = candidate
+        wrongPlan.graphicsSelection?.planRevision &+= 1
+        var wrongBackend = candidate
+        wrongBackend.graphicsSelection?.backend = .virglVenus
+        var wrongObservation = candidate
+        wrongObservation.workloadReady = true
+        for rejected in [try XCTUnwrap(original.readiness), ready, wrongEndpoint, wrongPlan,
+                         wrongBackend, wrongObservation] {
+            XCTAssertThrowsError(try store.renewLiveReadiness(
+                machineID: identity.machineID, launchIdentity: identity,
+                processIdentity: process, readiness: rejected))
+            XCTAssertEqual(try store.read(machineID: identity.machineID), renewed)
+        }
+    }
+
     func testAdoptionRejectsStaleProcessGenerationBeforeInstallingSupervisor() throws {
         let current = try DoryHostProcessIdentity.capture()
         XCTAssertThrowsError(try HvProcess.adopting(

@@ -1,0 +1,11 @@
+{
+  "scope": "Persist renderer readiness renewal for an exact live RawHV reconnect record. Only renderer generation and proof digests may change; launch, process generation, endpoints, backend and other observations remain bound to the existing record. Caller must authenticate the runtime and admit the daemon-issued renderer generation before publication.",
+  "validation": "8 reconnect XCTest tests pass. New test covers durable readback from a fresh store, pending-record rejection, launch secret/process-start mismatch, stale and duplicate generations, and changed endpoint/plan/backend/observations without corrupting the live record.",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DorydKit/DoryRuntimeReconnect.swift": "61b9a837e2ba4203ced39cabc680f55a321b63e3cbb6168e34023953ee3ec99d",
+    "dory-core-swift/Tests/DorydKitTests/DoryRuntimeReconnectTests.swift": "886d3099fd5988a84892150b57023b6aed3d0dd7b10272dce4623e549bdaf3c0"
+  },
+  "log": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/renderer-readiness-renewal-final.log",
+  "logSHA256": "0f7724ba95916b458aa3cc8ee899d722b38b0473a8e98ba5299d064a1d6a60c5",
+  "limitation": "Store API qualification in isolated checkout. Connected daemon/runner reset and physical GPU recovery remain in progress."
+}
