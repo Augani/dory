@@ -1116,7 +1116,7 @@ enum DoryPCMode {
             for number in [SIGTERM, SIGINT] {
                 signal(number, SIG_IGN)
                 let source = DispatchSource.makeSignalSource(signal: number, queue: signalQueue)
-                source.setEventHandler {
+                source.setEventHandler { @Sendable in
                     // The daemon's bounded stop may ultimately SIGKILL this runner if an
                     // installer has no guest agent and ignores the ACPI power key. Retire the
                     // runner-owned sidecar at the first host termination signal so that forced
