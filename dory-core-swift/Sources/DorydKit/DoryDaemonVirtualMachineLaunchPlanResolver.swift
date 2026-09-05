@@ -519,7 +519,13 @@ public final class DoryDaemonVirtualMachineLaunchPlanResolver:
             portForwards: plan.portForwards
         ))
         guard let backendPlan = mapped.plan, mapped.failure == nil else {
-            throw failure(.backendPlanRejected, "The exact backend adapter rejected the launch plan.")
+            let reason = mapped.failure.map {
+                " [\($0.code.rawValue)] \($0.message)"
+            } ?? " No backend plan was returned."
+            throw failure(
+                .backendPlanRejected,
+                "The exact backend adapter rejected the launch plan." + reason
+            )
         }
         guard backendPlan.backend.identity == plan.backend,
               backendPlan.backend.implementationIdentifier
