@@ -286,19 +286,7 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
       lock.withLock { deviceNotificationControl = uint32(bytes) & 0xFFFF }
       return
     }
-    if offset == Self.operationalOffset + 0x18, bytes.count == 8 {
-      lock.withLock {
-        let value = uint64(bytes)
-        commandRingControl = value & ~UInt64(0x30)
-        commandRingDequeueAddress = value & ~UInt64(0x3F)
-        commandRingCycle = value & 1 != 0
-      }
-      return
-    }
-    if offset == Self.operationalOffset + 0x30, bytes.count == 8 {
-      lock.withLock { deviceContextBaseAddress = uint64(bytes) & ~UInt64(0x3F) }
-      return
-    }
+    if writeAddressRegister(offset: offset, bytes: bytes) { return }
     if offset == Self.operationalOffset + 0x38, bytes.count == 4 {
       lock.withLock {
         configuredSlots = min(uint32(bytes) & 0xFF, UInt32(Self.maximumSlots))
@@ -318,17 +306,6 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
         eventRingSegmentTableSize = min(uint32(bytes) & 0xFFFF, 1)
         invalidateEventRingLocked()
       }
-      return
-    }
-    if offset == Self.runtimeOffset + 0x30, bytes.count == 8 {
-      lock.withLock {
-        eventRingSegmentTableAddress = uint64(bytes) & ~UInt64(0x3F)
-        invalidateEventRingLocked()
-      }
-      return
-    }
-    if offset == Self.runtimeOffset + 0x38, bytes.count == 8 {
-      writeEventRingDequeuePointer(uint64(bytes))
       return
     }
     if offset >= Self.portRegisterOffset,
@@ -400,12 +377,47 @@ public final class DoryPCXHCIController: DoryPCPCIFunction, DoryPCPCIMSIControll
     updateInterruptLine()
   }
 
-  private func writeEventRingDequeuePointer(_ value: UInt64) {
-    lock.withLock {
-      eventRingDequeuePointer = value & ~UInt64(0x8)
-      if value & 0x8 != 0 { interrupterManagement &= ~UInt32(1) }
+  // xHCI address registers accept a Qword or low/high Dword writes (xHCI 1.2 §5.1).
+  // Merge under the controller lock so each half preserves the other half and register flags.
+  private func writeAddressRegister(offset: UInt64, bytes: [UInt8]) -> Bool {
+    guard (bytes.count == 4 && offset % 4 == 0)
+      || (bytes.count == 8 && offset % 8 == 0) else { return false }
+    let base = offset & ~UInt64(7)
+    let handled = lock.withLock {
+      let current: UInt64
+      switch base {
+      case Self.operationalOffset + 0x18: current = commandRingControl
+      case Self.operationalOffset + 0x30: current = deviceContextBaseAddress
+      case Self.runtimeOffset + 0x30: current = eventRingSegmentTableAddress
+      case Self.runtimeOffset + 0x38: current = eventRingDequeuePointer
+      default: return false
+      }
+      let value: UInt64
+      if bytes.count == 8 {
+        value = uint64(bytes)
+      } else if offset == base {
+        value = (current & 0xFFFF_FFFF_0000_0000) | UInt64(uint32(bytes))
+      } else {
+        value = (current & 0xFFFF_FFFF) | (UInt64(uint32(bytes)) << 32)
+      }
+      switch base {
+      case Self.operationalOffset + 0x18:
+        commandRingControl = value & ~UInt64(0x30)
+        commandRingDequeueAddress = value & ~UInt64(0x3F)
+        commandRingCycle = value & 1 != 0
+      case Self.operationalOffset + 0x30:
+        deviceContextBaseAddress = value & ~UInt64(0x3F)
+      case Self.runtimeOffset + 0x30:
+        eventRingSegmentTableAddress = value & ~UInt64(0x3F)
+        invalidateEventRingLocked()
+      default:
+        eventRingDequeuePointer = value & ~UInt64(0x8)
+        if value & 0x8 != 0 { interrupterManagement &= ~UInt32(1) }
+      }
+      return true
     }
-    updateInterruptLine()
+    if handled && base == Self.runtimeOffset + 0x38 { updateInterruptLine() }
+    return handled
   }
 
   private func writePort(_ port: Int, value: UInt32) throws {

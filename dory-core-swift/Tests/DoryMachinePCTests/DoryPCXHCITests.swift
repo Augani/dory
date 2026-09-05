@@ -3,6 +3,22 @@ import Foundation
 import Testing
 
 @Suite struct DoryPCXHCITests {
+  @Test(arguments: [UInt64(0x58), 0x70, 0x1030, 0x1038])
+  func addressRegistersAcceptSplitDwordsPreservingTheOtherHalf(offset: UInt64) throws {
+    let xhci = try DoryPCXHCIController()
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024, pciFunctions: [xhci])
+    try xhci.writeConfiguration(offset: 4, bytes: [2, 0])
+    let address = DoryPCV1ABI.xhciBARAddress + offset
+    // Linux's xhci_write_64 uses this low-then-high sequence even on a 64-bit guest.
+    try write32(machine, address, 0x01E2_A000)
+    try write32(machine, address + 4, 2)
+    #expect(try read64(machine, address) == 0x0000_0002_01E2_A000)
+    try write32(machine, address, 0x01E2_B000)
+    #expect(try read64(machine, address) == 0x0000_0002_01E2_B000)
+    try write32(machine, address + 4, 3)
+    #expect(try read64(machine, address) == 0x0000_0003_01E2_B000)
+  }
+
   @Test func publishesXHCI12PCIAndProtocolCapabilities() throws {
     let xhci = try DoryPCXHCIController()
     let machine = try DoryPCDirectKernelMachine(
@@ -53,6 +69,12 @@ import Testing
     #expect(try read32(machine, 0x2008) == 1 << 24)
     #expect((try read32(machine, 0x200C) >> 10) & 0x3F == 34)
     #expect(machine.localAPIC.snapshot().interruptRequest.contains(0x76))
+
+    // Updating the high Dword must not acknowledge the low-Dword interrupt flags.
+    try write32(machine, bar + 0x103C, 0)
+    #expect(try read32(machine, bar + 0x1020) & 1 == 1)
+    try write32(machine, bar + 0x1038, 0x2018)
+    #expect(try read32(machine, bar + 0x1020) & 1 == 0)
 
     try write32(machine, bar + 0x440, 1 << 4)
     let reset = try read32(machine, bar + 0x440)
@@ -126,7 +148,8 @@ import Testing
     #expect(try read32(machine, 0x2018) >> 24 == 1)
   }
 
-  @Test func addressDeviceConsumesInputContextAndPublishesOutputContext() throws {
+  @Test(arguments: [false, true])
+  func addressDeviceConsumesInputContextAndPublishesOutputContext(splitAddressWrites: Bool) throws {
     let xhci = try DoryPCXHCIController()
     let usbDevice = DoryPCUSBRecordingDevice(
       speed: .high,
@@ -137,6 +160,14 @@ import Testing
       pciFunctions: [xhci]
     )
     let bar = DoryPCV1ABI.xhciBARAddress
+    func writeAddress(_ address: UInt64, _ value: UInt64) throws {
+      if splitAddressWrites {
+        try write32(machine, address, UInt32(truncatingIfNeeded: value))
+        try write32(machine, address + 4, UInt32(truncatingIfNeeded: value >> 32))
+      } else {
+        try write64(machine, address, value)
+      }
+    }
     try xhci.writeConfiguration(offset: 4, bytes: [2, 0])
     try xhci.connect(port: 1, device: usbDevice)
     try machine.physicalMemory.write(
@@ -157,10 +188,10 @@ import Testing
       + littleEndian(UInt32(1 << 24 | 11 << 10 | 1))
     try machine.physicalMemory.write(at: 0x3000, bytes: enable + address)
     try write32(machine, bar + 0x1028, 1)
-    try write64(machine, bar + 0x1030, 0x1000)
-    try write64(machine, bar + 0x1038, 0x2000)
-    try write64(machine, bar + 0x58, 0x3001)
-    try write64(machine, bar + 0x70, 0x4000)
+    try writeAddress(bar + 0x1030, 0x1000)
+    try writeAddress(bar + 0x1038, 0x2000)
+    try writeAddress(bar + 0x58, 0x3001)
+    try writeAddress(bar + 0x70, 0x4000)
     try write32(machine, bar + 0x78, 8)
     try write32(machine, bar + 0x40, 1)
 
