@@ -2499,6 +2499,165 @@ import Testing
     #endif
   }
 
+  @Test func nativeSchedClockRegisterArithmeticMatchesInterpreterAtCPL0() throws {
+    #if arch(arm64)
+      let initialFlags = DoryX86RFLAGS(
+        rawValue: DoryX86RFLAGS.reservedOne.rawValue
+          | DoryX86RFLAGS.carry.rawValue
+          | DoryX86RFLAGS.parity.rawValue
+          | DoryX86RFLAGS.auxiliaryCarry.rawValue
+          | DoryX86RFLAGS.zero.rawValue
+          | DoryX86RFLAGS.sign.rawValue
+          | DoryX86RFLAGS.direction.rawValue
+          | DoryX86RFLAGS.interruptEnable.rawValue
+          | DoryX86RFLAGS.overflow.rawValue
+      )
+      let multiplyCases: [DoryX86GeneralRegisters] = [
+        .init(rax: 0, rdx: 0x1234),
+        .init(rax: 1, rdx: UInt64.max),
+        .init(rax: UInt64.max, rdx: 2),
+        .init(rax: 0x8000_0000_0000_0000, rdx: 2),
+        .init(rax: 0x0123_4567_89AB_CDEF, rdx: 0xFEDC_BA98_7654_3210),
+      ]
+      let shiftCases: [(registers: DoryX86GeneralRegisters, flags: DoryX86RFLAGS)] = [
+        (.init(rax: 0x0123_4567_89AB_CDEF, rcx: 0, rdx: 0xFEDC_BA98_7654_3210), initialFlags),
+        (
+          .init(rax: 0x8123_4567_89AB_CDEF, rcx: 1, rdx: 0x7EDC_BA98_7654_3210),
+          [.reservedOne, .interruptEnable]
+        ),
+        (
+          .init(rax: 0x0123_4567_89AB_CDEF, rcx: 13, rdx: 0xFEDC_BA98_7654_3210),
+          initialFlags
+        ),
+        (
+          .init(rax: 0x8000_0000_0000_0001, rcx: 63, rdx: 0x0000_0000_0000_0001),
+          [.reservedOne, .carry, .overflow]
+        ),
+        (
+          .init(rax: 0xA5A5_A5A5_A5A5_A5A5, rcx: 65, rdx: 0x5A5A_5A5A_5A5A_5A5A),
+          [.reservedOne, .overflow, .zero]
+        ),
+      ]
+
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          optimization: optimization
+        )
+        for registers in multiplyCases {
+          try assertNativeArithmeticParity(
+            bytes: [0x48, 0xF7, 0xE2],
+            registers: registers,
+            flags: initialFlags,
+            executor: executor,
+            optimization: optimization
+          )
+        }
+        for (registers, flags) in shiftCases {
+          try assertNativeArithmeticParity(
+            bytes: [0x48, 0x0F, 0xAD, 0xD0],
+            registers: registers,
+            flags: flags,
+            executor: executor,
+            optimization: optimization
+          )
+        }
+        try assertNativeArithmeticParity(
+          bytes: [0x48, 0x0F, 0xAD, 0xC0],
+          registers: .init(rax: 0x0123_4567_89AB_CDEF, rcx: 17),
+          flags: initialFlags,
+          executor: executor,
+          optimization: optimization
+        )
+        try assertNativeArithmeticParity(
+          bytes: [0x48, 0x0F, 0xAD, 0xC8],
+          registers: .init(
+            rax: 0x0123_4567_89AB_CDEF,
+            rcx: 0x0000_0000_0000_0011
+          ),
+          flags: initialFlags,
+          executor: executor,
+          optimization: optimization
+        )
+        try assertNativeArithmeticParity(
+          bytes: [0x48, 0x0F, 0xAD, 0xD1],
+          registers: .init(
+            rcx: 0xA5A5_A5A5_A5A5_A511,
+            rdx: 0x5A5A_5A5A_5A5A_5A5A
+          ),
+          flags: initialFlags,
+          executor: executor,
+          optimization: optimization
+        )
+        try assertNativeArithmeticSequenceParity(
+          bytes: [0x48, 0xF7, 0xE2, 0x48, 0x0F, 0xAD, 0xD0],
+          registers: .init(
+            rax: 0x0123_4567_89AB_CDEF,
+            rcx: 17,
+            rdx: 0xFEDC_BA98_7654_3210
+          ),
+          flags: initialFlags,
+          executor: executor,
+          optimization: optimization
+        )
+      }
+    #endif
+  }
+
+  @Test func nativeSchedClockArithmeticCoverageRemainsKernelRegisterOnly() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let kernelCS = DoryX86SegmentState(selector: 8, attributes: 0xA09B, limit: .max)
+      let userCS = DoryX86SegmentState(selector: 3, attributes: 0xA0FB, limit: .max)
+
+      for bytes in [
+        [UInt8]([0x48, 0xF7, 0x20]),  // mul qword ptr [rax]
+        [UInt8]([0x48, 0x0F, 0xAD, 0x10]),  // shrd qword ptr [rax],rdx,cl
+      ] {
+        let translated = try DoryX86IRTranslator().translate(bytes, at: 0, mode: .long64)
+        #expect(DoryARM64BaselineEmitter().compile(translated).tier == .interpreterFallback)
+      }
+
+      var kernelState = try DoryX86ArchitecturalState(
+        registers: .init(rax: 3, rdx: 7),
+        rip: 0,
+        rflags: [.reservedOne],
+        cs: kernelCS
+      )
+      #expect(try executor.execute(
+        bytes: [0x48, 0xF7, 0xE2],
+        at: 0,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &kernelState
+      ) != nil)
+
+      var userState = try DoryX86ArchitecturalState(
+        registers: .init(rax: 3, rcx: 1, rdx: 7),
+        rip: 0,
+        rflags: [.reservedOne],
+        cs: userCS
+      )
+      #expect(try executor.execute(
+        bytes: [0x48, 0xF7, 0xE2],
+        at: 0,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &userState
+      ) == nil)
+      #expect(try executor.execute(
+        bytes: [0x48, 0x0F, 0xAD, 0xD0],
+        at: 0,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &userState
+      ) == nil)
+    #endif
+  }
+
   @Test func nativeTranslationSpansMeasuredKernelHashLoop() throws {
     let bytes: [UInt8] = [
       0x48, 0x8B, 0x10, 0x48, 0x83, 0xC0, 0x20, 0x48, 0x0F, 0xAF, 0xD6,
@@ -4350,6 +4509,97 @@ import Testing
       #expect(executor.diagnostics.nativeTraceReplays == 1)
       #expect(executor.nativeBatchExecutionCount == 1)
     #endif
+  }
+
+  private func assertNativeArithmeticParity(
+    bytes: [UInt8],
+    registers: DoryX86GeneralRegisters,
+    flags: DoryX86RFLAGS,
+    executor: DoryARM64BaselineExecutor,
+    optimization: DoryARM64JITOptimization
+  ) throws {
+    let kernelCS = DoryX86SegmentState(selector: 8, attributes: 0xA09B, limit: .max)
+    var interpreted = try DoryX86ArchitecturalState(
+      registers: registers,
+      rip: 0,
+      rflags: flags,
+      cs: kernelCS
+    )
+    _ = DoryX86Interpreter().step(
+      state: &interpreted,
+      memory: try DoryX86ByteArrayMemory(bytes: bytes),
+      mode: .long64
+    )
+
+    var translated = try DoryX86ArchitecturalState(
+      registers: registers,
+      rip: 0,
+      rflags: flags,
+      cs: kernelCS
+    )
+    let execution = try #require(
+      executor.execute(
+        bytes: bytes,
+        at: 0,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &translated
+      )
+    )
+
+    #expect(execution.block.tier.rawValue == optimization.rawValue)
+    #expect(translated == interpreted)
+  }
+
+  private func assertNativeArithmeticSequenceParity(
+    bytes: [UInt8],
+    registers: DoryX86GeneralRegisters,
+    flags: DoryX86RFLAGS,
+    executor: DoryARM64BaselineExecutor,
+    optimization: DoryARM64JITOptimization
+  ) throws {
+    let kernelCS = DoryX86SegmentState(selector: 8, attributes: 0xA09B, limit: .max)
+    let memory = try DoryX86ByteArrayMemory(bytes: bytes)
+    var interpreted = try DoryX86ArchitecturalState(
+      registers: registers,
+      rip: 0,
+      rflags: flags,
+      cs: kernelCS
+    )
+    while interpreted.rip < UInt64(bytes.count) {
+      let decoded = try DoryX86Decoder().decode(
+        try memory.instructionBytes(at: interpreted.rip, maximumCount: 15),
+        at: interpreted.rip,
+        mode: .long64
+      )
+      #expect(DoryX86Interpreter().step(
+        state: &interpreted,
+        memory: memory,
+        mode: .long64
+      ) == .retired(decoded))
+    }
+
+    var translated = try DoryX86ArchitecturalState(
+      registers: registers,
+      rip: 0,
+      rflags: flags,
+      cs: kernelCS
+    )
+    let execution = try #require(
+      executor.execute(
+        bytes: bytes,
+        at: 0,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 2,
+        state: &translated
+      )
+    )
+
+    #expect(execution.block.tier.rawValue == optimization.rawValue)
+    #expect(execution.block.guestInstructionCount == 2)
+    #expect(translated == interpreted)
   }
 }
 

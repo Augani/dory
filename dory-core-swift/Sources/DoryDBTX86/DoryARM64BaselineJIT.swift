@@ -174,6 +174,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination) || isFSOrGS(source)
       case .signedMultiply(let destination, let lhs, let rhs):
         return isFSOrGS(destination) || isFSOrGS(lhs) || isFSOrGS(rhs)
+      case .unsignedAccumulatorMultiply(let source):
+        return isFSOrGS(source)
+      case .doubleShiftRightCL(let destination, let source):
+        return isFSOrGS(destination) || isFSOrGS(source)
       case .compareExchange(let destination, let source):
         return isFSOrGS(destination) || isFSOrGS(source)
       case .effectiveAddress:
@@ -253,6 +257,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitSetDirectionFlag(enabled: enabled, into: &words)
     case .readTimestampCounter:
       return emitReadTimestampCounter(into: &words)
+    case .unsignedAccumulatorMultiply(let source):
+      return emitUnsignedAccumulatorMultiply(source: source, into: &words)
+    case .doubleShiftRightCL(let destination, let source):
+      return emitDoubleShiftRightCL(destination: destination, source: source, into: &words)
     case .compareExchange(let destination, let source):
       return emitCompareExchange(destination: destination, source: source, into: &words)
     case .signedMultiply(let destination, let lhs, let rhs):
@@ -649,6 +657,13 @@ public struct DoryARM64BaselineEmitter: Sendable {
       if case .memory = lhs { return 1 }
       if case .memory = rhs { return 1 }
       return 0
+    case .unsignedAccumulatorMultiply(let source):
+      if case .memory = source { return 1 }
+      return 0
+    case .doubleShiftRightCL(let destination, let source):
+      if case .memory = destination { return 1 }
+      if case .memory = source { return 1 }
+      return 0
     case .extendMove(_, let source, _):
       if case .memory = source { return 1 }
       return 0
@@ -735,6 +750,178 @@ public struct DoryARM64BaselineEmitter: Sendable {
       words.append(encodeLogical(.or, is64Bit: false, 31, 11, 12))
       words.append(encodeStore64(register: 12, base: 0, byteOffset: Int(target.index) * 8))
     }
+    return true
+  }
+
+  private func emitUnsignedAccumulatorMultiply(
+    source: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard case .register(let sourceRegister) = source,
+      sourceRegister.bank == "x86.gpr", sourceRegister.index < 16, sourceRegister.width == .i64
+    else { return false }
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: 0))
+    words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(sourceRegister.index) * 8))
+    words.append(encodeMultiply64(left: 9, right: 10, destination: 11))
+    words.append(encodeUnsignedMultiplyHigh64(left: 9, right: 10, destination: 12))
+    words.append(encodeStore64(register: 11, base: 0, byteOffset: 0))
+    words.append(encodeStore64(register: 12, base: 0, byteOffset: 16))
+
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 12, 31, 31))
+    words.append(encodeConditionalSet(register: 13, condition: .notEqual))
+    words.append(encodeLoad64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
+    let overflowMask = DoryX86RFLAGS.carry.rawValue | DoryX86RFLAGS.overflow.rawValue
+    emitImmediate(~overflowMask, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.or, left: 14, right: 13, destination: 14))
+    words.append(encodeLogical(.or, left: 14, right: 13, shiftAmount: 11, destination: 14))
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 15, into: &words)
+    words.append(encodeLogical(.or, left: 14, right: 15, destination: 14))
+    words.append(encodeStore64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
+    return true
+  }
+
+  private func emitDoubleShiftRightCL(
+    destination: DoryIROperand,
+    source: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard case .register(let target) = destination,
+      target.bank == "x86.gpr", target.index < 16, target.width == .i64,
+      case .register(let sourceRegister) = source,
+      sourceRegister.bank == "x86.gpr", sourceRegister.index < 16, sourceRegister.width == .i64
+    else { return false }
+
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+    words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(sourceRegister.index) * 8))
+    words.append(encodeLoad64(register: 11, base: 0, byteOffset: 8))
+    emitImmediate(0x3f, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 11, right: 15, destination: 11))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 11, 31, 31))
+    let zeroCountBranch = words.count
+    words.append(0)
+
+    words.append(
+      encodeVariableShift(
+        .logicalRight,
+        is64Bit: true,
+        value: 9,
+        count: 11,
+        destination: 12
+      ))
+    emitImmediate(64, register: 16, into: &words)
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 16, 11, 16))
+    words.append(
+      encodeVariableShift(
+        .left,
+        is64Bit: true,
+        value: 10,
+        count: 16,
+        destination: 16
+      ))
+    words.append(encodeLogical(.or, left: 12, right: 16, destination: 12))
+
+    emitImmediate(1, register: 15, into: &words)
+    emitImmediate(1, register: 16, into: &words)
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 11, 16, 16))
+    words.append(
+      encodeVariableShift(
+        .logicalRight,
+        is64Bit: true,
+        value: 9,
+        count: 16,
+        destination: 13
+      ))
+    words.append(encodeLogical(.and, left: 13, right: 15, destination: 13))
+
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 12, 31, 31))
+    words.append(encodeConditionalSet(register: 16, condition: .equal))
+    words.append(encodeLogical(.or, left: 13, right: 16, shiftAmount: 6, destination: 13))
+    words.append(
+      encodeLogical(
+        .or,
+        left: 31,
+        right: 12,
+        shiftAmount: 63,
+        logicalRightShift: true,
+        destination: 16
+      ))
+    words.append(encodeLogical(.and, left: 16, right: 15, destination: 16))
+    words.append(encodeLogical(.or, left: 13, right: 16, shiftAmount: 7, destination: 13))
+
+    words.append(
+      encodeLogical(
+        .xor,
+        left: 12,
+        right: 12,
+        shiftAmount: 4,
+        logicalRightShift: true,
+        destination: 16
+      ))
+    words.append(
+      encodeLogical(
+        .xor, left: 16, right: 16, shiftAmount: 2, logicalRightShift: true, destination: 16
+      ))
+    words.append(
+      encodeLogical(
+        .xor, left: 16, right: 16, shiftAmount: 1, logicalRightShift: true, destination: 16
+      ))
+    words.append(encodeLogical(.and, left: 16, right: 15, destination: 16))
+    words.append(encodeLogical(.xor, left: 16, right: 15, destination: 16))
+    words.append(encodeLogical(.or, left: 13, right: 16, shiftAmount: 2, destination: 13))
+
+    words.append(encodeLoad64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
+    let resultFlagMask =
+      DoryX86RFLAGS.carry.rawValue
+      | DoryX86RFLAGS.parity.rawValue
+      | DoryX86RFLAGS.auxiliaryCarry.rawValue
+      | DoryX86RFLAGS.zero.rawValue
+      | DoryX86RFLAGS.sign.rawValue
+    emitImmediate(~resultFlagMask, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.or, left: 14, right: 13, destination: 14))
+
+    emitImmediate(1, register: 15, into: &words)
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 11, 15, 31))
+    let nonUnitCountBranch = words.count
+    words.append(0)
+    words.append(
+      encodeLogical(
+        .or,
+        left: 31,
+        right: 9,
+        shiftAmount: 63,
+        logicalRightShift: true,
+        destination: 16
+      ))
+    words.append(
+      encodeLogical(
+        .or,
+        left: 31,
+        right: 12,
+        shiftAmount: 63,
+        logicalRightShift: true,
+        destination: 15
+      ))
+    words.append(encodeLogical(.xor, left: 16, right: 15, destination: 16))
+    emitImmediate(1, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 16, right: 15, destination: 16))
+    emitImmediate(~DoryX86RFLAGS.overflow.rawValue, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.or, left: 14, right: 16, shiftAmount: 11, destination: 14))
+    words[nonUnitCountBranch] = encodeConditionalBranch(
+      condition: .notEqual,
+      wordOffset: words.count - nonUnitCountBranch
+    )
+
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 15, into: &words)
+    words.append(encodeLogical(.or, left: 14, right: 15, destination: 14))
+    words.append(encodeStore64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
+    words.append(encodeStore64(register: 12, base: 0, byteOffset: Int(target.index) * 8))
+    words[zeroCountBranch] = encodeConditionalBranch(
+      condition: .equal,
+      wordOffset: words.count - zeroCountBranch
+    )
     return true
   }
 
@@ -2081,6 +2268,14 @@ public struct DoryARM64BaselineEmitter: Sendable {
     destination: UInt32
   ) -> UInt32 {
     0x9B40_7C00 | right << 16 | left << 5 | destination
+  }
+
+  private func encodeUnsignedMultiplyHigh64(
+    left: UInt32,
+    right: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    0x9BC0_7C00 | right << 16 | left << 5 | destination
   }
 
   private func encodeRotateRightImmediate64(
@@ -3689,6 +3884,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       block.statements.contains(where: {
         if case .compareExchange = $0 { return true }
         return false
+      })
+    {
+      return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
+    }
+    if key.privilegeLevel != 0,
+      block.statements.contains(where: {
+        switch $0 {
+        case .unsignedAccumulatorMultiply, .doubleShiftRightCL:
+          return true
+        default:
+          return false
+        }
       })
     {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)

@@ -108,6 +108,15 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)
 
+      case .unsignedAccumulatorMultiply:
+        statements.append(statement)
+        invalidate(.register(.init(bank: "x86.gpr", index: 0, width: .i64)), knownConstants: &knownConstants)
+        invalidate(.register(.init(bank: "x86.gpr", index: 2, width: .i64)), knownConstants: &knownConstants)
+
+      case .doubleShiftRightCL(let destination, _):
+        statements.append(statement)
+        invalidate(destination, knownConstants: &knownConstants)
+
       case .extendMove(let destination, _, _):
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)
