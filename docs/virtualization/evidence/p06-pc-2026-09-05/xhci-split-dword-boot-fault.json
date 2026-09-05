@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "fixCommit": "918193712",
+  "scope": "EFI-disabled diagnostic exposes independent xHCI Linux initialization failure; focused register fix",
+  "boot": {
+    "stop": "instructionBudget(3000000000)",
+    "completedInstructions": 3000000000,
+    "serialMarkerMatched": false,
+    "runnerSHA256": "11996c8bd2feae22d144751eba312e36d733a00c06d3a804275efe5b1af21420",
+    "firmwareCodeSHA256": "461cc0af580f1cfc91c944250950f18ea151c70e2d12e34739ad1ec38c47f4ca"
+  },
+  "fault": {
+    "symbol": "xhci_mem_init+0x1dd/0xf00",
+    "kind": "general protection",
+    "instruction": "89 42 30 (MOV dword ptr [RDX+0x30], EAX)",
+    "rdx": "0xffffd01c00198040",
+    "rax": "0x01e2a000",
+    "register": "DCBAAP low Dword, operational offset0x30",
+    "verifiedKASLRSlide": "0x1d400000",
+    "aftermath": "init panic and reset CPU state; budget completion is not successful boot"
+  },
+  "rootCause": "Controller accepted only8-byte writes to64-bit address registers; Linux used ordered low/high4-byte writes.",
+  "change": "Merge4-byte halves atomically forCRCR,DCBAAP,ERSTBA,ERDP; preserve masks, ring state, and interrupt acknowledgement. Existing8-byte path retained.",
+  "specification": "https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf",
+  "tests": {
+    "suite": "DoryPCXHCITests",
+    "passed": 8,
+    "parameterizedCoverage": [
+      "four address registers preserve untouched half",
+      "device setup and transfer through both Qword and split Dword writes"
+    ],
+    "interruptCoverage": "High-half ERDP write preserves pending interrupt; low-half acknowledgement clears it."
+  },
+  "remaining": "Matched full Linux rerun required; EFI runtime issue remains separate. No userspace or graphics qualification claimed.",
+  "artifacts": [
+    {
+      "path": "/private/tmp/dory-pc-grub-linux-efi-noruntime-standalone-20260905061959-88797/smoke-baseline-jit-efi-noruntime-deterministic-3b-cpumask.json",
+      "sha256": "ae43ef5ded89dd6bd474aefa2b36621d79aaa9fe1bfa7b3a77c34dd020940508"
+    },
+    {
+      "path": "/tmp/dory-root-xhci-split-dword-tests-0905.log",
+      "sha256": "8e31fe5eb0fc8917a398142aeace66303265d2d32ffe8d6a91e17b28541e7351"
+    }
+  ]
+}
