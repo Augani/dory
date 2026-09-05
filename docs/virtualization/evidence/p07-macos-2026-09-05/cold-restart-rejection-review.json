@@ -1,0 +1,23 @@
+{
+  "schema": "dory.native-mac-cold-restart-review@1",
+  "scope": "Read-only retained fixture review; does not establish the historical adapter rejection cause.",
+  "planSHA256": "ff46b45ae459c28961f87d36f453f2692d280f4dcfd1dc23823d5f133ccca030",
+  "machineSHA256": "f267d7ed6bb1c42f92b1f16619356eef65e2865068ac1e932dd9984d86bae287",
+  "planBootMediaKind": "macos-restore-image",
+  "machineShape": {
+    "guestFamily": "macos",
+    "guestArchitecture": "arm64",
+    "bootMode": "macos-restore",
+    "displayMode": "desktop"
+  },
+  "requiredMacPathsPopulated": true,
+  "qualifiedRuntime": "sha256:dc9296343ca01f300337b4b527ecf2b164a4287825e6daa15d75b489c417e176",
+  "originalHelperPath": "/tmp/dory-managed-vzmac-app-0905.EzHzb3/DoryVMM.app/Contents/MacOS/dory-vmm",
+  "originalHelperPresentAtReview": false,
+  "findings": [
+    "Retained restore-media and machine shape satisfy the Mac adapter media/configuration guard.",
+    "Adapter checks helper availability before media validation. Temporary helper loss is an alternative explanation requiring verification.",
+    "Advertised virtualDisk support remains a separate product gap; this failed run does not prove it caused the rejection."
+  ],
+  "nextAction": "Reopen without rewriting authority; retain exact adapter diagnostic. Use only a helper matching the qualified digest, or qualify a new fixture with the new helper."
+}
