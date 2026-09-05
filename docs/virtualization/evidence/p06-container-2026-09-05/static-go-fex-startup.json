@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "scope": "Static Go 1.25.9 startup under current FEX container endpoint; diagnosis, not qualification",
+  "builderImage": "golang:1.25.9-bookworm@sha256:298734aec230b5f3e8cee450ce6d7eccc39f1797ba548ee90d57e9803030c6c3",
+  "probes": [
+    "hello",
+    "chanalloc",
+    "syscallonly"
+  ],
+  "nativeARM64": {
+    "allExitCode": 0,
+    "outputs": [
+      "hello-static-go",
+      "chanalloc:51:1024",
+      "syscallonly"
+    ]
+  },
+  "translatedAMD64": {
+    "allExitCode": 255,
+    "beforeMain": true,
+    "GOAMD64": "v1/v2/v3 fail; v4 rejects unsupported microarchitecture",
+    "observations": [
+      "hello and chanalloc report runtime.rtsigprocmask SIGSEGV",
+      "syscallonly reports indexbytebody SIGSEGV"
+    ]
+  },
+  "interpretation": "Reproduces without Docker daemon or maintained Moby patch. Exact FEX/runtime defect remains under investigation.",
+  "review": "Coordinator inspected retained native and translated logs; did not independently rerun the probes.",
+  "artifacts": [
+    {
+      "path": "/private/tmp/dory-amd64-static-go-fex-diag.1788591564/static-go-fex-runs.log",
+      "sha256": "a0d5600a5a788c3815a065f910ec564c58297887fcd4b68193f540da05a995c7"
+    },
+    {
+      "path": "/private/tmp/dory-amd64-static-go-fex-diag.1788591564/goamd64-fex-runs.log",
+      "sha256": "c16bf0103156542cfd8560665f74dd3192cc1178f10fcfde9acc34ce5b3b248d"
+    },
+    {
+      "path": "/private/tmp/dory-amd64-static-go-fex-diag.1788591564/static-go-arm64-native-runs.log",
+      "sha256": "10bc202f2a359e8e11bcd2890cac26ef52935284e37bd7c3c0fd81d12edfc3c5"
+    }
+  ]
+}
