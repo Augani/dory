@@ -1,0 +1,20 @@
+{
+  "files": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "275ef7e78ce0f154b234bd7ef1afe485f72f1cca49acf280e603e9f2048f1276",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "99bc58134e187e0a0654c2792c551551b07b954b7a62d6841e1b4ad81ea35e82",
+    "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift": "3d10ab80a7f6acfa46b8ca5d4d2032c2b888a97abb285e7ab46d9fb2789e7d83",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "39d4c3a21856859dd3ccfeb303b02d15b0815aab8af279382db37a744377fb7f"
+  },
+  "kind": "dev.dory.native-sched-clock-hotpath",
+  "log": "native-sched-clock.log.gz",
+  "logSHA256": "f91488451b1e25331c465a9614a1fdfa662f5d58bdc4289f040e7b0a2b1fa501",
+  "sourceHead": "e3ac368053d2392b25fac8a2ea4d1971063f1529",
+  "sourceCommit": "1c9af8cb6",
+  "passedTests": 99,
+  "scope": "64-bit register unsigned MUL and SHRD by CL at CPL0, baseline and optimizing; full state parity incl combined kernel sequence and register aliasing",
+  "limitations": [
+    "No full guest boot or elapsed performance qualification.",
+    "Memory and user-mode variants retain interpreter fallback.",
+    "Four-way recent cache experiment was not promoted."
+  ]
+}
