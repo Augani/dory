@@ -29,5 +29,11 @@
       "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-self-sender-pushpop-oneshot-1788648400/pushpop-v5-hot.objdump",
       "sha256": "75f8928bac63fa76782b3639c9da347078c2720a0a91f6d3782b4ecf7b6cfcbd"
     }
+  },
+  "controls": {
+    "result": "12 runs passed: three each for baseline/candidate with no signal and with handler observing but not editing context",
+    "implication": "Failure requires the edited signal-frame path in this reproduction; unchanged host/guest continuation restoration must be preserved",
+    "logSHA256": "aedebfed7778ddb15b0339a20223a0c2010d9bbc21805f5ca3b33d55fbd3f181",
+    "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-self-sender-pushpop-oneshot-1788648400/run-v7-controls.log"
   }
 }
