@@ -1,0 +1,70 @@
+{
+  "agentProbe": "disabled-until-guest-marker",
+  "finalSHA256": {
+    "boot-config-boot.sh": "0bfa0c9b366b1db4693e7484560e11bafd30d93efffedd6fc458b80476ebbee4",
+    "dory-hv.stderr": "2a1ab4ee352c13f8c895d7dca9acfc3f48fdefebeb06ab280d278cd603c098e2",
+    "dory-hv.stdout": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "envelope-input.json": "04ae418466dcdb7e6973233932ea475bd61b331bf6c4138248eef5dd535f71f2",
+    "envelope-output.json": "5b7841a99f18817403fb8194402bc2bf47e075ac01b20945a3540803a69e015e",
+    "launch-production-no-probe.py": "780a17fe9f4492ad7f7ae857b1ba1d55ab908607f8f47e7951edd09c57105b40",
+    "production-desktop-no-uefi-virtiofs-receipt.json": "05d8053c407c2cdef46ec6250862235979a99ab2a6ce6e26b835e73129365f1c",
+    "state/serial.log": "bd90f00262d8b31c114a5c886bc4f607dd8d7ab6efe2d032613c67243394746f"
+  },
+  "firmwareCodeSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
+  "firmwareManifestSHA256": "e37406e3b84343fcd159aa2da7708df2a94acb9f6882a0c9aeb63112e004a4c9",
+  "firmwareSBOMSHA256": "5e25fbaec0ec5d89756effc3e7fed87faa4b87d05840178cf09d74fbd51ff196",
+  "fsWorkerSHA256": "6720906bd9c18dcec23cf2b7151f8852b171247ed0296098a35512b5b8b2dffc",
+  "handoff": {
+    "agentCapabilities": [],
+    "controlSocketPath": "/private/tmp/dory-pc-production-app-no-uefi-virtiofs-0905.931640/control.sock",
+    "desktopVisible": false,
+    "detail": "DoryPC-v1 x86_64 Linux firmware has begun executing through DoryDBT",
+    "guestBooted": false,
+    "machineID": "pc-prod-dorycfg-no-uefi-virtiofs-0905",
+    "operationID": "58d3a080-e1ea-4ed8-967c-3db89d9ef606",
+    "toolsConnected": false,
+    "workloadReady": false
+  },
+  "helperSHA256": "eddfe50473621103ef563acd2ccc68eec89b9f63112249f97e14054bf65c76b5",
+  "installerMediaSHA256": "b2e0573369e3ad58dfbed94d29d3f63581e391d8eea535389209b70186c326ef",
+  "lastProgress": {
+    "baseline": "2947989444",
+    "interpreter": "162760556",
+    "optimizing": "0"
+  },
+  "lastSerialLine": "[    0.000000] clocksource: hpet: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 191126044627 ns",
+  "markers": {
+    "DORYCFG-AGENT-EXEC": false,
+    "DORYCFG-BOOT-SCRIPT-START": false,
+    "EXT4-fs (vda): mounted": false,
+    "Kernel panic": false,
+    "Run /sbin/init": false,
+    "Switched to clocksource": false,
+    "efivars: Registered efivars operations": false,
+    "filesystem worker channel invalidated": false,
+    "general protection fault": false,
+    "serviceCapacityReached": false,
+    "tsc:": false
+  },
+  "operationID": "58d3a080-e1ea-4ed8-967c-3db89d9ef606",
+  "progressSamples": 49,
+  "receiptPath": "/private/tmp/dory-pc-production-app-no-uefi-virtiofs-0905.931640/production-desktop-no-uefi-virtiofs-receipt.json",
+  "recordedAtUnix": 1788606166.741157,
+  "rendererWorkerSHA256": "77c863f0744d8e2311539404582ca649aab0eea8dd725416cbdd0549aa86a519",
+  "runDirectory": "/private/tmp/dory-pc-production-app-no-uefi-virtiofs-0905.931640",
+  "serialBytesFinal": 11684,
+  "stderrBytesFinal": 68592,
+  "systemDiskSourceSHA256": "d851c88763032f2b6169c2427f88c2d971b9ca93b8ec2e3800939bf0c6c063b9",
+  "termination": {
+    "atUnix": 1788606123.803974,
+    "kind": "supervisor-timeout",
+    "status": -5
+  },
+  "scope": "Signed production PC runner with dorycfg share and guest-only virtio-fs. Headless, graphics none. Terminated before userspace.",
+  "reviewLimitations": [
+    "No guest userspace or accelerated graphics proof.",
+    "No recurrence of prior worker invalidation observed; this is not an isolated causal comparison because the helper binary and readiness-probe behavior also changed.",
+    "No service-capacity rejection observed with agent probes disabled; this run does not qualify the abandoned-probe fix.",
+    "Early clock-calibration stall is the next diagnosis target; final serial location alone does not prove a clock bug."
+  ]
+}
