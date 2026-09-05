@@ -2870,7 +2870,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             let exit = try region.execute(
               at: resident.offset,
               context: context,
-              memory: memory,
+              memory: resident.block.requiresMemoryCallbacks ? memory : nil,
               requiresRestartableReads: resident.block.requiresRestartableMemoryReads
             )
             if exit == .interpreter, hasCheckpoint {
