@@ -1431,7 +1431,7 @@ struct SettingsView: View {
                     "Attaches a virtio-gpu device (Mesa Venus in the guest, virglrenderer and MoltenVK on your Mac) so Vulkan and GPU compute inside containers reach Apple Metal. This mode cannot run at the same time as x86/amd64 emulation because the two kernels require different page sizes.",
                     isOn: Binding(get: { store.gpuVenusEnabled }, set: { on in Task { await store.setGPUVenus(on) } }),
                     divider: false,
-                    disabled: !onShared || !store.gpuRuntimeAvailable || store.rosettaX86Enabled
+                    disabled: !onShared || (!store.gpuVenusEnabled && (!store.gpuRuntimeAvailable || store.rosettaX86Enabled))
                 )
             }
             .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 11))
@@ -1447,10 +1447,10 @@ struct SettingsView: View {
                 Text("Switch to Dory's shared engine above to use GPU acceleration.")
                     .font(.system(size: 11.5)).foregroundStyle(p.text3).padding(.top, 8)
             } else if !store.gpuArchitectureSupported {
-                Text("In-guest Venus GPU acceleration is currently supported and release-verified only on Apple silicon. Intel Macs can still reach Metal-backed host services such as Ollama or LM Studio at host.dory.internal.")
+                Text("In-guest GPU acceleration requires an Apple Silicon Mac.")
                     .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3).padding(.top, 8)
             } else if !store.gpuRuntimeAvailable {
-                Text("Install or bundle the provenance-verified GPU kernel and Venus runtime (virglrenderer plus MoltenVK) to enable this. Until then, run a Metal-backed host service such as Ollama, LM Studio, or MLX and reach it from containers at host.dory.internal on ports 11434, 1234, and 18190.")
+                Text("Install a Dory build containing the signed GPU runner package and matching guest kernel. Your saved GPU preference is retained if the package is unavailable.")
                     .font(.system(size: 11.5)).foregroundStyle(p.text3).lineSpacing(3).padding(.top, 8)
             }
         }
@@ -1654,13 +1654,13 @@ struct SettingsView: View {
                 Circle().fill(available ? p.green : p.text3).frame(width: 8, height: 8)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(available
-                        ? "Venus GPU runtime detected"
-                        : (store.gpuArchitectureSupported ? "Venus GPU runtime not found" : "Venus GPU requires Apple silicon"))
+                        ? "GPU package verified"
+                        : (store.gpuArchitectureSupported ? "GPU package unavailable" : "Venus GPU requires Apple silicon"))
                         .font(.system(size: 13, weight: .semibold)).foregroundStyle(p.text)
                     Text(available
-                        ? "A verified GPU kernel, Venus-capable virglrenderer, and MoltenVK ICD are available to the engine."
+                        ? "The signed GPU package passed preflight. Worker and guest readiness are checked when the engine starts."
                         : (store.gpuArchitectureSupported
-                            ? "Needs the GPU kernel plus a Venus-capable libvirglrenderer and MoltenVK ICD, bundled in the app or installed for development."
+                            ? "Requires Dory’s signed, qualified GPU runner package and matching guest kernel."
                             : "Intel Venus is not advertised: no physical Intel result or x86 GPU kernel has been release-verified."))
                         .font(.system(size: 11.5)).foregroundStyle(p.text3).lineLimit(3)
                 }

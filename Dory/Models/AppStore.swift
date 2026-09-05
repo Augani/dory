@@ -361,14 +361,8 @@ final class AppStore {
                 engineMemoryMB = min(max(saved, 2048), resourceLimits.maximumMemoryMB)
             }
             if let v = UserDefaults.standard.object(forKey: SharedVMProvisioner.Config.gpuVenusKey) as? Bool { gpuVenusEnabled = v }
-            if gpuVenusEnabled, !gpuRuntimeAvailable {
-                gpuVenusEnabled = false
-                UserDefaults.standard.set(false, forKey: SharedVMProvisioner.Config.gpuVenusKey)
-            }
-            if gpuVenusEnabled, rosettaX86Enabled {
-                gpuVenusEnabled = false
-                UserDefaults.standard.set(false, forKey: SharedVMProvisioner.Config.gpuVenusKey)
-            }
+            // Preserve the requested mode when package preflight fails. Launch reports the
+            // failure; opening Settings must not silently rewrite the persisted preference.
             dockerHostCleaned = DockerHostConflict.hasCleaned
             dockerHostConflictDismissed = UserDefaults.standard.bool(forKey: Self.dockerHostDismissedKey)
             if let width = UserDefaults.standard.object(forKey: Self.containerDetailWidthKey) as? Double, width >= 320 {

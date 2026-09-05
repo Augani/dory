@@ -268,7 +268,7 @@ struct RuntimeSupportTests {
         #expect(argumentValue(after: "--cpus", in: arguments) == "6")
     }
 
-    @Test func sharedVMConfigurationPrefersAMD64OverAnIncompatibleGPUPreference() throws {
+    @Test func sharedVMConfigurationRejectsConflictingGPUAndAMD64Requests() throws {
         let config = SharedVMProvisioner.Config(
             cpus: 4,
             memory: "3G",
@@ -276,17 +276,16 @@ struct RuntimeSupportTests {
             gpuVenus: true,
             daxDataShares: []
         )
-        let arguments = try SharedVMProvisioner.engineArguments(
-            config: config,
-            kernel: "/tmp/kernel",
-            gvproxy: "/tmp/gvproxy",
-            rootfs: nil
-        )
-
         #expect(config.rosettaX86)
-        #expect(!config.gpuVenus)
-        #expect(arguments.contains("--amd64"))
-        #expect(!arguments.contains("--gpu"))
+        #expect(config.gpuVenus)
+        #expect(throws: SharedVMProvisioner.ProvisionError.self) {
+            try SharedVMProvisioner.engineArguments(
+                config: config,
+                kernel: "/tmp/kernel",
+                gvproxy: "/tmp/gvproxy",
+                rootfs: nil
+            )
+        }
     }
 
     @Test func sharedVMEngineArgumentsShareHomeAtItsRealPath() throws {

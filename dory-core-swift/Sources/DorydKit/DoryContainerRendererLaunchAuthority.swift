@@ -4,6 +4,14 @@ import DoryOperations
 import DoryRendererWorkerWireContracts
 import Foundation
 
+/// Read-only package preflight shared by Settings and container launch. This verifies the
+/// signed runner/worker qualification; observed guest GPU readiness still comes from launch.
+public enum DoryContainerGPUPreflight {
+    public static func verifyRunner(at path: String) throws {
+        _ = try DoryContainerRendererLaunchAuthority.verifiedRuntime(at: path)
+    }
+}
+
 /// The Docker engine uses the same signed worker and immutable bootstrap as an ARM desktop.
 /// CLI metadata describes the inherited object; it does not replace that object's authority.
 final class DoryContainerRendererLaunchAuthority: Sendable {
@@ -29,17 +37,7 @@ final class DoryContainerRendererLaunchAuthority: Sendable {
         kernelPath: String,
         stateDirectory: String
     ) throws -> Self {
-        let runtime = try DoryDaemonVirtualMachineProductionTrustFactory.verifyProductionRuntime(
-            path: runnerPath,
-            descriptor: RawHVLinuxMachineBackend.backendDescriptor,
-            componentIdentifier: "dory-hv"
-        )
-        guard let admission = runtime.rendererAccelerationAdmission,
-              admission.authorizes(runtimeBuildIdentifier: runtime.runtimeBuildIdentifier),
-              let runnerIdentity = admission.runnerCodeDirectoryHash,
-              let workerIdentity = admission.rendererWorkerCodeDirectoryHash else {
-            throw MachineManagerError.persistence("container GPU requires a signed, qualified renderer bundle")
-        }
+        let (runtime, runnerIdentity, workerIdentity) = try Self.verifiedRuntime(at: runnerPath)
         let kernelDigest = try digestKernel(at: kernelPath)
         // Do not repair permissions on an existing directory: the trusted-root acquisition must
         // reject an unsafe or replaced state root instead of granting it launch authority.
@@ -79,6 +77,23 @@ final class DoryContainerRendererLaunchAuthority: Sendable {
                 )
             )
         )
+    }
+
+    static func verifiedRuntime(at path: String) throws -> (
+        DoryDaemonVerifiedBackendRuntime, DoryCodeDirectoryHash, DoryCodeDirectoryHash
+    ) {
+        let runtime = try DoryDaemonVirtualMachineProductionTrustFactory.verifyProductionRuntime(
+            path: path,
+            descriptor: RawHVLinuxMachineBackend.backendDescriptor,
+            componentIdentifier: "dory-hv"
+        )
+        guard let admission = runtime.rendererAccelerationAdmission,
+              admission.authorizes(runtimeBuildIdentifier: runtime.runtimeBuildIdentifier),
+              let runnerIdentity = admission.runnerCodeDirectoryHash,
+              let workerIdentity = admission.rendererWorkerCodeDirectoryHash else {
+            throw MachineManagerError.persistence("container GPU requires a signed, qualified renderer bundle")
+        }
+        return (runtime, runnerIdentity, workerIdentity)
     }
 
     private static func digestKernel(at path: String) throws -> String {

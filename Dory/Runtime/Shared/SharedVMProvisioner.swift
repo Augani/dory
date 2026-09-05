@@ -1,5 +1,6 @@
 import Darwin
 import DoryOperations
+import DorydKit
 import Foundation
 
 /// Brings up Dory's single shared Linux VM — `dory-hv`, our own VMM on Hypervisor.framework — which
@@ -170,9 +171,8 @@ nonisolated enum SharedVMProvisioner {
             self.memory = memory
             self.headroomMB = headroomMB
             self.rosettaX86 = rosettaX86
-            // AMD64 compatibility is the safer default for existing installs. Venus uses a
-            // separate 16 KiB kernel, so never let a stale pair of preferences select both.
-            self.gpuVenus = gpuVenus && !rosettaX86
+            // Preserve both requests; launch rejects incompatible kernel requirements explicitly.
+            self.gpuVenus = gpuVenus
             self.daxDataShares = daxDataShares
         }
 
@@ -242,9 +242,7 @@ nonisolated enum SharedVMProvisioner {
         return last
     }
 
-    /// Whether the host Venus GPU runtime (a virglrenderer dylib plus a MoltenVK ICD) is present,
-    /// bundled in the app or installed via Homebrew. The toggle also requires the dedicated arm64
-    /// GPU kernel: a headless-kernel fallback would claim GPU mode while booting the wrong guest.
+    /// Package preflight only. Live worker and guest GPU checks remain owned by engine launch.
     nonisolated static func venusArchitectureSupported(arch: String = engineArch) -> Bool {
         arch == "arm64"
     }
@@ -267,37 +265,13 @@ nonisolated enum SharedVMProvisioner {
         let hasGPUKernel = gpuKernelOverrides.contains(where: { fileManager.fileExists(atPath: $0) })
             || Bundle.main.url(forResource: hvGPUKernelResourceName(arch: arch), withExtension: "lzfse") != nil
         guard hasGPUKernel else { return false }
-        let rendererCandidates = [
-            environment["DORY_VIRGLRENDERER_PATH"],
-            environment["DORY_VIRGLRENDERER"],
-            Bundle.main.privateFrameworksPath.map { "\($0)/libvirglrenderer.dylib" },
-            Bundle.main.resourcePath.map { "\($0)/libvirglrenderer.dylib" },
-            "/opt/homebrew/lib/libvirglrenderer.dylib",
-            "/usr/local/lib/libvirglrenderer.dylib",
-        ].compactMap { $0 }
-        let icdCandidates = [
-            environment["DORY_MOLTENVK_ICD"],
-            Bundle.main.resourcePath.map { "\($0)/vulkan/icd.d/MoltenVK_icd.json" },
-            "/opt/homebrew/etc/vulkan/icd.d/MoltenVK_icd.json",
-            "/opt/homebrew/share/vulkan/icd.d/MoltenVK_icd.json",
-            "/usr/local/etc/vulkan/icd.d/MoltenVK_icd.json",
-            "/usr/local/share/vulkan/icd.d/MoltenVK_icd.json",
-        ].compactMap { $0 }
-        guard icdCandidates.contains(where: { fileManager.fileExists(atPath: $0) }) else { return false }
-        // The Venus path exposes host-visible blobs by hv_vm_mapping the pointer virglrenderer returns
-        // from virgl_renderer_resource_map (the libkrun/krunkit model), so probe the renderer actually
-        // exports a blob-map entrypoint and Dory's async macOS fence fix before enabling the
-        // toggle. A stock or older renderer can appear usable but stall Vulkan applications.
-        for path in rendererCandidates where fileManager.fileExists(atPath: path) {
-            guard let handle = dlopen(path, RTLD_LAZY | RTLD_LOCAL) else { continue }
-            let hasBlobMap = dlsym(handle, "virgl_renderer_resource_map") != nil
-                || dlsym(handle, "virgl_renderer_resource_get_map_ptr") != nil
-            let hasDoryFenceFix = dlsym(handle, "dory_virglrenderer_macos_venus_fence_fix") != nil
-            let hasDoryMoltenVKFix = dlsym(handle, "dory_moltenvk_spirv_native_array_fix") != nil
-            dlclose(handle)
-            if hasBlobMap && hasDoryFenceFix && hasDoryMoltenVKFix { return true }
+        guard let runner = hvHelperBinary() else { return false }
+        do {
+            try DoryContainerGPUPreflight.verifyRunner(at: runner)
+            return true
+        } catch {
+            return false
         }
-        return false
     }
 
     static func hostSupport(

@@ -10,6 +10,7 @@
 		AA1000000000000000000001 /* DoryStorageProvider.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = AA1000000000000000000003 /* DoryStorageProvider.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		AA00000000000000000000B3 /* SwiftTerm in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000B2 /* SwiftTerm */; };
 		AA00000000000000000000C3 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000C2 /* Sparkle */; };
+		AA00000000000000000000E3 /* DorydKit in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000003 /* DorydKit */; };
 		AA00000000000000000000D3 /* DoryOperations in Frameworks */ = {isa = PBXBuildFile; productRef = AA00000000000000000000D2 /* DoryOperations */; };
 		D0B100000000000000000001 /* DoryHV in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000001 /* DoryHV */; };
 		D0B100000000000000000002 /* DoryCore in Frameworks */ = {isa = PBXBuildFile; productRef = D0B700000000000000000002 /* DoryCore */; };
@@ -250,6 +251,7 @@
 		3E705CEC2FE37C790094B33C /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			files = (
+				AA00000000000000000000E3 /* DorydKit in Frameworks */,
 				AA00000000000000000000D3 /* DoryOperations in Frameworks */,
 				AA00000000000000000000B3 /* SwiftTerm in Frameworks */,
 				AA00000000000000000000C3 /* Sparkle in Frameworks */,
@@ -393,6 +395,7 @@
 			);
 			name = Dory;
 			packageProductDependencies = (
+				D0B700000000000000000003 /* DorydKit */,
 				AA00000000000000000000D2 /* DoryOperations */,
 				AA00000000000000000000B2 /* SwiftTerm */,
 				AA00000000000000000000C2 /* Sparkle */,
