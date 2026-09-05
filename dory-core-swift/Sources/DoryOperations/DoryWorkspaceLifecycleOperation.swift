@@ -177,6 +177,15 @@ public struct DoryWorkspaceConfigurationAuthority: Codable, Sendable, Equatable 
         DoryOperationJournalStore.isDigest(legacyConfigurationSHA256)
             && (canonicalDefinitionSHA256.map(DoryOperationJournalStore.isDigest) ?? true)
     }
+
+    /// A planned-runtime postcondition may bind either legacy machine bytes or the exact
+    /// canonical v2 definition. Callers choose the digest they are proving; this predicate only
+    /// checks that the selected digest is already part of this condition's content authority.
+    fileprivate func authorizesPlannedRuntimeRequirement(_ requirement: DoryWorkspacePlannedRuntimeRequirement?) -> Bool {
+        guard let configurationSHA256 = requirement?.configurationSHA256 else { return false }
+        return configurationSHA256 == legacyConfigurationSHA256
+            || configurationSHA256 == canonicalDefinitionSHA256
+    }
 }
 
 /// Content-only identity for a snapshot selected by a lifecycle operation. The descriptor digest
@@ -293,7 +302,7 @@ public struct DoryWorkspaceLifecycleCondition: Codable, Sendable, Equatable {
         }
         let futureRuntimeIsValid = plannedRuntime.map {
             $0.isValid && runtime == nil
-                && $0.configurationSHA256 == configurationAuthority?.legacyConfigurationSHA256
+                && (configurationAuthority?.authorizesPlannedRuntimeRequirement($0) ?? false)
         } ?? false
         let desktopUpdateIsValid = desktopUpdate.map {
             $0.isValid && runtime == nil && plannedRuntime == nil && configurationAuthority == nil && creation == nil
@@ -709,7 +718,7 @@ public struct DoryWorkspaceLifecycleOperation: Codable, Sendable, Equatable {
         }
         let startsWorkspace = kind == .starting && target.plannedRuntime?.isValid == true
             && target.runtime == nil && source.runtime?.policy == .requireResolvedPlan
-            && target.plannedRuntime?.configurationSHA256 == source.configurationAuthority?.legacyConfigurationSHA256
+            && source.configurationAuthority?.authorizesPlannedRuntimeRequirement(target.plannedRuntime) == true
             && target.plannedRuntime?.virtualHardwareABIVersion == source.runtime?.virtualHardwareABIVersion
             && target.configurationAuthority == source.configurationAuthority
             && target.definitionRevision == source.definitionRevision

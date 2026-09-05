@@ -1577,7 +1577,7 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     private func validateHostQualification(
         into issues: inout [DoryResolvedMachinePlanValidationIssue]
     ) {
-        if usesPortableLinuxEFIBaseline { return }
+        if usesPortableLinuxEFIBaseline || usesPreparedNativeMacOSBaseline { return }
         guard let host = hostQualification,
               Self.isSafeEvidenceIdentifier(host.qualificationIdentity),
               Self.isSHA256(host.qualificationReportSHA256),
@@ -1616,6 +1616,26 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             return bootMedia.inspectionEvidence?.catalogManifestEvidence == nil
         }
         return bootMedia.inspectionEvidence == nil
+    }
+
+    /// Production native Mac restore planning is intentionally admitted as an exact prepared
+    /// baseline before per-host catalog qualification exists. The restore artifact inspection,
+    /// Apple-supported restore configuration, VZ helper verification, and explicit experimental
+    /// authorization provide the bounded launch authority; any catalog/runtime qualification must
+    /// use the stricter host-qualified shape above.
+    var usesPreparedNativeMacOSBaseline: Bool {
+        guest == DoryGuestPlatform(family: .macOS, architecture: .arm64)
+            && backend == .appleVirtualizationFramework
+            && graphics == .hostAcceleratedDisplay
+            && supportTier == .experimental
+            && bootMedia.media.source == .userProvided
+            && bootMedia.media.kind == .macOSRestoreImage
+            && bootMedia.inspectionEvidence != nil
+            && bootMedia.inspectionEvidence?.catalogManifestEvidence == nil
+            && qualificationEvidence.graphics == nil
+            && qualificationEvidence.runtime == nil
+            && hostQualification == nil
+            && experimentalAuthorization != nil
     }
 
     private func validateSupportAuthorization(

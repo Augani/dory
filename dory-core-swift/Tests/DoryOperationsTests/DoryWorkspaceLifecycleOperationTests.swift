@@ -34,6 +34,25 @@ struct DoryWorkspaceLifecycleOperationTests {
         #expect(!invalid.validate().isEmpty)
     }
 
+    @Test("planned start can bind canonical definition authority and rejects drift")
+    func plannedStartCanBindCanonicalDefinitionAuthority() throws {
+        var operation = makeOperation()
+        let canonicalDefinition = try #require(operation.source.configurationAuthority?.canonicalDefinitionSHA256)
+        operation.target.runtime = nil
+        operation.target.plannedRuntime = .init(
+            configurationSHA256: canonicalDefinition,
+            virtualHardwareABIVersion: 1)
+        #expect(operation.validate().isEmpty)
+
+        var invalid = operation
+        invalid.target.plannedRuntime?.configurationSHA256 = String(repeating: "f", count: 64)
+        #expect(!invalid.validate().isEmpty)
+
+        invalid = operation
+        invalid.source.configurationAuthority?.canonicalDefinitionSHA256 = String(repeating: "e", count: 64)
+        #expect(!invalid.validate().isEmpty)
+    }
+
     @Test("a compound target requirement cannot authorize start or replace source runtime authority")
     func plannedRuntimeIsOnlyACompoundPostcondition() throws {
         var operation = makeOperation()

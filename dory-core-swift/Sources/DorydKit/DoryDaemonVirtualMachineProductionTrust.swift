@@ -1101,17 +1101,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
     private static func planUsesPreparedNativeMacOSBaseline(
         _ plan: DoryResolvedMachinePlan
     ) -> Bool {
-        plan.guest == DoryGuestPlatform(family: .macOS, architecture: .arm64)
-            && plan.backend == .appleVirtualizationFramework
-            && plan.graphics == .hostAcceleratedDisplay
-            && plan.supportTier == .experimental
-            && plan.bootMedia.media.source == .userProvided
-            && plan.bootMedia.media.kind == .macOSRestoreImage
-            && plan.bootMedia.inspectionEvidence?.catalogManifestEvidence == nil
-            && plan.qualificationEvidence.graphics == nil
-            && plan.qualificationEvidence.runtime == nil
-            && plan.hostQualification == nil
-            && plan.experimentalAuthorization != nil
+        plan.usesPreparedNativeMacOSBaseline
     }
 
     private func preparedNativeMacOSRestoreInspection(

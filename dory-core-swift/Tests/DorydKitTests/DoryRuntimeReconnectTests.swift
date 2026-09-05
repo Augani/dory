@@ -201,6 +201,12 @@ final class DoryRuntimeReconnectTests: XCTestCase {
         try server.start()
         defer { server.stop() }
         _ = signal(SIGTERM, SIG_DFL)
+        if let retirePath = environment["DORY_RECONNECT_TEST_RETIRE_ON_FILE"] {
+            while !FileManager.default.fileExists(atPath: retirePath) {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            return
+        }
         while true { pause() }
     }
 

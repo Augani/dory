@@ -3242,14 +3242,17 @@ public final class MachineManager: @unchecked Sendable {
         try validateProductionStartPreflight(entry)
         let source = try lifecycleCondition(machine: entry.configuration, state: entry.state,
                                             runtimeIdentity: entry.runtimeIdentity)
-        guard let configurationDigest = source.configurationAuthority?.legacyConfigurationSHA256,
+        guard let configurationAuthority = source.configurationAuthority,
               source.runtime?.policy == .requireResolvedPlan else {
             throw MachineManagerError.persistence("start requires resolved-policy workspace migration")
         }
+        guard let definitionDigest = configurationAuthority.canonicalDefinitionSHA256 else {
+            throw MachineManagerError.persistence("start source has no exact definition authority")
+        }
         return try beginLifecycleOperation(operationID: operationID, kind: .starting, source: source,
             target: .init(workspaceID: id, state: .running, definitionRevision: source.definitionRevision,
-                configurationAuthority: source.configurationAuthority,
-                plannedRuntime: .init(configurationSHA256: configurationDigest,
+                configurationAuthority: configurationAuthority,
+                plannedRuntime: .init(configurationSHA256: definitionDigest,
                     virtualHardwareABIVersion: entry.runtimeIdentity.virtualHardwareABIVersion)),
             targetResourceID: nil, readiness: true)
     }
@@ -15339,6 +15342,12 @@ public final class MachineManager: @unchecked Sendable {
                 "--control-sock", "\(machineRuntimeDirectory(id: machine.id))/c.sock",
                 "--handoff-sock", handoffPath,
             ]
+            if runtimeReconnectIdentity != nil {
+                arguments.append(contentsOf: [
+                    DoryRuntimeReconnectContract.fileDescriptorArgument,
+                    String(DoryRuntimeReconnectContract.childFileDescriptor),
+                ])
+            }
             if operation == "install" {
                 arguments.append(contentsOf: ["--ipsw", restoreImagePath])
             }
@@ -18099,9 +18108,10 @@ public final class MachineManager: @unchecked Sendable {
                 let bundle = try DoryVZMacMachineBundle.load(
                     from: URL(fileURLWithPath: bundleDestination, isDirectory: true)
                 )
+                let memoryBytes = machine.memoryMB.multipliedReportingOverflow(by: 1_048_576)
                 guard bundle.manifest.resources.cpuCount == machine.cpuCount,
-                      bundle.manifest.resources.memoryBytes
-                        == machine.memoryMB * 1_048_576,
+                      !memoryBytes.overflow,
+                      bundle.manifest.resources.memoryBytes == memoryBytes.partialValue,
                       bundle.manifest.resources.diskBytes == machine.diskSizeBytes else {
                     throw MachineManagerError.persistence(
                         "native macOS bundle resources differ from workspace intent"
@@ -18896,7 +18906,7 @@ public final class MachineManager: @unchecked Sendable {
                 phase: .install,
                 devices: [DoryVMBootMediaReference(
                     id: "restore",
-                    role: .recovery,
+                    role: .installer,
                     kind: .macOSRestoreImage,
                     source: .userProvided,
                     artifact: restoreReference,
@@ -18934,7 +18944,6 @@ public final class MachineManager: @unchecked Sendable {
             input: DoryVMInputConfiguration(),
             integrations: [
                 .clipboard,
-                .clockSynchronization,
                 .dynamicDisplay,
                 .gracefulShutdown,
             ],
@@ -20634,18 +20643,46 @@ public final class MachineManager: @unchecked Sendable {
                   machine.installedDesktopPayloadReceipt?.hasCoherentAuthority(
                     environment: machine.environment
                   ) ?? true,
-                  isPrivateDirectory(path: "\(root)/\(id)"),
-                  machine.rootfsPath == rootfsPath,
-                  machine.kernelPath == kernelPath,
-                  isPrivateRegularFile(path: rootfsPath),
-                  isPrivateRegularFile(path: kernelPath),
-                  machine.installerISOPath == nil || (
-                    machine.bootMode == .efi
-                        && machine.installerISOPath == installerISOPath
-                        && isPrivateRegularFile(path: installerISOPath)
-                  ) else {
+                  isPrivateDirectory(path: "\(root)/\(id)") else {
                 continue
             }
+            if machine.bootMode == .macOSRestore {
+                let restorePath = "\(root)/\(id)/Restore.ipsw"
+                let bundlePath = "\(root)/\(id)/Machine.dorymac"
+                let memoryBytes = machine.memoryMB.multipliedReportingOverflow(by: 1_048_576)
+                guard machine.guestFamily == .macOS,
+                      machine.guestArchitecture == .arm64,
+                      machine.macOSRestoreImagePath == restorePath,
+                      machine.macOSMachineBundlePath == bundlePath,
+                      isPrivateRegularFile(path: restorePath),
+                      isPrivateDirectory(path: bundlePath),
+                      let bundle = try? DoryVZMacMachineBundle.load(
+                        from: URL(fileURLWithPath: bundlePath, isDirectory: true)
+                      ),
+                      bundle.manifest.resources.cpuCount == machine.cpuCount,
+                      !memoryBytes.overflow,
+                      bundle.manifest.resources.memoryBytes == memoryBytes.partialValue,
+                      bundle.manifest.resources.diskBytes == machine.diskSizeBytes else {
+                    continue
+                }
+            } else {
+                guard machine.rootfsPath == rootfsPath,
+                      machine.kernelPath == kernelPath,
+                      isPrivateRegularFile(path: rootfsPath),
+                      isPrivateRegularFile(path: kernelPath),
+                      machine.installerISOPath == nil || (
+                        machine.bootMode == .efi
+                            && machine.installerISOPath == installerISOPath
+                            && isPrivateRegularFile(path: installerISOPath)
+                      ) else {
+                    continue
+                }
+            }
+            let usesNativeWorkspaceAuthority = launchPolicy == .perWorkspaceAuthority
+                && ((try? workspaceRepository.readPersistedRecord(id: id)).map { record in
+                    record.legacyConfigurationSHA256 == nil
+                        && record.legacyMigrationFactsSHA256 == nil
+                } ?? false)
             let identity: DoryMachineRuntimeIdentity = switch launchPolicy {
             case .legacyCompatibility:
                 .legacyCompatibility(
@@ -20662,7 +20699,8 @@ public final class MachineManager: @unchecked Sendable {
                 loadOrMigratePerWorkspaceRuntimeIdentity(
                     machine: machine,
                     authoritativeLegacyData: data,
-                    store: runtimeIdentityStore
+                    store: runtimeIdentityStore,
+                    usesNativeWorkspaceAuthority: usesNativeWorkspaceAuthority
                 )
             }
             let savedState = savedStateStore.inspect(
@@ -20691,20 +20729,15 @@ public final class MachineManager: @unchecked Sendable {
             }
             let typedSettingsSnapshot: DoryMachineTypedSettingsSnapshot?
             let sandboxPolicySnapshot: DoryVMSandboxPolicy?
-            let usesNativeWorkspaceAuthority: Bool
-            if launchPolicy == .perWorkspaceAuthority,
-               let record = try? workspaceRepository.readPersistedRecord(id: id),
-               record.legacyConfigurationSHA256 == nil,
-               record.legacyMigrationFactsSHA256 == nil {
+            if usesNativeWorkspaceAuthority,
+               let record = try? workspaceRepository.readPersistedRecord(id: id) {
                 typedSettingsSnapshot = try? DoryMachineTypedSettingsSnapshot(
                     definition: record.definition
                 )
                 sandboxPolicySnapshot = record.definition.sandboxPolicy
-                usesNativeWorkspaceAuthority = true
             } else {
                 typedSettingsSnapshot = nil
                 sandboxPolicySnapshot = nil
-                usesNativeWorkspaceAuthority = false
             }
             loaded[id] = MachineEntry(
                 configuration: machine,
@@ -20856,7 +20889,8 @@ public final class MachineManager: @unchecked Sendable {
     private static func loadOrMigratePerWorkspaceRuntimeIdentity(
         machine: DoryMachineConfiguration,
         authoritativeLegacyData: Data,
-        store: DoryMachineRuntimeIdentityStore
+        store: DoryMachineRuntimeIdentityStore,
+        usesNativeWorkspaceAuthority: Bool
     ) -> DoryMachineRuntimeIdentity {
         do {
             if let persisted = try store.readIfPresent(
@@ -20866,9 +20900,10 @@ public final class MachineManager: @unchecked Sendable {
                 return persisted
             }
             let machineDirectory = store.root + "/" + machine.id
-            if Self.readPrivateMetadata(
-                path: machineDirectory + "/" + Self.nativeCreationCommittedMarkerName
-            ) == Self.nativeCreationPrecommitMarkerData(machineID: machine.id) {
+            if usesNativeWorkspaceAuthority
+                || Self.readPrivateMetadata(
+                    path: machineDirectory + "/" + Self.nativeCreationCommittedMarkerName
+                ) == Self.nativeCreationPrecommitMarkerData(machineID: machine.id) {
                 let unresolved = DoryMachineRuntimeIdentity.requiresReplanning(
                     virtualHardwareABIVersion:
                         DoryVirtualMachineDefinition.currentVirtualHardwareABIVersion,

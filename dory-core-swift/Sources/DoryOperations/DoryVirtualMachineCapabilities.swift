@@ -1959,8 +1959,10 @@ public enum DoryAppleSiliconCapabilityEvaluator {
         }
         let isLinuxRawHV = request.guest.family == .linux
             && request.backend == .doryHypervisor
+        let isMacOSVirtualizationFramework = request.guest.family == .macOS
+            && request.backend == .appleVirtualizationFramework
         let isLinuxDesktopRuntime = isGraphical && isLinuxRawHV
-        let audioIsImplemented = isLinuxRawHV && isGraphical
+        let audioIsImplemented = isGraphical && (isLinuxRawHV || isMacOSVirtualizationFramework)
         if devices.audioInput, !audioIsImplemented {
             return unavailable(
                 tier: tier,
@@ -2015,7 +2017,8 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                 message: "The selected guest/backend contract does not implement directory sharing."
             )
         }
-        if devices.clipboard, !isLinuxDesktopRuntime {
+        if devices.clipboard,
+           !(isLinuxDesktopRuntime || (isGraphical && isMacOSVirtualizationFramework)) {
             return unavailable(
                 tier: tier,
                 code: .clipboardIntegrationUnsupported,
@@ -2045,7 +2048,8 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                 )
             }
         }
-        if devices.dynamicDisplay, !isLinuxDesktopRuntime {
+        if devices.dynamicDisplay,
+           !(isLinuxDesktopRuntime || (isGraphical && isMacOSVirtualizationFramework)) {
             return unavailable(
                 tier: tier,
                 code: .dynamicDisplayUnsupported,
@@ -2053,8 +2057,8 @@ public enum DoryAppleSiliconCapabilityEvaluator {
             )
         }
         if devices.gracefulShutdown {
-            guard request.guest.family == .linux,
-                  request.backend == .doryHypervisor else {
+            guard (request.guest.family == .linux && request.backend == .doryHypervisor)
+                    || isMacOSVirtualizationFramework else {
                 return unavailable(
                     tier: tier,
                     code: .gracefulShutdownUnsupported,

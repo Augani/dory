@@ -1,0 +1,52 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "scope": "Daemon MachineManager start, suspend, provenance refresh and resume composition using a real Apple-prepared bundle with a substituted helper",
+  "fixture": {
+    "restore_image": "Real IPSW",
+    "machine_bundle": "Real Apple-prepared Mac bundle",
+    "helper": "Shell launcher and authenticated XCTest reconnect server; no VZ virtual machine executed",
+    "saved_state_payload": "Synthetic fixture payload, not Apple saved VM memory"
+  },
+  "verification": [
+    {
+      "suite": "prepared_bundle_composition",
+      "passed_tests": 1,
+      "failed_tests": 0,
+      "local_log_sha256": "1fe41b20f9af4902b9a94700c2e27c64cdaf1f8d8dfa9de33bdf2a12bf2f9bce"
+    },
+    {
+      "suite": "capability_negotiation",
+      "passed_tests": 41,
+      "failed_tests": 0,
+      "local_log_sha256": "ba925ee0c3b0f95cea43fb1c2ce218c5e07e1c35b520bac6f73a5f667d0be329"
+    },
+    {
+      "suite": "lifecycle_and_start_journals",
+      "passed_tests": 24,
+      "failed_tests": 0,
+      "local_log_sha256": "1ab225e2130acb33a700de7a299aff689074f3ebc0f3af0d8b910f67c8f383aa"
+    },
+    {
+      "suite": "saved_state_provenance",
+      "passed_tests": 1,
+      "failed_tests": 0,
+      "local_log_sha256": "c69f805bd76d1605cc0551dbcfad923ebf7f54158472ba593c358c60960ed8ca"
+    }
+  ],
+  "source_sha256": {
+    "dory-core-swift/Sources/DoryOperations/DoryVirtualMachineCapabilities.swift": "3bbbd8e825a073c57f03055cd9cc2d9ea1c9dd5c5fe9705cc426f1f64495b60c",
+    "dory-core-swift/Sources/DoryOperations/DoryWorkspaceLifecycleOperation.swift": "796506e2bed2949a3cc94bd8d4bfe36870d9703e65ee7477d751b29efe346141",
+    "dory-core-swift/Sources/DorydKit/DoryDaemonVirtualMachineProductionTrust.swift": "476e5b0071b88a7605c869fe7c82ad7fe755f3067f3615bef2a068a049ae5041",
+    "dory-core-swift/Sources/DorydKit/DoryResolvedMachinePlan.swift": "fafcbe0e7c884687d0d741fde019cec4146ada7174fc2a2aad3bdc88fe8ff2ce",
+    "dory-core-swift/Sources/DorydKit/MachineManager.swift": "25573f050bb5953946b83eec1af42657696044d5c4a24696607fbb802718132c",
+    "dory-core-swift/Tests/DoryOperationsTests/DoryWorkspaceLifecycleOperationTests.swift": "22e4a807f4a4cf079d00c8219b881aecc1ab365aa30b4f23ee602cf83824f5b4",
+    "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionPlanningCompositionTests.swift": "00eac1a151a928c62c48e325224c9c069bf015f0b56d0222ca49fc71b7eed7f3",
+    "dory-core-swift/Tests/DorydKitTests/DoryRuntimeReconnectTests.swift": "d7cd4ba921fc90b35eefe6018e3aab75a13c5692ff73dc6018c2b7997f91bc9c"
+  },
+  "remaining": [
+    "Run production daemon lifecycle with the actual VZ helper on an isolated Mac VM",
+    "Verify physical guest integration and sustained Metal workloads",
+    "Complete release qualification across the declared host/guest matrix"
+  ]
+}
