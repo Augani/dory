@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "sourceCommit": "466de56c3",
+  "scope": "Effective disabled-camera policy in native macOS runtime; no guest boot or restore qualification",
+  "behavior": [
+    "Managed camera omission defaults disabled; explicit enable rejected while capability unsupported",
+    "Disabled policy constructs no camera bridge; legacy standalone policy remains compatible"
+  ],
+  "artifacts": [
+    {
+      "path": "/private/tmp/dory-runtime-policy-harness.swift",
+      "sha256": "d2ac79620069ad15fd6fb0f4b2feb7f6e736125dc22ae13c62bad1137242b268"
+    },
+    {
+      "path": "/private/tmp/dory-runtime-policy-harness",
+      "sha256": "729a7b81d3e42e61fb806228eb04baa164f8a75d429a14568131d6dc3fb00272"
+    },
+    {
+      "path": "/private/tmp/dory-camera-policy-runtime-harness-0905.log",
+      "sha256": "c09e1809daed45a8b8a817ca6f523c1e259c44c89ceb290b284a1c3b58d89115"
+    },
+    {
+      "path": "/private/tmp/dory-camera-policy-focused-tests-0905.log",
+      "sha256": "6914b756007474b70ca2160f123cbdda79535894ffe17457f3bda9316a380973"
+    }
+  ],
+  "runtimeProof": {
+    "bundle": "/private/tmp/dory-actual-vzmac-boir9lek/M.dorymac",
+    "output": "cameraBridge=nil",
+    "exitCode": 0,
+    "rootIndependentRepeat": true,
+    "virtualMachineStarted": false
+  },
+  "focusedTests": {
+    "xctest": 13,
+    "swiftTesting": 3,
+    "failures": 0
+  },
+  "limitations": [
+    "No camera-enabled guest qualification",
+    "Broader MachineManager integration run had a separate logging-environment expectation failure; investigation remains open",
+    "Saved-state restore still awaits normal host unlock and controlled repeat"
+  ]
+}
