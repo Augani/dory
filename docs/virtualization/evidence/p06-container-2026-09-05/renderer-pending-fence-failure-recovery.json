@@ -1,0 +1,85 @@
+{
+  "cleanup": {
+    "disposable_endpoint_shutdown": "daemon/engine/renderer worker absent after Ctrl-C to live session; orphaned disposable gvproxy PID 38547 terminated with SIGTERM",
+    "preserved_pids_alive_after_cleanup": [
+      1676,
+      65840,
+      84935,
+      84950
+    ],
+    "shutdown_log": "/private/tmp/dory-pending-recovery.38142/pending-proof.1788582748/logs/disposable-daemon-shutdown-check.log"
+  },
+  "endpoint": {
+    "data_disk_uuid_before_after": "87be8842-b14a-4d96-8491-df65c6fe52c2",
+    "docker_socket": "/private/tmp/dory-pending-recovery.38142/h/.dory/dory.sock",
+    "initial_engine_pid": 38153,
+    "initial_renderer_bootstrap_sha256": "dd8c848436835e759168729515dae1979414a4c67d886b9323c505b8dad5a3aa",
+    "initial_renderer_worker_pid": 38155,
+    "restarted_engine_pid": 38542,
+    "restarted_renderer_bootstrap_sha256": "cbc5f2609d14bdcd0ec645504a2bb5a346ba1d4fc3997b2e07c48f39cf48fb8b",
+    "restarted_renderer_worker_pid": 38544,
+    "root": "/private/tmp/dory-pending-recovery.38142"
+  },
+  "fault": {
+    "active_container": "dory-pending-fence-active-1788582783",
+    "active_container_id": "d4af810324273b623130cd39f20c240a15dfd421064f2727d66d528f31b50ef1",
+    "engine_uncertain_fenced_chain_count": 0,
+    "engine_uncertain_line": "dory-gpu: renderer worker generation 2 failed; retained 0 uncertain fenced chains: broker(DoryHV.DoryRendererWorkerBrokerError.notActive(DoryHV.DoryRendererWorkerBrokerState.interrupted))",
+    "kill_epoch": 1788582784,
+    "killed_pid": 38155,
+    "killed_process": "fresh endpoint renderer worker only",
+    "pending_after_kill_log": "",
+    "post_kill_container_observation": "Docker API returned EOF/socket-missing during restart, then the original pending container reappeared as Created with no completion marker.",
+    "post_kill_poll_tail": "observe=31 inspect_status=0\ncreated exit=0 oom=false error=\nobserve=32 inspect_status=0\ncreated exit=0 oom=false error=\nobserve=33 inspect_status=0\ncreated exit=0 oom=false error=\nobserve=34 inspect_status=0\ncreated exit=0 oom=false error=\nobserve=35 inspect_status=0\ncreated exit=0 oom=false error=\nobserve=36 inspect_status=0\ncreated exit=0 oom=false error=\nobserve=37 inspect_status=0\ncreated exit=0 oom=false error=\nobserve=38 inspect_status=0\ncreated exit=0 oom=false error=\nobserve=39 inspect_status=0\ncreated exit=0 oom=false error=\nobserve=40 inspect_status=0\ncreated exit=0 oom=false error="
+  },
+  "logs": {
+    "engine_log": "/private/tmp/dory-pending-recovery.38142/s/dory-hv.log",
+    "load_compute": "/private/tmp/dory-pending-recovery.38142/pending-proof.1788582748/logs/load-compute.log",
+    "load_pending": "/private/tmp/dory-pending-recovery.38142/pending-proof.1788582748/logs/load-pending.log",
+    "pending_after_kill_polls": "/private/tmp/dory-pending-recovery.38142/pending-proof.1788582748/logs/pending-after-kill-polls.log",
+    "pending_before_kill": "/private/tmp/dory-pending-recovery.38142/pending-proof.1788582748/logs/pending-before-kill.log",
+    "post_restart_compute_audit": "/private/tmp/dory-pending-recovery.38142/pending-proof.1788582748/logs/post-restart-compute-audit.log",
+    "post_restart_compute_audit_hostconfig": "/private/tmp/dory-pending-recovery.38142/pending-proof.1788582748/logs/post-restart-compute-audit-hostconfig.log",
+    "post_restart_standard_compute": "/private/tmp/dory-pending-recovery.38142/pending-proof.1788582748/logs/post-restart-standard-compute.log"
+  },
+  "pending_fence_probe": {
+    "assertion": "probe printed submitted_marker=1 and fence_status_after_submit=NOT_READY before worker kill",
+    "binary_sha256": "fda590f90e34fc1b0ee1cdeff99776147bea5e1a4be8bb1d4fa2d92e1293c9d9",
+    "image": "dory/gpu-pending-fence:1788582258-atomic",
+    "marker_log": "pending-sentinel-1788582783\nsubmitted_marker=1 fence_status_after_submit=NOT_READY raw=1 pid=1 time_ns=60369909819 device=Virtio-GPU Venus (Apple M2 Pro) driver=venus elements=1048576",
+    "marker_poll": 4,
+    "source_root": "/private/tmp/dory-pending-fence-probe.1788582258",
+    "spirv_sha256": "d80be1353014dc0753069bb528c8e0411c845f08d0f676f2872cb3a3fb65d79e"
+  },
+  "preserved_endpoints": {
+    "installed_daemon_pid": 1676,
+    "ordinary_build_endpoint_engine_pid": 65840,
+    "shared_gpu_endpoint_renderer_worker_pid": 84935,
+    "shared_gpu_endpoint_worker_alive_after_kill": true
+  },
+  "recovery_validation": {
+    "docker_after_restart": "docker=29.6.1 os=linux arch=arm64",
+    "sentinel_expected": "pending-sentinel-1788582783",
+    "sentinel_observed": "pending-sentinel-1788582783",
+    "sentinel_volume": "dory-pending-fence-sentinel-1788582783",
+    "standard_no_env_compute_stdout": "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass",
+    "standard_no_env_exit": 0,
+    "standard_no_env_hostconfig": "status=exited exit=0 deviceRequests=null devices=[{\"PathOnHost\":\"/dev/dri/renderD128\",\"PathInContainer\":\"/dev/dri/renderD128\",\"CgroupPermissions\":\"rw\"}]"
+  },
+  "scope": "renderer worker SIGKILL after a Vulkan container submitted compute work and vkGetFenceStatus reported VK_NOT_READY, followed by daemon-managed graph restart and standard --gpus all no-env compute validation",
+  "log_sha256": {
+    "engine_log": "cb4d81584363c5736dbe0b7dfdcdfe4d0104a816d52bc809bf7642776a3645df",
+    "load_compute": "91fc1bc49bc8559120998ae5bb3a14ac6d92ac400e9f5b27f8154ec176762683",
+    "load_pending": "d7aa9a378cf781b4c7d2c0de5c8211d7828686b42566ebcff7da4bb9f2b0b1eb",
+    "pending_after_kill_polls": "84a192bbc114d6d26e126e428c171429e4f6cd0f0a1364e0b8762f1803f6bb8d",
+    "pending_before_kill": "f2ad05315f34a9151bf72dd080d14b42ac317baddef1a8331cec0018e04c1c6b",
+    "post_restart_compute_audit": "caccd63b221920337b03e02256d0098fee849cc4fd8e8d45b8c1c318a4c4f93f",
+    "post_restart_compute_audit_hostconfig": "632f4796e156e63958580d8492707abfe9e8268d1405dd189b0968890a353c01",
+    "post_restart_standard_compute": "cf5390e21b1aa8bb66098a24e767bc922d72b5cd3838241eaa4fe663ed5205cc"
+  },
+  "limitations": [
+    "VK_NOT_READY was observed before the kill; the observation does not establish fence status at the exact signal instant.",
+    "The interrupted container reappeared as Created with exit=0 after restart. Interrupted workload state reconciliation remains unresolved.",
+    "The engine retained zero uncertain fenced chains; this campaign does not qualify all outstanding command or fence failure paths."
+  ]
+}

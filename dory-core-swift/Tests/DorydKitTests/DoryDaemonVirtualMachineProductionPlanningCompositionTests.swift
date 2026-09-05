@@ -1246,13 +1246,11 @@ private final class NativeMacManagerHelperController:
 {
     private let lock = NSLock()
     private let exitMarkerPath: String
-    private let pidPath: String
     var bundlePath: String?
     private var saves = 0
 
-    init(exitMarkerPath: String, pidPath: String) {
+    init(exitMarkerPath: String) {
         self.exitMarkerPath = exitMarkerPath
-        self.pidPath = pidPath
     }
 
     var saveCount: Int { lock.withLock { saves } }
@@ -1290,7 +1288,6 @@ private struct NativeMacManagerHelper {
     let root: String
     let executablePath: String
     let exitMarkerPath: String
-    let pidPath: String
     let managerRuntimeRoot: String
     let controller: NativeMacManagerHelperController
 
@@ -1298,9 +1295,8 @@ private struct NativeMacManagerHelper {
         self.root = root
         executablePath = root + "/fake-vzmac-helper.sh"
         exitMarkerPath = root + "/fake-vzmac-exit"
-        pidPath = root + "/fake-vzmac.pid"
         managerRuntimeRoot = root + "/manager-runtime"
-        controller = NativeMacManagerHelperController(exitMarkerPath: exitMarkerPath, pidPath: pidPath)
+        controller = NativeMacManagerHelperController(exitMarkerPath: exitMarkerPath)
         let testBundle = Bundle(for: DoryRuntimeReconnectTests.self).bundlePath
         let developerDirectory = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
             ?? "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer"
