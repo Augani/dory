@@ -336,6 +336,7 @@ struct NewMachineSheet: View {
                 ForEach(GuestPlatform.allCases) { platform in
                     Button {
                         guestPlatform = platform
+                        cameraEnabled = false
                         installerISOPath = ""
                         installerISOCheck = .none
                         macOSRestoreImagePath = ""
@@ -710,13 +711,13 @@ struct NewMachineSheet: View {
                         .toggleStyle(.switch)
                         .tint(p.accent)
                         .accessibilityIdentifier("new-machine-camera")
-                        .disabled(customISOInstall && !guestPlatform.isMacOS)
+                        .disabled(customISOInstall || guestPlatform.isMacOS)
                     Spacer(minLength: 0)
                 }
                 .font(.system(size: 12.5))
                 .foregroundStyle(p.text)
                 Text(guestPlatform.isMacOS
-                     ? "Audio uses Apple virtual devices. Dory Camera uses the guest camera bridge and follows macOS camera permission on the host."
+                     ? "Audio uses Apple virtual devices. Camera sharing is not yet available for macOS guests."
                      : customISOInstall
                         ? "Speakers and microphone use standard VirtIO audio. Camera sharing is currently unavailable for custom Linux ISO compatibility guests."
                         : "Enabled devices are attached explicitly. Camera sharing appears in Linux as a standard UVC webcam and follows macOS camera permission.")
@@ -727,7 +728,14 @@ struct NewMachineSheet: View {
     }
 
     @ViewBuilder private var desktopGraphicsBlock: some View {
-        if displayMode == .desktop, !customISOInstall {
+        if displayMode == .desktop, guestPlatform.isMacOS {
+            VStack(alignment: .leading, spacing: 8) {
+                sectionLabel("GRAPHICS")
+                Text("macOS uses Apple's virtual graphics device with guest Metal support. Graphics are configured automatically.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(p.text3)
+            }
+        } else if displayMode == .desktop, !customISOInstall {
             VStack(alignment: .leading, spacing: 8) {
                 sectionLabel("GRAPHICS")
                 Toggle("GPU acceleration", isOn: $gpuAccelerationEnabled)
@@ -1304,7 +1312,7 @@ struct NewMachineSheet: View {
                         inputEnabled: audioInputEnabled,
                         outputEnabled: audioOutputEnabled
                     ),
-                    cameraConfiguration: DoryVMCameraConfiguration(enabled: cameraEnabled)
+                    cameraConfiguration: DoryVMCameraConfiguration(enabled: false)
                 )
             } else {
                 settings.bootMode = .efi
