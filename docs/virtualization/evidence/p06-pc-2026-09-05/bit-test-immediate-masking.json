@@ -1,0 +1,30 @@
+{
+  "kind": "x86-immediate-bit-offset-masking",
+  "commit": "719dce70f",
+  "source": "https://cdrdv2-public.intel.com/868140/253666-089-sdm-vol-2a.pdf",
+  "contract": "Intel SDM Volume 2A BT: processor ignores high-order immediate offset bits; register offsets may address a memory bit string.",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift": "4c3f153ccbbdd3283268510f098ecd785d94c98645b3981c13749e6083531e5b",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86BitTestAddressingTests.swift": "9b644559f6796442d1c59a2e7ad22e0ff7b7581e2e3d7a6842a50e6b3fb4d6ac"
+  },
+  "scope": "BT/BTS/BTR/BTC immediate forms across 16/32/64-bit operands and valid LOCK forms at backing boundary; negative and positive register bit-string offsets remain valid.",
+  "limits": [
+    "No guest boot claim; sampled boot BTR immediate zero is unaffected."
+  ],
+  "runs": [
+    {
+      "phase": "red",
+      "result": "2 tests, 54 issues; false boundary faults and wrong memory/CF",
+      "log": "bit-test-immediate-red.log.gz",
+      "originalSHA256": "7dae5805bad10e2b15bc510ee956a9311bc4fa5953ff73e487e16179a6a32997",
+      "publishedGzipSHA256": "e4fb6fb4603c31a74af6c59fc15c2e06ef3f0b6c06d5756185a3847f09024f9a"
+    },
+    {
+      "phase": "green",
+      "result": "135 tests in 3 suites pass; exit 0",
+      "log": "bit-test-immediate-green.log.gz",
+      "originalSHA256": "2bcbc2a2f00adf543de380e69a3809aafd339c4881a8429cc43f147123508eb4",
+      "publishedGzipSHA256": "859d4e7982344eb971bc8659f5ee2e89edf3a73305e21d9a97870e6a93ebf3f5"
+    }
+  ]
+}
