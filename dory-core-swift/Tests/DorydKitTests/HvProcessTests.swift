@@ -76,6 +76,86 @@ final class HvProcessTests: XCTestCase {
         }
     }
 
+    func testManagedContainerRendererRefreshReplacesOneShotBootstrapAuthority() throws {
+        func makeAuthority(
+            descriptor: Int32,
+            bootstrapDigest: String,
+            kernelDigest: String
+        ) throws -> DoryContainerRendererLaunchAuthority {
+            let bootstrap = RawHVAdmittedRendererBootstrap(
+                byteCount: UInt64(DoryRendererWorkerBootstrapCodec.fixedByteCount),
+                sha256: bootstrapDigest,
+                authority: HvProcessInheritedFileDescriptor(
+                    name: RuntimeLaunchEnvelope.rendererBootstrapSlotName,
+                    takingOwnershipOf: descriptor,
+                    childDescriptor: RuntimeLaunchEnvelope.rendererBootstrapDescriptor
+                )
+            )
+            return try DoryContainerRendererLaunchAuthority(
+                bootstrap: bootstrap,
+                kernelSHA256: kernelDigest,
+                releaseIdentity: makeRendererReleaseIdentity()
+            )
+        }
+
+        let oldDescriptor = open("/dev/null", O_RDONLY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(oldDescriptor, 0)
+        let oldAuthority = try makeAuthority(
+            descriptor: oldDescriptor,
+            bootstrapDigest: String(repeating: "a", count: 64),
+            kernelDigest: String(repeating: "b", count: 64)
+        )
+        var configuration = HvProcessConfiguration(
+            executablePath: "/tmp/DoryHVRunner.app/Contents/MacOS/dory-hv",
+            arguments: [
+                "engine",
+                "--kernel", "/tmp/kernel",
+                "--state-dir", "/tmp/state",
+                "--gpu", "venus",
+            ] + oldAuthority.arguments + [
+                "--rootfs", "/tmp/rootfs"
+            ],
+            inheritedFileDescriptors: [oldAuthority.bootstrap.authority]
+        )
+        configuration.containerRendererAuthority = oldAuthority
+        configuration.rendererReleaseIdentity = oldAuthority.releaseIdentity
+
+        let newDescriptor = open("/dev/zero", O_RDONLY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(newDescriptor, 0)
+        let newAuthority = try makeAuthority(
+            descriptor: newDescriptor,
+            bootstrapDigest: String(repeating: "c", count: 64),
+            kernelDigest: String(repeating: "d", count: 64)
+        )
+        var observedPrepare: (runner: String, kernel: String, state: String)?
+
+        try DoryContainerRendererLaunchAuthority.refreshManagedHVConfiguration(
+            &configuration
+        ) { runner, kernel, state in
+            observedPrepare = (runner, kernel, state)
+            return newAuthority
+        }
+
+        XCTAssertEqual(observedPrepare?.runner, "/tmp/DoryHVRunner.app/Contents/MacOS/dory-hv")
+        XCTAssertEqual(observedPrepare?.kernel, "/tmp/kernel")
+        XCTAssertEqual(observedPrepare?.state, "/tmp/state")
+        XCTAssertEqual(fcntl(oldDescriptor, F_GETFD), -1)
+        XCTAssertGreaterThanOrEqual(fcntl(newDescriptor, F_GETFD), 0)
+        XCTAssertEqual(configuration.containerRendererAuthority?.bootstrap.sha256, newAuthority.bootstrap.sha256)
+        XCTAssertEqual(configuration.rendererReleaseIdentity, newAuthority.releaseIdentity)
+        XCTAssertEqual(
+            configuration.inheritedFileDescriptors.map(\.name),
+            [RuntimeLaunchEnvelope.rendererBootstrapSlotName]
+        )
+        XCTAssertEqual(
+            configuration.arguments.filter { $0 == "--renderer-bootstrap-sha256" }.count,
+            1
+        )
+        XCTAssertFalse(configuration.arguments.contains(oldAuthority.bootstrap.sha256))
+        XCTAssertTrue(configuration.arguments.contains(newAuthority.bootstrap.sha256))
+        XCTAssertTrue(configuration.arguments.contains(newAuthority.kernelSHA256))
+    }
+
     func testHvProcessConfigurationKeepsLaunchEnvelopesOutOfLine() {
         XCTAssertLessThan(
             MemoryLayout<HvProcessConfiguration>.size,

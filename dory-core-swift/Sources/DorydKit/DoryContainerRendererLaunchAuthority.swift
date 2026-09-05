@@ -32,6 +32,81 @@ final class DoryContainerRendererLaunchAuthority: Sendable {
          "--gpu-kernel-sha256", kernelSHA256]
     }
 
+    static func refreshManagedHVConfiguration(
+        _ configuration: inout HvProcessConfiguration,
+        prepareAuthority: (
+            _ runnerPath: String,
+            _ kernelPath: String,
+            _ stateDirectory: String
+        ) throws -> DoryContainerRendererLaunchAuthority = {
+            try DoryContainerRendererLaunchAuthority.prepare(
+                runnerPath: $0,
+                kernelPath: $1,
+                stateDirectory: $2
+            )
+        }
+    ) throws {
+        guard configuration.containerRendererAuthority != nil else { return }
+        let kernelPath = try requiredArgumentValue("--kernel", in: configuration.arguments)
+        let stateDirectory = try requiredArgumentValue("--state-dir", in: configuration.arguments)
+        configuration.arguments = try removingRendererBootstrapArguments(from: configuration.arguments)
+        for descriptor in configuration.inheritedFileDescriptors
+        where descriptor.name == RuntimeLaunchEnvelope.rendererBootstrapSlotName
+            || descriptor.childDescriptor == RuntimeLaunchEnvelope.rendererBootstrapDescriptor {
+            descriptor.close()
+        }
+        configuration.inheritedFileDescriptors.removeAll {
+            $0.name == RuntimeLaunchEnvelope.rendererBootstrapSlotName
+                || $0.childDescriptor == RuntimeLaunchEnvelope.rendererBootstrapDescriptor
+        }
+        let refreshed = try prepareAuthority(configuration.executablePath, kernelPath, stateDirectory)
+        configuration.arguments += refreshed.arguments
+        configuration.inheritedFileDescriptors.append(refreshed.bootstrap.authority)
+        configuration.containerRendererAuthority = refreshed
+        configuration.rendererReleaseIdentity = refreshed.releaseIdentity
+    }
+
+    private static func requiredArgumentValue(
+        _ flag: String,
+        in arguments: [String]
+    ) throws -> String {
+        guard !arguments.contains(where: { $0.hasPrefix(flag + "=") }) else {
+            throw MachineManagerError.persistence("container GPU launch argument \(flag) must not use inline form")
+        }
+        let indices = arguments.indices.filter { arguments[$0] == flag }
+        guard indices.count == 1, let index = indices.first,
+              arguments.indices.contains(index + 1) else {
+            throw MachineManagerError.persistence("container GPU launch argument \(flag) is missing")
+        }
+        return arguments[index + 1]
+    }
+
+    private static func removingRendererBootstrapArguments(
+        from arguments: [String]
+    ) throws -> [String] {
+        let flags = Set(["--renderer-bootstrap-byte-count",
+                         "--renderer-bootstrap-sha256",
+                         "--gpu-kernel-sha256"])
+        var result: [String] = []
+        var index = arguments.startIndex
+        while index < arguments.endIndex {
+            let argument = arguments[index]
+            guard !flags.contains(where: { argument.hasPrefix($0 + "=") }) else {
+                throw MachineManagerError.persistence("container GPU renderer bootstrap arguments must not use inline form")
+            }
+            if flags.contains(argument) {
+                guard arguments.indices.contains(index + 1) else {
+                    throw MachineManagerError.persistence("container GPU renderer bootstrap argument \(argument) is missing its value")
+                }
+                index += 2
+                continue
+            }
+            result.append(argument)
+            index += 1
+        }
+        return result
+    }
+
     static func prepare(
         runnerPath: String,
         kernelPath: String,

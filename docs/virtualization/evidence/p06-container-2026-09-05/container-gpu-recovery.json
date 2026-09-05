@@ -1,0 +1,66 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "scope": "One idle renderer crash followed by automatic whole-engine recovery on a disposable ARM64 container endpoint",
+  "daemon": {
+    "cdhash": "8e3ae9b1d2b0bc385b4e374a00c51b5df8eec358",
+    "rendererWorkerCDHash": "eb6b95843a06e621d087f9e96232e10f03b4afa3",
+    "runnerCDHash": "07c733c1b2594e01e790e63f44dae2f391f36ec8",
+    "sha256": "eee894f8edea749f2f7a3ab0a9174e694d97e26e898b49bdde74ecf51895fa1a"
+  },
+  "source_sha256": {
+    "dory-core-swift/Sources/DorydKit/DoryContainerRendererLaunchAuthority.swift": "8fb059810260b1c3110cd9a3bb9c3b2816706953b88a60795f0c93263e6ddf17",
+    "dory-core-swift/Sources/DorydKit/DockerTier.swift": "26e185d0320c251f190f3d4f008c6fda62cc24d0274c2a3c533ad8689f1434ea",
+    "dory-core-swift/Tests/DorydKitTests/HvProcessTests.swift": "3f9f12c48270463f5d417c28cb9139bd244be2d472fb5d234979a70a7efa1e7d"
+  },
+  "fault": "SIGKILL sent only to disposable renderer worker PID 96398",
+  "pre_crash": {
+    "dockerDataDiskUUID": "b9912837-ef86-42f4-973b-21175bf324c2",
+    "enginePID": 96394,
+    "hostConfig": "DeviceRequests=null Devices=[{\"PathOnHost\":\"/dev/dri/renderD128\",\"PathInContainer\":\"/dev/dri/renderD128\",\"CgroupPermissions\":\"rw\"}]",
+    "rendererBootstrapSHA256": "e807b7a7e15dd408446963af0396032be416acf3fb195ea8afab48f7812ae913",
+    "rendererWorkerPID": 96398,
+    "shaderResult": "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass"
+  },
+  "post_restart": {
+    "dockerDataDiskUUID": "b9912837-ef86-42f4-973b-21175bf324c2",
+    "dockerVersion": "29.6.1 linux/arm64 kernel=6.12.106-dory",
+    "enginePID": 97446,
+    "fsWorkerPID": 97450,
+    "hostConfig": "DeviceRequests=null Devices=[{\"PathOnHost\":\"/dev/dri/renderD128\",\"PathInContainer\":\"/dev/dri/renderD128\",\"CgroupPermissions\":\"rw\"}]",
+    "rendererBootstrapSHA256": "89b3790f76e0542f8c35ec1d84e55dea0875b29c7299ca68be01b4b29137754f",
+    "rendererWorkerPID": 97451,
+    "sentinelValue": "recovery2-sentinel-1788579769",
+    "sentinelVolume": "dory-recovery2-sentinel-1788579769",
+    "shaderResult": "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass"
+  },
+  "observations": {
+    "fresh_bootstrap": true,
+    "same_data_disk": true,
+    "uncertain_fenced_chains_at_fault": 0,
+    "cleanup": "Disposable daemon shut down with SIGTERM; engine and workers exited."
+  },
+  "local_log_hashes": {
+    "precrashLog": {
+      "filename": "recovery2-image-and-precrash.1788579769.log",
+      "sha256": "06b98f76b85336c0b6553128941fa0749ac457f276709ca9b3119f003e1c1a99"
+    },
+    "workerKillObservationLog": {
+      "filename": "recovery2-worker-kill-observe.1788579792.log",
+      "sha256": "c6997ddf988e0b5485abc3264f8e7efa5f09cc2386192b47e7b6d8dfb5c95d59"
+    },
+    "postRestartProofLog": {
+      "filename": "recovery2-postrestart-proof.1788579815.log",
+      "sha256": "f474359ea28f51241cc69184b5dc8ddbd9470e932071c4e29e2699aba3ff1dbb"
+    },
+    "shutdownLog": {
+      "filename": "recovery2-status-and-shutdown.1788579826.log",
+      "sha256": "ebdbc9234d8e69446dddad8311fa76377c204539ab8b493fce8fd5f51a8bf720"
+    }
+  },
+  "limitations": [
+    "The recovery proof used the packaged Mesa candidate runtime with explicit VK_ICD_FILENAMES and LD_LIBRARY_PATH inside the test container; the saved Docker image does not yet activate /opt/dory/mesa automatically for arbitrary container commands.",
+    "No outstanding GPU commands at fault; recovery during active dispatch remains unverified.",
+    "One crash/recovery cycle; sustained reliability and application Settings flow remain unqualified."
+  ]
+}

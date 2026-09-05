@@ -4051,6 +4051,7 @@ public final class DockerTier: @unchecked Sendable {
             // The tier must rebuild the full helper + dataplane graph after a VM exit. Disable
             // HvProcess's local child-only retry so it cannot resurrect behind stale proxies.
             hvConfiguration.restartPolicy = .none
+            try DoryContainerRendererLaunchAuthority.refreshManagedHVConfiguration(&hvConfiguration)
             try configureInheritedDockerDataDisk(
                 launchAuthority: dataDiskLaunchAuthority,
                 hvConfiguration: &hvConfiguration
