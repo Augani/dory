@@ -1684,7 +1684,7 @@ import Testing
     #endif
   }
 
-  @Test func lockedCompareExchangeMatchesInterpreterAccumulatorAndFlags() throws {
+  @Test func memoryCompareExchangeMatchesInterpreterAccumulatorAndFlags() throws {
     #if arch(arm64)
       struct Case {
         let bytes: [UInt8]
@@ -1706,6 +1706,15 @@ import Testing
           expectedZero: true
         ),
         Case(
+          bytes: [0x0F, 0xB1, 0x17],
+          destination: 0x1122_3344,
+          rax: 0xCAFE_BABE_1122_3344,
+          rdx: 0x5566_7788,
+          expectedRAX: 0xCAFE_BABE_1122_3344,
+          expectedDestination: 0x5566_7788,
+          expectedZero: true
+        ),
+        Case(
           bytes: [0xF0, 0x0F, 0xB1, 0x17],
           destination: 0x8877_6655,
           rax: 0xCAFE_BABE_1122_3344,
@@ -1715,7 +1724,34 @@ import Testing
           expectedZero: false
         ),
         Case(
+          bytes: [0x3E, 0x0F, 0xB1, 0x17],
+          destination: 0x8877_6655,
+          rax: 0xCAFE_BABE_1122_3344,
+          rdx: 0x5566_7788,
+          expectedRAX: 0x8877_6655,
+          expectedDestination: 0x8877_6655,
+          expectedZero: false
+        ),
+        Case(
+          bytes: [0x3E, 0x0F, 0xB1, 0x17],
+          destination: 0x1122_3344,
+          rax: 0xCAFE_BABE_1122_3344,
+          rdx: 0x5566_7788,
+          expectedRAX: 0xCAFE_BABE_1122_3344,
+          expectedDestination: 0x5566_7788,
+          expectedZero: true
+        ),
+        Case(
           bytes: [0xF0, 0x48, 0x0F, 0xB1, 0x17],
+          destination: 0x1122_3344_5566_7788,
+          rax: 0x1122_3344_5566_7788,
+          rdx: 0xAABB_CCDD_EEFF_0011,
+          expectedRAX: 0x1122_3344_5566_7788,
+          expectedDestination: 0xAABB_CCDD_EEFF_0011,
+          expectedZero: true
+        ),
+        Case(
+          bytes: [0x48, 0x0F, 0xB1, 0x17],
           destination: 0x1122_3344_5566_7788,
           rax: 0x1122_3344_5566_7788,
           rdx: 0xAABB_CCDD_EEFF_0011,
@@ -1731,6 +1767,24 @@ import Testing
           expectedRAX: 0x8877_6655_4433_2211,
           expectedDestination: 0x8877_6655_4433_2211,
           expectedZero: false
+        ),
+        Case(
+          bytes: [0x3E, 0x48, 0x0F, 0xB1, 0x17],
+          destination: 0x8877_6655_4433_2211,
+          rax: 0x1122_3344_5566_7788,
+          rdx: 0xAABB_CCDD_EEFF_0011,
+          expectedRAX: 0x8877_6655_4433_2211,
+          expectedDestination: 0x8877_6655_4433_2211,
+          expectedZero: false
+        ),
+        Case(
+          bytes: [0x3E, 0x48, 0x0F, 0xB1, 0x17],
+          destination: 0x1122_3344_5566_7788,
+          rax: 0x1122_3344_5566_7788,
+          rdx: 0xAABB_CCDD_EEFF_0011,
+          expectedRAX: 0x1122_3344_5566_7788,
+          expectedDestination: 0xAABB_CCDD_EEFF_0011,
+          expectedZero: true
         ),
       ]
 
@@ -1779,6 +1833,119 @@ import Testing
           #expect(try nativeMemory.read(at: 0x80, byteCount: byteCount)
             == interpretedMemory.read(at: 0x80, byteCount: byteCount))
         }
+      }
+    #endif
+  }
+
+  @Test func memoryCompareExchangeHandlesPatchedLockAliasAndFaultRollback() throws {
+    #if arch(arm64)
+      for bytes in [[UInt8(0x3E), 0x0F, 0xB1, 0x12], [0x3E, 0x48, 0x0F, 0xB1, 0x12]] {
+        for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+          let byteCount = bytes.contains(0x48) ? 8 : 4
+          let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+          let nativeMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+          try interpretedMemory.write(at: 0, bytes: bytes)
+          try nativeMemory.write(at: 0, bytes: bytes)
+          try interpretedMemory.writeScalar(at: 0x80, value: 0x80, byteCount: byteCount)
+          try nativeMemory.writeScalar(at: 0x80, value: 0x80, byteCount: byteCount)
+          let initial = try DoryX86ArchitecturalState(
+            registers: .init(rax: 0xAAAA_BBBB_0000_0080, rdx: 0x80),
+            rip: 0,
+            rflags: [.reservedOne, .carry, .sign],
+            cs: .init(selector: 8, attributes: 0xA09B, limit: .max)
+          )
+          var interpreted = initial
+          let decoded = try DoryX86Decoder().decode(bytes, at: 0, mode: .long64)
+          #expect(DoryX86Interpreter().step(
+            state: &interpreted, memory: interpretedMemory, mode: .long64) == .retired(decoded))
+
+          var native = initial
+          let execution = try #require(DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024,
+            optimization: optimization
+          ).execute(
+            bytes: bytes,
+            at: 0,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &native,
+            memory: nativeMemory
+          ))
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(native == interpreted)
+          #expect(native.registers.rdx == 0x80)
+          #expect(try nativeMemory.readScalar(at: 0x80, byteCount: byteCount) == 0x80)
+        }
+      }
+
+      for bytes in [[UInt8(0x3E), 0x0F, 0xB1, 0x10], [0x3E, 0x48, 0x0F, 0xB1, 0x10]] {
+        for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+          let byteCount = bytes.contains(0x48) ? 8 : 4
+          let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+          let nativeMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+          try interpretedMemory.write(at: 0, bytes: bytes)
+          try nativeMemory.write(at: 0, bytes: bytes)
+          let destination: UInt64 = byteCount == 8 ? 0x1122_3344_5566_7788 : 0x5566_7788
+          let source: UInt64 = byteCount == 8 ? 0xAABB_CCDD_EEFF_0011 : 0x1122_3344
+          try interpretedMemory.writeScalar(at: 0x80, value: destination, byteCount: byteCount)
+          try nativeMemory.writeScalar(at: 0x80, value: destination, byteCount: byteCount)
+          let initial = try DoryX86ArchitecturalState(
+            registers: .init(rax: 0x80, rdx: source),
+            rip: 0,
+            rflags: [.reservedOne, .carry, .sign],
+            cs: .init(selector: 8, attributes: 0xA09B, limit: .max)
+          )
+          var interpreted = initial
+          let decoded = try DoryX86Decoder().decode(bytes, at: 0, mode: .long64)
+          #expect(DoryX86Interpreter().step(
+            state: &interpreted, memory: interpretedMemory, mode: .long64) == .retired(decoded))
+
+          var native = initial
+          let execution = try #require(DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024,
+            optimization: optimization
+          ).execute(
+            bytes: bytes,
+            at: 0,
+            mode: .long64,
+            addressSpaceID: 2 + UInt64(byteCount),
+            maximumInstructions: 1,
+            state: &native,
+            memory: nativeMemory
+          ))
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(native == interpreted)
+          #expect(native.registers.rax == destination)
+          #expect(native.registers.rdx == source)
+          #expect(try nativeMemory.readScalar(at: 0x80, byteCount: byteCount) == destination)
+        }
+      }
+
+      let faultBytes: [UInt8] = [0x3E, 0x0F, 0xB1, 0x17]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x1111_2222, rdx: 0x3333_4444, rdi: 0x80),
+        rip: 0,
+        rflags: [.reservedOne, .carry, .sign],
+        cs: .init(selector: 8, attributes: 0xA09B, limit: .max)
+      )
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let faulting = try DoryX86ByteArrayMemory(byteCount: 0x40)
+        var faultState = initial
+        let faultExecution = try #require(DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          optimization: optimization
+        ).execute(
+          bytes: faultBytes,
+          at: 0,
+          mode: .long64,
+          addressSpaceID: optimization == .baseline ? 10 : 11,
+          maximumInstructions: 1,
+          state: &faultState,
+          memory: faulting
+        ))
+        #expect(faultExecution.exitCode == .interpreter)
+        #expect(faultState == initial)
       }
     #endif
   }

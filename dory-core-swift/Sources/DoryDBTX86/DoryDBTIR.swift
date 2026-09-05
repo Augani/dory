@@ -435,8 +435,7 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
-    case .compareExchange(let destination, let source) where mode == .long64
-      && instruction.prefixes.lock:
+    case .compareExchange(let destination, let source) where mode == .long64:
       guard case .memory(let memory) = destination,
         memory.width == .doubleword || memory.width == .quadword,
         case .register(_, let sourceWidth) = source,
