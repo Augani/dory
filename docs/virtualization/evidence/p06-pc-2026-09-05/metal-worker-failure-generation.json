@@ -1,0 +1,21 @@
+{
+  "scope": "Generation-tagged asynchronous Metal worker-frame failure callback",
+  "baseHEAD": "5ffefdf85046caa78c7d259490fa95217158fcc4",
+  "sourceSHA256": "a19fd546e3054f17ecd95d3fc53c6567e6c34211ba858c60cd042d2ea340d9f7",
+  "build": {
+    "target": "dory-hv",
+    "result": "passed",
+    "seconds": 173.48,
+    "privateLog": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/display-worker-failure-build.log",
+    "logSHA256": "6126f2207df6d007db963736daaa6260e6b86b7c3ea346a6cb00f0f16492236e"
+  },
+  "behavior": [
+    "Both worker presentation paths capture submitting worker generation.",
+    "Command-buffer failures use the scoped callback when installed. Existing clients retain the global callback fallback.",
+    "Metal command allocation and device failures remain global."
+  ],
+  "limitations": [
+    "API compiled with prior committed PCMode. Pending PCMode recovery wiring and stale callback lifecycle qualification are not proven by this build.",
+    "No physical renderer reset or guest GPU acceleration completion claim."
+  ]
+}

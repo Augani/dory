@@ -2334,6 +2334,8 @@ final class DesktopMetalView: DesktopDisplayView {
     /// Fires only from a completed Metal command buffer for a worker-issued presentation. The
     /// worker update itself is published only after its producer fence signals.
     var onWorkerPresentationCompleted: (@Sendable (UInt64) -> Void)?
+    // Asynchronous frame failures belong to the worker that submitted the frame.
+    var onWorkerPresentationFailed: (@Sendable (UInt64, String) -> Void)?
 
     override func makeBackingLayer() -> CALayer {
         CAMetalLayer()
@@ -2529,6 +2531,7 @@ final class DesktopMetalView: DesktopDisplayView {
             backingHeight: update.presentation.height,
             yOriginTop: geometry.yOriginTop,
             workerScanout: workerScanout,
+            workerGeneration: update.presentation.workerGeneration.rawValue,
             completion: { [onWorkerPresentationCompleted] completed in
                 guard completed else { return }
                 onWorkerPresentationCompleted?(
@@ -2582,6 +2585,7 @@ final class DesktopMetalView: DesktopDisplayView {
             backingHeight: update.height,
             yOriginTop: geometry.yOriginTop,
             workerScanout: workerScanout,
+            workerGeneration: update.workerGeneration.rawValue,
             completion: { [onWorkerPresentationCompleted] completed in
                 guard completed else { return }
                 onWorkerPresentationCompleted?(update.workerGeneration.rawValue)
@@ -2902,6 +2906,7 @@ final class DesktopMetalView: DesktopDisplayView {
         backingHeight: UInt32,
         yOriginTop: Bool,
         workerScanout: DesktopMetalWorkerScanout?,
+        workerGeneration: UInt64? = nil,
         completion: (@Sendable (Bool) -> Void)? = nil
     ) -> Bool {
         guard !deviceFailed else {
@@ -2977,17 +2982,20 @@ final class DesktopMetalView: DesktopDisplayView {
         }
         encoder.endEncoding()
         let failureSink = onDeviceFailure
+        let workerFailureSink = onWorkerPresentationFailed
         commandBuffer.addCompletedHandler { buffer in
             if buffer.status == .completed {
                 workerScanout?.markPresented()
                 completion?(true)
-            } else if let failureSink {
+            } else {
                 completion?(false)
                 let reason = buffer.error?.localizedDescription
                     ?? "Metal presentation ended with status \(buffer.status.rawValue)"
-                failureSink(reason)
-            } else {
-                completion?(false)
+                if let workerGeneration, let workerFailureSink {
+                    workerFailureSink(workerGeneration, reason)
+                } else {
+                    failureSink?(reason)
+                }
             }
         }
         commandBuffer.present(drawable)
