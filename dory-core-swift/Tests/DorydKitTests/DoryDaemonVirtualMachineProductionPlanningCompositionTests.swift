@@ -275,18 +275,10 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             && ProcessInfo.processInfo.environment["DORY_NATIVE_MAC_PREPARED_BUNDLE"] != nil)
     )
     func nativeMacMachineManagerSuspendRenewsMutableDiskProvenance() async throws {
-        try runNativeMacMachineManagerSuspendRenewsMutableDiskProvenance(
-            actualHelperExecutablePath: nil,
-            preserveFixtureRoot: false,
-            evidenceRoot: nil
-        )
+        try runNativeMacMachineManagerSuspendRenewsMutableDiskProvenance()
     }
 
-    fileprivate func runNativeMacMachineManagerSuspendRenewsMutableDiskProvenance(
-        actualHelperExecutablePath: String?,
-        preserveFixtureRoot: Bool,
-        evidenceRoot: String?
-    ) throws {
+    private func runNativeMacMachineManagerSuspendRenewsMutableDiskProvenance() throws {
         let environment = ProcessInfo.processInfo.environment
         let ipswPath = try #require(environment["DORY_NATIVE_MAC_IPSW"])
         let preparedBundlePath = try #require(environment["DORY_NATIVE_MAC_PREPARED_BUNDLE"])
@@ -297,15 +289,7 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             throw CompositionTestError.invalidAuthority
         }
         let machineID = "native-mac-manager-saved-state"
-        let physicalRoot = actualHelperExecutablePath == nil ? nil
-            : FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".dory/qualification/dory-production-planning-composition-\(UUID().uuidString)")
-                .standardizedFileURL.path
-        let fixture = try CompositionFixture(
-            ids: [],
-            rootOverride: physicalRoot,
-            preserveRoot: preserveFixtureRoot
-        )
+        let fixture = try CompositionFixture(ids: [])
         let helperRoot = "/tmp/dory-vzmac-fixture-\(getpid())-\(UUID().uuidString.prefix(8))"
         try FileManager.default.createDirectory(
             atPath: helperRoot,
@@ -314,24 +298,9 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
         )
         var removeHelperRoot = false
         defer { if removeHelperRoot { try? FileManager.default.removeItem(atPath: helperRoot) } }
-        let actualPhysicalRun = actualHelperExecutablePath != nil
-        let helper: NativeMacManagerHelper?
-        let helperExecutablePath: String
-        let managerRuntimeRoot: String
-        if let actualHelperExecutablePath {
-            helper = nil
-            helperExecutablePath = URL(fileURLWithPath: actualHelperExecutablePath)
-                .standardizedFileURL.path
-            guard FileManager.default.isExecutableFile(atPath: helperExecutablePath) else {
-                throw CompositionTestError.invalidAuthority
-            }
-            managerRuntimeRoot = helperRoot + "/manager-runtime"
-        } else {
-            let fakeHelper = try NativeMacManagerHelper(root: helperRoot)
-            helper = fakeHelper
-            helperExecutablePath = fakeHelper.executablePath
-            managerRuntimeRoot = fakeHelper.managerRuntimeRoot
-        }
+        let helper = try NativeMacManagerHelper(root: helperRoot)
+        let helperExecutablePath = helper.executablePath
+        let managerRuntimeRoot = helper.managerRuntimeRoot
         let managerState = fixture.root + "/manager-state"
         let machineDirectory = managerState + "/" + machineID
         let restorePath = machineDirectory + "/Restore.ipsw"
@@ -440,30 +409,16 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             lifecycleJournalHome: fixture.root + "/manager-journal",
             passMachineArguments: true,
             requiresReadyHandoff: true,
-            handoffReadyTimeoutSeconds: actualPhysicalRun ? 240 : 150,
-            desktopHandoffReadyTimeoutSeconds: actualPhysicalRun ? 240 : 150,
-            macOSRestoreHandoffReadyTimeoutSeconds: actualPhysicalRun ? 240 : 150,
+            handoffReadyTimeoutSeconds: 150,
+            desktopHandoffReadyTimeoutSeconds: 150,
+            macOSRestoreHandoffReadyTimeoutSeconds: 150,
             startupRestartPolicy: .none
         )
-        let manager: MachineManager
-        if let controller = helper?.controller {
-            manager = MachineManager(
-                diagnosticConfiguration: managerConfiguration,
-                launchPolicy: .perWorkspaceAuthority,
-                vzLifecycleController: controller
-            )
-        } else {
-            manager = MachineManager(
-                diagnosticConfiguration: managerConfiguration,
-                launchPolicy: .perWorkspaceAuthority
-            )
-        }
-        var actualPhysicalRunCompleted = false
-        defer {
-            if actualPhysicalRun && !actualPhysicalRunCompleted {
-                manager.stopAll()
-            }
-        }
+        let manager = MachineManager(
+            diagnosticConfiguration: managerConfiguration,
+            launchPolicy: .perWorkspaceAuthority,
+            vzLifecycleController: helper.controller
+        )
         let launchOperations = manager.resolvedLaunchCompatibilityOperations(
             for: .appleVirtualizationFramework
         )
@@ -509,75 +464,67 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             resourceAdmissionLedger: fixture.ledger
         )
 
-        helper?.controller.bundlePath = bundlePath
+        helper.controller.bundlePath = bundlePath
 
-        if let helper {
-            try? FileManager.default.removeItem(atPath: helper.exitMarkerPath)
-        }
+        try? FileManager.default.removeItem(atPath: helper.exitMarkerPath)
         let startCall = NativeMacPhysicalFixtureThreadCall.start(name: "dory-native-mac-start") {
             try manager.start(
                 id: machineID,
                 operationID: UUID(uuidString: "33333333-4444-4555-8666-777777777777")!
             )
         }
-        if helper != nil {
-            do {
-                let starting = try waitForNativeManagerStatus(
-                    manager,
-                    id: machineID,
-                    timeout: 300,
-                    label: "start handoff",
-                    failingWhenFinished: startCall
-                ) {
-                    $0.state == .starting && $0.handoffSocketPath != nil
-                }
-                let controlSocketPath = nativeHelperControlSocketPath(
-                    handoffSocketPath: try #require(starting.handoffSocketPath)
-                )
-                try waitForNativeHelperControlSocket(
-                    controlSocketPath,
-                    manager: manager,
-                    id: machineID,
-                    call: startCall,
-                    label: "start control socket"
-                )
-                try sendVmmHandoff(
-                    path: try #require(starting.handoffSocketPath),
-                    ready: VmmReadyMessage(
-                        machineID: machineID,
-                        operationID: starting.activeOperationID,
-                        controlSocketPath: controlSocketPath
-                    ),
-                    fileDescriptors: []
-                )
-            } catch {
-                _ = try? startCall.value()
-                throw error
+        do {
+            let starting = try waitForNativeManagerStatus(
+                manager,
+                id: machineID,
+                timeout: 300,
+                label: "start handoff",
+                failingWhenFinished: startCall
+            ) {
+                $0.state == .starting && $0.handoffSocketPath != nil
             }
+            let controlSocketPath = nativeHelperControlSocketPath(
+                handoffSocketPath: try #require(starting.handoffSocketPath)
+            )
+            try waitForNativeHelperControlSocket(
+                controlSocketPath,
+                manager: manager,
+                id: machineID,
+                call: startCall,
+                label: "start control socket"
+            )
+            try sendVmmHandoff(
+                path: try #require(starting.handoffSocketPath),
+                ready: VmmReadyMessage(
+                    machineID: machineID,
+                    operationID: starting.activeOperationID,
+                    controlSocketPath: controlSocketPath
+                ),
+                fileDescriptors: []
+            )
+        } catch {
+            _ = try? startCall.value()
+            throw error
         }
         let startedStatus = try startCall.value()
-        if !actualPhysicalRun {
-            try requireNativeMacManager(
-                startedStatus.state == .running,
-                "fake-helper start should publish running status; \(nativeManagerStatusDetail(startedStatus))"
-            )
-        }
-        let runningStatus = try waitForNativeManagerStatus(
+        try requireNativeMacManager(
+            startedStatus.state == .running,
+            "fake-helper start should publish running status; \(nativeManagerStatusDetail(startedStatus))"
+        )
+        _ = try waitForNativeManagerStatus(
             manager,
             id: machineID,
-            timeout: actualPhysicalRun ? 180 : 60,
+            timeout: 60,
             label: "start running"
         ) {
             $0.state == .running
         }
         let initialIdentity = try #require(manager.runtimeIdentity(id: machineID))
         let initialPlan = try fixture.plans.read(id: machineID)
-        if !actualPhysicalRun {
-            try NativeMacCompositionMaterial.writeGuestDiskByte(
-                at: bundlePath + "/" + DoryVZMacMachineBundle.diskName,
-                byte: 0x7a
-            )
-        }
+        try NativeMacCompositionMaterial.writeGuestDiskByte(
+            at: bundlePath + "/" + DoryVZMacMachineBundle.diskName,
+            byte: 0x7a
+        )
 
         let suspended = try NativeMacPhysicalFixtureThreadCall.start(name: "dory-native-mac-suspend") {
             try manager.suspend(
@@ -586,9 +533,7 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             )
         }.value()
         try requireNativeMacManager(suspended.state == .suspended, "suspend should publish suspended status")
-        if let helper {
-            #expect(helper.controller.saveCount == 1)
-        }
+        #expect(helper.controller.saveCount == 1)
         let refreshedIdentity = try #require(manager.runtimeIdentity(id: machineID))
         let refreshedPlan = try fixture.plans.read(id: machineID)
         try requireNativeMacManager(
@@ -629,49 +574,45 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             "suspend journal should target the saved-state resource"
         )
 
-        if let helper {
-            try? FileManager.default.removeItem(atPath: helper.exitMarkerPath)
-        }
+        try? FileManager.default.removeItem(atPath: helper.exitMarkerPath)
         let restoreCall = NativeMacPhysicalFixtureThreadCall.start(name: "dory-native-mac-resume") {
             try manager.resume(
                 id: machineID,
                 operationID: UUID(uuidString: "55555555-6666-4777-8888-999999999999")!
             )
         }
-        if helper != nil {
-            do {
-                let restoring = try waitForNativeManagerStatus(
-                    manager,
-                    id: machineID,
-                    timeout: 300,
-                    label: "resume handoff",
-                    failingWhenFinished: restoreCall
-                ) {
-                    $0.state == .starting && $0.handoffSocketPath != nil
-                }
-                let controlSocketPath = nativeHelperControlSocketPath(
-                    handoffSocketPath: try #require(restoring.handoffSocketPath)
-                )
-                try waitForNativeHelperControlSocket(
-                    controlSocketPath,
-                    manager: manager,
-                    id: machineID,
-                    call: restoreCall,
-                    label: "resume control socket"
-                )
-                try sendVmmHandoff(
-                    path: try #require(restoring.handoffSocketPath),
-                    ready: VmmReadyMessage(
-                        machineID: machineID,
-                        operationID: restoring.activeOperationID,
-                        controlSocketPath: controlSocketPath
-                    ),
-                    fileDescriptors: []
-                )
-            } catch {
-                _ = try? restoreCall.value()
-                throw error
+        do {
+            let restoring = try waitForNativeManagerStatus(
+                manager,
+                id: machineID,
+                timeout: 300,
+                label: "resume handoff",
+                failingWhenFinished: restoreCall
+            ) {
+                $0.state == .starting && $0.handoffSocketPath != nil
             }
+            let controlSocketPath = nativeHelperControlSocketPath(
+                handoffSocketPath: try #require(restoring.handoffSocketPath)
+            )
+            try waitForNativeHelperControlSocket(
+                controlSocketPath,
+                manager: manager,
+                id: machineID,
+                call: restoreCall,
+                label: "resume control socket"
+            )
+            try sendVmmHandoff(
+                path: try #require(restoring.handoffSocketPath),
+                ready: VmmReadyMessage(
+                    machineID: machineID,
+                    operationID: restoring.activeOperationID,
+                    controlSocketPath: controlSocketPath
+                ),
+                fileDescriptors: []
+            )
+        } catch {
+            _ = try? restoreCall.value()
+            throw error
         }
         let restoredStatus = try restoreCall.value()
         try requireNativeMacManager(restoredStatus.state == .running, "resume should publish running status")
@@ -681,39 +622,13 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             "resume should retain refreshed runtime identity"
         )
 
-        if actualPhysicalRun {
-            let closed = try NativeMacPhysicalFixtureThreadCall.start(name: "dory-native-mac-close-suspend") {
-                try manager.suspend(
-                    id: machineID,
-                    operationID: UUID(uuidString: "66666666-7777-4888-8999-aaaaaaaaaaaa")!
-                )
-            }.value()
-            try requireNativeMacManager(
-                closed.state == .suspended,
-                "final close should leave the managed VM suspended with helper exited"
-            )
-            try writeManagedNativeMacEvidence(
-                root: evidenceRoot,
-                fixtureRoot: fixture.root,
-                machineID: machineID,
-                machineDirectory: machineDirectory,
-                bundlePath: bundlePath,
-                helperExecutablePath: helperExecutablePath,
-                startStatus: runningStatus,
-                suspendedStatus: suspended,
-                restoredStatus: restoredStatus,
-                closedStatus: closed
-            )
-            actualPhysicalRunCompleted = true
-        } else {
-            _ = try NativeMacPhysicalFixtureThreadCall.start(name: "dory-native-mac-stop") {
-                try manager.stop(id: machineID)
-            }.value()
-            try NativeMacPhysicalFixtureThreadCall.start(name: "dory-native-mac-delete") {
-                try manager.delete(id: machineID)
-            }.value()
-            removeHelperRoot = true
-        }
+        _ = try NativeMacPhysicalFixtureThreadCall.start(name: "dory-native-mac-stop") {
+            try manager.stop(id: machineID)
+        }.value()
+        try NativeMacPhysicalFixtureThreadCall.start(name: "dory-native-mac-delete") {
+            try manager.delete(id: machineID)
+        }.value()
+        removeHelperRoot = true
     }
 
 private func cloneOrCopyPhysicalFixtureItem(source: String, destination: String) throws {
@@ -733,68 +648,6 @@ private func cloneOrCopyPhysicalFixtureItem(source: String, destination: String)
             throw CompositionTestError.notReady
         }
         return context
-    }
-}
-
-final class ActualManagedNativeMacSavedStateQualificationXCTest: XCTestCase {
-    func testActualManagedNativeMacSavedStateSuspendResumeAndClose() throws {
-        let environment = ProcessInfo.processInfo.environment
-        guard environment["DORY_NATIVE_MAC_MANAGED_FIXTURE_START"] == "1" else {
-            throw XCTSkip("set DORY_NATIVE_MAC_MANAGED_FIXTURE_START=1 to run the physical managed native Mac qualification")
-        }
-        let helper = try XCTUnwrap(environment["DORY_NATIVE_MAC_REAL_VMM_EXECUTABLE"])
-        _ = try XCTUnwrap(environment["DORY_NATIVE_MAC_IPSW"])
-        _ = try XCTUnwrap(environment["DORY_NATIVE_MAC_PREPARED_BUNDLE"])
-        FileHandle.standardError.write(
-            Data("actual managed native Mac qualification host pid=\(getpid()) main=\(Thread.isMainThread)\n".utf8)
-        )
-        try DorySecurityDynamicCodeValidator.validate(
-            pid: getpid(),
-            requirementText: DorydXPCSecurity.productionDaemonRequirement
-        )
-        FileHandle.standardError.write(
-            Data("actual managed native Mac qualification host satisfies production daemon launch requirement\n".utf8)
-        )
-        let box = ManagedNativeMacPhysicalQualificationResult()
-        let thread = Thread {
-            do {
-                try DoryDaemonVirtualMachineProductionPlanningCompositionTests()
-                    .runNativeMacMachineManagerSuspendRenewsMutableDiskProvenance(
-                        actualHelperExecutablePath: helper,
-                        preserveFixtureRoot: true,
-                        evidenceRoot: environment["DORY_NATIVE_MAC_MANAGED_EVIDENCE_ROOT"]
-                    )
-                box.finish(.success(()))
-            } catch {
-                box.finish(.failure(error))
-            }
-        }
-        thread.name = "dory-actual-managed-native-mac-qualification"
-        thread.stackSize = 8 * 1_024 * 1_024
-        thread.start()
-        while !box.isFinished {
-            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
-        }
-        try box.result!.get()
-    }
-}
-
-private final class ManagedNativeMacPhysicalQualificationResult: @unchecked Sendable {
-    private let lock = NSLock()
-    private var stored: Result<Void, Error>?
-
-    var result: Result<Void, Error>? {
-        lock.lock()
-        defer { lock.unlock() }
-        return stored
-    }
-
-    var isFinished: Bool { result != nil }
-
-    func finish(_ result: Result<Void, Error>) {
-        lock.lock()
-        stored = result
-        lock.unlock()
     }
 }
 
@@ -1956,82 +1809,6 @@ private func requireNativeMacManager(
     }
 }
 
-private func writeManagedNativeMacEvidence(
-    root requestedRoot: String?,
-    fixtureRoot: String,
-    machineID: String,
-    machineDirectory: String,
-    bundlePath: String,
-    helperExecutablePath: String,
-    startStatus: DoryMachineStatus,
-    suspendedStatus: DoryMachineStatus,
-    restoredStatus: DoryMachineStatus,
-    closedStatus: DoryMachineStatus
-) throws {
-    guard let requestedRoot, !requestedRoot.isEmpty else { return }
-    let evidenceRoot = URL(fileURLWithPath: requestedRoot).standardizedFileURL.path
-    try FileManager.default.createDirectory(
-        atPath: evidenceRoot,
-        withIntermediateDirectories: true,
-        attributes: [.posixPermissions: 0o700]
-    )
-    let bundle = try DoryVZMacMachineBundle.load(
-        from: URL(fileURLWithPath: bundlePath, isDirectory: true)
-    )
-    let savedStatePath = machineDirectory + "/saved-state-v1/state.bin"
-    let savedStateBytes = (try? FileManager.default.attributesOfItem(
-        atPath: savedStatePath
-    )[.size] as? NSNumber)?.uint64Value
-    let receipt: [String: Any] = [
-        "schema": "dory.managed-native-mac-saved-state-qualification@1",
-        "scope": "private signed-host MachineManager qualification; not release daemon qualification",
-        "recordedAtUnix": Date().timeIntervalSince1970,
-        "hostPID": Int(getpid()),
-        "machineID": machineID,
-        "fixtureRoot": fixtureRoot,
-        "machineDirectory": machineDirectory,
-        "bundlePath": bundlePath,
-        "helperExecutablePath": helperExecutablePath,
-        "helperSHA256": try compositionFileSHA256(path: helperExecutablePath),
-        "manifestInstallationState": bundle.manifest.installationState.rawValue,
-        "manifestMachineIdentifierSHA256": bundle.manifest.machineIdentifierSHA256,
-        "manifestHardwareModelSHA256": bundle.manifest.hardwareModelSHA256,
-        "savedStatePath": savedStatePath,
-        "savedStateBytes": managedNativeMacJSONValue(savedStateBytes),
-        "statuses": [
-            "start": managedNativeMacEvidenceStatus(startStatus),
-            "suspend": managedNativeMacEvidenceStatus(suspendedStatus),
-            "restore": managedNativeMacEvidenceStatus(restoredStatus),
-            "close": managedNativeMacEvidenceStatus(closedStatus),
-        ],
-    ]
-    let data = try JSONSerialization.data(
-        withJSONObject: receipt,
-        options: [.prettyPrinted, .sortedKeys]
-    )
-    try data.write(to: URL(fileURLWithPath: evidenceRoot + "/receipt.json"), options: .atomic)
-    try FileManager.default.setAttributes(
-        [.posixPermissions: 0o600],
-        ofItemAtPath: evidenceRoot + "/receipt.json"
-    )
-}
-
-private func managedNativeMacEvidenceStatus(_ status: DoryMachineStatus) -> [String: Any] {
-    [
-        "state": status.state.rawValue,
-        "pid": managedNativeMacJSONValue(status.pid),
-        "activeOperationID": managedNativeMacJSONValue(status.activeOperationID),
-        "handoffSocketPath": managedNativeMacJSONValue(status.handoffSocketPath),
-        "controlSocketPath": managedNativeMacJSONValue(status.controlSocketPath),
-        "savedStatePresent": status.savedState != nil,
-        "runtimePlanRevision": managedNativeMacJSONValue(
-            status.runtimeIdentity.resolvedPlan?.planRevision
-        ),
-        "lastError": managedNativeMacJSONValue(status.lastError),
-    ]
-}
-
-private func managedNativeMacJSONValue<T>(_ value: T?) -> Any { value ?? NSNull() }
 
 private func waitForNativeHelperControlSocket<T>(
     _ path: String,

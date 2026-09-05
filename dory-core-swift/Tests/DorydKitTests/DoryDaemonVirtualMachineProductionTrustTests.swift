@@ -2347,13 +2347,15 @@ func makeStoppedProductionTrustFixture() throws -> ProductionTrustFixture {
 func makeActualVMMProductionTrustFixture(
     actualVMMExecutablePath: String,
     gvproxyPath: String,
-    fixtureRoot: URL? = nil
+    fixtureRoot: URL? = nil,
+    testSigningPrivateKeyRawRepresentation: Data? = nil
 ) throws -> ProductionTrustFixture {
     try ProductionTrustFixture(
         actualRawHelperExecutablePath: actualVMMExecutablePath,
         actualRawHelperGVProxyPath: gvproxyPath,
         fixtureRootOverride: fixtureRoot,
-        requiresReadyHandoffOverride: true
+        requiresReadyHandoffOverride: true,
+        testSigningPrivateKeyRawRepresentation: testSigningPrivateKeyRawRepresentation
     )
 }
 
@@ -3907,7 +3909,7 @@ final class ProductionTrustFixture: @unchecked Sendable {
     let machineConfiguration: MachineManagerConfiguration
     let appVersion = "1.0.0"
     let manifestPath = "vm-qualifications.json"
-    let privateKey = Curve25519.Signing.PrivateKey()
+    let privateKey: Curve25519.Signing.PrivateKey
     let helperDigest: String
     let runtimeBuildIdentifier: String
     let mediaPath: String
@@ -3960,10 +3962,18 @@ final class ProductionTrustFixture: @unchecked Sendable {
         actualARMVirtFirmwareBundlePath: String? = nil,
         fixtureRootOverride: URL? = nil,
         requiresReadyHandoffOverride: Bool? = nil,
+        testSigningPrivateKeyRawRepresentation: Data? = nil,
         agentConnector: @escaping MachineManager.AgentConnector = {
             try LocalAgentControl.connect(socketPath: $0)
         }
     ) throws {
+        if let testSigningPrivateKeyRawRepresentation {
+            privateKey = try Curve25519.Signing.PrivateKey(
+                rawRepresentation: testSigningPrivateKeyRawRepresentation
+            )
+        } else {
+            privateKey = Curve25519.Signing.PrivateKey()
+        }
         let fixtureRoot = fixtureRootOverride ?? URL(fileURLWithPath: "/Users/Shared", isDirectory: true).appendingPathComponent(
             "\(authenticatedRuntime ? "dory-du" : "dory-production-trust")-\(UUID().uuidString)", isDirectory: true
         )

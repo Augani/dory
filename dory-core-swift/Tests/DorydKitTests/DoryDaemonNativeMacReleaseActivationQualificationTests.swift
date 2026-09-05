@@ -32,6 +32,28 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
             }
             return
         }
+        if let restartFixturePath = environment["DORY_NATIVE_MAC_RELEASE_DAEMON_RESTART_FIXTURE"] {
+            let helperPath = try XCTUnwrap(environment["DORY_NATIVE_MAC_REAL_VMM_EXECUTABLE"])
+            let evidenceRoot = try XCTUnwrap(environment["DORY_NATIVE_MAC_RELEASE_DAEMON_EVIDENCE_ROOT"])
+            let gvproxyPath = environment["DORY_NATIVE_MAC_REAL_GVPROXY"]
+                ?? "/Applications/Dory.app/Contents/Helpers/gvproxy"
+            try DorySecurityDynamicCodeValidator.validate(
+                pid: getpid(),
+                requirementText: DorydXPCSecurity.productionDaemonRequirement
+            )
+            FileHandle.standardError.write(Data(
+                "release-activation native Mac restart-only host pid=\(getpid()) satisfies production daemon requirement\n".utf8
+            ))
+            try Self.runOnLargeStack {
+                try Self.runRestartOnlyQualification(
+                    sourceFixturePath: restartFixturePath,
+                    helperPath: helperPath,
+                    evidenceRoot: evidenceRoot,
+                    gvproxyPath: gvproxyPath
+                )
+            }
+            return
+        }
         guard environment["DORY_NATIVE_MAC_RELEASE_DAEMON_FIXTURE_START"] == "1" else {
             throw XCTSkip("set DORY_NATIVE_MAC_RELEASE_DAEMON_FIXTURE_START=1 to run the physical release-activation native Mac qualification")
         }
@@ -61,7 +83,6 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
         }
     }
 
-
     private static func runQualification(
         helperPath: String,
         preparedBundlePath: String,
@@ -75,21 +96,35 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
             withIntermediateDirectories: true,
             attributes: [.posixPermissions: 0o700]
         )
+        let signingKeyPath = releaseNativeMacTestSigningKeyPath(evidenceRoot: evidenceRoot)
+        let signingKeyRawRepresentation = try loadOrCreateReleaseNativeMacTestSigningKey(
+            at: signingKeyPath
+        )
+        let fixtureRoot = URL(fileURLWithPath: evidenceRoot, isDirectory: true)
+            .appendingPathComponent("fixture", isDirectory: true)
         let fixture = try makeActualVMMProductionTrustFixture(
             actualVMMExecutablePath: helperPath,
             gvproxyPath: gvproxyPath,
-            fixtureRoot: URL(fileURLWithPath: evidenceRoot, isDirectory: true)
-                .appendingPathComponent("fixture", isDirectory: true)
+            fixtureRoot: fixtureRoot,
+            testSigningPrivateKeyRawRepresentation: signingKeyRawRepresentation
+        )
+        try writeReleaseNativeMacFixtureDescriptor(
+            root: evidenceRoot,
+            fixtureRoot: fixtureRoot.path,
+            dataDriveRoot: fixture.drive.root,
+            stateDirectory: fixture.machineConfiguration.stateDirectory,
+            helperExecutablePath: helperPath,
+            helperSHA256: helperDigest,
+            gvproxyPath: gvproxyPath,
+            testSigningKeyPath: signingKeyPath,
+            testSigningKeySHA256: releaseNativeMacSHA256(signingKeyRawRepresentation)
         )
         var completed = false
         defer {
-            if completed {
-                fixture.cleanup()
-            } else {
-                FileHandle.standardError.write(Data(
-                    "release-activation native Mac fixture retained after failure at \(fixture.root.path)\n".utf8
-                ))
-            }
+            let outcome = completed ? "success" : "failure"
+            FileHandle.standardError.write(Data(
+                "release-activation native Mac fixture retained after \(outcome) at \(fixture.root.path)\n".utf8
+            ))
         }
 
         var configuration = fixture.machineConfiguration
@@ -103,52 +138,9 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
         configuration.macOSRestoreHandoffReadyTimeoutSeconds = 240
         configuration.startupRestartPolicy = HvRestartPolicy.none
 
-        let factory = DoryDaemonVirtualMachineProductionTrustFactory(
-            authorityResolver: { store, key, architecture, appVersion in
-                try DoryVirtualMachineQualificationAuthorityResolver.resolve(
-                    store: store,
-                    publicKey: key,
-                    expectedArchitecture: architecture,
-                    appVersion: appVersion
-                )
-            },
-            runtimeVerifier: { path, descriptor, component in
-                guard path == helperPath,
-                      component == "dory-vmm",
-                      try DoryComponentCatalogVerifier.fileDigest(path) == helperDigest else {
-                    throw DoryDaemonProductionTrustInventoryError.backendUnavailable
-                }
-                let build = "sha256:\(helperDigest)"
-                return DoryDaemonVerifiedBackendRuntime(
-                    descriptor: descriptor,
-                    executablePath: path,
-                    runtimeBuildIdentifier: build,
-                    components: [DoryVirtualMachineQualifiedComponent(
-                        componentIdentifier: component,
-                        buildIdentifier: build,
-                        artifactSHA256: helperDigest
-                    )]
-                )
-            },
-            hostProbe: { _ in
-                DoryDaemonProductionHostObservation(
-                    hardwareModelIdentifier: "Mac16,1",
-                    operatingSystemBuild: "26A5406c",
-                    macOSMajorVersion: 26,
-                    virtualizationFrameworkAvailable: true,
-                    hypervisorFrameworkAvailable: true,
-                    metalAvailable: true,
-                    resources: DoryVMHostResources(
-                        logicalCPUCount: 12,
-                        physicalMemoryBytes: 32 * 1_024 * 1_024 * 1_024,
-                        freeStorageBytes: 512 * 1_024 * 1_024 * 1_024
-                    )
-                )
-            },
-            daemonIdentityVerifier: {
-                DorydXPCSecurity.currentProcessSatisfiesProductionDaemonRequirement()
-            },
-            planningTransactionAvailable: { true }
+        let factory = Self.releaseNativeMacActivationFactory(
+            helperPath: helperPath,
+            helperDigest: helperDigest
         )
 
         let machineID = "native-mac-release-daemon"
@@ -526,6 +518,8 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
             bundlePath: bundlePath,
             helperExecutablePath: helperPath,
             helperSHA256: helperDigest,
+            testSigningKeyPath: signingKeyPath,
+            testSigningKeySHA256: releaseNativeMacSHA256(signingKeyRawRepresentation),
             activationPlanRevision: activationPlanRevision,
             startStatus: running,
             suspendedStatus: firstSuspend,
@@ -544,6 +538,107 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
         completed = true
     }
 
+    private static func runRestartOnlyQualification(
+        sourceFixturePath: String,
+        helperPath: String,
+        evidenceRoot: String,
+        gvproxyPath: String
+    ) throws {
+        let fixtureRoot = URL(fileURLWithPath: sourceFixturePath, isDirectory: true)
+            .standardizedFileURL
+        let signingKeyPath = releaseNativeMacExistingFixtureSigningKeyPath(
+            fixtureRoot: fixtureRoot.path
+        )
+        let before = try releaseNativeMacReplayLedger(
+            fixtureRoot: fixtureRoot.path,
+            helperPath: helperPath,
+            signingKeyPath: signingKeyPath
+        )
+        try FileManager.default.createDirectory(
+            atPath: evidenceRoot,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        var machineID = "native-mac-release-daemon"
+        var machineDirectory = ""
+        var helperDigest = before.helperSHA256
+        var signingKeySHA256 = before.signingKeySHA256
+        var reopenMode = "legacy-reconstructed"
+        var finalStatus: DoryMachineStatus?
+        var replayError: String?
+        var didStart = false
+        var context: DoryDaemonVirtualMachineProductionActivationContext?
+        do {
+            let fixture = try reopenReleaseNativeMacActivationFixture(
+                fixtureRoot: fixtureRoot,
+                helperPath: helperPath
+            )
+            machineID = fixture.machineID
+            machineDirectory = fixture.machineDirectory
+            helperDigest = fixture.helperSHA256
+            signingKeySHA256 = fixture.signingKeySHA256
+            reopenMode = fixture.reopenMode
+            let afterReopen = try releaseNativeMacReplayLedger(
+                fixtureRoot: fixtureRoot.path,
+                helperPath: helperPath,
+                signingKeyPath: fixture.signingKeyPath
+            )
+            try requireReleaseNativeMac(
+                before == afterReopen,
+                "release restart-only loader changed fixture files before activation"
+            )
+            let activated = try activateReleaseNativeMacContext(
+                factory: fixture.factory,
+                store: fixture.store,
+                machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion,
+                publicKey: fixture.publicKey
+            )
+            context = activated
+            let status = try startReleaseNativeMacAndWait(
+                activated.machineManager,
+                machineID: fixture.machineID,
+                operationID: UUID(uuidString: "44444444-5555-4666-8aaa-888888888888")!,
+                label: "release restart-only cold start running"
+            )
+            didStart = status.state == .running
+            finalStatus = status
+        } catch {
+            replayError = String(describing: error)
+            if let context { finalStatus = context.machineManager.status(id: machineID) }
+        }
+        if didStart { context?.machineManager.stopAll() }
+        let after = try releaseNativeMacReplayLedger(
+            fixtureRoot: fixtureRoot.path,
+            helperPath: helperPath,
+            signingKeyPath: signingKeyPath
+        )
+        try writeReleaseManagedNativeMacRestartOnlyEvidence(
+            root: evidenceRoot,
+            sourceFixturePath: sourceFixturePath,
+            helperExecutablePath: helperPath,
+            helperSHA256: helperDigest,
+            testSigningKeyPath: signingKeyPath,
+            testSigningKeySHA256: signingKeySHA256,
+            machineID: machineID,
+            machineDirectory: machineDirectory,
+            reopenMode: reopenMode,
+            startStatus: finalStatus,
+            startError: replayError,
+            before: before,
+            after: after
+        )
+        try requireReleaseNativeMac(
+            before.trustCritical == after.trustCritical,
+            "release restart-only replay changed trust-critical fixture files"
+        )
+        if let replayError {
+            throw MachineManagerError.persistence(
+                "release restart-only cold start failed after read-only activation: \(replayError)"
+            )
+        }
+    }
+
     private static func runRecoveryOnlyQualification(
         sourceFixturePath: String,
         helperPath: String,
@@ -558,17 +653,18 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
         )
         let fixtureRoot = URL(fileURLWithPath: sourceFixturePath, isDirectory: true)
         let drive = try DoryDataDrive(home: fixtureRoot.path)
-        try drive.prepare()
+        guard case .ready = try drive.inspect() else {
+            throw MachineManagerError.persistence("release recovery-only fixture data drive is not ready")
+        }
         let machineConfiguration = MachineManagerConfiguration(
             vmmExecutablePath: helperPath,
-            acceleratedDesktopExecutablePath: helperPath,
             armVirtFirmwareBundlePath: fixtureRoot.appendingPathComponent(
                 "armvirt-firmware",
                 isDirectory: true
             ).path,
             stateDirectory: drive.machinesDirectory,
             runtimeDirectory: fixtureRoot.appendingPathComponent("runtime", isDirectory: true).path,
-            acceleratedDesktopBaseArguments: ["desktop", "--gvproxy", gvproxyPath],
+            acceleratedDesktopBaseArguments: [],
             passMachineArguments: true,
             logDirectory: fixtureRoot.appendingPathComponent("logs", isDirectory: true).path,
             requiresReadyHandoff: true,
@@ -705,6 +801,337 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
     }
 }
 
+
+private struct ReleaseNativeMacReopenedFixture {
+    var fixtureRoot: URL
+    var drive: DoryDataDrive
+    var store: DoryComponentStore
+    var machineConfiguration: MachineManagerConfiguration
+    var factory: DoryDaemonVirtualMachineProductionTrustFactory
+    var appVersion: String
+    var publicKey: String
+    var signingKeyPath: String
+    var signingKeySHA256: String
+    var helperSHA256: String
+    var machineID: String
+    var machineDirectory: String
+    var reopenMode: String
+}
+
+private struct ReleaseNativeMacFixtureDescriptor: Codable, Equatable {
+    var schema: String
+    var fixtureRoot: String
+    var dataDriveRoot: String
+    var stateDirectory: String
+    var machineID: String
+    var helperExecutablePath: String
+    var helperSHA256: String
+    var gvproxyPath: String
+    var testSigningKeyPath: String
+    var testSigningKeySHA256: String
+    var armVirtFirmwareBundlePath: String
+    var logDirectory: String
+    var requiresReadyHandoff: Bool
+    var passMachineArguments: Bool
+    var handoffReadyTimeoutSeconds: TimeInterval
+    var desktopHandoffReadyTimeoutSeconds: TimeInterval
+    var macOSRestoreHandoffReadyTimeoutSeconds: TimeInterval
+    var startupRestartPolicy: String
+    var runtimeDirectoryPolicy: String
+}
+
+private struct ReleaseNativeMacReplayLedger: Codable, Equatable {
+    var fixtureRoot: String
+    var helperSHA256: String
+    var signingKeyPath: String
+    var signingKeySHA256: String
+    var trustCritical: [String: String]
+    var machineControl: [String: String]
+}
+
+private extension DoryDaemonNativeMacReleaseActivationQualificationTests {
+    static func releaseNativeMacActivationFactory(
+        helperPath: String,
+        helperDigest: String
+    ) -> DoryDaemonVirtualMachineProductionTrustFactory {
+        DoryDaemonVirtualMachineProductionTrustFactory(
+            authorityResolver: { store, key, architecture, appVersion in
+                try DoryVirtualMachineQualificationAuthorityResolver.resolve(
+                    store: store,
+                    publicKey: key,
+                    expectedArchitecture: architecture,
+                    appVersion: appVersion
+                )
+            },
+            runtimeVerifier: { path, descriptor, component in
+                guard path == helperPath,
+                      component == "dory-vmm",
+                      try DoryComponentCatalogVerifier.fileDigest(path) == helperDigest else {
+                    throw DoryDaemonProductionTrustInventoryError.backendUnavailable
+                }
+                let build = "sha256:\(helperDigest)"
+                return DoryDaemonVerifiedBackendRuntime(
+                    descriptor: descriptor,
+                    executablePath: path,
+                    runtimeBuildIdentifier: build,
+                    components: [DoryVirtualMachineQualifiedComponent(
+                        componentIdentifier: component,
+                        buildIdentifier: build,
+                        artifactSHA256: helperDigest
+                    )]
+                )
+            },
+            hostProbe: { _ in
+                DoryDaemonProductionHostObservation(
+                    hardwareModelIdentifier: "Mac16,1",
+                    operatingSystemBuild: "26A5406c",
+                    macOSMajorVersion: 26,
+                    virtualizationFrameworkAvailable: true,
+                    hypervisorFrameworkAvailable: true,
+                    metalAvailable: true,
+                    resources: DoryVMHostResources(
+                        logicalCPUCount: 12,
+                        physicalMemoryBytes: 32 * 1_024 * 1_024 * 1_024,
+                        freeStorageBytes: 512 * 1_024 * 1_024 * 1_024
+                    )
+                )
+            },
+            daemonIdentityVerifier: {
+                DorydXPCSecurity.currentProcessSatisfiesProductionDaemonRequirement()
+            },
+            planningTransactionAvailable: { true }
+        )
+    }
+
+    static func reopenReleaseNativeMacActivationFixture(
+        fixtureRoot: URL,
+        helperPath: String
+    ) throws -> ReleaseNativeMacReopenedFixture {
+        let helperDigest = try DoryComponentCatalogVerifier.fileDigest(helperPath)
+        let descriptor = try readReleaseNativeMacFixtureDescriptor(
+            fixtureRoot: fixtureRoot.path
+        )
+        let drive = try DoryDataDrive(home: fixtureRoot.path)
+        guard case .ready = try drive.inspect() else {
+            throw MachineManagerError.persistence("release restart-only fixture data drive is not ready")
+        }
+        let store = DoryComponentStore(drive: drive)
+        let signingKeyPath = descriptor?.testSigningKeyPath
+            ?? releaseNativeMacExistingFixtureSigningKeyPath(fixtureRoot: fixtureRoot.path)
+        let signingKeyRawRepresentation = try readReleaseNativeMacTestSigningKey(
+            at: signingKeyPath
+        )
+        let signingKey = try Curve25519.Signing.PrivateKey(
+            rawRepresentation: signingKeyRawRepresentation
+        )
+        let machineID = descriptor?.machineID ?? "native-mac-release-daemon"
+        let machineDirectory = drive.machinesDirectory + "/" + machineID
+        if let descriptor {
+            try validateReleaseNativeMacFixtureDescriptor(
+                descriptor,
+                fixtureRoot: fixtureRoot.path,
+                dataDriveRoot: drive.root,
+                stateDirectory: drive.machinesDirectory,
+                helperPath: helperPath,
+                helperSHA256: helperDigest,
+                signingKeyPath: signingKeyPath,
+                signingKeySHA256: releaseNativeMacSHA256(signingKeyRawRepresentation),
+                machineID: machineID
+            )
+        }
+        let resolvedPlan = try DoryResolvedMachinePlanRepository(
+            root: drive.machinesDirectory
+        ).read(id: machineID)
+        let resolvedVMMComponent = resolvedPlan.components.first {
+            $0.componentIdentifier == "dory-vmm"
+        }
+        try requireReleaseNativeMac(
+            resolvedVMMComponent?.artifactSHA256 == helperDigest
+                && resolvedVMMComponent?.buildIdentifier == "sha256:\(helperDigest)",
+            "release restart-only helper digest must match the durable resolved-plan dory-vmm component"
+        )
+        try requireReleaseNativeMac(
+            FileManager.default.fileExists(atPath: machineDirectory + "/machine.json"),
+            "release restart-only fixture must contain persisted machine metadata"
+        )
+        let machineData = try Data(
+            contentsOf: URL(fileURLWithPath: machineDirectory + "/machine.json")
+        )
+        let machine = try JSONDecoder().decode(DoryMachineConfiguration.self, from: machineData)
+        try requireReleaseNativeMac(
+            machine.id == machineID
+                && machine.macOSMachineBundlePath == machineDirectory + "/Machine.dorymac"
+                && machine.macOSRestoreImagePath == machineDirectory + "/Restore.ipsw",
+            "release restart-only fixture machine metadata must bind the managed Mac bundle and restore image"
+        )
+        try requireReleaseNativeMac(
+            FileManager.default.fileExists(atPath: machineDirectory + "/workspace-v2.json"),
+            "release restart-only fixture must contain persisted workspace definition"
+        )
+        try requireReleaseNativeMac(
+            !FileManager.default.fileExists(atPath: machineDirectory + "/" + DoryMachineSavedStateStore.directoryName),
+            "release restart-only fixture must begin cold-stopped without a saved-state wrapper"
+        )
+        let bundle = try DoryVZMacMachineBundle.load(
+            from: URL(fileURLWithPath: machineDirectory + "/Machine.dorymac", isDirectory: true)
+        )
+        try requireReleaseNativeMac(
+            bundle.manifest.installationState == .stopped,
+            "release restart-only fixture must begin with the native Mac bundle stopped"
+        )
+        let configuration = MachineManagerConfiguration(
+            vmmExecutablePath: helperPath,
+            armVirtFirmwareBundlePath: descriptor?.armVirtFirmwareBundlePath
+                ?? fixtureRoot.appendingPathComponent("armvirt-firmware", isDirectory: true).path,
+            stateDirectory: drive.machinesDirectory,
+            runtimeDirectory: "/tmp/dory-release-vzmac-restart-\(getpid())-\(UUID().uuidString.prefix(8))/runtime",
+            acceleratedDesktopBaseArguments: [],
+            passMachineArguments: descriptor?.passMachineArguments ?? true,
+            logDirectory: descriptor?.logDirectory
+                ?? fixtureRoot.appendingPathComponent("logs", isDirectory: true).path,
+            requiresReadyHandoff: descriptor?.requiresReadyHandoff ?? true,
+            handoffReadyTimeoutSeconds: descriptor?.handoffReadyTimeoutSeconds ?? 240,
+            desktopHandoffReadyTimeoutSeconds: descriptor?.desktopHandoffReadyTimeoutSeconds ?? 240,
+            macOSRestoreHandoffReadyTimeoutSeconds: descriptor?.macOSRestoreHandoffReadyTimeoutSeconds ?? 240,
+            startupRestartPolicy: .none
+        )
+        return ReleaseNativeMacReopenedFixture(
+            fixtureRoot: fixtureRoot,
+            drive: drive,
+            store: store,
+            machineConfiguration: configuration,
+            factory: releaseNativeMacActivationFactory(
+                helperPath: helperPath,
+                helperDigest: helperDigest
+            ),
+            appVersion: "1.0.0",
+            publicKey: signingKey.publicKey.rawRepresentation.base64EncodedString(),
+            signingKeyPath: signingKeyPath,
+            signingKeySHA256: releaseNativeMacSHA256(signingKeyRawRepresentation),
+            helperSHA256: helperDigest,
+            machineID: machineID,
+            machineDirectory: machineDirectory,
+            reopenMode: descriptor == nil ? "legacy-reconstructed-cold-start" : "descriptor-read-only-cold-start"
+        )
+    }
+}
+
+private func activateReleaseNativeMacContext(
+    factory: DoryDaemonVirtualMachineProductionTrustFactory,
+    store: DoryComponentStore,
+    machineConfiguration: MachineManagerConfiguration,
+    appVersion: String,
+    publicKey: String
+) throws -> DoryDaemonVirtualMachineProductionActivationContext {
+    switch factory.activate(
+        store: store,
+        machineConfiguration: machineConfiguration,
+        appVersion: appVersion,
+        publicKey: publicKey,
+        expectedArchitecture: "arm64"
+    ) {
+    case let .activated(context):
+        return context
+    case let .unavailable(failure):
+        throw MachineManagerError.persistence(
+            "release activation unavailable: \(failure.code.rawValue): \(failure.message)"
+        )
+    }
+}
+
+private func startReleaseNativeMacAndWait(
+    _ manager: MachineManager,
+    machineID: String,
+    operationID: UUID,
+    label: String
+) throws -> DoryMachineStatus {
+    let call: NativeMacReleaseThreadCall<DoryMachineStatus> = NativeMacReleaseThreadCall.start(name: label) {
+        try manager.start(id: machineID, operationID: operationID)
+    }
+    _ = try waitForReleaseNativeMacStatus(
+        manager,
+        id: machineID,
+        timeout: 240,
+        label: label,
+        failingWhenFinished: call
+    ) { $0.state == .running }
+    return try call.value()
+}
+
+private func releaseNativeMacReplayLedger(
+    fixtureRoot: String,
+    helperPath: String,
+    signingKeyPath: String
+) throws -> ReleaseNativeMacReplayLedger {
+    let drive = try DoryDataDrive(home: fixtureRoot)
+    let machineDirectory = drive.machinesDirectory + "/native-mac-release-daemon"
+    var trustPaths = [
+        helperPath,
+        signingKeyPath,
+        fixtureRoot + "/qualification.json",
+        drive.componentsDirectory + "/catalog.json",
+        drive.componentsDirectory + "/catalog.sig",
+        drive.componentsDirectory + "/active/linux-machines.json",
+        drive.machinesDirectory + "/.vm-production-trust-floor-v1",
+    ]
+    trustPaths += try releaseNativeMacRegularFiles(
+        under: drive.componentsDirectory + "/installed"
+    )
+    trustPaths += try releaseNativeMacRegularFiles(
+        under: drive.machinesDirectory + "/.artifact-authority"
+    )
+    let machinePaths = [
+        machineDirectory + "/machine.json",
+        machineDirectory + "/workspace-v2.json",
+        machineDirectory + "/resolved-plan.json",
+        machineDirectory + "/runtime-identity-v1.json",
+        machineDirectory + "/runtime-identity-head-v1.json",
+        machineDirectory + "/planning-transaction-v1.json",
+        machineDirectory + "/Machine.dorymac/machine.json",
+    ]
+    let keyData = try readReleaseNativeMacTestSigningKey(at: signingKeyPath)
+    return ReleaseNativeMacReplayLedger(
+        fixtureRoot: fixtureRoot,
+        helperSHA256: try DoryComponentCatalogVerifier.fileDigest(helperPath),
+        signingKeyPath: signingKeyPath,
+        signingKeySHA256: releaseNativeMacSHA256(keyData),
+        trustCritical: try releaseNativeMacHashRequiredFiles(trustPaths),
+        machineControl: try releaseNativeMacHashRequiredFiles(machinePaths)
+    )
+}
+
+private func releaseNativeMacRegularFiles(under root: String) throws -> [String] {
+    var isDirectory: ObjCBool = false
+    guard FileManager.default.fileExists(atPath: root, isDirectory: &isDirectory),
+          isDirectory.boolValue else { return [] }
+    let entries = try FileManager.default.contentsOfDirectory(
+        at: URL(fileURLWithPath: root, isDirectory: true),
+        includingPropertiesForKeys: [.isRegularFileKey, .isDirectoryKey],
+        options: []
+    )
+    var files: [String] = []
+    for entry in entries {
+        let values = try entry.resourceValues(forKeys: [.isRegularFileKey, .isDirectoryKey])
+        if values.isRegularFile == true {
+            files.append(entry.path)
+        } else if values.isDirectory == true {
+            files += try releaseNativeMacRegularFiles(under: entry.path)
+        }
+    }
+    return files
+}
+
+private func releaseNativeMacHashRequiredFiles(_ paths: [String]) throws -> [String: String] {
+    var hashes: [String: String] = [:]
+    for path in paths.sorted() {
+        try requireReleaseNativeMac(
+            FileManager.default.fileExists(atPath: path),
+            "release replay ledger required file missing: \(path)"
+        )
+        hashes[path] = try DoryComponentCatalogVerifier.fileDigest(path)
+    }
+    return hashes
+}
 private final class ReleaseNativeMacFaultRecorder: @unchecked Sendable {
     private let lock = NSLock()
     private var value = false
@@ -847,6 +1274,96 @@ private func requireReleaseNativeMacStatus(
     return status
 }
 
+private func releaseNativeMacTestSigningKeyPath(evidenceRoot: String) -> String {
+    URL(fileURLWithPath: evidenceRoot, isDirectory: true)
+        .appendingPathComponent("test-signing-key.raw", isDirectory: false)
+        .standardizedFileURL.path
+}
+
+private func releaseNativeMacExistingFixtureSigningKeyPath(fixtureRoot: String) -> String {
+    URL(fileURLWithPath: fixtureRoot, isDirectory: true)
+        .deletingLastPathComponent()
+        .appendingPathComponent("test-signing-key.raw", isDirectory: false)
+        .standardizedFileURL.path
+}
+
+private func loadOrCreateReleaseNativeMacTestSigningKey(at path: String) throws -> Data {
+    if FileManager.default.fileExists(atPath: path) {
+        return try readReleaseNativeMacTestSigningKey(at: path)
+    }
+    let key = Curve25519.Signing.PrivateKey().rawRepresentation
+    let fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, mode_t(0o600))
+    if fd < 0 {
+        if errno == EEXIST { return try readReleaseNativeMacTestSigningKey(at: path) }
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    defer { close(fd) }
+    try key.withUnsafeBytes { rawBuffer in
+        guard let base = rawBuffer.baseAddress else { return }
+        var written = 0
+        while written < rawBuffer.count {
+            let count = write(fd, base.advanced(by: written), rawBuffer.count - written)
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            guard count > 0 else { throw POSIXError(.EIO) }
+            written += count
+        }
+    }
+    guard fsync(fd) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    try validateReleaseNativeMacTestSigningKeyDescriptor(fd)
+    _ = try Curve25519.Signing.PrivateKey(rawRepresentation: key)
+    return key
+}
+
+private func readReleaseNativeMacTestSigningKey(at path: String) throws -> Data {
+    let fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+    guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+    defer { close(fd) }
+    try validateReleaseNativeMacTestSigningKeyDescriptor(fd)
+    let data = try readReleaseNativeMacTestSigningKeyDescriptor(fd)
+    _ = try Curve25519.Signing.PrivateKey(rawRepresentation: data)
+    return data
+}
+
+private func validateReleaseNativeMacTestSigningKeyDescriptor(_ fd: Int32) throws {
+    var info = stat()
+    guard fstat(fd, &info) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    try requireReleaseNativeMac((info.st_mode & S_IFMT) == S_IFREG, "test signing key must be a regular file")
+    try requireReleaseNativeMac(info.st_nlink == 1, "test signing key must have one link")
+    try requireReleaseNativeMac(info.st_uid == geteuid(), "test signing key must be owned by this user")
+    try requireReleaseNativeMac((info.st_mode & 0o077) == 0, "test signing key must not be group/world accessible")
+    try requireReleaseNativeMac(info.st_size == 32, "test signing key must be one Curve25519 raw private key")
+}
+
+private func readReleaseNativeMacTestSigningKeyDescriptor(_ fd: Int32) throws -> Data {
+    guard lseek(fd, 0, SEEK_SET) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    var bytes = [UInt8](repeating: 0, count: 32)
+    var offset = 0
+    while offset < bytes.count {
+        let remaining = bytes.count - offset
+        let count = bytes.withUnsafeMutableBytes { buffer in
+            read(fd, buffer.baseAddress!.advanced(by: offset), remaining)
+        }
+        if count < 0 {
+            if errno == EINTR { continue }
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+        guard count > 0 else { throw POSIXError(.EIO) }
+        offset += count
+    }
+    return Data(bytes)
+}
+
+private func releaseNativeMacSHA256(_ data: Data) -> String {
+    SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+}
+
 private func cloneOrCopyReleaseQualificationItem(source: String, destination: String) throws {
     let sourceURL = URL(fileURLWithPath: source)
     var isDirectory: ObjCBool = false
@@ -907,6 +1424,118 @@ private func workspaceCreationTimestamp(machineDirectory: String) -> Int64 {
     return additionOverflow ? Int64.max : result
 }
 
+private func writeReleaseNativeMacFixtureDescriptor(
+    root: String,
+    fixtureRoot: String,
+    dataDriveRoot: String,
+    stateDirectory: String,
+    helperExecutablePath: String,
+    helperSHA256: String,
+    gvproxyPath: String,
+    testSigningKeyPath: String,
+    testSigningKeySHA256: String
+) throws {
+    let descriptor = ReleaseNativeMacFixtureDescriptor(
+        schema: "dory.release-activation-native-mac-fixture-descriptor@1",
+        fixtureRoot: fixtureRoot,
+        dataDriveRoot: dataDriveRoot,
+        stateDirectory: stateDirectory,
+        machineID: "native-mac-release-daemon",
+        helperExecutablePath: helperExecutablePath,
+        helperSHA256: helperSHA256,
+        gvproxyPath: gvproxyPath,
+        testSigningKeyPath: testSigningKeyPath,
+        testSigningKeySHA256: testSigningKeySHA256,
+        armVirtFirmwareBundlePath: URL(fileURLWithPath: fixtureRoot, isDirectory: true)
+            .appendingPathComponent("armvirt-firmware", isDirectory: true).path,
+        logDirectory: URL(fileURLWithPath: fixtureRoot, isDirectory: true)
+            .appendingPathComponent("logs", isDirectory: true).path,
+        requiresReadyHandoff: true,
+        passMachineArguments: true,
+        handoffReadyTimeoutSeconds: 240,
+        desktopHandoffReadyTimeoutSeconds: 240,
+        macOSRestoreHandoffReadyTimeoutSeconds: 240,
+        startupRestartPolicy: "none",
+        runtimeDirectoryPolicy: "ephemeral-restart-only"
+    )
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
+    try (encoder.encode(descriptor) + Data("\n".utf8)).write(
+        to: URL(fileURLWithPath: root + "/fixture-descriptor.json"),
+        options: .atomic
+    )
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o600],
+        ofItemAtPath: root + "/fixture-descriptor.json"
+    )
+}
+
+private func readReleaseNativeMacFixtureDescriptor(
+    fixtureRoot: String
+) throws -> ReleaseNativeMacFixtureDescriptor? {
+    let descriptorPath = URL(fileURLWithPath: fixtureRoot, isDirectory: true)
+        .deletingLastPathComponent()
+        .appendingPathComponent("fixture-descriptor.json")
+        .standardizedFileURL.path
+    guard FileManager.default.fileExists(atPath: descriptorPath) else { return nil }
+    let data = try Data(contentsOf: URL(fileURLWithPath: descriptorPath))
+    let descriptor = try JSONDecoder().decode(ReleaseNativeMacFixtureDescriptor.self, from: data)
+    try requireReleaseNativeMac(
+        descriptor.schema == "dory.release-activation-native-mac-fixture-descriptor@1",
+        "release fixture descriptor schema is unsupported"
+    )
+    return descriptor
+}
+
+private func validateReleaseNativeMacFixtureDescriptor(
+    _ descriptor: ReleaseNativeMacFixtureDescriptor,
+    fixtureRoot: String,
+    dataDriveRoot: String,
+    stateDirectory: String,
+    helperPath: String,
+    helperSHA256: String,
+    signingKeyPath: String,
+    signingKeySHA256: String,
+    machineID: String
+) throws {
+    try requireReleaseNativeMac(
+        descriptor.fixtureRoot == fixtureRoot,
+        "release fixture descriptor root does not match the selected fixture"
+    )
+    try requireReleaseNativeMac(
+        descriptor.dataDriveRoot == dataDriveRoot,
+        "release fixture descriptor data-drive root does not match inspection"
+    )
+    try requireReleaseNativeMac(
+        descriptor.stateDirectory == stateDirectory,
+        "release fixture descriptor state directory does not match inspection"
+    )
+    try requireReleaseNativeMac(
+        descriptor.machineID == machineID,
+        "release fixture descriptor machine id does not match replay target"
+    )
+    try requireReleaseNativeMac(
+        descriptor.helperExecutablePath == helperPath && descriptor.helperSHA256 == helperSHA256,
+        "release fixture descriptor helper identity does not match replay helper"
+    )
+    try requireReleaseNativeMac(
+        descriptor.testSigningKeyPath == signingKeyPath
+            && descriptor.testSigningKeySHA256 == signingKeySHA256,
+        "release fixture descriptor signing key identity does not match replay key"
+    )
+    try requireReleaseNativeMac(
+        descriptor.passMachineArguments
+            && descriptor.requiresReadyHandoff
+            && descriptor.startupRestartPolicy == "none"
+            && descriptor.runtimeDirectoryPolicy == "ephemeral-restart-only",
+        "release fixture descriptor launch policy is unsupported"
+    )
+    try requireReleaseNativeMac(
+        FileManager.default.fileExists(atPath: descriptor.armVirtFirmwareBundlePath),
+        "release fixture descriptor ARM firmware path is missing"
+    )
+}
+
 private func writeReleaseManagedNativeMacEvidence(
     root: String,
     fixtureRoot: String,
@@ -915,6 +1544,8 @@ private func writeReleaseManagedNativeMacEvidence(
     bundlePath: String,
     helperExecutablePath: String,
     helperSHA256: String,
+    testSigningKeyPath: String,
+    testSigningKeySHA256: String,
     activationPlanRevision: UInt64,
     startStatus: DoryMachineStatus,
     suspendedStatus: DoryMachineStatus,
@@ -953,6 +1584,8 @@ private func writeReleaseManagedNativeMacEvidence(
         "bundlePath": bundlePath,
         "helperExecutablePath": helperExecutablePath,
         "helperSHA256": helperSHA256,
+        "testSigningKeyPath": testSigningKeyPath,
+        "testSigningKeySHA256": testSigningKeySHA256,
         "sourceSHA256": try releaseNativeMacSourceHashes(),
         "activationPlanRevision": activationPlanRevision,
         "manifestInstallationState": bundle.manifest.installationState.rawValue,
@@ -981,6 +1614,58 @@ private func writeReleaseManagedNativeMacEvidence(
     try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: root + "/receipt.json")
 }
 
+private func writeReleaseManagedNativeMacRestartOnlyEvidence(
+    root: String,
+    sourceFixturePath: String,
+    helperExecutablePath: String,
+    helperSHA256: String,
+    testSigningKeyPath: String,
+    testSigningKeySHA256: String,
+    machineID: String,
+    machineDirectory: String,
+    reopenMode: String,
+    startStatus: DoryMachineStatus?,
+    startError: String?,
+    before: ReleaseNativeMacReplayLedger,
+    after: ReleaseNativeMacReplayLedger
+) throws {
+    try FileManager.default.createDirectory(
+        atPath: root,
+        withIntermediateDirectories: true,
+        attributes: [.posixPermissions: 0o700]
+    )
+    let payload: [String: Any] = [
+        "schema": "dory.release-activation-native-mac-restart-only-qualification@1",
+        "scope": "private signed doryd-identity host reopening an existing task-owned fixture through ProductionTrustFactory.activate without calling ProductionTrustFixture.create; validates key/helper/catalog/trust-floor pre/post ledgers and probes stopped installed native Mac cold start",
+        "recordedAtUnix": Date().timeIntervalSince1970,
+        "hostPID": Int(getpid()),
+        "sourceFixturePath": sourceFixturePath,
+        "machineID": machineID,
+        "machineDirectory": machineDirectory,
+        "reopenMode": reopenMode,
+        "helperExecutablePath": helperExecutablePath,
+        "helperSHA256": helperSHA256,
+        "testSigningKeyPath": testSigningKeyPath,
+        "testSigningKeySHA256": testSigningKeySHA256,
+        "sourceSHA256": try releaseNativeMacSourceHashes(),
+        "startError": startError ?? NSNull(),
+        "startStatus": startStatus.map(releaseNativeMacEvidenceStatus) ?? NSNull(),
+        "preReplayLedger": try releaseNativeMacJSONValue(before),
+        "postReplayLedger": try releaseNativeMacJSONValue(after),
+        "trustCriticalUnchanged": before.trustCritical == after.trustCritical,
+        "machineControlUnchanged": before.machineControl == after.machineControl,
+    ]
+    let data = try JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted, .sortedKeys])
+    try (data + Data("\n".utf8)).write(
+        to: URL(fileURLWithPath: root + "/restart-only-receipt.json"),
+        options: .atomic
+    )
+    try FileManager.default.setAttributes(
+        [.posixPermissions: 0o600],
+        ofItemAtPath: root + "/restart-only-receipt.json"
+    )
+}
+
 private func writeReleaseManagedNativeMacRecoveryOnlyEvidence(
     root: String,
     sourceFixturePath: String,
@@ -996,6 +1681,12 @@ private func writeReleaseManagedNativeMacRecoveryOnlyEvidence(
         withIntermediateDirectories: true,
         attributes: [.posixPermissions: 0o700]
     )
+    let sourceSigningKeyPath = releaseNativeMacExistingFixtureSigningKeyPath(
+        fixtureRoot: sourceFixturePath
+    )
+    let sourceSigningKeyHash = releaseNativeMacRecoverySigningKeyHash(
+        sourceFixturePath: sourceFixturePath
+    )
     let payload: [String: Any] = [
         "schema": "dory.release-activation-native-mac-recovery-only-qualification@1",
         "scope": "private signed doryd-identity host constructing a fresh MachineManager over the original task-owned failed fixture root; verifies native Mac cold-stop saved-state discard recovery without launching Apple Virtualization.framework or a guest; production-factory activation remains separately open",
@@ -1007,6 +1698,8 @@ private func writeReleaseManagedNativeMacRecoveryOnlyEvidence(
         "machineDirectory": machineDirectory,
         "helperExecutablePath": helperExecutablePath,
         "helperSHA256": helperSHA256,
+        "testSigningKeyPath": sourceSigningKeyPath,
+        "testSigningKeySHA256": sourceSigningKeyHash ?? NSNull(),
         "sourceSHA256": try releaseNativeMacSourceHashes(),
         "savedStateWrapperPresentAfterRecovery": FileManager.default.fileExists(
             atPath: machineDirectory + "/saved-state-v1"
@@ -1022,6 +1715,19 @@ private func writeReleaseManagedNativeMacRecoveryOnlyEvidence(
         [.posixPermissions: 0o600],
         ofItemAtPath: root + "/recovery-only-receipt.json"
     )
+}
+
+private func releaseNativeMacRecoverySigningKeyHash(sourceFixturePath: String) -> String? {
+    let keyPath = releaseNativeMacExistingFixtureSigningKeyPath(
+        fixtureRoot: sourceFixturePath
+    )
+    guard let data = try? readReleaseNativeMacTestSigningKey(at: keyPath) else { return nil }
+    return releaseNativeMacSHA256(data)
+}
+
+private func releaseNativeMacJSONValue<T: Encodable>(_ value: T) throws -> Any {
+    let data = try JSONEncoder().encode(value)
+    return try JSONSerialization.jsonObject(with: data)
 }
 
 private func releaseNativeMacSourceHashes() throws -> [String: String] {
