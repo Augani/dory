@@ -1,0 +1,37 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "pathFixCommit": "f734ba1cd",
+  "scope": "Disposable ARM64 patched Docker engine restart; targeted pre-ack checkpoint and GPU renderer failure remain separate gates",
+  "runnerSHA256": "eefb6acd6d6bc61613debc744d9dadd4d70006ac8ead765961889728f70d2103",
+  "dockerServerVersion": "29.6.1-dory1",
+  "observed": {
+    "interruptedContainerStatus": "exited",
+    "exitCode": 255,
+    "oomKilled": false,
+    "volumeSentinel": "sentinel-before-crash",
+    "completionMarkerPresent": false,
+    "freshContainerOutput": "fresh-ok:aarch64"
+  },
+  "rootVerification": {
+    "reviewedRetainedRuntimeLog": true,
+    "independentlyRepeatedRuntimeCampaign": false,
+    "enginePolicyTestsPassed": 14
+  },
+  "artifacts": [
+    {
+      "path": "/private/tmp/dory-patched-dockerd-endpoint.1102aa702.live.1788590051/patched-daemon-restart-recheck-1788591247.log",
+      "sha256": "7b88c8873e50d64b332f0d8364f93394c17b8fe469168d30c9310ede73073e66"
+    },
+    {
+      "path": "/tmp/dory-root-engine-path-policy-tests-0905.log",
+      "sha256": "199a56c7ce92cd12f9065dfe19a567f882bb2d50259462ae9c49e2a5ec86b121"
+    }
+  ],
+  "remaining": [
+    "Observe/retest exact pre-ack StartIntent crash boundary",
+    "Repeat GPU renderer failure campaign on patched image",
+    "Production initfs integration and AMD64 static-Go/FEX qualification"
+  ],
+  "cleanup": "Agent reports disposable endpoint stopped; user Mac and original build endpoint preserved"
+}

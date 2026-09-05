@@ -56,5 +56,13 @@
       "path": "/tmp/dory-root-cpu-profile-pc-baseline-tests-0905.log",
       "sha256": "6ff863b414d9a8c342d9fa4f21475f29eb0f3cb9d32493d0ead7fe33ce4c5eb3"
     }
-  ]
+  ],
+  "pagingFollowup": {
+    "commit": "f39d46c36",
+    "change": "Paging context reads PAT support directly from the same predicate used by CPUID.edx bit16, avoiding full leaf1 construction per access",
+    "testsPassed": 56,
+    "suites": 4,
+    "log": "/tmp/dory-root-paging-direct-feature-tests-0905.log",
+    "logSHA256": "81713b6814cea8835bb69d9a71199fc463756794bd7cabe81e651e33cacbdb92"
+  }
 }
