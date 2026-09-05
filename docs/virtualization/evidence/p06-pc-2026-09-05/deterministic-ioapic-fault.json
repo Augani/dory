@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "scope": "Diagnostic deterministic clock control, not production-clock boot qualification",
+  "raw_sha256": "7d01e89df822f54db0a8d556bfb59d2f18ce1dc65fab21090de042da038b40d9",
+  "runner_sha256": "9ab841cd9f25194e4be8d0bd312c7a8c101d90efe5b9f45c7174b62af27ecce0",
+  "clock_source": "deterministic",
+  "stop": "instructionBudget(1200000000)",
+  "completed_instructions": 1200000000,
+  "serial_marker_matched": false,
+  "first_fault": {
+    "guest_time_seconds": 7.161127,
+    "kind": "general protection",
+    "symbol": "unmask_ioapic_irq+0x5c/0x80",
+    "instruction_bytes": "897010",
+    "rax": "0xffffffffff5fb000",
+    "esi": 0,
+    "preceding_selector": 20,
+    "target_linear_address": "0xffffffffff5fb010"
+  },
+  "source_path": [
+    "DoryPCIOAPICMMIO.writeWindow decodes zero value as unmasked vector0 for redirection entry2.",
+    "DoryPCIOAPIC.configure rejects unmasked vectors below0x10.",
+    "Interpreter generic error catch maps this device error to guest#GP."
+  ],
+  "interpretation": "Register state and source path are consistent with Dory rejecting a transient IOAPIC configuration write. Verify architectural register/delivery behavior before changing admission.",
+  "remaining": [
+    "Correct IOAPIC register versus interrupt delivery semantics with regression coverage.",
+    "Repeat production-clock and diagnostic boot runs.",
+    "Reach userspace and qualify graphics."
+  ]
+}
