@@ -188,7 +188,7 @@ public struct DoryIROptimizer: Sendable {
       case .immediate(let value, let width) = source,
       width == target.width
     else {
-      knownConstants.removeValue(forKey: identity)
+      invalidate(writtenOperand, knownConstants: &knownConstants)
       return
     }
     knownConstants[identity] = mask(value, to: target.width)
@@ -202,6 +202,10 @@ public struct DoryIROptimizer: Sendable {
     knownConstants.removeValue(
       forKey: .init(bank: register.bank, index: register.index)
     )
+    // Legacy high-byte registers alias bits 8...15 of the corresponding full GPR.
+    if register.bank == "x86.high8" {
+      knownConstants.removeValue(forKey: .init(bank: "x86.gpr", index: register.index))
+    }
   }
 
   private func invalidateStackPointer(

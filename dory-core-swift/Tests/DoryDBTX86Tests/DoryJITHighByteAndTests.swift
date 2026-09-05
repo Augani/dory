@@ -2,6 +2,24 @@ import Testing
 @testable import DoryDBTX86
 
 @Suite struct DoryJITHighByteAndTests {
+  @Test func highByteWriteInvalidatesContainingRegisterConstant() throws {
+    #if arch(arm64)
+      // mov rdx,0x1234_5678_9ABC_FF11; and dh,0xfd; mov rax,rdx.
+      let bytes: [UInt8] = [0x48, 0xBA, 0x11, 0xFF, 0xBC, 0x9A, 0x78, 0x56, 0x34, 0x12,
+        0x80, 0xE6, 0xFD, 0x48, 0x89, 0xD0]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096, optimization: optimization)
+        var state = try DoryX86ArchitecturalState(rip: 0)
+        let result = try #require(executor.execute(bytes: bytes, at: 0, mode: .long64,
+          addressSpaceID: 0, maximumInstructions: 3, state: &state))
+        #expect(result.block.guestInstructionCount == 3)
+        #expect(state.registers.rdx == 0x1234_5678_9ABC_FD11)
+        #expect(state.registers.rax == state.registers.rdx)
+        #expect(state.rip == UInt64(bytes.count))
+      }
+    #endif
+  }
+
   @Test func highByteImmediateAndPreservesSurroundingBitsAndMatchesInterpreter() throws {
     #if arch(arm64)
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {

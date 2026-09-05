@@ -4,13 +4,20 @@
   "sourceSHA256": {
     "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "32f44a3b7a37b260260a931d149ffc20cf4e563633806cf7bce569ab9f4a3d3b",
     "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "857dfc455388abe3bfed7bd3ea5657af6d1c3ab4a92683162ba88ac8afae32bf",
-    "dory-core-swift/Tests/DoryDBTX86Tests/DoryJITHighByteAndTests.swift": "c6b103213d4d1ef1126bb22b414f23170267deb42cdfe615ddfa9af491a6ce53"
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryJITHighByteAndTests.swift": "e879a7ecee3b29965b52e8e3d1b6e04310841fae412413a29f8316d762b83882",
+    "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift": "c214a2074d521bd556908c76bf9d4797f5b753751cbf2ce8f2134d1833a8e3a1"
   },
   "qualification": {
-    "results": "114 tests in 3 suites passed",
+    "results": "115 tests in 3 suites passed",
     "focusedCoverage": "All 256 input byte values, five immediate masks including measured 0xfd, all four high-byte registers, baseline and optimizing tiers; interpreter equivalence plus explicit surrounding-bit preservation.",
-    "privateLog": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/highbyte-and-final.log",
-    "logSHA256": "1a4449e9f5e8dcc1178de777ebf88ecfacc5c9e96e9da3a282867611105d1edb"
+    "privateLog": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/highbyte-alias-final.log",
+    "logSHA256": "def23dba60b9d6094f31b0c7389e475ecac159a4bad19f566a1923eaa71a24d2",
+    "mixedInstructionRegression": {
+      "sequence": "mov rdx,constant; and dh,0xfd; mov rax,rdx",
+      "before": "Optimizing tier incorrectly propagated the old full-register constant; regression reproduced.",
+      "after": "High-byte writes invalidate the full-register constant. Baseline and optimizing tiers preserve the changed value.",
+      "beforeLogSHA256": "bc9035621f1350c90da71d01d091ca3fe2ff86af762e232a846e4ff68214821d"
+    }
   },
   "measuredTrigger": {
     "opcode": "80e6fd",
