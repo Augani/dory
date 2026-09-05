@@ -129,6 +129,9 @@ struct DoryPCUEFIRuntimeAuthority {
         networkBackend: any DoryVirtioNetworkBackend = DoryVirtioInMemoryNetworkBackend(),
         additionalPCIFunctions: [any DoryPCPCIFunction] = []
     ) throws -> DoryPCUEFIMachine {
+        guard envelope.platform.cpuProfile == .compatibleX8664V1 else {
+            throw VMError.invalidConfiguration("DoryPC CPU profile is not supported by this runtime")
+        }
         guard let networkInterface = envelope.devices.networkInterface else {
             throw VMError.invalidConfiguration("DoryPC network identity is missing")
         }
@@ -162,6 +165,7 @@ struct DoryPCUEFIRuntimeAuthority {
             networkMACAddress: networkInterface.macAddressOctets!,
             networkMTU: networkInterface.maximumTransmissionUnit,
             additionalPCIFunctions: additionalPCIFunctions,
+            interpreter: .init(profile: .compatibleV1),
             executionTier: tier
         )
         variableGeneration.advance(to: machine.effectiveVariableStoreGeneration)
