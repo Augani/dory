@@ -1,0 +1,25 @@
+{
+  "schema": "dory.native-direction-review@1",
+  "baseCommit": "f37db48f4be1af873c4fdd4c87e15537c194c967",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "a3c90a3650d771cc278b5c27461dee04b943c1718b458a0d5dfc11e0252119a5",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "2554e7cf1c6c412bd6f51b3ad94fabb03b8659648e79358e50c42ebf90f4a399",
+    "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift": "dafaaa3882481e500e68fc9df92bf6652db16c9e7e8ab861609c58e25d4d1586",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "f3bbc0dbf6354548e3bb6a3bc91fa3037906ee51329740e2d2fd364c46433a0b"
+  },
+  "scope": "Native long-mode CLD/STD in baseline and optimizing tiers, preserving unrelated flags and architectural state.",
+  "validation": {
+    "result": "8 tests in 1 suite passed",
+    "coverage": [
+      "Both initial DF states, CLD and STD, CPL0 and CPL3, baseline and optimizing execution",
+      "Existing trace invalidation and restartable memory callback behavior"
+    ],
+    "log": "native-direction-tests.log.gz",
+    "rawSHA256": "cb1be2efa1c3021159082b96feb0eefaa56bfc2490823e74e088f16f5c323c42",
+    "publishedUncompressedSHA256": "cb1be2efa1c3021159082b96feb0eefaa56bfc2490823e74e088f16f5c323c42",
+    "normalization": "Home-directory prefix replaced with <HOME>."
+  },
+  "limitations": [
+    "No guest boot or performance result is established by this focused correctness slice."
+  ]
+}

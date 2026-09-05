@@ -116,7 +116,7 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)
 
-      case .clearInterruptFlag:
+      case .clearInterruptFlag, .setDirectionFlag:
         statements.append(statement)
 
       case .readTimestampCounter:

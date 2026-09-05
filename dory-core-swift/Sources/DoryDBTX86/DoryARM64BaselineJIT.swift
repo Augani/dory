@@ -176,7 +176,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination) || isFSOrGS(source)
       case .effectiveAddress:
         return false
-      case .stackPushFlags, .clearInterruptFlag, .readTimestampCounter, .helper:
+      case .stackPushFlags, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .helper:
         return false
       }
     }
@@ -245,6 +245,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitStackPop(destination: destination, into: &words)
     case .clearInterruptFlag:
       return emitClearInterruptFlag(into: &words)
+    case .setDirectionFlag(let enabled):
+      return emitSetDirectionFlag(enabled: enabled, into: &words)
     case .readTimestampCounter:
       return emitReadTimestampCounter(into: &words)
     case .compareExchange(let destination, let source):
@@ -324,6 +326,21 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
     emitImmediate(~DoryX86RFLAGS.interruptEnable.rawValue, register: 10, into: &words)
     words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 10, into: &words)
+    words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
+    return true
+  }
+
+  private func emitSetDirectionFlag(enabled: Bool, into words: inout [UInt32]) -> Bool {
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
+    if enabled {
+      emitImmediate(DoryX86RFLAGS.direction.rawValue, register: 10, into: &words)
+      words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
+    } else {
+      emitImmediate(~DoryX86RFLAGS.direction.rawValue, register: 10, into: &words)
+      words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
+    }
     emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 10, into: &words)
     words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
     words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
@@ -570,7 +587,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return 0
     case .compareExchange:
       return 1
-    case .effectiveAddress, .clearInterruptFlag, .readTimestampCounter, .helper:
+    case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .helper:
       return 0
     }
   }

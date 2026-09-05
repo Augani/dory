@@ -92,6 +92,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case stackPushFlags
   case stackPop(destination: DoryIROperand)
   case clearInterruptFlag
+  case setDirectionFlag(enabled: Bool)
   case readTimestampCounter
   case compareExchange(destination: DoryIROperand, source: DoryIROperand)
   case signedMultiply(destination: DoryIROperand, lhs: DoryIROperand, rhs: DoryIROperand)
@@ -383,6 +384,8 @@ public struct DoryX86IRTranslator: Sendable {
       )
     case .setInterruptsEnabled(false) where mode == .long64:
       return ([.clearInterruptFlag], nil)
+    case .setDirection(let enabled) where mode == .long64:
+      return ([.setDirectionFlag(enabled: enabled)], nil)
     case .readTimestampCounter(false) where mode == .long64:
       return ([.readTimestampCounter], .next(instruction.nextInstructionAddress))
     case .compareExchange(let destination, let source) where mode == .long64
@@ -659,7 +662,7 @@ public struct DoryX86IRTranslator: Sendable {
         register.width == width && isJITGeneralRegister(register)
       else { return false }
       return true
-    case .clearInterruptFlag, .readTimestampCounter:
+    case .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter:
       return true
     case .helper:
       return false
@@ -724,7 +727,7 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(source) ? .read : .none
     case .compareExchange:
       return .write
-    case .effectiveAddress, .clearInterruptFlag, .readTimestampCounter, .helper:
+    case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .helper:
       return .none
     }
   }

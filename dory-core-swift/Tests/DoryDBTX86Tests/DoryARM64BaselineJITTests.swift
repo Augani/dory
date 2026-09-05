@@ -1375,6 +1375,94 @@ import Testing
     #expect(DoryARM64BaselineEmitter().compile(protected).tier == .interpreterFallback)
   }
 
+  @Test func directionFlagWritesMatchInterpreterAcrossTiers() throws {
+    #if arch(arm64)
+      struct Case {
+        let bytes: [UInt8]
+        let setsDirection: Bool
+      }
+      struct PrivilegeCase {
+        let selector: UInt16
+        let attributes: UInt16
+      }
+      let cases = [
+        Case(bytes: [0xFC], setsDirection: false),  // CLD
+        Case(bytes: [0xFD], setsDirection: true),  // STD
+      ]
+      let privilegeCases = [
+        PrivilegeCase(selector: 8, attributes: 0xA09B),
+        PrivilegeCase(selector: 3, attributes: 0xA0FB),
+      ]
+      for testCase in cases {
+        for startsWithDirection in [false, true] {
+          for privilegeCase in privilegeCases {
+            let address: UInt64 = 0x1FDC_191F
+            let decoded = try DoryX86Decoder().decode(testCase.bytes, at: address, mode: .long64)
+            let translated = try DoryX86IRTranslator().translate(
+              testCase.bytes, at: address, mode: .long64)
+            #expect(
+              translated.statements == [
+                DoryIRStatement.setDirectionFlag(enabled: testCase.setsDirection)
+              ]
+            )
+            let initialFlags: DoryX86RFLAGS = startsWithDirection
+              ? [.reservedOne, .carry, .parity, .direction, .interruptEnable, .overflow]
+              : [.reservedOne, .carry, .parity, .interruptEnable, .overflow]
+            let expectedFlags: DoryX86RFLAGS = testCase.setsDirection
+              ? [.reservedOne, .carry, .parity, .direction, .interruptEnable, .overflow]
+              : [.reservedOne, .carry, .parity, .interruptEnable, .overflow]
+
+            for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+              var interpreted = try DoryX86ArchitecturalState(
+                rip: address,
+                rflags: initialFlags,
+                cs: .init(
+                  selector: privilegeCase.selector,
+                  attributes: privilegeCase.attributes,
+                  limit: .max
+                )
+              )
+              #expect(DoryX86Interpreter().step(
+                state: &interpreted,
+                memory: try DoryX86ByteArrayMemory(baseAddress: address, bytes: testCase.bytes),
+                mode: .long64) == .retired(decoded))
+
+              var native = try DoryX86ArchitecturalState(
+                rip: address,
+                rflags: initialFlags,
+                cs: .init(
+                  selector: privilegeCase.selector,
+                  attributes: privilegeCase.attributes,
+                  limit: .max
+                )
+              )
+              let execution = try #require(
+                DoryARM64BaselineExecutor(
+                  maximumCodeBytes: 4096,
+                  optimization: optimization
+                ).execute(
+                  bytes: testCase.bytes,
+                  at: native.rip,
+                  mode: .long64,
+                  addressSpaceID: UInt64(privilegeCase.selector),
+                  maximumInstructions: 1,
+                  state: &native
+                )
+              )
+              #expect(execution.block.tier.rawValue == optimization.rawValue)
+              #expect(!execution.block.requiresMemoryCallbacks)
+              #expect(native == interpreted)
+              #expect(native.rflags == expectedFlags)
+            }
+          }
+        }
+      }
+
+      let protected = try DoryX86IRTranslator().translate([0xFC], at: 0, mode: .protected32)
+      #expect(DoryARM64BaselineEmitter().compile(protected).tier == .interpreterFallback)
+    #endif
+  }
+
   @Test func lockedCompareExchangeMatchesInterpreterAccumulatorAndFlags() throws {
     #if arch(arm64)
       struct Case {
