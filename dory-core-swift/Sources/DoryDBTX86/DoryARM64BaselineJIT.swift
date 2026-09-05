@@ -1722,7 +1722,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
   ) -> Bool {
     guard isLowByteRegister(destination) else { return false }
     if case .memory(let address, width: .i8) = source {
-      guard !writesDestination, operation == .compare || operation == .test,
+      guard ((!writesDestination && (operation == .compare || operation == .test))
+        || (writesDestination && operation == .and)),
         emitMemoryAddress(address, into: 12, words: &words)
       else { return false }
       emitMemoryRead(addressRegister: 12, width: .i8, resultRegister: 10, words: &words)

@@ -1,0 +1,34 @@
+{
+  "baseHEAD": "fadd2e3bef18df615b89bb86cc41aa91d700799e",
+  "change": "native low-byte register AND from byte memory source (22 /r), including measured RIP-relative form 22 15 8e be 09 02",
+  "createdAt": "2026-09-05T23:15:00-00:00",
+  "liveRunEvidence": {
+    "note": "live e13 runner does not include this patch; it remains running for boot comparison",
+    "observedHotSite": "rip=ffffffff9e6baf6c cpl=0 bytes=22158ebe0902 nativeEmitter hits=523855 at 150s; maps with slide 0x1d400000 to current exact kernel, motivating 22 /r support",
+    "pid": 18972,
+    "runRoot": "${HOME}/.dory/qualification/pc-production-next-20260905-2330/run-20260905230107",
+    "sourceHEAD": "e13c89b0e67bd199ba4fdee97cb136c5cc8baea3"
+  },
+  "sourceHashes": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "16a257087c98229def95f7feadcfa81666c86a5e7c46b77dbac95cac2828e75d",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "f90b2b5adf04e93058266740fab151e042be784e4165d73afa575569ae5b0a7b",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "a57c044ceb606da6028bc819f84ab98aadf039ecbaa050c4196d5967b8422246"
+  },
+  "tests": {
+    "DoryARM64BaselineJITTests": {
+      "log": "${HOME}/.dory/qualification/native-lowbyte-memory-source-and-20260905/baseline-jit-full.log",
+      "result": "115 tests in 1 suite passed",
+      "sha256": "260e758aa57cea587daeb70a0d9d07de34e0aa8e901fd979260adc6a4c96077f"
+    },
+    "DoryJITHighByteAndTests|DoryJITShortReplacementTests": {
+      "log": "${HOME}/.dory/qualification/native-lowbyte-memory-source-and-20260905/adjacent-highbyte-shortreplacement.log",
+      "result": "3 tests in 2 suites passed",
+      "sha256": "2267613e794d7ebbf9446b6373785f9d6d5178d832ec4aa8f5ff356dafe419eb"
+    },
+    "initialFocusedFaultCase": {
+      "log": "${HOME}/.dory/qualification/native-lowbyte-memory-source-and-20260905/focused-baseline-jit-xcode.log",
+      "result": "compile/test scaffolding fixed after this run; retained as diagnostic only",
+      "sha256": "4181aac9438189efa4f2f15810b5f4e8e44c8c916b9d247c434e09e1072dc353"
+    }
+  }
+}
