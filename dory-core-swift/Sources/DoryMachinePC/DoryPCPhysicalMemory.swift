@@ -58,7 +58,7 @@ extension DoryPCMMIODevice {
 /// Sealed physical address router. RAM and devices share one DoryX86Memory boundary, so paging,
 /// interpreter, and every future JIT helper observe an identical DoryPC-v1 memory map.
 public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
-  DoryX86CodeGenerationMemory, @unchecked Sendable
+  DoryX86AtomicScalarMemory, DoryX86CodeGenerationMemory, @unchecked Sendable
 {
   private struct Mapping {
     let lowerBound: UInt64
@@ -304,6 +304,29 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .write)
     try ram.writeScalar(at: resolved.backingAddress, value: value, byteCount: byteCount)
+  }
+
+  public func compareExchangeScalar(
+    at address: UInt64,
+    expected: UInt64,
+    desired: UInt64,
+    byteCount: Int
+  ) throws -> UInt64? {
+    guard [1, 2, 4, 8].contains(byteCount) else {
+      throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    guard let atomicRAM = ram as? any DoryX86AtomicScalarMemory else { return nil }
+    if let resolved = try directRAMRoute(address: address, byteCount: byteCount) {
+      return try atomicRAM.compareExchangeScalar(
+        at: resolved.backingAddress, expected: expected, desired: desired, byteCount: byteCount)
+    }
+    // Native locked operations are admitted for ordinary RAM only. A device mapping declines
+    // without invoking MMIO read/write side effects; the interpreter remains responsible for
+    // precise device semantics.
+    if try resolve(address: address, byteCount: byteCount, access: .write) != nil { return nil }
+    let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .write)
+    return try atomicRAM.compareExchangeScalar(
+      at: resolved.backingAddress, expected: expected, desired: desired, byteCount: byteCount)
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {

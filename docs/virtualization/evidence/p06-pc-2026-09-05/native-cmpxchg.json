@@ -1,0 +1,18 @@
+{
+  "schema": "dory.native-cmpxchg@1",
+  "scope": "CPL0 long-mode locked dword/qword memory CMPXCHG; shared interpreter/native atomic gate; production bus and translated RAM support",
+  "validation": {
+    "tests": 143,
+    "suites": 4,
+    "result": "passed",
+    "rawLogSHA256": "b53d49fe2f74b627f1076f85754d89a1db311b79b4bbfdd50cb52e0151e95da1",
+    "publicLog": "native-cmpxchg-tests.log.gz",
+    "publicLogUncompressedSHA256": "b53d49fe2f74b627f1076f85754d89a1db311b79b4bbfdd50cb52e0151e95da1",
+    "normalization": "Personal home prefix replaced with $HOME if present"
+  },
+  "limitations": [
+    "No guest run for this source yet; no elapsed performance claim.",
+    "User-mode, cross-page and MMIO execution remain interpreter paths.",
+    "This does not qualify SMP or whole-system memory ordering."
+  ]
+}

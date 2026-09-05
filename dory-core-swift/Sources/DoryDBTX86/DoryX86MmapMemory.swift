@@ -3,7 +3,7 @@ import Foundation
 /// Large-address-space backing store using mmap. Virtual pages are lazily backed
 /// by the host's VM system, so allocating 16 GB of guest RAM does not consume
 /// 16 GB of host physical memory — only pages that are actually touched cost RAM.
-public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
+public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMemory, @unchecked Sendable {
   public let baseAddress: UInt64
   public let byteCount: Int
   private let lock = NSLock()
@@ -149,6 +149,33 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, @unchecked Sendable {
         UInt8(truncatingIfNeeded: value >> UInt64(index * 8))
     }
     markCodePagesWritten(offset: offset, byteCount: byteCount)
+  }
+
+  public func compareExchangeScalar(
+    at address: UInt64,
+    expected: UInt64,
+    desired: UInt64,
+    byteCount: Int
+  ) throws -> UInt64? {
+    guard [1, 2, 4, 8].contains(byteCount) else {
+      throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    lock.lock()
+    defer { lock.unlock() }
+    let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
+    var observed: UInt64 = 0
+    for index in 0..<byteCount {
+      observed |= UInt64(pointer.advanced(by: offset + index).assumingMemoryBound(to: UInt8.self).pointee)
+        << UInt64(index * 8)
+    }
+    let mask = byteCount == 8 ? UInt64.max : (UInt64(1) << UInt64(byteCount * 8)) - 1
+    let stored = (observed & mask) == (expected & mask) ? desired : observed
+    for index in 0..<byteCount {
+      pointer.advanced(by: offset + index).assumingMemoryBound(to: UInt8.self).pointee =
+        UInt8(truncatingIfNeeded: stored >> UInt64(index * 8))
+    }
+    markCodePagesWritten(offset: offset, byteCount: byteCount)
+    return observed & mask
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {

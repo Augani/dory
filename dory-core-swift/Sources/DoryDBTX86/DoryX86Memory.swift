@@ -98,6 +98,21 @@ public protocol DoryX86RestartableScalarMemory: DoryX86Memory {
   func readRestartableScalar(at address: UInt64, byteCount: Int) throws -> UInt64?
 }
 
+/// Optional path for x86 locked scalar read-modify-write operations. The caller must hold
+/// DoryX86AtomicGate.shared so interpreter and native locked instructions share one
+/// architectural serialization point before entering memory-owned locks. Implementations must
+/// validate the complete write cycle before reading, serialize the compare and destination
+/// write under one memory-owned critical section, and return the observed destination value.
+/// Returning nil declines native execution before touching MMIO or unsupported memory.
+public protocol DoryX86AtomicScalarMemory: DoryX86Memory {
+  func compareExchangeScalar(
+    at address: UInt64,
+    expected: UInt64,
+    desired: UInt64,
+    byteCount: Int
+  ) throws -> UInt64?
+}
+
 /// Optional change token for translated code resident in ordinary RAM. A token is valid only for
 /// the exact address range supplied by the caller. Returning `nil` keeps the conservative byte
 /// comparison path for MMIO, firmware flash, or memory implementations without write tracking.
@@ -210,7 +225,7 @@ extension DoryX86ScalarMemory {
 /// Its checked calloc/free ownership is independent of mmap RAM. Array-returning read/snapshot
 /// APIs still allocate diagnostic copies through Swift; those copies do not promise recoverable
 /// allocation exhaustion. Product paging composes a translator over this exact bounds behavior.
-public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, @unchecked Sendable {
+public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMemory, @unchecked Sendable {
   public let baseAddress: UInt64
   public let byteCount: Int
   private let lock = NSLock()
@@ -328,6 +343,31 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, @unchecked Sendab
       storage[offset + index] = UInt8(truncatingIfNeeded: value >> UInt64(index * 8))
     }
     markCodePagesWritten(offset: offset, byteCount: byteCount)
+  }
+
+  public func compareExchangeScalar(
+    at address: UInt64,
+    expected: UInt64,
+    desired: UInt64,
+    byteCount: Int
+  ) throws -> UInt64? {
+    guard [1, 2, 4, 8].contains(byteCount) else {
+      throw DoryX86ScalarMemoryError.invalidByteCount(byteCount)
+    }
+    lock.lock()
+    defer { lock.unlock() }
+    let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
+    var observed: UInt64 = 0
+    for index in 0..<byteCount {
+      observed |= UInt64(storage[offset + index]) << UInt64(index * 8)
+    }
+    let mask = byteCount == 8 ? UInt64.max : (UInt64(1) << UInt64(byteCount * 8)) - 1
+    let stored = (observed & mask) == (expected & mask) ? desired : observed
+    for index in 0..<byteCount {
+      storage[offset + index] = UInt8(truncatingIfNeeded: stored >> UInt64(index * 8))
+    }
+    markCodePagesWritten(offset: offset, byteCount: byteCount)
+    return observed & mask
   }
 
   public func validateWrite(at address: UInt64, byteCount: Int) throws {

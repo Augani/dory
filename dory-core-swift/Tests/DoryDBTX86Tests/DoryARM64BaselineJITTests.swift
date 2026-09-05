@@ -1375,6 +1375,175 @@ import Testing
     #expect(DoryARM64BaselineEmitter().compile(protected).tier == .interpreterFallback)
   }
 
+  @Test func lockedCompareExchangeMatchesInterpreterAccumulatorAndFlags() throws {
+    #if arch(arm64)
+      struct Case {
+        let bytes: [UInt8]
+        let destination: UInt64
+        let rax: UInt64
+        let rdx: UInt64
+        let expectedRAX: UInt64
+        let expectedDestination: UInt64
+        let expectedZero: Bool
+      }
+      let cases = [
+        Case(
+          bytes: [0xF0, 0x0F, 0xB1, 0x17],
+          destination: 0x1122_3344,
+          rax: 0xCAFE_BABE_1122_3344,
+          rdx: 0x5566_7788,
+          expectedRAX: 0xCAFE_BABE_1122_3344,
+          expectedDestination: 0x5566_7788,
+          expectedZero: true
+        ),
+        Case(
+          bytes: [0xF0, 0x0F, 0xB1, 0x17],
+          destination: 0x8877_6655,
+          rax: 0xCAFE_BABE_1122_3344,
+          rdx: 0x5566_7788,
+          expectedRAX: 0x8877_6655,
+          expectedDestination: 0x8877_6655,
+          expectedZero: false
+        ),
+        Case(
+          bytes: [0xF0, 0x48, 0x0F, 0xB1, 0x17],
+          destination: 0x1122_3344_5566_7788,
+          rax: 0x1122_3344_5566_7788,
+          rdx: 0xAABB_CCDD_EEFF_0011,
+          expectedRAX: 0x1122_3344_5566_7788,
+          expectedDestination: 0xAABB_CCDD_EEFF_0011,
+          expectedZero: true
+        ),
+        Case(
+          bytes: [0xF0, 0x48, 0x0F, 0xB1, 0x17],
+          destination: 0x8877_6655_4433_2211,
+          rax: 0x1122_3344_5566_7788,
+          rdx: 0xAABB_CCDD_EEFF_0011,
+          expectedRAX: 0x8877_6655_4433_2211,
+          expectedDestination: 0x8877_6655_4433_2211,
+          expectedZero: false
+        ),
+      ]
+
+      for testCase in cases {
+        for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+          let byteCount = testCase.bytes.contains(0x48) ? 8 : 4
+          let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+          let nativeMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+          try interpretedMemory.write(at: 0, bytes: testCase.bytes)
+          try nativeMemory.write(at: 0, bytes: testCase.bytes)
+          try interpretedMemory.writeScalar(at: 0x80, value: testCase.destination, byteCount: byteCount)
+          try nativeMemory.writeScalar(at: 0x80, value: testCase.destination, byteCount: byteCount)
+          let initial = try DoryX86ArchitecturalState(
+            registers: .init(rax: testCase.rax, rdx: testCase.rdx, rdi: 0x80),
+            rip: 0,
+            rflags: [.reservedOne, .carry, .sign],
+            cs: .init(selector: 8, attributes: 0xA09B, limit: .max)
+          )
+          var interpreted = initial
+          let decoded = try DoryX86Decoder().decode(testCase.bytes, at: 0, mode: .long64)
+          #expect(DoryX86Interpreter().step(
+            state: &interpreted, memory: interpretedMemory, mode: .long64) == .retired(decoded))
+
+          var native = initial
+          let execution = try #require(
+            DoryARM64BaselineExecutor(
+              maximumCodeBytes: 16 * 1024,
+              optimization: optimization
+            ).execute(
+              bytes: testCase.bytes,
+              at: 0,
+              mode: .long64,
+              addressSpaceID: 0,
+              maximumInstructions: 1,
+              state: &native,
+              memory: nativeMemory
+            )
+          )
+
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(execution.block.requiresMemoryCallbacks)
+          #expect(native == interpreted)
+          #expect(native.registers.rax == testCase.expectedRAX)
+          #expect(native.rflags.contains(.zero) == testCase.expectedZero)
+          #expect(try nativeMemory.readScalar(at: 0x80, byteCount: byteCount) == testCase.expectedDestination)
+          #expect(try nativeMemory.read(at: 0x80, byteCount: byteCount)
+            == interpretedMemory.read(at: 0x80, byteCount: byteCount))
+        }
+      }
+    #endif
+  }
+
+  @Test func lockedCompareExchangeDeclinesBeforeUnsupportedMemoryOrPrivilegeSideEffects() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0xF0, 0x0F, 0xB1, 0x17]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x1111_2222, rdx: 0x3333_4444, rdi: 0x80),
+        rip: 0,
+        rflags: [.reservedOne, .carry, .sign],
+        cs: .init(selector: 8, attributes: 0xA09B, limit: .max)
+      )
+
+      let nonAtomic = try ScalarTrackingMemory(byteCount: 0x100)
+      try nonAtomic.backing.writeScalar(at: 0x80, value: 0x1111_2222, byteCount: 4)
+      var nonAtomicState = initial
+      let nonAtomicExecution = try #require(
+        DoryARM64BaselineExecutor(maximumCodeBytes: 4096).execute(
+          bytes: bytes,
+          at: 0,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &nonAtomicState,
+          memory: nonAtomic
+        )
+      )
+      #expect(nonAtomicExecution.exitCode == .interpreter)
+      #expect(nonAtomicState == initial)
+      #expect(nonAtomic.scalarReads == 0)
+      #expect(nonAtomic.scalarWrites == 0)
+      #expect(try nonAtomic.backing.readScalar(at: 0x80, byteCount: 4) == 0x1111_2222)
+
+      let faulting = try DoryX86ByteArrayMemory(byteCount: 0x40)
+      var faultState = initial
+      let faultExecution = try #require(
+        DoryARM64BaselineExecutor(maximumCodeBytes: 4096).execute(
+          bytes: bytes,
+          at: 0,
+          mode: .long64,
+          addressSpaceID: 1,
+          maximumInstructions: 1,
+          state: &faultState,
+          memory: faulting
+        )
+      )
+      #expect(faultExecution.exitCode == .interpreter)
+      #expect(faultState == initial)
+
+      var userState = try DoryX86ArchitecturalState(
+        registers: initial.registers,
+        rip: initial.rip,
+        rflags: initial.rflags,
+        cs: .init(selector: 3, attributes: 0xA0FB, limit: .max)
+      )
+      let userMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+      try userMemory.writeScalar(at: 0x80, value: 0x1111_2222, byteCount: 4)
+      #expect(try DoryARM64BaselineExecutor(maximumCodeBytes: 4096).execute(
+        bytes: bytes,
+        at: 0,
+        mode: .long64,
+        addressSpaceID: 2,
+        maximumInstructions: 1,
+        state: &userState,
+        memory: userMemory
+      ) == nil)
+      #expect(userState.registers == initial.registers)
+      #expect(userState.rip == initial.rip)
+      #expect(userState.rflags == initial.rflags)
+      #expect(try userMemory.readScalar(at: 0x80, byteCount: 4) == 0x1111_2222)
+    #endif
+  }
+
   @Test func timestampCounterUsesVirtualTSCAndStopsNativeChainAtClockBoundary() throws {
     #if arch(arm64)
       // rdtsc; mov eax,0xdeadbeef. RDTSC is a virtual-clock boundary, so the

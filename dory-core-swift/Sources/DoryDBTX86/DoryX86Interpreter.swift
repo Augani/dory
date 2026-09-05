@@ -8875,11 +8875,19 @@ public struct DoryX86Interpreter: Sendable {
   }
 }
 
-private final class DoryX86AtomicGate: @unchecked Sendable {
+/// Serializes x86 locked read-modify-write instructions across interpreter and native DBT paths.
+/// Callers must acquire this gate before entering memory implementation locks.
+final class DoryX86AtomicGate: @unchecked Sendable {
   static let shared = DoryX86AtomicGate()
   private let lock = NSLock()
 
   private init() {}
+
+  func withLock<Result>(_ operation: () throws -> Result) rethrows -> Result {
+    lock.lock()
+    defer { lock.unlock() }
+    return try operation()
+  }
 
   func withLock<State, Result>(
     state: inout State,

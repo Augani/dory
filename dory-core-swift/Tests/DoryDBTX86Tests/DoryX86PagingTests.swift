@@ -735,6 +735,53 @@ import Testing
     #expect(try memory.read(at: 0x9100, byteCount: 24) == before)
   }
 
+
+  @Test func atomicScalarMemoryPreservesMismatchWriteCycleAndCodeGeneration() throws {
+    let byteArray = try DoryX86ByteArrayMemory(byteCount: 0x2000)
+    let mmap = try DoryX86MmapMemory(byteCount: 0x2000)
+    let memories: [any DoryX86PhysicalRAM & DoryX86AtomicScalarMemory] = [byteArray, mmap]
+    for memory in memories {
+      try memory.writeScalar(at: 0x1000, value: 0x1122_3344, byteCount: 4)
+      let generation = try #require(try memory.codeGeneration(at: 0x1000, byteCount: 4))
+      #expect(try memory.compareExchangeScalar(
+        at: 0x1000, expected: 0x5566_7788, desired: 0xAABB_CCDD, byteCount: 4) == 0x1122_3344)
+      #expect(try memory.readScalar(at: 0x1000, byteCount: 4) == 0x1122_3344)
+      #expect(try memory.codeGeneration(at: 0x1000, byteCount: 4) != generation)
+      #expect(try memory.compareExchangeScalar(
+        at: 0x1000, expected: 0x1122_3344, desired: 0xAABB_CCDD, byteCount: 4) == 0x1122_3344)
+      #expect(try memory.readScalar(at: 0x1000, byteCount: 4) == 0xAABB_CCDD)
+    }
+  }
+
+  @Test func translatedAtomicCompareExchangeRequiresOneWritableLinearPage() throws {
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
+    let linear: UInt64 = 0x0040_0000
+    try installFourLevelMapping(linear: linear, physicalPage: 0x8000, flags: 0x7, memory: memory)
+    try installFourLevelMapping(linear: linear + 0x1000, physicalPage: 0x9000, flags: 0x7, memory: memory)
+    let paging = DoryX86PagingUnit()
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: memory, pagingUnit: paging, context: longModeContext(cpl: 0))
+
+    try memory.writeScalar(at: 0x8100, value: 0x1234_5678, byteCount: 4)
+    #expect(try translated.compareExchangeScalar(
+      at: linear + 0x100, expected: 0x1234_5678, desired: 0x8765_4321, byteCount: 4) == 0x1234_5678)
+    #expect(try memory.readScalar(at: 0x8100, byteCount: 4) == 0x8765_4321)
+
+    #expect(try translated.compareExchangeScalar(
+      at: linear + 0xFFC, expected: 0, desired: 1, byteCount: 8) == nil)
+    #expect(try memory.readScalar(at: 0x8FFC, byteCount: 4) == 0)
+    #expect(try memory.readScalar(at: 0x9000, byteCount: 4) == 0)
+
+    try write64(memory, 0x4000 + ((linear >> 12) & 0x1ff) * 8, 0x8000 | 0x5)
+    paging.invalidate(linearAddress: linear)
+    let fault = DoryX86MemoryError.pageFault(address: linear + 0x100, errorCode: 3)
+    #expect(throws: fault) {
+      try translated.compareExchangeScalar(
+        at: linear + 0x100, expected: 0x8765_4321, desired: 0, byteCount: 4)
+    }
+    #expect(try memory.readScalar(at: 0x8100, byteCount: 4) == 0x8765_4321)
+  }
+
   private func longModeContext(cpl: UInt8) -> DoryX86PagingContext {
     .init(control: longModeControl(), rflags: .reset, currentPrivilegeLevel: cpl, mode: .long64)
   }

@@ -203,7 +203,8 @@ public struct DoryX86DifferentialHarness: Sendable {
 /// Captures precise callback errors before the native runtime reduces them to a fallback exit.
 /// This wrapper never turns an ordinary or device read into a restartability proof.
 private final class DoryX86DifferentialAccess:
-  DoryX86ScalarMemory, DoryX86RestartableScalarMemory, @unchecked Sendable
+  DoryX86ScalarMemory, DoryX86RestartableScalarMemory, DoryX86AtomicScalarMemory,
+  @unchecked Sendable
 {
   let memory: any DoryX86Memory
   private let lock = NSLock()
@@ -274,6 +275,18 @@ private final class DoryX86DifferentialAccess:
     try record {
       try (memory as? any DoryX86RestartableScalarMemory)?.readRestartableScalar(
         at: address, byteCount: byteCount)
+    }
+  }
+
+  func compareExchangeScalar(
+    at address: UInt64,
+    expected: UInt64,
+    desired: UInt64,
+    byteCount: Int
+  ) throws -> UInt64? {
+    try record {
+      try (memory as? any DoryX86AtomicScalarMemory)?.compareExchangeScalar(
+        at: address, expected: expected, desired: desired, byteCount: byteCount)
     }
   }
 
