@@ -3512,6 +3512,44 @@ import Testing
     #endif
   }
 
+  @Test func reverseBitScan64MatchesInterpreterForEveryBitAndAliasedRegisters() throws {
+    #if arch(arm64)
+      let values = [UInt64(0), UInt64.max] + (0..<64).map { UInt64(1) << $0 }
+      let flags: DoryX86RFLAGS = [.reservedOne, .zero, .carry, .parity, .auxiliaryCarry,
+        .sign, .overflow, .direction, .interruptEnable]
+      let encodings: [[UInt8]] = [
+        [0x48, 0x0F, 0xBD, 0xC8], // bsr rcx,rax
+        [0x48, 0x0F, 0xBD, 0xC0], // bsr rax,rax
+        [0x49, 0x0F, 0xBD, 0xDC], // bsr rbx,r12: measured kernel instruction
+      ]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024, optimization: optimization)
+        for bytes in encodings {
+          for value in values {
+            let initial = try DoryX86ArchitecturalState(
+              registers: .init(rax: value, rcx: 0xFFFF_1234_5678_0000,
+                rbx: 0xABCD_EF00_1234_5678, r12: value),
+              rip: 0, rflags: flags)
+            var interpreted = initial
+            guard case .retired = DoryX86Interpreter().step(
+              state: &interpreted, memory: try DoryX86ByteArrayMemory(bytes: bytes), mode: .long64)
+            else {
+              Issue.record("BSR64 reference execution did not retire")
+              continue
+            }
+            var translated = initial
+            let execution = try #require(executor.execute(
+              bytes: bytes, at: 0, mode: .long64, addressSpaceID: 0,
+              maximumInstructions: 1, state: &translated))
+            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(translated == interpreted)
+          }
+        }
+      }
+    #endif
+  }
+
   @Test func nativeTranslationSpansMeasuredKernelReverseBitScanSlice() throws {
     let bytes: [UInt8] = [
       0x8B, 0x7E, 0x04,  // mov edi,[rsi+4]
@@ -3547,11 +3585,10 @@ import Testing
     }
   }
 
-  @Test func reverseBitScanCoverageExcludesOtherWidthsDirectionsAndMemory() throws {
+  @Test func reverseBitScanCoverageExcludes16BitForwardAndMemoryForms() throws {
     let excluded: [[UInt8]] = [
       [0x0F, 0xBC, 0xC8],  // bsf ecx,eax
       [0x66, 0x0F, 0xBD, 0xC8],  // bsr cx,ax
-      [0x48, 0x0F, 0xBD, 0xC8],  // bsr rcx,rax
       [0x0F, 0xBD, 0x08],  // bsr ecx,[rax]
     ]
     for bytes in excluded {

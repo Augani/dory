@@ -1,0 +1,12 @@
+{
+  "scope": "Extend existing native register BSR to 64 bits, including measured kernel BSR RBX,R12 (490fbddc). Preserve destination for zero input and match interpreter flags; 16-bit, forward and memory forms remain fallback.",
+  "validation": "109 baseline JIT tests pass. Both tiers compare full state with interpreter for every set-bit position, zero, all ones, same-register aliasing and an extended source register. Existing 32-bit width/zero behavior remains covered.",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "089485812197ccd587dd5c6e35c85bbf40b54980dca7a4ab036abc9b71ec1eea",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "5e94ed487f6ef8364647322c1285b89f58049a4887fd3843333a0408f4627211",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "3d37ed4a0a93441ef53cc55d5da386711498abec7f08a0a63288be631e3f17b1"
+  },
+  "log": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/native-bsr64.log",
+  "logSHA256": "5c1c0f96bc0717a4dc19b4de24811a9be9d80e9f2ac36883a8aa34d58e4fbf7c",
+  "limitation": "Exact changed sources in isolated qualification checkout; no production boot or speedup claim."
+}

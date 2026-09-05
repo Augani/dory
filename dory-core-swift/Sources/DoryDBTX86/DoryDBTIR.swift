@@ -707,8 +707,8 @@ public struct DoryX86IRTranslator: Sendable {
       }
     case .bitScan(let reverse, let destination, let source):
       guard reverse,
-        case .register(let target) = destination, target.width == .i32,
-        case .register(let origin) = source, origin.width == .i32
+        case .register(let target) = destination,
+        case .register(let origin) = source, origin.width == target.width
       else { return false }
       return isJITGeneralRegister(target) && isJITGeneralRegister(origin)
     case .byteSwap(let operand):

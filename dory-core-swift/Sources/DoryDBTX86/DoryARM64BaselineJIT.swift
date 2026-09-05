@@ -450,16 +450,20 @@ public struct DoryARM64BaselineEmitter: Sendable {
     guard reverse,
       case .register(let target) = destination,
       case .register(let origin) = source,
-      target.bank == "x86.gpr", target.index < 16, target.width == .i32,
-      origin.bank == "x86.gpr", origin.index < 16, origin.width == .i32
+      target.bank == "x86.gpr", target.index < 16,
+      target.width == .i32 || target.width == .i64,
+      origin.bank == "x86.gpr", origin.index < 16, origin.width == target.width
     else { return false }
 
-    words.append(encodeLoad32(register: 9, base: 0, byteOffset: Int(origin.index) * 8))
+    let is64Bit = target.width == .i64
+    words.append(is64Bit
+      ? encodeLoad64(register: 9, base: 0, byteOffset: Int(origin.index) * 8)
+      : encodeLoad32(register: 9, base: 0, byteOffset: Int(origin.index) * 8))
     words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(target.index) * 8))
-    words.append(encodeCountLeadingZeros32(source: 9, destination: 11))
-    emitImmediate(31, register: 12, into: &words)
-    words.append(encodeLogical(.xor, is64Bit: false, 12, 11, 11))
-    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 9, 31, 31))
+    words.append(encodeCountLeadingZeros(is64Bit: is64Bit, source: 9, destination: 11))
+    emitImmediate(is64Bit ? 63 : 31, register: 12, into: &words)
+    words.append(encodeLogical(.xor, is64Bit: is64Bit, 12, 11, 11))
+    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 9, 31, 31))
     words.append(
       encodeConditionalSelect(
         destination: 11,
@@ -2360,8 +2364,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     0x9B20_7C00 | right << 16 | left << 5 | destination
   }
 
-  private func encodeCountLeadingZeros32(source: UInt32, destination: UInt32) -> UInt32 {
-    0x5AC0_1000 | source << 5 | destination
+  private func encodeCountLeadingZeros(is64Bit: Bool, source: UInt32, destination: UInt32) -> UInt32 {
+    (is64Bit ? 0xDAC0_1000 : 0x5AC0_1000) | source << 5 | destination
   }
 
   private func encodeReverseBytes(
