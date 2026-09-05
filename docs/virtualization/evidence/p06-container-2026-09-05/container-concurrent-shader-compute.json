@@ -60,5 +60,14 @@
     "Explicit render-node device mapping; normal --gpus all is not qualified here.",
     "Overlapping container lifetimes and successful workloads do not prove simultaneous hardware execution.",
     "Brief smoke only, not sustained resource isolation, worker crash recovery or reset qualification."
-  ]
+  ],
+  "unrequestedGPUControl": {
+    "probeEvidence": "container-shader-compute.json",
+    "sameImageAndProbe": true,
+    "devices": [],
+    "deviceRequests": null,
+    "exitCode": 2,
+    "output": "vkEnumeratePhysicalDevices/count: -3",
+    "interpretation": "The same probe cannot enumerate a Vulkan device in a container without explicit GPU device mapping. This is one admission-isolation control, not a full device-escape audit."
+  }
 }
