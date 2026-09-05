@@ -40,5 +40,21 @@
       "path": "/private/tmp/dory-amd64-static-go-fex-diag.1788591564/static-go-arm64-native-runs.log",
       "sha256": "10bc202f2a359e8e11bcd2890cac26ef52935284e37bd7c3c0fd81d12edfc3c5"
     }
-  ]
+  ],
+  "signalRestoreAB": {
+    "sourceCommit": "1cc4b93e7a71c883ec021b71359f136394dc1f3c",
+    "omittedPatch": "patches/fex-restore-complete-signal-context.patch",
+    "retainedPatches": [
+      "patches/fex-container-fd-isolation.patch",
+      "patches/fex-processor-id-stack-fix.patch"
+    ],
+    "defaultPreemptionResults": {
+      "hello": 0,
+      "chanalloc": 0
+    },
+    "interpretation": "Removing the unconditional dispatcher-resume patch makes the minimal programs pass. A replacement must preserve actual signal-context edits, including the original RSP-only regression; simply deleting it is not accepted as final fix.",
+    "review": "Coordinator inspected retained A/B log, not independently repeated build/runtime.",
+    "log": "/private/tmp/dory-fex-static-go-diagnosis.1788591700/fex-no-restore-complete-runtime-1788597719/summary.log",
+    "sha256": "42bcee0f231e04e13144504ad86cfaf2805de2cf75c55a65c1d57f395c7c37c2"
+  }
 }
