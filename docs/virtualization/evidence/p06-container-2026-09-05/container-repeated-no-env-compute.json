@@ -1,0 +1,42 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "scope": "60-second sequential Vulkan device creation, shader dispatch, full output verification and teardown in one supported ARM64 container",
+  "image_sha256": "29f42fafc95e569207ec1f0056501327a4c313ca9bcc6e1c401e3e3543046e30",
+  "gpu_request": "--gpus all",
+  "environment_unset": [
+    "VK_DRIVER_FILES",
+    "VK_ICD_FILENAMES",
+    "LD_LIBRARY_PATH"
+  ],
+  "driver": "venus",
+  "device": "Virtio-GPU Venus (Apple M2 Pro)",
+  "completed_dispatches": 2345,
+  "elements_per_dispatch": 65536,
+  "verified_outputs": 153681920,
+  "mismatches": 0,
+  "elapsed_guest_wall_seconds": 60,
+  "container_exit_code": 0,
+  "oom_killed": false,
+  "container_started_at": "2026-09-05T03:55:04.035689802Z",
+  "container_finished_at": "2026-09-05T03:56:04.010525122Z",
+  "device_requests_after_rewrite": null,
+  "device_mapping": {
+    "host": "/dev/dri/renderD128",
+    "container": "/dev/dri/renderD128",
+    "permissions": "rw"
+  },
+  "probe_sha256": {
+    "compute": "b83daaf97ee07e2431d2da89d84576fbf8fc4ed9d1b1e751a047e6fc47da86de",
+    "compute.c": "b3306e657e8d9d5084374096352c5e2a69ba3ef981e40dd23c04a88f71039c60",
+    "compute.comp": "bfd810d9698fb8cbb67492421ff985af2026cae81814f42ce7eb638ed812f9de",
+    "compute.spv": "254d3eb162d7f01e7be5bc638ab4d1e92bd60916ab6fffed198416efa76c6bd2"
+  },
+  "local_log_sha256": "1bc573db80483977aeebce206aa0ec707aa1407865d790432107bd371ff45e9f",
+  "limitations": [
+    "Small sequential workload, not a sustained thermal or broad performance qualification.",
+    "No renderer fault injected during active dispatch.",
+    "No measurement of GPU memory reclamation or leaks; successful teardown calls do not prove full resource reclamation.",
+    "User Mac VM and build engine remained active; this was not a controlled benchmark."
+  ]
+}

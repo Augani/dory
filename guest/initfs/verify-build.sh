@@ -89,6 +89,7 @@ if [ "$ARCH" = arm64 ]; then
     /opt/dory/mesa/libexec/dory-vulkan-compositor-probe \
     /opt/dory/mesa/libexec/dory-vulkan-probe \
     /opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json \
+    /etc/vulkan/icd.d/dory-virtio_icd.aarch64.json \
     /opt/dory/mesa/share/dory/runtime.env \
     /opt/dory/mesa/share/dory/build-packages.txt \
     /usr/lib/dory/fex/licenses/FEX-Emu.copyright \
@@ -150,10 +151,11 @@ VENUS_MANIFEST_DUMP=""
 PC_MESA_EXTRACT=""
 PC_MESA_DUMP=""
 PC_MESA_REFERENCE=""
+CONTAINER_VENUS_ICD_DUMP=""
 cleanup() {
   rm -f "$AGENT_DUMP" "$FEX_DUMP" "$FEX_SERVER_DUMP" "$FEX_BUILD_PACKAGES_DUMP" \
     "$DORY_RUNC_DUMP" "$RUNC_REAL_DUMP" "$GPU_RUNTIME_DUMP" "$VENUS_ICD_DUMP" \
-    "$VENUS_MANIFEST_DUMP"
+    "$CONTAINER_VENUS_ICD_DUMP" "$VENUS_MANIFEST_DUMP"
   [ -z "$PC_MESA_EXTRACT" ] || rm -rf "$PC_MESA_EXTRACT"
   [ -z "$PC_MESA_DUMP" ] || rm -rf "$PC_MESA_DUMP"
   [ -z "$PC_MESA_REFERENCE" ] || rm -rf "$PC_MESA_REFERENCE"
@@ -171,10 +173,13 @@ if [ "$ARCH" = arm64 ]; then
   GPU_RUNTIME_DUMP="$(mktemp /tmp/dory-engine-gpu-runtime-verify.XXXXXX)"
   VENUS_ICD_DUMP="$(mktemp /tmp/dory-engine-venus-icd-verify.XXXXXX)"
   VENUS_MANIFEST_DUMP="$(mktemp /tmp/dory-engine-venus-manifest-verify.XXXXXX)"
+  CONTAINER_VENUS_ICD_DUMP="$(mktemp /tmp/dory-container-venus-icd-verify.XXXXXX)"
   "$DEBUGFS" -R "dump /usr/lib/dory/engine-gpu-runtime.env $GPU_RUNTIME_DUMP" \
     "$IMAGE" >/dev/null 2>&1 || fail "could not extract the engine GPU runtime receipt"
   "$DEBUGFS" -R "dump /opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json $VENUS_ICD_DUMP" \
     "$IMAGE" >/dev/null 2>&1 || fail "could not extract the Venus ICD manifest"
+  "$DEBUGFS" -R "dump /etc/vulkan/icd.d/dory-virtio_icd.aarch64.json $CONTAINER_VENUS_ICD_DUMP" \
+    "$IMAGE" >/dev/null 2>&1 || fail "could not extract the container Venus ICD manifest"
   "$DEBUGFS" -R "dump /opt/dory/mesa/share/dory/runtime.env $VENUS_MANIFEST_DUMP" \
     "$IMAGE" >/dev/null 2>&1 || fail "could not extract the Venus runtime manifest"
   grep -Fqx 'schema=1' "$GPU_RUNTIME_DUMP" \
@@ -194,6 +199,8 @@ PY
     "$GPU_RUNTIME_DUMP" || fail "$IMAGE does not bind the Mesa runtime digest contract"
   grep -Fqx 'mesa_icd=/opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json' \
     "$GPU_RUNTIME_DUMP" || fail "$IMAGE does not bind the engine Venus ICD path"
+  grep -Fqx 'container_vulkan_icd=/etc/vulkan/icd.d/dory-virtio_icd.aarch64.json' \
+    "$GPU_RUNTIME_DUMP" || fail "$IMAGE does not bind the container Vulkan ICD path"
   grep -Fqx 'vulkaninfo_package=debian_vulkan_tools_arm64' "$GPU_RUNTIME_DUMP" \
     || fail "$IMAGE does not record the pinned vulkaninfo package"
   grep -Fqx 'vulkan_loader_package=debian_libvulkan1_arm64' "$GPU_RUNTIME_DUMP" \
@@ -204,6 +211,25 @@ PY
     || fail "$IMAGE does not record the pinned GPU userland snapshot"
   grep -Fq '"library_path": "../../../lib/libvulkan_virtio.so"' "$VENUS_ICD_DUMP" \
     || fail "$IMAGE Venus ICD is not relocatable within its Dory pack"
+  python3 - "$VENUS_ICD_DUMP" "$CONTAINER_VENUS_ICD_DUMP" <<'PY' \
+    || fail "$IMAGE container Venus ICD does not activate the tuple-bound Dory ICD"
+import json
+import pathlib
+import sys
+
+pack = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+container = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+expected = {
+    "file_format_version": pack.get("file_format_version", "1.0.1"),
+    "ICD": {
+        "api_version": pack["ICD"]["api_version"],
+        "library_arch": pack["ICD"].get("library_arch", "64"),
+        "library_path": "/opt/dory/mesa/lib/libvulkan_virtio.so",
+    },
+}
+if container != expected:
+    raise SystemExit(1)
+PY
   for manifest_line in \
     schema=6 \
     architecture=aarch64 \

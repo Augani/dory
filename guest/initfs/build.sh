@@ -329,6 +329,33 @@ PY
     exit 1
   }
   "$ROOT/guest/desktop/install-graphics-pack.sh" "$runtime" "$dest" "$(id -u)"
+
+  install -d -m0755 "$dest/etc/vulkan/icd.d"
+  python3 - \
+    "$dest/opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json" \
+    "$dest/etc/vulkan/icd.d/dory-virtio_icd.aarch64.json" <<'PY'
+import json
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1])
+target = pathlib.Path(sys.argv[2])
+manifest = json.loads(source.read_text(encoding="utf-8"))
+icd = manifest.get("ICD", {})
+if icd.get("library_path") != "../../../lib/libvulkan_virtio.so":
+    raise SystemExit("Dory Venus ICD pack manifest is not relocatable")
+activated = {
+    "ICD": {
+        "api_version": icd["api_version"],
+        "library_arch": icd.get("library_arch", "64"),
+        "library_path": "/opt/dory/mesa/lib/libvulkan_virtio.so",
+    },
+    "file_format_version": manifest.get("file_format_version", "1.0.1"),
+}
+target.write_text(json.dumps(activated, indent=4, sort_keys=True) + "\n", encoding="utf-8")
+PY
+  chmod 0644 "$dest/etc/vulkan/icd.d/dory-virtio_icd.aarch64.json"
+
   install -d -m0755 "$dest/usr/lib/dory"
   receipt="$dest/usr/lib/dory/engine-gpu-runtime.env"
   {
@@ -336,6 +363,7 @@ PY
     printf 'mesa_runtime_sha256=%s\n' "$actual_runtime"
     printf 'mesa_runtime_contract=%s\n' "DoryRendererArtifactManifest.guestMesa"
     printf 'mesa_icd=%s\n' "/opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json"
+    printf 'container_vulkan_icd=%s\n' "/etc/vulkan/icd.d/dory-virtio_icd.aarch64.json"
     printf 'vulkaninfo_package=%s\n' "debian_vulkan_tools_arm64"
     printf 'vulkan_loader_package=%s\n' "debian_libvulkan1_arm64"
     printf 'debian_suite=%s\n' "bookworm"

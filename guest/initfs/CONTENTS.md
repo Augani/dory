@@ -16,7 +16,9 @@ The builder is intentionally reproducible from pinned public inputs in `guest/in
 - Dory's production Mesa Venus runtime archive, verified against `Config/DoryRendererProductionTuple.json`,
   plus Debian Bookworm snapshot `vulkan-tools`/`libvulkan1`/glibc runtime packages on `arm64`.
   This supplies real `vulkaninfo` without installing distro Mesa drivers; boot forces the loader to
-  enumerate only `/opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json`.
+  enumerate only `/opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json`, while
+  Dory-supported container images discover the same candidate ICD through
+  `/etc/vulkan/icd.d/dory-virtio_icd.aarch64.json`.
 - Dory's guest agent from `guest/out/dory-agent-<arch>`
 
 Runtime contents added by Dory:
@@ -37,9 +39,12 @@ Runtime contents added by Dory:
   every translated process in one container shares its private FEXServer socket there, including
     package-manager sandbox users with no writable home directory.
 - `/opt/dory/mesa`: the tuple-bound Venus ICD, Dory Vulkan probes, and manifest installed by the
-  reusable graphics-pack installer. `/usr/bin/vulkaninfo`, `/usr/lib/aarch64-linux-gnu/libvulkan.so.1`,
-  and Debian's AArch64 glibc loader are pinned from a coherent Bookworm snapshot closure so the
-  engine can prove a real Venus Vulkan 1.3 device before starting Docker.
+  reusable graphics-pack installer. `/etc/vulkan/icd.d/dory-virtio_icd.aarch64.json` activates that
+  exact ICD for containers derived from the Dory GPU image without requiring probe-specific
+  `VK_DRIVER_FILES`, `VK_ICD_FILENAMES`, or `LD_LIBRARY_PATH` settings. `/usr/bin/vulkaninfo`,
+  `/usr/lib/aarch64-linux-gnu/libvulkan.so.1`, and Debian's AArch64 glibc loader are pinned from a
+  coherent Bookworm snapshot closure so the engine can prove a real Venus Vulkan 1.3 device before
+  starting Docker.
 - `/etc/resolv.conf` and `/etc/hostname`.
 - `iptables`/`ip6tables`, loop-device and ext4 tools, and cgroup-v2 support used by Dory's
   dedicated sandbox VMs for uid-scoped egress policy and bounded scratch storage. Sandbox workload
