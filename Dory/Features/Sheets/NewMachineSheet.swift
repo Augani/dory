@@ -55,7 +55,6 @@ struct NewMachineSheet: View {
         case linuxARM64
         case linuxX86_64
         case macOSARM64
-        case macOSX86_64
 
         var id: String { rawValue }
         var title: String {
@@ -63,23 +62,21 @@ struct NewMachineSheet: View {
             case .linuxARM64: "Linux"
             case .linuxX86_64: "Linux"
             case .macOSARM64: "macOS"
-            case .macOSX86_64: "macOS"
             }
         }
         var architecture: String {
             switch self {
             case .linuxARM64, .macOSARM64: "ARM64"
-            case .linuxX86_64, .macOSX86_64: "x86_64"
+            case .linuxX86_64: "x86_64"
             }
         }
         var systemImage: String {
             switch self {
             case .linuxARM64, .linuxX86_64: "shippingbox"
-            case .macOSARM64, .macOSX86_64: "macpro.gen3"
+            case .macOSARM64: "macpro.gen3"
             }
         }
-        var isMacOS: Bool { self == .macOSARM64 || self == .macOSX86_64 }
-        var isAvailable: Bool { self != .macOSX86_64 }
+        var isMacOS: Bool { self == .macOSARM64 }
     }
 
     enum Stage: Hashable { case useCase, form }
@@ -338,7 +335,6 @@ struct NewMachineSheet: View {
             ) {
                 ForEach(GuestPlatform.allCases) { platform in
                     Button {
-                        guard platform.isAvailable else { return }
                         guestPlatform = platform
                         installerISOPath = ""
                         installerISOCheck = .none
@@ -353,13 +349,11 @@ struct NewMachineSheet: View {
                         HStack(spacing: 9) {
                             Image(systemName: platform.systemImage)
                                 .font(.system(size: 14, weight: .semibold))
-                                .foregroundStyle(platform.isAvailable ? p.accent : p.text3)
+                                .foregroundStyle(p.accent)
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(platform.title)
                                     .font(.system(size: 12.5, weight: .semibold))
-                                Text(platform.isAvailable
-                                     ? platform.architecture
-                                     : "Legacy x86_64 · not yet available")
+                                Text(platform.architecture)
                                     .font(.system(size: 10.5))
                                     .foregroundStyle(p.text3)
                             }
@@ -369,7 +363,7 @@ struct NewMachineSheet: View {
                                     .foregroundStyle(p.accent)
                             }
                         }
-                        .foregroundStyle(platform.isAvailable ? p.text : p.text3)
+                        .foregroundStyle(p.text)
                         .padding(10)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(p.bgElevated, in: RoundedRectangle(cornerRadius: 9))
@@ -379,12 +373,9 @@ struct NewMachineSheet: View {
                         ))
                     }
                     .buttonStyle(.plain)
-                    .disabled(!platform.isAvailable)
                     .accessibilityIdentifier("guest-platform-\(platform.rawValue)")
                     .accessibilityLabel("\(platform.title) \(platform.architecture)")
-                    .accessibilityHint(platform.isAvailable
-                        ? "Select this guest platform"
-                        : "Legacy Intel macOS support is not yet available")
+                    .accessibilityHint("Select this guest platform")
                 }
             }
         }
@@ -1180,7 +1171,6 @@ struct NewMachineSheet: View {
         switch guestPlatform {
         case .linuxX86_64: .amd64
         case .linuxARM64, .macOSARM64: .arm64
-        case .macOSX86_64: .amd64
         }
     }
 
