@@ -30,5 +30,26 @@
     "Reach userspace with standard interrupt routing.",
     "Diagnose timer/IRQ progress and boot throughput.",
     "Run actual GLX workload before enabling PC GPU admission."
-  ]
+  ],
+  "post_elcr": {
+    "source_commit": "e19d3fca4",
+    "raw_result_sha256": "2322c78b6dd2a31e622666da7463f8b6ec5b32e04fa91eaa903af62b8a17bd83",
+    "runner_sha256": "18746b3aac1b006b411b853df4d50163649071aa502ba316361d584b690706c3",
+    "stop": "instructionBudget(1200000000)",
+    "completed_instructions": 1200000000,
+    "serial_marker_matched": false,
+    "terminal_rip": "0xffffffffb2b51938",
+    "terminal_bytes": "534889fb0f8550020000e8192b000048",
+    "symbolization": {
+      "method": "Unique match of all16 recorded instruction bytes in exact kernel ELF PT_LOAD segments.",
+      "kaslr_slide": "0x31a00000",
+      "unslid_rip": "0xffffffff81151938",
+      "symbol": "timekeeping_update",
+      "stack_code_symbols": [
+        "timekeeping_advance",
+        "perf_event_task_tick"
+      ]
+    },
+    "scope": "ELCR/PIC correction has not established full boot. Terminal timing code alone does not prove a timer stall or interrupt storm."
+  }
 }
