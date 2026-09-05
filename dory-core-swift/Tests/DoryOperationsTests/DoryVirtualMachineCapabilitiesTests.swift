@@ -1224,6 +1224,20 @@ struct VirtualMachineCapabilitiesTests {
             mediaArtifactSHA256: Self.guestArtifactSHA256,
             devices: DoryVirtualMachineDeviceCapabilityRequest(cameraInput: true)
         )
+        let unsupportedNativeMacCamera = evaluate(
+            family: .macOS,
+            media: .macOSRestoreImage,
+            source: .vendorDownload,
+            backend: .appleVirtualizationFramework,
+            graphics: .software,
+            devices: DoryVirtualMachineDeviceCapabilityRequest(
+                display: DoryVirtualMachineDisplayCapabilityRequest(
+                    widthPixels: 1_920,
+                    heightPixels: 1_080
+                ),
+                cameraInput: true
+            )
+        )
         let directionalClipboard = DoryVirtualMachineDeviceCapabilityRequest(
             clipboard: true,
             clipboardPolicy: .legacyDesktop(.hostToGuest)
@@ -1280,6 +1294,7 @@ struct VirtualMachineCapabilitiesTests {
         #expect(outputOnlyAudio.resolvedDevices?.audioOutput == true)
         #expect(outputOnlyAudio.resolvedDevices?.audioInput == false)
         #expect(unsupportedHeadlessCamera.availability.reason?.code == .cameraInputUnsupported)
+        #expect(unsupportedNativeMacCamera.availability.reason?.code == .cameraInputUnsupported)
         #expect(qualifiedDirectionalClipboard.availability.isUsable)
         #expect(qualifiedDirectionalClipboard.resolvedDevices == directionalClipboard)
         #expect(mismatchedClipboard.availability.reason?.code == .clipboardPolicyInvalid)

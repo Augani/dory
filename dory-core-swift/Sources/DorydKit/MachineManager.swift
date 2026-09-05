@@ -15242,6 +15242,11 @@ public final class MachineManager: @unchecked Sendable {
                 "native macOS VZMac launch has no resolved shared-directory authority"
             )
         }
+        if devices.cameraInput {
+            throw MachineManagerError.persistence(
+                "native macOS VZMac launch has no supported host-camera bridge authority"
+            )
+        }
         if devices.clipboard {
             guard devices.clipboardPolicy == nil
                     || devices.clipboardPolicy == .legacyDesktop(.bidirectional) else {
@@ -15260,6 +15265,7 @@ public final class MachineManager: @unchecked Sendable {
             "--audio-output", String(devices.audioOutput),
             "--clipboard", String(devices.clipboard),
             "--directory-sharing", String(devices.directorySharing),
+            "--camera", String(devices.cameraInput),
         ])
     }
 

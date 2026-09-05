@@ -121,6 +121,7 @@ public enum DoryVZMacDesktopArgumentError: Error, Sendable, Equatable, CustomStr
     case invalidOperationID
     case invalidNetworkPolicy(String)
     case invalidBoolean(String, String)
+    case managedCameraUnsupported
 
     public var description: String {
         switch self {
@@ -144,6 +145,8 @@ public enum DoryVZMacDesktopArgumentError: Error, Sendable, Equatable, CustomStr
             "unsupported VZMac network policy: \(value)"
         case .invalidBoolean(let flag, let value):
             "\(flag) must be true or false, not \(value)"
+        case .managedCameraUnsupported:
+            "managed VZMac launch cannot enable the unsupported host-camera bridge"
         }
     }
 }
@@ -175,7 +178,7 @@ public func parseDoryVZMacDesktopArguments(
             "--machine", "--ipsw", "--guest-tools", "--usb-disk", "--machine-id",
             "--operation-id", "--state-dir", "--control-sock", "--handoff-sock",
             "--restore-state", "--network", "--audio-input", "--audio-output", "--clipboard",
-            "--directory-sharing",
+            "--directory-sharing", "--camera",
             DoryRuntimeReconnectContract.fileDescriptorArgument,
         ].contains(flag) else {
             throw DoryVZMacDesktopArgumentError.unknownArgument(flag)
@@ -227,6 +230,22 @@ public func parseDoryVZMacDesktopArguments(
     } else {
         networkPolicy = .sharedNAT
     }
+    let managedLifecycleFlagPresent = [
+        "--machine-id",
+        "--operation-id",
+        "--state-dir",
+        "--control-sock",
+        "--handoff-sock",
+        DoryRuntimeReconnectContract.fileDescriptorArgument,
+    ].contains { values[$0] != nil }
+    let cameraBridgeEnabled = try parseOptionalBoolean(
+        values["--camera"],
+        flag: "--camera",
+        defaultValue: managedLifecycleFlagPresent ? false : true
+    )
+    if managedLifecycleFlagPresent, cameraBridgeEnabled {
+        throw DoryVZMacDesktopArgumentError.managedCameraUnsupported
+    }
     let devicePolicy = DoryVZMacDevicePolicy(
         network: networkPolicy,
         audio: DoryVZMacAudioPolicy(
@@ -250,7 +269,8 @@ public func parseDoryVZMacDesktopArguments(
             values["--directory-sharing"],
             flag: "--directory-sharing",
             defaultValue: true
-        )
+        ),
+        cameraBridgeEnabled: cameraBridgeEnabled
     )
     let machineID = values["--machine-id"]
     if let machineID,

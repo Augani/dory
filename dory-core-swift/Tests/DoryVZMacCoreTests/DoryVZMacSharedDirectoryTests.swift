@@ -90,7 +90,8 @@ final class DoryVZMacSharedDirectoryTests: XCTestCase {
             network: .disconnected,
             audio: DoryVZMacAudioPolicy(inputEnabled: false, outputEnabled: false),
             clipboardEnabled: false,
-            directorySharingEnabled: false
+            directorySharingEnabled: false,
+            cameraBridgeEnabled: false
         )
 
         try DoryVZMacConfigurationBuilder.applyDevicePolicy(
@@ -134,17 +135,35 @@ final class DoryVZMacSharedDirectoryTests: XCTestCase {
             network: .disconnected,
             audio: DoryVZMacAudioPolicy(inputEnabled: false, outputEnabled: false),
             clipboardEnabled: false,
-            directorySharingEnabled: false
+            directorySharingEnabled: false,
+            cameraBridgeEnabled: false
         )
 
         XCTAssertNotEqual(
             try DoryVZMacConfigurationBuilder.fingerprint(),
             try DoryVZMacConfigurationBuilder.fingerprint(devicePolicy: disabled)
         )
-        XCTAssertEqual(
-            try DoryVZMacConfigurationBuilder.fingerprint(devicePolicy: disabled),
-            try DoryVZMacConfigurationBuilder.fingerprint(devicePolicy: disabled)
+        XCTAssertNotEqual(
+            try DoryVZMacConfigurationBuilder.fingerprint(),
+            try DoryVZMacConfigurationBuilder.fingerprint(
+                devicePolicy: DoryVZMacDevicePolicy(cameraBridgeEnabled: false)
+            )
         )
+    }
+
+    func testDevicePolicyDecodesLegacyCameraBridgeAsEnabled() throws {
+        let data = Data(#"""
+        {
+          "network": "shared-nat",
+          "audio": { "inputEnabled": true, "outputEnabled": true },
+          "clipboardEnabled": true,
+          "directorySharingEnabled": true
+        }
+        """#.utf8)
+
+        let decoded = try JSONDecoder().decode(DoryVZMacDevicePolicy.self, from: data)
+
+        XCTAssertTrue(decoded.cameraBridgeEnabled)
     }
 
     private func makeTemporaryDirectory() throws -> URL {

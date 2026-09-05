@@ -52,12 +52,13 @@ struct MachineManagerResolvedPlanIntegrationTests {
             to: &arguments
         )
 
-        #expect(arguments.suffix(10) == [
+        #expect(arguments.suffix(12) == [
             "--network", "disconnected",
             "--audio-input", "false",
             "--audio-output", "true",
             "--clipboard", "false",
             "--directory-sharing", "false",
+            "--camera", "false",
         ])
     }
 
@@ -99,6 +100,17 @@ struct MachineManagerResolvedPlanIntegrationTests {
             try MachineManager.appendVZMacResolvedDevicePolicyArguments(
                 from: devices,
                 to: &shareArguments
+            )
+        }
+
+        var cameraArguments: [String] = []
+        #expect(throws: MachineManagerError.self) {
+            let devices = DoryVirtualMachineDeviceCapabilityRequest(
+                cameraInput: true
+            )
+            try MachineManager.appendVZMacResolvedDevicePolicyArguments(
+                from: devices,
+                to: &cameraArguments
             )
         }
     }

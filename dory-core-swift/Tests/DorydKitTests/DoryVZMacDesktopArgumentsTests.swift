@@ -18,6 +18,7 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
             "--audio-output", "true",
             "--clipboard", "false",
             "--directory-sharing", "true",
+            "--camera", "false",
         ])
 
         XCTAssertEqual(arguments.operation, .install)
@@ -31,6 +32,7 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
         XCTAssertTrue(arguments.devicePolicy.audio.outputEnabled)
         XCTAssertFalse(arguments.devicePolicy.clipboardEnabled)
         XCTAssertTrue(arguments.devicePolicy.directorySharingEnabled)
+        XCTAssertFalse(arguments.devicePolicy.cameraBridgeEnabled)
     }
 
     func testParsesRunWithoutRestoreImage() throws {
@@ -91,6 +93,24 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
         XCTAssertEqual(arguments.controlSocketPath, "/tmp/runtime/c.sock")
         XCTAssertEqual(arguments.handoffSocketPath, "/tmp/runtime/h.sock")
         XCTAssertEqual(arguments.reconnectIdentity, identity)
+        XCTAssertFalse(arguments.devicePolicy.cameraBridgeEnabled)
+
+        XCTAssertThrowsError(try parseDoryVZMacDesktopArguments([
+            "run",
+            "--machine", "/tmp/test.dorymac",
+            "--machine-id", "mac-work",
+            "--operation-id", "d1ec76d2-a4a0-42dc-a725-643167a06f52",
+            "--state-dir", "/tmp/machines/mac-work",
+            "--control-sock", "/tmp/runtime/c.sock",
+            "--handoff-sock", "/tmp/runtime/h.sock",
+            "--runtime-reconnect-fd", String(target),
+            "--camera", "true",
+        ])) { error in
+            XCTAssertEqual(
+                error as? DoryVZMacDesktopArgumentError,
+                .managedCameraUnsupported
+            )
+        }
     }
 
     func testRejectsPartialManagedLifecycleContract() {
@@ -307,6 +327,16 @@ final class DoryVZMacDesktopArgumentsTests: XCTestCase {
             XCTAssertEqual(
                 error as? DoryVZMacDesktopArgumentError,
                 .invalidBoolean("--clipboard", "yes")
+            )
+        }
+        XCTAssertThrowsError(try parseDoryVZMacDesktopArguments([
+            "run",
+            "--machine", "/tmp/test.dorymac",
+            "--camera", "yes",
+        ])) { error in
+            XCTAssertEqual(
+                error as? DoryVZMacDesktopArgumentError,
+                .invalidBoolean("--camera", "yes")
             )
         }
     }

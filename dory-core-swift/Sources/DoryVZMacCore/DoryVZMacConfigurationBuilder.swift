@@ -42,17 +42,37 @@ public struct DoryVZMacDevicePolicy: Codable, Sendable, Equatable {
     public var audio: DoryVZMacAudioPolicy
     public var clipboardEnabled: Bool
     public var directorySharingEnabled: Bool
+    public var cameraBridgeEnabled: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case network
+        case audio
+        case clipboardEnabled
+        case directorySharingEnabled
+        case cameraBridgeEnabled
+    }
 
     public init(
         network: DoryVZMacNetworkPolicy = .sharedNAT,
         audio: DoryVZMacAudioPolicy = DoryVZMacAudioPolicy(),
         clipboardEnabled: Bool = true,
-        directorySharingEnabled: Bool = true
+        directorySharingEnabled: Bool = true,
+        cameraBridgeEnabled: Bool = true
     ) {
         self.network = network
         self.audio = audio
         self.clipboardEnabled = clipboardEnabled
         self.directorySharingEnabled = directorySharingEnabled
+        self.cameraBridgeEnabled = cameraBridgeEnabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        network = try container.decode(DoryVZMacNetworkPolicy.self, forKey: .network)
+        audio = try container.decode(DoryVZMacAudioPolicy.self, forKey: .audio)
+        clipboardEnabled = try container.decode(Bool.self, forKey: .clipboardEnabled)
+        directorySharingEnabled = try container.decode(Bool.self, forKey: .directorySharingEnabled)
+        cameraBridgeEnabled = try container.decodeIfPresent(Bool.self, forKey: .cameraBridgeEnabled) ?? true
     }
 
     public static let legacyDefault = DoryVZMacDevicePolicy()
@@ -120,7 +140,7 @@ public enum DoryVZMacConfigurationBuilder {
             let audioOutput: Bool
             let input: String
             let entropy: String
-            let cameraSocketPort: UInt32
+            let cameraSocketPort: UInt32?
             let clipboard: Bool
             let xhciEnabled: Bool
             let directorySharing: Bool
@@ -156,7 +176,7 @@ public enum DoryVZMacConfigurationBuilder {
                 audioOutput: devicePolicy.audio.outputEnabled,
                 input: "mac-keyboard-trackpad",
                 entropy: "virtio",
-                cameraSocketPort: 1_030,
+                cameraSocketPort: devicePolicy.cameraBridgeEnabled ? 1_030 : nil,
                 clipboard: devicePolicy.clipboardEnabled,
                 xhciEnabled: xhciEnabled,
                 directorySharing: devicePolicy.directorySharingEnabled,
@@ -394,7 +414,7 @@ public final class DoryVZMacRuntime {
     private let machineLease: DoryVZMacMachineLease
     public let configuration: VZVirtualMachineConfiguration
     public let virtualMachine: VZVirtualMachine
-    public let cameraBridge: DoryVZMacCameraBridge
+    public let cameraBridge: DoryVZMacCameraBridge?
     public let configurationSHA256: String
 
     public init(
@@ -420,14 +440,19 @@ public final class DoryVZMacRuntime {
             devicePolicy: devicePolicy
         )
         virtualMachine = VZVirtualMachine(configuration: configuration)
-        cameraBridge = DoryVZMacCameraBridge(
-            camera: camera ?? DoryMacCameraBackend(log: log),
-            log: log
-        )
-        guard let socket = virtualMachine.socketDevices.first as? VZVirtioSocketDevice else {
-            throw DoryVZMacConfigurationError.cameraSocketUnavailable
+        if devicePolicy.cameraBridgeEnabled {
+            let bridge = DoryVZMacCameraBridge(
+                camera: camera ?? DoryMacCameraBackend(log: log),
+                log: log
+            )
+            guard let socket = virtualMachine.socketDevices.first as? VZVirtioSocketDevice else {
+                throw DoryVZMacConfigurationError.cameraSocketUnavailable
+            }
+            try bridge.install(on: socket)
+            cameraBridge = bridge
+        } else {
+            cameraBridge = nil
         }
-        try cameraBridge.install(on: socket)
     }
 
     public func install(
@@ -741,6 +766,6 @@ public final class DoryVZMacRuntime {
     }
 
     deinit {
-        cameraBridge.remove()
+        cameraBridge?.remove()
     }
 }
