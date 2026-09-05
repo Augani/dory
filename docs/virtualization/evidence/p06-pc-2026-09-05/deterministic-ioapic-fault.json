@@ -28,5 +28,18 @@
     "Correct IOAPIC register versus interrupt delivery semantics with regression coverage.",
     "Repeat production-clock and diagnostic boot runs.",
     "Reach userspace and qualify graphics."
-  ]
+  ],
+  "after_fix": {
+    "source_commit": "cb4be0b80",
+    "raw_sha256": "af2209bca9e0778b7b9c44488949395e459c4a5e5a370efe01c757df35b4758a",
+    "runner_sha256": "c22cfd1aa536c5fec24d5d7f7cb8f7dc807c8835f55a046a79ae2f73882f409a",
+    "completed_instructions": 1200000000,
+    "stop": "instructionBudget(1200000000)",
+    "serial_marker_matched": false,
+    "observed": "No Oops/BUG in retained serial; Linux passes symmetric I/O setup, timer routing, early TSC calibration and reaches FPU setup.",
+    "root_regression_tests": 10,
+    "root_regression_suites": 2,
+    "root_test_log_sha256": "0899db438e14cfbb818dc8d57d48091ba49a2daf47cf28acd038bca32e8ba513",
+    "remaining": "Full userspace boot and production-clock qualification; local-APIC ESR illegal-vector reporting remains unimplemented."
+  }
 }
