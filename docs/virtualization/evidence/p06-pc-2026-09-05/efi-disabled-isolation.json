@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "scope": "Diagnostic efi=noruntime isolation, not production boot qualification",
+  "pid": 89066,
+  "terminal": {
+    "reportedByRunOwner": "SIGTERM after approximately 33 minutes; exit 143",
+    "reason": "CPU-hot with no new progress after 2.5 billion instructions for approximately 15 minutes",
+    "coordinatorObservation": "Process absent and stdout empty; terminal status supplied by run owner",
+    "stdoutBytes": 0,
+    "validTerminalSmokeReceipt": false
+  },
+  "lastProgress": {
+    "completedInstructions": 2500000000,
+    "instructionPointer": "0xffffffff9e9dfc83",
+    "interpreterInstructions": 93360668,
+    "baselineJITInstructions": 2406639332
+  },
+  "conclusion": "Removing EFI runtime for diagnosis advances beyond earlier EFI variable-call fault; does not prove userspace boot or production EFI correctness. Firmware runtime handoff investigation remains required.",
+  "artifacts": [
+    {
+      "path": "/private/tmp/dory-pc-grub-linux-efi-noruntime-standalone-20260905061959-88797/smoke-baseline-jit-efi-noruntime-deterministic-3b.stderr",
+      "sha256": "6af11e2bf30e96b09ccc213e91f96ba5a2e8d1c74f44065d4c4d49c2d87ffdb0"
+    },
+    {
+      "path": "/private/tmp/dory-pc-grub-linux-efi-noruntime-standalone-20260905061959-88797/host-sample-pid89066-10s.txt",
+      "sha256": "14d52b1124a50676ab216ee761fdb45c9221fa05b64671728bede03426467e86"
+    },
+    {
+      "path": "/private/tmp/dory-pc-grub-linux-efi-noruntime-standalone-20260905061959-88797/host-sample-pid89066-after-2p5b-5s.txt",
+      "sha256": "fcaef9b1ffb0f6a5a142994e1444ab3be5d2c188e13effd06e5f0e5466d53050"
+    }
+  ]
+}
