@@ -636,6 +636,13 @@ public struct DoryX86IRTranslator: Sendable {
         return false
       }
     case .binary(let operation, let destination, let source, let writesDestination):
+      if case .register(let target) = destination,
+        target.bank == "x86.high8", target.index < 4, target.width == .i8,
+        operation == .and, writesDestination,
+        case .immediate(_, width: .i8) = source
+      {
+        return true
+      }
       let targetWidth: DoryIRIntegerWidth
       switch destination {
       case .register(let target) where isJITGeneralRegister(target):

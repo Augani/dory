@@ -1,0 +1,26 @@
+{
+  "scope": "Native immediate AND for AH/CH/DH/BH using existing byte arithmetic flags",
+  "baseHEAD": "1300c8042f562ea5a7dcc234891c30a8948376b5",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "32f44a3b7a37b260260a931d149ffc20cf4e563633806cf7bce569ab9f4a3d3b",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "857dfc455388abe3bfed7bd3ea5657af6d1c3ab4a92683162ba88ac8afae32bf",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryJITHighByteAndTests.swift": "c6b103213d4d1ef1126bb22b414f23170267deb42cdfe615ddfa9af491a6ce53"
+  },
+  "qualification": {
+    "results": "114 tests in 3 suites passed",
+    "focusedCoverage": "All 256 input byte values, five immediate masks including measured 0xfd, all four high-byte registers, baseline and optimizing tiers; interpreter equivalence plus explicit surrounding-bit preservation.",
+    "privateLog": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/highbyte-and-final.log",
+    "logSHA256": "1a4449e9f5e8dcc1178de777ebf88ecfacc5c9e96e9da3a282867611105d1edb"
+  },
+  "measuredTrigger": {
+    "opcode": "80e6fd",
+    "instruction": "and dh,0xfd",
+    "privateSnapshot": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/highbyte-and-hot-site.log",
+    "snapshotSHA256": "11ff2db315e769dfedc702366a9a948b269d9105237e84b38a92fd405489c246"
+  },
+  "limitations": [
+    "Other high-byte operations remain interpreter fallbacks.",
+    "No end-to-end guest boot or measured speedup claim.",
+    "The already-frozen e13c89b0e runner excludes this later patch."
+  ]
+}

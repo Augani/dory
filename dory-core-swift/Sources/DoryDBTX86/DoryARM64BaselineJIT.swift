@@ -1576,6 +1576,28 @@ public struct DoryARM64BaselineEmitter: Sendable {
     writesDestination: Bool,
     into words: inout [UInt32]
   ) -> Bool {
+    if case .register(let target) = destination,
+      target.bank == "x86.high8", target.index < 4, target.width == .i8,
+      operation == .and, writesDestination,
+      case .immediate(let immediate, width: .i8) = source
+    {
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+      words.append(encodeLogical(.or, left: 31, right: 9, shiftAmount: 8,
+        logicalRightShift: true, destination: 9))
+      emitImmediate(0xFF, register: 15, into: &words)
+      words.append(encodeLogical(.and, left: 9, right: 15, destination: 9))
+      emitImmediate(immediate & 0xFF, register: 10, into: &words)
+      guard emitLowByteBinaryFlags(.and, writesDestination: true, into: &words) else {
+        return false
+      }
+      // AH/CH/DH/BH replace only bits 8...15 of the containing GPR.
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+      emitImmediate(~UInt64(0xFF00), register: 10, into: &words)
+      words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
+      words.append(encodeLogical(.or, left: 9, right: 11, shiftAmount: 8, destination: 9))
+      words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+      return true
+    }
     if case .register(let target) = destination, isLowByteRegister(target),
       (!writesDestination && (operation == .compare || operation == .test))
         || (writesDestination && operation == .and)
