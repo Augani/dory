@@ -49,7 +49,7 @@ public struct DoryX86PagingContext: Sendable, Hashable {
       currentPrivilegeLevel: UInt8(state.cs.selector & 3),
       mode: mode,
       supportsOneGiBPages: profile.supports(.oneGiBPages),
-      supportsPAT: profile.cpuid(leaf: 1).edx & (1 << 16) != 0
+      supportsPAT: profile.supports(.pageAttributeTable)
     )
   }
 }
