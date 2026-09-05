@@ -1,0 +1,56 @@
+{
+  "candidate": {
+    "FEXServer_SHA256": "bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597",
+    "FEX_SHA256": "3f6e1a5ab3ae4d164573ee1ad381afff1670e9b124c0556e53101f025a74c134",
+    "c_probe_compiler": "/opt/homebrew/bin/zig 0.15.2 target x86_64-linux-musl",
+    "candidate_image": "dory-fex-conditional-fixed:1788599430",
+    "carrier_image": "dory-fex-conditional-fixed:1788599430 with docker cp /probe execution",
+    "go_probe_binaries": "/private/tmp/dory-amd64-static-go-fex-diag.1788591564/bin/{hello-amd64,chanalloc-amd64} plus /private/tmp/dory-fex-go125-repros*/{regexpstress,reflectstress,preemptstress,regexpsmall,regexpgoroutines}",
+    "signal_context_patch_sha256": "e06507751d42ff359b2257d413fc07d145483e4739b286596c1e12d6dde45e90"
+  },
+  "initfs": {
+    "extractedProofDir": "/private/tmp/dory-initfs-fex-proof.0KPZvO",
+    "stamp": [
+      "schema=3",
+      "arch=arm64",
+      "input_sha256=9328714a5a288c3f622f037d01c41b3cb3a3a9bf105413b8540a869ef3c0a4cd",
+      "agent_sha256=148e0f1b49db9440188bed115af8cfa129081f2d3c0be93bc7799e1f1f4a268f",
+      "image_sha256=3281e758c629cd36eaed86ba2e684d3e7ad5b421000f26c801be37d8404dc641"
+    ],
+    "verifyLog": "/private/tmp/dory-initfs-guarded-fex-arm64-explicit-verify-1788599806.log",
+    "verifySummary": "verified arm64 initfs input fingerprint 9328714a5a288c3f622f037d01c41b3cb3a3a9bf105413b8540a869ef3c0a4cd"
+  },
+  "positiveRuntime": {
+    "asyncArithmeticExact": {
+      "actual": "971197368082184901",
+      "expected": "971197368082184901",
+      "limitation": "Signals were delivered to the arithmetic target thread and the arithmetic result matched exactly; this is not instrumented proof that every signal landed while host PC was inside translated JIT code.",
+      "line": "async-thread-signal-exact transport=0 exit=0 stdout=async-thread-signal-arith-exact:expected=971197368082184901:actual=971197368082184901:signals=1325367:sent=2833664| stderr=",
+      "sent": "2833664",
+      "signals": "1325367"
+    },
+    "i386NoopSignal": "pre-existing failure under both no-restore and guarded candidates; not attributed to guarded patch",
+    "resultsLog": "/private/tmp/dory-fex-static-go-diagnosis.1788591700/fex-conditional-guarded-runtime-1788599578/results.txt"
+  },
+  "scope": "FEX guarded signal-context tuple and initfs integration; second regexp goroutine async-preemption failure remains open",
+  "secondFailure": {
+    "matrixLog": "/private/tmp/dory-fex-go125-repros.GWnGsb/regex-small-matrix.log",
+    "nextDiagnosticTarget": "Instrument changed-RIP async signal path to compare published guest RIP/RSP/GPR snapshot against Go asyncPreempt return frame; check for torn JIT snapshot when OriginalRIP is derived after SpillSRA from Frame->State.rip.",
+    "reproDir": "/private/tmp/dory-fex-go125-repros.GWnGsb",
+    "summary": "Go 1.25.9 static amd64 regexpgoroutines fails only with default async preemption under both no-restore and guarded FEX. regexpsmall and asyncpreemptoff pass."
+  },
+  "date": "2026-09-05",
+  "independentReview": {
+    "checks": [
+      "Pinned upstream three-patch sequence independently applied",
+      "All three changed shell scripts passed bash -n",
+      "Final patch and vendored binary digests matched",
+      "Initfs image digest and extracted FEX/FEXServer digests independently matched",
+      "Read explicit initfs verification log and guarded runtime results"
+    ],
+    "limitations": [
+      "No default-preemption AMD64 Docker qualification",
+      "Image contents verified; new image not yet booted in production engine"
+    ]
+  }
+}

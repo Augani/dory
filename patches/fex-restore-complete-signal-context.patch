@@ -1,11 +1,123 @@
+diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+index 9ba706c7b..b3e5cb19e 100644
+--- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
++++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator.cpp
+@@ -321,6 +321,11 @@ bool SignalDelegator::HandleDispatcherGuestSignal(FEXCore::Core::InternalThreadS
+     // We are in jit, SRA must be spilled
+     SpillSRA(Thread, ucontext, IgnoreMask);
+
++    // SetupFrame_* publishes the post-spill guest state to the signal frame. Keep a copy of that
++    // canonical frame state so sigreturn can distinguish real guest edits from stale pre-spill
++    // register snapshots.
++    memcpy(&ContextBackup->GuestState, &Frame->State, sizeof(FEXCore::Core::CPUState));
++
+     ContextBackup->Flags |= ArchHelpers::Context::ContextFlags::CONTEXT_FLAG_INJIT;
+
+     // We are leaving the syscall information behind. Make sure to store the previous state.
 diff --git a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp
-index 2401fe496..229f9f644 100644
+index 2401fe496..748876a4a 100644
 --- a/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp
 +++ b/Source/Tools/LinuxEmulation/LinuxSyscalls/SignalDelegator/GuestFramesManagement.cpp
-@@ -130,2 +130,4 @@ void SignalDelegator::RestoreFrame_x64(FEXCore::Core::InternalThreadState* Threa
+@@ -122,13 +122,100 @@ static void SetXStateInfo(T* xstate, bool is_avx_enabled) {
+   }
+ }
+
++static bool SignalFrameChanged_x64(FEXCore::Context::Context* CTX, FEXCore::Core::InternalThreadState* Thread,
++                                   ArchHelpers::Context::ContextBackup* Context,
++                                   const FEXCore::x86_64::ucontext_t* guest_uctx, bool SupportsAVX) {
++  if (Context->OriginalRIP != guest_uctx->uc_mcontext.gregs[FEXCore::x86_64::FEX_REG_RIP]) {
++    return true;
++  }
++
++  const auto& OriginalState = Context->GuestState;
++
++#define COMPARE_REG(x)                                                                                                    \
++  do {                                                                                                                    \
++    if (OriginalState.gregs[FEXCore::X86State::REG_##x] != guest_uctx->uc_mcontext.gregs[FEXCore::x86_64::FEX_REG_##x]) { \
++      return true;                                                                                                        \
++    }                                                                                                                     \
++  } while (false)
++  COMPARE_REG(R8);
++  COMPARE_REG(R9);
++  COMPARE_REG(R10);
++  COMPARE_REG(R11);
++  COMPARE_REG(R12);
++  COMPARE_REG(R13);
++  COMPARE_REG(R14);
++  COMPARE_REG(R15);
++  COMPARE_REG(RDI);
++  COMPARE_REG(RSI);
++  COMPARE_REG(RBP);
++  COMPARE_REG(RBX);
++  COMPARE_REG(RDX);
++  COMPARE_REG(RAX);
++  COMPARE_REG(RCX);
++  COMPARE_REG(RSP);
++#undef COMPARE_REG
++
++  const uint64_t OriginalCSGSFS = ((uint64_t)OriginalState.ss_idx << 48) | ((uint64_t)OriginalState.fs_idx << 32) |
++                                  ((uint64_t)OriginalState.gs_idx << 16) | ((uint64_t)OriginalState.cs_idx << 0);
++  if (OriginalCSGSFS != guest_uctx->uc_mcontext.gregs[FEXCore::x86_64::FEX_REG_CSGSFS]) {
++    return true;
++  }
++
++  if (CTX->ReconstructCompactedEFLAGS(Thread, false, nullptr, 0) != guest_uctx->uc_mcontext.gregs[FEXCore::x86_64::FEX_REG_EFL]) {
++    return true;
++  }
++
++  if (reinterpret_cast<uint64_t>(guest_uctx->uc_mcontext.fpregs) != Context->FPStateLocation) {
++    return true;
++  }
++
++  auto* xstate = reinterpret_cast<const FEXCore::x86_64::xstate*>(guest_uctx->uc_mcontext.fpregs);
++  auto* fpstate = &xstate->fpstate;
++
++  if ((fpstate->mxcsr & 0xFFC0) != (OriginalState.mxcsr & 0xFFC0) || fpstate->fcw != OriginalState.FCW ||
++      fpstate->ftw != OriginalState.AbridgedFTW) {
++    return true;
++  }
++
++  if (((fpstate->fsw >> 0) & 1) != OriginalState.flags[FEXCore::X86State::X87FLAG_IE_LOC] ||
++      ((fpstate->fsw >> 8) & 1) != OriginalState.flags[FEXCore::X86State::X87FLAG_C0_LOC] ||
++      ((fpstate->fsw >> 9) & 1) != OriginalState.flags[FEXCore::X86State::X87FLAG_C1_LOC] ||
++      ((fpstate->fsw >> 10) & 1) != OriginalState.flags[FEXCore::X86State::X87FLAG_C2_LOC] ||
++      ((fpstate->fsw >> 14) & 1) != OriginalState.flags[FEXCore::X86State::X87FLAG_C3_LOC] ||
++      ((fpstate->fsw >> 11) & 0b111) != OriginalState.flags[FEXCore::X86State::X87FLAG_TOP_LOC]) {
++    return true;
++  }
++
++  const uint16_t CurrentOffset = OriginalState.flags[FEXCore::X86State::X87FLAG_TOP_LOC];
++  for (size_t i = 0; i < FEXCore::Core::CPUState::NUM_MMS; ++i) {
++    const auto modulo_i = (i + CurrentOffset) % 8;
++    if (memcmp(&OriginalState.mm[modulo_i], &fpstate->_st[i], sizeof(OriginalState.mm[0])) != 0) {
++      return true;
++    }
++  }
++
++  __uint128_t XMM_Low[FEXCore::Core::CPUState::NUM_XMMS] {};
++  __uint128_t YMM_High[FEXCore::Core::CPUState::NUM_XMMS] {};
++  CTX->ReconstructXMMRegisters(Thread, XMM_Low, SupportsAVX ? YMM_High : nullptr);
++  if (memcmp(XMM_Low, fpstate->_xmm, sizeof(XMM_Low)) != 0) {
++    return true;
++  }
++  if (SupportsAVX && memcmp(YMM_High, xstate->ymmh.ymmh_space, sizeof(YMM_High)) != 0) {
++    return true;
++  }
++
++  return false;
++}
++
+ void SignalDelegator::RestoreFrame_x64(FEXCore::Core::InternalThreadState* Thread, ArchHelpers::Context::ContextBackup* Context,
+                                        FEXCore::Core::CpuStateFrame* Frame, void* ucontext) {
+   auto* guest_uctx = reinterpret_cast<FEXCore::x86_64::ucontext_t*>(Context->UContextLocation);
+   [[maybe_unused]] auto* guest_siginfo = reinterpret_cast<siginfo_t*>(Context->SigInfoLocation);
+
 -  // If the guest modified the RIP then we need to take special precautions here
 -  if (Context->OriginalRIP != guest_uctx->uc_mcontext.gregs[FEXCore::x86_64::FEX_REG_RIP] || Context->FaultToTopAndGeneratedException) {
-+  // A guest signal handler may update any part of the saved context, including the stack pointer
-+  // without changing RIP. Always rebuild the complete guest state and resume through the dispatcher
-+  // so those edits are honored and stale JIT register state cannot leak across sigreturn.
-+  {
++  // If the guest modified its signal context then rebuild the full guest-visible state through the
++  // dispatcher. Otherwise preserve the original host continuation path so interrupted FEX host code,
++  // including syscall-return publication, can finish normally.
++  if (Context->FaultToTopAndGeneratedException || SignalFrameChanged_x64(CTX, Thread, Context, guest_uctx, SupportsAVX)) {
+
+     // Restore previous `InSyscallInfo` structure.
+     Frame->InSyscallInfo = Context->InSyscallInfo;

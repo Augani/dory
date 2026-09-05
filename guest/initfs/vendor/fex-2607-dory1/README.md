@@ -15,14 +15,14 @@ Provenance:
 - upstream ProcessorID fix: `patches/fex-processor-id-stack-fix.patch`
 - ProcessorID patch SHA-256: `e1da91d76caf48ed30183486abcc9a0eb768d28fd5d041a8b4cbe1c7b75df35c`
 - Dory signal-context fix: `patches/fex-restore-complete-signal-context.patch`
-- signal-context patch SHA-256: `e405db087203d5f22d50b54820b6a2120d013c0cdd33d1db343f4fac4c1d1e22`
+- signal-context patch SHA-256: `e06507751d42ff359b2257d413fc07d145483e4739b286596c1e12d6dde45e90`
 - builder: `ubuntu:24.04@sha256:4fbb8e6a8395de5a7550b33509421a2bafbc0aab6c06ba2cef9ebffbc7092d90`
 - Ubuntu archive snapshot: `20260713T120000Z`
 - snapshot CA bootstrap package SHA-256: `6bac2a01979e210d9eac1d4d56747ec709ea60654744d66705dc3c36e7629e50`
 - reproducible source epoch: `1783039651` (`2026-07-03T00:47:31Z`, the source commit timestamp)
 - build package inventory: `BUILD_PACKAGES.txt`
 - build package inventory SHA-256: `ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1`
-- FEX SHA-256: `01921fa471efc53c955b1d6263f7df4ad0f08f082669a3a7adb6f1e1d5ac0c28`
+- FEX SHA-256: `3f6e1a5ab3ae4d164573ee1ad381afff1670e9b124c0556e53101f025a74c134`
 - FEXServer SHA-256: `bbe8a34fc2ba4e606acd7e5b11d9b51da283835f40d2851e2ed39d35d28f2597`
 
 The rebuild initializes only the eight submodules required by the two production targets. The
@@ -49,9 +49,11 @@ the temporary host stack allocation after `RDPID` instead of allocating a second
 prevents stack corruption in translated runtimes such as Go.
 
 The signal-context patch makes x86-64 signal return restore the complete guest register state and
-resume through the dispatcher. Go's asynchronous preemption changes the context saved by its
-`SIGURG` handler. Restoring every register prevents stale translated state from corrupting later Go
-compiler work.
+resume through the dispatcher only when the guest changed its saved context. Go's asynchronous
+preemption can interrupt FEX host syscall machinery; unchanged guest contexts must return through the
+original host continuation so syscall return state is still published. When a guest handler edits RIP,
+GPRs including RSP, EFLAGS, selectors, or floating-point/vector state, FEX rebuilds the guest state
+from the signal frame before resuming.
 
 Nested execution follows Linux rather than package-specific exceptions. X86 shebangs are delegated
 to the kernel's binfmt path, FEX preserves its already-proven interpreter state only across the
