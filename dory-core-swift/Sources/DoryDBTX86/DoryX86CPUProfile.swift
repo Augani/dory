@@ -36,6 +36,44 @@ public enum DoryX86Feature: String, Codable, CaseIterable, Sendable, Hashable {
   case physicalAddressExtension
   case pageGlobalEnable
   case pageAttributeTable
+  fileprivate var membershipBit: UInt64 {
+    switch self {
+    case .x87: return 1 << 0
+    case .tsc: return 1 << 1
+    case .rdtscp: return 1 << 2
+    case .msr: return 1 << 3
+    case .cmpxchg8b: return 1 << 4
+    case .apic: return 1 << 5
+    case .sysenter: return 1 << 6
+    case .cmov: return 1 << 7
+    case .clflush: return 1 << 8
+    case .mmx: return 1 << 9
+    case .fxsave: return 1 << 10
+    case .sse: return 1 << 11
+    case .sse2: return 1 << 12
+    case .sse3: return 1 << 13
+    case .ssse3: return 1 << 14
+    case .sse41: return 1 << 15
+    case .sse42: return 1 << 16
+    case .popcnt: return 1 << 17
+    case .cmpxchg16b: return 1 << 18
+    case .syscall: return 1 << 19
+    case .executeDisable: return 1 << 20
+    case .oneGiBPages: return 1 << 21
+    case .longMode: return 1 << 22
+    case .lahf64: return 1 << 23
+    case .invariantTSC: return 1 << 24
+    case .xsave: return 1 << 25
+    case .osxsave: return 1 << 26
+    case .avx: return 1 << 27
+    case .avx2: return 1 << 28
+    case .pageSizeExtension: return 1 << 29
+    case .physicalAddressExtension: return 1 << 30
+    case .pageGlobalEnable: return 1 << 31
+    case .pageAttributeTable: return 1 << 32
+    }
+  }
+
 }
 
 public struct DoryX86CPUIDResult: Codable, Sendable, Hashable {
@@ -71,6 +109,7 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
   public let linearAddressBits: UInt8
   public let virtualTSCFrequencyHz: UInt64
   public let identity: DoryX86CPUIdentity
+  private let supportedFeatureMask: UInt64
 
   /// Optional SIMD and extended-state advertisement remain unavailable until
   /// XSAVE/XRSTOR and the complete optional SIMD/VEX surface have architectural qualification.
@@ -116,6 +155,12 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     self.features = allowingUnqualifiedSIMDAndExtendedState
       ? features
       : features.subtracting(Self.unqualifiedSIMDAndExtendedStateFeatures)
+    // The requested feature set is immutable. Resolve dependency chains once instead of
+    // hashing the same features recursively on every instruction and page-table access.
+    let admittedFeatures = self.features
+    self.supportedFeatureMask = DoryX86Feature.allCases.reduce(0) { mask, feature in
+      Self.supports(feature, in: admittedFeatures) ? mask | feature.membershipBit : mask
+    }
     self.physicalAddressBits = physicalAddressBits
     self.linearAddressBits = linearAddressBits
     self.virtualTSCFrequencyHz = virtualTSCFrequencyHz
@@ -171,17 +216,21 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     identity: .intelCompatibleV1)
 
   public func supports(_ feature: DoryX86Feature) -> Bool {
+    supportedFeatureMask & feature.membershipBit != 0
+  }
+
+  private static func supports(_ feature: DoryX86Feature, in features: Set<DoryX86Feature>) -> Bool {
     guard features.contains(feature) else { return false }
     switch feature {
-    case .rdtscp, .invariantTSC: return supports(.tsc)
-    case .osxsave: return supports(.xsave)
-    case .sse2: return supports(.sse)
-    case .sse3, .ssse3, .sse41, .sse42: return supports(.sse2)
-    case .avx: return supports(.xsave) && supports(.sse2) && supports(.fxsave)
-    case .avx2: return supports(.avx)
-    case .longMode, .executeDisable: return supports(.physicalAddressExtension)
+    case .rdtscp, .invariantTSC: return supports(.tsc, in: features)
+    case .osxsave: return supports(.xsave, in: features)
+    case .sse2: return supports(.sse, in: features)
+    case .sse3, .ssse3, .sse41, .sse42: return supports(.sse2, in: features)
+    case .avx: return supports(.xsave, in: features) && supports(.sse2, in: features) && supports(.fxsave, in: features)
+    case .avx2: return supports(.avx, in: features)
+    case .longMode, .executeDisable: return supports(.physicalAddressExtension, in: features)
     case .oneGiBPages:
-      return supports(.physicalAddressExtension) && supports(.longMode)
+      return supports(.physicalAddressExtension, in: features) && supports(.longMode, in: features)
     default: return true
     }
   }
