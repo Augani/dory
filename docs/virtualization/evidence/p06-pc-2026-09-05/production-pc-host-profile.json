@@ -1,0 +1,22 @@
+{
+  "schema": "dory.production-pc-host-profile@1",
+  "command": "sample 69718 1 -file /tmp/dory-pc-production-live-sample-0905.txt",
+  "sampleTimeUTC": "2026-09-05T18:18:18.992Z",
+  "runnerSHA256": "4883ffc5eb0c626fea039e89b69f8cd0ca24438e5bc1a34980a14fcd4acae5ac",
+  "run": "pc-production-userspace-20260905-173324/run-20260905180214",
+  "rawSHA256": "b3a07a36c1b671f6dd91b13b52ff84df3e4ba43abd2fc24ed3fbaa7930837f8a",
+  "publishedUncompressedSHA256": "b3a07a36c1b671f6dd91b13b52ff84df3e4ba43abd2fc24ed3fbaa7930837f8a",
+  "log": "production-pc-host-profile.log.gz",
+  "observations": [
+    "79 execution-queue samples; 62 include executeChainedSummary. Counts are inclusive call stacks, not independent durations.",
+    "21 samples at chain resident-resolution call, including code-generation translation and RAM generation checks plus resident-cache lookup.",
+    "Other sampled chains include generated-code scalar memory callbacks and paging lookup.",
+    "Serial output had not advanced beyond CPU0 initialization while execution counters continued increasing."
+  ],
+  "nextAction": "Inspect guest progress and production fallback hotspots; use the profile to investigate lookup, translation and callback costs without bypassing code invalidation or precise faults.",
+  "limitations": [
+    "One short host sample is not a benchmark, a complete bottleneck ranking or proof of a guest deadlock.",
+    "No guest userspace or accelerated-desktop qualification from this profile.",
+    "Live process was left running."
+  ]
+}
