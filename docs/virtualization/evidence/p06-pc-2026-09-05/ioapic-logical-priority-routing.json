@@ -1,0 +1,35 @@
+{
+  "kind": "ioapic-logical-routing-and-priority",
+  "commit": "a61b86ba9",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryMachinePC/DoryPCAPIC.swift": "250499d6ea060341ef992c5992997bff6c236515ddd45c177937950a9a8f1509",
+    "dory-core-swift/Sources/DoryMachinePC/DoryPCDirectKernelMachine.swift": "11c1d6ed5225dafd9c9bcf5d4cfa2e88b13e6b715cd3391c402a62f4d231762a",
+    "dory-core-swift/Sources/DoryMachinePC/DoryPCMultiprocessor.swift": "a2201fc8829e4e9de364fd1cb9be70dc6874fb19ee288bcf84c0330325bbc50a",
+    "dory-core-swift/Sources/DoryMachinePC/DoryPCPhysicalMemory.swift": "4f575fc4462f54c8ae512fa9871b0d91124296bb275ac85138c79b3c692df433",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCAPICTests.swift": "9fdee709fec945f60d576b0da6fe08a24293242ce97d78720e327a639954d37e",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCIOAPICMaskTests.swift": "cf4c565d3a06d1d78d16d1f31b47b5985f4e12c4250c1f20e9561b2c6264fee9",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCMultiprocessorTests.swift": "772452ce1ed08957e5ea632b27151d3f79bfc7014644d68640d5ef815ef249bb"
+  },
+  "scope": "Guest MMIO fixed/logical routing, virtual APR-style lowest-priority selection, level EOI tracking, legacy route decoding, and halted-vCPU route acceptance.",
+  "limits": [
+    "No ordinary Linux boot or parallel SMP qualification.",
+    "NMI, SMI, INIT and ExtINT IOAPIC delivery remain unsupported.",
+    "The broad package run terminated with signal 10 and is excluded; investigation remains open."
+  ],
+  "tests": [
+    {
+      "log": "dory-ioapic-direct-focused-0905g.log.gz",
+      "testsPassed": 52,
+      "originalSHA256": "1fc4a3963b615da12c6d07e9d4ae8b2e0153c19f290e12eab0952a49057157ab",
+      "publishedGzipSHA256": "20a80f32fa83e62f425ac3128be7cefe43729765bf178101f603a6e627cab2ed",
+      "sourceBuild": "Shared repository source with dedicated SwiftPM scratch directory; frozen file hashes above."
+    },
+    {
+      "log": "dory-ioapic-transport-adjacent-0905.log.gz",
+      "testsPassed": 32,
+      "originalSHA256": "2b03f626858d47e5a940398fd41f811cbf9a117af571e6ad348bf7b8c2cab3a8",
+      "publishedGzipSHA256": "d5e586c752e454792290e33f6213a7742669ee980c881472c8359bbc90a2d9ae",
+      "sourceBuild": "Shared repository source with dedicated SwiftPM scratch directory; frozen file hashes above."
+    }
+  ]
+}
