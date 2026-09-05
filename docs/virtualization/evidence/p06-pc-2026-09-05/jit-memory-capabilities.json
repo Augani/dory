@@ -1,0 +1,9 @@
+{
+  "change": "Resolve memory protocol capabilities once per native execution chain; retain per-block callback failure state and restartable-read policy.",
+  "sourceSHA256": "6c569088ad9ccb80165d5f57b139179c9973a7164d220e303e41f4271dc42437",
+  "source": "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift",
+  "validation": "118 tests in 3 suites passed; baseline JIT, canonical faults, decode boundaries. Isolated checkout with exact changed source; not a whole-HEAD qualification.",
+  "log": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/jit-memory-capabilities-final.log",
+  "logSHA256": "49475c44cccd48e96529329d2d8642fa673937236f4f1997d1834b9564b8766c",
+  "limitation": "No end-to-end boot speedup measured. Host sample motivated removal of repeated protocol conformance checks."
+}
