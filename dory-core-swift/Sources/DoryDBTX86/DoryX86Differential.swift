@@ -179,6 +179,9 @@ public struct DoryX86DifferentialHarness: Sendable {
     var context = DoryX86GeneralRegister.allCases.map { state.registers[$0] }
     context.append(state.rip)
     context.append(state.rflags.rawValue)
+    context.append(state.fs.base)
+    context.append(state.gs.base)
+    context.append(state.tsc)
     return context
   }
 

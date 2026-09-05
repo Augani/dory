@@ -69,6 +69,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private static let rflagsOffset = 17 * 8
   private static let fsBaseOffset = 18 * 8
   private static let gsBaseOffset = 19 * 8
+  private static let tscOffset = 20 * 8
   private static let rspOffset = 4 * 8
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
@@ -173,7 +174,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination) || isFSOrGS(lhs) || isFSOrGS(rhs)
       case .effectiveAddress:
         return false
-      case .stackPushFlags, .clearInterruptFlag, .helper:
+      case .stackPushFlags, .clearInterruptFlag, .readTimestampCounter, .helper:
         return false
       }
     }
@@ -242,6 +243,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitStackPop(destination: destination, into: &words)
     case .clearInterruptFlag:
       return emitClearInterruptFlag(into: &words)
+    case .readTimestampCounter:
+      return emitReadTimestampCounter(into: &words)
     case .signedMultiply(let destination, let lhs, let rhs):
       return emitSignedMultiply(destination: destination, lhs: lhs, rhs: rhs, into: &words)
     case .extendMove(let destination, let source, let signed):
@@ -320,6 +323,16 @@ public struct DoryARM64BaselineEmitter: Sendable {
     emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 10, into: &words)
     words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
     words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
+    return true
+  }
+
+  private func emitReadTimestampCounter(into words: inout [UInt32]) -> Bool {
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.tscOffset))
+    words.append(encodeLogical(.or, left: 31, right: 9, shiftAmount: 32, logicalRightShift: true, destination: 10))
+    words.append(encodeLogical(.or, is64Bit: false, left: 31, right: 9, destination: 9))
+    words.append(encodeLogical(.or, is64Bit: false, left: 31, right: 10, destination: 10))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: 0))
+    words.append(encodeStore64(register: 10, base: 0, byteOffset: 2 * 8))
     return true
   }
 
@@ -551,7 +564,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .extendMove(_, let source, _):
       if case .memory = source { return 1 }
       return 0
-    case .effectiveAddress, .clearInterruptFlag, .helper:
+    case .effectiveAddress, .clearInterruptFlag, .readTimestampCounter, .helper:
       return 0
     }
   }
@@ -2207,7 +2220,7 @@ private let doryJITMemoryWrite: dory_jit_memory_write_function = {
 }
 
 public final class DoryJITExecutableRegion: @unchecked Sendable {
-  public static let contextWordCount = 20
+  public static let contextWordCount = 21
 
   private let lock = NSLock()
   private let region: OpaquePointer
@@ -2487,17 +2500,20 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let offset: Int
     let codeGeneration: UInt64
     let memoryCodeGeneration: UInt64?
+    let endsTimeBoundary: Bool
 
     init(
       block: DoryARM64CompiledBlock,
       offset: Int,
       codeGeneration: UInt64,
-      memoryCodeGeneration: UInt64?
+      memoryCodeGeneration: UInt64?,
+      endsTimeBoundary: Bool
     ) {
       self.block = block
       self.offset = offset
       self.codeGeneration = codeGeneration
       self.memoryCodeGeneration = memoryCodeGeneration
+      self.endsTimeBoundary = endsTimeBoundary
     }
   }
 
@@ -2945,7 +2961,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             }
 
             if recordsTrace {
-              if resident.block.requiresMemoryCallbacks || resident.block.mayExitToInterpreter {
+              if resident.block.requiresMemoryCallbacks || resident.block.mayExitToInterpreter
+                || resident.endsTimeBoundary
+              {
                 publishNativeTrace(newTrace, for: traceKey, if: true)
                 recordsTrace = false
               } else {
@@ -2959,6 +2977,18 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                   recordsTrace = false
                 }
               }
+            }
+
+            if resident.endsTimeBoundary, completed > 0 {
+              publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
+              chainedRetiredInstructionCount &+= UInt64(completed)
+              Self.apply(context: context, to: &state)
+              return DoryARM64ExecutionSummary(
+                guestInstructionCount: UInt32(completed),
+                residentBlockCount: UInt32(blockCount),
+                tier: resident.block.tier,
+                exitCode: .dispatch
+              )
             }
 
             let hasCheckpoint = resident.block.requiresMemoryCallbacks || resident.block.mayExitToInterpreter
@@ -2987,7 +3017,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
 
             completed += Int(resident.block.guestInstructionCount)
             blockCount += 1
-            guard exit == .dispatch, completed < maximumInstructions else {
+            guard exit == .dispatch, completed < maximumInstructions, !resident.endsTimeBoundary else {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               chainedRetiredInstructionCount &+= UInt64(completed)
               Self.apply(context: context, to: &state)
@@ -3269,7 +3299,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           block: cached.block,
           offset: cached.offset,
           codeGeneration: cached.codeGeneration,
-          memoryCodeGeneration: memoryGeneration
+          memoryCodeGeneration: memoryGeneration,
+          endsTimeBoundary: cached.endsTimeBoundary
         )
         publish(resident, for: key)
         return resident
@@ -3301,7 +3332,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             memoryCodeGeneration: readCodeGeneration(
               using: codeGenerationProvider,
               byteCount: byteCount
-            )
+            ),
+            endsTimeBoundary: shared.endsTimeBoundary
           )
           publish(resident, for: key)
           return resident
@@ -3385,6 +3417,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     }) {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
+    let containsTimestampCounter = translated.statements.contains {
+      if case .readTimestampCounter = $0 { return true }
+      return false
+    }
+    if containsTimestampCounter {
+      guard profile.supports(.tsc), mode == .long64, key.privilegeLevel == 0 else {
+        return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
+      }
+    }
     let block = optimization == .optimizing ? optimizer.optimize(translated).block : translated
     // The native context carries GPRs/RIP/flags, but cannot raise a privileged
     // instruction fault. Let the interpreter deliver #GP at the original HLT.
@@ -3445,11 +3486,19 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       block: compiled,
       offset: offset,
       codeGeneration: Self.fingerprint(bytes: guestBytes, mode: mode),
-      memoryCodeGeneration: memoryCodeGeneration
+      memoryCodeGeneration: memoryCodeGeneration,
+      endsTimeBoundary: Self.endsTimeBoundary(block)
     )
     publish(resident, for: key)
     compiledBlockCount &+= 1
     return .init(resident: resident, emitterDeclineByteCount: nil, declineReason: nil)
+  }
+
+  private static func endsTimeBoundary(_ block: DoryIRBasicBlock) -> Bool {
+    block.statements.contains {
+      if case .readTimestampCounter = $0 { return true }
+      return false
+    }
   }
 
   static func compilationDeclineReason(
@@ -3756,6 +3805,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[17] = state.rflags.rawValue
     context[18] = state.fs.base
     context[19] = state.gs.base
+    context[20] = state.tsc
   }
 
   private static func apply(

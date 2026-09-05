@@ -119,6 +119,11 @@ public struct DoryIROptimizer: Sendable {
       case .clearInterruptFlag:
         statements.append(statement)
 
+      case .readTimestampCounter:
+        statements.append(statement)
+        invalidate(.register(.init(bank: "x86.gpr", index: 0, width: .i64)), knownConstants: &knownConstants)
+        invalidate(.register(.init(bank: "x86.gpr", index: 2, width: .i64)), knownConstants: &knownConstants)
+
       case .helper:
         statements.append(statement)
         knownConstants.removeAll(keepingCapacity: true)

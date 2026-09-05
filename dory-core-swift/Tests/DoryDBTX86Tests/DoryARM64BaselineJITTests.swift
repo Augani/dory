@@ -1375,6 +1375,158 @@ import Testing
     #expect(DoryARM64BaselineEmitter().compile(protected).tier == .interpreterFallback)
   }
 
+  @Test func timestampCounterUsesVirtualTSCAndStopsNativeChainAtClockBoundary() throws {
+    #if arch(arm64)
+      // rdtsc; mov eax,0xdeadbeef. RDTSC is a virtual-clock boundary, so the
+      // chained executor must return after publishing only EDX:EAX from state.tsc.
+      let bytes: [UInt8] = [0x0F, 0x31, 0xB8, 0xEF, 0xBE, 0xAD, 0xDE]
+      let decoded = try DoryX86Decoder().decode(bytes, at: 0x1000, mode: .long64)
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          optimization: optimization
+        )
+        let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+        var native = try DoryX86ArchitecturalState(
+          registers: .init(rax: 0xAAAA_AAAA_AAAA_AAAA, rdx: 0xBBBB_BBBB_BBBB_BBBB),
+          rip: 0x1000,
+          rflags: [.reservedOne, .carry],
+          cs: .init(selector: 0, attributes: 0xA09B, limit: .max),
+          tsc: 0x1122_3344_5566_7788
+        )
+        var interpreted = native
+        #expect(DoryX86Interpreter().step(state: &interpreted, memory: memory, mode: .long64)
+          == .retired(decoded))
+
+        let summary = try #require(executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            try memory.instructionBytes(at: address, maximumCount: maximumCount)
+          },
+          at: native.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 2,
+          state: &native,
+          memory: memory
+        ))
+
+        #expect(summary.guestInstructionCount == 1)
+        #expect(summary.residentBlockCount == 1)
+        #expect(summary.exitCode == .dispatch)
+        #expect(summary.tier.rawValue == optimization.rawValue)
+        #expect(native == interpreted)
+        #expect(native.rip == 0x1002)
+        #expect(native.registers.rax == 0x5566_7788)
+        #expect(native.registers.rdx == 0x1122_3344)
+      }
+    #endif
+  }
+
+  @Test func timestampCounterAfterNativePrefixWaitsForClockResampleBeforeRead() throws {
+    #if arch(arm64)
+      // mov eax,1; rdtsc. The first dispatch may retire the ordinary prefix, then it must
+      // return before RDTSC so the machine clock source can refresh state.tsc on reentry.
+      let bytes: [UInt8] = [0xB8, 1, 0, 0, 0, 0x0F, 0x31]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          optimization: optimization
+        )
+        let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+        var state = try DoryX86ArchitecturalState(
+          registers: .init(rax: 0xAAAA, rdx: 0xBBBB),
+          rip: 0x1000,
+          rflags: [.reservedOne],
+          cs: .init(selector: 0, attributes: 0xA09B, limit: .max),
+          tsc: 0x10
+        )
+
+        let prefix = try #require(executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            try memory.instructionBytes(at: address, maximumCount: maximumCount)
+          },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 2,
+          state: &state,
+          memory: memory
+        ))
+        #expect(prefix.guestInstructionCount == 1)
+        #expect(prefix.residentBlockCount == 1)
+        #expect(state.rip == 0x1005)
+        #expect(state.registers.rax == 1)
+        #expect(state.registers.rdx == 0xBBBB)
+
+        state.tsc = 0x1122_3344_5566_7788
+        let timestamp = try #require(executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            try memory.instructionBytes(at: address, maximumCount: maximumCount)
+          },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        ))
+        #expect(timestamp.guestInstructionCount == 1)
+        #expect(timestamp.residentBlockCount == 1)
+        #expect(state.rip == 0x1007)
+        #expect(state.registers.rax == 0x5566_7788)
+        #expect(state.registers.rdx == 0x1122_3344)
+      }
+    #endif
+  }
+
+  @Test func timestampCounterNativeFastPathKeepsUnsupportedAndUserGatesOnInterpreterPath() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x0F, 0x31]
+      let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
+      let baseline = DoryX86CPUProfile.compatibleV1
+      let hiddenTSC = DoryX86CPUProfile(
+        identifier: "test.hidden-native-tsc",
+        features: baseline.features.subtracting([.tsc]),
+        physicalAddressBits: baseline.physicalAddressBits,
+        linearAddressBits: baseline.linearAddressBits,
+        virtualTSCFrequencyHz: baseline.virtualTSCFrequencyHz
+      )
+      let cases: [(String, DoryX86CPUProfile, UInt16, UInt64)] = [
+        ("hidden TSC", hiddenTSC, 0, 0),
+        ("user CPL", baseline, 3, 0),
+        ("user CPL with CR4.TSD", baseline, 3, 1 << 2),
+      ]
+      for (name, profile, selector, cr4) in cases {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          profile: profile
+        )
+        var state = try DoryX86ArchitecturalState(
+          registers: .init(rax: 1, rdx: 2),
+          rip: 0x1000,
+          rflags: [.reservedOne],
+          cs: .init(selector: selector, attributes: selector == 0 ? 0xA09B : 0xA0FB, limit: .max),
+          control: .init(cr4: cr4),
+          tsc: 0x1122_3344_5566_7788
+        )
+        let original = state
+        let summary = try executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            try memory.instructionBytes(at: address, maximumCount: maximumCount)
+          },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        )
+        #expect(summary == nil, "unexpected native RDTSC execution for \(name)")
+        #expect(state == original, "native RDTSC fallback changed state for \(name)")
+      }
+    #endif
+  }
+
   @Test func pushFlagsAndCliExecuteNativeLongModeKernelFastPath() throws {
     #if arch(arm64)
       let flags: DoryX86RFLAGS = [

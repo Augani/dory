@@ -92,6 +92,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case stackPushFlags
   case stackPop(destination: DoryIROperand)
   case clearInterruptFlag
+  case readTimestampCounter
   case signedMultiply(destination: DoryIROperand, lhs: DoryIROperand, rhs: DoryIROperand)
   case extendMove(destination: DoryIROperand, source: DoryIROperand, signed: Bool)
   case effectiveAddress(destination: DoryIROperand, address: DoryIRMemoryAddress)
@@ -176,7 +177,7 @@ public struct DoryX86IRTranslator: Sendable {
       let statementMemoryBehavior = lowering.statements.reduce(MemoryBehavior.none) {
         max($0, self.memoryBehavior($1))
       }
-      if instructionCount > 1, requiresJITFallback(lowering) {
+      if instructionCount > 1, requiresJITFallback(lowering) || requiresDispatchBoundary(lowering) {
         offset -= Int(instruction.length)
         instructionCount -= 1
         terminator = .next(instructionAddress)
@@ -381,6 +382,8 @@ public struct DoryX86IRTranslator: Sendable {
       )
     case .setInterruptsEnabled(false) where mode == .long64:
       return ([.clearInterruptFlag], nil)
+    case .readTimestampCounter(false) where mode == .long64:
+      return ([.readTimestampCounter], .next(instruction.nextInstructionAddress))
     case .signedMultiply(let destination, let lhs, let rhs):
       return (
         [
@@ -457,6 +460,15 @@ public struct DoryX86IRTranslator: Sendable {
     _ lowering: (statements: [DoryIRStatement], terminator: DoryIRTerminator?)
   ) -> Bool {
     lowering.statements.contains { !isBaselineJITSupported($0) }
+  }
+
+  private func requiresDispatchBoundary(
+    _ lowering: (statements: [DoryIRStatement], terminator: DoryIRTerminator?)
+  ) -> Bool {
+    lowering.statements.contains {
+      if case .readTimestampCounter = $0 { return true }
+      return false
+    }
   }
 
   private func isBaselineJITSupported(_ statement: DoryIRStatement) -> Bool {
@@ -617,7 +629,7 @@ public struct DoryX86IRTranslator: Sendable {
       return [address.base, address.index].compactMap { $0 }.allSatisfy {
         isJITGeneralRegister($0) && $0.width == address.addressWidth
       }
-    case .clearInterruptFlag:
+    case .clearInterruptFlag, .readTimestampCounter:
       return true
     case .helper:
       return false
@@ -680,7 +692,7 @@ public struct DoryX86IRTranslator: Sendable {
     case .extendMove(let destination, let source, _):
       if isMemory(destination) { return .write }
       return isMemory(source) ? .read : .none
-    case .effectiveAddress, .clearInterruptFlag, .helper:
+    case .effectiveAddress, .clearInterruptFlag, .readTimestampCounter, .helper:
       return .none
     }
   }
