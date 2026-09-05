@@ -573,7 +573,9 @@ public struct DoryX86IRTranslator: Sendable {
         ):
         targetWidth = .i8
       case .memory(let address, let width)
-      where (width == .i32 || width == .i64) && isJITMemoryAddress(address):
+      where isJITMemoryAddress(address)
+        && ((width == .i32 || width == .i64)
+          || (width == .i8 && !writesDestination && (operation == .compare || operation == .test))):
         targetWidth = width
       default:
         return false

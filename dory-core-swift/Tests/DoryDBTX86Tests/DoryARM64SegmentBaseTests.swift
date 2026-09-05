@@ -102,6 +102,39 @@ import Testing
     #endif
   }
 
+  @Test func longModeGSByteCompareUsesSegmentBaseInNativePath() throws {
+    #if arch(arm64)
+      // cmp byte ptr gs:[rip+0xf8],0: the linked slot at 0x100 differs from per-CPU storage.
+      let bytes: [UInt8] = [0x65, 0x80, 0x3D, 0xF8, 0, 0, 0, 0]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let nativeMemory = try SegmentRecordingMemory()
+        let interpretedMemory = try SegmentRecordingMemory()
+        for memory in [nativeMemory, interpretedMemory] {
+          try memory.backing.write(at: 0, bytes: bytes)
+          try memory.backing.write(at: 0x100, bytes: [0])
+          try memory.backing.write(at: 0x2100, bytes: [0x80])
+        }
+        var native = try makeState()
+        var interpreted = native
+        let result = try #require(DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024, optimization: optimization
+        ).execute(bytes: bytes, at: 0, mode: .long64, addressSpaceID: 0,
+          maximumInstructions: 1, state: &native, memory: nativeMemory))
+        let decoded = try DoryX86Decoder().decode(bytes, at: 0, mode: .long64)
+        #expect(DoryX86Interpreter().step(state: &interpreted, memory: interpretedMemory,
+          mode: .long64) == .retired(decoded))
+        #expect(result.block.tier.rawValue == optimization.rawValue)
+        #expect(result.block.requiresMemoryCallbacks)
+        #expect(native == interpreted)
+        #expect(native.rflags.contains(.sign))
+        #expect(!native.rflags.contains(.carry))
+        #expect(!native.rflags.contains(.overflow))
+        #expect(!native.rflags.contains(.zero))
+        #expect(nativeMemory.dataAccessCount > 0)
+      }
+    #endif
+  }
+
   @Test func nativePrefixCanCrossLongModeSegmentAccess() throws {
     #if arch(arm64)
       // mov eax,7; mov rax,gs:[rbx]

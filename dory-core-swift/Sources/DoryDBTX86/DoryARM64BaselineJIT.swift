@@ -1287,6 +1287,16 @@ public struct DoryARM64BaselineEmitter: Sendable {
         into: &words
       )
     }
+    if case .memory(let address, width: .i8) = destination,
+      !writesDestination, operation == .compare || operation == .test
+    {
+      return emitLowByteMemoryFlagsBinary(
+        operation,
+        address: address,
+        source: source,
+        into: &words
+      )
+    }
 
     let width: DoryIRIntegerWidth
     let registerTarget: DoryIRRegister?
@@ -1372,6 +1382,44 @@ public struct DoryARM64BaselineEmitter: Sendable {
       loadLowByteOperand(source, into: 10, words: &words)
     else { return false }
 
+    guard emitLowByteBinaryFlags(
+      operation,
+      writesDestination: writesDestination,
+      into: &words
+    ) else { return false }
+    if writesDestination {
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(destination.index) * 8))
+      emitImmediate(~UInt64(0xFF), register: 10, into: &words)
+      words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
+      words.append(encodeLogical(.or, left: 9, right: 11, destination: 9))
+      words.append(
+        encodeStore64(register: 9, base: 0, byteOffset: Int(destination.index) * 8)
+      )
+    }
+    return true
+  }
+
+  private func emitLowByteMemoryFlagsBinary(
+    _ operation: DoryIRBinaryOperation,
+    address: DoryIRMemoryAddress,
+    source: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
+    emitMemoryRead(addressRegister: 12, width: .i8, resultRegister: 9, words: &words)
+    guard loadLowByteOperand(source, into: 10, words: &words) else { return false }
+    return emitLowByteBinaryFlags(
+      operation,
+      writesDestination: false,
+      into: &words
+    )
+  }
+
+  private func emitLowByteBinaryFlags(
+    _ operation: DoryIRBinaryOperation,
+    writesDestination: Bool,
+    into words: inout [UInt32]
+  ) -> Bool {
     // Put the x86 sign bit at the ARM32 sign position before setting NZCV. This makes C, Z, N,
     // and V describe an exact eight-bit operation. The unshifted operands and result remain in
     // x9, x10, and x11 so the shared x86 auxiliary-carry and parity synthesis stays exact.
@@ -1419,15 +1467,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
       resultRegister: 11,
       into: &words
     )
-    if writesDestination {
-      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(destination.index) * 8))
-      emitImmediate(~UInt64(0xFF), register: 10, into: &words)
-      words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
-      words.append(encodeLogical(.or, left: 9, right: 11, destination: 9))
-      words.append(
-        encodeStore64(register: 9, base: 0, byteOffset: Int(destination.index) * 8)
-      )
-    }
     return true
   }
 

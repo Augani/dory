@@ -1,0 +1,29 @@
+{
+  "schema": "dory.native-byte-memory-flags-review@1",
+  "baseCommit": "8b49259aca08afecbd1e5a048b7d03f4097b0a24",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "59afd3fcecabd63d278745f9c6394e6477e1a37b621f960680c7918bb84fc714",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "e7f1593f82eb7b89a3170eda13d32bb826cf370c128a9a6e966af9b23a9a9fed",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "d989519785472bc9e4d060161b4dcae27cd356704bfc30733ef1e55266d334b7",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64SegmentBaseTests.swift": "ce9d4ae0ad30f411126884d62969b329fe4dd8b5a24f3a522ceacdcab8447c73"
+  },
+  "scope": "Native non-writing byte-memory CMP and TEST, including GS-relative reads; load source operand after the memory callback to respect ARM64 caller-saved registers.",
+  "validation": {
+    "result": "112 tests in 3 suites passed",
+    "suites": [
+      "DoryARM64BaselineJITTests",
+      "DoryARM64SegmentBaseTests",
+      "DoryX86RMWPreflightTests"
+    ],
+    "log": "native-byte-memory-flags-tests.log.gz",
+    "rawSHA256": "bacb1753748fc6d5ce7f61574396aa53b9b6a8a6cdd55f725fb1924b381b62e9",
+    "publishedUncompressedSHA256": "bacb1753748fc6d5ce7f61574396aa53b9b6a8a6cdd55f725fb1924b381b62e9",
+    "isolation": "Executed in frozen private checkout; four changed source/test files byte-identical to committed shared files. Existing generated FFI binding copied unchanged to satisfy package build.",
+    "generatedBindingSHA256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+  },
+  "cleanup": "Removed obsolete assertion expecting byte-memory CMP to remain interpreter-only; retained unsupported operand exclusions.",
+  "limitations": [
+    "No post-change guest boot or performance measurement yet.",
+    "Native memory writes, atomic operations and MMIO behavior are not expanded by this batch."
+  ]
+}

@@ -862,6 +862,110 @@ import Testing
     #endif
   }
 
+  @Test func byteMemoryCompareAndTestMatchInterpreterAcrossTiers() throws {
+    #if arch(arm64)
+      struct ByteFlagsCase {
+        let bytes: [UInt8]
+        let registers: DoryX86GeneralRegisters
+        let memoryByte: UInt8
+        let sourceRegisterByte: UInt8?
+      }
+      let cases = [
+        ByteFlagsCase(
+          bytes: [0x80, 0x38, 0x00],  // cmp byte ptr [rax],0
+          registers: .init(rax: 0x80),
+          memoryByte: 0,
+          sourceRegisterByte: nil
+        ),
+        ByteFlagsCase(
+          bytes: [0x80, 0x38, 0x7F],  // cmp byte ptr [rax],0x7f
+          registers: .init(rax: 0x80),
+          memoryByte: 0x80,
+          sourceRegisterByte: nil
+        ),
+        ByteFlagsCase(
+          bytes: [0x38, 0x18],  // cmp byte ptr [rax],bl
+          registers: .init(rax: 0x80, rbx: 0x34),
+          memoryByte: 0x34,
+          sourceRegisterByte: 0x34
+        ),
+        ByteFlagsCase(
+          bytes: [0xF6, 0x00, 0x81],  // test byte ptr [rax],0x81
+          registers: .init(rax: 0x80),
+          memoryByte: 0x80,
+          sourceRegisterByte: nil
+        ),
+      ]
+      let initialFlags: DoryX86RFLAGS = [
+        .reservedOne, .carry, .auxiliaryCarry, .direction, .interruptEnable, .overflow,
+      ]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        for testCase in cases {
+          let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+          let translatedMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+          for memory in [interpretedMemory, translatedMemory] {
+            try memory.write(at: 0, bytes: testCase.bytes)
+            try memory.write(at: 0x80, bytes: [testCase.memoryByte])
+          }
+
+          var interpreted = try DoryX86ArchitecturalState(
+            registers: testCase.registers,
+            rip: 0,
+            rflags: initialFlags
+          )
+          let decoded = try DoryX86Decoder().decode(testCase.bytes, at: 0, mode: .long64)
+          #expect(DoryX86Interpreter().step(state: &interpreted, memory: interpretedMemory,
+            mode: .long64) == .retired(decoded))
+
+          var translated = try DoryX86ArchitecturalState(
+            registers: testCase.registers,
+            rip: 0,
+            rflags: initialFlags
+          )
+          let execution = try #require(DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024, optimization: optimization
+          ).execute(bytes: testCase.bytes, at: 0, mode: .long64, addressSpaceID: 0,
+            maximumInstructions: 1, state: &translated, memory: translatedMemory))
+
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(execution.block.requiresMemoryCallbacks)
+          #expect(!execution.block.requiresRestartableMemoryReads)
+          #expect(translated == interpreted)
+          #expect(try translatedMemory.read(at: 0, byteCount: 0x100)
+            == interpretedMemory.read(at: 0, byteCount: 0x100))
+          if let sourceRegisterByte = testCase.sourceRegisterByte {
+            #expect(UInt8(truncatingIfNeeded: translated.registers.rbx) == sourceRegisterByte)
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func byteMemoryCompareFaultLeavesArchitecturalStateRestartable() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x80, 0x38, 0x00]  // cmp byte ptr [rax],0
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x40)
+        try memory.write(at: 0, bytes: bytes)
+        let initial = try DoryX86ArchitecturalState(
+          registers: .init(rax: 0x80),
+          rip: 0,
+          rflags: [.reservedOne, .carry, .direction, .overflow]
+        )
+        var state = initial
+        let execution = try #require(DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024, optimization: optimization
+        ).execute(bytes: bytes, at: 0, mode: .long64, addressSpaceID: 0,
+          maximumInstructions: 1, state: &state, memory: memory))
+
+        #expect(execution.block.tier.rawValue == optimization.rawValue)
+        #expect(execution.block.requiresMemoryCallbacks)
+        #expect(execution.exitCode == .interpreter)
+        #expect(state == initial)
+      }
+    #endif
+  }
+
   @Test func registerPushAndPopMatchInterpreterAcrossTiers() throws {
     #if arch(arm64)
       struct StackCase {
@@ -3218,11 +3322,10 @@ import Testing
     #expect(DoryARM64BaselineEmitter().compile(optimized, tier: .optimizing).tier == .optimizing)
   }
 
-  @Test func lowByteFlagsOnlyCoverageExcludesHighByteMemoryAndDestinationWrites() throws {
+  @Test func unsupportedByteOperandFormsRetainInterpreterFallback() throws {
     let excluded: [[UInt8]] = [
       [0x84, 0xE4],  // test ah,ah
       [0x3A, 0x00],  // cmp al,[rax]
-      [0x80, 0x38, 0x01],  // cmp byte ptr [rax],1
       [0x00, 0xC0],  // add al,al
     ]
     for bytes in excluded {
