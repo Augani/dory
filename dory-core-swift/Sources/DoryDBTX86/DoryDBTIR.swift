@@ -654,7 +654,13 @@ public struct DoryX86IRTranslator: Sendable {
       case .immediate(_, let width):
         return width == targetWidth
       case .memory(let address, let width):
-        guard targetWidth != .i8 else { return false }
+        if targetWidth == .i8 {
+          guard !writesDestination, operation == .compare || operation == .test else {
+            return false
+          }
+          guard case .register(let target) = destination else { return false }
+          return width == .i8 && isJITLowByteRegister(target) && isJITMemoryAddress(address)
+        }
         guard case .register = destination else { return false }
         return width == targetWidth && isJITMemoryAddress(address)
       }

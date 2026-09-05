@@ -867,6 +867,7 @@ import Testing
       struct ByteFlagsCase {
         let bytes: [UInt8]
         let registers: DoryX86GeneralRegisters
+        let memoryAddress: UInt64
         let memoryByte: UInt8
         let sourceRegisterByte: UInt8?
       }
@@ -874,24 +875,49 @@ import Testing
         ByteFlagsCase(
           bytes: [0x80, 0x38, 0x00],  // cmp byte ptr [rax],0
           registers: .init(rax: 0x80),
+          memoryAddress: 0x80,
           memoryByte: 0,
           sourceRegisterByte: nil
         ),
         ByteFlagsCase(
           bytes: [0x80, 0x38, 0x7F],  // cmp byte ptr [rax],0x7f
           registers: .init(rax: 0x80),
+          memoryAddress: 0x80,
           memoryByte: 0x80,
           sourceRegisterByte: nil
         ),
         ByteFlagsCase(
           bytes: [0x38, 0x18],  // cmp byte ptr [rax],bl
           registers: .init(rax: 0x80, rbx: 0x34),
+          memoryAddress: 0x80,
           memoryByte: 0x34,
           sourceRegisterByte: 0x34
         ),
         ByteFlagsCase(
+          bytes: [0x3A, 0x0C, 0x06],  // cmp cl,byte ptr [rsi+rax]
+          registers: .init(rax: 3, rcx: 0x8A, rsi: 0x80),
+          memoryAddress: 0x83,
+          memoryByte: 0x8A,
+          sourceRegisterByte: nil
+        ),
+        ByteFlagsCase(
+          bytes: [0x3A, 0x00],  // cmp al,[rax]: address/source alias and signed overflow
+          registers: .init(rax: 0x80),
+          memoryAddress: 0x80,
+          memoryByte: 0x7F,
+          sourceRegisterByte: nil
+        ),
+        ByteFlagsCase(
+          bytes: [0x84, 0x08],  // test byte ptr [rax],cl remains memory-destination
+          registers: .init(rax: 0x80, rcx: 0x81),
+          memoryAddress: 0x80,
+          memoryByte: 0x80,
+          sourceRegisterByte: nil
+        ),
+        ByteFlagsCase(
           bytes: [0xF6, 0x00, 0x81],  // test byte ptr [rax],0x81
           registers: .init(rax: 0x80),
+          memoryAddress: 0x80,
           memoryByte: 0x80,
           sourceRegisterByte: nil
         ),
@@ -905,7 +931,7 @@ import Testing
           let translatedMemory = try DoryX86ByteArrayMemory(byteCount: 0x100)
           for memory in [interpretedMemory, translatedMemory] {
             try memory.write(at: 0, bytes: testCase.bytes)
-            try memory.write(at: 0x80, bytes: [testCase.memoryByte])
+            try memory.write(at: testCase.memoryAddress, bytes: [testCase.memoryByte])
           }
 
           var interpreted = try DoryX86ArchitecturalState(
@@ -943,25 +969,30 @@ import Testing
 
   @Test func byteMemoryCompareFaultLeavesArchitecturalStateRestartable() throws {
     #if arch(arm64)
-      let bytes: [UInt8] = [0x80, 0x38, 0x00]  // cmp byte ptr [rax],0
-      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
-        let memory = try DoryX86ByteArrayMemory(byteCount: 0x40)
-        try memory.write(at: 0, bytes: bytes)
-        let initial = try DoryX86ArchitecturalState(
-          registers: .init(rax: 0x80),
-          rip: 0,
-          rflags: [.reservedOne, .carry, .direction, .overflow]
-        )
-        var state = initial
-        let execution = try #require(DoryARM64BaselineExecutor(
-          maximumCodeBytes: 16 * 1024, optimization: optimization
-        ).execute(bytes: bytes, at: 0, mode: .long64, addressSpaceID: 0,
-          maximumInstructions: 1, state: &state, memory: memory))
+      let cases: [([UInt8], DoryX86GeneralRegisters)] = [
+        ([0x80, 0x38, 0x00], .init(rax: 0x80)),  // cmp byte ptr [rax],0
+        ([0x3A, 0x08], .init(rax: 0x80, rcx: 0x55)),  // cmp cl,byte ptr [rax]
+      ]
+      for (bytes, registers) in cases {
+        for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+          let memory = try DoryX86ByteArrayMemory(byteCount: 0x40)
+          try memory.write(at: 0, bytes: bytes)
+          let initial = try DoryX86ArchitecturalState(
+            registers: registers,
+            rip: 0,
+            rflags: [.reservedOne, .carry, .direction, .overflow]
+          )
+          var state = initial
+          let execution = try #require(DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024, optimization: optimization
+          ).execute(bytes: bytes, at: 0, mode: .long64, addressSpaceID: 0,
+            maximumInstructions: 1, state: &state, memory: memory))
 
-        #expect(execution.block.tier.rawValue == optimization.rawValue)
-        #expect(execution.block.requiresMemoryCallbacks)
-        #expect(execution.exitCode == .interpreter)
-        #expect(state == initial)
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(execution.block.requiresMemoryCallbacks)
+          #expect(execution.exitCode == .interpreter)
+          #expect(state == initial)
+        }
       }
     #endif
   }
@@ -3915,7 +3946,6 @@ import Testing
   @Test func unsupportedByteOperandFormsRetainInterpreterFallback() throws {
     let excluded: [[UInt8]] = [
       [0x84, 0xE4],  // test ah,ah
-      [0x3A, 0x00],  // cmp al,[rax]
       [0x00, 0xC0],  // add al,al
     ]
     for bytes in excluded {

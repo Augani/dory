@@ -1,0 +1,12 @@
+{
+  "scope": "Native low-byte register comparison with byte memory source, reusing existing flags synthesis and precise memory callback handling. High-byte and unsupported byte arithmetic forms remain interpreter fallbacks.",
+  "validation": "105 baseline JIT tests passed across baseline/optimizing execution; added unequal cmp al,[rax] alias/overflow case and byte-memory-source fault rollback.",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "0ccf342a974cd7c6f820e38fd0f33dac7db395cbc1bca993bcc322f1015360a5",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "4a895e0b8b787a1fd405b32ae8bacfb8b515c124230be6c5d9a68c93789b0035",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "0b4f0d87a2acbbc832693f2429c4e38135f9fa45b5956c94dc7df163c93b0c81"
+  },
+  "log": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/lowbyte-memory-source-final.log",
+  "logSHA256": "5e4c849bcd8f9e0145ba8cfc1459353cc95fb1fa2fc757b48b072fb18f7d02b9",
+  "limitation": "Exact changed sources in isolated qualification checkout, not all-HEAD qualification; no boot speedup claimed."
+}

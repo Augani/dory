@@ -1653,10 +1653,18 @@ public struct DoryARM64BaselineEmitter: Sendable {
     writesDestination: Bool,
     into words: inout [UInt32]
   ) -> Bool {
-    guard isLowByteRegister(destination),
-      loadLowByteRegister(destination, into: 9, words: &words),
-      loadLowByteOperand(source, into: 10, words: &words)
-    else { return false }
+    guard isLowByteRegister(destination) else { return false }
+    if case .memory(let address, width: .i8) = source {
+      guard !writesDestination, operation == .compare || operation == .test,
+        emitMemoryAddress(address, into: 12, words: &words)
+      else { return false }
+      emitMemoryRead(addressRegister: 12, width: .i8, resultRegister: 10, words: &words)
+      guard loadLowByteRegister(destination, into: 9, words: &words) else { return false }
+    } else {
+      guard loadLowByteRegister(destination, into: 9, words: &words),
+        loadLowByteOperand(source, into: 10, words: &words)
+      else { return false }
+    }
 
     guard emitLowByteBinaryFlags(
       operation,
