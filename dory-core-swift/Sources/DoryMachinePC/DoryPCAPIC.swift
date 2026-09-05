@@ -416,15 +416,22 @@ public final class DoryPCIOAPIC: @unchecked Sendable {
 
   public func snapshot() -> [DoryPCIOAPICPinSnapshot] {
     lock.withLock {
-      pins.indices.map { index in
-        .init(
-          pin: index,
-          route: pins[index].route,
-          asserted: pins[index].asserted,
-          remoteIRR: pins[index].remoteIRR
-        )
-      }
+      pins.indices.map { snapshotLocked(for: $0) }
     }
+  }
+
+  func snapshot(for pin: Int) throws -> DoryPCIOAPICPinSnapshot {
+    guard pins.indices.contains(pin) else { throw DoryPCAPICError.invalidPin(pin) }
+    return lock.withLock { snapshotLocked(for: pin) }
+  }
+
+  private func snapshotLocked(for pin: Int) -> DoryPCIOAPICPinSnapshot {
+    .init(
+      pin: pin,
+      route: pins[pin].route,
+      asserted: pins[pin].asserted,
+      remoteIRR: pins[pin].remoteIRR
+    )
   }
 
 }

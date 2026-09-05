@@ -921,10 +921,12 @@ public final class DoryPCIOAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
     let index = Int(register - 0x10)
     let pin = index / 2
     guard pin < ioAPIC.pinCount else { return 0 }
-    let route = try ioAPIC.route(for: pin)
+    let snapshot = try ioAPIC.snapshot(for: pin)
+    let route = snapshot.route
     if !index.isMultiple(of: 2) { return route.destinationAPICID << 24 }
     return UInt32(route.vector)
       | (route.activeLow ? 1 << 13 : 0)
+      | (snapshot.remoteIRR ? 1 << 14 : 0)
       | (route.levelTriggered ? 1 << 15 : 0)
       | (route.masked ? 1 << 16 : 0)
   }

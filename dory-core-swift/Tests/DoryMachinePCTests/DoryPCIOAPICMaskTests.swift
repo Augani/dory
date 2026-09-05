@@ -4,6 +4,36 @@ import Testing
 @testable import DoryMachinePC
 
 @Suite struct DoryPCIOAPICMaskTests {
+  @Test func remoteIRRReadbackTracksLevelDeliveryAndIgnoresGuestWrites() throws {
+    let local = DoryPCLocalAPIC(apicID: 0)
+    try local.configureSpuriousVector(0xFF, softwareEnabled: true)
+    let io = DoryPCIOAPIC()
+    try io.attach(local)
+    io.seal()
+    let mmio = DoryPCIOAPICMMIO(ioAPIC: io)
+    try mmio.write(offset: 0, bytes: [0x10, 0, 0, 0])
+    try mmio.write(offset: 0x10, bytes: [0x40, 0xC0, 0, 0])
+    // Writing the read-only remote-IRR bit cannot manufacture a pending interrupt.
+    #expect(try mmio.read(offset: 0x10, byteCount: 4) == [0x40, 0x80, 0, 0])
+    try io.setAsserted(true, pin: 0)
+    #expect(local.acknowledge(interruptsEnabled: true) == 0x40)
+    #expect(try mmio.read(offset: 0x10, byteCount: 4) == [0x40, 0xC0, 0, 0])
+
+    // Masking the route or writing zero to remote IRR does not acknowledge delivery.
+    try mmio.write(offset: 0x10, bytes: [0x40, 0x80, 1, 0])
+    try io.setAsserted(false, pin: 0)
+    #expect(try mmio.read(offset: 0x10, byteCount: 4) == [0x40, 0xC0, 1, 0])
+    #expect(local.endOfInterrupt() == 0x40)
+    try io.endOfInterrupt(vector: 0x40, destinationAPICID: 0)
+    #expect(try mmio.read(offset: 0x10, byteCount: 4) == [0x40, 0x80, 1, 0])
+
+    // Edge delivery does not use remote IRR.
+    try mmio.write(offset: 0x10, bytes: [0x41, 0, 0, 0])
+    try io.setAsserted(true, pin: 0)
+    #expect(local.acknowledge(interruptsEnabled: true) == 0x41)
+    #expect(try mmio.read(offset: 0x10, byteCount: 4) == [0x41, 0, 0, 0])
+  }
+
   @Test func freshRedirectionEntriesReadBackArchitecturalResetValues() throws {
     let ram = try DoryX86ByteArrayMemory(byteCount: 0x1000)
     let bus = try DoryPCPhysicalMemoryBus(ram: ram)
