@@ -457,6 +457,30 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(firmware.definition.platform == .arm64LinuxV1)
         #expect(try firmware.legacyConfiguration() == legacy)
 
+        var x86Installer = legacy
+        x86Installer.guestArchitecture = .x86_64
+        x86Installer.installerISOPath = "/managed/installed-linux/installer.iso"
+        x86Installer.environment[DoryDesktopGraphicsPreference.environmentKey]
+            = DoryDesktopGraphicsPreference.virglVenus.rawValue
+        let translatedInstaller = try DoryMachineConfigurationMigrationBridge.migrate(
+            x86Installer,
+            facts: DoryMachineConfigurationMigrationFacts(
+                guestArchitecture: .x86_64,
+                systemDiskCapacityBytes: 64 * gibibyte,
+                lifecycle: DoryVMLifecycleMetadata(
+                    revision: 1,
+                    createdAtUnixMilliseconds: 1_787_200_000_000,
+                    updatedAtUnixMilliseconds: 1_787_200_000_000
+                )
+            )
+        )
+        #expect(translatedInstaller.bootContract == .efiInstaller)
+        #expect(translatedInstaller.definition.guest.architecture == .x86_64)
+        #expect(translatedInstaller.definition.boot.devices[0].kind == .installerISO)
+        #expect(translatedInstaller.definition.graphics.acceptableLevels == [.hardwareAccelerated3D])
+        #expect(translatedInstaller.definition.resources == DoryVMProductionResourceBudget.make(for: translatedInstaller.definition))
+        #expect(try translatedInstaller.legacyConfiguration() == x86Installer)
+
         let direct = try migrate(
             legacy,
             capacity: 64 * gibibyte,

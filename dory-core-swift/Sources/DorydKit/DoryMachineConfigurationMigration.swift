@@ -359,7 +359,10 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
 
     private func applyGraphicsPolicy(to environment: inout [String: String]) throws {
         guard definition.graphics != baselineDefinition.graphics else { return }
-        guard bootContract == .managedDirectKernel || bootContract == .efiInstalledDirectBoot,
+        guard bootContract == .managedDirectKernel
+                || bootContract == .efiInstalledDirectBoot
+                || (bootContract == .efiInstaller
+                    && definition.guest.architecture == .x86_64),
               authoritativeLegacyConfiguration.displayMode == .desktop else {
             throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange("graphics")
         }
@@ -727,6 +730,7 @@ public enum DoryMachineConfigurationMigrationBridge {
         )
         let acceleratedBoot = bootContract == .managedDirectKernel
             || bootContract == .efiInstalledDirectBoot
+            || (bootContract == .efiInstaller && facts.guestArchitecture == .x86_64)
         let guest = DoryGuestPlatform(family: .linux, architecture: facts.guestArchitecture)
         let translationConsent: DoryTranslationConsent =
             facts.guestArchitecture == .x86_64 ? .explicit : .notRequired
@@ -743,10 +747,9 @@ public enum DoryMachineConfigurationMigrationBridge {
         } else if acceleratedBoot {
             graphics = typedGraphicsPolicy(graphicsPreference)
         } else {
-            // Generic EFI media is admitted only through the portable DoryARMVirt software
-            // baseline. Advertising a currently unqualified display level first turns the proven
-            // software path into a fallback that requires an authorization the create workflow
-            // cannot truthfully supply.
+            // Portable ARM EFI installer media remains on the proven software baseline. The x86
+            // DoryPC installer path above is admitted only by the explicit Apple-silicon
+            // qualification gate and can carry the requested renderer authority.
             graphics = DoryVMGraphicsPolicy(acceptableLevels: [.software])
         }
         let displays = isDesktop ? [DoryVMDisplayConfiguration()] : []

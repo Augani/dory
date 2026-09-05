@@ -1,0 +1,9 @@
+{
+  "change": "Preserve requested graphics policy for x86 EFI installer migration and reverse projection; retain ARM EFI installer software policy",
+  "result": "17 migration tests passed; not runtime GPU qualification",
+  "sourceHashes": {
+    "dory-core-swift/Sources/DorydKit/DoryMachineConfigurationMigration.swift": "48dfb4f3adfe7befbc19740b88eaca388d5aa87719134d8ce957763e35393b64",
+    "dory-core-swift/Tests/DorydKitTests/DoryMachineConfigurationMigrationTests.swift": "18ebf7843aa86ac8b9472906412abc4a748464670193091ba5606a7a596d41bd"
+  },
+  "logSHA256": "6b15b2342ee0c52820719aafc6d23b1ad955b9287ccf93e56bd9209e9891c41e"
+}
