@@ -1,0 +1,116 @@
+{
+  "conclusion": "After the host console was unlocked, the isolated qualifier restored the retained saved state in a new process, reached the post-restore window state, consumed the prior saved-state artifact, then exited cleanly after AppKit termination and wrote a fresh Apple saved-state receipt. The earlier -25308 Secure Enclave/interaction denial did not repeat. This closes the locked-console diagnosis for the qualifier path, while release-daemon MachineManager Mac lifecycle qualification remains separate.",
+  "controlledUnlockedRestore": {
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer /private/tmp/dory_mac_unlocked_resume_cycle.py",
+    "exit": {
+      "exitedAt": "2026-09-05T09:23:56+0000",
+      "phase": "resume-exit",
+      "pid": 83852,
+      "returncode": 0
+    },
+    "harnessExit": 0,
+    "initialSavedState": {
+      "createdAt": "2026-09-05T09:22:32Z",
+      "stateBytes": 1476399104,
+      "stateSHA256": "60b2ac32f36192777ae42e86e3db5e5f208a742877f2806abc6f25f2cbee4f6b"
+    },
+    "newSavedStateAfterResumeSuspend": {
+      "createdAt": "2026-09-05T09:23:55Z",
+      "manifestState": "suspended",
+      "stateBytes": 1308626944,
+      "stateSHA256": "b2694327a03cf9d5799ffb2ec863e328eee5e676ce9de54a4b0caa3375ce4947"
+    },
+    "postRestoreBeforeTerminate": {
+      "label": "post-restore-before-terminate",
+      "manifestState": "stopped",
+      "present": false
+    },
+    "receiptPath": "/private/tmp/dory-mac-unlocked-resume-cycle-0905/receipt.json",
+    "receiptSHA256": "9bf6e6fe1525d560de862ac6fe0f23785aab15883689095077c7b62e4307dc4a",
+    "repeatSecKey25308ObservedInQueriedLogSlice": false,
+    "resumeProcessPID": 83852,
+    "resumeReadiness": {
+      "observedAt": "2026-09-05T09:23:37+0000",
+      "ok": true,
+      "phase": "resume-ready",
+      "pid": 83852,
+      "processReturncode": null,
+      "titles": [
+        "0|1.0|Dory \u2014 macOS resumed"
+      ]
+    },
+    "success": true,
+    "termination": {
+      "phase": "resume-terminate-request",
+      "pid": 83852,
+      "requestedAt": "2026-09-05T09:23:55+0000",
+      "terminate": {
+        "returncode": 0,
+        "stderr": "",
+        "stdout": "terminate true\n"
+      }
+    },
+    "topLevelLog": {
+      "exists": true,
+      "sha256": "026490a3aa7c4c93415774f7e53861df0848cccab27273b285694019b0533283",
+      "size": 3087
+    },
+    "topLevelLogPath": "/private/tmp/dory-mac-unlocked-resume-cycle-0905/run.log",
+    "virtualizationLog": {
+      "exists": true,
+      "sha256": "b5c3bff535772d79298b31b05d42e4b914bff14ac4ef8c91165130cb8fbe9b49",
+      "size": 30
+    },
+    "virtualizationLogPath": "/private/tmp/dory-mac-unlocked-resume-cycle-0905/vz-service.log"
+  },
+  "date": "2026-09-05",
+  "firstUnlockedObservation": {
+    "command": "python3 /private/tmp/dory_run_qualifier_resume_same_bundle.py",
+    "harnessExit": 124,
+    "laterStopAction": "not proven from that wrapper; after the timeout a later process inventory found no qualifier/VM process and the bundle was stopped with the prior saved-state consumed",
+    "limitation": "The wrapper only waited for resume CLI exit for 180s even though a resumed VM normally keeps running; it did not observe lifecycle readiness or issue an orderly termination in the script.",
+    "processPID": 95400,
+    "repeatSecKey25308ObservedInQueriedLogSlice": false
+  },
+  "freshSavedStateForControlledRestore": {
+    "command": "dory-vzmac-qualification run --machine /tmp/dory-actual-vzmac-ljqr23mq/M.dorymac --suspend-on-exit",
+    "harnessBug": "The initial combined Python harness failed its own readiness check because it passed -- to swift -e, so CommandLine.arguments[1] was --. A manual CGWindow query observed the running title before termination.",
+    "processPID": 82537,
+    "savedState": {
+      "createdAt": "2026-09-05T09:22:32Z",
+      "manifestState": "suspended",
+      "stateBytes": 1476399104,
+      "stateSHA256": "60b2ac32f36192777ae42e86e3db5e5f208a742877f2806abc6f25f2cbee4f6b"
+    },
+    "termination": "AppKit NSRunningApplication.terminate() returned true; process exited 0",
+    "windowTitleObservedExternally": "Dory \u2014 macOS running"
+  },
+  "input": {
+    "app": "/tmp/dory-arm-smp-0905.LAhbHr/DoryMacQualification.app/Contents/MacOS/dory-vzmac-qualification",
+    "bundle": "/tmp/dory-actual-vzmac-ljqr23mq/M.dorymac",
+    "hostConditionChange": "root read IOConsoleLocked=No before the successful retest; no keychain unlock/workaround was attempted by this agent",
+    "previousLockedFailure": "while the console was locked, restore failed with VZErrorDomain Code=12 and Virtualization service SecKeyCreateDecryptedDataWithParameters NSOSStatusErrorDomain -25308",
+    "userVMUntouched": true
+  },
+  "limitations": [
+    "This evidence uses DoryMacQualification.app on the isolated bundle, not the production doryd MachineManager path.",
+    "The readiness signal is external lifecycle/UI readiness via the qualifier window title after restore, not an in-guest macOS agent proof.",
+    "No user keychain operation was attempted and the user live Mac VM was untouched."
+  ],
+  "schema": 2,
+  "scope": "Unlocked-console same-isolated-bundle macOS saved-state restore observation using DoryMacQualification.app. This is a qualifier/new-process lifecycle observation on the isolated bundle, not release-daemon MachineManager qualification and not the user live VM.",
+  "source": {
+    "dirtyFilesAtEvidenceWrite": [
+      "A docs/virtualization/evidence/p07-macos-2026-09-05/unlocked-restore-observation.json"
+    ],
+    "repositoryHeadAtEvidenceWrite": "fc1f97315111b7621d40af99c163438ced6735e0"
+  },
+  "independentReview": {
+    "checks": [
+      "Receipt and both log digests verified",
+      "Receipt records post-restore window title and orderly process exit0",
+      "Source sets macOS resumed title only after awaited restoreSuspendedState succeeds"
+    ],
+    "limitation": "Lifecycle qualification via diagnostic application, not in-guest workload or release-daemon proof"
+  }
+}
