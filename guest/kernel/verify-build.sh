@@ -1,6 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")"
+source PINS
 source ./config-policy.sh
 source ./profile.sh
 
@@ -19,6 +20,8 @@ case "$ARCH" in
     COMPRESSED="$OUT/Image$PROFILE_SUFFIX.zst"
     SECONDARY=""
     STAMP="$OUT/kernel-build-arm64$PROFILE_SUFFIX.stamp"
+    PACKAGES="$OUT/build-packages-arm64$PROFILE_SUFFIX.txt"
+    TOOLCHAIN="$OUT/toolchain-arm64$PROFILE_SUFFIX.txt"
     ;;
   amd64|x86_64)
     ARCH="amd64"
@@ -27,6 +30,8 @@ case "$ARCH" in
     COMPRESSED="$OUT/vmlinux-x86$PROFILE_SUFFIX.zst"
     SECONDARY="$OUT/bzImage-x86$PROFILE_SUFFIX"
     STAMP="$OUT/kernel-build-amd64$PROFILE_SUFFIX.stamp"
+    PACKAGES="$OUT/build-packages-amd64$PROFILE_SUFFIX.txt"
+    TOOLCHAIN="$OUT/toolchain-amd64$PROFILE_SUFFIX.txt"
     ;;
   *)
     echo "usage: $0 [arm64|amd64]" >&2
@@ -35,6 +40,10 @@ case "$ARCH" in
 esac
 if { [ "$PROFILE" = "desktop" ] || [ "$PROFILE" = "accelerated-desktop" ]; } && [ "$ARCH" != "arm64" ]; then
   echo "desktop kernel profiles currently support arm64 only" >&2
+  exit 64
+fi
+if [ "$PROFILE" = "pc-virgl2" ] && [ "$ARCH" != "amd64" ]; then
+  echo "pc-virgl2 kernel profile currently supports amd64 only" >&2
   exit 64
 fi
 
@@ -48,7 +57,7 @@ stamp_value() {
   awk -F= -v key="$key" '$1 == key { sub(/^[^=]*=/, ""); print; exit }' "$STAMP"
 }
 
-for path in "$CONFIG" "$PRIMARY" "$COMPRESSED" "$STAMP"; do
+for path in "$CONFIG" "$PRIMARY" "$COMPRESSED" "$STAMP" "$PACKAGES" "$TOOLCHAIN"; do
   [ -s "$path" ] || fail "missing or empty $path; rebuild with guest/kernel/build.sh $ARCH"
 done
 if [ -n "$SECONDARY" ]; then
@@ -56,11 +65,17 @@ if [ -n "$SECONDARY" ]; then
 fi
 
 EXPECTED_INPUT="$(./input-fingerprint.sh "$ARCH")"
-[ "$(stamp_value schema)" = "3" ] || fail "$STAMP has an unsupported schema"
+[ "$(stamp_value schema)" = "4" ] || fail "$STAMP has an unsupported schema"
 [ "$(stamp_value arch)" = "$ARCH" ] || fail "$STAMP was built for another architecture"
 [ "$(stamp_value profile)" = "$PROFILE" ] || fail "$STAMP was built for another kernel profile"
 [ "$(stamp_value input_sha256)" = "$EXPECTED_INPUT" ] \
   || fail "$PRIMARY is stale relative to the current kernel configs/patches"
+[ "$(stamp_value builder_snapshot)" = "$KERNEL_DEBIAN_SNAPSHOT" ] \
+  || fail "$STAMP was built with another Debian package snapshot"
+[ "$(stamp_value build_packages_sha256)" = "$(shasum -a 256 "$PACKAGES" | awk '{print $1}')" ] \
+  || fail "$PACKAGES does not match its build stamp"
+[ "$(stamp_value toolchain_sha256)" = "$(shasum -a 256 "$TOOLCHAIN" | awk '{print $1}')" ] \
+  || fail "$TOOLCHAIN does not match its build stamp"
 [ "$(stamp_value config_sha256)" = "$(shasum -a 256 "$CONFIG" | awk '{print $1}')" ] \
   || fail "$CONFIG does not match its build stamp"
 [ "$(stamp_value primary_sha256)" = "$(shasum -a 256 "$PRIMARY" | awk '{print $1}')" ] \
@@ -91,6 +106,7 @@ esac
 case "$PROFILE" in
   headless) CONFIG_FRAGMENTS+=(dory-headless.fragment) ;;
   venus) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-gpu.fragment) ;;
+  pc-virgl2) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-pc-virgl2.fragment) ;;
   desktop) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-desktop.fragment) ;;
   accelerated-desktop) CONFIG_FRAGMENTS+=(dory-virtual-display.fragment dory-gpu.fragment dory-desktop.fragment dory-accelerated-desktop.fragment) ;;
 esac

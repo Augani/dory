@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "scope": "PC VirGL2 x86_64 kernel artifact verification; no guest boot or graphics workload claimed",
+  "verification": {
+    "command": "DORY_KERNEL_PROFILE=pc-virgl2 ./guest/kernel/verify-build.sh amd64",
+    "exit_code": 0,
+    "input_sha256": "fb2443edd659291c06df0005320cc762c57e1632d174c9ce111dadc7424d4d1a"
+  },
+  "build_stamp": {
+    "schema": "4",
+    "arch": "amd64",
+    "profile": "pc-virgl2",
+    "input_sha256": "fb2443edd659291c06df0005320cc762c57e1632d174c9ce111dadc7424d4d1a",
+    "builder_snapshot": "20260713T000000Z",
+    "build_packages_sha256": "2de4df6b4cbbf7861c42cc567b3b5553eca05ba229765721926d31f323e2c288",
+    "toolchain_sha256": "bc6ae160459de8417f41481cc36bb95ef951d46cba9e5b949c01998a7aaf65d9",
+    "config_sha256": "91bd5afad852fd16127a395b11745d01fc4a9eea1609af4aa4801f4aee84b4b8",
+    "primary_sha256": "7b25d6c81f8c42624fad40f410baaddee3f4f9694a9239bf1e3c5cd41d72093d",
+    "compressed_sha256": "5d859ef3c70138e171f814452a41c1e4a5b93e558be52dc0fd8a5a7640f98826",
+    "secondary_sha256": "d301a250643bd578413d4b6f17829d1253cc61838d9ebb4114ff6c69979252b4"
+  },
+  "toolchain": [
+    "builder_snapshot=20260713T000000Z",
+    "build_platform=aarch64",
+    "make_arch=x86_64",
+    "cross_compile=x86_64-linux-gnu-",
+    "cc_version=x86_64-linux-gnu-gcc (Debian 12.2.0-14) 12.2.0",
+    "ld_version=GNU ld (GNU Binutils for Debian) 2.40"
+  ],
+  "source_sha256": {
+    "guest/kernel/PINS": "115a434971373d72b3a671624672d1e1f57c5128f82dfed0265afa0d7040da3c",
+    "guest/kernel/build.sh": "f1be1dadbbba68096ce782dce2a34387bad9e04d10bed73eddb8444949c5bef9",
+    "guest/kernel/input-fingerprint.sh": "ba6a4d4a353bcae5e0e3c77d03c8265386cab8e49f94405fb6f6349db3e4293d",
+    "guest/kernel/profile.sh": "6e5fff55d1dcf81ea4096fdd123655eb324234f26aa253eb852d4a47ba75f17b",
+    "guest/kernel/verify-build.sh": "d6776a3e1c79e46dfc240d679a06141d426e4adf3329fdf79a8159e04d7068d4",
+    "guest/kernel/dory-pc-virgl2.fragment": "4ac60a4a15ff48cc2121456bc9c75d5b6d187518d9073b42307105fadbc36ba2"
+  },
+  "remaining": [
+    "Boot this exact kernel through the PC runtime",
+    "Bind kernel and Mesa artifacts to the production graphics launch authority",
+    "Verify real guest accelerated GLX output and renderer identity",
+    "Qualify sustained graphics and failure recovery"
+  ]
+}

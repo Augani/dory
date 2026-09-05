@@ -10,6 +10,13 @@ OUT="$(pwd)/../out"
 mkdir -p "$OUT"
 PROFILE="$(dory_kernel_resolve_profile)"
 PROFILE_SUFFIX="$(dory_kernel_profile_suffix "$PROFILE")"
+BUILD_JOBS="${DORY_KERNEL_BUILD_JOBS:-4}"
+case "$BUILD_JOBS" in
+  ''|*[!0-9]*|0) echo "DORY_KERNEL_BUILD_JOBS must be a positive integer" >&2; exit 64 ;;
+esac
+BUILD_PLATFORM=""
+CROSS_COMPILE_PREFIX=""
+TOOLCHAIN_PACKAGES=""
 
 case "$KERNEL_SOURCE_DATE_EPOCH" in
   ''|*[!0-9]*) echo "KERNEL_SOURCE_DATE_EPOCH must be a non-negative integer" >&2; exit 64 ;;
@@ -41,15 +48,17 @@ docker_cmd() {
 
 case "$ARCH" in
   arm64)
-    PLATFORM="linux/arm64"
+    BUILD_PLATFORM="linux/arm64"
     MAKE_ARCH="arm64"
     CONFIGS="dory.config dory-arm.config"
     TARGETS="Image"
     ;;
   amd64|x86_64)
     ARCH="amd64"
-    PLATFORM="linux/amd64"
+    BUILD_PLATFORM="linux/arm64"
     MAKE_ARCH="x86_64"
+    CROSS_COMPILE_PREFIX="x86_64-linux-gnu-"
+    TOOLCHAIN_PACKAGES="gcc-x86-64-linux-gnu binutils-x86-64-linux-gnu"
     CONFIGS="dory.config dory-x86.config"
     TARGETS="vmlinux bzImage"
     ;;
@@ -62,11 +71,16 @@ esac
 case "$PROFILE" in
   headless) CONFIGS="$CONFIGS dory-headless.fragment" ;;
   venus) CONFIGS="$CONFIGS dory-virtual-display.fragment dory-gpu.fragment" ;;
+  pc-virgl2) CONFIGS="$CONFIGS dory-virtual-display.fragment dory-pc-virgl2.fragment" ;;
   desktop) CONFIGS="$CONFIGS dory-virtual-display.fragment dory-desktop.fragment" ;;
   accelerated-desktop) CONFIGS="$CONFIGS dory-virtual-display.fragment dory-gpu.fragment dory-desktop.fragment dory-accelerated-desktop.fragment" ;;
 esac
 if { [ "$PROFILE" = "desktop" ] || [ "$PROFILE" = "accelerated-desktop" ]; } && [ "$ARCH" != "arm64" ]; then
   echo "desktop kernel profiles currently support arm64 only" >&2
+  exit 64
+fi
+if [ "$PROFILE" = "pc-virgl2" ] && [ "$ARCH" != "amd64" ]; then
+  echo "pc-virgl2 kernel profile currently supports amd64 only" >&2
   exit 64
 fi
 
@@ -93,17 +107,24 @@ FINAL_INPUT_FINGERPRINT="$(DORY_KERNEL_PROFILE="$PROFILE" ./input-fingerprint.sh
 CID=""
 STAGING=""
 cleanup() {
-  if [ -n "$CID" ]; then
-    docker_cmd rm -f "$CID" >/dev/null 2>&1 || true
-  fi
-  if [ -n "$STAGING" ]; then
-    rm -rf "$STAGING"
+  status=$?
+  if [ "$status" -eq 0 ] || [ "${DORY_KERNEL_PRESERVE_FAILED_CANDIDATE:-1}" = 0 ]; then
+    if [ -n "$CID" ]; then
+      docker_cmd rm -f "$CID" >/dev/null 2>&1 || true
+    fi
+    if [ -n "$STAGING" ]; then
+      rm -rf "$STAGING"
+    fi
+  else
+    [ -z "$STAGING" ] || echo "preserving failed kernel candidate in $STAGING" >&2
+    [ -z "$CID" ] || echo "preserving failed kernel build container $CID" >&2
   fi
 }
 trap cleanup EXIT
 
-CID="$(docker_cmd create --platform "$PLATFORM" \
+CID="$(docker_cmd create --platform "$BUILD_PLATFORM" \
   -e ARCH="$MAKE_ARCH" \
+  -e CROSS_COMPILE="$CROSS_COMPILE_PREFIX" \
   -e LC_ALL=C \
   -e TZ=UTC \
   -e SOURCE_DATE_EPOCH="$KERNEL_SOURCE_DATE_EPOCH" \
@@ -118,6 +139,11 @@ CID="$(docker_cmd create --platform "$PLATFORM" \
   -e DORY_KERNEL_CONFIG_TARB64="$CONFIG_TARB64" \
   -e DORY_KERNEL_PATCHES="$PATCH_LIST" \
   -e DORY_KERNEL_TARGETS="$TARGETS" \
+  -e DORY_KERNEL_BUILD_JOBS="$BUILD_JOBS" \
+  -e DORY_KERNEL_TOOLCHAIN_PACKAGES="$TOOLCHAIN_PACKAGES" \
+  -e DORY_KERNEL_DEBIAN_SNAPSHOT="$KERNEL_DEBIAN_SNAPSHOT" \
+  -e DORY_KERNEL_DEBIAN_SNAPSHOT_URL="$KERNEL_DEBIAN_SNAPSHOT_URL" \
+  -e DORY_KERNEL_DEBIAN_SECURITY_SNAPSHOT_URL="$KERNEL_DEBIAN_SECURITY_SNAPSHOT_URL" \
   -e DORY_KERNEL_PROFILE="$PROFILE" \
   -e DORY_KERNEL_SUFFIX="$PROFILE_SUFFIX" \
   -e DORY_KERNEL_INPUT_SHA256="$INPUT_FINGERPRINT" \
@@ -128,8 +154,21 @@ CID="$(docker_cmd create --platform "$PLATFORM" \
   printf "%s" "$DORY_KERNEL_CONFIG_TARB64" | base64 -d | tar -xzf - -C /tmp/dory-kernel-config
   set -x
   mkdir -p /out
-  apt-get update
-  apt-get install -y build-essential flex bison bc libssl-dev libelf-dev xz-utils zstd curl python3 patch
+  printf "deb [check-valid-until=no] %s bookworm main\ndeb [check-valid-until=no] %s bookworm-security main\n" \
+    "$DORY_KERNEL_DEBIAN_SNAPSHOT_URL" "$DORY_KERNEL_DEBIAN_SECURITY_SNAPSHOT_URL" \
+    > /etc/apt/sources.list
+  find /etc/apt/sources.list.d -type f -delete 2>/dev/null || true
+  apt-get -o Acquire::Retries=3 -o Acquire::Check-Valid-Until=false update
+  apt-get -o Acquire::Retries=3 -o Acquire::Check-Valid-Until=false install -y build-essential flex bison bc libssl-dev libelf-dev xz-utils zstd curl python3 patch $DORY_KERNEL_TOOLCHAIN_PACKAGES
+  dpkg-query -W -f="\${binary:Package}=\${Version}\n" | LC_ALL=C sort > "/out/build-packages-$DORY_KERNEL_ARCH$DORY_KERNEL_SUFFIX.txt"
+  {
+    printf "builder_snapshot=%s\n" "$DORY_KERNEL_DEBIAN_SNAPSHOT"
+    printf "build_platform=%s\n" "$(uname -m)"
+    printf "make_arch=%s\n" "$ARCH"
+    printf "cross_compile=%s\n" "$CROSS_COMPILE"
+    ${CROSS_COMPILE}gcc --version | sed "s/^/cc_version=/" | head -n 1
+    ${CROSS_COMPILE}ld --version | sed "s/^/ld_version=/" | head -n 1
+  } > "/out/toolchain-$DORY_KERNEL_ARCH$DORY_KERNEL_SUFFIX.txt"
   curl -fsSL '"$KERNEL_URL"' -o linux.tar.xz
   echo "'"$KERNEL_SHA256"'  linux.tar.xz" | sha256sum -c -
   tar xf linux.tar.xz --strip-components=1
@@ -148,7 +187,7 @@ CID="$(docker_cmd create --platform "$PLATFORM" \
   make olddefconfig
   KSUFFIX="$DORY_KERNEL_SUFFIX"
   cp .config "/out/config-$DORY_KERNEL_ARCH$KSUFFIX"
-  make -j$(nproc) $DORY_KERNEL_TARGETS
+  make -j"$DORY_KERNEL_BUILD_JOBS" $DORY_KERNEL_TARGETS
   if [ "$DORY_KERNEL_ARCH" = arm64 ]; then
     cp arch/arm64/boot/Image "/out/Image$KSUFFIX"
     zstd -19 -f "/out/Image$KSUFFIX" -o "/out/Image$KSUFFIX.zst"
@@ -167,7 +206,10 @@ CID="$(docker_cmd create --platform "$PLATFORM" \
   fi
   STAMP_TMP="$STAMP.tmp"
   {
-    printf "schema=3\narch=%s\nprofile=%s\ninput_sha256=%s\n" "$DORY_KERNEL_ARCH" "$DORY_KERNEL_PROFILE" "$DORY_KERNEL_INPUT_SHA256"
+    printf "schema=4\narch=%s\nprofile=%s\ninput_sha256=%s\n" "$DORY_KERNEL_ARCH" "$DORY_KERNEL_PROFILE" "$DORY_KERNEL_INPUT_SHA256"
+    printf "builder_snapshot=%s\n" "$DORY_KERNEL_DEBIAN_SNAPSHOT"
+    printf "build_packages_sha256=%s\n" "$(sha256sum "/out/build-packages-$DORY_KERNEL_ARCH$KSUFFIX.txt" | awk "{print \$1}")"
+    printf "toolchain_sha256=%s\n" "$(sha256sum "/out/toolchain-$DORY_KERNEL_ARCH$KSUFFIX.txt" | awk "{print \$1}")"
     printf "config_sha256=%s\n" "$(sha256sum "/out/config-$DORY_KERNEL_ARCH$KSUFFIX" | awk "{print \$1}")"
     printf "primary_sha256=%s\n" "$(sha256sum "$PRIMARY" | awk "{print \$1}")"
     printf "compressed_sha256=%s\n" "$(sha256sum "$COMPRESSED" | awk "{print \$1}")"
@@ -187,10 +229,10 @@ CID=""
 DORY_KERNEL_PROFILE="$PROFILE" DORY_KERNEL_OUT_DIR="$STAGING" ./verify-build.sh "$ARCH"
 
 if [ "$ARCH" = arm64 ]; then
-  PUBLISH=("config-arm64$PROFILE_SUFFIX" "Image$PROFILE_SUFFIX" "Image$PROFILE_SUFFIX.zst")
+  PUBLISH=("config-arm64$PROFILE_SUFFIX" "Image$PROFILE_SUFFIX" "Image$PROFILE_SUFFIX.zst" "build-packages-arm64$PROFILE_SUFFIX.txt" "toolchain-arm64$PROFILE_SUFFIX.txt")
   STAMP_NAME="kernel-build-arm64$PROFILE_SUFFIX.stamp"
 else
-  PUBLISH=("config-amd64$PROFILE_SUFFIX" "vmlinux-x86$PROFILE_SUFFIX" "vmlinux-x86$PROFILE_SUFFIX.zst" "bzImage-x86$PROFILE_SUFFIX")
+  PUBLISH=("config-amd64$PROFILE_SUFFIX" "vmlinux-x86$PROFILE_SUFFIX" "vmlinux-x86$PROFILE_SUFFIX.zst" "bzImage-x86$PROFILE_SUFFIX" "build-packages-amd64$PROFILE_SUFFIX.txt" "toolchain-amd64$PROFILE_SUFFIX.txt")
   STAMP_NAME="kernel-build-amd64$PROFILE_SUFFIX.stamp"
 fi
 for artifact in "${PUBLISH[@]}"; do

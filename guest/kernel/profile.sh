@@ -18,8 +18,8 @@ dory_kernel_resolve_profile() {
   fi
 
   case "$profile" in
-    headless|venus|desktop|accelerated-desktop) ;;
-    *) echo "DORY_KERNEL_PROFILE must be headless, venus, desktop, or accelerated-desktop" >&2; return 64 ;;
+    headless|venus|pc-virgl2|desktop|accelerated-desktop) ;;
+    *) echo "DORY_KERNEL_PROFILE must be headless, venus, pc-virgl2, desktop, or accelerated-desktop" >&2; return 64 ;;
   esac
   if [ "$legacy_gpu" = "1" ] && [ "$profile" != "venus" ]; then
     echo "DORY_EXPERIMENTAL_GPU=1 conflicts with DORY_KERNEL_PROFILE=$profile" >&2
@@ -32,6 +32,7 @@ dory_kernel_profile_suffix() {
   case "$1" in
     headless) printf '\n' ;;
     venus) printf '%s\n' '-gpu' ;;
+    pc-virgl2) printf '%s\n' '-pc-virgl2' ;;
     desktop) printf '%s\n' '-desktop' ;;
     # This is the production desktop profile, so retain the established release artifact names.
     accelerated-desktop) printf '%s\n' '-desktop' ;;

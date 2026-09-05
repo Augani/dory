@@ -23,11 +23,16 @@ esac
 case "$PROFILE" in
   headless) CONFIGS+=(dory-headless.fragment) ;;
   venus) CONFIGS+=(dory-virtual-display.fragment dory-gpu.fragment) ;;
+  pc-virgl2) CONFIGS+=(dory-virtual-display.fragment dory-pc-virgl2.fragment) ;;
   desktop) CONFIGS+=(dory-virtual-display.fragment dory-desktop.fragment) ;;
   accelerated-desktop) CONFIGS+=(dory-virtual-display.fragment dory-gpu.fragment dory-desktop.fragment dory-accelerated-desktop.fragment) ;;
 esac
 if { [ "$PROFILE" = "desktop" ] || [ "$PROFILE" = "accelerated-desktop" ]; } && [ "$ARCH" != "arm64" ]; then
   echo "desktop kernel profiles currently support arm64 only" >&2
+  exit 64
+fi
+if [ "$PROFILE" = "pc-virgl2" ] && [ "$ARCH" != "amd64" ]; then
+  echo "pc-virgl2 kernel profile currently supports amd64 only" >&2
   exit 64
 fi
 
@@ -42,8 +47,9 @@ fi
 # Hash names as well as contents so adding, removing, reordering, or replacing an input invalidates
 # every previously built kernel. The schema marker makes future fingerprint changes explicit.
 {
-  printf 'schema=3\narch=%s\nprofile=%s\nkernel_version=%s\nkernel_url=%s\nkernel_sha256=%s\nbuilder_image=%s\n' \
-    "$ARCH" "$PROFILE" "$KERNEL_VERSION" "$KERNEL_URL" "$KERNEL_SHA256" "$KERNEL_BUILDER_IMAGE"
+  printf 'schema=4\narch=%s\nprofile=%s\nkernel_version=%s\nkernel_url=%s\nkernel_sha256=%s\nbuilder_image=%s\nbuild_jobs_default=4\ndebian_snapshot=%s\ndebian_snapshot_url=%s\ndebian_security_snapshot_url=%s\n' \
+    "$ARCH" "$PROFILE" "$KERNEL_VERSION" "$KERNEL_URL" "$KERNEL_SHA256" "$KERNEL_BUILDER_IMAGE" \
+    "$KERNEL_DEBIAN_SNAPSHOT" "$KERNEL_DEBIAN_SNAPSHOT_URL" "$KERNEL_DEBIAN_SECURITY_SNAPSHOT_URL"
   for input in build.sh docker-endpoint.sh profile.sh PINS "${CONFIGS[@]}" "${PATCHES[@]}"; do
     printf 'input=%s\n' "$input"
     shasum -a 256 "$input"

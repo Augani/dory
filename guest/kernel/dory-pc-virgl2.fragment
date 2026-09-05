@@ -1,0 +1,15 @@
+# PC/x86_64 VirGL2 renderer support layered on dory-virtual-display.fragment. This profile
+# intentionally does not inherit the ARM Venus page-size contract from dory-gpu.fragment.
+CONFIG_DMABUF_HEAPS=y
+CONFIG_UDMABUF=y
+
+# The PC VirGL2 runner drives scanout explicitly and does not need a framebuffer console fallback.
+CONFIG_DRM_FBDEV_EMULATION=n
+CONFIG_FB=n
+CONFIG_FB_VIRTUAL=n
+
+# x86 defconfig can pull physical PC GPU drivers when generic DRM support is selected. The PC
+# runner exposes only virtio-gpu, so keep those drivers out of the immutable VirGL2 kernel.
+CONFIG_DRM_I915=n
+CONFIG_DRM_XE=n
+CONFIG_DRM_GMA500=n

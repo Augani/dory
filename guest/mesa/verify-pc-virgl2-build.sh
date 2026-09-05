@@ -139,8 +139,10 @@ fi
 driver_dynamic="$(elf_dynamic "$DRIVER")"
 gl_loader_dynamic="$(elf_dynamic "$GL_LOADER")"
 gallium_dynamic="$(elf_dynamic "$GALLIUM")"
+# readelf prints dynamic tags as `(RUNPATH)`, while llvm-objdump prints bare `RUNPATH`/`RPATH`
+# table labels. Check both spellings so the fallback verifier does not miss ambient search paths.
 for dynamic_section in "$driver_dynamic" "$gl_loader_dynamic" "$gallium_dynamic"; do
-  if grep -Eq '\((RPATH|RUNPATH)\)' <<<"$dynamic_section"; then
+  if grep -Eq '\((RPATH|RUNPATH)\)|^[[:space:]]*(RPATH|RUNPATH)[[:space:]]' <<<"$dynamic_section"; then
     fail "PC VirGL2 runtime carries an ambient dynamic-loader search path"
   fi
 done
@@ -167,7 +169,12 @@ runtime_dyn_symbols="$(
 if grep -Fq 'GLIBC_PRIVATE' <<<"$runtime_dyn_symbols"; then
   fail "runtime references the non-public GLIBC_PRIVATE ABI"
 fi
-glibc_symbols="$(sed -n -e 's/.*@\(GLIBC_[0-9][0-9.]*\).*/\1/p' -e 's/.*@@\(GLIBC_[0-9][0-9.]*\).*/\1/p' -e 's/.*\[\(GLIBC_[0-9][0-9.]*\)\].*/\1/p' <<<"$runtime_dyn_symbols")"
+glibc_symbols="$(sed -n \
+  -e 's/.*@\(GLIBC_[0-9][0-9.]*\).*/\1/p' \
+  -e 's/.*@@\(GLIBC_[0-9][0-9.]*\).*/\1/p' \
+  -e 's/.*\[\(GLIBC_[0-9][0-9.]*\)\].*/\1/p' \
+  -e 's/.*(\(GLIBC_[0-9][0-9.]*\)).*/\1/p' \
+  <<<"$runtime_dyn_symbols")"
 actual_max_glibc="$(LC_ALL=C sort -Vu <<<"$glibc_symbols" | tail -n 1)"
 grep -Eq '^GLIBC_[0-9]+(\.[0-9]+)+$' <<<"$actual_max_glibc" \
   || fail "runtime ELF does not declare a valid public GNU-libc symbol floor"
