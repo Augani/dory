@@ -1,0 +1,97 @@
+{
+  "scope": "Fixture tests execute real cache preflight; rustup sentinel exits73 when rebuild begins. They do not build Rust or qualify a binary.",
+  "scriptSHA256": "b30289394462cbcd9a165466ecef464d58e31de22e0e0aca96f1d3239d6bf67d",
+  "results": [
+    {
+      "version": "before",
+      "case": "intact",
+      "exit": 0,
+      "output": "DoryFFI.xcframework is current (e20269a1dfa1ad6752e937cbb413fc3d16001f51d4beda55829ca1c38eec4006)"
+    },
+    {
+      "version": "before",
+      "case": "modified artifacts/DoryFFI.xcframework/Info.plist",
+      "exit": 0,
+      "output": "DoryFFI.xcframework is current (e20269a1dfa1ad6752e937cbb413fc3d16001f51d4beda55829ca1c38eec4006)"
+    },
+    {
+      "version": "before",
+      "case": "modified artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+      "exit": 0,
+      "output": "DoryFFI.xcframework is current (e20269a1dfa1ad6752e937cbb413fc3d16001f51d4beda55829ca1c38eec4006)"
+    },
+    {
+      "version": "before",
+      "case": "modified artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+      "exit": 0,
+      "output": "DoryFFI.xcframework is current (e20269a1dfa1ad6752e937cbb413fc3d16001f51d4beda55829ca1c38eec4006)"
+    },
+    {
+      "version": "before",
+      "case": "modified artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+      "exit": 0,
+      "output": "DoryFFI.xcframework is current (e20269a1dfa1ad6752e937cbb413fc3d16001f51d4beda55829ca1c38eec4006)"
+    },
+    {
+      "version": "before",
+      "case": "modified Sources/DoryCore/generated/dory_ffi.swift",
+      "exit": 0,
+      "output": "DoryFFI.xcframework is current (e20269a1dfa1ad6752e937cbb413fc3d16001f51d4beda55829ca1c38eec4006)"
+    },
+    {
+      "version": "after",
+      "case": "intact",
+      "exit": 0,
+      "output": "DoryFFI.xcframework is current (14af45155d00a71daf72e8daefff60f24be911d968cc5bd6ff6f529a476e28da)"
+    },
+    {
+      "version": "after",
+      "case": "modified artifacts/DoryFFI.xcframework/Info.plist",
+      "exit": 73,
+      "output": ""
+    },
+    {
+      "version": "after",
+      "case": "modified artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+      "exit": 73,
+      "output": ""
+    },
+    {
+      "version": "after",
+      "case": "modified artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+      "exit": 73,
+      "output": ""
+    },
+    {
+      "version": "after",
+      "case": "modified artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+      "exit": 73,
+      "output": ""
+    },
+    {
+      "version": "after",
+      "case": "modified Sources/DoryCore/generated/dory_ffi.swift",
+      "exit": 73,
+      "output": ""
+    },
+    {
+      "version": "after",
+      "case": "missing output receipt",
+      "exit": 73,
+      "output": ""
+    },
+    {
+      "version": "after",
+      "case": "missing Swift binding",
+      "exit": 73,
+      "output": ""
+    },
+    {
+      "version": "after",
+      "case": "changed Rust source",
+      "exit": 73,
+      "output": ""
+    }
+  ],
+  "commit": "1849acf85"
+}
