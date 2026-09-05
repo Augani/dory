@@ -1,5 +1,6 @@
 import CryptoKit
 @testable import DorydKit
+import DoryOperations
 import DoryRendererWorkerWireContracts
 import Foundation
 import Testing
@@ -216,7 +217,7 @@ struct DoryRendererBootstrapQualificationTests {
             format: .xml,
             options: 0
         ).write(to: contents.appendingPathComponent("Info.plist"))
-        try fixture.receipt.write(
+        try fixture.productionRuntimeReceipt().write(
             to: resources.appendingPathComponent(
                 DoryVerifiedRendererBootstrapQualification.receiptFilename
             )
@@ -456,11 +457,22 @@ private struct RendererBootstrapQualificationFixture {
         try! Self.signature(value, key: privateKey)
     }
 
+    func productionRuntimeReceipt() throws -> Data {
+        var runtime = object
+        let productionKeyID = try Self.productionSigningKeyID()
+        runtime["signingKeyID"] = productionKeyID
+        runtime["revocationKeyID"] = productionKeyID
+        return try Self.canonical(runtime)
+    }
+
     func pcVirGL2Receipt() throws -> Data {
         let transcript = String(repeating: "c", count: 64)
         var pc = object
+        let productionKeyID = try Self.productionSigningKeyID()
         pc["bootstrapTranscriptSHA256"] = transcript
         pc["qualificationIdentity"] = "dory-renderer-bootstrap:\(transcript)"
+        pc["signingKeyID"] = productionKeyID
+        pc["revocationKeyID"] = productionKeyID
         pc["capsets"] = [capsets[0]]
         pc["featureBits"] = Int(
             DoryRendererWorkerFeatures.pcVirGL2Acceleration.rawValue
@@ -477,6 +489,13 @@ private struct RendererBootstrapQualificationFixture {
     private static func canonical(_ value: [String: Any]) throws -> Data {
         try DoryRendererProductionInventory.canonicalJSONData(value)
             + Data("\n".utf8)
+    }
+
+    private static func productionSigningKeyID() throws -> String {
+        let publicKey = try #require(Data(base64Encoded: DoryComponentDefaults.publicKey))
+        return SHA256.hash(data: publicKey).map {
+            String(format: "%02x", $0)
+        }.joined()
     }
 
     private static func signature(

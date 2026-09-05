@@ -1,0 +1,40 @@
+{
+  "schema": "dory.pc-virgl2-build-evidence@1",
+  "verificationCommand": "guest/mesa/verify-pc-virgl2-build.sh x86_64",
+  "verificationExitCode": 0,
+  "runtimeSHA256": "410e364a0f9a93ed9f370c4eae90c88a625416be1dffa96dd8af5952a6558450",
+  "runtimeByteCount": 8330399,
+  "stamp": {
+    "schema": "2",
+    "arch": "x86_64",
+    "profile": "pc-virgl2",
+    "input_sha256": "f763981be617340ed5c1b8ef5dc260637a1f29078eeb5d830efb42337782a363",
+    "runtime_sha256": "410e364a0f9a93ed9f370c4eae90c88a625416be1dffa96dd8af5952a6558450",
+    "mesa_version": "26.0.0-devel",
+    "mesa_source_commit": "79bc850d884a1307356ff61c017e58901b90c7e2",
+    "mesa_source_tree": "585b6604e6ef58585cfc44f7b4d5eab172ddfbbd",
+    "mesa_source_date_epoch": "1767751301",
+    "libc_family": "glibc",
+    "glibc_symbol_ceiling": "GLIBC_2.31"
+  },
+  "sourceSHA256": {
+    "guest/mesa/build-pc-virgl2.sh": "837a3b2ebac95b4e0122a06be458e963ae561bc2cceb85ba2d12fdeb2f955867",
+    "guest/mesa/input-pc-virgl2-fingerprint.sh": "11ca761b2eff57c217bd57139128f329fe8e0500aca1aa46a31d3ddfa83e847c",
+    "guest/mesa/verify-pc-virgl2-build.sh": "9d2eb985a901539a024e7b14fb8387bff39270bad6bd51d04f6e81a0140f4a2f"
+  },
+  "includedRuntime": [
+    "libGL.so.1 and matching libGL copies",
+    "libgallium-26.0.0-devel.so",
+    "dri/virtio_gpu_dri.so"
+  ],
+  "maxObservedGLIBCSymbol": "GLIBC_2.29",
+  "requiredGuestLoaderEnvironment": {
+    "LD_LIBRARY_PATH": "/opt/dory/mesa/lib",
+    "LIBGL_DRIVERS_PATH": "/opt/dory/mesa/lib/dri"
+  },
+  "limitations": [
+    "Build/archive verification only; no guest GL context creation or display workload is proven.",
+    "Guest must supply the exact compatible dependencies listed in the runtime manifest.",
+    "Immutable x86 kernel/rootfs/Mesa artifact binding and physical GPU qualification remain open."
+  ]
+}
