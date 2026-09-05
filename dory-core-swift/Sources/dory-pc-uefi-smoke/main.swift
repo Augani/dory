@@ -72,6 +72,8 @@ private struct Arguments {
   let executionTier: DoryPCExecutionTier
   let expectedSerialMarker: String?
   let bootProbe: Bool
+  let clockSource: DoryPCClockSource
+  let clockSourceDescription: String
   let initialRTCUnixSeconds: UInt64
   let traceAfterInstructions: UInt64?
   let traceCapacity: Int
@@ -91,7 +93,7 @@ private struct Arguments {
           "--system-disk", "--installer-media", "--variable-store-directory",
           "--exception-policy", "--execution-tier", "--progress-instructions",
           "--expected-serial-marker",
-          "--boot-probe",
+          "--boot-probe", "--clock-source",
           "--initial-rtc-unix-seconds",
           "--trace-after-instructions", "--trace-capacity", "--trace-break-rip-below",
         ].contains(name)
@@ -109,7 +111,7 @@ private struct Arguments {
           + "[--processor-count count] [--exception-policy stop|deliver] "
           + "[--execution-tier interpreter|baseline-jit|optimizing-jit] "
           + "[--expected-serial-marker text] "
-          + "[--boot-probe enabled|disabled] "
+          + "[--boot-probe enabled|disabled] [--clock-source host-monotonic|deterministic] "
           + "[--initial-rtc-unix-seconds seconds] "
           + "[--trace-after-instructions count] [--trace-capacity count] "
           + "[--trace-break-rip-below address] "
@@ -183,6 +185,17 @@ private struct Arguments {
     case "enabled": bootProbe = true
     case "disabled": bootProbe = false
     default: throw SmokeError.usage("invalid boot probe policy: \(bootProbeText)")
+    }
+    let clockSourceText = options["--clock-source"] ?? "host-monotonic"
+    switch clockSourceText {
+    case "host-monotonic":
+      clockSource = .hostMonotonic
+      clockSourceDescription = clockSourceText
+    case "deterministic":
+      clockSource = .deterministic
+      clockSourceDescription = clockSourceText
+    default:
+      throw SmokeError.usage("invalid clock source: \(clockSourceText)")
     }
     self.initialRTCUnixSeconds = initialRTCUnixSeconds
     firmwareBundle = URL(fileURLWithPath: bundle, isDirectory: true).standardizedFileURL
@@ -700,7 +713,8 @@ private func run() throws {
     initialRTCDate: Date(timeIntervalSince1970: TimeInterval(arguments.initialRTCUnixSeconds)),
     firmwareConfigurationFlags: arguments.bootProbe ? [.qualificationBootProbe] : [],
     displaySink: displaySink,
-    executionTier: arguments.executionTier
+    executionTier: arguments.executionTier,
+    clockSource: arguments.clockSource
   )
   let execution = try runWithProgress(
     machine: composed.machine,
@@ -859,6 +873,7 @@ private func run() throws {
     "bootProbe": arguments.bootProbe,
     "serialDroppedBytes": serialDrops.transmitted,
     "blockDevices": blockDevices,
+    "clockSource": arguments.clockSourceDescription,
     "displayDevice": displayDevice,
     "displayFrameCount": display.frameCount,
     "lastDisplayFrame": lastDisplayFrame,
