@@ -51,5 +51,21 @@
       ]
     },
     "scope": "ELCR/PIC correction has not established full boot. Terminal timing code alone does not prove a timer stall or interrupt storm."
+  },
+  "post_elcr_trace": {
+    "raw_result_sha256": "5a677bcc91759fb10ac5376dea3f2413ca8a846e98a71ec617335bd22ea7c51a",
+    "runner_sha256": "18746b3aac1b006b411b853df4d50163649071aa502ba316361d584b690706c3",
+    "completed_instructions": 1200000000,
+    "stop": "instructionBudget(1200000000)",
+    "serial_marker_matched": false,
+    "trace_entries": 1024,
+    "kaslr_slide": "0x1ce00000",
+    "symbolization_method": "36 uniquely matching instruction-byte sequences among the first40 trace entries agree on the slide in the exact kernel ELF PT_LOAD segments; llvm-addr2line resolves the complete trace with that slide.",
+    "observed_transitions": [
+      "timer_interrupt returns through common_interrupt and native_irq_return_iret",
+      "handle_softirqs is followed by a new irq_entries_start/common_interrupt entry",
+      "second timer_interrupt reaches tick_periodic and timekeeping_advance"
+    ],
+    "conclusion": "The bounded trace observes repeated timer IRQ servicing, rather than a single stuck fast_mix instruction. Controller state and timer-rate evidence are still needed to diagnose why Linux has not reached userspace."
   }
 }
