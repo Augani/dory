@@ -191,6 +191,69 @@ struct DoryRendererBootstrapQualificationTests {
         #expect(sealChecks == 0)
     }
 
+    @Test("runtime candidate loader selects ARM Venus and PC VirGL2 receipts independently")
+    func runtimeCandidateProfilesCoexistInOneBundle() throws {
+        let fixture = try RendererBootstrapQualificationFixture()
+        let pcReceipt = try fixture.pcVirGL2Receipt()
+        let temporary = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathExtension("app")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        let contents = temporary.appendingPathComponent("Contents", isDirectory: true)
+        let resources = contents.appendingPathComponent("Resources", isDirectory: true)
+        try FileManager.default.createDirectory(
+            at: resources,
+            withIntermediateDirectories: true
+        )
+        let info: [String: Any] = [
+            "CFBundleIdentifier": "dev.dory.qualification-profiles-test",
+            "CFBundleName": "QualificationProfilesTest",
+            "CFBundlePackageType": "APPL",
+            "CFBundleVersion": "1",
+        ]
+        try PropertyListSerialization.data(
+            fromPropertyList: info,
+            format: .xml,
+            options: 0
+        ).write(to: contents.appendingPathComponent("Info.plist"))
+        try fixture.receipt.write(
+            to: resources.appendingPathComponent(
+                DoryVerifiedRendererBootstrapQualification.receiptFilename
+            )
+        )
+        try pcReceipt.write(
+            to: resources.appendingPathComponent(
+                DoryVerifiedRendererBootstrapQualification.pcVirGL2ReceiptFilename
+            )
+        )
+        let bundle = try #require(Bundle(url: temporary))
+
+        var sealChecks = 0
+        let arm = try DoryVerifiedRendererBootstrapQualification
+            .loadRuntimeCandidateForTesting(
+                from: bundle,
+                now: fixture.now
+            ) { _ in
+                sealChecks += 1
+            }
+        let pc = try DoryVerifiedRendererBootstrapQualification
+            .loadRuntimeCandidateForTesting(
+                producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1,
+                from: bundle,
+                now: fixture.now
+            ) { _ in
+                sealChecks += 1
+            }
+
+        #expect(sealChecks == 2)
+        #expect(arm.producerFenceContract == .managedLinux612106PrepareFBV1)
+        #expect(arm.capsets.map(\.id) == [2, 4])
+        #expect(pc.producerFenceContract == .doryPCX8664LinuxVirGL2PrepareFBV1)
+        #expect(pc.capsets.map(\.id) == [2])
+        #expect(pc.guestMesaSHA256.lowercaseSHA256
+            != DoryRendererSourceTuple.guestMesaRuntimeSHA256)
+    }
+
     @Test("single-capset and fabricated feature evidence fail even when signed")
     func incompleteCapabilitiesFailClosed() throws {
         let fixture = try RendererBootstrapQualificationFixture()
@@ -391,6 +454,24 @@ private struct RendererBootstrapQualificationFixture {
 
     func sign(_ value: Data) -> Data {
         try! Self.signature(value, key: privateKey)
+    }
+
+    func pcVirGL2Receipt() throws -> Data {
+        let transcript = String(repeating: "c", count: 64)
+        var pc = object
+        pc["bootstrapTranscriptSHA256"] = transcript
+        pc["qualificationIdentity"] = "dory-renderer-bootstrap:\(transcript)"
+        pc["capsets"] = [capsets[0]]
+        pc["featureBits"] = Int(
+            DoryRendererWorkerFeatures.pcVirGL2Acceleration.rawValue
+        )
+        pc["guestMesaSHA256"] = String(repeating: "9", count: 64)
+        pc["managedGuestKernelSHA256"] = String(repeating: "8", count: 64)
+        pc["producerFenceContract"] = Int(
+            DoryRendererProducerFenceContract
+                .doryPCX8664LinuxVirGL2PrepareFBV1.rawValue
+        )
+        return try Self.canonical(pc)
     }
 
     private static func canonical(_ value: [String: Any]) throws -> Data {

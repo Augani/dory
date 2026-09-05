@@ -16,8 +16,6 @@
 	<string>$(DORY_VM_QUALIFICATION_BOOTSTRAP)</string>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
-	<key>LSMultipleInstancesProhibited</key>
-	<true/>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

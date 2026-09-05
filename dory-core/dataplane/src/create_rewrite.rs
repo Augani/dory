@@ -22,6 +22,8 @@ pub struct RewriteOpts {
 pub enum RewriteError {
     #[error("GPU requested but not supported by this engine")]
     GpuUnsupported,
+    #[error("Dory GPU requests require the single Vulkan render device: {0}")]
+    GpuRequestUnsupported(&'static str),
 }
 
 const EXTRA_HOSTS: &[&str] = &["host.docker.internal", "host.dory.internal"];
@@ -56,9 +58,7 @@ pub fn rewrite_create_body(body: &[u8], opts: &RewriteOpts) -> Result<Vec<u8>, R
         loopback_port_intents = normalize_port_bindings(hc);
         normalize_dory_socket_mounts(hc);
         ensure_extra_hosts(hc);
-        if has_gpu_request(hc) && !opts.gpu_supported {
-            return Err(RewriteError::GpuUnsupported);
-        }
+        normalize_gpu_requests(hc, opts.gpu_supported)?;
     }
     preserve_loopback_port_intent(obj, loopback_port_intents);
 
@@ -229,24 +229,130 @@ fn ensure_extra_hosts(hc: &mut serde_json::Map<String, Value>) {
     }
 }
 
-fn has_gpu_request(hc: &serde_json::Map<String, Value>) -> bool {
+fn is_gpu_request(req: &Value) -> bool {
+    if matches!(
+        req.get("Driver").and_then(Value::as_str),
+        Some("nvidia" | "cuda" | "dory")
+    ) {
+        return true;
+    }
+    req.get("Capabilities")
+        .and_then(Value::as_array)
+        .is_some_and(|groups| {
+            groups.iter().any(|g| {
+                g.as_array()
+                    .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some("gpu")))
+            })
+        })
+}
+
+/// The daemon supplies admission; clients cannot select a host GPU runtime with an environment
+/// variable. Only the render node is needed for Vulkan. Container images must supply compatible
+/// Mesa userspace; mapping a DRM node does not implement NVIDIA/CUDA or install an ICD.
+fn normalize_gpu_requests(
+    hc: &mut serde_json::Map<String, Value>,
+    supported: bool,
+) -> Result<(), RewriteError> {
     let Some(requests) = hc.get("DeviceRequests").and_then(Value::as_array) else {
-        return false;
+        return Ok(());
     };
-    requests.iter().any(|req| {
-        // Driver "nvidia", or a capability group containing "gpu".
-        if req.get("Driver").and_then(Value::as_str) == Some("nvidia") {
-            return true;
+    if !requests.iter().any(is_gpu_request) {
+        return Ok(());
+    }
+    if !supported {
+        return Err(RewriteError::GpuUnsupported);
+    }
+    for req in requests.iter().filter(|r| is_gpu_request(r)) {
+        let driver = req.get("Driver").and_then(Value::as_str);
+        if !matches!(driver, None | Some("" | "dory"))
+            || req.get("Driver").is_some_and(|v| !v.is_null() && !v.is_string())
+        {
+            return Err(RewriteError::GpuRequestUnsupported("unsupported driver"));
         }
-        req.get("Capabilities")
+        let gpu_group = req
+            .get("Capabilities")
             .and_then(Value::as_array)
             .is_some_and(|groups| {
                 groups.iter().any(|g| {
                     g.as_array()
-                        .is_some_and(|caps| caps.iter().any(|c| c.as_str() == Some("gpu")))
+                        .is_some_and(|caps| caps.len() == 1 && caps[0] == "gpu")
                 })
-            })
-    })
+            });
+        if !gpu_group {
+            return Err(RewriteError::GpuRequestUnsupported(
+                "unsupported capability set",
+            ));
+        }
+        if req
+            .get("Options")
+            .is_some_and(|v| !v.is_null() && !v.as_object().is_some_and(|m| m.is_empty()))
+        {
+            return Err(RewriteError::GpuRequestUnsupported(
+                "driver options are unsupported",
+            ));
+        }
+        let ids = req.get("DeviceIDs");
+        let has_ids =
+            ids.is_some_and(|v| !v.is_null() && !v.as_array().is_some_and(|a| a.is_empty()));
+        if has_ids {
+            if ids != Some(&serde_json::json!(["0"])) || req.get("Count").is_some_and(|v| v != 0) {
+                return Err(RewriteError::GpuRequestUnsupported(
+                    "only device 0 is available",
+                ));
+            }
+        } else if req
+            .get("Count")
+            .is_some_and(|v| !matches!(v.as_i64(), Some(-1 | 1)))
+        {
+            return Err(RewriteError::GpuRequestUnsupported(
+                "only one GPU is available",
+            ));
+        }
+    }
+    let remaining: Vec<Value> = requests
+        .iter()
+        .filter(|r| !is_gpu_request(r))
+        .cloned()
+        .collect();
+    const RENDER: &str = "/dev/dri/renderD128";
+    let mut devices = match hc.get("Devices") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(devices)) => devices.clone(),
+        _ => {
+            return Err(RewriteError::GpuRequestUnsupported(
+                "invalid device mappings",
+            ))
+        }
+    };
+    let mut mapped = false;
+    for device in &devices {
+        let target = device.get("PathInContainer").and_then(Value::as_str);
+        if target == Some(RENDER) {
+            if device.get("PathOnHost").and_then(Value::as_str) != Some(RENDER)
+                || !matches!(
+                    device.get("CgroupPermissions").and_then(Value::as_str),
+                    Some("rw" | "rwm")
+                )
+            {
+                return Err(RewriteError::GpuRequestUnsupported(
+                    "conflicting render device mapping",
+                ));
+            }
+            mapped = true;
+        }
+    }
+    if !mapped {
+        devices.push(serde_json::json!({
+            "PathOnHost": RENDER, "PathInContainer": RENDER, "CgroupPermissions": "rw"
+        }));
+    }
+    hc.insert("Devices".into(), Value::Array(devices));
+    if remaining.is_empty() {
+        hc.remove("DeviceRequests");
+    } else {
+        hc.insert("DeviceRequests".into(), Value::Array(remaining));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -468,7 +574,69 @@ mod tests {
             rewrite(body.clone(), false),
             Err(RewriteError::GpuUnsupported)
         );
-        assert!(rewrite(body, true).is_ok()); // supported -> passes through
+        let out = rewrite(body, true).unwrap();
+        assert!(out["HostConfig"].get("DeviceRequests").is_none());
+        assert_eq!(
+            out["HostConfig"]["Devices"][0]["PathInContainer"],
+            "/dev/dri/renderD128"
+        );
+        assert_eq!(out["HostConfig"]["Devices"][0]["CgroupPermissions"], "rw");
+        assert!(out["HostConfig"].get("DeviceCgroupRules").is_none());
+    }
+
+    #[test]
+    fn gpu_translation_preserves_other_requests_and_is_idempotent() {
+        let other = json!({"Driver": "example-device", "Capabilities": [["example"]]});
+        let body = json!({"HostConfig": {
+            "DeviceRequests": [{"Count": -1, "Capabilities": [["gpu"]]}, other],
+            "Devices": [{"PathOnHost": "/dev/example", "PathInContainer": "/dev/example", "CgroupPermissions": "r"}]
+        }});
+        let out = rewrite(body, true).unwrap();
+        assert_eq!(out["HostConfig"]["DeviceRequests"], json!([other]));
+        assert_eq!(out["HostConfig"]["Devices"].as_array().unwrap().len(), 2);
+        assert_eq!(out["HostConfig"]["Devices"][0]["CgroupPermissions"], "r");
+        assert_eq!(rewrite(out.clone(), true).unwrap(), out);
+        let selected = rewrite(
+            json!({"HostConfig": {"DeviceRequests": [{
+                "Driver": "dory", "Count": 0, "DeviceIDs": ["0"], "Capabilities": [["gpu"]]
+            }]}}),
+            true,
+        )
+        .unwrap();
+        assert_eq!(
+            selected["HostConfig"]["Devices"][0]["PathOnHost"],
+            "/dev/dri/renderD128"
+        );
+    }
+
+    #[test]
+    fn gpu_translation_rejects_unimplementable_requests_and_conflicting_mappings() {
+        for request in [
+            json!({"Driver": 42, "Capabilities": [["gpu"]]}),
+            json!({"Driver": "nvidia", "Capabilities": [["gpu"]]}),
+            json!({"Count": 2, "Capabilities": [["gpu"]]}),
+            json!({"DeviceIDs": ["1"], "Capabilities": [["gpu"]]}),
+            json!({"Capabilities": [["gpu", "cuda"]]}),
+            json!({"Options": {"mode": "cuda"}, "Capabilities": [["gpu"]]}),
+        ] {
+            assert!(
+                matches!(
+                    rewrite(json!({"HostConfig": {"DeviceRequests": [request]}}), true),
+                    Err(RewriteError::GpuRequestUnsupported(_))
+                ),
+                "{request}"
+            );
+        }
+        assert!(matches!(
+            rewrite(
+                json!({"HostConfig": {
+                    "DeviceRequests": [{"Capabilities": [["gpu"]]}],
+                    "Devices": [{"PathOnHost": "/dev/other", "PathInContainer": "/dev/dri/renderD128", "CgroupPermissions": "rw"}]
+                }}),
+                true
+            ),
+            Err(RewriteError::GpuRequestUnsupported(_))
+        ));
     }
 
     #[test]

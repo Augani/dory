@@ -1,9 +1,8 @@
-import Darwin
 import Foundation
 import Testing
 @testable import Dory
 
-@Suite(.serialized)
+@Suite
 struct SharedVMCreateCompatibilityTests {
     @Test func sharedVMCreateInjectsHostServiceAliasesAndNormalizesLoopbackPorts() async throws {
         let capture = SharedVMProxyCapture()
@@ -37,33 +36,6 @@ struct SharedVMCreateCompatibilityTests {
         let portBindings = try #require(hostConfig["PortBindings"] as? [String: [[String: String]]])
         #expect(portBindings["3000/tcp"]?.first?["HostIp"] == "")
         #expect(portBindings["3000/tcp"]?.first?["HostPort"] == "18081")
-    }
-
-    @Test func sharedVMCreateRejectsDockerGPURequestsWithDoryGuidance() async throws {
-        let capture = SharedVMProxyCapture()
-        let shim = DockerShim(runtime: SharedVMProxyRuntime(capture: capture))
-        let body = Data(#"""
-        {
-          "Image":"alpine:3.20",
-          "HostConfig":{
-            "DeviceRequests":[{"Driver":"","Count":-1,"DeviceIDs":null,"Capabilities":[["gpu"]],"Options":{}}]
-          }
-        }
-        """#.utf8)
-
-        let response = await shim.handle(ParsedRequest(
-            method: "POST",
-            target: "/v1.47/containers/create?name=gpu",
-            headers: ["content-type": "application/json"],
-            body: body
-        ))
-
-        #expect(response.status == 501)
-        #expect(capture.isEmpty)
-        let error = try #require(try JSONSerialization.jsonObject(with: response.body) as? [String: Any])
-        let message = try #require(error["message"] as? String)
-        #expect(message.contains("Docker --gpus"))
-        #expect(message.contains("host.dory.internal"))
     }
 
     @Test func sharedVMCreateRebindsOnlyDoryProxySocketMountsToTheGuestDaemon() async throws {
@@ -107,56 +79,29 @@ struct SharedVMCreateCompatibilityTests {
         #expect(mounts[2]["Source"] as? String == "/Users/test/.dory/engine.sock")
     }
 
-    @Test func sharedVMCreateTranslatesDockerGPURequestsWhenExperimentalVenusIsEnabled() async throws {
-        let previous = getenv("DORY_EXPERIMENTAL_GPU").map { String(cString: $0) }
-        setenv("DORY_EXPERIMENTAL_GPU", "venus", 1)
-        defer {
-            if let previous {
-                setenv("DORY_EXPERIMENTAL_GPU", previous, 1)
-            } else {
-                unsetenv("DORY_EXPERIMENTAL_GPU")
-            }
-        }
-
+    @Test func sharedVMCreatePreservesDeviceRequestsForDaemonAdmission() async throws {
         let capture = SharedVMProxyCapture()
         let shim = DockerShim(runtime: SharedVMProxyRuntime(capture: capture))
-        let body = Data(#"""
-        {
-          "Image":"alpine:3.20",
-          "HostConfig":{
-            "DeviceRequests":[{"Driver":"","Count":-1,"DeviceIDs":null,"Capabilities":[["gpu"]],"Options":{}}]
-          }
-        }
-        """#.utf8)
-
+        let body = Data(#"{"HostConfig":{"DeviceRequests":[{"Count":-1,"Capabilities":[["gpu"]]},{"Driver":"example","Capabilities":[["example"]]}]}}"#.utf8)
         let response = await shim.handle(ParsedRequest(
-            method: "POST",
-            target: "/v1.47/containers/create?name=gpu",
-            headers: ["content-type": "application/json"],
-            body: body
+            method: "POST", target: "/v1.47/containers/create?name=gpu",
+            headers: ["content-type": "application/json"], body: body
         ))
-
         #expect(response.status == 201)
-        let json = try #require(capture.lastJSON)
-        let hostConfig = try #require(json["HostConfig"] as? [String: Any])
-        #expect(hostConfig["DeviceRequests"] == nil)
-        let devices = try #require(hostConfig["Devices"] as? [[String: Any]])
-        #expect(devices.contains { $0["PathInContainer"] as? String == "/dev/dri/renderD128" })
-        #expect(devices.contains { $0["PathInContainer"] as? String == "/dev/dri/card0" })
-        let rules = try #require(hostConfig["DeviceCgroupRules"] as? [String])
-        #expect(rules.contains("c 226:* rwm"))
+        let original = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let expected = try #require(original["HostConfig"] as? [String: Any])
+        let forwarded = try #require(capture.lastJSON?["HostConfig"] as? [String: Any])
+        #expect(NSDictionary(dictionary: ["requests": forwarded["DeviceRequests"] as Any])
+            .isEqual(to: ["requests": expected["DeviceRequests"] as Any]))
+        #expect(forwarded["Devices"] == nil)
+        #expect(forwarded["DeviceCgroupRules"] == nil)
     }
+
 }
 
 private final class SharedVMProxyCapture: @unchecked Sendable {
     private let lock = NSLock()
     private var bodies: [Data] = []
-
-    var isEmpty: Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return bodies.isEmpty
-    }
 
     var lastJSON: [String: Any]? {
         lock.lock()

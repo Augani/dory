@@ -253,19 +253,26 @@ enum DoryPCMode {
             private let lock = NSLock()
             private var published = false
             private var presentationReady = false
+            private var rendererPresentationReady: Bool
             private var guestServicesReady: Bool
             private let publishOperation: @Sendable () throws -> Void
 
             init(
                 requiresGuestServices: Bool,
+                requiresRendererPresentation: Bool = false,
                 _ publishOperation: @escaping @Sendable () throws -> Void
             ) {
+                rendererPresentationReady = !requiresRendererPresentation
                 guestServicesReady = !requiresGuestServices
                 self.publishOperation = publishOperation
             }
 
             func markPresentationReady() throws {
                 try markReady { presentationReady = true }
+            }
+
+            func markRendererPresentationReady() throws {
+                try markReady { rendererPresentationReady = true }
             }
 
             func markGuestServicesReady() throws {
@@ -276,7 +283,9 @@ enum DoryPCMode {
                 let shouldPublish = lock.withLock { () -> Bool in
                     mutation()
                     guard !published else { return false }
-                    guard presentationReady, guestServicesReady else { return false }
+                    guard presentationReady, rendererPresentationReady, guestServicesReady else {
+                        return false
+                    }
                     published = true
                     return true
                 }
@@ -448,15 +457,42 @@ enum DoryPCMode {
                 // machine contract, but a Dory guest agent is not. Agent-backed conveniences may
                 // come online after boot; they cannot prevent a valid generic installation from
                 // publishing readiness or completing its first disk-boot proof.
-                requiresGuestServices: false
+                requiresGuestServices: false,
+                requiresRendererPresentation: rendererWorkerLaunch != nil
             ) {
-                let graphics = envelope.graphics == .software
-                    ? DoryRuntimeGraphicsSelection.resolvedSoftware(
+                let graphics: DoryRuntimeGraphicsSelection?
+                switch envelope.graphics {
+                case .software:
+                    graphics = DoryRuntimeGraphicsSelection.resolvedSoftware(
                         operationID: envelope.operationID,
                         resolvedPlanSHA256: envelope.resolvedPlanSHA256,
                         planRevision: envelope.planRevision
                     )
-                    : nil
+                case .hardwareAccelerated3D:
+                    guard let rendererWorkerLaunch else {
+                        throw VMError.invalidConfiguration(
+                            "DoryPC accelerated readiness is missing renderer authority"
+                        )
+                    }
+                    graphics = DoryRuntimeGraphicsSelection(
+                        operationID: DoryOperationIdentity.canonical(envelope.operationID),
+                        resolvedPlanSHA256: envelope.resolvedPlanSHA256,
+                        planRevision: envelope.planRevision,
+                        accelerationLevel: .hardwareAccelerated3D,
+                        backend: .virgl,
+                        rendererGeneration: rendererWorkerLaunch.workerGeneration.rawValue,
+                        rendererWorkerReceiptSHA256:
+                            rendererWorkerLaunch.rendererWorkerReceiptSHA256,
+                        guestProducerFenceProofSHA256:
+                            rendererWorkerLaunch.qualifiedProducerFenceAuthoritySHA256
+                    )
+                case .none:
+                    graphics = nil
+                case .hostAcceleratedDisplay:
+                    throw VMError.invalidConfiguration(
+                        "DoryPC host-accelerated display is not admitted"
+                    )
+                }
                 try VmmHandoffClient.send(
                     path: configuration.handoffSocketPath,
                     ready: VmmReadyMessage(
@@ -704,10 +740,26 @@ enum DoryPCMode {
                         machineState?.current().machine.powerController.request(.powerOff)
                     }
                     view.onWorkerPresentationCompleted = {
-                        [weak rendererWorkerLaunch] workerGeneration in
-                        rendererWorkerLaunch?.recordSynchronizedPresentation(
-                            workerGeneration: workerGeneration
-                        )
+                        [
+                            rendererFailureRelay,
+                            readyPublisher,
+                            weak machineState,
+                            weak rendererWorkerLaunch,
+                        ] workerGeneration in
+                        do {
+                            rendererWorkerLaunch?.recordSynchronizedPresentation(
+                                workerGeneration: workerGeneration
+                            )
+                            try rendererWorkerLaunch?
+                                .claimSynchronizedPresentationForPublication()
+                            try readyPublisher.markRendererPresentationReady()
+                        } catch {
+                            let reason = "renderer presentation failed closed: \(error)"
+                            rendererWorkerLaunch?.failSynchronizedPresentation(reason)
+                            rendererWorkerLaunch?.teardown(reason: reason)
+                            rendererFailureRelay.report(reason)
+                            machineState?.current().machine.powerController.request(.powerOff)
+                        }
                     }
                 }
                 mailbox.view = view

@@ -1,0 +1,41 @@
+{
+  "schema": "dory.container-guest-build-evidence@1",
+  "baseCommit": "a4d0a534da58b6c89d7e332d59b8c109487b1d5a",
+  "workingTreeChangesPresent": true,
+  "buildEnvironment": {
+    "dockerVersion": "29.6.1",
+    "architecture": "arm64",
+    "isolated": true
+  },
+  "artifacts": [
+    {
+      "path": "guest/out/dory-mesa-venus-arm64.tar.zst",
+      "bytes": 655990,
+      "sha256": "fa12e2bef9855dd382c3cd7f1dcd434f65302fc13471ae06367179f1ad37124c"
+    },
+    {
+      "path": "guest/out/initfs-arm64.ext4",
+      "bytes": 1073741824,
+      "sha256": "613d220a751c2d077e3a07b7bebf02f2a3be28cff0e93ed3ab98c66ba3b57642"
+    }
+  ],
+  "verification": {
+    "mesaVerifyBuild": "passed",
+    "initfsVerifyBuild": "passed",
+    "mesaBuildInputSHA256": "19a55684e03b26053f504982ebbbd85f31d198bcaeb307239689fd11189f17e9",
+    "initfsInputFingerprint": "7ba1a17844fd8f1f67ceefd6129b82ec9f237170490d128010ed771144b932bc"
+  },
+  "sourceHashes": {
+    "guest/initfs/PINS": "71031529f438e95bbf6c672c61d9c3b4f2cfe1170e1004674b61428d4fee9cde",
+    "guest/initfs/build.sh": "77ac6b6dc248a96153e88ed1e43d8d8ab7f5f38ee801fa9e24650a39f0a2b88c",
+    "guest/initfs/input-fingerprint.sh": "aaa980a8bdd0982a9da463ded826f3cbbba3e71469d3814dde0300a029c5e838",
+    "guest/initfs/verify-build.sh": "0e1552718160273a6d1ca998f1c58ee4ab2eed973ef0666ce24690a99bb3ee78",
+    "guest/mesa/build.sh": "9ee01086f980605473f45044e305f374bac39304d8fe9224548854eb84994f5f",
+    "guest/mesa/verify-build.sh": "ddff8b762109e3ae1af74e8a70e644a2f4bb02737ee4fb41294a272971959020"
+  },
+  "limitations": [
+    "Build and artifact verification only; does not prove GPU device readiness or hardware compute.",
+    "Compatible container-image userspace and full daemon GPU engine launch still require qualification.",
+    "No x86 GPU artifact or runtime qualification."
+  ]
+}

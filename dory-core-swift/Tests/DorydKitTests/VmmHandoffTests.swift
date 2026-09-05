@@ -131,6 +131,18 @@ final class VmmHandoffTests: XCTestCase {
             guestProducerFenceProofSHA256: guestFenceProof
         )
         XCTAssertTrue(complete.isValid)
+
+        let pcVirGL2 = DoryRuntimeGraphicsSelection(
+            operationID: operationID,
+            resolvedPlanSHA256: planSHA256,
+            planRevision: 1,
+            accelerationLevel: .hardwareAccelerated3D,
+            backend: .virgl,
+            rendererGeneration: 1,
+            rendererWorkerReceiptSHA256: rendererReceipt,
+            guestProducerFenceProofSHA256: guestFenceProof
+        )
+        XCTAssertTrue(pcVirGL2.isValid)
     }
 
     func testReceivesReadyMessageAndFileDescriptor() throws {

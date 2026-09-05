@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import DoryRendererWorkerWireContracts
 
 public struct DoryVirtualMachineQualifiedComponent: Codable, Sendable, Equatable, Hashable {
     public var componentIdentifier: String
@@ -81,6 +82,9 @@ public struct DoryVirtualMachineQualificationRecord: Codable, Sendable, Equatabl
     /// therefore cannot authorize acceleration.
     public var producerFenceBeforeFlushQualified: Bool?
     public var venusVulkanGuestRuntimeQualified: Bool
+    public var rendererGuestKernelSHA256: String?
+    public var rendererGuestMesaSHA256: String?
+    public var rendererProducerFenceContract: DoryRendererProducerFenceContract?
     public var performanceQualification: DoryVirtualMachinePerformanceQualificationEvidence
 
     public init(
@@ -102,6 +106,9 @@ public struct DoryVirtualMachineQualificationRecord: Codable, Sendable, Equatabl
         virtioGPUKernelAndDeviceSupportQualified: Bool = false,
         producerFenceBeforeFlushQualified: Bool = false,
         venusVulkanGuestRuntimeQualified: Bool = false,
+        rendererGuestKernelSHA256: String? = nil,
+        rendererGuestMesaSHA256: String? = nil,
+        rendererProducerFenceContract: DoryRendererProducerFenceContract? = nil,
         performanceQualification: DoryVirtualMachinePerformanceQualificationEvidence
     ) {
         self.qualificationIdentity = qualificationIdentity
@@ -123,6 +130,9 @@ public struct DoryVirtualMachineQualificationRecord: Codable, Sendable, Equatabl
             virtioGPUKernelAndDeviceSupportQualified
         self.producerFenceBeforeFlushQualified = producerFenceBeforeFlushQualified
         self.venusVulkanGuestRuntimeQualified = venusVulkanGuestRuntimeQualified
+        self.rendererGuestKernelSHA256 = rendererGuestKernelSHA256?.lowercased()
+        self.rendererGuestMesaSHA256 = rendererGuestMesaSHA256?.lowercased()
+        self.rendererProducerFenceContract = rendererProducerFenceContract
         self.performanceQualification = performanceQualification
     }
 }
@@ -294,7 +304,10 @@ public struct DoryVerifiedVirtualMachineQualificationAuthority: Sendable {
                     artifactSHA256: request.bootMedia.artifactSHA256 ?? "",
                     manifestSHA256: manifestSHA256,
                     signingKeyID: signingKeyID,
-                    manifestFormatVersion: manifest.schemaVersion
+                    manifestFormatVersion: manifest.schemaVersion,
+                    rendererGuestKernelSHA256: record.rendererGuestKernelSHA256,
+                    rendererGuestMesaSHA256: record.rendererGuestMesaSHA256,
+                    rendererProducerFenceContract: record.rendererProducerFenceContract
                 ),
                 virtioGPUKernelAndDeviceSupportQualified:
                     record.virtioGPUKernelAndDeviceSupportQualified,
@@ -528,10 +541,28 @@ public enum DoryVirtualMachineQualificationAuthorityResolver {
                     && isSHA256($0.artifactSHA256)
             }
             && performanceEvidenceIsStructurallyValid(record.performanceQualification)
-            && (record.graphics != .hardwareAccelerated3D
-                || (record.virtioGPUKernelAndDeviceSupportQualified
-                    && record.producerFenceBeforeFlushQualified == true
-                    && record.venusVulkanGuestRuntimeQualified))
+            && hardware3DQualificationIsStructurallyValid(record)
+    }
+
+    private static func hardware3DQualificationIsStructurallyValid(
+        _ record: DoryVirtualMachineQualificationRecord
+    ) -> Bool {
+        guard record.graphics == .hardwareAccelerated3D else { return true }
+        guard record.virtioGPUKernelAndDeviceSupportQualified,
+              record.producerFenceBeforeFlushQualified == true else {
+            return false
+        }
+        if record.guest.family == .linux,
+           record.guest.architecture == .x86_64,
+           record.backend == .doryHypervisor {
+            return record.rendererGuestKernelSHA256.map(isSHA256) == true
+                && record.rendererGuestMesaSHA256.map(isSHA256) == true
+                && record.rendererGuestMesaSHA256
+                    != DoryRendererSourceTuple.guestMesaRuntimeSHA256
+                && record.rendererProducerFenceContract
+                    == .doryPCX8664LinuxVirGL2PrepareFBV1
+        }
+        return record.venusVulkanGuestRuntimeQualified
     }
 
     private static func performanceEvidenceIsStructurallyValid(

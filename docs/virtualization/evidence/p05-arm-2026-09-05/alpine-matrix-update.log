@@ -1,0 +1,306 @@
+time="2026-09-05T00:46:14Z" level=info msg="gvproxy version v0.8.9-dory3"
+time="2026-09-05T00:46:14Z" level=info msg="waiting for clients..."
+time="2026-09-05T00:46:14Z" level=info msg="listening unix:///tmp/dory-av-58139-1/api.sock"
+UEFI firmware (version  built at 08:13:56 on Aug 12 2026)
+[2J[004D[=3h[2J[009DPress ESCAPE for boot options ....[0m[30m[40m[2J[038D[0m[37m[40m[002;030HGNU GRUB  version 2.14
+
+[001C/----------------------------------------------------------------------------\[005;002H|[076C|[006;002H|[076C|[007;002H|[076C|[008;002H|[076C|[009;002H|[076C|[010;002H|[076C|[011;002H|[076C|[012;002H|[076C|[013;002H|[076C|[014;002H|[076C|[015;002H|[076C|[016;002H|[076C|[017;002H|[076C|[018;002H\----------------------------------------------------------------------------/[019;002H[020;002H     Use the ^ and v keys to select which entry is highlighted.          
+      Press enter to boot the selected OS, `e' to edit the commands       
+      before booting or `c' for a command-line.                           [005;080H 
+[0m[30m[47m[005;003H*Linux lts                                                                  [0m[37m[40m[001D[006;003H                                                                            [001D[007;003H                                                                            [001D[008;003H                                                                            [001D[009;003H                                                                            [001D[010;003H                                                                            [001D[011;003H                                                                            [001D[012;003H                                                                            [001D[013;003H                                                                            [001D[014;003H                                                                            [001D[015;003H                                                                            [001D[016;003H                                                                            [001D[017;003H                                                                            [001D[002C 
+[005;078H[023;001H   The highlighted entry will be executed automatically in 1s.                 [005;078H[023;001H   The highlighted entry will be executed automatically in 0s.                 [005;078H[0m[30m[40m[2J[001;001H[0m[37m[40m  Booting `Linux lts'
+
+dory-hv: sysreg trap (write) op0=2 op1=0 crn=1 crm=3 op2=4, RAZ/WI
+dory-hv: sysreg trap (write) op0=2 op1=0 crn=1 crm=0 op2=4, RAZ/WI
+7  1%                                             8[0K7  3% #                                           8[0K7  4% ##                                          8[0K7  6% ###                                         8[0K7  7% ###                                         8[0K7  8% ###                                         8[0K7 10% ####                                        8[0K7 12% #####                                       8[0K7 14% ######                                      8[0K7 15% #######                                     8[0K7 16% #######                                     8[0K7 17% #######                                     8[0K7 18% #######                                     8[0K7 19% ########                                    8[0K7 20% ########                                    8[0K7 21% #########                                   8[0K7 22% #########                                   8[0K7 23% ##########                                  8[0K7 24% ##########                                  8[0K7 26% ###########                                 8[0K7 28% ############                                8[0K7 30% #############                               8[0K7 31% #############                               8[0K7 31% ##############                              8[0K7 32% ##############                              8[0K7 33% ##############                              8[0K7 34% ###############                             8[0K7 35% ###############                             8[0K7 37% ################                            8[0K7 38% #################                           8[0K7 40% ##################                          8[0K7 42% ##################                          8[0K7 44% ###################                         8[0K7 46% ####################                        8[0K7 48% #####################                       8[0K7 50% ######################                      8[0K7 52% #######################                     8[0K7 54% #######################                     8[0K7 56% ########################                    8[0K7 58% #########################                   8[0K7 60% ##########################                  8[0K7 62% ###########################                 8[0K7 64% ############################                8[0K7 66% #############################               8[0K7 68% #############################               8[0K7 68% ##############################              8[0K7 69% ##############################              8[0K7 71% ###############################             8[0K7 73% ################################            8[0K7 75% #################################           8[0K7 76% #################################           8[0K7 77% ##################################          8[0K7 78% ##################################          8[0K7 79% ##################################          8[0K7 80% ###################################         8[0K7 81% ###################################         8[0K7 82% ####################################        8[0K7 83% ####################################        8[0K7 84% #####################################       8[0K7 85% #####################################       8[0K7 86% ######################################      8[0K7 87% ######################################      8[0K7 88% ######################################      8[0K7 89% #######################################     8[0K7 90% #######################################     8[0K7 90% ########################################    8[0K7 91% ########################################    8[0K7 92% ########################################    8[0K7 93% ########################################    8[0K7 94% #########################################   8[0K7 96% ##########################################  8[0K7 98% ########################################### 8[0K7 99% ########################################### 8[0K7100% ############################################8[0K
+
+   OpenRC 0.63.1 is starting up Linux 6.18.35-0-lts (aarch64)
+
+ * /proc is already mounted
+ * Mounting /run ... [ ok ]
+ * /run/openrc: creating directory
+ * /run/lock: creating directory
+ * /run/lock: correcting owner
+ * Caching service dependencies ... [ ok ]
+ * Remounting devtmpfs on /dev ... [ ok ]
+ * Mounting /dev/mqueue ... [ ok ]
+ * Mounting modloop  ... * Verifying modloop
+ [ ok ]
+ * Mounting security filesystem ... [ ok ]
+ * Mounting debug filesystem ... [ ok ]
+ * Mounting trace filesystem ... [ ok ]
+ * Mounting persistent storage (pstore) filesystem ... [ ok ]
+ * Mounting efivarfs filesystem ... [ ok ]
+ * Mounting bpf filesystem ... [ ok ]
+ * Starting busybox mdev ... [ ok ]
+ * Scanning hardware for mdev ... [ ok ]
+ * Loading hardware drivers ... [ ok ]
+ * Loading modules ... [ ok ]
+ * Setting system clock using the hardware clock [UTC] ... [ ok ]
+ * Checking local filesystems  ... [ ok ]
+ * Remounting filesystems ... [ ok ]
+ * Mounting local filesystems ... [ ok ]
+ * Configuring kernel parameters ... [ ok ]
+ * Creating user login records ... [ ok ]
+ * Cleaning /tmp directory ... [ ok ]
+ * Setting hostname to localhost from /etc/hostname ... [ ok ]
+ * Starting busybox syslog ... [ ok ]
+ * Starting firstboot ... [ ok ]
+
+Welcome to Alpine Linux 3.24
+Kernel 6.18.35-0-lts on aarch64 (/dev/ttyAMA0)
+
+localhost login: root
+Welcome to Alpine!
+
+The Alpine Wiki contains a large amount of how-to guides and general
+information about administrating Alpine systems.
+See <https://wiki.alpinelinux.org/>.
+
+You can setup the system with the command: setup-alpine
+
+You may change this message by editing /etc/motd.
+
+localhost:~# [6nip link set eth0 up && udhcpc -i eth0 -n -q && printf 'https://dl-c
+dn.alpinelinux.org/alpine/v3.24/main\n' > /etc/apk/repositories && apk add --no-
+cache dosfstools e2fsprogs grub-efi sfdisk && ERASE_DISKS=/dev/vda setup-disk -m
+ sys -s 0 /dev/vda
+udhcpc: started, v1.37.0
+udhcpc: broadcasting discover
+udhcpc: broadcasting select for 192.168.127.2, server 192.168.127.1
+udhcpc: lease of 192.168.127.2 obtained from 192.168.127.1, lease time 3600
+7[fetch https://dl-cdn.alpinelinux.org/alpine...]8[0K( 1/23) Installing dosfstools (4.2-r2)
+7  0%                                             8[0K( 2/23) Installing libeconf (0.8.3-r0)
+7  0%                                             8[0K7  1%                                             8[0K( 3/23) Installing libblkid (2.42.1-r0)
+7  1%                                             8[0K7  2% █                                           8[0K( 4/23) Installing libcom_err (1.47.4-r0)
+7  2% █                                           8[0K7  3% █                                           8[0K( 5/23) Installing e2fsprogs-libs (1.47.4-r0)
+7  3% █                                           8[0K7  4% ██                                          8[0K7  5% ██                                          8[0K( 6/23) Installing libuuid (2.42.1-r0)
+7  5% ██                                          8[0K7  6% ██                                          8[0K( 7/23) Installing e2fsprogs (1.47.4-r0)
+7  6% ██                                          8[0K7  6% ███                                         8[0K7  8% ███                                         8[0K( 8/23) Installing xz-libs (5.8.3-r0)
+7  8% ███                                         8[0K7  9% ███                                         8[0K7 10% ████                                        8[0K( 9/23) Installing zstd-libs (1.5.7-r2)
+7 10% ████                                        8[0K7 11% █████                                       8[0K7 12% █████                                       8[0K7 13% █████                                       8[0K(10/23) Installing kmod (34.2-r1)
+7 13% █████                                       8[0K7 14% ██████                                      8[0K(11/23) Installing lddtree (1.27-r0)
+7 14% ██████                                      8[0K7 15% ██████                                      8[0K(12/23) Installing device-mapper-libs (2.03.35-r3)
+7 15% ██████                                      8[0K7 16% ███████                                     8[0K(13/23) Installing json-c (0.18-r1)
+7 16% ███████                                     8[0K7 17% ███████                                     8[0K(14/23) Installing cryptsetup-libs (2.8.6-r0)
+7 17% ███████                                     8[0K7 18% ████████                                    8[0K7 19% ████████                                    8[0K7 20% ████████                                    8[0K(15/23) Installing kmod-libs (34.2-r1)
+7 20% ████████                                    8[0K7 20% █████████                                   8[0K7 21% █████████                                   8[0K(16/23) Installing mkinitfs (3.14.0-r0)
+7 21% █████████                                   8[0K  Executing mkinitfs-3.14.0-r0.post-install
+7 21% █████████                                   8[0K(17/23) Installing grub (2.14-r0)
+7 21% █████████                                   8[0K7 22% █████████                                   8[0K7 23% ██████████                                  8[0K7 24% ██████████                                  8[0K7 25% ███████████                                 8[0K7 26% ███████████                                 8[0K7 27% ████████████                                8[0K7 28% ████████████                                8[0K7 30% █████████████                               8[0K7 31% █████████████                               8[0K7 32% ██████████████                              8[0K7 33% ██████████████                              8[0K7 34% ███████████████                             8[0K7 35% ███████████████                             8[0K7 36% ████████████████                            8[0K7 37% ████████████████                            8[0K7 38% █████████████████                           8[0K7 39% █████████████████                           8[0K7 41% ██████████████████                          8[0K7 42% ██████████████████                          8[0K7 43% ███████████████████                         8[0K7 44% ███████████████████                         8[0K7 45% ███████████████████                         8[0K7 46% ████████████████████                        8[0K7 47% ████████████████████                        8[0K7 48% █████████████████████                       8[0K7 49% █████████████████████                       8[0K7 50% ██████████████████████                      8[0K7 51% ██████████████████████                      8[0K7 53% ███████████████████████                     8[0K7 54% ███████████████████████                     8[0K7 55% ████████████████████████                    8[0K7 56% ████████████████████████                    8[0K7 57% █████████████████████████                   8[0K7 58% █████████████████████████                   8[0K7 59% ██████████████████████████                  8[0K7 60% ██████████████████████████                  8[0K7 61% ███████████████████████████                 8[0K7 62% ███████████████████████████                 8[0K7 64% ████████████████████████████                8[0K7 65% ████████████████████████████                8[0K7 66% █████████████████████████████               8[0K7 67% █████████████████████████████               8[0K7 68% ██████████████████████████████              8[0K7 69% ██████████████████████████████              8[0K7 70% ███████████████████████████████             8[0K7 71% ███████████████████████████████             8[0K7 72% ████████████████████████████████            8[0K7 73% ████████████████████████████████            8[0K7 74% ████████████████████████████████            8[0K7 76% █████████████████████████████████           8[0K7 77% █████████████████████████████████           8[0K7 78% ██████████████████████████████████          8[0K7 79% ██████████████████████████████████          8[0K7 80% ███████████████████████████████████         8[0K(18/23) Installing grub-efi (2.14-r0)
+7 80% ███████████████████████████████████         8[0K7 81% ███████████████████████████████████         8[0K7 82% ████████████████████████████████████        8[0K7 83% ████████████████████████████████████        8[0K7 84% █████████████████████████████████████       8[0K7 86% █████████████████████████████████████       8[0K7 87% ██████████████████████████████████████      8[0K7 88% ██████████████████████████████████████      8[0K7 89% ███████████████████████████████████████     8[0K7 90% ███████████████████████████████████████     8[0K7 91% ████████████████████████████████████████    8[0K7 92% ████████████████████████████████████████    8[0K7 93% █████████████████████████████████████████   8[0K(19/23) Installing libfdisk (2.42.1-r0)
+7 93% █████████████████████████████████████████   8[0K7 94% █████████████████████████████████████████   8[0K(20/23) Installing ncurses-terminfo-base (6.6_p20260516-r0)
+7 94% █████████████████████████████████████████   8[0K7 95% ██████████████████████████████████████████  8[0K(21/23) Installing libncursesw (6.6_p20260516-r0)
+7 95% ██████████████████████████████████████████  8[0K7 96% ██████████████████████████████████████████  8[0K7 97% ██████████████████████████████████████████  8[0K(22/23) Installing libsmartcols (2.42.1-r0)
+7 97% ██████████████████████████████████████████  8[0K7 98% ███████████████████████████████████████████ 8[0K(23/23) Installing sfdisk (2.42.1-r0)
+7 98% ███████████████████████████████████████████ 8[0K7 99% ███████████████████████████████████████████ 8[0K7100% ████████████████████████████████████████████8[0KExecuting busybox-1.37.0-r31.trigger
+7[syncing disks...]8[0KOK: 38.4 MiB in 51 packages
+ [1m[33m*[m WARNING: you are stopping a sysinit service[K
+ [1m[32m*[m Unmounting /.modloop[K ...
+ [ ok ]
+7[fetch https://dl-cdn.alpinelinux.org/alpine...]8[0K7[syncing disks...]8[0KCreating file systems...
+mkfs.fat 4.2 (2021-01-31)
+Installing system on /dev/vda2:
+Installing for arm64-efi platform.
+Installation finished. No error reported.
+7[fetch https://dl-cdn.alpinelinux.org/alpine...]8[0K7  1%                                             8[0K7  2%                                             8[0K7  2% █                                           8[0K7  3% █                                           8[0K7  4% █                                           8[0K7  4% ██                                          8[0K7  5% ██                                          8[0K7  6% ██                                          8[0K7  6% ███                                         8[0K7  7% ███                                         8[0K7  8% ███                                         8[0K7  9% ███                                         8[0K7  9% ████                                        8[0K7 10% ████                                        8[0K7 11% ████                                        8[0K7 11% █████                                       8[0K7 12% █████                                       8[0K7 13% █████                                       8[0K7 13% ██████                                      8[0K7 14% ██████                                      8[0K7 15% ██████                                      8[0K7 15% ███████                                     8[0K7 16% ███████                                     8[0K7 17% ███████                                     8[0K7 18% ███████                                     8[0K7 18% ████████                                    8[0K7 19% ████████                                    8[0K7 20% ████████                                    8[0K7 20% █████████                                   8[0K7 21% █████████                                   8[0K7 22% █████████                                   8[0K7 22% ██████████                                  8[0K7 23% ██████████                                  8[0K7 24% ██████████                                  8[0K7 25% ███████████                                 8[0K7 26% ███████████                                 8[0K7 27% ███████████                                 8[0K7 27% ████████████                                8[0K7 28% ████████████                                8[0K7 29% ████████████                                8[0K7 29% █████████████                               8[0K7 30% █████████████                               8[0K7 31% █████████████                               8[0K7 31% ██████████████                              8[0K7 32% ██████████████                              8[0K7 33% ██████████████                              8[0K7 34% ██████████████                              8[0K7 34% ███████████████                             8[0K7 35% ███████████████                             8[0K7 36% ███████████████                             8[0K7 36% ████████████████                            8[0K7 37% ████████████████                            8[0K7 38% ████████████████                            8[0K7 38% █████████████████                           8[0K7 39% █████████████████                           8[0K7 40% █████████████████                           8[0K7 40% ██████████████████                          8[0K7 41% ██████████████████                          8[0K7 42% ██████████████████                          8[0K7 43% ██████████████████                          8[0K7 43% ███████████████████                         8[0K7 44% ███████████████████                         8[0K7 45% ███████████████████                         8[0K7 45% ████████████████████                        8[0K7 46% ████████████████████                        8[0K7 47% ████████████████████                        8[0K7 47% █████████████████████                       8[0K7 48% █████████████████████                       8[0K7 49% █████████████████████                       8[0K7 50% ██████████████████████                      8[0K7 51% ██████████████████████                      8[0K7 52% ██████████████████████                      8[0K7 52% ███████████████████████                     8[0K7 53% ███████████████████████                     8[0K7 54% ███████████████████████                     8[0K7 54% ████████████████████████                    8[0K7 55% ████████████████████████                    8[0K7 56% ████████████████████████                    8[0K7 56% █████████████████████████                   8[0K7 57% █████████████████████████                   8[0K7 58% █████████████████████████                   8[0K7 59% █████████████████████████                   8[0K7 59% ██████████████████████████                  8[0K7 60% ██████████████████████████                  8[0K7 61% ██████████████████████████                  8[0K7 61% ███████████████████████████                 8[0K7 62% ███████████████████████████                 8[0K7 63% ███████████████████████████                 8[0K7 63% ████████████████████████████                8[0K7 64% ████████████████████████████                8[0K7 65% ████████████████████████████                8[0K7 65% █████████████████████████████               8[0K7 66% █████████████████████████████               8[0K7 67% █████████████████████████████               8[0K7 68% █████████████████████████████               8[0K7 68% ██████████████████████████████              8[0K7 69% ██████████████████████████████              8[0K7 70% ██████████████████████████████              8[0K7 70% ███████████████████████████████             8[0K7 71% ███████████████████████████████             8[0K7 72% ███████████████████████████████             8[0K7 72% ████████████████████████████████            8[0K7 73% ████████████████████████████████            8[0K7 74% ████████████████████████████████            8[0K7 75% █████████████████████████████████           8[0K7 76% █████████████████████████████████           8[0K7 77% █████████████████████████████████           8[0K7 77% ██████████████████████████████████          8[0K7 78% ██████████████████████████████████          8[0K7 79% ██████████████████████████████████          8[0K7 79% ███████████████████████████████████         8[0K7 80% ███████████████████████████████████         8[0K7 81% ███████████████████████████████████         8[0K7 81% ████████████████████████████████████        8[0K7 82% ████████████████████████████████████        8[0K7 83% ████████████████████████████████████        8[0K7 84% ████████████████████████████████████        8[0K7 84% █████████████████████████████████████       8[0K7 85% █████████████████████████████████████       8[0K7 86% █████████████████████████████████████       8[0K7 86% ██████████████████████████████████████      8[0K7 87% ██████████████████████████████████████      8[0K7 88% ██████████████████████████████████████      8[0K7 88% ███████████████████████████████████████     8[0K7 89% ███████████████████████████████████████     8[0K7 90% ███████████████████████████████████████     8[0K7 90% ████████████████████████████████████████    8[0K7 91% ████████████████████████████████████████    8[0K7 92% ████████████████████████████████████████    8[0K7 93% ████████████████████████████████████████    8[0K7 93% █████████████████████████████████████████   8[0K7 94% █████████████████████████████████████████   8[0K7 95% █████████████████████████████████████████   8[0K7 95% ██████████████████████████████████████████  8[0K7 96% ██████████████████████████████████████████  8[0K7 97% ██████████████████████████████████████████  8[0K7 97% ███████████████████████████████████████████ 8[0K7 98% ███████████████████████████████████████████ 8[0K7 99% ███████████████████████████████████████████ 8[0K7100% ████████████████████████████████████████████8[0K* creating /boot/initramfs-lts for 6.18.48-0-lts
+* Generating grub configuration file ...
+* Found linux image: /boot/vmlinuz-lts
+* Found initrd image: /boot/initramfs-lts
+* Adding boot menu entry for UEFI Firmware Settings ...
+* done
+
+Installation is complete. Please reboot.
+localhost:~# [6nreboot
+localhost:~# [6n * Stopping busybox syslog ... [ ok ]
+ * Unmounting loop devices
+ * Unmounting filesystems
+ * Setting hardware clock using the system clock [UTC] ... [ ok ]
+ * Stopping busybox mdev ... [ ok ]
+ * Terminating remaining processes ... [ ok ]
+ * Killing remaining processes ... [ ok ]
+ * /var/cache/rc: creating directory
+ * Saving dependency cache ... [ ok ]
+ * Remounting remaining filesystems read-only ... *   Remounting / read only ... [ ok ]
+ [ ok ]
+The system is going down NOW!
+Sent SIGTERM to all processes
+Sent SIGKILL to all processes
+Requesting system reboot
+[   78.015924] reboot: Restarting system
+dory-hv: guest stop reason: guest requested reset
+time="2026-09-05T00:47:37Z" level=error msg="cannot receive packets from /tmp/dory-av-58139-1/vm.sock, disconnecting: cannot read size from socket: read unixgram /tmp/dory-av-58139-1/gv.sock: use of closed network connection"
+time="2026-09-05T00:47:37Z" level=error msg="gvproxy exiting: signal caught"
+time="2026-09-05T00:47:37Z" level=info msg="gvproxy version v0.8.9-dory3"
+time="2026-09-05T00:47:37Z" level=info msg="waiting for clients..."
+time="2026-09-05T00:47:37Z" level=info msg="listening unix:///tmp/dory-av-58139-2/api.sock"
+UEFI firmware (version  built at 08:13:56 on Aug 12 2026)
+[2J[004D[=3h[2J[009DPress ESCAPE for boot options ....error:
+/home/buildozer/aports/main/grub/src/grub-2.14/grub-core/lib/arg.c:grub_arg_par
+se:403:the argument `--unit=ttyAMA0' requires an integer.
+error:
+/home/buildozer/aports/main/grub/src/grub-2.14/grub-core/commands/terminal.c:ha
+ndle_command:138:terminal `serial' isn't found.
+error:
+/home/buildozer/aports/main/grub/src/grub-2.14/grub-core/commands/terminal.c:ha
+ndle_command:138:terminal `serial' isn't found.
+[0m[30m[40m[2J[001;001H[0m[37m[40m[002;030HGNU GRUB  version 2.14
+
+[001C/----------------------------------------------------------------------------\[005;002H|[076C|[006;002H|[076C|[007;002H|[076C|[008;002H|[076C|[009;002H|[076C|[010;002H|[076C|[011;002H|[076C|[012;002H|[076C|[013;002H|[076C|[014;002H|[076C|[015;002H|[076C|[016;002H|[076C|[017;002H|[076C|[018;002H\----------------------------------------------------------------------------/[019;002H[020;002H     Use the ^ and v keys to select which entry is highlighted.          
+      Press enter to boot the selected OS, `e' to edit the commands       
+      before booting or `c' for a command-line.                           [005;080H 
+[0m[30m[47m[005;003H*Alpine Linux v3.24, with Linux lts                                         [0m[37m[40m[001D[006;003H UEFI Firmware Settings                                                     [001D[007;003H                                                                            [001D[008;003H                                                                            [001D[009;003H                                                                            [001D[010;003H                                                                            [001D[011;003H                                                                            [001D[012;003H                                                                            [001D[013;003H                                                                            [001D[014;003H                                                                            [001D[015;003H                                                                            [001D[016;003H                                                                            [001D[017;003H                                                                            [001D[002C 
+[005;078H[023;001H   The highlighted entry will be executed automatically in 1s.                 [005;078H[023;001H   The highlighted entry will be executed automatically in 0s.                 [005;078H[0m[30m[40m[2J[001;001H[0m[37m[40m  Booting `Alpine Linux v3.24, with Linux lts'
+
+Loading Linux lts ...
+Loading initial ramdisk ...
+dory-hv: sysreg trap (write) op0=2 op1=0 crn=1 crm=3 op2=4, RAZ/WI
+dory-hv: sysreg trap (write) op0=2 op1=0 crn=1 crm=0 op2=4, RAZ/WI
+
+   OpenRC 0.63.2 is starting up Linux 6.18.48-0-lts (aarch64)
+
+ * /proc is already mounted
+ * Mounting /run ... [ ok ]
+ * /run/openrc: creating directory
+ * /run/lock: creating directory
+ * /run/lock: correcting owner
+ * Caching service dependencies ... [ ok ]
+ * Remounting devtmpfs on /dev ... [ ok ]
+ * Mounting /dev/mqueue ... [ ok ]
+ * Mounting security filesystem ... [ ok ]
+ * Mounting debug filesystem ... [ ok ]
+ * Mounting trace filesystem ... [ ok ]
+ * Mounting persistent storage (pstore) filesystem ... [ ok ]
+ * Mounting efivarfs filesystem ... [ ok ]
+ * Mounting bpf filesystem ... [ ok ]
+ * Starting busybox mdev ... [ ok ]
+ * Scanning hardware for mdev ... [ ok ]
+ * Loading hardware drivers ... [ ok ]
+ * Loading modules ... [ ok ]
+ * Setting system clock using the hardware clock [UTC] ... [ ok ]
+ * Checking local filesystems  .../dev/vda2: clean, 7219/245280 files, 102456/980480 blocks
+fsck.fat 4.2 (2021-01-31)
+/dev/vda1: 5 files, 84/67448 clusters
+ [ ok ]
+ * Remounting root filesystem read/write ... [ ok ]
+ * Remounting filesystems ... [ ok ]
+ * Mounting local filesystems ... [ ok ]
+ * Configuring kernel parameters ... [ ok ]
+ * Creating user login records ... [ ok ]
+ * Setting hostname to localhost from /etc/hostname ... [ ok ]
+ * Starting busybox syslog ... [ ok ]
+
+Welcome to Alpine Linux 3.24
+Kernel 6.18.48-0-lts on aarch64 (/dev/ttyAMA0)
+
+localhost login: root
+Welcome to Alpine!
+
+The Alpine Wiki contains a large amount of how-to guides and general
+information about administrating Alpine systems.
+See <https://wiki.alpinelinux.org/>.
+
+You can setup the system with the command: setup-alpine
+
+You may change this message by editing /etc/motd.
+
+localhost:~# [6nip link set eth0 up && udhcpc -i eth0 -n -q && apk update && apk up
+grade --available && sync && printf 'DORY_UPDATE_COMPLETE\n' && reboot
+
+udhcpc: started, v1.37.0
+udhcpc: broadcasting discover
+udhcpc: broadcasting select for 192.168.127.2, server 192.168.127.1
+udhcpc: lease of 192.168.127.2 obtained from 192.168.127.1, lease time 3600
+7[fetch https://dl-cdn.alpinelinux.org/alpine...]8[0Kv3.24.1-491-g862b5a3f538 [https://dl-cdn.alpinelinux.org/alpine/v3.24/main]
+OK: 5983 distinct packages available
+7[syncing disks...]8[0KOK: 220.6 MiB in 48 packages
+DORY_UPDATE_COMPLETE
+localhost:~# 
+localhost:~# [6n * Stopping busybox syslog ... [ ok ]
+ * Unmounting loop devices
+ * Unmounting filesystems
+ *   Unmounting /tmp ... [ ok ]
+ *   Unmounting /boot/efi ... [ ok ]
+ * Setting hardware clock using the system clock [UTC] ... [ ok ]
+ * Stopping busybox mdev ... [ ok ]
+ * Terminating remaining processes ...[    3.328049] reboot: Restarting system
+dory-hv: guest stop reason: guest requested reset
+time="2026-09-05T00:47:45Z" level=error msg="cannot receive packets from /tmp/dory-av-58139-2/vm.sock, disconnecting: cannot read size from socket: read unixgram /tmp/dory-av-58139-2/gv.sock: use of closed network connection"
+time="2026-09-05T00:47:45Z" level=error msg="gvproxy exiting: signal caught"
+time="2026-09-05T00:47:45Z" level=info msg="gvproxy version v0.8.9-dory3"
+time="2026-09-05T00:47:45Z" level=info msg="waiting for clients..."
+time="2026-09-05T00:47:45Z" level=info msg="listening unix:///tmp/dory-av-58139-3/api.sock"
+UEFI firmware (version  built at 08:13:56 on Aug 12 2026)
+[2J[004D[=3h[2J[009DPress ESCAPE for boot options ....error:
+/home/buildozer/aports/main/grub/src/grub-2.14/grub-core/lib/arg.c:grub_arg_par
+se:403:the argument `--unit=ttyAMA0' requires an integer.
+error:
+/home/buildozer/aports/main/grub/src/grub-2.14/grub-core/commands/terminal.c:ha
+ndle_command:138:terminal `serial' isn't found.
+error:
+/home/buildozer/aports/main/grub/src/grub-2.14/grub-core/commands/terminal.c:ha
+ndle_command:138:terminal `serial' isn't found.
+[0m[30m[40m[2J[001;001H[0m[37m[40m[002;030HGNU GRUB  version 2.14
+
+[001C/----------------------------------------------------------------------------\[005;002H|[076C|[006;002H|[076C|[007;002H|[076C|[008;002H|[076C|[009;002H|[076C|[010;002H|[076C|[011;002H|[076C|[012;002H|[076C|[013;002H|[076C|[014;002H|[076C|[015;002H|[076C|[016;002H|[076C|[017;002H|[076C|[018;002H\----------------------------------------------------------------------------/[019;002H[020;002H     Use the ^ and v keys to select which entry is highlighted.          
+      Press enter to boot the selected OS, `e' to edit the commands       
+      before booting or `c' for a command-line.                           [005;080H 
+[0m[30m[47m[005;003H*Alpine Linux v3.24, with Linux lts                                         [0m[37m[40m[001D[006;003H UEFI Firmware Settings                                                     [001D[007;003H                                                                            [001D[008;003H                                                                            [001D[009;003H                                                                            [001D[010;003H                                                                            [001D[011;003H                                                                            [001D[012;003H                                                                            [001D[013;003H                                                                            [001D[014;003H                                                                            [001D[015;003H                                                                            [001D[016;003H                                                                            [001D[017;003H                                                                            [001D[002C 
+[005;078H[023;001H   The highlighted entry will be executed automatically in 1s.                 [005;078H[023;001H   The highlighted entry will be executed automatically in 0s.                 [005;078H[0m[30m[40m[2J[001;001H[0m[37m[40m  Booting `Alpine Linux v3.24, with Linux lts'
+
+Loading Linux lts ...
+Loading initial ramdisk ...
+dory-hv: sysreg trap (write) op0=2 op1=0 crn=1 crm=3 op2=4, RAZ/WI
+dory-hv: sysreg trap (write) op0=2 op1=0 crn=1 crm=0 op2=4, RAZ/WI
+
+   OpenRC 0.63.2 is starting up Linux 6.18.48-0-lts (aarch64)
+
+ * /proc is already mounted
+ * Mounting /run ... [ ok ]
+ * /run/openrc: creating directory
+ * /run/lock: creating directory
+ * /run/lock: correcting owner
+ * Remounting devtmpfs on /dev ... [ ok ]
+ * Mounting /dev/mqueue ... [ ok ]
+ * Mounting security filesystem ... [ ok ]
+ * Mounting debug filesystem ... [ ok ]
+ * Mounting trace filesystem ... [ ok ]
+ * Mounting persistent storage (pstore) filesystem ... [ ok ]
+ * Mounting efivarfs filesystem ... [ ok ]
+ * Mounting bpf filesystem ... [ ok ]
+ * Starting busybox mdev ... [ ok ]
+ * Scanning hardware for mdev ... [ ok ]
+ * Loading hardware drivers ... [ ok ]
+ * Loading modules ... [ ok ]
+ * Setting system clock using the hardware clock [UTC] ... [ ok ]
+ * Checking local filesystems  .../dev/vda2: clean, 7226/245280 files, 102468/980480 blocks
+fsck.fat 4.2 (2021-01-31)
+/dev/vda1: 5 files, 84/67448 clusters
+ [ ok ]
+ * Remounting root filesystem read/write ... [ ok ]
+ * Remounting filesystems ... [ ok ]
+ * Mounting local filesystems ... [ ok ]
+ * Configuring kernel parameters ... [ ok ]
+ * Creating user login records ... [ ok ]
+ * Setting hostname to localhost from /etc/hostname ... [ ok ]
+ * Starting busybox syslog ... [ ok ]
+
+Welcome to Alpine Linux 3.24
+Kernel 6.18.48-0-lts on aarch64 (/dev/ttyAMA0)
+
+localhost login: root
+Welcome to Alpine!
+
+The Alpine Wiki contains a large amount of how-to guides and general
+information about administrating Alpine systems.
+See <https://wiki.alpinelinux.org/>.
+
+You can setup the system with the command: setup-alpine
+
+You may change this message by editing /etc/motd.
+
+localhost:~# [6nprintf 'DORY_%s\n' UPDATED_DISK_READY
+DORY_UPDATED_DISK_READY
+localhost:~# [6ndory-hv: guest stop reason: guest requested power off
+time="2026-09-05T00:47:51Z" level=error msg="cannot receive packets from /tmp/dory-av-58139-3/vm.sock, disconnecting: cannot read size from socket: read unixgram /tmp/dory-av-58139-3/gv.sock: use of closed network connection"
+time="2026-09-05T00:47:51Z" level=error msg="gvproxy exiting: signal caught"

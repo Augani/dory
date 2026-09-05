@@ -1,0 +1,8 @@
+UEFI firmware (version  built at 08:13:56 on Aug 12 2026)
+[2J[004D[=3h[2J[009DPress ESCAPE for boot options ....[2J[038DUEFI Interactive Shell v2.2
+EDK II
+UEFI v2.70 (EDK II, 0x00010000)
+[1m[33m[40mMapping table[0m[37m[40m
+[1m[33m[40m     BLK0:[0m[37m[40m [1m[37m[40mAlias(s):[0m[37m[40m
+          VenHw(837DCA9E-E874-4D82-B29A-23FE0E23D1E2,0000100C00000000)
+dory-hv: guest stop reason: guest requested power off

@@ -1,4 +1,5 @@
 import DoryOperations
+import DoryRendererWorkerWireContracts
 import DoryFirmware
 import CryptoKit
 import DoryVMContracts
@@ -1791,6 +1792,8 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
             && isSHA256(evidence.manifestSHA256)
             && isSafeEvidenceIdentifier(evidence.signingKeyID)
             && evidence.manifestFormatVersion > 0
+            && (evidence.rendererGuestKernelSHA256.map(isSHA256) ?? true)
+            && (evidence.rendererGuestMesaSHA256.map(isSHA256) ?? true)
     }
 
     static func isSHA256(_ value: String) -> Bool {

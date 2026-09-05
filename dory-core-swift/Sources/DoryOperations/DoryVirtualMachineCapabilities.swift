@@ -1,3 +1,5 @@
+import DoryRendererWorkerWireContracts
+
 /// The operating-system family installed in a virtual machine.
 public enum DoryGuestFamily: String, Codable, Sendable, CaseIterable, Hashable {
     case linux
@@ -595,19 +597,28 @@ public struct DorySignedArtifactQualificationEvidence: Codable, Sendable, Equata
     public var manifestSHA256: String
     public var signingKeyID: String
     public var manifestFormatVersion: UInt16
+    public var rendererGuestKernelSHA256: String?
+    public var rendererGuestMesaSHA256: String?
+    public var rendererProducerFenceContract: DoryRendererProducerFenceContract?
 
     public init(
         manifestIdentity: String,
         artifactSHA256: String,
         manifestSHA256: String,
         signingKeyID: String,
-        manifestFormatVersion: UInt16
+        manifestFormatVersion: UInt16,
+        rendererGuestKernelSHA256: String? = nil,
+        rendererGuestMesaSHA256: String? = nil,
+        rendererProducerFenceContract: DoryRendererProducerFenceContract? = nil
     ) {
         self.manifestIdentity = manifestIdentity
         self.artifactSHA256 = artifactSHA256
         self.manifestSHA256 = manifestSHA256
         self.signingKeyID = signingKeyID
         self.manifestFormatVersion = manifestFormatVersion
+        self.rendererGuestKernelSHA256 = rendererGuestKernelSHA256?.lowercased()
+        self.rendererGuestMesaSHA256 = rendererGuestMesaSHA256?.lowercased()
+        self.rendererProducerFenceContract = rendererProducerFenceContract
     }
 }
 
@@ -653,6 +664,25 @@ public struct DoryTrustedGuestImageGraphicsQualification: Sendable, Equatable, H
     let virtioGPUKernelAndDeviceSupportQualified: Bool
     let producerFenceBeforeFlushQualified: Bool
     let venusVulkanGuestRuntimeQualified: Bool
+
+    var pcVirGL2RendererProfileQualified: Bool {
+        guard let rendererGuestKernelSHA256 = auditEvidence.rendererGuestKernelSHA256,
+              let rendererGuestMesaSHA256 = auditEvidence.rendererGuestMesaSHA256 else {
+            return false
+        }
+        return producerFenceBeforeFlushQualified
+            && Self.isSHA256(rendererGuestKernelSHA256)
+            && Self.isSHA256(rendererGuestMesaSHA256)
+            && rendererGuestMesaSHA256 != DoryRendererSourceTuple.guestMesaRuntimeSHA256
+            && auditEvidence.rendererProducerFenceContract
+                == .doryPCX8664LinuxVirGL2PrepareFBV1
+    }
+
+    private static func isSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy { byte in
+            (byte >= 48 && byte <= 57) || (byte >= 97 && byte <= 102)
+        }
+    }
 
     init(
         auditEvidence: DorySignedArtifactQualificationEvidence,
@@ -2108,13 +2138,24 @@ public enum DoryAppleSiliconCapabilityEvaluator {
                 )
             }
         }
-        guard request.graphics != .hardwareAccelerated3D
-                || qualification.venusVulkanGuestRuntimeQualified else {
-            return unavailable(
-                tier: .supported,
-                code: .linuxVenusVulkanRuntimeUnqualified,
-                message: "The Linux image's Venus and Vulkan guest runtime has not passed qualification."
-            )
+        if request.graphics == .hardwareAccelerated3D {
+            if request.guest.architecture == .x86_64 {
+                guard qualification.pcVirGL2RendererProfileQualified else {
+                    return unavailable(
+                        tier: .supported,
+                        code: .linuxVirtioGPUProducerFenceUnqualified,
+                        message: "The x86_64 Linux image has no signed DoryPC VirGL2 renderer profile binding its boot kernel, guest Mesa runtime, and producer-fence contract."
+                    )
+                }
+            } else {
+                guard qualification.venusVulkanGuestRuntimeQualified else {
+                    return unavailable(
+                        tier: .supported,
+                        code: .linuxVenusVulkanRuntimeUnqualified,
+                        message: "The Linux image's Venus and Vulkan guest runtime has not passed qualification."
+                    )
+                }
+            }
         }
         return nil
     }
@@ -2158,6 +2199,8 @@ public enum DoryAppleSiliconCapabilityEvaluator {
             && isSHA256(evidence.manifestSHA256)
             && !evidence.signingKeyID.isEmpty
             && evidence.manifestFormatVersion > 0
+            && (evidence.rendererGuestKernelSHA256.map(isSHA256) ?? true)
+            && (evidence.rendererGuestMesaSHA256.map(isSHA256) ?? true)
     }
 
     private static func bootMediaInspectionEvidenceIsValid(

@@ -565,3 +565,78 @@ public enum DoryMachineSavedStateError: Error, Sendable, CustomStringConvertible
         }
     }
 }
+
+/// Saved-state planning is a checkpoint of a caller-owned suspend. A native Mac helper may
+/// legitimately mutate its managed system disk before Apple VZ saves and exits, so the suspend
+/// journal records the refreshed exact plan that is bound into the durable saved-state manifest.
+extension DoryOperationLease {
+    func savedStatePlanCheckpoint() throws -> DoryResolvedMachinePlan? {
+        let operation = try readWorkspaceLifecycleOperation()
+        guard operation.kind == .suspending,
+              operation.targetResourceID == DoryWorkspaceLifecycleOperation.savedStateResourceID else {
+            throw MachineManagerError.persistence(
+                "saved-state checkpoint requires a saved-state suspend root"
+            )
+        }
+        let prefix = "saved-state.plan."
+        var previous: DoryResolvedMachinePlan?
+        for event in try events() where event.stepID.hasPrefix(prefix) {
+            let data = try readManifest(digest: String(event.stepID.dropFirst(prefix.count)))
+            let plan = try JSONDecoder().decode(DoryResolvedMachinePlan.self, from: data)
+            try validateSavedStatePlanCheckpoint(
+                plan,
+                operation: operation,
+                previous: previous
+            )
+            previous = plan
+        }
+        return previous
+    }
+
+    func publishSavedStatePlanCheckpoint(_ plan: DoryResolvedMachinePlan) throws {
+        let operation = try readWorkspaceLifecycleOperation()
+        let previous = try savedStatePlanCheckpoint()
+        if previous == plan { return }
+        try validateSavedStatePlanCheckpoint(plan, operation: operation, previous: previous)
+        let digest = try publishManifest(DoryMachineDesktopUpdateJournal.canonicalData(plan))
+        let state = try read().state
+        _ = try transition(
+            to: state.phase,
+            status: state.status,
+            expectedRevision: state.revision,
+            stepID: "saved-state.plan." + digest
+        )
+    }
+
+    private func validateSavedStatePlanCheckpoint(
+        _ plan: DoryResolvedMachinePlan,
+        operation: DoryWorkspaceLifecycleOperation,
+        previous: DoryResolvedMachinePlan?
+    ) throws {
+        guard operation.validate().isEmpty,
+              operation.kind == .suspending,
+              operation.targetResourceID == DoryWorkspaceLifecycleOperation.savedStateResourceID,
+              operation.target.state == .suspended,
+              plan.validate().isEmpty,
+              plan.machineID == operation.target.workspaceID,
+              plan.definitionRevision == operation.target.definitionRevision,
+              plan.definitionSHA256
+                == operation.target.configurationAuthority?.canonicalDefinitionSHA256,
+              plan.virtualHardwareABIVersion
+                == operation.target.runtime?.virtualHardwareABIVersion else {
+            throw MachineManagerError.persistence(
+                "saved-state plan differs from the caller's exact target definition"
+            )
+        }
+        if let previous {
+            guard plan.planRevision > previous.planRevision,
+                  plan.backend == previous.backend,
+                  plan.guest == previous.guest,
+                  plan.platform == previous.platform else {
+                throw MachineManagerError.persistence(
+                    "saved-state admission renewal changed runtime authority"
+                )
+            }
+        }
+    }
+}

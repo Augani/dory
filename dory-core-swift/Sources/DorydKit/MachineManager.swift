@@ -1351,6 +1351,27 @@ struct RawHVRendererBootstrapRequest: Sendable {
     let runtimeBuildIdentifier: String
     let components: [DoryResolvedBackendComponentEvidence]
     let rendererWorkerCodeDirectoryHash: DoryCodeDirectoryHash
+    let producerFenceContract: DoryRendererProducerFenceContract
+    let guestMesaSHA256: String?
+
+    init(
+        workspaceID: UUID,
+        generation: UInt64,
+        runtimeBuildIdentifier: String,
+        components: [DoryResolvedBackendComponentEvidence],
+        rendererWorkerCodeDirectoryHash: DoryCodeDirectoryHash,
+        producerFenceContract: DoryRendererProducerFenceContract =
+            .managedLinux612106PrepareFBV1,
+        guestMesaSHA256: String? = nil
+    ) {
+        self.workspaceID = workspaceID
+        self.generation = generation
+        self.runtimeBuildIdentifier = runtimeBuildIdentifier
+        self.components = components
+        self.rendererWorkerCodeDirectoryHash = rendererWorkerCodeDirectoryHash
+        self.producerFenceContract = producerFenceContract
+        self.guestMesaSHA256 = guestMesaSHA256?.lowercased()
+    }
 }
 
 struct RawHVAdmittedRendererBootstrap: @unchecked Sendable {
@@ -1426,10 +1447,22 @@ struct RawHVAdmittedPCUEFIBoot: @unchecked Sendable {
 struct RawHVAdmittedPCUEFIRuntimeResources: @unchecked Sendable {
     let disk: RawHVAdmittedSystemDisk
     let boot: RawHVAdmittedPCUEFIBoot
+    let rendererBootstrap: RawHVAdmittedRendererBootstrap?
+
+    init(
+        disk: RawHVAdmittedSystemDisk,
+        boot: RawHVAdmittedPCUEFIBoot,
+        rendererBootstrap: RawHVAdmittedRendererBootstrap? = nil
+    ) {
+        self.disk = disk
+        self.boot = boot
+        self.rendererBootstrap = rendererBootstrap
+    }
 
     func close() {
         disk.authority.close()
         boot.close()
+        rendererBootstrap?.close()
     }
 }
 
@@ -2936,7 +2969,8 @@ public final class MachineManager: @unchecked Sendable {
     public func resolveAndPublishProductionPlan(
         id: String,
         operationID: UUID = UUID(),
-        controller: any DoryDaemonVirtualMachineProductionPlanningControlling
+        controller: any DoryDaemonVirtualMachineProductionPlanningControlling,
+        allowActiveSavedStateSuspend: Bool = false
     ) throws -> DoryMachineStatus {
         let mutationLease = mutationCoordinator.acquire(workspaceID: id)
         defer { mutationLease.release() }
@@ -2956,8 +2990,18 @@ public final class MachineManager: @unchecked Sendable {
         }
         entry = current
         lock.unlock()
+        let activeSavedStateSuspend = allowActiveSavedStateSuspend
+            && entry.process == nil
+            && entry.handoffServer == nil
+            && entry.state == .stopped
+            && (activeLifecycleOperation(machineID: id).map { active in
+                active.operation.operationID == operationID
+                    && active.operation.kind == .suspending
+                    && active.operation.targetResourceID
+                        == DoryWorkspaceLifecycleOperation.savedStateResourceID
+            } ?? false)
         guard entry.process == nil, entry.handoffServer == nil,
-              entry.state == .created || entry.state == .stopped else {
+              entry.state == .created || entry.state == .stopped || activeSavedStateSuspend else {
             throw MachineManagerError.persistence(
                 "machine \(id) must be stopped before production planning"
             )
@@ -3308,6 +3352,33 @@ public final class MachineManager: @unchecked Sendable {
               current.runtime?.policy == .requireResolvedPlan,
               entry.runtimeIdentity.virtualHardwareABIVersion == operation.target.plannedRuntime?.virtualHardwareABIVersion else {
             throw MachineManagerError.persistence("start source definition changed after the request")
+        }
+    }
+
+    private func validateSavedStateSuspendPlanningSource(
+        _ context: MachineLifecycleJournalContext
+    ) throws {
+        let operation = context.operation
+        let id = operation.source.workspaceID
+        guard operation.kind == .suspending,
+              operation.targetResourceID == DoryWorkspaceLifecycleOperation.savedStateResourceID,
+              operation.target.state == .suspended,
+              let entry = lock.withLock({ machines[id] }) else {
+            throw MachineManagerError.persistence("saved-state planning has no suspend root")
+        }
+        let current = try lifecycleCondition(
+            machine: entry.configuration,
+            state: operation.source.state,
+            runtimeIdentity: entry.runtimeIdentity
+        )
+        guard current.configurationAuthority == operation.source.configurationAuthority,
+              current.definitionRevision == operation.source.definitionRevision,
+              current.runtime?.policy == .requireResolvedPlan,
+              entry.runtimeIdentity.virtualHardwareABIVersion
+                == operation.target.runtime?.virtualHardwareABIVersion else {
+            throw MachineManagerError.persistence(
+                "saved-state source definition changed after helper exit"
+            )
         }
     }
 
@@ -5294,7 +5365,8 @@ public final class MachineManager: @unchecked Sendable {
                         machine: launchMachine,
                         operationID: operationID,
                         resolvedPlan: resolvedPlan,
-                        launchBinding: launchBinding
+                        launchBinding: launchBinding,
+                        rendererReleaseIdentity: rendererReleaseIdentity
                     )
                 } else {
                 guard
@@ -6361,6 +6433,9 @@ public final class MachineManager: @unchecked Sendable {
         )
         let temporaryPath = try savedStateStore.temporaryStatePath(machineID: id)
         var helperExited = false
+        var helperRetiredForSavedStatePlanning = false
+        var admissionSettledForSavedStatePlanning = false
+        var finalRuntimeIdentity = runtimeIdentity
         do {
             try advanceLifecycle(lifecycle)
             guard process.prepareForExpectedExit() else {
@@ -6412,31 +6487,48 @@ public final class MachineManager: @unchecked Sendable {
                 )
             }
             helperExited = true
+            let refresh = try refreshNativeMacResolvedPlanAfterSavedStateHelperExit(
+                id: id,
+                operationID: durableOperationID,
+                process: process,
+                machine: machine,
+                runtimeIdentity: runtimeIdentity,
+                admissionPlan: admissionPlan,
+                authoritativeData: authoritativeData
+            )
+            finalRuntimeIdentity = refresh.runtimeIdentity
+            helperRetiredForSavedStatePlanning = refresh.helperRetired
+            admissionSettledForSavedStatePlanning = refresh.admissionSettled
             let manifest = try savedStateStore.publish(
                 temporaryStatePath: temporaryPath,
                 machineID: id,
                 authoritativeConfigurationData: authoritativeData,
-                runtimeIdentity: runtimeIdentity
+                runtimeIdentity: finalRuntimeIdentity
             )
             lock.lock()
-            guard var current = machines[id], current.process === process,
+            guard var current = machines[id],
                   current.configuration == machine,
-                  current.runtimeIdentity == runtimeIdentity else {
+                  current.runtimeIdentity == finalRuntimeIdentity,
+                  (helperRetiredForSavedStatePlanning
+                    ? current.process == nil
+                    : current.process === process) else {
                 lock.unlock()
                 throw MachineManagerError.persistence(
                     "machine authority changed while saved state was being published"
                 )
             }
-            current.process = nil
-            current.handoffServer?.stop()
-            current.handoffServer = nil
-            current.handoff = nil
-            current.launchID = nil
-            current.runtimeAddress = nil
-            current.currentBalloonTargetMB = nil
-            current.activeResolvedPlan = nil
-            current.activeBackend = nil
-            current.pendingRestoreStatePath = nil
+            if !helperRetiredForSavedStatePlanning {
+                current.process = nil
+                current.handoffServer?.stop()
+                current.handoffServer = nil
+                current.handoff = nil
+                current.launchID = nil
+                current.runtimeAddress = nil
+                current.currentBalloonTargetMB = nil
+                current.activeResolvedPlan = nil
+                current.activeBackend = nil
+                current.pendingRestoreStatePath = nil
+            }
             current.state = .suspended
             current.savedStateStatus = DoryMachineSavedStateStatus(manifest: manifest)
             clearFailure(on: &current)
@@ -6444,7 +6536,9 @@ public final class MachineManager: @unchecked Sendable {
             lock.unlock()
             try? runtimeReconnectStore.remove(machineID: id)
             do {
-                try markResolvedAdmissionStopped(plan: admissionPlan)
+                if !admissionSettledForSavedStatePlanning {
+                    try markResolvedAdmissionStopped(plan: admissionPlan)
+                }
             } catch {
                 // The VZ payload and suspended machine state are already durable. Retaining an
                 // over-counted running lease is fail-safe; the next restore or daemon restart
@@ -6474,7 +6568,11 @@ public final class MachineManager: @unchecked Sendable {
                 lock.lock()
                 if var current = machines[id],
                    current.configuration == machine,
-                   current.runtimeIdentity == runtimeIdentity {
+                   (current.runtimeIdentity == finalRuntimeIdentity
+                    || current.activeOperationID == durableOperationID),
+                   (current.process === process
+                    || (current.process == nil
+                        && current.activeOperationID == durableOperationID)) {
                     current.process = nil
                     current.handoffServer?.stop()
                     current.handoffServer = nil
@@ -6498,11 +6596,91 @@ public final class MachineManager: @unchecked Sendable {
                 }
                 lock.unlock()
                 try? runtimeReconnectStore.remove(machineID: id)
-                try? markResolvedAdmissionStopped(plan: admissionPlan)
+                if !admissionSettledForSavedStatePlanning {
+                    try? markResolvedAdmissionStopped(plan: admissionPlan)
+                }
             }
             failLifecycle(lifecycle, stepID: "suspend.failed")
             throw error
         }
+    }
+
+    struct NativeMacSavedStatePlanRefresh {
+        var runtimeIdentity: DoryMachineRuntimeIdentity
+        var helperRetired: Bool
+        var admissionSettled: Bool
+    }
+
+    private func refreshNativeMacResolvedPlanAfterSavedStateHelperExit(
+        id: String,
+        operationID: UUID,
+        process: HvProcess,
+        machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity,
+        admissionPlan: DoryResolvedMachinePlan?,
+        authoritativeData: Data
+    ) throws -> NativeMacSavedStatePlanRefresh {
+        guard launchPolicy == .perWorkspaceAuthority,
+              machine.guestFamily == .macOS,
+              machine.bootMode == .macOSRestore,
+              runtimeIdentity.mode == .resolvedPlan else {
+            return NativeMacSavedStatePlanRefresh(
+                runtimeIdentity: runtimeIdentity,
+                helperRetired: false,
+                admissionSettled: false
+            )
+        }
+        guard let controller = productionAdmissionComponentsSnapshot().controller else {
+            throw MachineManagerError.persistence(
+                "native Mac saved-state planning has no production controller"
+            )
+        }
+        try markResolvedAdmissionStopped(plan: admissionPlan)
+        lock.lock()
+        guard var current = machines[id], current.process === process,
+              current.configuration == machine,
+              current.runtimeIdentity == runtimeIdentity,
+              current.activeOperationID == operationID else {
+            lock.unlock()
+            throw MachineManagerError.persistence(
+                "native Mac helper authority changed before saved-state planning"
+            )
+        }
+        let handoffServer = current.handoffServer
+        current.process = nil
+        current.handoffServer = nil
+        current.handoff = nil
+        current.launchID = nil
+        current.runtimeAddress = nil
+        current.currentBalloonTargetMB = nil
+        current.activeResolvedPlan = nil
+        current.activeBackend = nil
+        current.pendingRestoreStatePath = nil
+        current.state = .stopped
+        machines[id] = current
+        lock.unlock()
+        handoffServer?.stop()
+        try? runtimeReconnectStore.remove(machineID: id)
+        let refreshed = try resolveAndPublishProductionPlan(
+            id: id,
+            operationID: operationID,
+            controller: controller,
+            allowActiveSavedStateSuspend: true
+        ).runtimeIdentity
+        guard refreshed.mode == .resolvedPlan,
+              refreshed.validate().isEmpty,
+              refreshed.resolvedPlan?.machineID == id,
+              refreshed.backend == .appleVirtualizationFramework,
+              Self.readPrivateMetadata(path: machineConfigPath(id: id)) == authoritativeData else {
+            throw MachineManagerError.persistence(
+                "native Mac saved-state planning did not preserve exact authority"
+            )
+        }
+        return NativeMacSavedStatePlanRefresh(
+            runtimeIdentity: refreshed,
+            helperRetired: true,
+            admissionSettled: true
+        )
     }
 
     private func savedStateRestoreContext(id: String, operationID: UUID) throws -> MachineLifecycleJournalContext {
@@ -13210,7 +13388,9 @@ public final class MachineManager: @unchecked Sendable {
             firmwareSBOMByteCount: admitted.boot.firmwareSBOM.byteCount,
             installerMediaByteCount: admitted.boot.installerMedia?.byteCount,
             installerMediaSHA256: admitted.boot.installerMedia?.sha256,
-            installerMediaLogicalID: installerMediaLogicalID
+            installerMediaLogicalID: installerMediaLogicalID,
+            rendererBootstrapByteCount: admitted.rendererBootstrap?.byteCount,
+            rendererBootstrapSHA256: admitted.rendererBootstrap?.sha256
         )
         _ = try envelope.validatedResources()
         do {
@@ -13243,7 +13423,8 @@ public final class MachineManager: @unchecked Sendable {
         machine: DoryMachineConfiguration,
         operationID: UUID,
         resolvedPlan: DoryResolvedMachinePlan,
-        launchBinding: MachineBackendLaunchBinding
+        launchBinding: MachineBackendLaunchBinding,
+        rendererReleaseIdentity: DoryRendererReleaseIdentityV1?
     ) throws -> RawHVRuntimeLaunchAuthority {
         guard resolvedPlan.guest.family == .linux,
               resolvedPlan.guest.architecture == .x86_64,
@@ -13282,10 +13463,72 @@ public final class MachineManager: @unchecked Sendable {
                 "resolved DoryPC-v1 launch requires managed EFI storage and configured PC firmware"
             )
         }
-        guard launchBinding.graphics == .none || launchBinding.graphics == .software else {
+        let rendererBootstrapRequest: RawHVRendererBootstrapRequest?
+        let rendererGuestKernelSHA256: String?
+        switch launchBinding.graphics {
+        case .none, .software:
+            rendererBootstrapRequest = nil
+            rendererGuestKernelSHA256 = nil
+        case .hostAcceleratedDisplay:
             throw MachineManagerError.persistence(
-                "resolved DoryPC-v1 hardware graphics requires the signed PC renderer admission path"
+                "resolved DoryPC-v1 host-accelerated display is not admitted"
             )
+        case .hardwareAccelerated3D:
+            guard let graphicsEvidence = resolvedPlan.qualificationEvidence.graphics,
+                  resolvedPlan.qualificationEvidence.runtime != nil,
+                  let rendererReleaseIdentity else {
+                throw MachineManagerError.persistence(
+                    "resolved DoryPC-v1 graphics launch is missing signed guest or worker authority"
+                )
+            }
+            guard let kernelSHA256 = graphicsEvidence.rendererGuestKernelSHA256,
+                  let guestMesaSHA256 = graphicsEvidence.rendererGuestMesaSHA256,
+                  let selectedBootArtifactSHA256 =
+                    resolvedPlan.bootMedia.media.artifactSHA256,
+                  graphicsEvidence.artifactSHA256.lowercased()
+                    == selectedBootArtifactSHA256.lowercased(),
+                  DoryResolvedMachinePlan.isSHA256(kernelSHA256),
+                  DoryResolvedMachinePlan.isSHA256(guestMesaSHA256),
+                  guestMesaSHA256 != DoryRendererSourceTuple.guestMesaRuntimeSHA256,
+                  graphicsEvidence.rendererProducerFenceContract
+                    == .doryPCX8664LinuxVirGL2PrepareFBV1 else {
+                throw MachineManagerError.persistence(
+                    "resolved DoryPC-v1 graphics launch lacks a signed x86 VirGL2 renderer profile"
+                )
+            }
+            let packagedQualification: DoryVerifiedRendererBootstrapQualification
+            do {
+                packagedQualification = try DoryVerifiedRendererBootstrapQualification
+                    .loadRuntimeCandidate(
+                        producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1
+                    )
+            } catch {
+                throw MachineManagerError.persistence(
+                    "resolved DoryPC-v1 graphics launch lacks packaged x86 renderer qualification: \(error)"
+                )
+            }
+            guard packagedQualification.productionAccelerationIsQualified,
+                  packagedQualification.producerFenceContract
+                    == .doryPCX8664LinuxVirGL2PrepareFBV1,
+                  packagedQualification.managedGuestKernelSHA256.lowercaseSHA256
+                    == kernelSHA256,
+                  packagedQualification.guestMesaSHA256.lowercaseSHA256
+                    == guestMesaSHA256 else {
+                throw MachineManagerError.persistence(
+                    "resolved DoryPC-v1 graphics launch does not match packaged x86 renderer qualification"
+                )
+            }
+            rendererBootstrapRequest = RawHVRendererBootstrapRequest(
+                workspaceID: operationID,
+                generation: resolvedPlan.planRevision,
+                runtimeBuildIdentifier: resolvedPlan.backendRuntimeBuildIdentifier,
+                components: resolvedPlan.components,
+                rendererWorkerCodeDirectoryHash:
+                    rendererReleaseIdentity.rendererWorkerCodeDirectoryHash,
+                producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1,
+                guestMesaSHA256: guestMesaSHA256
+            )
+            rendererGuestKernelSHA256 = kernelSHA256
         }
         let storageUsages = resolvedPlan.launchArtifacts.flatMap { artifact in
             artifact.usages.compactMap { usage in
@@ -13354,7 +13597,7 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         let admitted = try lease.withBorrowedDescriptor { descriptor in
-            try Self.admitResolvedDoryPCUEFIResources(
+            let resources = try Self.admitResolvedDoryPCUEFIResources(
                 machineDirectoryDescriptor: descriptor,
                 machineDirectoryGeneration: lease.generation,
                 expectedDiskCapacityBytes: admittedStorageBytes,
@@ -13365,6 +13608,31 @@ public final class MachineManager: @unchecked Sendable {
                 mediaKind: resolvedPlan.bootMedia.media.kind,
                 expectedInstallerSHA256: installerSHA256
             )
+            do {
+                let rendererBootstrap = try rendererBootstrapRequest.map { request in
+                    guard let rendererGuestKernelSHA256 else {
+                        throw MachineManagerError.persistence(
+                            "resolved DoryPC-v1 renderer bootstrap lacks x86 kernel authority"
+                        )
+                    }
+                    return try Self.stageResolvedRawHVRendererBootstrap(
+                        machineDirectoryDescriptor: descriptor,
+                        machineDirectoryGeneration: lease.generation,
+                        exactKernelSHA256: rendererGuestKernelSHA256,
+                        request: request,
+                        childDescriptor:
+                            RuntimeLaunchEnvelope.uefiRendererBootstrapDescriptor
+                    )
+                }
+                return RawHVAdmittedPCUEFIRuntimeResources(
+                    disk: resources.disk,
+                    boot: resources.boot,
+                    rendererBootstrap: rendererBootstrap
+                )
+            } catch {
+                resources.close()
+                throw error
+            }
         }
         var transferred = false
         defer { if !transferred { admitted.close() } }
@@ -13388,7 +13656,9 @@ public final class MachineManager: @unchecked Sendable {
             firmwareSBOMByteCount: admitted.boot.firmwareSBOM.byteCount,
             installerMediaByteCount: admitted.boot.installerMedia?.byteCount,
             installerMediaSHA256: admitted.boot.installerMedia?.sha256,
-            installerMediaLogicalID: installerMediaLogicalID
+            installerMediaLogicalID: installerMediaLogicalID,
+            rendererBootstrapByteCount: admitted.rendererBootstrap?.byteCount,
+            rendererBootstrapSHA256: admitted.rendererBootstrap?.sha256
         )
         _ = try envelope.validatedResources()
 #if DEBUG
@@ -13407,7 +13677,9 @@ public final class MachineManager: @unchecked Sendable {
         transferred = true
         return try RawHVRuntimeLaunchAuthority(
             pcEnvelope: envelope,
-            inheritedFileDescriptors: [admitted.disk.authority] + admitted.boot.authorities
+            inheritedFileDescriptors: [admitted.disk.authority]
+                + admitted.boot.authorities
+                + (admitted.rendererBootstrap.map { [$0.authority] } ?? [])
         )
     }
 
@@ -14310,7 +14582,8 @@ public final class MachineManager: @unchecked Sendable {
         machineDirectoryDescriptor: Int32,
         machineDirectoryGeneration: DoryTrustedDirectoryIdentity,
         exactKernelSHA256: String,
-        request: RawHVRendererBootstrapRequest
+        request: RawHVRendererBootstrapRequest,
+        childDescriptor: Int32 = RuntimeLaunchEnvelope.rendererBootstrapDescriptor
     ) throws -> RawHVAdmittedRendererBootstrap {
         try validateRawHVMachineDirectoryDescriptor(
             machineDirectoryDescriptor,
@@ -14324,14 +14597,29 @@ public final class MachineManager: @unchecked Sendable {
             lowercaseSHA256: exactKernelSHA256,
             field: "managedGuestKernel"
         )
+        let guestMesa = try DoryRendererArtifactDigest(
+            lowercaseSHA256: request.guestMesaSHA256
+                ?? renderer.guestMesa.lowercaseSHA256,
+            field: "guestMesa"
+        )
+        let requestedCapabilities: DoryRendererRequestedCapabilities
+        switch request.producerFenceContract {
+        case .managedLinux612106PrepareFBV1:
+            requestedCapabilities = .productionAcceleration
+        case .doryPCX8664LinuxVirGL2PrepareFBV1:
+            requestedCapabilities = .pcVirGL2Acceleration
+        }
         let bootstrap = try DoryRendererWorkerBootstrap(
             workspaceID: DoryRendererWorkspaceID(rawValue: request.workspaceID),
             generation: DoryRendererWorkerGeneration(rawValue: request.generation),
             sourceTuple: .productionCandidate,
-            producerFenceContract: .managedLinux612106PrepareFBV1,
-            requestedCapabilities: .productionAcceleration,
-            artifacts: renderer.artifactManifest(
+            producerFenceContract: request.producerFenceContract,
+            requestedCapabilities: requestedCapabilities,
+            artifacts: DoryRendererArtifactManifest(
+                candidateInventory: renderer.candidateInventory,
                 managedGuestKernel: kernel,
+                guestMesa: guestMesa,
+                rendererWorkerExecutable: renderer.rendererWorkerExecutable,
                 rendererWorkerCodeDirectoryHash:
                     request.rendererWorkerCodeDirectoryHash
             )
@@ -14375,7 +14663,7 @@ public final class MachineManager: @unchecked Sendable {
         let authority = HvProcessInheritedFileDescriptor(
             name: RuntimeLaunchEnvelope.rendererBootstrapSlotName,
             takingOwnershipOf: reader,
-            childDescriptor: RuntimeLaunchEnvelope.rendererBootstrapDescriptor
+            childDescriptor: childDescriptor
         )
         reader = -1
         return RawHVAdmittedRendererBootstrap(
@@ -20728,7 +21016,10 @@ public final class MachineManager: @unchecked Sendable {
                     && active.operation.snapshotRestoreSpecificationDigest == nil
                     && active.operation.snapshotSpecificationDigest == nil
                     && active.operation.creationSpecificationDigest == nil
-                    && !(active.operation.kind == .starting && active.operation.target.plannedRuntime != nil)) {
+                    && !(active.operation.kind == .starting && active.operation.target.plannedRuntime != nil)
+                    && !(active.operation.kind == .suspending
+                        && active.operation.targetResourceID
+                            == DoryWorkspaceLifecycleOperation.savedStateResourceID)) {
                 activePlanningMutationIDs.remove(machine.id)
                 return "machine \(machine.id) already has an active lifecycle mutation"
             }
@@ -20803,7 +21094,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         if let unfinished = try unfinishedPersistedLifecycleOperation(machineID: machine.id) {
             guard unfinished.plan.id == operationID,
-                  [.workspaceUpdate, .workspaceRestore, .workspaceSnapshot, .workspaceProvision, .workspaceClone, .workspaceStart].contains(unfinished.plan.kind) else {
+                  [.workspaceUpdate, .workspaceRestore, .workspaceSnapshot, .workspaceProvision, .workspaceClone, .workspaceStart, .workspaceSuspend].contains(unfinished.plan.kind) else {
                 throw MachineManagerError.persistence("machine lifecycle operation requires recovery before planning")
             }
             if updateParent == nil {
@@ -20822,6 +21113,10 @@ public final class MachineManager: @unchecked Sendable {
                     try validateSnapshotRestorePublication(DoryMachineSnapshotRestoreJournal.read(from: parent.lease))
                 } else if parent.operation.desktopUpdateSpecificationDigest != nil {
                     desktopAuthority = try validateDesktopPublication(parent)
+                } else if parent.operation.kind == .suspending,
+                          parent.operation.targetResourceID
+                            == DoryWorkspaceLifecycleOperation.savedStateResourceID {
+                    try validateSavedStateSuspendPlanningSource(parent)
                 } else {
                     let update = try DoryMachineConfigurationUpdateJournal.read(from: lease)
                     guard update.requiresResolvedPlan else {
@@ -20852,6 +21147,10 @@ public final class MachineManager: @unchecked Sendable {
                 if desktopAuthority == nil {
                     desktopAuthority = try validateDesktopPublication(updateParent)
                 }
+            } else if updateParent.operation.kind == .suspending,
+                      updateParent.operation.targetResourceID
+                        == DoryWorkspaceLifecycleOperation.savedStateResourceID {
+                try validateSavedStateSuspendPlanningSource(updateParent)
             } else {
                 let update = try DoryMachineConfigurationUpdateJournal.read(from: updateParent.lease)
                 guard update.requiresResolvedPlan, update.operationID == operationID else {
@@ -20967,6 +21266,15 @@ public final class MachineManager: @unchecked Sendable {
                         let restore = try DoryMachineSnapshotRestoreJournal.read(from: parent.lease)
                         let plan = try self.validateSnapshotRestorePlan(parent, restore: restore)
                         try parent.lease.publishSnapshotRestoreCheckpoint(plan, at: .plan)
+                    } else if parent.operation.kind == .suspending,
+                              parent.operation.targetResourceID
+                                == DoryWorkspaceLifecycleOperation.savedStateResourceID {
+                        guard let plan = self.lock.withLock({
+                            self.machines[machine.id]?.runtimeIdentity.resolvedPlan
+                        }) else {
+                            throw MachineManagerError.persistence("saved-state plan has no runtime identity")
+                        }
+                        try parent.lease.publishSavedStatePlanCheckpoint(plan)
                     } else if let desktopPlanningAuthority {
                         guard let plan = self.lock.withLock({
                             self.machines[machine.id]?.runtimeIdentity.resolvedPlan
@@ -21446,7 +21754,11 @@ public final class MachineManager: @unchecked Sendable {
         let intent = MachineSavedStateIntentAuthority(
             machineID: machine.id,
             configurationSHA256: Self.sha256(data: authoritativeConfigurationData),
-            runtimeIdentity: runtimeIdentity,
+            runtimeCompatibility: MachineSavedStateRuntimeCompatibilityAuthority(
+                authorizationState: runtimeIdentity.mode,
+                backend: runtimeIdentity.backend,
+                virtualHardwareABIVersion: runtimeIdentity.virtualHardwareABIVersion
+            ),
             hostHardwareModel: host.hardwareModel,
             hostOperatingSystemBuild: host.operatingSystemBuild,
             backend: .appleVirtualizationFramework
@@ -21454,10 +21766,10 @@ public final class MachineManager: @unchecked Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let descriptor = try encoder.encode(intent)
-        let runtime = try encoder.encode(runtimeIdentity)
+        let compatibility = try encoder.encode(intent.runtimeCompatibility)
         return DoryWorkspaceSnapshotAuthority(
             descriptorSHA256: Self.sha256(data: descriptor),
-            artifactEvidenceSHA256: Self.sha256(data: runtime)
+            artifactEvidenceSHA256: Self.sha256(data: compatibility)
         )
     }
 
@@ -23850,10 +24162,16 @@ private struct PendingResolvedMachineStart {
     var shareAuthorities: [DoryMachineShareRuntimeAuthority]
 }
 
+private struct MachineSavedStateRuntimeCompatibilityAuthority: Codable, Equatable {
+    var authorizationState: DoryMachineRuntimeIdentityMode
+    var backend: DoryVirtualizationBackendIdentity?
+    var virtualHardwareABIVersion: UInt16
+}
+
 private struct MachineSavedStateIntentAuthority: Codable {
     var machineID: String
     var configurationSHA256: String
-    var runtimeIdentity: DoryMachineRuntimeIdentity
+    var runtimeCompatibility: MachineSavedStateRuntimeCompatibilityAuthority
     var hostHardwareModel: String
     var hostOperatingSystemBuild: String
     var backend: DoryVirtualizationBackendIdentity

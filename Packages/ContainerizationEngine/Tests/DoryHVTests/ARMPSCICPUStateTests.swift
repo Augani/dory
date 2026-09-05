@@ -24,6 +24,8 @@ struct ARMPSCICPUStateTests {
             #expect(state.affinityInfo(target: target, lowestLevel: 0) == -2)
         }
         #expect(state.affinityInfo(target: 0, lowestLevel: 1) == -2)
+        #expect(state.affinityInfo(target: 0, lowestLevel: 0x1_0000_0000) == -2)
+        #expect(state.affinityInfo(target: 0, lowestLevel: UInt64.max) == -2)
         #expect(state.affinityInfo(target: 1, lowestLevel: 0) == 1)
         #expect(state.requestOn(target: 1, entry: 0x4000_0000, executableRanges: ram) == 0)
     }

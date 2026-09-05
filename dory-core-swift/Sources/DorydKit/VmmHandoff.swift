@@ -96,7 +96,9 @@ public struct DoryRuntimeGraphicsSelection: Codable, Sendable, Equatable, Hashab
             return rendererGeneration == nil
                 && rendererWorkerReceiptSHA256 == nil
                 && guestProducerFenceProofSHA256 == nil
-        case (.hostAcceleratedDisplay, .virgl), (.hardwareAccelerated3D, .virglVenus):
+        case (.hostAcceleratedDisplay, .virgl),
+             (.hardwareAccelerated3D, .virgl),
+             (.hardwareAccelerated3D, .virglVenus):
             return rendererGeneration.map { $0 > 0 } == true
                 && rendererWorkerReceiptSHA256.map(Self.isLowercaseSHA256) == true
                 && guestProducerFenceProofSHA256.map(Self.isLowercaseSHA256) == true

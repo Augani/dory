@@ -259,7 +259,7 @@ public final class DoryRendererWorkerVirtioCommandLane: @unchecked Sendable {
         commandDeadlineNanoseconds: UInt64 = 5_000_000_000
     ) throws {
         guard deviceGeneration != 0,
-              broker.capabilityReceipt.productionAccelerationIsAdmissible else {
+              broker.capabilityReceipt.isAdmissible(for: broker.bootstrap) else {
             throw DoryRendererWorkerVirtioCommandLaneError.invalidSubmitRegions
         }
         let limits = broker.bootstrap.limits

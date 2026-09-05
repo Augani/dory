@@ -28,6 +28,11 @@ public struct DoryRendererArtifactManifest: Equatable, Sendable {
 /// environment values, library names, or fallback modes in this envelope. The signed service owns
 /// one successful bootstrap attempt for its complete process lifetime.
 public struct DoryRendererWorkerBootstrap: Equatable, Sendable {
+    public static let supportedProducerFenceContracts: Set<DoryRendererProducerFenceContract> = [
+        .managedLinux612106PrepareFBV1,
+        .doryPCX8664LinuxVirGL2PrepareFBV1,
+    ]
+
     public let workspaceID: DoryRendererWorkspaceID
     public let generation: DoryRendererWorkerGeneration
     public let sourceTuple: DoryRendererSourceTuple
@@ -48,13 +53,20 @@ public struct DoryRendererWorkerBootstrap: Equatable, Sendable {
         guard sourceTuple == .productionCandidate else {
             throw DoryRendererWorkerContractError.unsupportedSourceTuple(sourceTuple.rawValue)
         }
-        guard producerFenceContract == .managedLinux612106PrepareFBV1 else {
+        guard Self.supportedProducerFenceContracts.contains(producerFenceContract) else {
             throw DoryRendererWorkerContractError.unsupportedProducerFenceContract(
                 producerFenceContract.rawValue
             )
         }
-        guard requestedCapabilities == .productionAcceleration else {
-            throw DoryRendererWorkerContractError.incompleteAccelerationRequest
+        switch producerFenceContract {
+        case .managedLinux612106PrepareFBV1:
+            guard requestedCapabilities == .productionAcceleration else {
+                throw DoryRendererWorkerContractError.incompleteAccelerationRequest
+            }
+        case .doryPCX8664LinuxVirGL2PrepareFBV1:
+            guard requestedCapabilities == .pcVirGL2Acceleration else {
+                throw DoryRendererWorkerContractError.incompleteAccelerationRequest
+            }
         }
         self.workspaceID = workspaceID
         self.generation = generation

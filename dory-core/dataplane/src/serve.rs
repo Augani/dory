@@ -1656,6 +1656,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admitted_gpu_create_reaches_dockerd_as_a_render_device() {
+        let (captured, path) = spawn_fake(true).await;
+        let body = r#"{"HostConfig":{"DeviceRequests":[{"Count":-1,"Capabilities":[["gpu"]]}]}}"#;
+        let mut client = UnixStream::connect(&path).await.unwrap();
+        client.write_all(create_request(body).as_bytes()).await.unwrap();
+        let response = read_response(&mut client).await;
+        assert!(response.starts_with("HTTP/1.1 201"), "{response}");
+        client.shutdown().await.unwrap();
+        let bytes = captured.lock().unwrap().clone();
+        let end = head_end(&bytes).unwrap();
+        let rewritten: serde_json::Value = serde_json::from_slice(&bytes[end..]).unwrap();
+        assert!(rewritten["HostConfig"].get("DeviceRequests").is_none());
+        assert_eq!(rewritten["HostConfig"]["Devices"], serde_json::json!([{
+            "PathOnHost": "/dev/dri/renderD128",
+            "PathInContainer": "/dev/dri/renderD128",
+            "CgroupPermissions": "rw"
+        }]));
+        assert_eq!(content_length(std::str::from_utf8(&bytes[..end]).unwrap()), Some(bytes.len() - end));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[tokio::test]
     async fn gpu_request_gets_501_and_is_not_forwarded() {
         let (captured, path) = spawn_fake(false).await;
 

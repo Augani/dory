@@ -305,15 +305,12 @@ struct DockerShim: Sendable {
         if runtime.supportsRawProxy {
             let normalized = runtime.kind == .sharedVM
                 ? Self.sharedVMNormalizedCreateBody(request.body)
-                : SharedVMCreateBody(body: request.body, compatibilityError: nil)
-            if let message = normalized.compatibilityError {
-                return errorResponse(501, message)
-            }
+                : request.body
             guard let response = await runtime.proxyRequest(
                 method: request.method.uppercased(),
                 path: request.target,
                 headers: Self.proxyRequestHeaders(request),
-                body: normalized.body
+                body: normalized
             ) else {
                 return errorResponse(502, "docker engine unavailable")
             }
@@ -359,18 +356,11 @@ struct DockerShim: Sendable {
         }
     }
 
-    private struct SharedVMCreateBody {
-        var body: Data
-        var compatibilityError: String?
-    }
-
     private static let sharedVMHostServiceGateway = "host-gateway"
-    private static let sharedVMGPUUnsupportedMessage =
-        "Dory's shared VM accepts Docker --gpus only when GPU acceleration is enabled in Settings > Docker Engine > GPU Acceleration (this restarts the engine). Enable it, then rerun with --gpus all on an image that ships Mesa's Venus Vulkan driver. Alternatively, run a Metal-backed host service such as Ollama, LM Studio, MLX, or llama.cpp and call it from containers at http://host.dory.internal:11434 or http://host.dory.internal:1234."
 
-    private static func sharedVMNormalizedCreateBody(_ body: Data) -> SharedVMCreateBody {
+    private static func sharedVMNormalizedCreateBody(_ body: Data) -> Data {
         guard var root = (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] else {
-            return SharedVMCreateBody(body: body, compatibilityError: nil)
+            return body
         }
 
         var hostConfig = root["HostConfig"] as? [String: Any] ?? [:]
@@ -393,28 +383,15 @@ struct DockerShim: Sendable {
             changed = true
         }
 
-        var compatibilityError: String?
-        if hasGPUDeviceRequest(hostConfig) {
-            if sharedVMGPUDeviceTranslationEnabled() {
-                if normalizeSharedVMGPUDevices(in: &hostConfig) {
-                    changed = true
-                }
-            } else {
-                compatibilityError = sharedVMGPUUnsupportedMessage
-            }
-        }
-        guard changed else {
-            return SharedVMCreateBody(body: body, compatibilityError: compatibilityError)
-        }
+        // Preserve device requests for the daemon's admitted GPU policy. The app must not
+        // grant devices from environment variables or erase another device driver's request.
+        guard changed else { return body }
 
         if hostConfig["PortBindings"] != nil {
             hostConfig["PortBindings"] = portBindings
         }
         root["HostConfig"] = hostConfig
-        return SharedVMCreateBody(
-            body: (try? JSONSerialization.data(withJSONObject: root)) ?? body,
-            compatibilityError: compatibilityError
-        )
+        return (try? JSONSerialization.data(withJSONObject: root)) ?? body
     }
 
     private static func isLoopbackHostIP(_ value: String) -> Bool {
@@ -508,71 +485,6 @@ struct DockerShim: Sendable {
             address.removeLast()
         }
         return address.isEmpty || address == "host-gateway" || address == "172.17.0.1" || address == "10.0.2.2"
-    }
-
-    private static func hasGPUDeviceRequest(_ hostConfig: [String: Any]) -> Bool {
-        guard let requests = hostConfig["DeviceRequests"] as? [[String: Any]] else { return false }
-        return requests.contains { request in
-            if let driver = (request["Driver"] as? String)?.lowercased(),
-               driver.contains("gpu") || driver.contains("nvidia") || driver.contains("cuda") {
-                return true
-            }
-            return containsGPUCapability(request["Capabilities"] as Any)
-        }
-    }
-
-    private static func sharedVMGPUDeviceTranslationEnabled() -> Bool {
-        let environment = ProcessInfo.processInfo.environment
-        return environment["DORY_EXPERIMENTAL_GPU"] == "venus"
-            || environment["DORY_SHARED_VM_GPU_DEVICES"] == "1"
-    }
-
-    private static func normalizeSharedVMGPUDevices(in hostConfig: inout [String: Any]) -> Bool {
-        var changed = false
-        if hostConfig["DeviceRequests"] != nil {
-            hostConfig.removeValue(forKey: "DeviceRequests")
-            changed = true
-        }
-
-        var devices = hostConfig["Devices"] as? [[String: Any]]
-            ?? (hostConfig["Devices"] as? [Any])?.compactMap { $0 as? [String: Any] }
-            ?? []
-        for path in ["/dev/dri/renderD128", "/dev/dri/card0"] {
-            let alreadyPresent = devices.contains { device in
-                device["PathInContainer"] as? String == path || device["PathOnHost"] as? String == path
-            }
-            if !alreadyPresent {
-                devices.append([
-                    "PathOnHost": path,
-                    "PathInContainer": path,
-                    "CgroupPermissions": "rwm",
-                ])
-                changed = true
-            }
-        }
-        if changed || hostConfig["Devices"] != nil {
-            hostConfig["Devices"] = devices
-        }
-
-        var rules = hostConfig["DeviceCgroupRules"] as? [String]
-            ?? (hostConfig["DeviceCgroupRules"] as? [Any])?.compactMap { $0 as? String }
-            ?? []
-        if !rules.contains("c 226:* rwm") {
-            rules.append("c 226:* rwm")
-            hostConfig["DeviceCgroupRules"] = rules
-            changed = true
-        }
-        return changed
-    }
-
-    private static func containsGPUCapability(_ value: Any) -> Bool {
-        if let string = value as? String {
-            return string.lowercased().contains("gpu")
-        }
-        if let values = value as? [Any] {
-            return values.contains { containsGPUCapability($0) }
-        }
-        return false
     }
 
     private func createNetwork(_ request: ParsedRequest) async -> ShimResponse {

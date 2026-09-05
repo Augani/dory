@@ -977,7 +977,7 @@ enum VirtioMMIODeviceTree {
       case PSCI.affinityInfo, PSCI.affinityInfo32:
         let mask: UInt64 = function == PSCI.affinityInfo32 ? 0xFFFF_FFFF : .max
         let target = try vcpu.read(HV_REG_X1) & mask
-        let lowestLevel = UInt32(truncatingIfNeeded: try vcpu.read(HV_REG_X2))
+        let lowestLevel = try vcpu.read(HV_REG_X2) & mask
         let result = teamCondition.withLock {
           psciCPUState.affinityInfo(target: target, lowestLevel: lowestLevel)
         }

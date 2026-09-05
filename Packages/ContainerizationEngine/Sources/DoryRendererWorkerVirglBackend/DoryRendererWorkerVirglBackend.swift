@@ -443,7 +443,12 @@ public final class DoryRendererWorkerVirglBackend:
                 throw DoryRendererWorkerBackendActivationError.rendererInitialization
             }
             do {
-                let preflight = try Self.preflight(session: session)
+                let requiresVenus = bootstrap.producerFenceContract
+                    == .managedLinux612106PrepareFBV1
+                let preflight = try Self.preflight(
+                    session: session,
+                    requiresVenus: requiresVenus
+                )
                 let receiptCapsets: [DoryRendererCapsetAttestation]
                 do {
                     receiptCapsets = try preflight.capsets.map { capset in
@@ -456,11 +461,14 @@ public final class DoryRendererWorkerVirglBackend:
                 } catch {
                     throw DoryRendererWorkerBackendActivationError.capabilityReceipt
                 }
+                let receiptFeatures: DoryRendererWorkerFeatures = requiresVenus
+                    ? .productionAcceleration
+                    : .pcVirGL2Acceleration
                 let receipt: DoryRendererCapabilityReceipt
                 do {
                     receipt = try DoryRendererCapabilityReceipt(
                         accepting: bootstrap,
-                        features: .productionAcceleration,
+                        features: receiptFeatures,
                         capsets: receiptCapsets
                     )
                 } catch {
@@ -1164,7 +1172,8 @@ public final class DoryRendererWorkerVirglBackend:
     }
 
     private static func preflight(
-        session: any DoryRendererForeignSession
+        session: any DoryRendererForeignSession,
+        requiresVenus: Bool = true
     ) throws -> PreflightResult {
         let pollDescriptor: Int32?
         do {
@@ -1181,16 +1190,20 @@ public final class DoryRendererWorkerVirglBackend:
         guard virgl2.maximumVersion > 0, !virgl2.bytes.isEmpty else {
             throw DoryRendererWorkerBackendActivationError.virgl2Capability
         }
-        let venus: DoryRendererForeignCapset
-        do {
-            venus = try session.capset(id: 4)
-        } catch {
-            throw DoryRendererWorkerBackendActivationError.venusCapability
-        }
-        // `virgl_renderer_get_cap_set` deliberately reports Venus at outer version zero. The
-        // returned payload carries the Venus wire/XML/spec versions and is the capability proof.
-        guard venus.maximumVersion == 0, !venus.bytes.isEmpty else {
-            throw DoryRendererWorkerBackendActivationError.venusCapability
+        let venus: DoryRendererForeignCapset?
+        if requiresVenus {
+            do {
+                venus = try session.capset(id: 4)
+            } catch {
+                throw DoryRendererWorkerBackendActivationError.venusCapability
+            }
+            // `virgl_renderer_get_cap_set` deliberately reports Venus at outer version zero. The
+            // returned payload carries the Venus wire/XML/spec versions and is the capability proof.
+            guard venus?.maximumVersion == 0, venus?.bytes.isEmpty == false else {
+                throw DoryRendererWorkerBackendActivationError.venusCapability
+            }
+        } else {
+            venus = nil
         }
 
         let resource2DBackingByteCount = 4 * 4 * 4
@@ -1388,50 +1401,52 @@ public final class DoryRendererWorkerVirglBackend:
         } catch {
             throw DoryRendererWorkerBackendActivationError.virgl2Context
         }
-        do {
-            try session.createContext(
-                id: preflightVenusContextID,
-                capsetID: 4,
-                name: "dory-preflight-venus"
-            )
-        } catch {
-            throw DoryRendererWorkerBackendActivationError.venusContext
+        if requiresVenus {
+            do {
+                try session.createContext(
+                    id: preflightVenusContextID,
+                    capsetID: 4,
+                    name: "dory-preflight-venus"
+                )
+            } catch {
+                throw DoryRendererWorkerBackendActivationError.venusContext
+            }
+            venusCreated = true
+            let blob: DoryRendererBlobCreatePayload
+            do {
+                blob = try DoryRendererBlobCreatePayload(
+                    blobMemory: UInt32(DORY_VIRGL_RENDERER_BLOB_MEMORY_HOST3D),
+                    blobFlags: UInt32(DORY_VIRGL_RENDERER_BLOB_FLAG_MAPPABLE),
+                    // Venus reserves zero for a renderer-allocated, exportable SHM blob.
+                    blobID: 0,
+                    size: UInt64(getpagesize())
+                )
+                try session.createBlob(
+                    DoryRendererForeignBlobCreate(
+                        resourceID: preflightResourceID,
+                        contextID: preflightVenusContextID,
+                        payload: blob
+                    ),
+                    iovecs: nil,
+                    iovecCount: 0
+                )
+            } catch {
+                throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
+            }
+            blobCreated = true
+            let validated: ValidatedSHM
+            do {
+                let exported = try session.exportBlob(resourceID: preflightResourceID)
+                validated = try validateExportedSHM(
+                    exported,
+                    minimumBytes: UInt64(getpagesize()),
+                    maximumBytes: UInt64(getpagesize()) * 16
+                )
+            } catch {
+                throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
+            }
+            close(validated.fileDescriptor)
         }
-        venusCreated = true
-        let blob: DoryRendererBlobCreatePayload
-        do {
-            blob = try DoryRendererBlobCreatePayload(
-                blobMemory: UInt32(DORY_VIRGL_RENDERER_BLOB_MEMORY_HOST3D),
-                blobFlags: UInt32(DORY_VIRGL_RENDERER_BLOB_FLAG_MAPPABLE),
-                // Venus reserves zero for a renderer-allocated, exportable SHM blob.
-                blobID: 0,
-                size: UInt64(getpagesize())
-            )
-            try session.createBlob(
-                DoryRendererForeignBlobCreate(
-                    resourceID: preflightResourceID,
-                    contextID: preflightVenusContextID,
-                    payload: blob
-                ),
-                iovecs: nil,
-                iovecCount: 0
-            )
-        } catch {
-            throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
-        }
-        blobCreated = true
-        let validated: ValidatedSHM
-        do {
-            let exported = try session.exportBlob(resourceID: preflightResourceID)
-            validated = try validateExportedSHM(
-                exported,
-                minimumBytes: UInt64(getpagesize()),
-                maximumBytes: UInt64(getpagesize()) * 16
-            )
-        } catch {
-            throw DoryRendererWorkerBackendActivationError.sharedMemoryExport
-        }
-        close(validated.fileDescriptor)
 
         let globalFenceDescriptor: Int32
         do {
@@ -1466,25 +1481,29 @@ public final class DoryRendererWorkerVirglBackend:
             throw DoryRendererWorkerBackendActivationError.fenceExport
         }
 
-        let venusFenceDescriptor: Int32
-        do {
-            try session.createFence(
-                contextID: preflightVenusContextID,
-                flags: 0,
-                ringIndex: 0,
-                fenceID: preflightVenusFenceID
-            )
-            venusFenceDescriptor = try session.exportFence(fenceID: preflightVenusFenceID)
-            defer { close(venusFenceDescriptor) }
-            try waitForFenceCompletion(
-                descriptor: venusFenceDescriptor,
-                session: session
-            )
-        } catch {
-            throw DoryRendererWorkerBackendActivationError.fenceExport
+        if requiresVenus {
+            let venusFenceDescriptor: Int32
+            do {
+                try session.createFence(
+                    contextID: preflightVenusContextID,
+                    flags: 0,
+                    ringIndex: 0,
+                    fenceID: preflightVenusFenceID
+                )
+                venusFenceDescriptor = try session.exportFence(
+                    fenceID: preflightVenusFenceID
+                )
+                defer { close(venusFenceDescriptor) }
+                try waitForFenceCompletion(
+                    descriptor: venusFenceDescriptor,
+                    session: session
+                )
+            } catch {
+                throw DoryRendererWorkerBackendActivationError.fenceExport
+            }
         }
         return PreflightResult(
-            capsets: [virgl2, venus],
+            capsets: venus.map { [virgl2, $0] } ?? [virgl2],
             pollDescriptor: pollDescriptor
         )
     }

@@ -44,7 +44,7 @@ struct ARMPSCICPUState {
         states[index] = .on
     }
 
-    func affinityInfo(target: UInt64, lowestLevel: UInt32) -> Int64 {
+    func affinityInfo(target: UInt64, lowestLevel: UInt64) -> Int64 {
         // PSCI 1.0 permits an implementation to support only affinity level zero.
         guard lowestLevel == 0, let index = index(for: target) else { return -2 }
         return states[index].rawValue

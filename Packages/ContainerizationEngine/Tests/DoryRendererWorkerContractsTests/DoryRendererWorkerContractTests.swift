@@ -496,6 +496,31 @@ import Testing
         #expect(!missingSharedTexture.productionAccelerationIsAdmissible)
     }
 
+    @Test func pcVirGL2ReceiptAdmitsOnlyVirglCapsetForPCBootstrap() throws {
+        let bootstrap = try makeBootstrap(
+            producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1,
+            requestedCapabilities: .pcVirGL2Acceleration,
+            guestMesa: digest(6)
+        )
+        let virgl2 = try capset(id: 2, seed: 20)
+        let venus = try capset(id: 4, seed: 40)
+        let pcReceipt = try DoryRendererCapabilityReceipt(
+            accepting: bootstrap,
+            features: .pcVirGL2Acceleration,
+            capsets: [virgl2]
+        )
+        #expect(pcReceipt.pcVirGL2AccelerationIsAdmissible)
+        #expect(pcReceipt.isAdmissible(for: bootstrap))
+        #expect(!pcReceipt.productionAccelerationIsAdmissible)
+
+        let venusReceipt = try DoryRendererCapabilityReceipt(
+            accepting: bootstrap,
+            features: .productionAcceleration,
+            capsets: [virgl2, venus]
+        )
+        #expect(!venusReceipt.isAdmissible(for: bootstrap))
+    }
+
     @Test func receiptBindsExactCapsetBytesAndRejectsMalformedAuthority() throws {
         let bootstrap = try makeBootstrap()
         let virgl2 = try capset(id: 2, seed: 20)
@@ -650,17 +675,23 @@ import Testing
         ) == expectedTextureClasses)
     }
 
-    private func makeBootstrap() throws -> DoryRendererWorkerBootstrap {
+    private func makeBootstrap(
+        producerFenceContract: DoryRendererProducerFenceContract =
+            .managedLinux612106PrepareFBV1,
+        requestedCapabilities: DoryRendererRequestedCapabilities =
+            .productionAcceleration,
+        guestMesa: DoryRendererArtifactDigest? = nil
+    ) throws -> DoryRendererWorkerBootstrap {
         try DoryRendererWorkerBootstrap(
             workspaceID: DoryRendererWorkspaceID(rawValue: fixedUUID(1)),
             generation: DoryRendererWorkerGeneration(rawValue: 1),
             sourceTuple: .productionCandidate,
-            producerFenceContract: .managedLinux612106PrepareFBV1,
-            requestedCapabilities: .productionAcceleration,
+            producerFenceContract: producerFenceContract,
+            requestedCapabilities: requestedCapabilities,
             artifacts: DoryRendererArtifactManifest(
                 candidateInventory: digest(1),
                 managedGuestKernel: digest(2),
-                guestMesa: digest(3),
+                guestMesa: guestMesa ?? digest(3),
                 rendererWorkerExecutable: digest(4),
                 rendererWorkerCodeDirectoryHash: try codeDirectoryHash(5)
             )

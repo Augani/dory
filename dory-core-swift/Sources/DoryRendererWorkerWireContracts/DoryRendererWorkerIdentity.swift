@@ -214,8 +214,9 @@ public enum DoryRendererSourceTuple: UInt16, Sendable {
 
 /// Guest-side authority that makes RESOURCE_FLUSH producer-complete. Unknown kernels may not claim
 /// this proof merely because they negotiate the same virtio-gpu features.
-public enum DoryRendererProducerFenceContract: UInt16, Sendable {
+public enum DoryRendererProducerFenceContract: UInt16, Sendable, Codable, Hashable {
     case managedLinux612106PrepareFBV1 = 1
+    case doryPCX8664LinuxVirGL2PrepareFBV1 = 2
 }
 
 public struct DoryRendererRequestedCapabilities: OptionSet, Sendable {
@@ -236,6 +237,12 @@ public struct DoryRendererRequestedCapabilities: OptionSet, Sendable {
         .virgl2,
         .venus,
         .sharedMemoryMetalScanout,
+        .synchronizedLeaseRelease,
+        .sharedTextureMetalScanout,
+    ]
+
+    public static let pcVirGL2Acceleration: Self = [
+        .virgl2,
         .synchronizedLeaseRelease,
         .sharedTextureMetalScanout,
     ]

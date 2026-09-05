@@ -569,6 +569,20 @@ case "desktop":
             let authority = try DoryPCUEFIRuntimeAuthority.admit(
                 envelope: pcRuntimeLaunchEnvelope
             )
+            let rendererWorkerLaunch = try await DesktopRendererWorkerLaunch.prepare(
+                resolvedGraphics: pcRuntimeLaunchEnvelope.graphics,
+                rendererBootstrapAuthority: authority.resources.rendererBootstrap,
+                exactManagedKernelSHA256: nil,
+                requiredBootstrapDescriptor:
+                    RuntimeLaunchEnvelope.uefiRendererBootstrapDescriptor,
+                requiredProducerFenceContract:
+                    .doryPCX8664LinuxVirGL2PrepareFBV1
+            )
+            defer {
+                rendererWorkerLaunch?.teardown(
+                    reason: "DoryPC renderer launch teardown"
+                )
+            }
             try DoryPCMode.run(.init(
                 envelope: pcRuntimeLaunchEnvelope,
                 authority: authority,
@@ -583,7 +597,8 @@ case "desktop":
                 gvproxyPath: gvproxy,
                 shares: shares,
                 displayPresentation: displayPresentation,
-                reconnectIdentity: reconnectIdentity!
+                reconnectIdentity: reconnectIdentity!,
+                rendererWorkerLaunch: rendererWorkerLaunch
             ))
         } catch {
             fail("DoryPC desktop failed: \(error)")

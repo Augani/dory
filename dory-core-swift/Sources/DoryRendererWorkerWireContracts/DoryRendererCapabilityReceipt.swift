@@ -41,6 +41,17 @@ public struct DoryRendererWorkerFeatures: OptionSet, Sendable {
         .zeroCopySharedTextureMetalScanout,
     ]
 
+    public static let pcVirGL2Acceleration: Self = [
+        .virgl2,
+        .rendererFenceDescriptor,
+        .singleUseLeaseRelease,
+        .isolatedSignedWorker,
+        .deviceLossFailStop,
+        .managedProducerFenceAccepted,
+        .asynchronousGPUCompletion,
+        .zeroCopySharedTextureMetalScanout,
+    ]
+
     static let knownMask = productionAcceleration.rawValue
 }
 
@@ -105,6 +116,20 @@ public struct DoryRendererCapabilityReceipt: Equatable, Sendable {
     public var productionAccelerationIsAdmissible: Bool {
         features == .productionAcceleration
             && capsets.map(\.id) == [2, 4]
+    }
+
+    public var pcVirGL2AccelerationIsAdmissible: Bool {
+        features == .pcVirGL2Acceleration
+            && capsets.map(\.id) == [2]
+    }
+
+    public func isAdmissible(for bootstrap: DoryRendererWorkerBootstrap) -> Bool {
+        switch bootstrap.producerFenceContract {
+        case .managedLinux612106PrepareFBV1:
+            return productionAccelerationIsAdmissible
+        case .doryPCX8664LinuxVirGL2PrepareFBV1:
+            return pcVirGL2AccelerationIsAdmissible
+        }
     }
 
     public init(

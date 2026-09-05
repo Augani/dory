@@ -222,6 +222,57 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
         })
     }
 
+    func testPCRendererBootstrapUsesUEFIFD9AndX86VirGL2Profile() throws {
+        let fixture = try makeManagedMachineDirectory(
+            prefix: "dory-runtime-pc-renderer-bootstrap"
+        )
+        defer { try? FileManager.default.removeItem(atPath: fixture.root) }
+        let exactKernel = Data("exact-expanded-pc-kernel".utf8)
+        let x86Mesa = String(repeating: "9", count: 64)
+        let request = try rendererBootstrapRequest(
+            producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1,
+            guestMesaSHA256: x86Mesa
+        )
+
+        let admitted = try fixture.lease.withBorrowedDescriptor { descriptor in
+            try MachineManager.stageResolvedRawHVRendererBootstrap(
+                machineDirectoryDescriptor: descriptor,
+                machineDirectoryGeneration: fixture.lease.generation,
+                exactKernelSHA256: digest(exactKernel),
+                request: request,
+                childDescriptor: RuntimeLaunchEnvelope.uefiRendererBootstrapDescriptor
+            )
+        }
+        defer { admitted.close() }
+
+        XCTAssertEqual(admitted.authority.name, RuntimeLaunchEnvelope.rendererBootstrapSlotName)
+        XCTAssertEqual(
+            admitted.authority.childDescriptor,
+            RuntimeLaunchEnvelope.uefiRendererBootstrapDescriptor
+        )
+        let encoded = try contents(of: admitted.authority)
+        XCTAssertEqual(admitted.sha256, digest(encoded))
+        try assertImmutableAuthority(admitted.authority, expected: encoded)
+        let bootstrap = try DoryRendererWorkerBootstrapCodec.decode(encoded)
+        XCTAssertEqual(
+            bootstrap.producerFenceContract,
+            .doryPCX8664LinuxVirGL2PrepareFBV1
+        )
+        XCTAssertEqual(bootstrap.requestedCapabilities, .pcVirGL2Acceleration)
+        XCTAssertEqual(
+            bootstrap.artifacts.managedGuestKernel.lowercaseSHA256,
+            digest(exactKernel)
+        )
+        XCTAssertEqual(bootstrap.artifacts.guestMesa.lowercaseSHA256, x86Mesa)
+        XCTAssertNotEqual(
+            bootstrap.artifacts.guestMesa.lowercaseSHA256,
+            DoryRendererSourceTuple.guestMesaRuntimeSHA256
+        )
+        XCTAssertFalse(try directoryEntries(fixture.directory).contains {
+            $0.hasPrefix(".rawhv-renderer-bootstrap-")
+        })
+    }
+
     func testSupervisorRetainsAllBootAuthoritiesAcrossRestartThenClosesAtTerminalExit() throws {
         let fixture = try makeRuntimeFixture()
         defer { try? FileManager.default.removeItem(atPath: fixture.root) }
@@ -442,7 +493,11 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
         )
     }
 
-    private func rendererBootstrapRequest() throws -> RawHVRendererBootstrapRequest {
+    private func rendererBootstrapRequest(
+        producerFenceContract: DoryRendererProducerFenceContract =
+            .managedLinux612106PrepareFBV1,
+        guestMesaSHA256: String? = nil
+    ) throws -> RawHVRendererBootstrapRequest {
         let runtimeDigest = String(repeating: "a", count: 64)
         let runtimeBuild = "sha256:\(runtimeDigest)"
         func artifact(_ nibble: Character) throws -> DoryRendererArtifactDigest {
@@ -481,7 +536,9 @@ final class RuntimeBootAuthorityIntegrationTests: XCTestCase {
             rendererWorkerCodeDirectoryHash: try DoryCodeDirectoryHash(
                 lowercaseHexadecimal: String(repeating: "34", count: 20),
                 field: "rendererWorkerCodeDirectoryHash"
-            )
+            ),
+            producerFenceContract: producerFenceContract,
+            guestMesaSHA256: guestMesaSHA256
         )
     }
 

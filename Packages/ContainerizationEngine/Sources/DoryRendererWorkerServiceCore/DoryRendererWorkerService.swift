@@ -181,7 +181,7 @@ public final class DoryRendererWorkerService: @unchecked Sendable {
             } catch {
                 throw DoryRendererWorkerBackendActivationError.capabilityReceipt
             }
-            guard receipt.productionAccelerationIsAdmissible else {
+            guard receipt.isAdmissible(for: bootstrap) else {
                 failGeneration()
                 return try DoryRendererWorkerRPCResultCodec.encode(
                     .success(payload: receiptBytes, descriptorCount: 0)

@@ -191,13 +191,12 @@ final class DesktopRendererWorkerLaunch: @unchecked Sendable {
         rendererBootstrapAuthority: RuntimeLaunchEnvelope.InheritedFileDescriptorSlot?,
         exactManagedKernelSHA256: String?,
         requiredBootstrapDescriptor: Int32 = RuntimeLaunchEnvelope.rendererBootstrapDescriptor,
+        requiredProducerFenceContract: DoryRendererProducerFenceContract =
+            .managedLinux612106PrepareFBV1,
         connector: @escaping Connector = { bytes in
             try await DoryRendererWorkerBroker.connect(exactBootstrapBytes: bytes)
         },
-        qualificationProvider: @escaping QualificationProvider = {
-            try DoryVerifiedRendererBootstrapQualification
-                .loadRuntimeCandidate()
-        }
+        qualificationProvider: QualificationProvider? = nil
     ) async throws -> DesktopRendererWorkerLaunch? {
         guard resolvedGraphics == .hardwareAccelerated3D else {
             guard rendererBootstrapAuthority == nil else {
@@ -208,8 +207,7 @@ final class DesktopRendererWorkerLaunch: @unchecked Sendable {
             }
             return nil
         }
-        guard let authority = rendererBootstrapAuthority,
-              let exactManagedKernelSHA256 else {
+        guard let authority = rendererBootstrapAuthority else {
             throw DesktopRendererWorkerLaunchError.missingBootstrapAuthority
         }
 
@@ -218,22 +216,39 @@ final class DesktopRendererWorkerLaunch: @unchecked Sendable {
             requiredDescriptor: requiredBootstrapDescriptor
         )
         let bootstrap = try DoryRendererWorkerBootstrapCodec.decode(exactBytes)
-        guard hexadecimal(bootstrap.artifacts.managedGuestKernel.bytes)
-                == exactManagedKernelSHA256 else {
-            throw DesktopRendererWorkerLaunchError.managedKernelDigestMismatch
+        guard bootstrap.producerFenceContract == requiredProducerFenceContract else {
+            throw DesktopRendererWorkerLaunchError.bootstrapQualificationMismatch
+        }
+        if let exactManagedKernelSHA256 {
+            guard hexadecimal(bootstrap.artifacts.managedGuestKernel.bytes)
+                    == exactManagedKernelSHA256 else {
+                throw DesktopRendererWorkerLaunchError.managedKernelDigestMismatch
+            }
+        } else {
+            guard requiredProducerFenceContract
+                    == .doryPCX8664LinuxVirGL2PrepareFBV1 else {
+                throw DesktopRendererWorkerLaunchError.missingBootstrapAuthority
+            }
         }
 
         let broker = try await connector(exactBytes)
         do {
             guard broker.bootstrap == bootstrap,
-                  broker.capabilityReceipt.productionAccelerationIsAdmissible,
+                  broker.capabilityReceipt.isAdmissible(for: bootstrap),
                   broker.capabilityReceipt.producerFenceContract
                     == bootstrap.producerFenceContract else {
                 throw DoryRendererWorkerBrokerError.incompleteCapabilityReceipt
             }
             let qualification: DoryVerifiedRendererBootstrapQualification
             do {
-                qualification = try qualificationProvider()
+                if let qualificationProvider {
+                    qualification = try qualificationProvider()
+                } else {
+                    qualification = try DoryVerifiedRendererBootstrapQualification
+                        .loadRuntimeCandidate(
+                            producerFenceContract: requiredProducerFenceContract
+                        )
+                }
             } catch {
                 throw DesktopRendererWorkerLaunchError
                     .bootstrapQualificationUnavailable

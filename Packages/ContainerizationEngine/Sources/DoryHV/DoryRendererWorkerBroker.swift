@@ -219,7 +219,7 @@ public actor DoryRendererWorkerBroker {
         capabilityReceipt: DoryRendererCapabilityReceipt,
         channel: any DoryRendererWorkerChannel
     ) throws {
-        guard capabilityReceipt.productionAccelerationIsAdmissible,
+        guard capabilityReceipt.isAdmissible(for: bootstrap),
               capabilityReceipt.workspaceID == bootstrap.workspaceID,
               capabilityReceipt.generation == bootstrap.generation,
               capabilityReceipt.sourceTuple == bootstrap.sourceTuple,

@@ -1,5 +1,6 @@
 import Foundation
 import Testing
+import DoryRendererWorkerWireContracts
 @testable import DoryOperations
 
 @Suite("Virtual machine capability negotiation")
@@ -369,6 +370,43 @@ struct VirtualMachineCapabilitiesTests {
             for: .init(family: .linux, architecture: .x86_64),
             bootMedia: .installerISO
         ) == [.doryHypervisor])
+    }
+
+    @Test("x86 hardware graphics stay closed until the PC VirGL2 profile is product-admitted")
+    func x86HardwareGraphicsStayClosedUntilPCVirGL2IsProductAdmitted() {
+        let missingProfile = evaluate(
+            family: .linux,
+            architecture: .x86_64,
+            media: .installerISO,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .hardwareAccelerated3D,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            trustedGuestImageGraphicsQualification: Self.qualifiedLinuxGraphics,
+            automaticallyTrustGuestGraphics: false
+        )
+        #expect(missingProfile.availability.reason?.code
+            == .graphicsModeUnsupported)
+
+        let pcProfile = trustedQualification(
+            signedManifestIdentity: "dory-linux-x86_64-pc-virgl2-v1",
+            venusVulkanQualified: false,
+            rendererGuestKernelSHA256: String(repeating: "8", count: 64),
+            rendererGuestMesaSHA256: String(repeating: "9", count: 64),
+            rendererProducerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1
+        )
+        let admitted = evaluate(
+            family: .linux,
+            architecture: .x86_64,
+            media: .installerISO,
+            source: .userProvided,
+            backend: .doryHypervisor,
+            graphics: .hardwareAccelerated3D,
+            mediaArtifactSHA256: Self.guestArtifactSHA256,
+            trustedGuestImageGraphicsQualification: pcProfile,
+            automaticallyTrustGuestGraphics: false
+        )
+        #expect(admitted.availability.reason?.code == .graphicsModeUnsupported)
     }
 
     @Test("QEMU/HVF is not a Linux backend even for an ARM64 guest")
@@ -1456,7 +1494,10 @@ struct VirtualMachineCapabilitiesTests {
         manifestFormatVersion: UInt16 = 1,
         virtioGPUQualified: Bool = true,
         venusVulkanQualified: Bool = true,
-        producerFenceQualified: Bool = true
+        producerFenceQualified: Bool = true,
+        rendererGuestKernelSHA256: String? = nil,
+        rendererGuestMesaSHA256: String? = nil,
+        rendererProducerFenceContract: DoryRendererProducerFenceContract? = nil
     ) -> DoryTrustedGuestImageGraphicsQualification {
         DoryTrustedGuestImageGraphicsQualification(
             auditEvidence: DorySignedArtifactQualificationEvidence(
@@ -1464,7 +1505,10 @@ struct VirtualMachineCapabilitiesTests {
                 artifactSHA256: qualifiedArtifactSHA256,
                 manifestSHA256: manifestSHA256,
                 signingKeyID: signingKeyID,
-                manifestFormatVersion: manifestFormatVersion
+                manifestFormatVersion: manifestFormatVersion,
+                rendererGuestKernelSHA256: rendererGuestKernelSHA256,
+                rendererGuestMesaSHA256: rendererGuestMesaSHA256,
+                rendererProducerFenceContract: rendererProducerFenceContract
             ),
             virtioGPUKernelAndDeviceSupportQualified: virtioGPUQualified,
             producerFenceBeforeFlushQualified: producerFenceQualified,

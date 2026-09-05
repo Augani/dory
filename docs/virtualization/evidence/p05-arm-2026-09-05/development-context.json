@@ -1,0 +1,64 @@
+{
+  "schema": "dory.development-evidence@1",
+  "commit": "a4d0a534da58b6c89d7e332d59b8c109487b1d5a",
+  "scope": "ARM UEFI shell and stock Alpine 3.24.1 installation followed by reset, installer detach, and installed-disk boot",
+  "qualification": "development-only",
+  "limitations": [
+    "Ad-hoc signed development runner; not a release qualification",
+    "Initial shell/install runs use installed gvproxy outside the matrix. The separate alpine-matrix-update receipt uses the exact pinned gvproxy and matrix gate.",
+    "One ARM vCPU, serial console, no GPU or desktop qualification",
+    "Fresh private disks; no production daemon install lifecycle or host restart qualification",
+    "Two independent distro families pass install/update/reset fixtures. Production daemon lifecycle, separate process cold boot and graphics remain unqualified."
+  ],
+  "files": {
+    "uefi-shell.json": "644bec7fa1151ef3823f98321098920e264e8c4981583cc6772441e32d23b5d7",
+    "uefi-shell.log": "3a83a78baf8aca4828b00999888fe60823ec4037142761fd53e2e7b83e963b3c",
+    "alpine-install-receipt.json": "b2aec68ab1806abf31d9b2cb2c684b73266c6ca99374f62e13cd50a820b0acf9",
+    "alpine-install.log": "3a4b39893b40c1e61d7c417d921406975b3e1e2675aea4147ae38f364cab9234",
+    "alpine-matrix-update.json": "fa8f99b3699637aae887693765699f836576174dcdd910321a8e1a588da8c54d",
+    "alpine-matrix-update.log": "e35bcec47c6213dda768c62ebc4e3d8f0179a8a36c88fbf3453dcd3ef542f708",
+    "gvproxy-provenance.txt": "7d190e5a323aea31ada5209d2d033fce9687ec0f019606f09f779eb2a5b531bc",
+    "firmware-manifest.json": "330fcfec4f4f84799613f590875c17a5ca26377133dde85817a71c389837c180",
+    "firmware-sbom.json": "ad67925dfdc7dcbdea42164a2adfab8c3ed41d90040c5b25e91432178f85b3e5",
+    "debian-matrix-update.json": "08cd58bc059326a376f962a19e07fd2e5aea04b3e97838c1b11b97004592936c",
+    "debian-matrix-update.log": "5672e7c61adc3ef82ccc22d8a3e30f4b2dc8f83db509772e3cfdc5ab538fd0b7",
+    "alpine-matrix-cold-snapshot.json": "7037e42bfe6d620dd7ed134ca57b86f7d9dc72f92ba7a98825d07dcb713f9bae",
+    "alpine-matrix-cold-snapshot.log": "aca7a110b4ce08176d9bd2032f7a9c67a2ea13fcac10162faf46e5a18f926698",
+    "alpine-matrix-recovery.json": "a6413d8165abb87d6a4fe86ebbaba4516cd9a6f7647f5c911556d6a2e9dcdb3d",
+    "alpine-matrix-recovery.log": "82d1f4b6087013f0e161636e7c6a695234b3eb319280cabeda51019eea8e00ed"
+  },
+  "matrixGateEvidence": [
+    {
+      "gateID": "alpine-update",
+      "receipt": "alpine-matrix-update.json",
+      "observedBootAttempts": 3,
+      "completedConsoleSteps": 8,
+      "installerAttachedForFinalBoot": false,
+      "scope": "Exact matrix-selected development runner gate passed; this does not qualify the production daemon or release."
+    },
+    {
+      "gateID": "debian-update",
+      "receipt": "debian-matrix-update.json",
+      "observedBootAttempts": 3,
+      "completedConsoleSteps": 30,
+      "installerAttachedForFinalBoot": false,
+      "scope": "Exact matrix-selected install/update/boot fixture passed on development runner."
+    },
+    {
+      "gateID": "alpine-cold-snapshot",
+      "receipt": "alpine-matrix-cold-snapshot.json",
+      "observedBootAttempts": 4,
+      "completedConsoleSteps": 9,
+      "completedColdSnapshotActions": 2,
+      "scope": "Stopped disk/NVRAM snapshot capture and restore; guest sentinel verifies rollback after intervening disk writes."
+    },
+    {
+      "gateID": "alpine-recovery",
+      "receipt": "alpine-matrix-recovery.json",
+      "observedBootAttempts": 3,
+      "completedConsoleSteps": 10,
+      "installerAttachedForFinalBoot": true,
+      "scope": "Recovery-media reattachment and read-only installed-disk sentinel verification."
+    }
+  ]
+}
