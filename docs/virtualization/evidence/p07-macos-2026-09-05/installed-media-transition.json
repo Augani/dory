@@ -1,0 +1,31 @@
+{
+  "sourceCommit": "d6d87cf80e081d26bc060c8c289a038b40e60bd4",
+  "change": "Installed native Mac boot selects verified mutable system disk; restore image required only for installation",
+  "verification": [
+    {
+      "log": "installed-media-manager.log.gz",
+      "sha256Uncompressed": "7acb283399a11a62f4d4593e205a018fd4969208e27919c8810f6a0f9d06a6a5",
+      "passedTests": 1,
+      "scope": "Simulated helper, real prepared bundle; manager resume/cold start/reopen without IPSW"
+    },
+    {
+      "log": "installed-media-trust.log.gz",
+      "sha256Uncompressed": "edcd217b936810f9df2de62c75fb07c84d31c56c782063e2a56a2647da347b27",
+      "passedTests": 1,
+      "scope": "Actual production planning and start inventory; incompatible prepared state rejected"
+    },
+    {
+      "log": "installed-media-planning.log.gz",
+      "sha256Uncompressed": "d42e839f966ad7123a81a6257a78112d3d418ceaf0828e5606f24ba32c9c1def",
+      "passedTests": 43,
+      "scope": "Swift Testing plan and planning composition"
+    },
+    {
+      "log": "installed-media-backend.log.gz",
+      "sha256Uncompressed": "17da116bd4d4cc8d357ab44cf9388d5ac00a562ff8812432fed2b00a326540f8",
+      "passedTests": 20,
+      "scope": "XCTest backend admission"
+    }
+  ],
+  "qualification": "Not a physical guest run; signed product installation/desktop/Metal and lifecycle qualification remain open."
+}
