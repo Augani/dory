@@ -276,15 +276,20 @@ CODESIGN_ARGUMENTS=(
   --options runtime
   --entitlements "$ENTITLEMENTS"
 )
+TIMESTAMP_ARGUMENTS=()
+if [ "$SIGN_IDENTITY" != "-" ]; then
+  TIMESTAMP_ARGUMENTS+=(--timestamp)
+fi
 for angle_name in libEGL.dylib libGLESv2.dylib; do
   /usr/bin/codesign \
     --force \
     --sign "$SIGN_IDENTITY" \
     --identifier "$WORKER_IDENTIFIER.$angle_name" \
     --options runtime \
+    "${TIMESTAMP_ARGUMENTS[@]+"${TIMESTAMP_ARGUMENTS[@]}"}" \
     "$WORKER_FRAMEWORKS/$angle_name"
 done
-"${CODESIGN_ARGUMENTS[@]}" "$WORKER_BUNDLE"
+"${CODESIGN_ARGUMENTS[@]}" "${TIMESTAMP_ARGUMENTS[@]+"${TIMESTAMP_ARGUMENTS[@]}"}" "$WORKER_BUNDLE"
 python3 "$PACKAGER" verify-worker-linkage --worker-executable "$WORKER_DESTINATION"
 
 INSTALLED_SHA256="$(shasum -a 256 "$WORKER_DESTINATION" | awk '{print $1}')"

@@ -302,7 +302,8 @@ struct EngineRuntimePolicyTests {
         #expect(logMount != nil)
         #expect(venusDeviceMarker != nil)
         #expect(dockerInstaller != nil)
-        #expect(script.contains("VK_ICD_FILENAMES=\"$DORY_VENUS_ICD\""))
+        #expect(!script.contains("VK_ICD_FILENAMES"))
+        #expect(script.contains("VK_DRIVER_FILES=\"$DORY_VENUS_ICD\""))
         #expect(script.contains("/mnt/dory-logs/gpu-vulkaninfo.log"))
         #expect(script.contains("/mnt/dory-logs/gpu-venus-probe.log"))
         if let logMount,

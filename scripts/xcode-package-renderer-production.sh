@@ -200,6 +200,7 @@ python3 "$ROOT/scripts/package-renderer-production-bundle.py" package \
   --sign "$SIGN_IDENTITY" \
   --identifier com.pythonxi.Dory.HVRunner \
   --options runtime \
+  --timestamp \
   --entitlements "$ROOT/Packages/ContainerizationEngine/dory-hv.entitlements" \
   "$RUNNER_APP"
 /usr/bin/codesign --verify --strict --deep "$RUNNER_APP"
@@ -251,8 +252,9 @@ fi
 RELEASE_ARGUMENTS=()
 [ "$QUALIFICATION_MODE" = preview ] \
   || RELEASE_ARGUMENTS+=(--require-release-signature)
+RUNNER_APP_CANONICAL="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve(strict=True))' "$RUNNER_APP")"
 python3 "$ROOT/scripts/package-renderer-production-bundle.py" seal-evidence \
-  --runner-app "$RUNNER_APP" \
+  --runner-app "$RUNNER_APP_CANONICAL" \
   --managed-kernel "$MANAGED_KERNEL" \
   --expected-team "$EXPECTED_TEAM" \
   "${ADHOC_ARGUMENTS[@]+"${ADHOC_ARGUMENTS[@]}"}" \
