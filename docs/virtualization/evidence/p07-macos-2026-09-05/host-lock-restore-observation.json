@@ -1,0 +1,11 @@
+{
+  "schema": 1,
+  "observed_at": "2026-09-05T05:45:47.830731+00:00",
+  "scope": "Read-only host lock observation after isolated qualifier restore failure; not proof of causation",
+  "IOConsoleLocked": true,
+  "console_session_screen_locked": [
+    true
+  ],
+  "restore_error": "SecKeyCreateDecryptedDataWithParameters: NSOSStatusErrorDomain -25308; AKSError -536870174",
+  "next": "User unlocks normally, then repeat restore using retained state. Preserve keychain protections and the live user VM."
+}
