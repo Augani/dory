@@ -565,7 +565,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     signed: Bool,
     into words: inout [UInt32]
   ) -> Bool {
-    guard !signed, case .register(let target) = destination,
+    guard case .register(let target) = destination,
       target.bank == "x86.gpr", target.index < 16,
       target.width == .i32 || target.width == .i64
     else { return false }
@@ -573,18 +573,27 @@ public struct DoryARM64BaselineEmitter: Sendable {
     switch source {
     case .register(let register)
     where register.bank == "x86.gpr" && register.index < 16
-      && (register.width == .i8 || register.width == .i16):
+      && (register.width == .i8 || register.width == .i16
+        || (signed && register.width == .i32 && target.width == .i64)):
       sourceWidth = register.width
       words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(register.index) * 8))
-    case .memory(let address, let width) where width == .i8 || width == .i16:
+    case .memory(let address, let width) where width == .i8 || width == .i16
+      || (signed && width == .i32 && target.width == .i64):
       guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
       sourceWidth = width
       emitMemoryRead(addressRegister: 12, width: width, resultRegister: 9, words: &words)
     default:
       return false
     }
-    emitImmediate(sourceWidth == .i8 ? 0xFF : 0xFFFF, register: 10, into: &words)
-    words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
+    if signed {
+      // SBFM with a W destination also clears the upper half of the x86 register.
+      let opcode: UInt32 = target.width == .i64 ? 0x9340_0000 : 0x1300_0000
+      let signBit = UInt32(sourceWidth.rawValue) - 1
+      words.append(opcode | signBit << 10 | 9 << 5 | 9)
+    } else {
+      emitImmediate(sourceWidth == .i8 ? 0xFF : 0xFFFF, register: 10, into: &words)
+      words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
+    }
     words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
     return true
   }

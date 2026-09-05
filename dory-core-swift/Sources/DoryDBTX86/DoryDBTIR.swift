@@ -587,15 +587,17 @@ public struct DoryX86IRTranslator: Sendable {
         return false
       }
     case .extendMove(let destination, let source, let signed):
-      guard !signed, case .register(let target) = destination,
+      guard case .register(let target) = destination,
         isJITGeneralRegister(target)
       else { return false }
       switch source {
       case .register(let register):
         return register.bank == "x86.gpr" && register.index < 16
-          && (register.width == .i8 || register.width == .i16)
+          && (register.width == .i8 || register.width == .i16
+            || (signed && register.width == .i32 && target.width == .i64))
       case .memory(let address, let width):
-        return (width == .i8 || width == .i16) && isJITMemoryAddress(address)
+        return (width == .i8 || width == .i16
+          || (signed && width == .i32 && target.width == .i64)) && isJITMemoryAddress(address)
       default:
         return false
       }

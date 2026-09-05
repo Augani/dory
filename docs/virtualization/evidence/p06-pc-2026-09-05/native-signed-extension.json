@@ -1,0 +1,23 @@
+{
+  "scope": "Native ARM64 baseline execution of x86 MOVSX and MOVSXD; not an end-to-end boot performance measurement",
+  "motivation": {
+    "normalEFIBoot": "normal-efi-init-handoff.json",
+    "observedDeclines": [
+      "4863ff",
+      "0fbe0546d80700"
+    ]
+  },
+  "validation": {
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path /private/tmp/dory-signed-extend-qfdm8k34 -j 2 --disable-index-store --filter DoryARM64BaselineJITTests",
+    "packageScope": "Isolated copy of DoryDBTX86, its two dependencies, and complete baseline JIT test suite",
+    "result": "83 tests passed; exit 0",
+    "log": "/private/tmp/dory-signed-extend-tests-0905.log",
+    "logSHA256": "78928e8163c7d6543c0021a56c50e55da29d9f7fabd2127805f8a78dfabb2de6",
+    "sourceSHA256": {
+      "Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "9a31355ff31512e7796eec4e08917d0b9a0a987758499c521fb54db67d7b27d2",
+      "Sources/DoryDBTX86/DoryDBTIR.swift": "95b2347f178bccda64dea8849ea9f567e3d11b3e71fc2929603eb4e34f17724e",
+      "Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "6d87b92808257c106fe92e07c98789bf9696759c15b3c6781bf0813c9a27af07"
+    }
+  },
+  "remaining": "Full production boot and measured wall-time comparison with this emitter are pending."
+}

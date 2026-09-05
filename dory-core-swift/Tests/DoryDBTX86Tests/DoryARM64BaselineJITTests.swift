@@ -2511,6 +2511,65 @@ import Testing
     #endif
   }
 
+  @Test func signedExtendMovesMatchInterpreterAtSignBoundaries() throws {
+    #if arch(arm64)
+      let cases: [([UInt8], UInt64)] = [
+        ([0x0F, 0xBE, 0xD8], 0x80),  // movsx ebx,al
+        ([0x0F, 0xBE, 0xD8], 0x7F),
+        ([0x48, 0x0F, 0xBE, 0xD8], 0x80),  // movsx rbx,al
+        ([0x0F, 0xBF, 0xD8], 0x8000),  // movsx ebx,ax
+        ([0x48, 0x0F, 0xBF, 0xD8], 0x8000),
+        ([0x48, 0x63, 0xFF], 0x8000_0000),  // movsxd rdi,edi; observed Linux hot site
+        ([0x48, 0x63, 0xFF], 0x7FFF_FFFF),
+        ([0x0F, 0xBE, 0x18], 0x80),  // movsx ebx,byte [rax]
+        ([0x48, 0x0F, 0xBE, 0x18], 0x80),
+        ([0x0F, 0xBF, 0x18], 0x8000),
+        ([0x48, 0x0F, 0xBF, 0x18], 0x8000),
+        ([0x48, 0x63, 0x18], 0x8000_0000),
+      ]
+      for (bytes, value) in cases {
+        let fromMemory = bytes.last == 0x18
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
+        try memory.write(at: 0, bytes: bytes)
+        try memory.write(at: 0x80, bytes: (0..<8).map { UInt8(truncatingIfNeeded: value >> ($0 * 8)) })
+        let initial = try DoryX86ArchitecturalState(
+          registers: .init(rax: fromMemory ? 0x80 : value, rbx: .max, rdi: value),
+          rip: 0,
+          rflags: .init(rawValue: 0xAD7)
+        )
+        var interpreted = initial
+        _ = DoryX86Interpreter().step(state: &interpreted, memory: memory, mode: .long64)
+        var translated = initial
+        let execution = try #require(
+          DoryARM64BaselineExecutor(maximumCodeBytes: 4096).execute(
+            bytes: bytes, at: 0, mode: .long64, addressSpaceID: 0,
+            maximumInstructions: 1, state: &translated, memory: memory
+          )
+        )
+        #expect(execution.block.tier == .baseline)
+        #expect(translated == interpreted)
+      }
+    #endif
+  }
+
+  @Test func signedExtendMemoryFaultLeavesStateRestartable() throws {
+    #if arch(arm64)
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x1000, rbx: 0xCAFE), rip: 0x3000)
+      var state = initial
+      let execution = try #require(
+        DoryARM64BaselineExecutor(maximumCodeBytes: 4096).execute(
+          bytes: [0x48, 0x0F, 0xBE, 0x18], at: state.rip,
+          mode: .long64, addressSpaceID: 0, maximumInstructions: 1,
+          state: &state, memory: DoryX86ByteArrayMemory(byteCount: 0x100)
+        )
+      )
+      #expect(execution.block.tier == .baseline)
+      #expect(execution.exitCode == .interpreter)
+      #expect(state == initial)
+    #endif
+  }
+
   @Test func zeroExtendWordMemoryMatchesTheFirmwareHotInstruction() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x46, 0x0F, 0xB7, 0x0C, 0x40]  // movzx r9d,[rax+r8*2]
