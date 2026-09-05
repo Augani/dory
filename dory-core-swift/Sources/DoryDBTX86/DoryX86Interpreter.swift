@@ -8539,15 +8539,6 @@ public struct DoryX86Interpreter: Sendable {
     }
   }
 
-  private func stackWidth(_ mode: DoryX86ExecutionMode) -> DoryX86OperandWidth {
-    switch mode {
-    case .real16: .word
-    case .protected16: .word
-    case .protected32: .doubleword
-    case .long64: .quadword
-    }
-  }
-
   private func mask(_ width: DoryX86OperandWidth) -> UInt64 {
     width == .quadword ? .max : (UInt64(1) << width.rawValue) - 1
   }
