@@ -91,6 +91,48 @@ import Testing
     #expect(try mmio.read(offset: 0x200 + 0x20, byteCount: 4) == [0, 0, 4, 0])
   }
 
+  @Test(arguments: [false, true])
+  func localAPICTimerControlWritesPreserveCountdown(periodic: Bool) throws {
+    let local = DoryPCLocalAPIC(apicID: 0)
+    let mmio = DoryPCLocalAPICMMIO(apic: local)
+    let mode: UInt8 = periodic ? 2 : 0
+    try mmio.write(offset: 0x320, bytes: [0x40, 0, mode, 0])
+    try mmio.write(offset: 0x380, bytes: [10, 0, 0, 0])
+    local.advanceTimer(byBaseClockTicks: 7) // Three divided ticks and one partial tick.
+
+    try mmio.write(offset: 0x320, bytes: [0x41, 0, mode | 1, 0])
+    #expect(local.snapshot().timer.currentCount == 7)
+    #expect(local.baseClockTicksUntilTimerExpiration() == 13)
+    local.advanceTimer(byBaseClockTicks: 2)
+    try mmio.write(offset: 0x320, bytes: [0x42, 0, mode, 0])
+    #expect(local.snapshot().timer.currentCount == 6)
+    local.advanceTimer(byBaseClockTicks: 11)
+    #expect(local.snapshot().interruptRequest == [0x42])
+    #expect(local.snapshot().timer.currentCount == (periodic ? 10 : 0))
+
+    try mmio.write(offset: 0x320, bytes: [0x43, 0, mode, 0])
+    #expect(local.snapshot().timer.currentCount == (periodic ? 10 : 0))
+    try mmio.write(offset: 0x380, bytes: [4, 0, 0, 0])
+    #expect(local.snapshot().timer.currentCount == 4)
+  }
+
+  @Test func localAPICTimerModeChangeDisarmsUntilInitialCountWrite() throws {
+    let local = DoryPCLocalAPIC(apicID: 0)
+    let mmio = DoryPCLocalAPICMMIO(apic: local)
+    try mmio.write(offset: 0x320, bytes: [0x40, 0, 0, 0])
+    try mmio.write(offset: 0x380, bytes: [10, 0, 0, 0])
+    local.advanceTimer(by: 3)
+    try mmio.write(offset: 0x320, bytes: [0x40, 0, 2, 0])
+    #expect(local.snapshot().timer.currentCount == 0)
+    #expect(local.snapshot().timer.initialCount == 10)
+    local.advanceTimer(by: 20)
+    #expect(local.snapshot().interruptRequest.isEmpty)
+    try mmio.write(offset: 0x380, bytes: [10, 0, 0, 0])
+    local.advanceTimer(by: 10)
+    #expect(local.snapshot().interruptRequest == [0x40])
+    #expect(local.snapshot().timer.currentCount == 10)
+  }
+
   @Test func localAPICTimerHonorsDivideByOneAndDivideBySixteen() throws {
     let divideByOne = DoryPCLocalAPIC(apicID: 0)
     let divideByOneMMIO = DoryPCLocalAPICMMIO(apic: divideByOne)

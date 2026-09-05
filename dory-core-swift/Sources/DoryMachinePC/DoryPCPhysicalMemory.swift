@@ -752,12 +752,12 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
     case 0x320:
       lock.withLock {
         timerLVT = value & 0x0003_07FF
-        applyTimerConfiguration()
+        applyTimerConfiguration(reloadCount: false)
       }
     case 0x380:
       lock.withLock {
         timerInitialCount = value
-        applyTimerConfiguration()
+        applyTimerConfiguration(reloadCount: true)
       }
     case 0x3E0:
       let configuration = value & 0xB
@@ -775,18 +775,26 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
     }
   }
 
-  private func applyTimerConfiguration() {
+  private func applyTimerConfiguration(reloadCount: Bool) {
     let mode: DoryPCLocalAPICTimerMode = timerLVT & (1 << 17) != 0 ? .periodic : .oneShot
     let vector = UInt8(truncatingIfNeeded: timerLVT)
     // xAPIC register writes do not become CPU exceptions. Firmware may temporarily program an
     // illegal vector while probing the timer; retain the raw LVT and activate it only once valid.
     guard vector >= 0x10 else { return }
-    try? apic.configureTimer(
-      vector: vector,
-      masked: timerLVT & (1 << 16) != 0,
-      mode: mode,
-      initialCount: timerInitialCount
-    )
+    if reloadCount {
+      try? apic.configureTimer(
+        vector: vector,
+        masked: timerLVT & (1 << 16) != 0,
+        mode: mode,
+        initialCount: timerInitialCount
+      )
+    } else {
+      try? apic.configureTimerControl(
+        vector: vector,
+        masked: timerLVT & (1 << 16) != 0,
+        mode: mode
+      )
+    }
   }
 
   private static func timerDivideValue(configuration: UInt32) -> UInt32 {

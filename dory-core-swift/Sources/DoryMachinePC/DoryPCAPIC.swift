@@ -159,6 +159,25 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
     }
   }
 
+  /// LVT mask/vector writes preserve the countdown; changing timer mode disarms it
+  /// (Intel SDM, Vol. 3A, 10.5.4). Only an initial-count write rearms the timer.
+  public func configureTimerControl(
+    vector: UInt8,
+    masked: Bool,
+    mode: DoryPCLocalAPICTimerMode
+  ) throws {
+    try validate(vector)
+    lock.withLock {
+      if timer.mode != mode {
+        timer.currentCount = 0
+        timerBaseClockRemainder = 0
+      }
+      timer.vector = vector
+      timer.masked = masked
+      timer.mode = mode
+    }
+  }
+
   /// Updates the architectural xAPIC timer divisor without reloading the current count.
   public func configureTimerDivideValue(_ divideValue: UInt32) {
     precondition([1, 2, 4, 8, 16, 32, 64, 128].contains(divideValue))
