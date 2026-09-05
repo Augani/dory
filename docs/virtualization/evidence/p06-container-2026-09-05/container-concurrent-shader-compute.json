@@ -1,0 +1,64 @@
+{
+  "schema": "dory.container-vulkan-concurrent-smoke@1",
+  "probeEvidence": "container-shader-compute.json",
+  "runtimeEvidence": "guest-vulkan-readiness.json",
+  "concurrentContainerCount": 2,
+  "dispatchesPerContainer": 5,
+  "totalCheckedOutputs": 655360,
+  "containerLifetimesOverlap": true,
+  "runs": [
+    {
+      "container": "a",
+      "state": {
+        "Status": "exited",
+        "Running": false,
+        "Paused": false,
+        "Restarting": false,
+        "OOMKilled": false,
+        "Dead": false,
+        "Pid": 0,
+        "ExitCode": 0,
+        "Error": "",
+        "StartedAt": "2026-09-05T03:09:58.600539023Z",
+        "FinishedAt": "2026-09-05T03:09:58.854098814Z"
+      },
+      "output": [
+        "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass",
+        "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass",
+        "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass",
+        "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass",
+        "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass"
+      ],
+      "logSHA256": "dfc1cb59cc2d2f701c53e2f4052ac399ebd2722048e997e342fc22561a2fe76c"
+    },
+    {
+      "container": "b",
+      "state": {
+        "Status": "exited",
+        "Running": false,
+        "Paused": false,
+        "Restarting": false,
+        "OOMKilled": false,
+        "Dead": false,
+        "Pid": 0,
+        "ExitCode": 0,
+        "Error": "",
+        "StartedAt": "2026-09-05T03:09:58.609791773Z",
+        "FinishedAt": "2026-09-05T03:09:58.854090356Z"
+      },
+      "output": [
+        "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass",
+        "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass",
+        "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass",
+        "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass",
+        "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass"
+      ],
+      "logSHA256": "dfc1cb59cc2d2f701c53e2f4052ac399ebd2722048e997e342fc22561a2fe76c"
+    }
+  ],
+  "limitations": [
+    "Explicit render-node device mapping; normal --gpus all is not qualified here.",
+    "Overlapping container lifetimes and successful workloads do not prove simultaneous hardware execution.",
+    "Brief smoke only, not sustained resource isolation, worker crash recovery or reset qualification."
+  ]
+}
