@@ -6,6 +6,11 @@
 # Alpine minirootfs provides /bin/sh, BusyBox applets, udhcpc, nc, and base device/mount tooling.
 # Docker static provides dockerd, containerd, runc, docker-init, docker-proxy, ctr, and docker.
 # crun is a faster optional OCI runtime; Dory keeps its runc-compatible path as the default.
+# Apple Silicon GPU mode additionally embeds Dory's production Venus runtime pack plus a pinned
+# Debian Bookworm glibc Vulkan-Tools closure from the same snapshot timestamp as guest/mesa/PINS. The
+# engine rootfs stays Alpine/musl for PID 1 and Docker, while /usr/bin/vulkaninfo runs through
+# Debian's AArch64 glibc loader and is forced at boot to enumerate only Dory's tuple-bound
+# /opt/dory/mesa Venus ICD. Do not replace this with distro Mesa drivers.
 # Apple Silicon additionally embeds Dory's hash-locked FEX-Emu 2607 binaries, built from the
 # pinned tag plus Dory's container integration and signal-context patches, and the upstream
 # ProcessorID stack fix. The FEX executables are static PIE so
@@ -48,3 +53,30 @@ iptables_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/iptables-
 libxtables_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/libxtables-1.8.11-r1.apk 7bf83828c8c1c0b7b08aff38fdd2d11829fa77c7a750e6224b0b30fae0aecc0e
 libmnl_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/libmnl-1.0.5-r2.apk 0de58a7968c96825f7ad1205ae0d18dd4d96c37db9dca31fee4727f6b08bc308
 libnftnl_amd64 https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/libnftnl-1.2.8-r0.apk de4048171138081548e581221d1b4642f07a6a638681b5db481b0edd54ba51b2
+debian_gcc_12_base_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/gcc-12/gcc-12-base_12.2.0-14+deb12u1_arm64.deb 674cf6cba6d432bd200c45fe866c1652c7a53523cc2e7a613e05bc4abf7b5440
+debian_libbsd0_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libb/libbsd/libbsd0_0.11.7-2_arm64.deb ef00f132ddd268ee67d756998723ee18543db27ab34930c0a9f1cff75cf55382
+debian_libc6_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/glibc/libc6_2.36-9+deb12u14_arm64.deb 01f4330719fd4f65580e16ea5a0527f372fca750e8f588d26deaf09f2d3b1cf4
+debian_libcrypt1_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcrypt/libcrypt1_4.4.33-2_arm64.deb eea0ad76ea5eb507127fea0c291622ea4ecdbb71c4b9a8ed9c76ae33fc1a0127
+debian_libffi8_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libf/libffi/libffi8_3.4.4-1_arm64.deb 80b5c36177dc0e29d531c7eddbed3cc7355cb490e49f8cfa5959572d161f27b3
+debian_libgcc_s1_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/gcc-12/libgcc-s1_12.2.0-14+deb12u1_arm64.deb 576926b283613db80168ddf76380a3bd877602778cf0d226caa7bfbfa71eacf3
+debian_libmd0_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libm/libmd/libmd0_1.0.4-2_arm64.deb 99a8c7dd591fae9fb37d8bf8dfdffa850e207fa405b3198c5b24711a5f972381
+debian_libstdcxx6_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/gcc-12/libstdc++6_12.2.0-14+deb12u1_arm64.deb 26e138c677a985775331373828a6c286c551ff397cb735d00e2383cb273d1cb2
+debian_libvulkan1_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/v/vulkan-loader/libvulkan1_1.3.239.0-1_arm64.deb 3a21d49fef3a9799a21ffd5faa5bd7a1bd35604417cd9f5cf74155afd3b5282e
+debian_libwayland_client0_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/w/wayland/libwayland-client0_1.21.0-1_arm64.deb ae390cc04c2eb1de90b9a6373505b22c730ada5e72daa50c507b7f99c12faf06
+debian_libx11_6_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libx11/libx11-6_1.8.4-2+deb12u2_arm64.deb d1d533e983582282a9ea82c87ac5ce715a9b67bd6d1acbd2439a11c63c36549b
+debian_libx11_data https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libx11/libx11-data_1.8.4-2+deb12u2_all.deb 987a848aeb1c358e4186368871b0526f10bb14c6b53214ab3bf8b69abb830191
+debian_libx11_xcb1_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libx11/libx11-xcb1_1.8.4-2+deb12u2_arm64.deb 21c7e6f19909bb1e02bb3c2089789791858c54d37e86cef9d7872782c1cb711e
+debian_libxau6_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxau/libxau6_1.0.9-1_arm64.deb 36c2bf400641a80521093771dc2562c903df4065f9eb03add50d90564337ea6c
+debian_libxcb1_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb1_1.15-1_arm64.deb 041d9a68415c3ccf3ce8f4f8b88e4bbfb5dc1f0d97013c6ef8423e620ea50f84
+debian_libxcb_dri3_0_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb-dri3-0_1.15-1_arm64.deb a4b2a700d0da1dcaddc6435986d2ae45e8efdb58a2892a2e87cebb0c85dca359
+debian_libxcb_keysyms1_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/x/xcb-util-keysyms/libxcb-keysyms1_0.4.0-1+b2_arm64.deb 7fcd8c1489db59403079e0c495999e68e91210553ed3cf4ee91eb6a3793ca572
+debian_libxcb_present0_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb-present0_1.15-1_arm64.deb df2148b69f25b6a31af73bcfb355b2ae3724678167457996febb3d335377ca17
+debian_libxcb_randr0_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb-randr0_1.15-1_arm64.deb 9e09fe9b7f6ac596f8b14499e9a10c336b7d3ff27e78f751dffeac9975113004
+debian_libxcb_shm0_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb-shm0_1.15-1_arm64.deb 825931950d42f51cd795cf2e5b9399d840225491e95ec530e0c5a9145c4ba5a0
+debian_libxcb_sync1_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb-sync1_1.15-1_arm64.deb 63f165fb851ffacf021cdc4224fb93f5694a5c03dc699f2f4237aa67e1550d25
+debian_libxcb_xfixes0_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb-xfixes0_1.15-1_arm64.deb e6cfc1f2a68d4c7f0c10e8bf24ebab20d791ba96ec1ca70824ccd927f0fa9e21
+debian_libxdmcp6_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxdmcp/libxdmcp6_1.1.2-3_arm64.deb e92569ac33247261aa09adfadc34ced3994ac301cf8b58de415a2d5dbf15ccfc
+debian_libxshmfence1_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxshmfence/libxshmfence1_1.3-1_arm64.deb fa2edaae6902681ecd02534dcdf8389ac48714d3385d572cc17747160957acc8
+debian_libzstd1_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libz/libzstd/libzstd1_1.5.4+dfsg2-5_arm64.deb 95e173c9538f96ede4fc275ec7863f395a97dd0ea62454be9bc914efa1b9be93
+debian_vulkan_tools_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/v/vulkan-tools/vulkan-tools_1.3.239.0+dfsg1-1_arm64.deb 962404252adab9f4722250741b40f688f092baa810fa041c42d181340e0a19bc
+debian_zlib1g_arm64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/z/zlib/zlib1g_1.2.13.dfsg-1_arm64.deb 52b8b8a145bbe1956bba82034f77022cbef0c3d0885c9e32d9817a7932fe1913

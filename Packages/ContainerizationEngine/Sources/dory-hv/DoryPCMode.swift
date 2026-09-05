@@ -21,6 +21,32 @@ enum DoryPCMode {
         return try make()
     }
 
+    /// DoryPC accelerated graphics is a signed renderer-worker contract, not a fallback hint. The
+    /// runner may build a VirGL authority only for hardware-3D launches that also have a display;
+    /// software/no-graphics launches must leave the renderer path unobserved so stale descriptors
+    /// cannot widen authority after admission.
+    static func admitRequiredGPUAcceleration<Authority>(
+        graphics: DoryGraphicsAccelerationLevel,
+        hasDisplay: Bool,
+        make: () throws -> Authority
+    ) throws -> Authority? {
+        switch graphics {
+        case .none, .software:
+            return nil
+        case .hostAcceleratedDisplay:
+            throw VMError.invalidConfiguration(
+                "DoryPC host-accelerated display requires a separate admitted graphics contract"
+            )
+        case .hardwareAccelerated3D:
+            guard hasDisplay else {
+                throw VMError.invalidConfiguration(
+                    "DoryPC accelerated graphics requires an admitted display"
+                )
+            }
+            return try make()
+        }
+    }
+
     /// DoryPC's gvproxy sockets are ephemeral runtime endpoints. Derive their directory from the
     /// already-admitted lifecycle socket rather than the persistent machine bundle, whose path can
     /// legitimately exceed Darwin's `sockaddr_un.sun_path` limit.
@@ -48,6 +74,7 @@ enum DoryPCMode {
         let shares: [DoryMachineShareConfiguration]
         let displayPresentation: DoryMachineDisplayPresentation
         let reconnectIdentity: DoryRuntimeReconnectLaunchIdentity
+        var rendererWorkerLaunch: DesktopRendererWorkerLaunch? = nil
     }
 
     @MainActor
@@ -81,7 +108,7 @@ enum DoryPCMode {
             }
         }
 
-        private final class FilesystemFailureRelay: @unchecked Sendable {
+        private class FailureRelay: @unchecked Sendable {
             private let lock = NSLock()
             private var failureStorage: String?
             private var stop: (@Sendable () -> Void)?
@@ -96,13 +123,19 @@ enum DoryPCMode {
                 if shouldStop { operation() }
             }
 
-            func report(_ event: VirtioFSWorkerLifecycleEvent) {
-                guard case .failure(let reason) = event else { return }
+            func report(_ reason: String) {
                 let operation = lock.withLock { () -> (@Sendable () -> Void)? in
                     if failureStorage == nil { failureStorage = reason }
                     return stop
                 }
                 operation?()
+            }
+        }
+
+        private final class FilesystemFailureRelay: FailureRelay, @unchecked Sendable {
+            func report(_ event: VirtioFSWorkerLifecycleEvent) {
+                guard case .failure(let reason) = event else { return }
+                report(reason)
             }
         }
 
@@ -272,11 +305,14 @@ enum DoryPCMode {
         private let sshAgentBridge: HostSSHAgentBridge?
         private let filesystemRuntime: DoryPCFilesystemRuntime?
         private let filesystemFailureRelay: FilesystemFailureRelay
+        private let rendererFailureRelay: FailureRelay
         private let clipboard: DoryDesktopClipboardCoordinator?
         private let machineState: MachineState
         private let keyboardInput: DoryPCDesktopInputSink
         private let pointerInput: DoryPCDesktopInputSink
         private let displaySink: DoryPCSoftwareDisplaySink?
+        private let gpuAccelerationAuthority: DoryPCVirGLRendererAuthority?
+        private let rendererWorkerLaunch: DesktopRendererWorkerLaunch?
         private let cameraBridge: DoryPCCameraBridge?
         private let audioBackend: DoryPCMacAudioBackend?
         private let usbControlHandler: DoryPCUSBControlHandler?
@@ -301,11 +337,24 @@ enum DoryPCMode {
 
         init(configuration: Configuration) throws {
             let envelope = configuration.envelope
-            guard envelope.graphics == .none || envelope.graphics == .software else {
+            let rendererWorkerLaunch = configuration.rendererWorkerLaunch
+            switch (envelope.graphics, rendererWorkerLaunch) {
+            case (.none, nil), (.software, nil), (.hardwareAccelerated3D, .some):
+                break
+            case (.hostAcceleratedDisplay, _):
+                throw VMError.invalidConfiguration(
+                    "DoryPC host-accelerated display requires a separate admitted graphics contract"
+                )
+            case (.hardwareAccelerated3D, nil):
                 throw VMError.invalidConfiguration(
                     "DoryPC accelerated graphics requires the signed renderer authority"
                 )
+            case (.none, .some), (.software, .some):
+                throw VMError.invalidConfiguration(
+                    "DoryPC software graphics must not receive renderer authority"
+                )
             }
+            self.rendererWorkerLaunch = rendererWorkerLaunch
             let devices = envelope.devices
             guard devices.networkAttachment != .bridged else {
                 throw VMError.invalidConfiguration(
@@ -339,6 +388,8 @@ enum DoryPCMode {
             }
             let filesystemFailureRelay = FilesystemFailureRelay()
             self.filesystemFailureRelay = filesystemFailureRelay
+            let rendererFailureRelay = FailureRelay()
+            self.rendererFailureRelay = rendererFailureRelay
             let filesystemRuntime = rawShares.isEmpty ? nil : try DoryPCFilesystemRuntime(
                 shares: rawShares,
                 virtualCPUCount: Int(envelope.executionResources.virtualCPUCount),
@@ -428,6 +479,26 @@ enum DoryPCMode {
                     displaySink?.hostDidPresent(frame)
                 }
             }
+            let gpuAccelerationAuthority = try DoryPCMode.admitRequiredGPUAcceleration(
+                graphics: envelope.graphics,
+                hasDisplay: mailbox != nil
+            ) { () -> DoryPCVirGLRendererAuthority in
+                guard let rendererWorkerLaunch, let mailbox else {
+                    throw VMError.invalidConfiguration(
+                        "DoryPC accelerated graphics requires the signed renderer authority"
+                    )
+                }
+                return try DoryPCVirGLRendererAuthority(
+                    lane: rendererWorkerLaunch.commandLane,
+                    deviceGeneration: DesktopRendererWorkerLaunch.initialDeviceGeneration,
+                    scanoutSink: { [mailbox, firstFrameRelay] update in
+                        guard mailbox.submit(update) else { return false }
+                        firstFrameRelay.deliver()
+                        return true
+                    }
+                )
+            }
+            self.gpuAccelerationAuthority = gpuAccelerationAuthority
             let audioBackend = devices.audioInput || devices.audioOutput
                 ? DoryPCMacAudioBackend { message in
                     FileHandle.standardError.write(
@@ -445,6 +516,7 @@ enum DoryPCMode {
             let filesystemFunctions = try filesystemRuntime?.start() ?? []
             let machine = try configuration.authority.makeMachine(
                 displaySink: displaySink,
+                gpuAccelerationAuthority: gpuAccelerationAuthority,
                 soundBackend: audioBackend ?? DoryVirtioInMemorySoundBackend(),
                 networkBackend: networkBackend,
                 additionalPCIFunctions: [vsockPCI] + filesystemFunctions
@@ -462,6 +534,9 @@ enum DoryPCMode {
                 dynamicDisplaySize: dynamicDisplaySize
             )
             filesystemFailureRelay.installStop { [machineState] in
+                machineState.current().machine.powerController.request(.powerOff)
+            }
+            rendererFailureRelay.installStop { [machineState] in
                 machineState.current().machine.powerController.request(.powerOff)
             }
             let keyboardInput = DoryPCDesktopInputSink(device: machine.keyboardDevice)
@@ -615,6 +690,25 @@ enum DoryPCMode {
                 }
                 view.onMacShortcut = { [weak clipboard] event in
                     clipboard?.handleMacShortcut(event) ?? false
+                }
+                if let rendererWorkerLaunch {
+                    view.onDeviceFailure = {
+                        [
+                            rendererFailureRelay,
+                            weak machineState,
+                            weak rendererWorkerLaunch,
+                        ] reason in
+                        rendererWorkerLaunch?.failSynchronizedPresentation(reason)
+                        rendererWorkerLaunch?.teardown(reason: reason)
+                        rendererFailureRelay.report("Metal display failed closed: \(reason)")
+                        machineState?.current().machine.powerController.request(.powerOff)
+                    }
+                    view.onWorkerPresentationCompleted = {
+                        [weak rendererWorkerLaunch] workerGeneration in
+                        rendererWorkerLaunch?.recordSynchronizedPresentation(
+                            workerGeneration: workerGeneration
+                        )
+                    }
                 }
                 mailbox.view = view
                 let window = NSWindow(
@@ -845,6 +939,7 @@ enum DoryPCMode {
                             .replaceAfterMachineReset() ?? []
                         let replacement = try configuration.authority.makeMachine(
                             displaySink: displaySink,
+                            gpuAccelerationAuthority: gpuAccelerationAuthority,
                             soundBackend: audioBackend
                                 ?? DoryVirtioInMemorySoundBackend(),
                             networkBackend: networkBackend,
@@ -862,7 +957,8 @@ enum DoryPCMode {
                             return
                         }
                     case .poweredOff:
-                        if let failure = filesystemFailureRelay.failure {
+                        if let failure = filesystemFailureRelay.failure
+                            ?? rendererFailureRelay.failure {
                             throw VMError.bootFailure(failure)
                         }
                         finish(nil)

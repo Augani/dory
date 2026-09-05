@@ -634,7 +634,7 @@ enum VirtioMMIODeviceTree {
     private let teamCondition = NSCondition()
     private var teamHandles: [hv_vcpu_t?] = []
     private var secondaryStarts: [(entry: UInt64, context: UInt64)?] = []
-    private var cpuStarted: [Bool] = []
+    private var psciCPUState = ARMPSCICPUState(cpuCount: 1)
     private var stopReason: GuestStopReason?
     private let stopSignal = VCPUStopSignal()
     private var registeredCPUs = 0
@@ -668,8 +668,7 @@ enum VirtioMMIODeviceTree {
       let count = max(1, configuration.cpuCount)
       teamHandles = Array(repeating: nil, count: count)
       secondaryStarts = Array(repeating: nil, count: count)
-      cpuStarted = Array(repeating: false, count: count)
-      cpuStarted[0] = true
+      psciCPUState = ARMPSCICPUState(cpuCount: count)
 
       for index in 1..<count {
         let thread = Thread { [self] in cpuMain(index: index) }
@@ -740,6 +739,7 @@ enum VirtioMMIODeviceTree {
           try vcpu.write(HV_REG_CPSR, 0x3C5)
           try vcpu.write(HV_REG_PC, start.entry)
           try vcpu.write(HV_REG_X0, start.context)
+          teamCondition.withLock { psciCPUState.completeOn(index: index) }
         }
 
         runLoop(vcpu: vcpu, index: index)
@@ -802,12 +802,19 @@ enum VirtioMMIODeviceTree {
     }
 
     private func startSecondary(mpidr: UInt64, entry: UInt64, context: UInt64) -> Int64 {
-      let index = Int(mpidr & 0xFF)
       teamCondition.lock()
       defer { teamCondition.unlock() }
-      guard index > 0, index < cpuStarted.count else { return -2 }  // INVALID_PARAMETERS
-      guard !cpuStarted[index] else { return -4 }  // ALREADY_ON
-      cpuStarted[index] = true
+      var executableRanges = [GuestLayout.ramBase..<(GuestLayout.ramBase + configuration.memoryBytes)]
+      if firmwareCode != nil {
+        executableRanges.append(
+          GuestLayout.firmwareCodeBase..<(GuestLayout.firmwareCodeBase + GuestLayout.firmwareCodeBytes)
+        )
+      }
+      let result = psciCPUState.requestOn(
+        target: mpidr, entry: entry,
+        executableRanges: executableRanges
+      )
+      guard result == 0, let index = psciCPUState.index(for: mpidr) else { return result }
       secondaryStarts[index] = (entry: entry, context: context)
       teamCondition.broadcast()
       return 0
@@ -951,7 +958,7 @@ enum VirtioMMIODeviceTree {
         let queried = UInt32(truncatingIfNeeded: try vcpu.read(HV_REG_X1))
         let supported: Set<UInt32> = [
           PSCI.version, PSCI.features, PSCI.systemOff, PSCI.systemReset, PSCI.cpuOn,
-          PSCI.migrateInfoType,
+          PSCI.cpuOn32, PSCI.affinityInfo, PSCI.affinityInfo32, PSCI.migrateInfoType,
         ]
         try vcpu.write(HV_REG_X0, supported.contains(queried) ? 0 : UInt64(bitPattern: -1))
       case PSCI.migrateInfoType:
@@ -960,12 +967,21 @@ enum VirtioMMIODeviceTree {
         return .powerOff
       case PSCI.systemReset:
         return .reset
-      case PSCI.cpuOn:
-        let target = try vcpu.read(HV_REG_X1)
-        let entry = try vcpu.read(HV_REG_X2)
-        let context = try vcpu.read(HV_REG_X3)
+      case PSCI.cpuOn, PSCI.cpuOn32:
+        let mask: UInt64 = function == PSCI.cpuOn32 ? 0xFFFF_FFFF : .max
+        let target = try vcpu.read(HV_REG_X1) & mask
+        let entry = try vcpu.read(HV_REG_X2) & mask
+        let context = try vcpu.read(HV_REG_X3) & mask
         let result = startSecondary(mpidr: target, entry: entry, context: context)
         try vcpu.write(HV_REG_X0, UInt64(bitPattern: Int64(result)))
+      case PSCI.affinityInfo, PSCI.affinityInfo32:
+        let mask: UInt64 = function == PSCI.affinityInfo32 ? 0xFFFF_FFFF : .max
+        let target = try vcpu.read(HV_REG_X1) & mask
+        let lowestLevel = UInt32(truncatingIfNeeded: try vcpu.read(HV_REG_X2))
+        let result = teamCondition.withLock {
+          psciCPUState.affinityInfo(target: target, lowestLevel: lowestLevel)
+        }
+        try vcpu.write(HV_REG_X0, UInt64(bitPattern: result))
       default:
         try vcpu.write(HV_REG_X0, UInt64(bitPattern: -1))
       }
@@ -1031,6 +1047,9 @@ enum VirtioMMIODeviceTree {
   enum PSCI {
     static let version: UInt32 = 0x8400_0000
     static let cpuOn: UInt32 = 0xC400_0003
+    static let cpuOn32: UInt32 = 0x8400_0003
+    static let affinityInfo: UInt32 = 0xC400_0004
+    static let affinityInfo32: UInt32 = 0x8400_0004
     static let migrateInfoType: UInt32 = 0x8400_0006
     static let systemOff: UInt32 = 0x8400_0008
     static let systemReset: UInt32 = 0x8400_0009

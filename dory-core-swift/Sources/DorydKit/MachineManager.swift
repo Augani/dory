@@ -14931,6 +14931,47 @@ public final class MachineManager: @unchecked Sendable {
             && snapshot.architecture == DoryGuestArchitecture.x86_64.rawValue
     }
 
+    static func appendVZMacResolvedDevicePolicyArguments(
+        from devices: DoryVirtualMachineDeviceCapabilityRequest,
+        to arguments: inout [String]
+    ) throws {
+        let network: DoryVZMacNetworkPolicy
+        switch devices.networkAttachment {
+        case .sharedNAT:
+            network = .sharedNAT
+        case .disconnected:
+            network = .disconnected
+        case .bridged, .isolated:
+            throw MachineManagerError.persistence(
+                "native macOS VZMac cannot implement \(devices.networkAttachment.rawValue) networking"
+            )
+        }
+        if devices.directorySharing {
+            throw MachineManagerError.persistence(
+                "native macOS VZMac launch has no resolved shared-directory authority"
+            )
+        }
+        if devices.clipboard {
+            guard devices.clipboardPolicy == nil
+                    || devices.clipboardPolicy == .legacyDesktop(.bidirectional) else {
+                throw MachineManagerError.persistence(
+                    "native macOS VZMac clipboard supports only bidirectional text/image SPICE sharing"
+                )
+            }
+        } else if devices.clipboardPolicy?.isEnabled == true {
+            throw MachineManagerError.persistence(
+                "native macOS VZMac clipboard device and policy disagree"
+            )
+        }
+        arguments.append(contentsOf: [
+            "--network", network.rawValue,
+            "--audio-input", String(devices.audioInput),
+            "--audio-output", String(devices.audioOutput),
+            "--clipboard", String(devices.clipboard),
+            "--directory-sharing", String(devices.directorySharing),
+        ])
+    }
+
     private func processArguments(
         for machine: DoryMachineConfiguration,
         operationID: UUID,
@@ -14960,9 +15001,9 @@ public final class MachineManager: @unchecked Sendable {
                   machine.displayMode == .desktop,
                   runtimeLaunchEnvelopeAuthority == nil,
                   pcRuntimeLaunchEnvelopeAuthority == nil,
-                  resolvedLaunchBinding?.backend.identity
-                    == .appleVirtualizationFramework,
-                  resolvedLaunchBinding?.graphics == .hostAcceleratedDisplay,
+                  let launchBinding = resolvedLaunchBinding,
+                  launchBinding.backend.identity == .appleVirtualizationFramework,
+                  launchBinding.graphics == .hostAcceleratedDisplay,
                   let bundlePath = machine.macOSMachineBundlePath,
                   let restoreImagePath = machine.macOSRestoreImagePath,
                   let handoffPath else {
@@ -15013,6 +15054,13 @@ public final class MachineManager: @unchecked Sendable {
             if operation == "install" {
                 arguments.append(contentsOf: ["--ipsw", restoreImagePath])
             }
+            if operation == "resume", let restoreStatePath {
+                arguments.append(contentsOf: ["--restore-state", restoreStatePath])
+            }
+            try Self.appendVZMacResolvedDevicePolicyArguments(
+                from: launchBinding.devices,
+                to: &arguments
+            )
             return arguments
         }
         let acceleratedInstalledLinux = acceleratedDesktop

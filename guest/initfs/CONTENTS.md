@@ -13,6 +13,10 @@ The builder is intentionally reproducible from pinned public inputs in `guest/in
 - FEX-Emu 2607 commit `1cc4b93e7a71c883ec021b71359f136394dc1f3c`, Dory's
   hash-locked container-FD, proc-less chroot, and nested-exec patch, the upstream ProcessorID
   stack fix, complete x86-64 signal-context restoration, and static-PIE ARM64 executables on `arm64`
+- Dory's production Mesa Venus runtime archive, verified against `Config/DoryRendererProductionTuple.json`,
+  plus Debian Bookworm snapshot `vulkan-tools`/`libvulkan1`/glibc runtime packages on `arm64`.
+  This supplies real `vulkaninfo` without installing distro Mesa drivers; boot forces the loader to
+  enumerate only `/opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json`.
 - Dory's guest agent from `guest/out/dory-agent-<arch>`
 
 Runtime contents added by Dory:
@@ -31,7 +35,11 @@ Runtime contents added by Dory:
   Docker exec, and inherited-seccomp chains on one Linux-compatible execution path.
   The OCI wrapper also injects a reserved 1 MiB `nosuid,nodev,noexec` tmpfs at `/run/dory-fex`;
   every translated process in one container shares its private FEXServer socket there, including
-  package-manager sandbox users with no writable home directory.
+    package-manager sandbox users with no writable home directory.
+- `/opt/dory/mesa`: the tuple-bound Venus ICD, Dory Vulkan probes, and manifest installed by the
+  reusable graphics-pack installer. `/usr/bin/vulkaninfo`, `/usr/lib/aarch64-linux-gnu/libvulkan.so.1`,
+  and Debian's AArch64 glibc loader are pinned from a coherent Bookworm snapshot closure so the
+  engine can prove a real Venus Vulkan 1.3 device before starting Docker.
 - `/etc/resolv.conf` and `/etc/hostname`.
 - `iptables`/`ip6tables`, loop-device and ext4 tools, and cgroup-v2 support used by Dory's
   dedicated sandbox VMs for uid-scoped egress policy and bounded scratch storage. Sandbox workload

@@ -1748,7 +1748,7 @@ public struct DoryDaemonVirtualMachineProductionTrustFactory: Sendable {
         ))
     }
 
-    private static func verifyProductionRuntime(
+    static func verifyProductionRuntime(
         path: String,
         descriptor: MachineBackendDescriptor,
         componentIdentifier: String

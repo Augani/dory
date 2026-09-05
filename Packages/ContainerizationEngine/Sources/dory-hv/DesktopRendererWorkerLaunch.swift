@@ -183,12 +183,14 @@ final class DesktopRendererWorkerLaunch: @unchecked Sendable {
         teardown(reason: "renderer launch authority released")
     }
 
-    /// Consumes FD6 only for hardware-accelerated 3D. Other resolved graphics levels must not
-    /// carry or start a renderer worker, even if a stale daemon accidentally leaves the slot open.
+    /// Consumes only the caller's admitted renderer-bootstrap descriptor for hardware-accelerated
+    /// 3D. Other resolved graphics levels must not carry or start a renderer worker, even if a
+    /// stale daemon accidentally leaves the slot open.
     static func prepare(
         resolvedGraphics: DoryGraphicsAccelerationLevel?,
         rendererBootstrapAuthority: RuntimeLaunchEnvelope.InheritedFileDescriptorSlot?,
         exactManagedKernelSHA256: String?,
+        requiredBootstrapDescriptor: Int32 = RuntimeLaunchEnvelope.rendererBootstrapDescriptor,
         connector: @escaping Connector = { bytes in
             try await DoryRendererWorkerBroker.connect(exactBootstrapBytes: bytes)
         },
@@ -211,7 +213,10 @@ final class DesktopRendererWorkerLaunch: @unchecked Sendable {
             throw DesktopRendererWorkerLaunchError.missingBootstrapAuthority
         }
 
-        let exactBytes = try readAndConsumeBootstrap(authority)
+        let exactBytes = try readAndConsumeBootstrap(
+            authority,
+            requiredDescriptor: requiredBootstrapDescriptor
+        )
         let bootstrap = try DoryRendererWorkerBootstrapCodec.decode(exactBytes)
         guard hexadecimal(bootstrap.artifacts.managedGuestKernel.bytes)
                 == exactManagedKernelSHA256 else {
@@ -319,8 +324,8 @@ final class DesktopRendererWorkerLaunch: @unchecked Sendable {
     }
 
     /// The descriptor parameter exists so the exact object reader can be exercised without
-    /// stealing process-global FD6 in a parallel test runner. Production never supplies it and
-    /// therefore always requires RuntimeLaunchEnvelope.rendererBootstrapDescriptor.
+    /// stealing process-global FD6 in a parallel test runner and so alternate launch envelopes can
+    /// bind their own fixed inherited slot. The default remains the desktop FD6 contract.
     static func readAndConsumeBootstrap(
         _ authority: RuntimeLaunchEnvelope.InheritedFileDescriptorSlot,
         requiredDescriptor: Int32 = RuntimeLaunchEnvelope.rendererBootstrapDescriptor

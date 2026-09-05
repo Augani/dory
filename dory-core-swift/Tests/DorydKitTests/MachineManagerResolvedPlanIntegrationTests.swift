@@ -27,6 +27,82 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    @Test("native VZMac launch emits resolved effective device policy arguments")
+    func nativeVZMacLaunchEmitsResolvedDevicePolicyArguments() throws {
+        var arguments = ["vzmac", "run"]
+        let devices = DoryVirtualMachineDeviceCapabilityRequest(
+            networkAttachment: .disconnected,
+            display: DoryVirtualMachineDisplayCapabilityRequest(
+                widthPixels: 1_920,
+                heightPixels: 1_080
+            ),
+            audioInput: false,
+            audioOutput: true,
+            keyboard: true,
+            pointer: true,
+            directorySharing: false,
+            clipboard: false,
+            clipboardPolicy: .disabled,
+            dynamicDisplay: true,
+            gracefulShutdown: true
+        )
+
+        try MachineManager.appendVZMacResolvedDevicePolicyArguments(
+            from: devices,
+            to: &arguments
+        )
+
+        #expect(arguments.suffix(10) == [
+            "--network", "disconnected",
+            "--audio-input", "false",
+            "--audio-output", "true",
+            "--clipboard", "false",
+            "--directory-sharing", "false",
+        ])
+    }
+
+    @Test("native VZMac launch rejects resolved policies it cannot construct")
+    func nativeVZMacLaunchRejectsUnsupportedResolvedPolicies() {
+        var isolatedArguments: [String] = []
+        #expect(throws: MachineManagerError.self) {
+            var devices = DoryVirtualMachineDeviceCapabilityRequest(
+                networkAttachment: .isolated
+            )
+            devices.clipboardPolicy = .disabled
+            try MachineManager.appendVZMacResolvedDevicePolicyArguments(
+                from: devices,
+                to: &isolatedArguments
+            )
+        }
+
+        var directionalClipboardArguments: [String] = []
+        #expect(throws: MachineManagerError.self) {
+            let devices = DoryVirtualMachineDeviceCapabilityRequest(
+                clipboard: true,
+                clipboardPolicy: DoryVMClipboardPolicy(
+                    text: .hostToGuest,
+                    image: .hostToGuest,
+                    files: .off
+                )
+            )
+            try MachineManager.appendVZMacResolvedDevicePolicyArguments(
+                from: devices,
+                to: &directionalClipboardArguments
+            )
+        }
+
+        var shareArguments: [String] = []
+        #expect(throws: MachineManagerError.self) {
+            let devices = DoryVirtualMachineDeviceCapabilityRequest(
+                directorySharing: true
+            )
+            try MachineManager.appendVZMacResolvedDevicePolicyArguments(
+                from: devices,
+                to: &shareArguments
+            )
+        }
+    }
+
     @Test("single-use renderer identity binds only the resolved RawHV hardware-3D launch")
     func rendererIdentityBindsExactResolvedLaunch() throws {
         let identity = try rendererReleaseIdentityFixture()

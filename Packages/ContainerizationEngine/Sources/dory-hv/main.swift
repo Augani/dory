@@ -793,6 +793,9 @@ case "engine":
     var directIPv6VirtualNetwork = "fd7d:6f72:7900::/64"
     var directIPv6HostGateway = "fd7d:6f72:7900::1"
     var gpuMode = EngineMode.GPUAccelerationMode.off
+    var rendererBootstrapByteCount: UInt64?
+    var rendererBootstrapSHA256: String?
+    var gpuKernelSHA256: String?
     var reclaimPolicy = EngineMode.ReclaimPolicy.dropCaches
     var fuseRequestQueuePolicy = EngineMode.FuseRequestQueuePolicy.automatic
     var amd64Emulation = false
@@ -868,6 +871,21 @@ case "engine":
             gpuMode = parseGPUMode(iterator.next() ?? "")
         case let value where value.hasPrefix("--gpu="):
             gpuMode = parseGPUMode(String(value.dropFirst("--gpu=".count)))
+        case "--renderer-bootstrap-byte-count":
+            guard let value = iterator.next(), let byteCount = UInt64(value), byteCount > 0 else {
+                fail("engine --renderer-bootstrap-byte-count requires a positive integer")
+            }
+            rendererBootstrapByteCount = byteCount
+        case "--renderer-bootstrap-sha256":
+            guard let value = iterator.next(), isLowercaseSHA256(value) else {
+                fail("engine --renderer-bootstrap-sha256 requires a lowercase SHA-256 digest")
+            }
+            rendererBootstrapSHA256 = value
+        case "--gpu-kernel-sha256":
+            guard let value = iterator.next(), isLowercaseSHA256(value) else {
+                fail("engine --gpu-kernel-sha256 requires a lowercase SHA-256 digest")
+            }
+            gpuKernelSHA256 = value
         case "--memory-reclaim":
             guard let value = iterator.next(),
                   let parsed = EngineMode.ReclaimPolicy(rawValue: value) else {
@@ -907,6 +925,28 @@ case "engine":
     guard let gvproxy else { fail("engine requires --gvproxy") }
     guard let stateDirectory else {
         fail("engine requires explicit --state-dir; refusing to select persistent Docker state implicitly")
+    }
+    let rendererBootstrapAuthority: RuntimeLaunchEnvelope.InheritedFileDescriptorSlot?
+    switch (
+        gpuMode,
+        rendererBootstrapByteCount,
+        rendererBootstrapSHA256,
+        gpuKernelSHA256
+    ) {
+    case (.off, nil, nil, nil):
+        rendererBootstrapAuthority = nil
+    case (.off, _, _, _):
+        fail("engine renderer bootstrap authority requires --gpu venus")
+    case let (.venus, .some(byteCount), .some(sha256), .some):
+        rendererBootstrapAuthority = RuntimeLaunchEnvelope.InheritedFileDescriptorSlot(
+            name: RuntimeLaunchEnvelope.rendererBootstrapSlotName,
+            descriptor: RuntimeLaunchEnvelope.rendererBootstrapDescriptor,
+            access: .readOnly,
+            byteCount: byteCount,
+            contentSHA256: sha256
+        )
+    case (.venus, _, _, _):
+        fail("engine --gpu venus requires --renderer-bootstrap-byte-count, --renderer-bootstrap-sha256, and --gpu-kernel-sha256")
     }
     let dockerDataDiskAuthority: EngineMode.DockerDataDiskAuthority
     let dataDriveRoot: String?
@@ -983,10 +1023,12 @@ case "engine":
         publishHost: publishHost,
         agentVsockForward: agentVsockForward,
         sshAgentSocket: sshAgentSocket,
-        guestAgentPath: guestAgent
+        guestAgentPath: guestAgent,
+        rendererBootstrapAuthority: rendererBootstrapAuthority,
+        exactManagedKernelSHA256: gpuKernelSHA256
     )
     do {
-        try EngineMode.run(configuration)
+        try await EngineMode.run(configuration)
     } catch {
         fail("engine failed: \(error)")
     }
@@ -999,4 +1041,10 @@ private func parseGPUMode(_ value: String) -> EngineMode.GPUAccelerationMode {
         fail("unknown gpu mode \(value); expected off or venus")
     }
     return mode
+}
+
+private func isLowercaseSHA256(_ value: String) -> Bool {
+    value.utf8.count == 64 && value.utf8.allSatisfy {
+        (48...57).contains($0) || (97...102).contains($0)
+    }
 }

@@ -1,9 +1,81 @@
 @testable import DorydKit
 import Darwin
+import DoryOperations
 import DoryRendererWorkerWireContracts
 import XCTest
 
 final class HvProcessTests: XCTestCase {
+    func testContainerRendererLaunchValidatesAuthorityBeforeSpawning() throws {
+        let directory = try makeTemporaryDirectory(prefix: "dory-engine-renderer")
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let marker = directory + "/executed"
+        let script = try makeExecutableScript(
+            in: directory, name: "engine.sh",
+            body: "#!/bin/sh\n/usr/bin/touch '\(marker)'\nexec /bin/sleep 30\n"
+        )
+        let descriptor = open("/dev/null", O_RDONLY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        let bootstrap = RawHVAdmittedRendererBootstrap(
+            byteCount: UInt64(DoryRendererWorkerBootstrapCodec.fixedByteCount),
+            sha256: String(repeating: "a", count: 64),
+            authority: HvProcessInheritedFileDescriptor(
+                name: RuntimeLaunchEnvelope.rendererBootstrapSlotName,
+                takingOwnershipOf: descriptor,
+                childDescriptor: RuntimeLaunchEnvelope.rendererBootstrapDescriptor
+            )
+        )
+        let renderer = DoryContainerRendererLaunchAuthority(
+            bootstrap: bootstrap, kernelSHA256: String(repeating: "b", count: 64),
+            releaseIdentity: try makeRendererReleaseIdentity()
+        )
+        var configuration = HvProcessConfiguration(
+            executablePath: script,
+            arguments: ["engine", "--gpu", "venus"] + renderer.arguments,
+            inheritedFileDescriptors: [bootstrap.authority]
+        )
+        configuration.containerRendererAuthority = renderer
+        configuration.rendererReleaseIdentity = renderer.releaseIdentity
+        let validator = RecordingSuspendedChildCodeValidator(
+            decisions: [.accept], markerPath: marker, observationDelay: 0.01
+        )
+        let process = HvProcess(configuration: configuration, suspendedChildCodeValidator: validator)
+        try process.start()
+        defer { process.stop() }
+        XCTAssertTrue(process.isRunning)
+        XCTAssertEqual(validator.observations.count, 1)
+        XCTAssertFalse(try XCTUnwrap(validator.observations.first).markerExisted)
+    }
+
+    func testContainerRendererRejectsShadowedArgumentsBeforeSpawning() throws {
+        for shadow in [["--gpu", "off"], ["--gpu=off"], ["--gpu-kernel-sha256", "wrong"]] {
+            let descriptor = open("/dev/null", O_RDONLY | O_CLOEXEC)
+            XCTAssertGreaterThanOrEqual(descriptor, 0)
+            let bootstrap = RawHVAdmittedRendererBootstrap(
+                byteCount: UInt64(DoryRendererWorkerBootstrapCodec.fixedByteCount),
+                sha256: String(repeating: "a", count: 64),
+                authority: HvProcessInheritedFileDescriptor(
+                    name: RuntimeLaunchEnvelope.rendererBootstrapSlotName,
+                    takingOwnershipOf: descriptor,
+                    childDescriptor: RuntimeLaunchEnvelope.rendererBootstrapDescriptor
+                )
+            )
+            let renderer = DoryContainerRendererLaunchAuthority(
+                bootstrap: bootstrap, kernelSHA256: String(repeating: "b", count: 64),
+                releaseIdentity: try makeRendererReleaseIdentity()
+            )
+            var configuration = HvProcessConfiguration(
+                executablePath: "/bin/sleep",
+                arguments: ["engine", "--gpu", "venus"] + renderer.arguments + shadow,
+                inheritedFileDescriptors: [bootstrap.authority]
+            )
+            configuration.containerRendererAuthority = renderer
+            configuration.rendererReleaseIdentity = renderer.releaseIdentity
+            let process = HvProcess(configuration: configuration)
+            XCTAssertThrowsError(try process.start())
+            XCTAssertNil(process.pid)
+        }
+    }
+
     func testHvProcessConfigurationKeepsLaunchEnvelopesOutOfLine() {
         XCTAssertLessThan(
             MemoryLayout<HvProcessConfiguration>.size,

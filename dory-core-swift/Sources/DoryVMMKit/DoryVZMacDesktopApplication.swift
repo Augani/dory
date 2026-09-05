@@ -52,6 +52,8 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
     public var guestToolsURL: URL?
     public var usbDiskURL: URL?
     public var usbDiskReadOnly: Bool
+    public var devicePolicy: DoryVZMacDevicePolicy
+    public var restoreStateURL: URL?
     public var machineID: String?
     public var operationID: UUID?
     public var stateDirectoryURL: URL?
@@ -66,6 +68,8 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
         guestToolsURL: URL? = nil,
         usbDiskURL: URL? = nil,
         usbDiskReadOnly: Bool = true,
+        devicePolicy: DoryVZMacDevicePolicy = .legacyDefault,
+        restoreStateURL: URL? = nil,
         machineID: String? = nil,
         operationID: UUID? = nil,
         stateDirectoryURL: URL? = nil,
@@ -79,6 +83,8 @@ public struct DoryVZMacDesktopArguments: Sendable, Equatable {
         self.guestToolsURL = guestToolsURL?.standardizedFileURL
         self.usbDiskURL = usbDiskURL?.standardizedFileURL
         self.usbDiskReadOnly = usbDiskReadOnly
+        self.devicePolicy = devicePolicy
+        self.restoreStateURL = restoreStateURL?.standardizedFileURL
         self.machineID = machineID
         self.operationID = operationID
         self.stateDirectoryURL = stateDirectoryURL?.standardizedFileURL
@@ -103,11 +109,15 @@ public enum DoryVZMacDesktopArgumentError: Error, Sendable, Equatable, CustomStr
     case missingMachineBundle
     case restoreImageRequired
     case restoreImageUnexpected
+    case restoreStateRequired
+    case restoreStateUnexpected
     case usbReadOnlyWithoutDisk
     case pathMustBeAbsolute(String)
     case incompleteManagedLifecycleContract
     case invalidMachineID
     case invalidOperationID
+    case invalidNetworkPolicy(String)
+    case invalidBoolean(String, String)
 
     public var description: String {
         switch self {
@@ -119,12 +129,18 @@ public enum DoryVZMacDesktopArgumentError: Error, Sendable, Equatable, CustomStr
         case .missingMachineBundle: "--machine is required"
         case .restoreImageRequired: "--ipsw is required for VZMac installation"
         case .restoreImageUnexpected: "--ipsw is accepted only for VZMac installation"
+        case .restoreStateRequired: "--restore-state is required for managed VZMac resume"
+        case .restoreStateUnexpected: "--restore-state is accepted only for VZMac resume"
         case .usbReadOnlyWithoutDisk: "--usb-disk-read-only requires --usb-disk"
         case .pathMustBeAbsolute(let flag): "\(flag) must name an absolute path"
         case .incompleteManagedLifecycleContract:
             "managed VZMac launch requires machine, operation, state, control, and handoff identity"
         case .invalidMachineID: "--machine-id is not a safe machine identifier"
         case .invalidOperationID: "--operation-id is not a canonical UUID"
+        case .invalidNetworkPolicy(let value):
+            "unsupported VZMac network policy: \(value)"
+        case .invalidBoolean(let flag, let value):
+            "\(flag) must be true or false, not \(value)"
         }
     }
 }
@@ -155,6 +171,8 @@ public func parseDoryVZMacDesktopArguments(
         guard [
             "--machine", "--ipsw", "--guest-tools", "--usb-disk", "--machine-id",
             "--operation-id", "--state-dir", "--control-sock", "--handoff-sock",
+            "--restore-state", "--network", "--audio-input", "--audio-output", "--clipboard",
+            "--directory-sharing",
             DoryRuntimeReconnectContract.fileDescriptorArgument,
         ].contains(flag) else {
             throw DoryVZMacDesktopArgumentError.unknownArgument(flag)
@@ -182,6 +200,12 @@ public func parseDoryVZMacDesktopArguments(
     if operation != .install, restoreURL != nil {
         throw DoryVZMacDesktopArgumentError.restoreImageUnexpected
     }
+    let restoreStateURL = try values["--restore-state"].map {
+        try absoluteFileURL($0, flag: "--restore-state", isDirectory: false)
+    }
+    if operation != .resume, restoreStateURL != nil {
+        throw DoryVZMacDesktopArgumentError.restoreStateUnexpected
+    }
     let toolsURL = try values["--guest-tools"].map {
         try absoluteFileURL($0, flag: "--guest-tools", isDirectory: true)
     }
@@ -191,6 +215,40 @@ public func parseDoryVZMacDesktopArguments(
     if sawUSBReadOnlyFlag, usbURL == nil {
         throw DoryVZMacDesktopArgumentError.usbReadOnlyWithoutDisk
     }
+    let networkPolicy: DoryVZMacNetworkPolicy
+    if let rawNetwork = values["--network"] {
+        guard let parsed = DoryVZMacNetworkPolicy(rawValue: rawNetwork) else {
+            throw DoryVZMacDesktopArgumentError.invalidNetworkPolicy(rawNetwork)
+        }
+        networkPolicy = parsed
+    } else {
+        networkPolicy = .sharedNAT
+    }
+    let devicePolicy = DoryVZMacDevicePolicy(
+        network: networkPolicy,
+        audio: DoryVZMacAudioPolicy(
+            inputEnabled: try parseOptionalBoolean(
+                values["--audio-input"],
+                flag: "--audio-input",
+                defaultValue: true
+            ),
+            outputEnabled: try parseOptionalBoolean(
+                values["--audio-output"],
+                flag: "--audio-output",
+                defaultValue: true
+            )
+        ),
+        clipboardEnabled: try parseOptionalBoolean(
+            values["--clipboard"],
+            flag: "--clipboard",
+            defaultValue: true
+        ),
+        directorySharingEnabled: try parseOptionalBoolean(
+            values["--directory-sharing"],
+            flag: "--directory-sharing",
+            defaultValue: true
+        )
+    )
     let machineID = values["--machine-id"]
     if let machineID,
        machineID.isEmpty || machineID.utf8.count > 63
@@ -244,6 +302,19 @@ public func parseDoryVZMacDesktopArguments(
             throw DoryVZMacDesktopArgumentError.incompleteManagedLifecycleContract
         }
     }
+    if let restoreStateURL {
+        guard managedValuesPresent.allSatisfy({ $0 }), let stateDirectoryURL else {
+            throw DoryVZMacDesktopArgumentError.incompleteManagedLifecycleContract
+        }
+        try validateManagedRestoreStateURL(
+            restoreStateURL,
+            stateDirectoryURL: stateDirectoryURL
+        )
+    }
+    if managedValuesPresent.allSatisfy({ $0 }), operation == .resume,
+       restoreStateURL == nil {
+        throw DoryVZMacDesktopArgumentError.restoreStateRequired
+    }
     return DoryVZMacDesktopArguments(
         operation: operation,
         machineBundleURL: machineURL,
@@ -251,6 +322,8 @@ public func parseDoryVZMacDesktopArguments(
         guestToolsURL: toolsURL,
         usbDiskURL: usbURL,
         usbDiskReadOnly: usbDiskReadOnly,
+        devicePolicy: devicePolicy,
+        restoreStateURL: restoreStateURL,
         machineID: machineID,
         operationID: operationID,
         stateDirectoryURL: stateDirectoryURL,
@@ -258,6 +331,117 @@ public func parseDoryVZMacDesktopArguments(
         handoffSocketPath: handoffSocketPath,
         reconnectIdentity: reconnectIdentity
     )
+}
+
+private func parseOptionalBoolean(
+    _ value: String?,
+    flag: String,
+    defaultValue: Bool
+) throws -> Bool {
+    guard let value else { return defaultValue }
+    switch value {
+    case "true": return true
+    case "false": return false
+    default: throw DoryVZMacDesktopArgumentError.invalidBoolean(flag, value)
+    }
+}
+
+private enum DoryVZMacManagedSavedStateLeaf {
+    case temporaryState
+    case publishedState
+}
+
+private func validateManagedRestoreStateURL(
+    _ stateURL: URL,
+    stateDirectoryURL: URL
+) throws {
+    try validateManagedSavedStatePathShape(
+        stateURL,
+        stateDirectoryURL: stateDirectoryURL,
+        expectedLeaf: .publishedState
+    )
+    try validateManagedSavedStateParent(
+        stateDirectoryURL: stateDirectoryURL,
+        leafName: stateURL.lastPathComponent,
+        mustExist: true
+    )
+}
+
+private func validateManagedSavedStatePathShape(
+    _ stateURL: URL,
+    stateDirectoryURL: URL,
+    expectedLeaf: DoryVZMacManagedSavedStateLeaf
+) throws {
+    let root = stateDirectoryURL.standardizedFileURL
+    let savedStateRoot = root.appendingPathComponent(
+        DoryMachineSavedStateStore.directoryName,
+        isDirectory: true
+    )
+    guard stateURL.deletingLastPathComponent().path == savedStateRoot.path else {
+        throw DoryVZMacDesktopArgumentError.pathMustBeAbsolute("--restore-state")
+    }
+    switch expectedLeaf {
+    case .temporaryState:
+        guard isCanonicalSavedStateTemporaryName(stateURL.lastPathComponent) else {
+            throw DoryVZMacDesktopArgumentError.pathMustBeAbsolute("--restore-state")
+        }
+    case .publishedState:
+        guard stateURL.lastPathComponent == DoryMachineSavedStateManifest.stateFileName else {
+            throw DoryVZMacDesktopArgumentError.pathMustBeAbsolute("--restore-state")
+        }
+    }
+}
+
+private func validateManagedSavedStateParent(
+    stateDirectoryURL: URL,
+    leafName: String,
+    mustExist: Bool
+) throws {
+    let root = try DoryTrustedDirectoryRoot(
+        canonicalAbsolutePath: stateDirectoryURL.standardizedFileURL.path
+    )
+    let savedStateRoot = try root.openPrivateChildDirectory(
+        DoryTrustedPathComponent(validating: DoryMachineSavedStateStore.directoryName)
+    )
+    try savedStateRoot.withBorrowedDescriptor { descriptor in
+        let leaf = try DoryTrustedPathComponent(validating: leafName)
+        let opened = openat(
+            descriptor,
+            leaf.value,
+            O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK
+        )
+        if mustExist {
+            guard opened >= 0 else { throw POSIXError(.ENOENT) }
+            defer { close(opened) }
+            try validateManagedSavedStateOpenFile(opened)
+        } else if opened >= 0 {
+            close(opened)
+            throw DoryVZMacSavedStateError.destinationExists(leaf.value)
+        } else if errno != ENOENT {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        }
+    }
+}
+
+private func validateManagedSavedStateOpenFile(_ descriptor: Int32) throws {
+    var status = stat()
+    guard fstat(descriptor, &status) == 0 else {
+        throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+    }
+    guard (status.st_mode & S_IFMT) == S_IFREG,
+          status.st_uid == geteuid(),
+          status.st_nlink == 1,
+          (status.st_mode & 0o077) == 0,
+          status.st_size > 0 else {
+        throw DoryVZMacSavedStateError.invalidArtifact("managed saved-state payload is not private")
+    }
+}
+
+private func isCanonicalSavedStateTemporaryName(_ name: String) -> Bool {
+    guard name.hasPrefix(DoryMachineSavedStateStore.temporaryStatePrefix) else { return false }
+    let suffix = String(name.dropFirst(DoryMachineSavedStateStore.temporaryStatePrefix.count))
+    guard suffix == suffix.lowercased(), UUID(uuidString: suffix) != nil else { return false }
+    return suffix.count == 36
 }
 
 private func absoluteFileURL(
@@ -315,7 +499,8 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
             machineBundleURL: arguments.machineBundleURL,
             guestToolsURL: arguments.guestToolsURL,
             usbDiskURL: arguments.usbDiskURL,
-            usbDiskReadOnly: arguments.usbDiskReadOnly
+            usbDiskReadOnly: arguments.usbDiskReadOnly,
+            devicePolicy: arguments.devicePolicy
         )) { message in
             FileHandle.standardError.write(Data("dory-vmm VZMac: \(message)\n".utf8))
         }
@@ -373,7 +558,7 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
                 case .run:
                     try await adapter.start()
                 case .resume:
-                    try await adapter.restoreSuspendedState()
+                    try await adapter.restoreSuspendedState(from: arguments.restoreStateURL)
                 }
             } catch {
                 terminalError = error
@@ -583,18 +768,26 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
                   request.operationID == nil,
                   request.directoryShares == nil,
                   request.reconnectChallenge == nil,
-                  let statePath = request.statePath,
-                  let acceptedStateURL = acceptedSavedStateURL(statePath) else {
+                  let statePath = request.statePath else {
                 return VmmControlResponse(
                     ok: false,
-                    message: "native macOS saved-state receipt is outside private machine state"
+                    message: "native macOS saved-state payload is outside private saved-state authority"
                 )
             }
             do {
+                let acceptedStateURL = try acceptedSavedStateURL(statePath)
                 if adapter.observation.state == .paused {
                     try await adapter.resume()
                 }
-                try await adapter.suspend()
+                try await adapter.suspend(to: acceptedStateURL)
+                guard let stateDirectoryURL = arguments.stateDirectoryURL?.standardizedFileURL else {
+                    throw VmmControlError.rejected("managed state directory is unavailable")
+                }
+                try validateManagedSavedStateParent(
+                    stateDirectoryURL: stateDirectoryURL,
+                    leafName: acceptedStateURL.lastPathComponent,
+                    mustExist: true
+                )
                 let bundle = try DoryVZMacMachineBundle.load(
                     from: arguments.machineBundleURL
                 )
@@ -603,17 +796,6 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
                         "suspend completed without a durable suspended manifest"
                     )
                 }
-                let receipt = DoryVZMacSavedStateReceipt(
-                    schema: "dory.vzmac-saved-state@1",
-                    machineID: arguments.machineID ?? "",
-                    bundlePath: bundle.rootURL.path,
-                    restoreImageSHA256: bundle.manifest.restoreImageSHA256,
-                    hardwareModelSHA256: bundle.manifest.hardwareModelSHA256,
-                    machineIdentifierSHA256: bundle.manifest.machineIdentifierSHA256
-                )
-                let encoder = JSONEncoder()
-                encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-                try encoder.encode(receipt).write(to: acceptedStateURL, options: [.atomic])
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
                     self?.finish()
                 }
@@ -648,13 +830,21 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
         )
     }
 
-    private func acceptedSavedStateURL(_ path: String) -> URL? {
-        guard let root = arguments.stateDirectoryURL?.standardizedFileURL else { return nil }
-        let candidate = URL(fileURLWithPath: path).standardizedFileURL
-        guard candidate.path.hasPrefix(root.path + "/"),
-              candidate.deletingLastPathComponent().path == root.path else {
-            return nil
+    private func acceptedSavedStateURL(_ path: String) throws -> URL {
+        guard let root = arguments.stateDirectoryURL?.standardizedFileURL else {
+            throw VmmControlError.rejected("managed state directory is unavailable")
         }
+        let candidate = URL(fileURLWithPath: path).standardizedFileURL
+        try validateManagedSavedStatePathShape(
+            candidate,
+            stateDirectoryURL: root,
+            expectedLeaf: .temporaryState
+        )
+        try validateManagedSavedStateParent(
+            stateDirectoryURL: root,
+            leafName: candidate.lastPathComponent,
+            mustExist: false
+        )
         return candidate
     }
 
@@ -704,15 +894,6 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
         mainMenu.addItem(viewRoot)
         application.mainMenu = mainMenu
     }
-}
-
-private struct DoryVZMacSavedStateReceipt: Codable {
-    var schema: String
-    var machineID: String
-    var bundlePath: String
-    var restoreImageSHA256: String
-    var hardwareModelSHA256: String
-    var machineIdentifierSHA256: String
 }
 
 private final class DoryVZMacControlServer: @unchecked Sendable {

@@ -267,6 +267,75 @@ install_iptables() {
   done
 }
 
+install_venus_runtime() {
+  local arch="$1" dest="$2" pkg deb runtime receipt actual_runtime expected_runtime
+  [ "$arch" = arm64 ] || return 0
+  guest/mesa/build.sh arm64
+  python3 "$ROOT/scripts/renderer-production-tuple.py" \
+    --definition "$ROOT/Config/DoryRendererProductionTuple.json" \
+    verify-guest-mesa-runtime --repo-root "$ROOT" >/dev/null
+
+  for pkg in \
+    debian_gcc_12_base_arm64 \
+    debian_libgcc_s1_arm64 \
+    debian_libc6_arm64 \
+    debian_libcrypt1_arm64 \
+    debian_libffi8_arm64 \
+    debian_libmd0_arm64 \
+    debian_libbsd0_arm64 \
+    debian_libxau6_arm64 \
+    debian_libxdmcp6_arm64 \
+    debian_libxcb1_arm64 \
+    debian_libx11_data \
+    debian_libx11_6_arm64 \
+    debian_libx11_xcb1_arm64 \
+    debian_libxcb_dri3_0_arm64 \
+    debian_libxcb_keysyms1_arm64 \
+    debian_libxcb_present0_arm64 \
+    debian_libxcb_randr0_arm64 \
+    debian_libxcb_shm0_arm64 \
+    debian_libxcb_sync1_arm64 \
+    debian_libxcb_xfixes0_arm64 \
+    debian_libxshmfence1_arm64 \
+    debian_libwayland_client0_arm64 \
+    debian_zlib1g_arm64 \
+    debian_libzstd1_arm64 \
+    debian_libstdcxx6_arm64 \
+    debian_libvulkan1_arm64 \
+    debian_vulkan_tools_arm64; do
+    deb="$(fetch_pin "$pkg")"
+    extract_deb "$deb" "$dest"
+  done
+
+  runtime="$OUT_DIR/dory-mesa-venus-arm64.tar.zst"
+  expected_runtime="$(python3 - "$ROOT/Config/DoryRendererProductionTuple.json" <<'PY'
+import json
+import pathlib
+import sys
+definition = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(definition["guestMesaBuildPolicy"]["runtimeSHA256"])
+PY
+)"
+  actual_runtime="$(sha256_file "$runtime")"
+  [ "$actual_runtime" = "$expected_runtime" ] || {
+    echo "Dory Venus runtime does not match the production tuple: expected $expected_runtime got $actual_runtime" >&2
+    exit 1
+  }
+  "$ROOT/guest/desktop/install-graphics-pack.sh" "$runtime" "$dest" "$(id -u)"
+  install -d -m0755 "$dest/usr/lib/dory"
+  receipt="$dest/usr/lib/dory/engine-gpu-runtime.env"
+  {
+    printf 'schema=1\n'
+    printf 'mesa_runtime_sha256=%s\n' "$actual_runtime"
+    printf 'mesa_runtime_contract=%s\n' "DoryRendererArtifactManifest.guestMesa"
+    printf 'mesa_icd=%s\n' "/opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json"
+    printf 'vulkaninfo_package=%s\n' "debian_vulkan_tools_arm64"
+    printf 'vulkan_loader_package=%s\n' "debian_libvulkan1_arm64"
+    printf 'debian_suite=%s\n' "bookworm"
+    printf 'debian_snapshot=%s\n' "20260713T000000Z"
+  } > "$receipt"
+}
+
 write_runtime_files() {
   local arch="$1" rootfs="$2" agent="$3" wrapper="$4"
   mkdir -p "$rootfs"/{dev,proc,sys,run,tmp,var/log,var/run,var/lib/docker,usr/bin,usr/local/bin,etc,sbin}
@@ -321,6 +390,7 @@ build_arch() {
   install_iptables "$arch" "$rootfs"
   install_docker_static "$docker_tar" "$rootfs"
   install_crun "$arch" "$rootfs"
+  install_venus_runtime "$arch" "$rootfs"
   install_fex "$arch" "$rootfs"
   write_runtime_files "$arch" "$rootfs" "$agent" "$wrapper"
 
@@ -340,7 +410,7 @@ build_arch() {
   final_stamp="$OUT_DIR/initfs-build-$arch.stamp"
   stamp_tmp="$(mktemp "$staging/.initfs-build-$arch.XXXXXX")"
   {
-    printf 'schema=2\narch=%s\ninput_sha256=%s\n' "$arch" "$input_fingerprint"
+    printf 'schema=3\narch=%s\ninput_sha256=%s\n' "$arch" "$input_fingerprint"
     printf 'agent_sha256=%s\n' "$(sha256_file "$agent")"
     printf 'image_sha256=%s\n' "$(sha256_file "$image")"
   } > "$stamp_tmp"

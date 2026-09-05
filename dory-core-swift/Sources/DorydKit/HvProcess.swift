@@ -335,6 +335,7 @@ public struct HvProcessConfiguration: Sendable {
     /// Populated only by the resolved production RawHV path after decoding the release identity
     /// from the live daemon. Legacy and test launches intentionally leave this unset.
     var rendererReleaseIdentity: DoryRendererReleaseIdentityV1?
+    var containerRendererAuthority: DoryContainerRendererLaunchAuthority?
 
     public init(
         executablePath: String,
@@ -357,6 +358,7 @@ public struct HvProcessConfiguration: Sendable {
         self.inheritedFileDescriptors = inheritedFileDescriptors
         self.launchStyle = launchStyle
         rendererReleaseIdentity = nil
+        containerRendererAuthority = nil
     }
 }
 
@@ -1134,6 +1136,7 @@ public final class HvProcess: @unchecked Sendable {
     private func validateDescriptorEnvelope(mappings: [InheritedDescriptorMapping]) throws {
         let dockerDiskIndex = try validatedDockerDataDiskDescriptorIndex(mappings: mappings)
         let reconnectIndex = try validatedRuntimeReconnectDescriptorIndex(mappings: mappings)
+        let containerRendererIndex = try validatedContainerRendererDescriptorIndex(mappings: mappings)
         guard configuration.runtimeLaunchEnvelopeAuthority == nil
                 || configuration.pcRuntimeLaunchEnvelopeAuthority == nil else {
             throw ProcessError.descriptorEnvelopeMismatch
@@ -1146,6 +1149,7 @@ public final class HvProcess: @unchecked Sendable {
         } else {
             let supplementalCount = (dockerDiskIndex == nil ? 0 : 1)
                 + (reconnectIndex == nil ? 0 : 1)
+                + (containerRendererIndex == nil ? 0 : 1)
             guard mappings.count == supplementalCount else {
                 throw ProcessError.descriptorEnvelopeMismatch
             }
@@ -1166,6 +1170,41 @@ public final class HvProcess: @unchecked Sendable {
         } else if let authority = configuration.pcRuntimeLaunchEnvelopeAuthority {
             try authority.validateResources()
         }
+    }
+
+    private func validatedContainerRendererDescriptorIndex(
+        mappings: [InheritedDescriptorMapping]
+    ) throws -> Int? {
+        guard let renderer = configuration.containerRendererAuthority else { return nil }
+        guard configuration.runtimeLaunchEnvelopeAuthority == nil,
+              configuration.pcRuntimeLaunchEnvelopeAuthority == nil,
+              configuration.arguments.first == "engine",
+              configuration.rendererReleaseIdentity == renderer.releaseIdentity else {
+            throw ProcessError.descriptorEnvelopeMismatch
+        }
+        let expected = ["--gpu", "venus"] + renderer.arguments
+        for offset in stride(from: 0, to: expected.count, by: 2) {
+            let flag = expected[offset]
+            let indices = configuration.arguments.indices.filter { configuration.arguments[$0] == flag }
+            guard !configuration.arguments.contains(where: { $0.hasPrefix(flag + "=") }),
+                  indices.count == 1, let index = indices.first,
+                  configuration.arguments.indices.contains(index + 1),
+                  configuration.arguments[index + 1] == expected[offset + 1] else {
+                throw ProcessError.descriptorEnvelopeMismatch
+            }
+        }
+        let candidates = configuration.inheritedFileDescriptors.indices.filter {
+            let authority = configuration.inheritedFileDescriptors[$0]
+            return authority.name == RuntimeLaunchEnvelope.rendererBootstrapSlotName
+                || authority.childDescriptor == RuntimeLaunchEnvelope.rendererBootstrapDescriptor
+        }
+        guard candidates.count == 1, let index = candidates.first,
+              configuration.inheritedFileDescriptors[index] === renderer.bootstrap.authority,
+              mappings.indices.contains(index),
+              mappings[index].childDescriptor == RuntimeLaunchEnvelope.rendererBootstrapDescriptor else {
+            throw ProcessError.descriptorEnvelopeMismatch
+        }
+        return index
     }
 
     private func validatedRuntimeReconnectDescriptorIndex(
@@ -1259,7 +1298,8 @@ public final class HvProcess: @unchecked Sendable {
 
     private func spawnEnvironment() throws -> ([String: String], Bool) {
         guard configuration.runtimeLaunchEnvelopeAuthority != nil
-                || configuration.pcRuntimeLaunchEnvelopeAuthority != nil else {
+                || configuration.pcRuntimeLaunchEnvelopeAuthority != nil
+                || configuration.containerRendererAuthority != nil else {
             return (configuration.environment, true)
         }
         let allowed = Set([

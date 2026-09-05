@@ -1,7 +1,9 @@
 import Darwin
+import CryptoKit
 import DoryOperations
 import Foundation
 import Testing
+@testable import DoryHV
 @testable import dory_hv
 
 struct EngineRuntimePolicyTests {
@@ -26,6 +28,42 @@ struct EngineRuntimePolicyTests {
         #expect(EngineMode.ReclaimPolicy(rawValue: "senpai") == .senpai)
         #expect(EngineMode.ReclaimPolicy(rawValue: "dropcaches") == nil)
         #expect(EngineMode.ReclaimPolicy(rawValue: "SENPAI") == nil)
+    }
+
+    @Test func engineVenusSelectsHardwareAcceleratedGraphics() {
+        #expect(EngineMode.resolvedGraphicsLevel(gpuMode: .off) == nil)
+        #expect(
+            EngineMode.resolvedGraphicsLevel(gpuMode: .venus)
+                == .hardwareAccelerated3D
+        )
+    }
+
+    @Test func engineVenusKernelDigestBindsTheImmutableBootPayload() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-engine-gpu-kernel-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let kernel = root.appendingPathComponent("Image").path
+        let bytes = Data("managed gpu kernel".utf8)
+        try bytes.write(to: URL(fileURLWithPath: kernel))
+        let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+
+        let payload = try EngineMode.gpuVerifiedBootPayload(
+            kernelPath: kernel,
+            expectedSHA256: digest
+        )
+        try payload.consumeForGuestLoad { kernelBytes, initrd in
+            #expect(kernelBytes == bytes)
+            let initrdBytes = try initrd()
+            #expect(initrdBytes == nil)
+        }
+        #expect(throws: (any Error).self) {
+            _ = try EngineMode.gpuVerifiedBootPayload(
+                kernelPath: kernel,
+                expectedSHA256: String(repeating: "0", count: 64)
+            )
+        }
     }
 
     @Test func fuseQueuePolicyIsBoundedAndDeterministic() throws {
@@ -230,6 +268,63 @@ struct EngineRuntimePolicyTests {
                 "dory_format_docker_data && dory_verify_docker_data_uuid && dory_mount_docker_data"
             )
         )
+    }
+
+    @Test func engineVenusBootRequiresGuestDRMAndVulkanBeforeDockerStarts() {
+        let script = EngineMode.guestBootScript(gpuMode: .venus)
+        let lines = script.split(separator: "\n").map(String.init)
+        let drmCharacterDeviceProbe = lines.firstIndex {
+            $0.contains("[ -c /dev/dri/renderD128 ]")
+        }
+        let drmFailureMarker = lines.firstIndex {
+            $0.contains("DORY-GPU-DRM-RENDERD128-MISSING")
+        }
+        let vulkanProbe = lines.firstIndex {
+            $0.contains("vulkaninfo --summary")
+        }
+        let venusProbe = lines.firstIndex {
+            $0.contains("dory-vulkan-probe")
+        }
+        let logMount = lines.firstIndex {
+            $0.contains("mount -t virtiofs dorylogs")
+        }
+        let venusDeviceMarker = lines.firstIndex {
+            $0.contains("DORY-GPU-VENUS-VULKAN-DEVICE-MISSING")
+        }
+        let dockerInstaller = lines.firstIndex {
+            $0.contains("dockerd -H unix:///var/run/docker.sock")
+        }
+
+        #expect(drmCharacterDeviceProbe != nil)
+        #expect(drmFailureMarker != nil)
+        #expect(vulkanProbe != nil)
+        #expect(venusProbe != nil)
+        #expect(logMount != nil)
+        #expect(venusDeviceMarker != nil)
+        #expect(dockerInstaller != nil)
+        #expect(script.contains("VK_ICD_FILENAMES=\"$DORY_VENUS_ICD\""))
+        #expect(script.contains("/mnt/dory-logs/gpu-vulkaninfo.log"))
+        #expect(script.contains("/mnt/dory-logs/gpu-venus-probe.log"))
+        if let logMount,
+           let drmFailureMarker,
+           let venusProbe,
+           let vulkanProbe,
+           let venusDeviceMarker,
+           let dockerInstaller {
+            #expect(logMount < drmFailureMarker)
+            #expect(drmFailureMarker < vulkanProbe)
+            #expect(venusProbe < vulkanProbe)
+            #expect(vulkanProbe < venusDeviceMarker)
+            #expect(venusDeviceMarker < dockerInstaller)
+        }
+    }
+
+    @Test func engineGPUOffBootDoesNotProbeDRM() {
+        let script = EngineMode.guestBootScript(gpuMode: .off)
+
+        #expect(!script.contains("/dev/dri/renderD128"))
+        #expect(!script.contains("DORY-GPU-DRM-RENDERD128-MISSING"))
+        #expect(!script.contains("DORY-GPU-VENUS-VULKAN-DEVICE-MISSING"))
     }
 
     @Test func engineStateDirectoryIsOwnerPrivateAndDoesNotFollowFinalSymlinks() throws {

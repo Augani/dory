@@ -41,7 +41,7 @@ for path in "$AGENT" "$IMAGE" "$STAMP"; do
 done
 
 EXPECTED_INPUT="$(guest/initfs/input-fingerprint.sh "$ARCH")"
-[ "$(stamp_value schema)" = "2" ] || fail "$STAMP has an unsupported schema"
+[ "$(stamp_value schema)" = "3" ] || fail "$STAMP has an unsupported schema"
 [ "$(stamp_value arch)" = "$ARCH" ] || fail "$STAMP was built for another architecture"
 [ "$(stamp_value input_sha256)" = "$EXPECTED_INPUT" ] \
   || fail "$IMAGE is stale relative to the current initfs/guest-agent sources"
@@ -77,10 +77,20 @@ done
 
 if [ "$ARCH" = arm64 ]; then
   for required in \
+    /lib/ld-linux-aarch64.so.1 \
+    /usr/bin/vulkaninfo \
     /usr/local/bin/dory-runc \
     /usr/local/bin/runc.real \
     /usr/lib/dory/fex/FEX \
     /usr/lib/dory/fex/FEXServer \
+    /usr/lib/dory/engine-gpu-runtime.env \
+    /usr/lib/aarch64-linux-gnu/libvulkan.so.1 \
+    /opt/dory/mesa/lib/libvulkan_virtio.so \
+    /opt/dory/mesa/libexec/dory-vulkan-compositor-probe \
+    /opt/dory/mesa/libexec/dory-vulkan-probe \
+    /opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json \
+    /opt/dory/mesa/share/dory/runtime.env \
+    /opt/dory/mesa/share/dory/build-packages.txt \
     /usr/lib/dory/fex/licenses/FEX-Emu.copyright \
     /usr/lib/dory/fex/licenses/libc6.copyright \
     /usr/lib/dory/fex/licenses/gcc-14-base.copyright \
@@ -96,9 +106,13 @@ FEX_SERVER_DUMP=""
 FEX_BUILD_PACKAGES_DUMP=""
 DORY_RUNC_DUMP=""
 RUNC_REAL_DUMP=""
+GPU_RUNTIME_DUMP=""
+VENUS_ICD_DUMP=""
+VENUS_MANIFEST_DUMP=""
 cleanup() {
   rm -f "$AGENT_DUMP" "$FEX_DUMP" "$FEX_SERVER_DUMP" "$FEX_BUILD_PACKAGES_DUMP" \
-    "$DORY_RUNC_DUMP" "$RUNC_REAL_DUMP"
+    "$DORY_RUNC_DUMP" "$RUNC_REAL_DUMP" "$GPU_RUNTIME_DUMP" "$VENUS_ICD_DUMP" \
+    "$VENUS_MANIFEST_DUMP"
 }
 trap cleanup EXIT
 "$DEBUGFS" -R "dump /usr/bin/dory-agent $AGENT_DUMP" "$IMAGE" >/dev/null 2>&1 \
@@ -110,6 +124,56 @@ if [ "$ARCH" = arm64 ]; then
   "$DEBUGFS" -R 'stat /usr/local/bin/runc' "$IMAGE" 2>&1 \
     | grep -q 'Fast link dest: "dory-runc"' \
     || fail "$IMAGE does not route BuildKit's conventional runc path through dory-runc"
+  GPU_RUNTIME_DUMP="$(mktemp /tmp/dory-engine-gpu-runtime-verify.XXXXXX)"
+  VENUS_ICD_DUMP="$(mktemp /tmp/dory-engine-venus-icd-verify.XXXXXX)"
+  VENUS_MANIFEST_DUMP="$(mktemp /tmp/dory-engine-venus-manifest-verify.XXXXXX)"
+  "$DEBUGFS" -R "dump /usr/lib/dory/engine-gpu-runtime.env $GPU_RUNTIME_DUMP" \
+    "$IMAGE" >/dev/null 2>&1 || fail "could not extract the engine GPU runtime receipt"
+  "$DEBUGFS" -R "dump /opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json $VENUS_ICD_DUMP" \
+    "$IMAGE" >/dev/null 2>&1 || fail "could not extract the Venus ICD manifest"
+  "$DEBUGFS" -R "dump /opt/dory/mesa/share/dory/runtime.env $VENUS_MANIFEST_DUMP" \
+    "$IMAGE" >/dev/null 2>&1 || fail "could not extract the Venus runtime manifest"
+  grep -Fqx 'schema=1' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE contains an unsupported engine GPU runtime receipt"
+  expected_mesa_sha="$(
+    python3 - "$ROOT/Config/DoryRendererProductionTuple.json" <<'PY'
+import json
+import pathlib
+import sys
+definition = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(definition["guestMesaBuildPolicy"]["runtimeSHA256"])
+PY
+  )"
+  grep -Fqx "mesa_runtime_sha256=$expected_mesa_sha" "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE embeds a Mesa Venus runtime outside the production tuple"
+  grep -Fqx 'mesa_runtime_contract=DoryRendererArtifactManifest.guestMesa' \
+    "$GPU_RUNTIME_DUMP" || fail "$IMAGE does not bind the Mesa runtime digest contract"
+  grep -Fqx 'mesa_icd=/opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json' \
+    "$GPU_RUNTIME_DUMP" || fail "$IMAGE does not bind the engine Venus ICD path"
+  grep -Fqx 'vulkaninfo_package=debian_vulkan_tools_arm64' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not record the pinned vulkaninfo package"
+  grep -Fqx 'vulkan_loader_package=debian_libvulkan1_arm64' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not record the pinned Vulkan loader package"
+  grep -Fqx 'debian_suite=bookworm' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not record the pinned GPU userland suite"
+  grep -Fqx 'debian_snapshot=20260713T000000Z' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not record the pinned GPU userland snapshot"
+  grep -Fq '"library_path": "../../../lib/libvulkan_virtio.so"' "$VENUS_ICD_DUMP" \
+    || fail "$IMAGE Venus ICD is not relocatable within its Dory pack"
+  for manifest_line in \
+    schema=6 \
+    architecture=aarch64 \
+    libc_family=glibc \
+    vulkan_api=1.3 \
+    vulkan13_features=dynamicRendering,maintenance4,synchronization2 \
+    vulkan_device_extensions=VK_KHR_external_semaphore_fd,VK_KHR_swapchain \
+    vulkan_instance_extensions=VK_KHR_surface,VK_KHR_wayland_surface,VK_KHR_xcb_surface \
+    pack_layout=single-tree \
+    libdrm_linkage=static-hidden \
+    manifest_library_path=../../../lib/libvulkan_virtio.so; do
+    grep -Fqx "$manifest_line" "$VENUS_MANIFEST_DUMP" \
+      || fail "$IMAGE Venus runtime manifest omits $manifest_line"
+  done
   FEX_DUMP="$(mktemp /tmp/dory-fex-verify.XXXXXX)"
   FEX_SERVER_DUMP="$(mktemp /tmp/dory-fex-server-verify.XXXXXX)"
   FEX_BUILD_PACKAGES_DUMP="$(mktemp /tmp/dory-fex-build-packages-verify.XXXXXX)"

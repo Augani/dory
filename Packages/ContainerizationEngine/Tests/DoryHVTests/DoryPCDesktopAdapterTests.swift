@@ -36,6 +36,64 @@ import Testing
         }
     }
 
+    @Test func gpuAccelerationAdmissionOnlyBuildsForAdmittedHardware3D() throws {
+        enum FixtureError: Error { case unavailable }
+
+        var softwareFactoryCalled = false
+        let software: String? = try DoryPCMode.admitRequiredGPUAcceleration(
+            graphics: .software,
+            hasDisplay: true
+        ) {
+            softwareFactoryCalled = true
+            return "renderer"
+        }
+        #expect(software == nil)
+        #expect(!softwareFactoryCalled)
+
+        var noneFactoryCalled = false
+        let none: String? = try DoryPCMode.admitRequiredGPUAcceleration(
+            graphics: .none,
+            hasDisplay: true
+        ) {
+            noneFactoryCalled = true
+            return "renderer"
+        }
+        #expect(none == nil)
+        #expect(!noneFactoryCalled)
+
+        #expect(throws: VMError.self) {
+            try DoryPCMode.admitRequiredGPUAcceleration(
+                graphics: .hostAcceleratedDisplay,
+                hasDisplay: true
+            ) {
+                "renderer"
+            } as String?
+        }
+        #expect(throws: VMError.self) {
+            try DoryPCMode.admitRequiredGPUAcceleration(
+                graphics: .hardwareAccelerated3D,
+                hasDisplay: false
+            ) {
+                "renderer"
+            } as String?
+        }
+        #expect(throws: FixtureError.self) {
+            try DoryPCMode.admitRequiredGPUAcceleration(
+                graphics: .hardwareAccelerated3D,
+                hasDisplay: true
+            ) {
+                throw FixtureError.unavailable
+            } as String?
+        }
+        let admitted: String? = try DoryPCMode.admitRequiredGPUAcceleration(
+            graphics: .hardwareAccelerated3D,
+            hasDisplay: true
+        ) {
+            "renderer"
+        }
+        #expect(admitted == "renderer")
+    }
+
     @Test func ephemeralNetworkSocketsFollowTheShortLifecycleRuntimeDirectory() {
         let persistentMachineDirectory =
             "/Users/example/Library/Application Support/Dory/Dory.dorydrive/machines/"

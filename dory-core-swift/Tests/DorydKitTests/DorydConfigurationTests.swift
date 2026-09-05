@@ -226,6 +226,15 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertNil(config.hvProcess)
     }
 
+    func testExternalForwardCannotEnableGPUWithEnvironmentAssertion() throws {
+        let environment = DorydEnvironment(values: [
+            "DORYD_HOME": "/tmp/doryd-home",
+            "DORYD_AGENT_VSOCK_FORWARD": "/tmp/forward.sock",
+            "DORYD_GPU_SUPPORTED": "1",
+        ], cwd: "/tmp", hostPlatform: DorydHostPlatform(architecture: .arm64, macOSMajorVersion: 15))
+        XCTAssertFalse(try XCTUnwrap(environment.dockerTierConfiguration()).gpuSupported)
+    }
+
     func testVenusCannotClaimAnUnverifiedExternalForward() {
         let env = DorydEnvironment(values: [
             "DORYD_HOME": "/tmp/doryd-home",
@@ -458,7 +467,7 @@ final class DorydConfigurationTests: XCTestCase {
         XCTAssertEqual(FileManager.default.contents(atPath: prepared), expected)
     }
 
-    func testVenusPreparesAndSelectsArchitectureMatchedCompressedGPUKernel() throws {
+    func testVenusPreparesGPUKernelButRejectsUnsignedRenderer() throws {
         let directory = "/tmp/doryd-config-gpu-kernel-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let helpers = directory + "/Helpers"
         let resources = directory + "/Resources"
@@ -487,12 +496,8 @@ final class DorydConfigurationTests: XCTestCase {
             "DORYD_GPU": "venus",
         ], cwd: directory, hostPlatform: DorydHostPlatform(architecture: .arm64, macOSMajorVersion: 15))
 
-        let configuration = try XCTUnwrap(environment.dockerTierConfiguration())
-        let hv = try XCTUnwrap(configuration.hvProcess)
+        XCTAssertNil(environment.dockerTierConfiguration())
         let prepared = state + "/assets/dory-hv-kernel-gpu-arm64"
-        XCTAssertArgumentPair(hv.arguments, "--kernel", prepared)
-        XCTAssertArgumentPair(hv.arguments, "--gpu", "venus")
-        XCTAssertTrue(configuration.gpuSupported)
         XCTAssertEqual(FileManager.default.contents(atPath: prepared), Data("gpu-kernel".utf8))
     }
 

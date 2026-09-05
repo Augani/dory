@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "qualification": "development-smoke-only",
+  "date": "2026-09-05",
+  "sourceBase": "0256df6afc9bcf0483c055111bea0bfb121a37e1",
+  "sourceState": "uncommitted implementation; not a release candidate",
+  "runtimeSHA256": "4e62fcd5dceadd84da8d996566b0a7e5f73ff8191254f7578d52c76b962225c9",
+  "runtimeSigning": "ad-hoc with repository dory-hv.entitlements",
+  "kernelSHA256": "e5b539373575c68c385e000a23b491ae01dca394a34508c743b0d7e2fbebd48c",
+  "sourceRootfsSHA256": "0e918e20b7f913fe961e0b4fa11f6b0e8b94746c480ea298467d0368ea784c04",
+  "diskIsolation": "APFS clone in private task directory; source app disk not attached",
+  "resources": {
+    "virtualCPUCount": 4,
+    "memoryMiB": 2048
+  },
+  "command": [
+    "dory-hv",
+    "agent-ping",
+    "--kernel",
+    "bundled dory-hv-kernel-arm64",
+    "--initfs",
+    "private cloned rootfs",
+    "--mem-mb",
+    "2048",
+    "--cpus",
+    "4",
+    "--timeout-sec",
+    "45"
+  ],
+  "exitCode": 0,
+  "observations": {
+    "allFourCPUsOnline": true,
+    "guestAgentResponded": true,
+    "guestKernel": "Linux 6.12.106-dory"
+  },
+  "host": {
+    "hw.model": "Mac14,10",
+    "hw.ncpu": "12",
+    "kern.osrelease": "27.0.0",
+    "kern.osversion": "26A5425a"
+  },
+  "sources": {
+    "Packages/ContainerizationEngine/Sources/DoryHV/Machine.swift": "f7400f4d418699b220f759cff617ca6e6a3fe244fc8036178d8984461ca6c995",
+    "Packages/ContainerizationEngine/Sources/DoryHV/ARMPSCICPUState.swift": "f44e31352d0cfe86a87a1d9d9b2370e491e49ea6fd191fc5588839e97d5559ac"
+  },
+  "log": {
+    "path": "arm64-four-cpu-agent-ping.log",
+    "sha256": "1ad38e80abb89c5679fe9d739b9ad9f2fa4bbabb19d4689fa06c4d5ce2c75b58"
+  },
+  "doesNotProve": [
+    "UEFI installation",
+    "GPU execution",
+    "CPU hotplug or CPU_OFF",
+    "suspend/restore",
+    "stock distro compatibility",
+    "production signed launch or release qualification"
+  ]
+}

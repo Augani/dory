@@ -160,7 +160,7 @@ public struct DorydEnvironment: Sendable {
         }
         if gpuRequested, explicitForward {
             reportEngineConfigurationError(
-                "DORYD_GPU=venus requires doryd's local dory-hv engine; external forwards must prove capability with DORYD_GPU_SUPPORTED"
+                "DORYD_GPU=venus requires doryd's authenticated local dory-hv engine"
             )
             return nil
         }
@@ -219,8 +219,7 @@ public struct DorydEnvironment: Sendable {
             forwardSocketPath: forwardSocket,
             cid: cid,
             dockerPort: clampedDockerPort(),
-            gpuSupported: bool("DORYD_GPU_SUPPORTED", default: false)
-                || gpuRequested,
+            gpuSupported: hvProcess?.containerRendererAuthority != nil,
             activitySocketPath: string("DORYD_ACTIVITY_SOCK")
                 ?? "\(stateDirectory)/dataplane-activity.sock",
             hvProcess: hvProcess,
@@ -501,7 +500,7 @@ public struct DorydEnvironment: Sendable {
             arguments.append(contentsOf: ["--share", share])
         }
 
-        return HvProcessConfiguration(
+        var process = HvProcessConfiguration(
             executablePath: helper,
             arguments: arguments,
             logPath: string("DORYD_HV_LOG") ?? "\(stateDirectory)/dory-hv.log",
@@ -512,6 +511,21 @@ public struct DorydEnvironment: Sendable {
                 stableRunSeconds: double("DORYD_HV_RESTART_STABLE_SECONDS") ?? 30
             )
         )
+        if venusRequested {
+            do {
+                let authority = try DoryContainerRendererLaunchAuthority.prepare(
+                    runnerPath: helper, kernelPath: kernel, stateDirectory: stateDirectory
+                )
+                process.arguments += authority.arguments
+                process.inheritedFileDescriptors.append(authority.bootstrap.authority)
+                process.containerRendererAuthority = authority
+                process.rendererReleaseIdentity = authority.releaseIdentity
+            } catch {
+                reportEngineConfigurationError("container GPU renderer admission failed: \(error)")
+                return nil
+            }
+        }
+        return process
     }
 
     private func vmmDockerProcessConfiguration(stateDirectory: String) -> VmmDockerProcessConfiguration? {

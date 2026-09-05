@@ -1,4 +1,5 @@
 import Darwin
+import CryptoKit
 import DoryCore
 import DoryFSWorkerContracts
 import DoryHV
@@ -296,6 +297,13 @@ enum EngineMode {
         /// Current guest agent binary supplied by the app/doryd bundle for this boot. It is copied
         /// into the read-only boot-config share so stale files under the user's home cannot shadow it.
         var guestAgentPath: String?
+        /// Exact descriptor authority for the renderer worker bootstrap. Present only when
+        /// `gpuMode == .venus`; the descriptor is consumed before guest execution starts.
+        var rendererBootstrapAuthority: RuntimeLaunchEnvelope.InheritedFileDescriptorSlot?
+            = nil
+        /// SHA-256 of the admitted managed GPU kernel, supplied by the daemon and rechecked against
+        /// the renderer bootstrap before a VirtioGPU device is exposed to the guest.
+        var exactManagedKernelSHA256: String? = nil
     }
 
     static func validateMemoryMB(_ memoryMB: UInt64) throws {
@@ -779,14 +787,89 @@ enum EngineMode {
         return path
     }
 
-    static func run(_ configuration: Configuration) throws {
-        try validateMemoryMB(configuration.memoryMB)
-        guard configuration.gpuMode == .off else {
+    static func resolvedGraphicsLevel(
+        gpuMode: GPUAccelerationMode
+    ) -> DoryGraphicsAccelerationLevel? {
+        switch gpuMode {
+        case .off:
+            nil
+        case .venus:
+            .hardwareAccelerated3D
+        }
+    }
+
+    static func prepareRendererWorkerLaunch(
+        for configuration: Configuration
+    ) async throws -> DesktopRendererWorkerLaunch? {
+        switch configuration.gpuMode {
+        case .off:
+            return try await DesktopRendererWorkerLaunch.prepare(
+                resolvedGraphics: nil,
+                rendererBootstrapAuthority: configuration.rendererBootstrapAuthority,
+                exactManagedKernelSHA256: configuration.exactManagedKernelSHA256
+            )
+        case .venus:
+            let resolvedGraphics = resolvedGraphicsLevel(
+                gpuMode: configuration.gpuMode
+            )
+            return try await VenusModeRequirement.require {
+                guard let launch = try await DesktopRendererWorkerLaunch.prepare(
+                    resolvedGraphics: resolvedGraphics,
+                    rendererBootstrapAuthority: configuration.rendererBootstrapAuthority,
+                    exactManagedKernelSHA256: configuration.exactManagedKernelSHA256
+                ) else {
+                    throw VMError.invalidConfiguration(
+                        "gpu=venus did not produce a renderer worker launch"
+                    )
+                }
+                return launch
+            }
+        }
+    }
+
+    static func bootPayload(for configuration: Configuration) throws -> MachineBootPayload {
+        guard configuration.gpuMode == .venus else {
+            return .legacyPaths(kernel: configuration.kernelPath, initrd: nil)
+        }
+        return try gpuVerifiedBootPayload(
+            kernelPath: configuration.kernelPath,
+            expectedSHA256: configuration.exactManagedKernelSHA256
+        )
+    }
+
+    static func gpuVerifiedBootPayload(
+        kernelPath: String,
+        expectedSHA256: String?
+    ) throws -> MachineBootPayload {
+        guard let expectedSHA256, isLowercaseSHA256(expectedSHA256) else {
             throw VMError.invalidConfiguration(
-                "container-engine GPU acceleration is unavailable; the retired in-process "
-                    + "VirGL loader is not a fallback for the isolated Linux desktop worker"
+                "gpu=venus requires the exact managed GPU kernel SHA-256"
             )
         }
+        let url = URL(fileURLWithPath: kernelPath)
+        let data = try Data(contentsOf: url)
+        let actual = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        guard actual == expectedSHA256 else {
+            throw VMError.invalidConfiguration(
+                "gpu=venus kernel digest mismatch for \(kernelPath)"
+            )
+        }
+        guard !data.isEmpty else {
+            throw VMError.invalidConfiguration(
+                "gpu=venus kernel image is empty: \(kernelPath)"
+            )
+        }
+        return .immutableBytes(kernel: data, initrd: nil)
+    }
+
+    private static func isLowercaseSHA256(_ value: String) -> Bool {
+        value.utf8.count == 64 && value.utf8.allSatisfy {
+            (48...57).contains($0) || (97...102).contains($0)
+        }
+    }
+
+    static func run(_ configuration: Configuration) async throws {
+        try validateMemoryMB(configuration.memoryMB)
         try DockerSocketBridge.validateSocketPath(configuration.engineSocket)
         if let forwardSocket = configuration.agentVsockForward {
             try AgentVsockForward.validateSocketPath(forwardSocket)
@@ -922,7 +1005,8 @@ enum EngineMode {
             bridgeNetwork: bridgeNetwork,
             sourcePreservingLAN: sourcePreservingLAN,
             allowDockerDataFormat: allowDockerDataFormat,
-            expectedDockerDataDiskUUID: expectedDockerDataDiskUUID
+            expectedDockerDataDiskUUID: expectedDockerDataDiskUUID,
+            gpuMode: configuration.gpuMode
         ), guestAgentPath: configuration.guestAgentPath)
         let guestLogShare = try guestLogShareConfiguration(stateDirectory: state)
         let filesystemShares = [bootConfigShare, guestLogShare] + configuration.shares
@@ -945,8 +1029,9 @@ enum EngineMode {
         )
         defer { filesystemWorker.client.close() }
 
+        let bootPayload = try bootPayload(for: configuration)
         let machine = try Machine(configuration: MachineConfiguration(
-            kernelPath: configuration.kernelPath,
+            bootPayload: bootPayload,
             commandLine: guestCommandLine(),
             memoryBytes: configuration.memoryMB << 20,
             cpuCount: configuration.cpus
@@ -962,9 +1047,45 @@ enum EngineMode {
         }
         attachPlatformDevices(to: machine, serialOutput: serialOutput)
 
+        let rendererWorkerLaunch: DesktopRendererWorkerLaunch?
+        do {
+            rendererWorkerLaunch = try await prepareRendererWorkerLaunch(for: configuration)
+        } catch {
+            throw VMError.invalidConfiguration(
+                "engine renderer-worker launch authority is invalid: \(error)"
+            )
+        }
+        defer { rendererWorkerLaunch?.teardown(reason: "engine renderer launch teardown") }
+
         var backends: [VirtioDeviceBackend] = []
         backends.append(try VirtioBlk(path: bootRootfs, identity: "dory-rootfs"))
         backends.append(dataDiskBackend)
+        let gpu: VirtioGPU?
+        if let rendererWorkerLaunch {
+            let hostVisibleMemory = try VirtioGPUHostVisibleMemory(
+                guestBase: GuestLayout.daxWindowBase
+            )
+            let acceleratedGPU = VirtioGPU(
+                hostMemoryBase: GuestLayout.daxWindowBase,
+                rendererWorkerCandidate: rendererWorkerLaunch.commandLane,
+                hostVisibleMemory: hostVisibleMemory,
+                onRendererWorkerFailure: { [weak machine, weak rendererWorkerLaunch] reason in
+                    rendererWorkerLaunch?.failSynchronizedPresentation(reason)
+                    rendererWorkerLaunch?.teardown(reason: reason)
+                    machine?.requestStop(.crash(
+                        "engine renderer worker failed closed: \(reason)"
+                    ))
+                }
+            )
+            gpu = acceleratedGPU
+            backends.append(acceleratedGPU)
+            note(
+                "engine GPU acceleration attached with authenticated renderer worker generation "
+                    + "\(rendererWorkerLaunch.workerGeneration.rawValue)"
+            )
+        } else {
+            gpu = nil
+        }
         backends.append(VirtioRng())
         backends.append(VirtioBalloon(memory: machine.memory) { note($0) })
         let vsock = VirtioVsock(guestCID: 3)
@@ -1309,6 +1430,9 @@ enum EngineMode {
             note("reclaim gauge: released \(released >> 20)MiB, restored \(restored >> 20)MiB, net \(Int64(bitPattern: released &- restored) / 1_048_576)MiB")
             let network = virtioNet.statistics
             note("network gauge: tx \(network.transmitPackets)p/\(network.transmitBytes)B drops=\(network.transmitDrops), rx \(network.receivePackets)p/\(network.receiveBytes)B deferred=\(network.receiveDeferred) drops=\(network.receiveDrops) truncated=\(network.receiveTruncations)")
+            if let graphics = gpu?.statistics {
+                note("gpu gauge: fences=\(graphics.fences) deviceLosses=\(graphics.rendererDeviceLosses) fenceTimeouts=\(graphics.fenceTimeouts)")
+            }
         }
         gauge.resume()
         defer { gauge.cancel() }
@@ -1398,7 +1522,8 @@ enum EngineMode {
         bridgeNetwork: DoryIPv4BridgeNetwork = try! DoryIPv4BridgeNetwork(),
         sourcePreservingLAN: Bool = false,
         allowDockerDataFormat: Bool = false,
-        expectedDockerDataDiskUUID: UUID? = nil
+        expectedDockerDataDiskUUID: UUID? = nil,
+        gpuMode: GPUAccelerationMode = .off
     ) -> String {
         let dockerDataDiskUUID = expectedDockerDataDiskUUID?.uuidString.lowercased() ?? ""
         let dockerDataDiskUUIDArgument = expectedDockerDataDiskUUID == nil
@@ -1414,12 +1539,14 @@ enum EngineMode {
             "mkdir -p /dev/pts",
             "mount -t devpts devpts /dev/pts",
             GuestContainerCompatibilityCommand.configureKernel(),
+            "mkdir -p /var/log",
             "mkdir -p /mnt/dory-logs",
             "if mount -t virtiofs dorylogs /mnt/dory-logs 2>/dev/null; then",
             "  { echo BOOT; uname -a; cat /proc/cmdline; } >/mnt/dory-logs/boot.log 2>&1 || true",
             "  ( while [ ! -e /var/log/dockerd.log ]; do sleep 0.2; done; tail -n +1 -f /var/log/dockerd.log >/mnt/dory-logs/dockerd.log 2>&1 ) & true",
             "  ( while [ ! -e /var/log/dory-agent.log ]; do sleep 0.2; done; tail -n +1 -f /var/log/dory-agent.log >/mnt/dory-logs/dory-agent.log 2>&1 ) & true",
             "fi",
+            guestGPUReadinessCommand(gpuMode: gpuMode),
             "mkdir -p /var/lib/docker",
             "[ -b /dev/vdb ] || { echo DATA-DISK-BLOCK-DEVICE-MISSING; sync; poweroff -f; exit 1; }",
             // First boot receives a sparse blank disk from the host. Format it inside the guest so
@@ -1545,6 +1672,31 @@ enum EngineMode {
             guestAgentExecCommand(),
         ]
         return script.joined(separator: "\n") + "\n"
+    }
+
+    private static func guestGPUReadinessCommand(gpuMode: GPUAccelerationMode) -> String {
+        switch gpuMode {
+        case .off:
+            return ":"
+        case .venus:
+            return [
+                "DORY_VENUS_ICD=/opt/dory/mesa/share/vulkan/icd.d/virtio_icd.aarch64.json",
+                "DORY_VENUS_PROBE=/opt/dory/mesa/libexec/dory-vulkan-probe",
+                "for i in $(seq 1 100); do",
+                "  [ -c /dev/dri/renderD128 ] && break",
+                "  sleep 0.2",
+                "done",
+                "[ -c /dev/dri/renderD128 ] || { echo DORY-GPU-DRM-RENDERD128-MISSING; sync; poweroff -f; exit 1; }",
+                "[ -r \"$DORY_VENUS_ICD\" ] || { echo DORY-GPU-VENUS-ICD-MISSING; sync; poweroff -f; exit 1; }",
+                "[ -x \"$DORY_VENUS_PROBE\" ] || { echo DORY-GPU-VENUS-PROBE-MISSING; sync; poweroff -f; exit 1; }",
+                "command -v vulkaninfo >/dev/null 2>&1 || { echo DORY-GPU-VULKANINFO-MISSING; sync; poweroff -f; exit 1; }",
+                "env -u LD_LIBRARY_PATH -u VK_ADD_DRIVER_FILES -u MESA_VK_DEVICE_SELECT -u MESA_LOADER_DRIVER_OVERRIDE VK_DRIVER_FILES=\"$DORY_VENUS_ICD\" VK_ICD_FILENAMES=\"$DORY_VENUS_ICD\" timeout 10 \"$DORY_VENUS_PROBE\" >/var/log/dory-gpu-venus-probe.log 2>&1 || { echo DORY-GPU-VENUS-PROBE-FAILED; cat /var/log/dory-gpu-venus-probe.log 2>/dev/null; cp /var/log/dory-gpu-venus-probe.log /mnt/dory-logs/gpu-venus-probe.log 2>/dev/null || true; sync; poweroff -f; exit 1; }",
+                "env -u LD_LIBRARY_PATH -u VK_ADD_DRIVER_FILES -u MESA_VK_DEVICE_SELECT -u MESA_LOADER_DRIVER_OVERRIDE VK_DRIVER_FILES=\"$DORY_VENUS_ICD\" VK_ICD_FILENAMES=\"$DORY_VENUS_ICD\" vulkaninfo --summary >/var/log/dory-gpu-vulkaninfo.log 2>&1 || { echo DORY-GPU-VULKANINFO-FAILED; cat /var/log/dory-gpu-vulkaninfo.log 2>/dev/null; cp /var/log/dory-gpu-vulkaninfo.log /mnt/dory-logs/gpu-vulkaninfo.log 2>/dev/null || true; sync; poweroff -f; exit 1; }",
+                "grep -Eiq 'venus|virtio' /var/log/dory-gpu-vulkaninfo.log && ! grep -Eiq 'llvmpipe|lavapipe|software rasterizer' /var/log/dory-gpu-vulkaninfo.log || { echo DORY-GPU-VENUS-VULKAN-DEVICE-MISSING; cat /var/log/dory-gpu-vulkaninfo.log 2>/dev/null; sync; poweroff -f; exit 1; }",
+                "cp /var/log/dory-gpu-venus-probe.log /mnt/dory-logs/gpu-venus-probe.log 2>/dev/null || true",
+                "cp /var/log/dory-gpu-vulkaninfo.log /mnt/dory-logs/gpu-vulkaninfo.log 2>/dev/null || true",
+            ].joined(separator: "\n")
+        }
     }
 
     private static func guestAgentStartCommand(shares: [VirtioFSShareConfiguration]) -> String {

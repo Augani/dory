@@ -24,6 +24,15 @@ INPUTS=(
   guest/initfs/build.sh
   guest/initfs/init
   guest/initfs/PINS
+  Config/DoryRendererProductionTuple.json
+  guest/desktop/install-graphics-pack.sh
+  guest/mesa/PINS
+  guest/mesa/build.sh
+  guest/mesa/dory-vulkan-compositor-probe.c
+  guest/mesa/dory-vulkan-probe.c
+  guest/mesa/input-fingerprint.sh
+  guest/mesa/verify-build.sh
+  scripts/renderer-production-tuple.py
   dory-core/Cargo.lock
   dory-core/Cargo.toml
 )
@@ -91,7 +100,7 @@ fi
 # Include the Rust toolchain and effective build flags because both can change the static guest
 # binary without changing source. Paths are relative to the repository so clones hash identically.
 {
-  printf 'schema=2\narch=%s\ntarget=%s\nsize_mb=%s\nrustflags=%s\n' \
+  printf 'schema=3\narch=%s\ntarget=%s\nsize_mb=%s\nrustflags=%s\n' \
     "$ARCH" "$TARGET" "${DORY_INITFS_SIZE_MB:-1024}" "$EFFECTIVE_RUSTFLAGS"
   rustc -Vv
   cargo -V

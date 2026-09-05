@@ -10,4 +10,16 @@ public enum VenusModeRequirement {
             )
         }
     }
+
+    public static func require<T>(
+        _ operation: () async throws -> T
+    ) async throws -> T {
+        do {
+            return try await operation()
+        } catch {
+            throw VMError.invalidConfiguration(
+                "gpu=venus could not attach the host renderer; refusing a headless fallback: \(error)"
+            )
+        }
+    }
 }

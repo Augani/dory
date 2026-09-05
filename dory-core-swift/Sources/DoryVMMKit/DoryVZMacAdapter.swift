@@ -67,17 +67,20 @@ public struct DoryVZMacAdapterConfiguration: Sendable, Equatable {
     public let guestToolsURL: URL?
     public let usbDiskURL: URL?
     public let usbDiskReadOnly: Bool
+    public let devicePolicy: DoryVZMacDevicePolicy
 
     public init(
         machineBundleURL: URL,
         guestToolsURL: URL? = nil,
         usbDiskURL: URL? = nil,
-        usbDiskReadOnly: Bool = true
+        usbDiskReadOnly: Bool = true,
+        devicePolicy: DoryVZMacDevicePolicy = .legacyDefault
     ) {
         self.machineBundleURL = machineBundleURL.standardizedFileURL
         self.guestToolsURL = guestToolsURL?.standardizedFileURL
         self.usbDiskURL = usbDiskURL?.standardizedFileURL
         self.usbDiskReadOnly = usbDiskReadOnly
+        self.devicePolicy = devicePolicy
     }
 }
 
@@ -112,6 +115,7 @@ public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelega
             bundle: bundle,
             sharedDirectories: shares,
             usbMassStorage: usbMassStorage,
+            devicePolicy: configuration.devicePolicy,
             log: log
         )
         displayView = VZVirtualMachineView()
@@ -155,10 +159,10 @@ public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelega
         }
     }
 
-    public func restoreSuspendedState() async throws {
+    public func restoreSuspendedState(from managedStateURL: URL? = nil) async throws {
         try beginTransition(expected: [.suspended], next: .restoring)
         do {
-            try await runtime.restoreSuspendedState()
+            try await runtime.restoreSuspendedState(from: managedStateURL)
             endTransition(.running)
         } catch {
             endTransition(.suspended, failure: error)
@@ -188,10 +192,10 @@ public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelega
         }
     }
 
-    public func suspend() async throws {
+    public func suspend(to managedStateURL: URL? = nil) async throws {
         try beginTransition(expected: [.running], next: .suspending)
         do {
-            try await runtime.suspend()
+            try await runtime.suspend(to: managedStateURL)
             endTransition(.suspended)
         } catch {
             endTransition(.running, failure: error)

@@ -22,4 +22,18 @@ struct VenusModeRequirementTests {
         let value = try VenusModeRequirement.require { "renderer" }
         #expect(value == "renderer")
     }
+
+    @Test func requestedVenusAsyncNeverTurnsRendererFailureIntoHeadlessSuccess() async {
+        do {
+            let _: String = try await VenusModeRequirement.require {
+                throw RendererUnavailable()
+            }
+            Issue.record("Venus renderer failure unexpectedly succeeded")
+        } catch let VMError.invalidConfiguration(reason) {
+            #expect(reason.contains("gpu=venus"))
+            #expect(reason.contains("refusing a headless fallback"))
+        } catch {
+            Issue.record("unexpected Venus failure: \(error)")
+        }
+    }
 }

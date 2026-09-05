@@ -106,6 +106,39 @@ struct DesktopRendererWorkerLaunchTests {
         #expect(calls.count == 0)
     }
 
+    @Test func hardwareGraphicsConsumesCallerSpecifiedBootstrapDescriptorBeforeConnect() async throws {
+        let bootstrap = try rendererLaunchBootstrap(workerGeneration: 23)
+        let bytes = DoryRendererWorkerBootstrapCodec.encode(bootstrap)
+        let fixture = try rendererLaunchBlob(bytes: bytes, unlinkBeforeRead: true)
+        let fixtureIdentity = try rendererLaunchDescriptorIdentity(fixture.descriptor)
+        let slot = rendererLaunchSlot(descriptor: fixture.descriptor, bytes: bytes)
+        let calls = RendererLaunchConnectorCalls()
+
+        do {
+            _ = try await DesktopRendererWorkerLaunch.prepare(
+                resolvedGraphics: .hardwareAccelerated3D,
+                rendererBootstrapAuthority: slot,
+                exactManagedKernelSHA256: rendererLaunchHex(
+                    bootstrap.artifacts.managedGuestKernel.bytes
+                ),
+                requiredBootstrapDescriptor: fixture.descriptor,
+                connector: { exactBytes in
+                    calls.record()
+                    if exactBytes != bytes { throw RendererLaunchTestError.wrongBootstrapBytes }
+                    throw RendererLaunchTestError.connectorObservedBootstrap
+                }
+            )
+            Issue.record("renderer connector unexpectedly returned a broker")
+        } catch RendererLaunchTestError.connectorObservedBootstrap {
+        }
+
+        #expect(calls.count == 1)
+        #expect(rendererLaunchDescriptorNoLongerReferences(
+            fixture.descriptor,
+            identity: fixtureIdentity
+        ))
+    }
+
     @Test func nonHardwareGraphicsRejectsEvenAnUnexpectedSlotWithoutConnect() async {
         let calls = RendererLaunchConnectorCalls()
         let unexpected = RuntimeLaunchEnvelope.InheritedFileDescriptorSlot(
@@ -242,7 +275,9 @@ struct DesktopRendererWorkerLaunchTests {
 
 private enum RendererLaunchTestError: Error {
     case connectorMustNotRun
+    case connectorObservedBootstrap
     case fixtureCreationFailed
+    case wrongBootstrapBytes
 }
 
 private final class RendererLaunchConnectorCalls: @unchecked Sendable {
