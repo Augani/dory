@@ -866,6 +866,12 @@ import Testing
       #expect(try machine.runOnDedicatedStack(maximumInstructions: 16, exceptionPolicy: .deliver)
         == .halted(instructionCount: 8))
       #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "H")])
+      #expect(machine.executionStatistics.deliveredMaskableInterrupts == 1)
+      #expect(machine.executionStatistics.deliveredNonMaskableInterrupts == 0)
+      #expect(machine.executionStatistics.retiredInterruptReturns == 0)
+      #expect(
+        machine.executionStatistics.deliveredInterruptVectors
+          == [.init(vector: 0x30, deliveries: 1)])
     }
   }
 

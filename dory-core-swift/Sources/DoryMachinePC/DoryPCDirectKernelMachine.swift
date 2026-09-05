@@ -64,24 +64,85 @@ public struct DoryPCClockSource: Sendable {
 }
 
 public struct DoryPCExecutionStatistics: Codable, Sendable, Hashable {
+  public struct InterruptVectorCount: Codable, Sendable, Hashable {
+    public let vector: UInt8
+    public let deliveries: UInt64
+
+    public init(vector: UInt8, deliveries: UInt64) {
+      self.vector = vector
+      self.deliveries = deliveries
+    }
+  }
+
   public let interpreterInstructions: UInt64
   public let baselineJITInstructions: UInt64
   public let baselineJITBlocks: UInt64
   public let optimizingJITInstructions: UInt64
   public let optimizingJITBlocks: UInt64
+  public let deliveredMaskableInterrupts: UInt64
+  public let deliveredNonMaskableInterrupts: UInt64
+  public let retiredInterruptReturns: UInt64
+  public let deliveredInterruptVectors: [InterruptVectorCount]
 
   public init(
     interpreterInstructions: UInt64,
     baselineJITInstructions: UInt64,
     baselineJITBlocks: UInt64,
     optimizingJITInstructions: UInt64,
-    optimizingJITBlocks: UInt64
+    optimizingJITBlocks: UInt64,
+    deliveredMaskableInterrupts: UInt64 = 0,
+    deliveredNonMaskableInterrupts: UInt64 = 0,
+    retiredInterruptReturns: UInt64 = 0,
+    deliveredInterruptVectors: [InterruptVectorCount] = []
   ) {
     self.interpreterInstructions = interpreterInstructions
     self.baselineJITInstructions = baselineJITInstructions
     self.baselineJITBlocks = baselineJITBlocks
     self.optimizingJITInstructions = optimizingJITInstructions
     self.optimizingJITBlocks = optimizingJITBlocks
+    self.deliveredMaskableInterrupts = deliveredMaskableInterrupts
+    self.deliveredNonMaskableInterrupts = deliveredNonMaskableInterrupts
+    self.retiredInterruptReturns = retiredInterruptReturns
+    self.deliveredInterruptVectors = deliveredInterruptVectors
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case interpreterInstructions
+    case baselineJITInstructions
+    case baselineJITBlocks
+    case optimizingJITInstructions
+    case optimizingJITBlocks
+    case deliveredMaskableInterrupts
+    case deliveredNonMaskableInterrupts
+    case retiredInterruptReturns
+    case deliveredInterruptVectors
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.init(
+      interpreterInstructions: try container.decode(UInt64.self, forKey: .interpreterInstructions),
+      baselineJITInstructions: try container.decode(UInt64.self, forKey: .baselineJITInstructions),
+      baselineJITBlocks: try container.decode(UInt64.self, forKey: .baselineJITBlocks),
+      optimizingJITInstructions: try container.decode(UInt64.self, forKey: .optimizingJITInstructions),
+      optimizingJITBlocks: try container.decode(UInt64.self, forKey: .optimizingJITBlocks),
+      deliveredMaskableInterrupts: try container.decodeIfPresent(
+        UInt64.self,
+        forKey: .deliveredMaskableInterrupts
+      ) ?? 0,
+      deliveredNonMaskableInterrupts: try container.decodeIfPresent(
+        UInt64.self,
+        forKey: .deliveredNonMaskableInterrupts
+      ) ?? 0,
+      retiredInterruptReturns: try container.decodeIfPresent(
+        UInt64.self,
+        forKey: .retiredInterruptReturns
+      ) ?? 0,
+      deliveredInterruptVectors: try container.decodeIfPresent(
+        [InterruptVectorCount].self,
+        forKey: .deliveredInterruptVectors
+      ) ?? []
+    )
   }
 }
 
@@ -296,6 +357,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private var baselineJITBlockCount: UInt64 = 0
   private var optimizingJITInstructionCount: UInt64 = 0
   private var optimizingJITBlockCount: UInt64 = 0
+  private var deliveredMaskableInterruptCount: UInt64 = 0
+  private var deliveredNonMaskableInterruptCount: UInt64 = 0
+  private var retiredInterruptReturnCount: UInt64 = 0
+  private var deliveredInterruptVectorCounts: [UInt8: UInt64] = [:]
   private var publishedExecutionStatistics = DoryPCExecutionStatistics(
     interpreterInstructions: 0,
     baselineJITInstructions: 0,
@@ -870,7 +935,16 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       baselineJITInstructions: baselineJITInstructionCount,
       baselineJITBlocks: baselineJITBlockCount,
       optimizingJITInstructions: optimizingJITInstructionCount,
-      optimizingJITBlocks: optimizingJITBlockCount
+      optimizingJITBlocks: optimizingJITBlockCount,
+      deliveredMaskableInterrupts: deliveredMaskableInterruptCount,
+      deliveredNonMaskableInterrupts: deliveredNonMaskableInterruptCount,
+      retiredInterruptReturns: retiredInterruptReturnCount,
+      deliveredInterruptVectors: deliveredInterruptVectorCounts
+        .sorted { lhs, rhs in
+          if lhs.value == rhs.value { return lhs.key < rhs.key }
+          return lhs.value > rhs.value
+        }
+        .map { .init(vector: $0.key, deliveries: $0.value) }
     )
     executionStatisticsLock.withLock { publishedExecutionStatistics = snapshot }
   }
@@ -955,13 +1029,20 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       translatedMemory: translatedMemories[processor],
       ioBus: ioBus
     )
-    let machineResult: ProcessorResult =
-      switch result {
-      case .retired: .retired
-      case .yielded: .yielded
-      case .halted: .halted
-      case .exception(let exception): .exception(exception)
+    let machineResult: ProcessorResult
+    switch result {
+    case .retired(let instruction):
+      if case .interruptReturn = instruction.operation {
+        retiredInterruptReturnCount &+= 1
       }
+      machineResult = .retired
+    case .yielded:
+      machineResult = .yielded
+    case .halted:
+      machineResult = .halted
+    case .exception(let exception):
+      machineResult = .exception(exception)
+    }
     return .init(result: machineResult, instructionCount: 1, jitTier: nil, jitBlockCount: 0)
   }
 
@@ -1278,6 +1359,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           pagingUnit: pagingUnits[index],
           mode: executionMode(processorState.value)
         )
+        switch source {
+        case .externalMaskable:
+          deliveredMaskableInterruptCount &+= 1
+        case .nonMaskable:
+          deliveredNonMaskableInterruptCount &+= 1
+        case .hardwareException, .software:
+          break
+        }
+        deliveredInterruptVectorCounts[vector, default: 0] &+= 1
         haltedProcessors[index] = false
       } catch DoryX86InterruptDeliveryError.processorShutdown {
         return .tripleFault(

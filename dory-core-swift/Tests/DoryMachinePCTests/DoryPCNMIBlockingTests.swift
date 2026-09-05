@@ -48,6 +48,11 @@ import Testing
     #expect(machine.state?.nmiBlocked == true)
     #expect(machine.state?.rip == 0x10_0101) // Handler NOP retired; IRET is next.
     #expect(machine.state?.registers.rsp == 0x7FF4)
+    #expect(machine.executionStatistics.deliveredMaskableInterrupts == 0)
+    #expect(machine.executionStatistics.deliveredNonMaskableInterrupts == 1)
+    #expect(machine.executionStatistics.retiredInterruptReturns == 0)
+    #expect(
+      machine.executionStatistics.deliveredInterruptVectors == [.init(vector: 2, deliveries: 1)])
   }
 
   @inline(never)
@@ -89,6 +94,10 @@ import Testing
     #expect(machine.state?.nmiBlocked == false)
     #expect(machine.state?.rip == 0x10_000E)
     #expect(machine.state?.registers.rsp == 0x8000)
+    #expect(machine.executionStatistics.deliveredNonMaskableInterrupts == 1)
+    #expect(machine.executionStatistics.retiredInterruptReturns == 1)
+    #expect(
+      machine.executionStatistics.deliveredInterruptVectors == [.init(vector: 2, deliveries: 1)])
   }
 
   @inline(never)
@@ -101,6 +110,10 @@ import Testing
     #expect(secondIRETStop == .instructionBudget(1))
     #expect(machine.state?.nmiBlocked == false)
     #expect(machine.state?.rip == 0x10_000E)
+    #expect(machine.executionStatistics.deliveredNonMaskableInterrupts == 2)
+    #expect(machine.executionStatistics.retiredInterruptReturns == 2)
+    #expect(
+      machine.executionStatistics.deliveredInterruptVectors == [.init(vector: 2, deliveries: 2)])
     let haltStop = try machine.runOnDedicatedStack(maximumInstructions: 2, exceptionPolicy: .deliver)
     #expect(haltStop == .halted(instructionCount: 1))
   }

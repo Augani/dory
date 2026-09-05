@@ -971,7 +971,11 @@ enum DoryPCMode {
                         Self.log(
                             "execution progress interpreter=\(statistics.interpreterInstructions) "
                                 + "baseline=\(statistics.baselineJITInstructions) "
-                                + "optimizing=\(statistics.optimizingJITInstructions)"
+                                + "optimizing=\(statistics.optimizingJITInstructions) "
+                                + "maskable-interrupts=\(statistics.deliveredMaskableInterrupts) "
+                                + "nmi-interrupts=\(statistics.deliveredNonMaskableInterrupts) "
+                                + "iret=\(statistics.retiredInterruptReturns) "
+                                + "interrupt-vectors=[\(Self.interruptVectorProgress(statistics.deliveredInterruptVectors))]"
                         )
                         if let diagnostics = composed.machine.baselineJITDiagnostics {
                             Self.log(Self.jitProgress("baseline", diagnostics))
@@ -1285,6 +1289,14 @@ enum DoryPCMode {
 
         private nonisolated static func hexSet(_ values: Set<UInt8>) -> String {
             values.sorted().map { hex(UInt64($0)) }.joined(separator: ",")
+        }
+
+        private nonisolated static func interruptVectorProgress(
+            _ vectors: [DoryPCExecutionStatistics.InterruptVectorCount]
+        ) -> String {
+            vectors.prefix(5).map {
+                "0x\(hex(UInt64($0.vector))):\($0.deliveries)"
+            }.joined(separator: ",")
         }
 
         private nonisolated static func blockDeviceProgress(
