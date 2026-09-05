@@ -30,7 +30,6 @@
     "staleArm64Receipt": "rejected with exit 1 and producer input mismatch"
   },
   "remaining": [
-    "Rebuild ARM64 against frozen producer source; current archive receipt is stale",
     "Run actual patched daemon and interrupted-container recovery campaign",
     "Investigate upstream and patched AMD64 static dockerd exit255 under FEX",
     "Qualify and integrate final artifacts; running guest retains upstream Docker"
@@ -41,5 +40,20 @@
     "oomKilled": false,
     "source": "agent diagnostic /private/tmp/dory-amd64-dockerd-fex-diag.81992",
     "independentlyRepeatedByRoot": false
+  },
+  "arm64RefreshedBuild": {
+    "producerReceipt": "guest/out/docker-29.6.1-dory1/docker-29.6.1-dory1-arm64.receipt.json",
+    "producerReceiptSHA256": "3c901d297c711f7c81c362b8ee6d3f6e1dfd5843ce96661612be2b6c5537cfbc",
+    "archiveSHA256": "3ba01aa0b2f8dbf60dbea797d5f677aa85b9d124737473aafbab1b376c576064",
+    "dockerdSHA256": "96adcfb667b2ac954cafe17f6177765344726089e37ae4aaaa88f7c6555739ef",
+    "producerInputSHA256": "8a5b43ec33fd2de3a7a1e322dd6a0c69f503de55aa5a637b80cc5417b00dcd6b",
+    "rootVerified": [
+      "archive and dockerd digests",
+      "all 9 archive members root-owned",
+      "Dockerfile and rebuild source digests match",
+      "initfs override fingerprint exits0"
+    ],
+    "initfsOverrideFingerprint": "3b595e1025f50e491534f299e33b35c6b5e68f8a086f88b22deaef39d87ee3ae",
+    "runtimeVerificationScope": "dockerd --version only; actual daemon/recovery validation remains open"
   }
 }
