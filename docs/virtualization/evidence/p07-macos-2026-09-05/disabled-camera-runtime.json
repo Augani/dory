@@ -39,7 +39,15 @@
   },
   "limitations": [
     "No camera-enabled guest qualification",
-    "Broader MachineManager integration run had a separate logging-environment expectation failure; investigation remains open",
     "Saved-state restore still awaits normal host unlock and controlled repeat"
-  ]
+  ],
+  "separateIntegrationTestCorrection": {
+    "commit": "39817744d",
+    "finding": "Host-process logging control was incorrectly used as guest environment fixture; replace with actual guest username/UID values",
+    "productionCodeChanged": false,
+    "focusedTests": 1,
+    "failures": 0,
+    "log": "/tmp/dory-log-env-resolved-plan-0905.log",
+    "logSHA256": "177c3d892803cf04c7b837d1eb2aba010a77730d9f65620b510058c05eeeef16"
+  }
 }
