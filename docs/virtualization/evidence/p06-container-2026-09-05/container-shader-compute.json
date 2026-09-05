@@ -1,0 +1,49 @@
+{
+  "schema": "dory.container-vulkan-compute@1",
+  "result": "pass",
+  "containerExitCode": 0,
+  "containerOOMKilled": false,
+  "device": "Virtio-GPU Venus (Apple M2 Pro)",
+  "driver": "venus",
+  "architecture": "aarch64",
+  "command": "vkCmdDispatch",
+  "elements": 65536,
+  "mismatches": 0,
+  "input": "uint32(i ^ 0xa5a5a5a5)",
+  "expected": "uint32((input * 1664525 + 1013904223) ^ (i * 17))",
+  "workgroupSize": 64,
+  "workgroupCount": 1024,
+  "synchronization": [
+    "host-coherent mapped storage buffer initialized on CPU",
+    "host-write to shader-read/write memory barrier",
+    "shader-write to host-read memory barrier",
+    "queue submission and completion fence before checking every output"
+  ],
+  "deviceAdmission": "explicit /dev/dri/renderD128 mapping with rw permission",
+  "runtimeEvidence": "guest-vulkan-readiness.json",
+  "containerImageIDPrefix": "81f096d71380",
+  "artifacts": {
+    "compute.c": "b3306e657e8d9d5084374096352c5e2a69ba3ef981e40dd23c04a88f71039c60",
+    "compute.comp": "bfd810d9698fb8cbb67492421ff985af2026cae81814f42ce7eb638ed812f9de",
+    "compute.spv": "254d3eb162d7f01e7be5bc638ab4d1e92bd60916ab6fffed198416efa76c6bd2",
+    "compute": "b83daaf97ee07e2431d2da89d84576fbf8fc4ed9d1b1e751a047e6fc47da86de",
+    "result.log": "caccd63b221920337b03e02256d0098fee849cc4fd8e8d45b8c1c318a4c4f93f"
+  },
+  "buildPackages": {
+    "gcc": "4:12.2.0-3",
+    "glslang-tools": "12.0.0-2",
+    "libc6-dev:arm64": "2.36-9+deb12u14",
+    "libvulkan-dev:arm64": "1.3.239.0-1",
+    "spirv-tools": "2023.1-2"
+  },
+  "validation": [
+    "gcc -O2 -Wall -Wextra -Werror",
+    "glslangValidator -V",
+    "spirv-val"
+  ],
+  "limitations": [
+    "Single compute workload using explicit device mapping; normal Docker --gpus all flow is not qualified by this receipt.",
+    "No concurrent containers, worker crash recovery, resource exhaustion or sustained workloads tested.",
+    "Development probe source and binaries retained privately, with hashes recorded here; not a packaged production probe."
+  ]
+}
