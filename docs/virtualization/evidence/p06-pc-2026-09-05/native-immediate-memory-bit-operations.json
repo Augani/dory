@@ -1,0 +1,19 @@
+{
+  "scope": "Native long64 CPL0 non-LOCK immediate memory BT/BTS/BTR/BTC for 32- and 64-bit operands. Register-index memory, LOCK, 16-bit and user-mode forms retain interpreter fallback.",
+  "motivation": "Live production CPU0 profile: __free_pages_core BTR imm13 (480fba300d) was the hottest interpreter-helper fallback, 483801 hits in an observed snapshot.",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "b51d98188673cbf7a3c05c7a2d12f551e504adcb7565b0252631407f7a9beda1",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "ab3dba195a0de5c70db3df8ca482866714e537df81f3f05d89d5da63a5661ece",
+    "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift": "28a77fbf92bb05334a28cee80c18064a6d9057bc5cb88bd18bdec74cce04a27e",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "5b17f656044d1ef8c24472e986138d44d00a7f7e72fdab620cfff1b77a8f5a70"
+  },
+  "referenceInterpreterSHA256": "4c3f153ccbbdd3283268510f098ecd785d94c98645b3981c13749e6083531e5b",
+  "validation": "122 tests in 4 suites passed. Baseline and optimizing tiers; all four operations; indices 0,13,31,32,63,64,255; zero/all-one values; base and RIP-relative addressing; full state/memory agreement; restartable-read decline, cross-boundary read fault and rejected write rollback; LOCK/register-index/user-mode gates.",
+  "log": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/native-memory-bit-immediate-final.log",
+  "logSHA256": "17182f9bd61fb8ef9828c42e1abdb50d4bb1adf6a9de54cafe403adb1adb0845",
+  "limitations": [
+    "Isolated validation checkout with exact changed sources and current reference interpreter, not all-HEAD qualification.",
+    "The first trial used an outdated isolated interpreter before the committed immediate-bit-mask fix; that fixture was corrected before final validation.",
+    "No end-to-end boot speed improvement or completed Linux boot claimed."
+  ]
+}

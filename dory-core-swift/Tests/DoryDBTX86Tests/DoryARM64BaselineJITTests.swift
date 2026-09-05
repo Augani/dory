@@ -1675,12 +1675,100 @@ import Testing
       }
 
       let memoryBTS = try DoryX86IRTranslator().translate(
-        [0x0F, 0xBA, 0x28, 0x04], at: 0, mode: .long64)
+        [0xF0, 0x0F, 0xBA, 0x28, 0x04], at: 0, mode: .long64)
       #expect(DoryARM64BaselineEmitter().compile(memoryBTS).tier == .interpreterFallback)
+
+      let memoryRegisterBT = try DoryX86IRTranslator().translate(
+        [0x48, 0x0F, 0xA3, 0x0F], at: 0, mode: .long64)
+      #expect(DoryARM64BaselineEmitter().compile(memoryRegisterBT).tier == .interpreterFallback)
+      var userState = try DoryX86ArchitecturalState(
+        registers: .init(rdi: 0x80), rip: 0,
+        cs: .init(selector: 0x1B, attributes: 0xA0FB, limit: .max))
+      #expect(try DoryARM64BaselineExecutor(maximumCodeBytes: 4096).execute(
+        bytes: [0x48, 0x0F, 0xBA, 0x37, 13], at: 0, mode: .long64, addressSpaceID: 0,
+        maximumInstructions: 1, state: &userState,
+        memory: DoryX86ByteArrayMemory(byteCount: 0x100)) == nil)
 
       let protectedBTS = try DoryX86IRTranslator().translate(
         [0x0F, 0xBA, 0xE8, 0x04], at: 0, mode: .protected32)
       #expect(DoryARM64BaselineEmitter().compile(protectedBTS).tier == .interpreterFallback)
+    #endif
+  }
+
+  @Test func immediateMemoryBitTestsMatchInterpreterAcrossTiers() throws {
+    #if arch(arm64)
+      for byteCount in [4, 8] {
+        for operation: UInt8 in 4...7 {
+          for bit: UInt8 in [0, 13, 31, 32, 63, 64, 255] {
+            for relative in [false, true] {
+              let prefixes: [UInt8] = byteCount == 8 ? [0x48] : []
+              var bytes = prefixes + [0x0F, 0xBA, operation << 3 | (relative ? 5 : 7)]
+              if relative {
+                let displacement = UInt32(0x80 - (0x10 + bytes.count + 5))
+                bytes += (0..<4).map { UInt8(truncatingIfNeeded: displacement >> ($0 * 8)) }
+              }
+              bytes.append(bit)
+              for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+                for initialValue in [UInt64(0), UInt64.max] {
+                  let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x80 + byteCount)
+                  let nativeMemory = try DoryX86ByteArrayMemory(byteCount: 0x80 + byteCount)
+                  for memory in [interpretedMemory, nativeMemory] {
+                    try memory.write(at: 0x10, bytes: bytes)
+                    try memory.writeScalar(at: 0x80, value: initialValue, byteCount: byteCount)
+                  }
+                  let initial = try DoryX86ArchitecturalState(
+                    registers: .init(rax: .max, rdi: 0x80), rip: 0x10,
+                    rflags: [.reservedOne, .carry, .parity, .zero, .sign, .overflow],
+                    cs: .init(selector: 8, attributes: 0xA09B, limit: .max))
+                  var interpreted = initial
+                  let decoded = try DoryX86Decoder().decode(bytes, at: 0x10, mode: .long64)
+                  #expect(DoryX86Interpreter().step(
+                    state: &interpreted, memory: interpretedMemory, mode: .long64) == .retired(decoded))
+                  var native = initial
+                  let result = try #require(DoryARM64BaselineExecutor(
+                    maximumCodeBytes: 4096, optimization: optimization
+                  ).execute(bytes: bytes, at: 0x10, mode: .long64, addressSpaceID: 0,
+                    maximumInstructions: 1, state: &native, memory: nativeMemory))
+                  #expect(result.block.tier.rawValue == optimization.rawValue)
+                  #expect(result.block.requiresMemoryCallbacks)
+                  #expect(result.block.requiresRestartableMemoryReads == (operation != 4))
+                  #expect(native == interpreted)
+                  #expect(try nativeMemory.read(at: 0, byteCount: 0x80 + byteCount)
+                    == interpretedMemory.read(at: 0, byteCount: 0x80 + byteCount))
+                }
+              }
+            }
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func immediateMemoryBitResetDeclinesWithoutCommittingStateOrMMIO() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x48, 0x0F, 0xBA, 0x37, 13]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        for address: UInt64 in [0x80, 0x88, 0xFE] {
+          let memory = try SelectiveRestartableMemory(
+            byteCount: 0x100, declinedAddress: 0x80, rejectedWriteAddress: 0x88)
+          try memory.backing.writeScalar(at: 0x80, value: .max, byteCount: 8)
+          try memory.backing.writeScalar(at: 0x88, value: .max, byteCount: 8)
+          let initial = try DoryX86ArchitecturalState(
+            registers: .init(rdi: address), rip: 0x10, rflags: [.reservedOne, .carry, .overflow],
+            cs: .init(selector: 8, attributes: 0xA09B, limit: .max))
+          var state = initial
+          let result = try #require(DoryARM64BaselineExecutor(
+            maximumCodeBytes: 4096, optimization: optimization
+          ).execute(bytes: bytes, at: state.rip, mode: .long64, addressSpaceID: 0,
+            maximumInstructions: 1, state: &state, memory: memory))
+          #expect(result.exitCode == .interpreter)
+          #expect(state == initial)
+          #expect(memory.restartableReads == 1)
+          #expect(memory.scalarWrites == (address == 0x88 ? 1 : 0))
+          #expect(try memory.backing.readScalar(at: 0x80, byteCount: 8) == .max)
+          #expect(try memory.backing.readScalar(at: 0x88, byteCount: 8) == .max)
+        }
+      }
     #endif
   }
 
@@ -5049,12 +5137,14 @@ private final class SelectiveRestartableMemory: DoryX86ScalarMemory,
 {
   let backing: DoryX86ByteArrayMemory
   let declinedAddress: UInt64
+  let rejectedWriteAddress: UInt64?
   private(set) var restartableReads = 0
   private(set) var scalarWrites = 0
 
-  init(byteCount: Int, declinedAddress: UInt64) throws {
+  init(byteCount: Int, declinedAddress: UInt64, rejectedWriteAddress: UInt64? = nil) throws {
     backing = try DoryX86ByteArrayMemory(byteCount: byteCount)
     self.declinedAddress = declinedAddress
+    self.rejectedWriteAddress = rejectedWriteAddress
   }
 
   func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
@@ -5081,6 +5171,9 @@ private final class SelectiveRestartableMemory: DoryX86ScalarMemory,
 
   func writeScalar(at address: UInt64, value: UInt64, byteCount: Int) throws {
     scalarWrites += 1
+    if address == rejectedWriteAddress {
+      throw DoryX86MemoryError.pageFault(address: address, errorCode: 3)
+    }
     try backing.writeScalar(at: address, value: value, byteCount: byteCount)
   }
 }
