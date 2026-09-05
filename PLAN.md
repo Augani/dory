@@ -92,7 +92,20 @@ The immediate delivery boundaries are:
 | F14 | Parallel device/runtime implementations and disconnected facades add maintenance without production benefit. | Delete only after checking production consumers and coverage; keep isolation, generation, lease and persistence boundaries. |
 | F15 | The plan's opening audit and first assignments describe closed work, while long chronological paragraphs bury current blockers. | Replace stale status and assignments; keep task IDs and linked raw evidence. Update status at the affected phase instead of appending another run narrative. |
 
-### 2.3 Evidence limits
+### 2.3 Corrective review before further runtime campaigns
+
+The next changes must resolve the complete failing contract before another expensive guest run. These are implementation instructions, not closed gates.
+
+| Lane | Source finding | Required correction and acceptance evidence |
+|---|---|---|
+| Mac restart qualification | `ProductionTrustFixture.init` creates helper/media/firmware files, republishes artifact authority and installs a catalog. Calling it on an interrupted fixture changes the state under test; persisting its signing key alone does not make it a loader. | Separate creation from loading an existing fixture. Reopen validates persisted configuration, key and artifact identities without regenerating them. A distinct process must activate the existing catalog and trust floor, recover the interrupted journal, and prove state transitions. Record pre/post hashes; never reset the trust floor to obtain a pass. |
+| Native x86 locked operations | The interpreter holds `DoryX86AtomicGate` across read/modify/write; scalar memory locks cover individual accesses. A new native CAS protected only by a memory lock can interleave with the interpreter sequence. | Define one shared serialization contract and lock order across both execution paths. Preserve write preflight, mismatch write-cycle effects, code invalidation and precise faults. Verify the actual production memory wrapper supports the operation. Require mixed interpreter/native contention coverage as well as match/mismatch and fault parity before a guest run. This does not itself qualify SMP/TSO. |
+| Installed Mac media | The VZ adapter advertises `.virtualDisk` but validates only `.macOSRestoreImage`; `nativeMacOSDefinition` constructs an install-phase restore definition. | Design the installed-media transition across definition, mutable artifact provenance, qualification admission and runtime launch together. Merely broadening the adapter guard cannot establish installed-disk support. |
+| FEX asynchronous signals | Prior failures involve guest RIP, stack and register state reconstructed at different host instruction phases. Individual CALL or dispatcher variants have not established a coherent guest state. | Review host-PC mapping, signal deferral, syscall/dispatcher handling, ucontext restoration and SRA reload as one contract. Distinguish proven divergence from hypotheses; require a deterministic reproducer of the identified boundary before another candidate build. |
+
+Keep new private runtime artifacts in durable qualification directories. Retain the exact source and raw result needed to support each claim; unavailable temporary evidence cannot qualify the current candidate.
+
+### 2.4 Evidence limits
 
 - The [P00 baseline](docs/virtualization/p00-baseline-2026-09-04.json) and [P01 review](docs/virtualization/p01-control-plane-review-2026-09-03.json) describe their own frozen sources and test exclusions. Their counts are not fresh test counts for this checkout.
 - The [source-62 profile probe validation](docs/virtualization/evidence/p02-correctness-2026-09-04/selected-paging-profile-probes-through-run-62-validation.json) records seven workloads each for two kernels/userspaces and host-observed ACPI S5. The [systemd validation](docs/virtualization/evidence/p02-correctness-2026-09-04/systemd-kernel-b-probe-2-validation.json) records eight workloads including PID 1 service supervision. These are pinned diagnostic environments, not installed distributions.
