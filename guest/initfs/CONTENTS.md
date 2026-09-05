@@ -71,6 +71,25 @@ Boot behavior:
 - Exec `/usr/bin/dory-agent` as PID 1 when present.
 - Hand PID 1 to `docker-init` only when `dory-agent` is absent, falling back to a long sleep loop.
 
+
+Supported container GPU image export:
+
+- Run `guest/initfs/build.sh arm64`, then `guest/initfs/export-container-image.sh arm64 --output /tmp/dory-initfs-arm64.tar`.
+  The exporter reruns `guest/initfs/verify-build.sh arm64`, preserves modes and symlinks from the
+  ext4 image, normalizes tar ownership to root:root for Dory's managed initfs contract, strips
+  macOS xattrs/AppleDouble sidecars from the Docker tar, and prints the initfs SHA256 and input
+  fingerprint used to produce the tar.
+- To import into a disposable Dory Docker endpoint without touching the user's default Docker
+  context, pass an explicit socket and tag: `guest/initfs/export-container-image.sh arm64 --output
+  /tmp/dory-initfs-arm64.tar --docker-host unix:///private/tmp/example/.dory/dory.sock --tag
+  dory/gpu-initfs:local`. The import labels record the initfs architecture, image SHA256, input
+  fingerprint, and activated container ICD path.
+- Containers derived from that image can use the standard API path: `docker --host
+  unix:///private/tmp/example/.dory/dory.sock run --rm --gpus all dory/gpu-initfs:local ...`.
+  Workloads should not need `VK_DRIVER_FILES`, `VK_ICD_FILENAMES`, or `LD_LIBRARY_PATH` to select
+  Dory's Venus ICD, because `/etc/vulkan/icd.d/dory-virtio_icd.aarch64.json` is in the Vulkan
+  loader's default search path.
+
 To inventory a built image on a machine with `debugfs`:
 
 ```sh

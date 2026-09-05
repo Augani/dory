@@ -1,0 +1,76 @@
+{
+  "builtInitfs": {
+    "buildLog": "/private/tmp/dory-initfs-root-owned-build.1788581299.log",
+    "inputFingerprint": "cdf9d8ad1f574faf91165b5827a72d92463a4def0c6f7b16183654b76c5c0dc1",
+    "ownershipChecks": [
+      "/bin/busybox uid=0 gid=0",
+      "/etc/vulkan/icd.d/dory-virtio_icd.aarch64.json uid=0 gid=0"
+    ],
+    "path": "guest/out/initfs-arm64.ext4",
+    "sha256": "ff8edb5f2780a35fa12f135b8e3905502e8642d9dff521d28c232af7042514a1",
+    "verifyLog": "/private/tmp/dory-initfs-root-owned-verify.1788581332.log"
+  },
+  "createdAt": "2026-09-05T04:11:35Z",
+  "independentReview": {
+    "appleDoubleTarEntries": 0,
+    "initfsVerification": "passed",
+    "nonRootTarEntries": 0,
+    "sourceSHA256": {
+      "guest/initfs/CONTENTS.md": "730e509472691503ecd6c3478ceb4523bd028bfdbd2c8e2b147b74259d1e007b",
+      "guest/initfs/build.sh": "6978ddf06935de81b07ea3780c56097ed3f865d07b4b544a0dabe8d7b9a4060c",
+      "guest/initfs/export-container-image.sh": "eb4e33c9165155c5a734201c370ec7cb3db589deef184b211c49ec751c8ed41b",
+      "guest/initfs/verify-build.sh": "fce8365e39f19090a169390ce29e861ea7b64263e5988418017fcba87797a992"
+    },
+    "tarEntriesChecked": 1510,
+    "tarSHA256": "ccb2e2b956abc057d5248c772a687e8e17a24b695c0458e790d7deb2396cf292"
+  },
+  "limitations": [
+    "The producer exports the Dory-supported initfs/runtime contents as a local Docker base image; it does not publish to a registry.",
+    "Third-party images need to be derived from this Dory GPU image, or otherwise carry equivalent Dory-qualified Mesa/runtime contents, to get no-env Venus discovery."
+  ],
+  "producer": {
+    "checks": [
+      "guest/initfs/verify-build.sh arm64 passed before export",
+      "export captures initfs image hash and stamp before verification, verifies that exact pair, then rejects source changes after extraction before publishing the tar",
+      "debugfs rdump exports modes and symlinks from guest/out/initfs-arm64.ext4 and rejects unexpected diagnostics",
+      "COPYFILE_DISABLE=1 tar --no-xattrs excludes macOS AppleDouble/xattr sidecars",
+      "tar entries are normalized to root/root for the managed Dory initfs contract",
+      "docker import uses --platform linux/arm64 and only the explicit unix Docker socket supplied with --docker-host"
+    ],
+    "command": "./guest/initfs/export-container-image.sh arm64 --output /private/tmp/dory-container-export-producer-proof.1788581432/dory-initfs-arm64.tar --docker-host unix:///private/tmp/dorygpu.84906/h/.dory/dory.sock --tag dory/gpu-initfs:producer-1788581432",
+    "importLabels": {
+      "org.dory.container-vulkan-icd": "/etc/vulkan/icd.d/dory-virtio_icd.aarch64.json",
+      "org.dory.initfs.arch": "arm64",
+      "org.dory.initfs.input-sha256": "cdf9d8ad1f574faf91165b5827a72d92463a4def0c6f7b16183654b76c5c0dc1",
+      "org.dory.initfs.sha256": "ff8edb5f2780a35fa12f135b8e3905502e8642d9dff521d28c232af7042514a1"
+    },
+    "importedImage": "dory/gpu-initfs:producer-1788581432",
+    "importedImageOsArch": "linux/arm64",
+    "rootfsTar": "/private/tmp/dory-container-export-producer-proof.1788581432/dory-initfs-arm64.tar",
+    "rootfsTarSHA256": "ccb2e2b956abc057d5248c772a687e8e17a24b695c0458e790d7deb2396cf292",
+    "stdoutLog": "/private/tmp/dory-container-export-producer-proof.1788581432/logs/export-import.log",
+    "tarOwnerCheck": [
+      "-rw-r--r--  0 root   root      188 Sep  5 04:08 ./etc/vulkan/icd.d/dory-virtio_icd.aarch64.json",
+      "lrwxr-xr-x  0 root   root        0 Sep  5 04:10 ./bin/sh -> /bin/busybox",
+      "-rwxr-xr-x  0 root   root   919304 Nov 23  2025 ./bin/busybox"
+    ],
+    "tarOwnerCheckLog": "/private/tmp/dory-container-export-producer-proof.1788581432/logs/tar-owner-check.log"
+  },
+  "schema": 1,
+  "scope": "Reproducible local producer for a Dory-supported ARM64 GPU container image from the verified root-owned initfs artifact; no registry publication and no default Docker context mutation.",
+  "sourceChanges": [
+    "guest/initfs/build.sh",
+    "guest/initfs/verify-build.sh",
+    "guest/initfs/export-container-image.sh",
+    "guest/initfs/CONTENTS.md"
+  ],
+  "usageValidation": {
+    "command": "docker -H unix:///private/tmp/dorygpu.84906/h/.dory/dory.sock run --gpus all dory/gpu-compute:producer-1788581432 /bin/sh -lc env -u VK_DRIVER_FILES -u VK_ICD_FILENAMES -u LD_LIBRARY_PATH /compute /compute.spv",
+    "computeImage": "dory/gpu-compute:producer-1788581432",
+    "computeImageInspect": "image=sha256:2962324ba3c2a9d20aae0368970b20c4a782b9fe828d23aed834758f387ab9fd os=linux arch=arm64 size=103059953",
+    "dockerSocket": "/private/tmp/dorygpu.84906/h/.dory/dory.sock",
+    "fullLog": "/private/tmp/dory-container-export-producer-proof.1788581432/logs/proof.log",
+    "hostConfig": "null [{\"PathOnHost\":\"/dev/dri/renderD128\",\"PathInContainer\":\"/dev/dri/renderD128\",\"CgroupPermissions\":\"rw\"}] exit=0",
+    "stdout": "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass"
+  }
+}

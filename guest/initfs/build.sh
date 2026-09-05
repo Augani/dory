@@ -54,6 +54,49 @@ sha256_file() {
   shasum -a 256 "$1" | awk '{print $1}'
 }
 
+find_debugfs() {
+  for cand in "${DORY_DEBUGFS:-}" \
+              "$(command -v debugfs 2>/dev/null || true)" \
+              /opt/homebrew/opt/e2fsprogs/sbin/debugfs \
+              /usr/local/opt/e2fsprogs/sbin/debugfs; do
+    [ -n "$cand" ] && [ -x "$cand" ] && { printf '%s\n' "$cand"; return 0; }
+  done
+  return 1
+}
+
+normalize_ext4_root_ownership() {
+  local source_root="$1" image="$2" debugfs commands output
+  debugfs="$(find_debugfs)" || { echo "debugfs not found; install e2fsprogs" >&2; exit 1; }
+  commands="$(mktemp "${TMPDIR:-/tmp}/dory-initfs-owner.XXXXXX")"
+  output="$(mktemp "${TMPDIR:-/tmp}/dory-initfs-owner-output.XXXXXX")"
+  python3 - "$source_root" > "$commands" <<'PY'
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+print('set_inode_field / uid 0')
+print('set_inode_field / gid 0')
+for path in sorted(root.rglob('*'), key=lambda item: item.as_posix()):
+    relative = '/' + path.relative_to(root).as_posix()
+    if '\n' in relative or '\r' in relative:
+        raise SystemExit(f"initfs path contains a newline: {relative!r}")
+    escaped = relative.replace('\\', '\\\\').replace('"', '\\"')
+    print(f'set_inode_field "{escaped}" uid 0')
+    print(f'set_inode_field "{escaped}" gid 0')
+PY
+  "$debugfs" -w -f "$commands" "$image" > "$output" 2>&1 || {
+    cat "$output" >&2
+    rm -f "$commands" "$output"
+    exit 1
+  }
+  if grep -Eiq '(^|: )(error|failed|not found|no such file|while )' "$output"; then
+    cat "$output" >&2
+    rm -f "$commands" "$output"
+    exit 1
+  fi
+  rm -f "$commands" "$output"
+}
+
 fetch_pin() {
   local key="$1" url expected name path actual
   url="$(pin_field "$key" url)"
@@ -507,6 +550,7 @@ build_arch() {
 
   truncate -s "${SIZE_MB}m" "$image"
   "$mke2fs" -q -F -t ext4 -L dory-initfs -d "$rootfs" "$image"
+  normalize_ext4_root_ownership "$rootfs" "$image"
   rm -rf "$rootfs"
   rm -f "$wrapper"
   ACTIVE_ROOTFS=""

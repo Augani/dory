@@ -57,6 +57,13 @@ case "$ARCH" in
 esac
 
 DEBUGFS="$(find_debugfs)" || fail "debugfs is required to validate the initfs contents (install e2fsprogs)"
+
+require_root_owned() {
+  local path="$1" stat_output
+  stat_output="$($DEBUGFS -R "stat $path" "$IMAGE" 2>&1)"
+  grep -Eq 'User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0' <<<"$stat_output" \
+    || fail "$IMAGE path is not root-owned: $path"
+}
 for required in \
   /bin/sh \
   /sbin/init \
@@ -73,6 +80,7 @@ for required in \
   /usr/sbin/iptables; do
   "$DEBUGFS" -R "stat $required" "$IMAGE" 2>&1 | grep -q '^Inode:' \
     || fail "$IMAGE is missing required guest path $required"
+  require_root_owned "$required"
 done
 
 if [ "$ARCH" = arm64 ]; then
@@ -98,6 +106,7 @@ if [ "$ARCH" = arm64 ]; then
     /usr/lib/dory/fex/provenance/BUILD_PACKAGES.txt; do
     "$DEBUGFS" -R "stat $required" "$IMAGE" 2>&1 | grep -q '^Inode:' \
       || fail "$IMAGE is missing required Apple Silicon FEX path $required"
+    require_root_owned "$required"
   done
 fi
 
