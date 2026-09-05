@@ -223,6 +223,48 @@ struct EngineRuntimePolicyTests {
         }
     }
 
+    @Test func standaloneDataDriveMetadataResolvesToItsEngineDiskPath() throws {
+        let tempRoot = "/private/tmp/dory-engine-policy-\(UUID().uuidString)"
+        let driveRoot = tempRoot + "/Dory Test/Dory.dorydrive"
+        let diskPath = driveRoot + "/engine/docker-data.ext4"
+        try FileManager.default.createDirectory(
+            atPath: (diskPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        try Data("disk".utf8).write(to: URL(fileURLWithPath: diskPath))
+        defer { try? FileManager.default.removeItem(atPath: tempRoot) }
+
+        #expect(
+            try EngineMode.resolvedStandaloneDataDriveDiskPath(
+                standaloneAuthorityPath: diskPath,
+                dataDriveRoot: driveRoot,
+                dataDriveDiskPath: diskPath
+            ) == diskPath
+        )
+        #expect(
+            try EngineMode.resolvedStandaloneDataDriveDiskPath(
+                standaloneAuthorityPath: diskPath.replacingOccurrences(
+                    of: "/private/tmp/",
+                    with: "/tmp/"
+                ),
+                dataDriveRoot: driveRoot,
+                dataDriveDiskPath: diskPath
+            ) == diskPath
+        )
+    }
+
+    @Test func standaloneDataDriveMetadataRejectsUnrelatedAuthorityPath() throws {
+        let driveRoot = "/private/tmp/Dory Test/Dory.dorydrive"
+        let diskPath = driveRoot + "/engine/docker-data.ext4"
+        #expect(throws: (any Error).self) {
+            _ = try EngineMode.resolvedStandaloneDataDriveDiskPath(
+                standaloneAuthorityPath: "/private/tmp/Other/docker-data.ext4",
+                dataDriveRoot: driveRoot,
+                dataDriveDiskPath: diskPath
+            )
+        }
+    }
+
     @Test func inheritedDockerDataDiskUUIDIsFormattedAndVerifiedBeforeMutation() {
         let script = EngineMode.guestBootScript(
             allowDockerDataFormat: true,

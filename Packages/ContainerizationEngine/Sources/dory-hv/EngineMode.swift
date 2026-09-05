@@ -306,6 +306,32 @@ enum EngineMode {
         var exactManagedKernelSHA256: String? = nil
     }
 
+    static func resolvedStandaloneDataDriveDiskPath(
+        standaloneAuthorityPath: String?,
+        dataDriveRoot: String,
+        dataDriveDiskPath: String?
+    ) throws -> String {
+        guard let standaloneAuthorityPath,
+              let dataDriveDiskPath else {
+            throw VMError.invalidConfiguration(
+                "standalone Docker data-disk authority has inconsistent data-drive metadata"
+            )
+        }
+        let rootPath = try DoryDataDrive.canonicalPath(dataDriveRoot)
+        let diskPath = try DoryDataDrive.canonicalPath(dataDriveDiskPath)
+        let authorityPath = try DoryDataDrive.canonicalPath(standaloneAuthorityPath)
+        let expectedDiskPath = try DoryDataDrive.canonicalPath(
+            rootPath + "/engine/docker-data.ext4"
+        )
+        guard diskPath == expectedDiskPath,
+              authorityPath == diskPath else {
+            throw VMError.invalidConfiguration(
+                "standalone data-drive metadata does not match its Docker data-disk path"
+            )
+        }
+        return diskPath
+    }
+
     static func validateMemoryMB(_ memoryMB: UInt64) throws {
         guard memoryMB <= UInt64(DoryEngineMemoryPolicy.maximumMemoryMB) else {
             throw VMError.invalidConfiguration(
@@ -889,12 +915,12 @@ enum EngineMode {
 
         let pristineRootfs = state + "/rootfs-pristine.ext4"
         let bootRootfs = state + "/rootfs-boot.ext4"
-        let standaloneDataDiskPath: String?
+        var standaloneDataDiskPath: String?
         switch configuration.dockerDataDiskAuthority {
         case .inherited:
             standaloneDataDiskPath = nil
         case .standalonePath(let path):
-            standaloneDataDiskPath = URL(fileURLWithPath: path).standardizedFileURL.path
+            standaloneDataDiskPath = try DoryDataDrive.canonicalPath(path)
         }
         let dataDriveLock: EngineStateDirectoryLock?
         if case .inherited = configuration.dockerDataDiskAuthority {
@@ -908,12 +934,11 @@ enum EngineMode {
             // it here would deadlock the launch and would add no authority to the inherited FD.
             dataDriveLock = nil
         } else if let dataDriveRoot = configuration.dataDriveRoot {
-            guard let dataDriveDiskPath = configuration.dataDriveDiskPath,
-                  dataDriveDiskPath == standaloneDataDiskPath else {
-                throw VMError.invalidConfiguration(
-                    "standalone data-drive metadata does not match its Docker data-disk path"
-                )
-            }
+            standaloneDataDiskPath = try resolvedStandaloneDataDriveDiskPath(
+                standaloneAuthorityPath: standaloneDataDiskPath,
+                dataDriveRoot: dataDriveRoot,
+                dataDriveDiskPath: configuration.dataDriveDiskPath
+            )
             dataDriveLock = try EngineStateDirectoryLock(
                 stateDirectory: dataDriveRoot,
                 lockFileName: "drive.lock"
