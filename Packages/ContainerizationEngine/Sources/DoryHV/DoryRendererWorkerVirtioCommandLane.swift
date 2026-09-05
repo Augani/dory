@@ -1497,9 +1497,9 @@ public final class DoryRendererWorkerVirtioCommandLane: @unchecked Sendable {
     }
 
     func revoke(deviceGeneration: UInt64) {
-        let cancellation: [ArmedFence] = lock.withLock {
+        let cancellation: [ArmedFence]? = lock.withLock {
             guard case .active(let activeGeneration) = state,
-                  activeGeneration == deviceGeneration else { return [] }
+                  activeGeneration == deviceGeneration else { return nil }
             state = .revoked(deviceGeneration: activeGeneration)
             reservedFenceIDs.removeAll(keepingCapacity: false)
             liveScanoutLeases.removeAll(keepingCapacity: false)
@@ -1508,6 +1508,7 @@ public final class DoryRendererWorkerVirtioCommandLane: @unchecked Sendable {
             armedFences.removeAll(keepingCapacity: false)
             return fences
         }
+        guard let cancellation else { return }
         for fence in cancellation { fence.cancel() }
         Task { await broker.invalidate() }
     }

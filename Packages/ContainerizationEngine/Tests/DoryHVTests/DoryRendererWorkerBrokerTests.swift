@@ -967,6 +967,31 @@ import Testing
         #expect(await rendererEventually { fixture.channel.invalidateCount == 1 })
     }
 
+    @Test func staleGenerationRevocationPreservesReboundRendererCommands() async throws {
+        let fixture = try rendererBrokerFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        #expect(lane.rebindPristineDeviceGeneration(from: 11, to: 12))
+        lane.invalidate(deviceGeneration: 11)
+        #expect(!(await rendererEventually { fixture.channel.invalidateCount != 0 }))
+        let authority = try DoryPCVirGLRendererAuthority(lane: lane, deviceGeneration: 12)
+        let context = Task.detached {
+            try authority.createContext(id: 7, capsetID: 2, name: "mesa")
+        }
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        fixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        try await context.value
+        lane.invalidate(deviceGeneration: 12)
+        #expect(await rendererEventually { fixture.channel.invalidateCount == 1 })
+        lane.invalidate(deviceGeneration: 12)
+        #expect(!(await rendererEventually { fixture.channel.invalidateCount != 1 }))
+    }
+
     @Test func doryPCVirGLTimeoutRevokesAnOutcomeUnknownGeneration() async throws {
         let fixture = try rendererBrokerFixture()
         let lane = try DoryRendererWorkerVirtioCommandLane(

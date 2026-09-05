@@ -1,0 +1,35 @@
+{
+  "schema": "dory.renderer-stale-revoke@1",
+  "baseCommit": "f6a001c8b3551e695e96680bc45ecfa56465df6d",
+  "sourceSHA256": {
+    "Packages/ContainerizationEngine/Sources/DoryHV/DoryRendererWorkerVirtioCommandLane.swift": "d88437c867f10a8a54a4d38ce05c958741684dcaf85edee4744b1bbf3f6618cf",
+    "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryRendererWorkerBrokerTests.swift": "1193d8bd34187f9a75bbd72cbc026709544df937500c09d750efad0ba16f7682"
+  },
+  "behavior": "Only an active matching device generation may revoke its command lane and invalidate the broker. Stale and repeated revocations have no external side effect.",
+  "validation": [
+    {
+      "log": "renderer-stale-revoke-before.log.gz",
+      "tests": 1,
+      "passed": false,
+      "rawSHA256": "6799c384be2d586d1095f7365708d7dd1a4735ba9b85f1f3d7b526a14ea41333",
+      "publishedUncompressedSHA256": "6799c384be2d586d1095f7365708d7dd1a4735ba9b85f1f3d7b526a14ea41333"
+    },
+    {
+      "log": "renderer-stale-revoke-after.log.gz",
+      "tests": 19,
+      "passed": true,
+      "rawSHA256": "2b6817e9f8282d182a9a05acd7cb5c4c11f845fa1596e5688710f9920004f00e",
+      "publishedUncompressedSHA256": "2b6817e9f8282d182a9a05acd7cb5c4c11f845fa1596e5688710f9920004f00e"
+    }
+  ],
+  "environment": "Xcode 26.6 RC; frozen private source checkout, isolating unrelated live Mac lifecycle edits. Final lane and test sources match these hashes.",
+  "scope": [
+    "Old implementation fails both connection-preservation and subsequent command-admission assertions.",
+    "Fixed implementation completes a context command after pristine generation rebind; matching revocation still invalidates once, repeated revocation does not invalidate again."
+  ],
+  "limitations": [
+    "Bounded asynchronous observations are not a general concurrency soak.",
+    "Does not implement renderer replacement after GPU commands have been admitted.",
+    "No physical accelerated guest qualification in this batch."
+  ]
+}
