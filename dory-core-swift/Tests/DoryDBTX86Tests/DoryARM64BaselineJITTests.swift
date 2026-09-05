@@ -3669,6 +3669,66 @@ import Testing
     #endif
   }
 
+  @Test func forwardBitScanRegistersMatchInterpreterForMeasuredPrefixAndAliases() throws {
+    #if arch(arm64)
+      struct Case {
+        let bytes: [UInt8]
+        let registerValues: DoryX86GeneralRegisters
+      }
+      let values = [UInt64(0), UInt64.max] + (0..<64).map { UInt64(1) << $0 }
+      let flags: DoryX86RFLAGS = [.reservedOne, .zero, .carry, .parity, .auxiliaryCarry,
+        .sign, .overflow, .direction, .interruptEnable]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024, optimization: optimization)
+        var addressSpaceID = UInt64(optimization == .baseline ? 0x1_0000 : 0x2_0000)
+        for value in values {
+          let cases: [Case] = [
+            .init(
+              bytes: [0xF3, 0x48, 0x0F, 0xBC, 0xDB],  // rep bsf rbx,rbx: measured kernel bytes under compat-v1
+              registerValues: .init(rbx: value)
+            ),
+            .init(
+              bytes: [0x48, 0x0F, 0xBC, 0xD2],  // bsf rdx,rdx
+              registerValues: .init(rdx: value)
+            ),
+            .init(
+              bytes: [0x48, 0x0F, 0xBC, 0xC0],  // bsf rax,rax
+              registerValues: .init(rax: value)
+            ),
+            .init(
+              bytes: [0x49, 0x0F, 0xBC, 0xCC],  // bsf rcx,r12
+              registerValues: .init(rcx: 0xABCD_EF00_1234_5678, r12: value)
+            ),
+            .init(
+              bytes: [0x0F, 0xBC, 0xCB],  // bsf ecx,ebx zero-extends on nonzero and preserves full RCX on zero
+              registerValues: .init(rcx: 0xABCD_EF00_1234_5678, rbx: value)
+            ),
+          ]
+          for testCase in cases {
+            let initial = try DoryX86ArchitecturalState(
+              registers: testCase.registerValues, rip: 0, rflags: flags)
+            var interpreted = initial
+            guard case .retired = DoryX86Interpreter().step(
+              state: &interpreted, memory: try DoryX86ByteArrayMemory(bytes: testCase.bytes),
+              mode: .long64)
+            else {
+              Issue.record("BSF reference execution did not retire")
+              continue
+            }
+            var translated = initial
+            addressSpaceID &+= 1
+            let execution = try #require(try executor.execute(
+              bytes: testCase.bytes, at: 0, mode: .long64, addressSpaceID: addressSpaceID,
+              maximumInstructions: 1, state: &translated))
+            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(translated == interpreted)
+          }
+        }
+      }
+    #endif
+  }
+
   @Test func reverseBitScan64MatchesInterpreterForEveryBitAndAliasedRegisters() throws {
     #if arch(arm64)
       let values = [UInt64(0), UInt64.max] + (0..<64).map { UInt64(1) << $0 }
@@ -3742,10 +3802,11 @@ import Testing
     }
   }
 
-  @Test func reverseBitScanCoverageExcludes16BitForwardAndMemoryForms() throws {
+  @Test func bitScanCoverageExcludes16BitAndMemoryForms() throws {
     let excluded: [[UInt8]] = [
-      [0x0F, 0xBC, 0xC8],  // bsf ecx,eax
+      [0x66, 0x0F, 0xBC, 0xC8],  // bsf cx,ax
       [0x66, 0x0F, 0xBD, 0xC8],  // bsr cx,ax
+      [0x0F, 0xBC, 0x08],  // bsf ecx,[rax]
       [0x0F, 0xBD, 0x08],  // bsr ecx,[rax]
     ]
     for bytes in excluded {

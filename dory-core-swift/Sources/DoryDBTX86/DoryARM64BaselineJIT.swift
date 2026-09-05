@@ -447,8 +447,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     source: DoryIROperand,
     into words: inout [UInt32]
   ) -> Bool {
-    guard reverse,
-      case .register(let target) = destination,
+    guard case .register(let target) = destination,
       case .register(let origin) = source,
       target.bank == "x86.gpr", target.index < 16,
       target.width == .i32 || target.width == .i64,
@@ -460,9 +459,14 @@ public struct DoryARM64BaselineEmitter: Sendable {
       ? encodeLoad64(register: 9, base: 0, byteOffset: Int(origin.index) * 8)
       : encodeLoad32(register: 9, base: 0, byteOffset: Int(origin.index) * 8))
     words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(target.index) * 8))
-    words.append(encodeCountLeadingZeros(is64Bit: is64Bit, source: 9, destination: 11))
-    emitImmediate(is64Bit ? 63 : 31, register: 12, into: &words)
-    words.append(encodeLogical(.xor, is64Bit: is64Bit, 12, 11, 11))
+    if reverse {
+      words.append(encodeCountLeadingZeros(is64Bit: is64Bit, source: 9, destination: 11))
+      emitImmediate(is64Bit ? 63 : 31, register: 12, into: &words)
+      words.append(encodeLogical(.xor, is64Bit: is64Bit, 12, 11, 11))
+    } else {
+      words.append(encodeReverseBits(is64Bit: is64Bit, source: 9, destination: 11))
+      words.append(encodeCountLeadingZeros(is64Bit: is64Bit, source: 11, destination: 11))
+    }
     words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 9, 31, 31))
     words.append(
       encodeConditionalSelect(
@@ -2396,6 +2400,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private func encodeCountLeadingZeros(is64Bit: Bool, source: UInt32, destination: UInt32) -> UInt32 {
     (is64Bit ? 0xDAC0_1000 : 0x5AC0_1000) | source << 5 | destination
+  }
+
+  private func encodeReverseBits(is64Bit: Bool, source: UInt32, destination: UInt32) -> UInt32 {
+    (is64Bit ? 0xDAC0_0000 : 0x5AC0_0000) | source << 5 | destination
   }
 
   private func encodeReverseBytes(

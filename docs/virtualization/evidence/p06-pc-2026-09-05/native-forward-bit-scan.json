@@ -1,0 +1,48 @@
+{
+  "baseHEAD": "5ffefdf85046caa78c7d259490fa95217158fcc4",
+  "causalFinding": "Earlier BSF nil executions came from reusing the same RIP/addressSpaceID for shorter replacement code; committed cache fix 5ffefdf85 handles that path. The BSF test now uses unique addressSpaceID values, removes the RAX workaround, and verifies the measured F3-prefixed forward BSF form under compatible-v1 semantics.",
+  "createdAt": "2026-09-05T22:50:45Z",
+  "logs": {
+    "baseline-jit-suite-bsf.log": {
+      "bytes": 32042,
+      "path": "${HOME}/.dory/qualification/native-forward-bit-scan-20260905-2340/baseline-jit-suite-bsf.log",
+      "sha256": "60710e3f28a9e1a2daa46b3e080d229be7f6234b5521339d747112016c0f7954"
+    },
+    "focused-bsf-isolated.log": {
+      "bytes": 118759,
+      "path": "${HOME}/.dory/qualification/native-forward-bit-scan-20260905-2340/focused-bsf-isolated.log",
+      "sha256": "7a4e690df8b61dc7a4098ed8ba3f7c55d660e11d47b589fafcd87c03a513c73a"
+    },
+    "short-replacement-suite-bsf.log": {
+      "bytes": 12449,
+      "path": "${HOME}/.dory/qualification/native-forward-bit-scan-20260905-2340/short-replacement-suite-bsf.log",
+      "sha256": "acfa2b231c6e751ef5e7378a1e3556d28c00fc6b413fc5fd8ecf8f141b9ffa5f"
+    }
+  },
+  "patchPath": "${HOME}/.dory/qualification/native-forward-bit-scan-20260905-2340/forward-bsf.patch",
+  "patchSHA256": "0385f3d55c90a4455fecfc43fa425aebc27d13fd6eb12a6efde645462f46c84a",
+  "results": [
+    "focused BSF/reverse/exclusion plus short-replacement filter passed: 4 tests / 2 suites",
+    "full DoryARM64BaselineJITTests passed: 112 tests / 1 suite",
+    "DoryJITShortReplacementTests passed: 1 test / 1 suite"
+  ],
+  "sharedSourceFiles": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "cd430daf1055085ebf733aa04b97150167334522d1c51ae4630fe9d9a5a6fda3",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "14100d326b1c854d4632af732b12964cbe3c8b7b0f099dcf072b6a65b2ce8d80",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "6aae7987609361f8d2e0f5ce1019c377f7cb7b6ffb5c60a350411aa539c6ce57"
+  },
+  "sourceFiles": {
+    "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab",
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "cd430daf1055085ebf733aa04b97150167334522d1c51ae4630fe9d9a5a6fda3",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "14100d326b1c854d4632af732b12964cbe3c8b7b0f099dcf072b6a65b2ce8d80",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "6aae7987609361f8d2e0f5ce1019c377f7cb7b6ffb5c60a350411aa539c6ce57",
+    "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a",
+    "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a": "6e9d3163a9a060283e00125782db048f9d35043162a9d97dac0da52e29709177"
+  },
+  "scope": "Native BSF register forms at 32/64-bit widths, preserving existing compatible-v1 interpreter semantics",
+  "limitations": [
+    "16-bit and memory-source forms remain on interpreter fallback.",
+    "F3-prefixed form uses existing BSF semantics; this does not add BMI1/TZCNT support.",
+    "No end-to-end guest boot or measured speedup claim."
+  ]
+}
