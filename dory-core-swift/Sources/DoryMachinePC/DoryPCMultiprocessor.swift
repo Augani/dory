@@ -15,7 +15,6 @@ public enum DoryPCMultiprocessorError: Error, Sendable, Equatable {
   case emptyTopology
   case duplicateAPICID(UInt32)
   case invalidDeliveryMode(UInt8)
-  case logicalDestinationUnsupported
   case missingDestination(UInt32)
 }
 
@@ -24,7 +23,7 @@ public struct DoryPCProcessorTopologySnapshot: Sendable, Hashable {
   public let pendingEvents: [DoryPCProcessorEvent]
 }
 
-/// Physical-destination xAPIC ICR and AP startup state shared by every execution engine.
+/// Physical/logical xAPIC ICR and AP startup state shared by every execution engine.
 public final class DoryPCMultiprocessorController: @unchecked Sendable {
   public let localAPICs: [DoryPCLocalAPIC]
 
@@ -51,9 +50,6 @@ public final class DoryPCMultiprocessorController: @unchecked Sendable {
   }
 
   public func handleInterruptCommand(sourceAPICID: UInt32, high: UInt32, low: UInt32) throws {
-    guard low & (1 << 11) == 0 else {
-      throw DoryPCMultiprocessorError.logicalDestinationUnsupported
-    }
     let targets = try resolvedTargets(sourceAPICID: sourceAPICID, high: high, low: low)
     let deliveryMode = UInt8(truncatingIfNeeded: low >> 8) & 0x7
     let vector = UInt8(truncatingIfNeeded: low)
@@ -119,6 +115,10 @@ public final class DoryPCMultiprocessorController: @unchecked Sendable {
       return localAPICs.filter { $0.apicID != sourceAPICID }
     default:
       let destination = high >> 24
+      if low & (1 << 11) != 0 {
+        return localAPICs.filter { $0.matchesLogicalDestination(UInt8(destination)) }
+      }
+      if destination == 0xFF { return localAPICs }
       guard let target = apicsByID[destination] else {
         throw DoryPCMultiprocessorError.missingDestination(destination)
       }

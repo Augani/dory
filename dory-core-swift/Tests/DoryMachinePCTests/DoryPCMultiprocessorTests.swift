@@ -2,6 +2,56 @@ import DoryMachinePC
 import Testing
 
 @Suite struct DoryPCMultiprocessorTests {
+  @Test(arguments: [false, true])
+  func logicalICRRoutesThroughGuestProgrammedDestinationRegisters(cluster: Bool) throws {
+    let apics = (0..<4).map { DoryPCLocalAPIC(apicID: UInt32($0)) }
+    let controller = try DoryPCMultiprocessorController(localAPICs: apics)
+    let registers = apics.map { apic in
+      DoryPCLocalAPICMMIO(apic: apic, onInterruptCommand: { high, low in
+        try controller.handleInterruptCommand(sourceAPICID: apic.apicID, high: high, low: low)
+      })
+    }
+    let logicalIDs: [UInt32] = cluster ? [0x11, 0x12, 0x14, 0x21] : [1, 2, 4, 8]
+    for index in apics.indices {
+      #expect(read32(try registers[index].read(offset: 0xE0, byteCount: 4)) == 0xFFFF_FFFF)
+      #expect(read32(try registers[index].read(offset: 0xD0, byteCount: 4)) == 0)
+      try registers[index].write(offset: 0xE0, bytes: littleEndian(cluster ? UInt32(0) : 0xFFFF_FFFF))
+      try registers[index].write(offset: 0xD0, bytes: littleEndian(logicalIDs[index] << 24 | 0x00FF_FFFF))
+      #expect(read32(try registers[index].read(offset: 0xD0, byteCount: 4)) == logicalIDs[index] << 24)
+      #expect(read32(try registers[index].read(offset: 0xE0, byteCount: 4)) == (cluster ? 0x0FFF_FFFF : 0xFFFF_FFFF))
+      try apics[index].configureSpuriousVector(0xFF, softwareEnabled: true)
+    }
+    // Select processors 0 and 2; the same low mask in another cluster must not match.
+    try registers[0].write(offset: 0x310, bytes: littleEndian(UInt32(cluster ? 0x15 : 5) << 24))
+    try registers[0].write(offset: 0x300, bytes: littleEndian(UInt32(0x51 | 1 << 11)))
+    for index in apics.indices {
+      #expect(apics[index].acknowledge(interruptsEnabled: true) == ([0, 2].contains(index) ? 0x51 : nil))
+      _ = apics[index].endOfInterrupt()
+    }
+    // The all-ones destination broadcasts in physical and logical mode, across clusters.
+    for destinationMode: UInt32 in [0, 1 << 11] {
+      try registers[0].write(offset: 0x310, bytes: littleEndian(UInt32(0xFF00_0000)))
+      try registers[0].write(offset: 0x300, bytes: littleEndian(0x52 | destinationMode))
+      for apic in apics {
+        #expect(apic.acknowledge(interruptsEnabled: true) == 0x52)
+        _ = apic.endOfInterrupt()
+      }
+    }
+  }
+
+  @Test(arguments: [UInt32(1), 2, 3])
+  func shorthandICRIgnoresLogicalDestinationMode(shorthand: UInt32) throws {
+    let apics = (0..<3).map { DoryPCLocalAPIC(apicID: UInt32($0)) }
+    for apic in apics { try apic.configureSpuriousVector(0xFF, softwareEnabled: true) }
+    let controller = try DoryPCMultiprocessorController(localAPICs: apics)
+    try controller.handleInterruptCommand(sourceAPICID: 1, high: 0xFE00_0000,
+      low: 0x53 | 1 << 11 | shorthand << 18)
+    for index in apics.indices {
+      let selected = shorthand == 2 || (shorthand == 1 ? index == 1 : index != 1)
+      #expect(apics[index].acknowledge(interruptsEnabled: true) == (selected ? 0x53 : nil))
+    }
+  }
+
   @Test func initAndStartupSequenceTransitionsOnlyTargetedApplicationProcessor() throws {
     let apics = (0..<4).map { DoryPCLocalAPIC(apicID: UInt32($0)) }
     let controller = try DoryPCMultiprocessorController(localAPICs: apics)

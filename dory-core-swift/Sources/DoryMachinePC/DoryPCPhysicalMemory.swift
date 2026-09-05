@@ -696,6 +696,8 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
       case 0x20: snapshot.apicID << 24
       case 0x30: 0x0005_0014
       case 0x80: UInt32(snapshot.taskPriority)
+      case 0xD0: apic.logicalDestinationRegister
+      case 0xE0: apic.destinationFormatRegister
       case 0xA0:
         UInt32(
           max(snapshot.taskPriority & 0xF0, snapshot.inService.max().map { $0 & 0xF0 } ?? 0))
@@ -738,6 +740,10 @@ public final class DoryPCLocalAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
       apic.setTaskPriority(UInt8(truncatingIfNeeded: value))
     case 0xB0:
       if let vector = apic.endOfInterrupt() { try onEndOfInterrupt(vector) }
+    case 0xD0:
+      apic.logicalDestinationRegister = value
+    case 0xE0:
+      apic.destinationFormatRegister = value
     case 0xF0:
       try apic.configureSpuriousVector(
         UInt8(truncatingIfNeeded: value), softwareEnabled: value & (1 << 8) != 0)

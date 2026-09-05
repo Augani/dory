@@ -56,6 +56,8 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   private var softwareEnabled = false
   private var spuriousVector: UInt8 = 0xFF
   private var taskPriority: UInt8 = 0
+  private var logicalDestination: UInt8 = 0
+  private var destinationFormat: UInt32 = 0xFFFF_FFFF
   private var interruptRequest: Set<UInt8> = []
   private var inService: Set<UInt8> = []
   private var levelTriggered: Set<UInt8> = []
@@ -85,6 +87,33 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
 
   public func setTaskPriority(_ value: UInt8) {
     lock.withLock { taskPriority = value }
+  }
+
+  var logicalDestinationRegister: UInt32 {
+    get { lock.withLock { UInt32(logicalDestination) << 24 } }
+    set { lock.withLock { logicalDestination = UInt8(truncatingIfNeeded: newValue >> 24) } }
+  }
+
+  var destinationFormatRegister: UInt32 {
+    get { lock.withLock { destinationFormat } }
+    set { lock.withLock { destinationFormat = newValue | 0x0FFF_FFFF } }
+  }
+
+  /// xAPIC logical addressing uses the LDR mask, not the physical APIC ID.
+  /// Intel SDM Vol. 3A 10.6.2.2 defines flat, cluster, and all-ones broadcast matching.
+  func matchesLogicalDestination(_ destination: UInt8) -> Bool {
+    lock.withLock {
+      if destination == 0xFF { return true }
+      switch destinationFormat >> 28 {
+      case 0xF:
+        return destination & logicalDestination != 0
+      case 0:
+        return destination & 0xF0 == logicalDestination & 0xF0
+          && destination & logicalDestination & 0x0F != 0
+      default:
+        return false
+      }
+    }
   }
 
   public func inject(vector: UInt8, levelTriggered: Bool = false) throws {
