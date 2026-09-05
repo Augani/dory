@@ -108,7 +108,7 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)
 
-      case .unsignedAccumulatorMultiply:
+      case .unsignedAccumulatorMultiply, .unsignedAccumulatorDivide:
         statements.append(statement)
         invalidate(.register(.init(bank: "x86.gpr", index: 0, width: .i64)), knownConstants: &knownConstants)
         invalidate(.register(.init(bank: "x86.gpr", index: 2, width: .i64)), knownConstants: &knownConstants)

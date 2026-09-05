@@ -96,6 +96,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case setDirectionFlag(enabled: Bool)
   case readTimestampCounter
   case unsignedAccumulatorMultiply(source: DoryIROperand)
+  case unsignedAccumulatorDivide(source: DoryIROperand)
   case doubleShiftRightCL(destination: DoryIROperand, source: DoryIROperand)
   case compareExchange(destination: DoryIROperand, source: DoryIROperand)
   case signedMultiply(destination: DoryIROperand, lhs: DoryIROperand, rhs: DoryIROperand)
@@ -422,6 +423,17 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .accumulatorArithmetic(.unsignedDivide, let source) where mode == .long64:
+      guard case .register(_, let width) = source, width == .doubleword || width == .quadword
+      else { return fallback(instruction, reason: .interpreter) }
+      return (
+        [
+          .unsignedAccumulatorDivide(
+            source: operand(source, instructionRelativeBase: instruction.nextInstructionAddress)
+          )
+        ],
+        .next(instruction.nextInstructionAddress)
+      )
     case .doubleShift(.right, let destination, let source, .cl) where mode == .long64:
       return (
         [
@@ -538,8 +550,12 @@ public struct DoryX86IRTranslator: Sendable {
     _ lowering: (statements: [DoryIRStatement], terminator: DoryIRTerminator?)
   ) -> Bool {
     lowering.statements.contains {
-      if case .readTimestampCounter = $0 { return true }
-      return false
+      switch $0 {
+      case .readTimestampCounter, .unsignedAccumulatorDivide:
+        return true
+      default:
+        return false
+      }
     }
   }
 
@@ -695,6 +711,9 @@ public struct DoryX86IRTranslator: Sendable {
     case .unsignedAccumulatorMultiply(let source):
       guard case .register(let register) = source else { return false }
       return register.width == .i64 && isJITGeneralRegister(register)
+    case .unsignedAccumulatorDivide(let source):
+      guard case .register(let register) = source else { return false }
+      return (register.width == .i32 || register.width == .i64) && isJITGeneralRegister(register)
     case .doubleShiftRightCL(let destination, let source):
       guard case .register(let target) = destination,
         case .register(let origin) = source
@@ -793,7 +812,7 @@ public struct DoryX86IRTranslator: Sendable {
     case .signedMultiply(let destination, let lhs, let rhs):
       if isMemory(destination) { return .write }
       return isMemory(lhs) || isMemory(rhs) ? .read : .none
-    case .unsignedAccumulatorMultiply(let source):
+    case .unsignedAccumulatorMultiply(let source), .unsignedAccumulatorDivide(let source):
       return isMemory(source) ? .read : .none
     case .doubleShiftRightCL(let destination, let source):
       if isMemory(destination) { return .write }
