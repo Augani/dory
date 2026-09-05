@@ -1,0 +1,13 @@
+{
+  "files": {
+    "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift": "843935d9af4af9c47ce0ff908bfaee2e824be0843936b4e88035b1660758704d",
+    "dory-core-swift/Sources/DoryMachinePC/DoryPCDirectKernelMachine.swift": "c74ef24d84e778e78e341c6398fdad8349928141eaf6f4b16d295ceebf9c2ebc",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift": "0afb9e18cbf4285d9bd83c99d7b798cd8eb3c20902edcda5cc5c3cb6cd120745",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCNMIBlockingTests.swift": "111a4afcbe569745ffb0dd7715bc085e960171682b218330729198760d17b857"
+  },
+  "log": "${HOME}/.dory/qualification/pc-interrupt-progress-counters-20260905/focused.log",
+  "commit": "04db0aa7c",
+  "validation": "2 tests in 2 suites passed: HPET/APIC wake delivery and NMI blocking/IRET across execution tiers.",
+  "logSHA256": "e619f5a5c7af4dad5897d897997cceaff3ee5bdfaf51a3e79578427e42317d9b",
+  "scope": "Counts successful external maskable/NMI delivery and all retired IRET instructions. These counters do not directly measure handler occupancy or establish Linux boot completion."
+}
