@@ -1,0 +1,39 @@
+{
+  "schema": "dory.pc-initfs-mesa-integration@1",
+  "sourceSHA256": {
+    "guest/initfs/build.sh": "beed01c3d3ba54522f91a25bb07e9c15a7f739457530fa685fd33d1955c93341",
+    "guest/initfs/input-fingerprint.sh": "3bb545a5cdbc1122ef506a959ea87df052d30e7b8802a244d57e423fe478c3c8",
+    "guest/initfs/verify-build.sh": "4e80a081e5776a223981247063a0f02e2e0cf72ab2c7a3ccdb707838d3acdb1f",
+    "guest/initfs/PINS.pc-virgl2-x86_64": "e6dd6465df4bb58390b4e1c85005efb03c0334277bae0177984f2405789cd56e"
+  },
+  "verifiedInitfsStamps": {
+    "amd64": {
+      "schema": "3",
+      "arch": "amd64",
+      "input_sha256": "50afaaf5e28423f8fe2e2f61996f2c09ca65d80205045664a6ff860293baa11d",
+      "agent_sha256": "bf05db6232afa5b4943375f163af16de302693032aeee0efb0002f9391f7cda3",
+      "image_sha256": "4a85a26ae5fb80c1becbe47e3dd2b2e53ed828e37204b20ce4322b086147e20e"
+    },
+    "arm64": {
+      "schema": "3",
+      "arch": "arm64",
+      "input_sha256": "bc3cf8e2a1c93f611b358ce0a8ce8c28b15bb576dc91b92a25ec4aaa15bd526a",
+      "agent_sha256": "148e0f1b49db9440188bed115af8cfa129081f2d3c0be93bc7799e1f1f4a268f",
+      "image_sha256": "a627fb1892d6d45b5bd890f5daee5ab19feda625694bb0cf5a6095c9951d20b8"
+    }
+  },
+  "verificationCommands": [
+    "guest/initfs/verify-build.sh amd64",
+    "guest/initfs/verify-build.sh arm64"
+  ],
+  "verificationExitCodes": [
+    0,
+    0
+  ],
+  "pcMesaRuntimeSHA256": "410e364a0f9a93ed9f370c4eae90c88a625416be1dffa96dd8af5952a6558450",
+  "scope": "Verified immutable initfs includes exact producer Mesa bytes, PC profile receipt and pinned loader dependency paths. ARM image refreshed after shared builder changes.",
+  "limitations": [
+    "No x86 GPU kernel or actual guest GLX context/workload is proven by this receipt.",
+    "Earlier container GPU workload evidence ran the previous ARM image copied into its engine state; this refreshed ARM image has not inherited those runtime results."
+  ]
+}
