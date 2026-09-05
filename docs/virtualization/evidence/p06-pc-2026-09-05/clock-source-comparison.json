@@ -1,0 +1,74 @@
+{
+  "date": "2026-09-05",
+  "scope": "Paired bounded smoke diagnostics; not production boot qualification",
+  "instructionBudget": 1500000000,
+  "results": [
+    {
+      "clockSource": "host-monotonic",
+      "stop": "instructionBudget(1500000000)",
+      "completedInstructions": 1500000000,
+      "instructionPointer": "0xffffffff922dd92a",
+      "instructionBytes": "e84179ffff488b85a802000031d24889",
+      "runnerSHA256": "04c797d8956c37c78a6a2c25456d9569289feb33139bcea28f39982b0a76a118",
+      "firmwareCodeSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
+      "installerMediaSHA256": "b2e0573369e3ad58dfbed94d29d3f63581e391d8eea535389209b70186c326ef",
+      "variableStoreTemplateSHA256": "80dbb9d55cd8975e7ca59e1abf2b750ff7498cd02976dcd66f29bce47909a032",
+      "serialDroppedBytes": 0,
+      "interpreterInstructions": 33777280,
+      "baselineJITInstructions": 1466222720,
+      "optimizingJITInstructions": 0,
+      "memoryBytes": 1073741824,
+      "processorCount": 1,
+      "executionTier": "baselineJIT",
+      "resultPath": "/private/tmp/dory-pc-clock-diagnostic-notrace-0905.123340/host-monotonic/result.json",
+      "resultSHA256": "8ad96f318338b7b496dc6c77f94375a03651d7cb188509a4e97e3787ee8d46d4",
+      "lastSerialLines": [
+        "[    0.000000] clocksource: jiffies: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 1911260446275000 ns",
+        "[    0.000000] Console: colour dummy device 80x25",
+        "[    0.000000] printk: legacy console [ttyS0] enabled",
+        "[    0.000000] ACPI: Core revision 20240827",
+        "[    0.000000] clocksource: hpet: mask: 0xffffffff max_cycles: 0xffffffff, max_idle_ns: 191126044627 ns"
+      ],
+      "userspaceMarker": false
+    },
+    {
+      "clockSource": "deterministic",
+      "stop": "instructionBudget(1500000000)",
+      "completedInstructions": 1500000000,
+      "instructionPointer": "0xffffffffb1fcd92e",
+      "instructionBytes": "74373c5c0f855effffff41807e010074",
+      "runnerSHA256": "04c797d8956c37c78a6a2c25456d9569289feb33139bcea28f39982b0a76a118",
+      "firmwareCodeSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
+      "installerMediaSHA256": "b2e0573369e3ad58dfbed94d29d3f63581e391d8eea535389209b70186c326ef",
+      "variableStoreTemplateSHA256": "80dbb9d55cd8975e7ca59e1abf2b750ff7498cd02976dcd66f29bce47909a032",
+      "serialDroppedBytes": 0,
+      "interpreterInstructions": 30392947,
+      "baselineJITInstructions": 1469607053,
+      "optimizingJITInstructions": 0,
+      "memoryBytes": 1073741824,
+      "processorCount": 1,
+      "executionTier": "baselineJIT",
+      "resultPath": "/private/tmp/dory-pc-clock-diagnostic-notrace-0905.123340/deterministic-124204/result.json",
+      "resultSHA256": "eda247307f3569196abe1862aa207e78ba9be157197049722527c202beb065a1",
+      "lastSerialLines": [
+        "[   17.110291] vgaarb: loaded",
+        "[   17.140928] hpet: 3 channels of 0 reserved for per-cpu timers",
+        "[   17.144643] hpet0: at MMIO 0xfed00000, IRQs 2, 8, 0",
+        "[   17.147186] hpet0: 3 comparators, 64-bit 10.000000 MHz counter",
+        "[   17.163064] clocksource: Switched to clocksource tsc-early"
+      ],
+      "userspaceMarker": false
+    }
+  ],
+  "limitations": [
+    "Both executions ended at their instruction budget before userspace.",
+    "Different KASLR addresses are not by themselves evidence of different kernel functions.",
+    "This comparison motivates clock-path investigation; it does not establish a root cause or qualify a CPUID change.",
+    "Deterministic time is a diagnostic mode, not the proposed production workaround.",
+    "No accelerated graphics or guest workload was qualified."
+  ],
+  "inputManifest": {
+    "path": "/private/tmp/dory-pc-clock-diagnostic-notrace-0905.123340/inputs.sha256",
+    "sha256": "698ce5df5e10410e2cfdd2ebbfd7f9cb30e732bd285aecbaa58107253d11706f"
+  }
+}
