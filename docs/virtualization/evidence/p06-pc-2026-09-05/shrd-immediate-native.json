@@ -1,0 +1,20 @@
+{
+  "commit": "0329c2472",
+  "scope": "Long-mode CPL0 register SHRD imm8 uses the existing native CL emitter with an immediate count. Count masking, zero-count preservation, aliases and full state match the interpreter across baseline and optimizing tiers.",
+  "limits": [
+    "Memory operands and CPL3 remain interpreted.",
+    "No whole-guest performance or boot claim; current live runner does not include this patch."
+  ],
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "47884950c1a6d56082c5de0a3bbe594e0a7e8e097abd7bca287eb9621df2b74c",
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "7aef6ade0533f35541fb68f6b8dc80ef4132f5233228ff33e18a987c41306ae8",
+    "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift": "21d67635990c9597fab84f3b2d9f403a0c7d18bba7cefaa3c6d680dbed96a6a7",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "14670499eca16dc3483fb31c9fe9d7e21b706ce86c44bcd1090977d3a0d994c9"
+  },
+  "test": {
+    "result": "103 tests in 1 suite pass; exit 0",
+    "log": "shrd-immediate-final.log.gz",
+    "originalSHA256": "ed96cf6fc38706f7d175ca78614033541835436201743cc673fdc07cf64c37d5",
+    "publishedGzipSHA256": "40ebdf062bd679e68053886ce26184325901f6dc696f9abc7af436f30ae4dcb3"
+  }
+}
