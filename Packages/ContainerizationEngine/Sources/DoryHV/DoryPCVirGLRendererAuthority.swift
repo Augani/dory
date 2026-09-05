@@ -155,7 +155,7 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
                 )
             },
             runtimeFailure: { [weak self] generation, _ in
-                self?.cancelPendingFences(deviceGeneration: generation)
+                self?.terminateUnknownOutcome(deviceGeneration: generation)
             }
         )
     }
@@ -594,7 +594,8 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
             hostFenceID: hostFenceID
         )
         let completed = lock.withLock { () -> [PendingFence] in
-            guard let target = pendingFences[key] else { return [] }
+            guard active, self.deviceGeneration == deviceGeneration,
+                  let target = pendingFences[key] else { return [] }
             let matchesCallbackTimeline = target.guest.contextFence
                 ? target.guest.contextID == contextID && target.guest.ringIndex == ringIndex
                 : contextID == 0 && ringIndex == 0
@@ -647,12 +648,14 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
     }
 
     private func cancelPendingFences(deviceGeneration: UInt64) {
-        let cancelled = lock.withLock { () -> [PendingFence] in
-            let matches = pendingFences.filter { $0.key.deviceGeneration == deviceGeneration }
-            for key in matches.keys { pendingFences.removeValue(forKey: key) }
-            return Array(matches.values)
-        }
+        let cancelled = lock.withLock { takePendingFencesLocked(deviceGeneration: deviceGeneration) }
         for pending in cancelled { pending.completion(.outcomeUnknown) }
+    }
+
+    private func takePendingFencesLocked(deviceGeneration: UInt64) -> [PendingFence] {
+        let matches = pendingFences.filter { $0.key.deviceGeneration == deviceGeneration }
+        for key in matches.keys { pendingFences.removeValue(forKey: key) }
+        return Array(matches.values)
     }
 
     private func wait<T: Sendable>(
@@ -697,14 +700,18 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
     }
 
     private func terminateUnknownOutcome(deviceGeneration failedGeneration: UInt64) {
-        let shouldRevoke = lock.withLock { () -> Bool in
-            guard active, deviceGeneration == failedGeneration else { return false }
+        let cancelled = lock.withLock { () -> [PendingFence]? in
+            guard active, deviceGeneration == failedGeneration else { return nil }
             active = false
             resourceGenerations.removeAll(keepingCapacity: false)
             backings.removeAll(keepingCapacity: false)
-            return true
+            return takePendingFencesLocked(deviceGeneration: failedGeneration)
         }
-        if shouldRevoke { lane.revoke(deviceGeneration: failedGeneration) }
+        guard let cancelled else { return }
+        // Revocation cancels worker event sources without invoking their completion sinks.
+        // Retire our guest-facing obligations before those callbacks become unreachable.
+        for pending in cancelled { pending.completion(.outcomeUnknown) }
+        lane.revoke(deviceGeneration: failedGeneration)
     }
 
     private func resolvedStride(for flush: DoryVirtioGPUAcceleratedScanoutFlush) throws -> UInt32 {
@@ -744,8 +751,7 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
             scanout.discardTransport()
         } catch {
             scanout.discardTransport()
-            lane.revoke(deviceGeneration: generation)
-            lock.withLock { active = false }
+            terminateUnknownOutcome(deviceGeneration: generation)
         }
     }
 }

@@ -1004,10 +1004,25 @@ import Testing
             commandTimeout: 0.01
         )
 
+        let completions = DoryPCVirGLFenceCompletionRecorder()
+        try authority.createFence(
+            .init(contextID: 0, ringIndex: 0, fenceID: 42, contextFence: false),
+            completion: { completions.append($0) }
+        )
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        let fence = try fixture.channel.command(at: 0, limits: fixture.bootstrap.limits)
+        let (completionDescriptor, signalDescriptor) = try makeUnsignaledFenceDescriptor()
+        defer { close(signalDescriptor) }
+        fixture.channel.complete(at: 0, with: .success(DoryRendererWorkerChannelReply(
+            payload: fence.payload, descriptors: [completionDescriptor]
+        )))
+        try #require(await rendererEventually { lane.snapshot().armedFences == 1 })
+        #expect(completions.values.isEmpty)
+
         let context = Task.detached {
             try authority.createContext(id: 7, capsetID: 2, name: "mesa")
         }
-        #expect(await rendererEventually { fixture.channel.sendCount == 1 })
+        #expect(await rendererEventually { fixture.channel.sendCount == 2 })
         do {
             try await context.value
             Issue.record("expected the renderer command to time out")
@@ -1018,6 +1033,10 @@ import Testing
             try authority.createContext(id: 8, capsetID: 2, name: "mesa")
         }
         #expect(await rendererEventually { fixture.channel.invalidateCount == 1 })
+        #expect(completions.values == [.outcomeUnknown])
+        #expect(lane.snapshot().armedFences == 0)
+        authority.reset()
+        #expect(completions.values == [.outcomeUnknown])
     }
 
     @Test func capsetsComeOnlyFromAuthenticatedReceiptBytes() throws {
