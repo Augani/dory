@@ -1463,6 +1463,123 @@ import Testing
     #endif
   }
 
+  @Test func registerBitTestsMatchInterpreterAcrossTiers() throws {
+    #if arch(arm64)
+      struct Case {
+        let name: String
+        let bytes: [UInt8]
+        let rax: UInt64
+        let rcx: UInt64
+        let expectedRAX: UInt64
+        let expectedCarry: Bool
+      }
+      let cases = [
+        Case(
+          name: "bt eax, ecx preserves high rax and clears incoming CF",
+          bytes: [0x0F, 0xA3, 0xC8],
+          rax: 0xDEAD_BEEF_0000_0000,
+          rcx: 4,
+          expectedRAX: 0xDEAD_BEEF_0000_0000,
+          expectedCarry: false
+        ),
+        Case(
+          name: "bt rax, negative rcx masks to bit 63",
+          bytes: [0x48, 0x0F, 0xA3, 0xC8],
+          rax: 1 << 63,
+          rcx: UInt64.max,
+          expectedRAX: 1 << 63,
+          expectedCarry: true
+        ),
+        Case(
+          name: "bts eax, wrapped imm8 writes low dword and clears incoming CF",
+          bytes: [0x0F, 0xBA, 0xE8, 0x24],
+          rax: 0xCAFE_BABE_0000_0000,
+          rcx: 0,
+          expectedRAX: 0x0000_0000_0000_0010,
+          expectedCarry: false
+        ),
+        Case(
+          name: "btr rax, imm8 clears a high qword bit",
+          bytes: [0x48, 0x0F, 0xBA, 0xF0, 0x3F],
+          rax: 0x8000_0000_0000_0001,
+          rcx: 0,
+          expectedRAX: 0x0000_0000_0000_0001,
+          expectedCarry: true
+        ),
+        Case(
+          name: "btc rax, rax reads old rax as the index before writing the base",
+          bytes: [0x48, 0x0F, 0xBB, 0xC0],
+          rax: (1 << 10) | 10,
+          rcx: 0,
+          expectedRAX: 10,
+          expectedCarry: true
+        ),
+        Case(
+          name: "btr eax, ecx zero-extends the written dword",
+          bytes: [0x0F, 0xB3, 0xC8],
+          rax: 0xFFFF_0000_0000_0001,
+          rcx: 0,
+          expectedRAX: 0,
+          expectedCarry: true
+        ),
+      ]
+      for testCase in cases {
+        let address: UInt64 = 0xB17_7000
+        let decoded = try DoryX86Decoder().decode(testCase.bytes, at: address, mode: .long64)
+        let translated = try DoryX86IRTranslator().translate(
+          testCase.bytes, at: address, mode: .long64)
+        #expect(translated.statements.count == 1)
+        if case .bitTestRegister = translated.statements.first {
+          // Expected native lowering for register-base bit tests.
+        } else {
+          Issue.record("\(testCase.name) did not lower to register bit-test IR")
+        }
+
+        for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+          let initial = try DoryX86ArchitecturalState(
+            registers: .init(rax: testCase.rax, rcx: testCase.rcx),
+            rip: address,
+            rflags: [.reservedOne, .carry, .parity, .sign, .overflow],
+            cs: .init(selector: 8, attributes: 0xA09B, limit: .max)
+          )
+          var interpreted = initial
+          #expect(DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: try DoryX86ByteArrayMemory(baseAddress: address, bytes: testCase.bytes),
+            mode: .long64) == .retired(decoded))
+
+          var native = initial
+          let execution = try #require(
+            DoryARM64BaselineExecutor(
+              maximumCodeBytes: 4096,
+              optimization: optimization
+            ).execute(
+              bytes: testCase.bytes,
+              at: native.rip,
+              mode: .long64,
+              addressSpaceID: 0,
+              maximumInstructions: 1,
+              state: &native
+            )
+          )
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(!execution.block.requiresMemoryCallbacks)
+          #expect(native == interpreted)
+          #expect(native.registers.rax == testCase.expectedRAX)
+          #expect(native.rflags.contains(.carry) == testCase.expectedCarry)
+        }
+      }
+
+      let memoryBTS = try DoryX86IRTranslator().translate(
+        [0x0F, 0xBA, 0x28, 0x04], at: 0, mode: .long64)
+      #expect(DoryARM64BaselineEmitter().compile(memoryBTS).tier == .interpreterFallback)
+
+      let protectedBTS = try DoryX86IRTranslator().translate(
+        [0x0F, 0xBA, 0xE8, 0x04], at: 0, mode: .protected32)
+      #expect(DoryARM64BaselineEmitter().compile(protectedBTS).tier == .interpreterFallback)
+    #endif
+  }
+
   @Test func lockedCompareExchangeMatchesInterpreterAccumulatorAndFlags() throws {
     #if arch(arm64)
       struct Case {

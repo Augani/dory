@@ -119,6 +119,12 @@ public struct DoryIROptimizer: Sendable {
       case .clearInterruptFlag, .setDirectionFlag:
         statements.append(statement)
 
+      case .bitTestRegister(let operation, let base, _):
+        statements.append(statement)
+        if operation != .test {
+          invalidate(base, knownConstants: &knownConstants)
+        }
+
       case .readTimestampCounter:
         statements.append(statement)
         invalidate(.register(.init(bank: "x86.gpr", index: 0, width: .i64)), knownConstants: &knownConstants)

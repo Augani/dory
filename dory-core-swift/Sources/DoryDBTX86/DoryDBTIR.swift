@@ -86,6 +86,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
     source: DoryIROperand
   )
   case setCondition(DoryX86Condition, destination: DoryIROperand)
+  case bitTestRegister(operation: DoryX86BitOperation, base: DoryIROperand, index: DoryIROperand)
   case bitScan(reverse: Bool, destination: DoryIROperand, source: DoryIROperand)
   case byteSwap(DoryIROperand)
   case stackPush(source: DoryIROperand)
@@ -343,6 +344,28 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .bitTest(let operation, let base, let index) where mode == .long64:
+      guard case .register(_, let baseWidth) = base,
+        baseWidth == .doubleword || baseWidth == .quadword
+      else { return fallback(instruction, reason: .interpreter) }
+      switch index {
+      case .register(_, let indexWidth) where indexWidth == baseWidth:
+        break
+      case .immediate(_, .byte):
+        break
+      default:
+        return fallback(instruction, reason: .interpreter)
+      }
+      return (
+        [
+          .bitTestRegister(
+            operation: operation,
+            base: operand(base),
+            index: operand(index)
+          )
+        ],
+        nil
+      )
     case .bitScan(let reverse, let destination, let source):
       return (
         [
@@ -592,6 +615,18 @@ public struct DoryX86IRTranslator: Sendable {
     case .setCondition(_, let destination):
       guard case .register(let target) = destination else { return false }
       return isJITLowByteRegister(target)
+    case .bitTestRegister(_, let base, let index):
+      guard case .register(let baseRegister) = base,
+        isJITGeneralRegister(baseRegister)
+      else { return false }
+      switch index {
+      case .register(let indexRegister):
+        return indexRegister.width == baseRegister.width && isJITGeneralRegister(indexRegister)
+      case .immediate(_, let width):
+        return width == .i8
+      case .memory:
+        return false
+      }
     case .bitScan(let reverse, let destination, let source):
       guard reverse,
         case .register(let target) = destination, target.width == .i32,
@@ -710,6 +745,8 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(source) ? .read : .none
     case .setCondition(_, let destination):
       return isMemory(destination) ? .write : .none
+    case .bitTestRegister:
+      return .none
     case .bitScan(_, let destination, let source):
       if isMemory(destination) { return .write }
       return isMemory(source) ? .read : .none

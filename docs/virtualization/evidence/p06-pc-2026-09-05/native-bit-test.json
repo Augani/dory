@@ -1,0 +1,26 @@
+{
+  "schema": "dory.native-bit-test-review@1",
+  "baseCommit": "f4dc9b0f8c529614872364708ca96679af750eed",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "a968cae9c87f2dc98783f8ac9d6e1608678f0b48038362ac384e4b3381cff6b4",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "3b747bc8e9941f314b9f37044d9fd50d7efd552b2199f5a6431d90e1f714196f",
+    "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift": "9a9dc9d75d41f5242d68b17ec584af7669961434b3254fa44b991d4701e89d1b",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "e338a23ee577257f707e7ee4ed818abecfb12fc24caae9bd591ba49ccfb16af8"
+  },
+  "scope": "Native long-mode register-base BT, BTS, BTR and BTC for 32-bit and 64-bit operands, with register or imm8 index. Memory forms retain interpreter behavior.",
+  "validation": {
+    "result": "101 tests in 2 suites passed",
+    "suites": [
+      "DoryARM64BaselineJITTests",
+      "DoryX86RMWPreflightTests"
+    ],
+    "log": "native-bit-test-tests.log.gz",
+    "rawSHA256": "8f98017d5a0dd35408df577e24fc88efd0e1b821b51dc0677348e24f5a7d12fd",
+    "publishedUncompressedSHA256": "8f98017d5a0dd35408df577e24fc88efd0e1b821b51dc0677348e24f5a7d12fd",
+    "normalization": "Home-directory prefix replaced with <HOME>."
+  },
+  "limitations": [
+    "Focused correctness tests do not establish guest boot or elapsed performance.",
+    "Memory bit-test native lowering and full guest qualification remain open."
+  ]
+}

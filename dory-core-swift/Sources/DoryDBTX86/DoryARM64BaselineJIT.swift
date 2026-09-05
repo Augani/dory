@@ -168,6 +168,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination) || isFSOrGS(source)
       case .setCondition(_, let destination):
         return isFSOrGS(destination)
+      case .bitTestRegister:
+        return false
       case .bitScan(_, let destination, let source), .extendMove(let destination, let source, _):
         return isFSOrGS(destination) || isFSOrGS(source)
       case .signedMultiply(let destination, let lhs, let rhs):
@@ -228,6 +230,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         condition, destination: destination, source: source, into: &words)
     case .setCondition(let condition, let destination):
       return emitSetCondition(condition, destination: destination, into: &words)
+    case .bitTestRegister(let operation, let base, let index):
+      return emitBitTestRegister(operation: operation, base: base, index: index, into: &words)
     case .bitScan(let reverse, let destination, let source):
       return emitBitScan(
         reverse: reverse,
@@ -436,6 +440,69 @@ public struct DoryARM64BaselineEmitter: Sendable {
     return true
   }
 
+
+  private func emitBitTestRegister(
+    operation: DoryX86BitOperation,
+    base: DoryIROperand,
+    index: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard case .register(let baseRegister) = base,
+      baseRegister.bank == "x86.gpr", baseRegister.index < 16,
+      baseRegister.width == .i32 || baseRegister.width == .i64,
+      load(baseRegister, into: 9, words: &words)
+    else { return false }
+
+    let is64Bit = baseRegister.width == .i64
+    let bitMask = UInt64(baseRegister.width.rawValue - 1)
+    switch index {
+    case .register(let indexRegister):
+      guard indexRegister.bank == "x86.gpr", indexRegister.index < 16,
+        indexRegister.width == baseRegister.width,
+        load(indexRegister, into: 10, words: &words)
+      else { return false }
+      emitImmediate(bitMask, register: 11, into: &words)
+      words.append(encodeLogical(.and, left: 10, right: 11, destination: 10))
+      emitImmediate(1, register: 11, into: &words)
+      words.append(
+        encodeVariableShift(
+          .left, is64Bit: is64Bit, value: 11, count: 10, destination: 11
+        ))
+    case .immediate(let rawIndex, .i8):
+      emitImmediate(1 << (rawIndex & bitMask), register: 11, into: &words)
+    default:
+      return false
+    }
+
+    words.append(encodeLogical(.andSetFlags, is64Bit: is64Bit, 9, 11, 12))
+    words.append(encodeConditionalSet(register: 13, condition: .notEqual))
+
+    if operation != .test {
+      switch operation {
+      case .test:
+        break
+      case .set:
+        words.append(encodeLogical(.or, is64Bit: is64Bit, 9, 11, 12))
+      case .reset:
+        emitImmediate(is64Bit ? UInt64.max : UInt64(UInt32.max), register: 12, into: &words)
+        words.append(encodeLogical(.xor, is64Bit: is64Bit, 11, 12, 12))
+        words.append(encodeLogical(.and, is64Bit: is64Bit, 9, 12, 12))
+      case .complement:
+        words.append(encodeLogical(.xor, is64Bit: is64Bit, 9, 11, 12))
+      }
+      words.append(encodeStore64(register: 12, base: 0, byteOffset: Int(baseRegister.index) * 8))
+    }
+
+    words.append(encodeLoad64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
+    emitImmediate(~DoryX86RFLAGS.carry.rawValue, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
+    words.append(encodeLogical(.or, left: 14, right: 13, destination: 14))
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 15, into: &words)
+    words.append(encodeLogical(.or, left: 14, right: 15, destination: 14))
+    words.append(encodeStore64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
+    return true
+  }
+
   private func emitConditionalMove(
     _ condition: DoryX86Condition,
     destination: DoryIROperand,
@@ -567,7 +634,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .shift(_, let destination, _):
       if case .memory = destination { return 2 }
       return 0
-    case .conditionalMove, .setCondition:
+    case .conditionalMove, .setCondition, .bitTestRegister:
       return 0
     case .bitScan(_, let destination, let source):
       if case .memory = destination { return 1 }
