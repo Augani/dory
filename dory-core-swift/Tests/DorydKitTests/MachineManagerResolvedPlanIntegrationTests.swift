@@ -382,7 +382,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             "exact-arguments",
             acceleratedExecutablePath: helper,
             passMachineArguments: true,
-            initialEnvironment: ["DORY_LOG_HARD_MAX_BYTES": "1048576"]
+            initialEnvironment: ["DORY_GUEST_UID": "502", "DORY_GUEST_USER": "dorydev"]
         ) { manager, starter, state in
             let definition = try DoryWorkspaceRepository(root: state)
                 .readPersistedRecord(id: "dev").definition
@@ -450,7 +450,8 @@ struct MachineManagerResolvedPlanIntegrationTests {
             #expect(!arguments.contains("--resolved-port-forwards"))
             #expect(!arguments.contains { $0.hasPrefix("DORY_DESKTOP_GRAPHICS=") })
             #expect(!arguments.contains { $0.hasPrefix("DORY_DESKTOP_VMM=") })
-            #expect(arguments.contains("DORY_LOG_HARD_MAX_BYTES=1048576"))
+            #expect(arguments.contains("DORY_GUEST_UID=502"))
+            #expect(arguments.contains("DORY_GUEST_USER=dorydev"))
         }
     }
 
