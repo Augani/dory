@@ -623,13 +623,6 @@ import Testing
         try await toHost.value
 
         let rendererUpdate = [UInt8](repeating: 0xa5, count: 32)
-        try fixture.channel.writeSharedRegionBytes(
-            rendererUpdate,
-            at: 2,
-            regionIndex: 0,
-            limits: fixture.bootstrap.limits,
-            using: rendererBacking
-        )
         let fromHost = Task.detached {
             try authority.transfer3D(
                 .init(
@@ -654,6 +647,19 @@ import Testing
         #expect(await rendererEventually { fixture.channel.sendCount == 5 })
         #expect(try fixture.channel.command(at: 4, limits: fixture.bootstrap.limits).operation
             == .transferFromHost3D)
+        #expect(try fixture.channel.sharedRegionBytes(
+            at: 2,
+            regionIndex: 0,
+            limits: fixture.bootstrap.limits,
+            using: rendererBacking
+        ) == guestUpdate)
+        try fixture.channel.writeSharedRegionBytes(
+            rendererUpdate,
+            at: 2,
+            regionIndex: 0,
+            limits: fixture.bootstrap.limits,
+            using: rendererBacking
+        )
         fixture.channel.complete(
             at: 4,
             with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
@@ -760,6 +766,164 @@ import Testing
             with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
         )
         #expect(await rendererEventually { lane.snapshot().liveScanoutLeases == 0 })
+    }
+
+    @Test func doryPCVirGLReadbackRefreshesStagingBeforeCopyingBackToGuest() async throws {
+        let fixture = try rendererBrokerFixture()
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: 11
+        )
+
+        let context = Task.detached {
+            try authority.createContext(id: 7, capsetID: 2, name: "mesa")
+        }
+        #expect(await rendererEventually { fixture.channel.sendCount == 1 })
+        fixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        try await context.value
+
+        let resource = Task.detached {
+            try authority.createResource3D(.init(
+                resourceID: 31,
+                target: 2,
+                format: 67,
+                bind: 2,
+                width: 4,
+                height: 4,
+                depth: 1,
+                arraySize: 1,
+                lastLevel: 0,
+                samples: 0,
+                flags: 0
+            ))
+        }
+        #expect(await rendererEventually { fixture.channel.sendCount == 2 })
+        let resourceGeneration = UInt64(53).littleEndian
+        fixture.channel.complete(
+            at: 1,
+            with: .success(DoryRendererWorkerChannelReply(
+                payload: withUnsafeBytes(of: resourceGeneration) { Data($0) },
+                descriptors: []
+            ))
+        )
+        try await resource.value
+
+        let memory = DoryPCVirGLTestMemory(byteCount: 0x2000)
+        let entries = [
+            DoryVirtioGPUBackingEntry(guestAddress: 0x1000, length: 32),
+            DoryVirtioGPUBackingEntry(guestAddress: 0x1100, length: 32),
+        ]
+        let originalGuestBytes = Array(UInt8(0)..<UInt8(64))
+        memory.put(Array(originalGuestBytes[0..<32]), at: 0x1000)
+        memory.put(Array(originalGuestBytes[32..<64]), at: 0x1100)
+        let attach = Task.detached {
+            try authority.attachBacking(
+                resourceID: 31,
+                entries: entries,
+                memory: memory
+            )
+        }
+        #expect(await rendererEventually { fixture.channel.sendCount == 3 })
+        #expect(try fixture.channel.sharedRegionBytes(
+            at: 2,
+            regionIndex: 0,
+            limits: fixture.bootstrap.limits
+        ) == Array(originalGuestBytes[0..<32]))
+        #expect(try fixture.channel.sharedRegionBytes(
+            at: 2,
+            regionIndex: 1,
+            limits: fixture.bootstrap.limits
+        ) == Array(originalGuestBytes[32..<64]))
+        let rendererBacking = try fixture.channel.duplicateDescriptor(
+            at: 2,
+            descriptorIndex: 0
+        )
+        fixture.channel.complete(
+            at: 2,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        try await attach.value
+
+        let outsideMutation = [UInt8](repeating: 0xEE, count: 64)
+        memory.put(Array(outsideMutation[0..<32]), at: 0x1000)
+        memory.put(Array(outsideMutation[32..<64]), at: 0x1100)
+        let readback = Task.detached {
+            try authority.transfer3D(
+                .init(
+                    direction: .fromHost,
+                    resourceID: 31,
+                    contextID: 7,
+                    x: 1,
+                    y: 1,
+                    z: 0,
+                    width: 2,
+                    height: 2,
+                    depth: 1,
+                    offset: 20,
+                    level: 0,
+                    stride: 16,
+                    layerStride: 0
+                ),
+                entries: entries,
+                memory: memory
+            )
+        }
+        #expect(await rendererEventually { fixture.channel.sendCount == 4 })
+        let transfer = try fixture.channel.command(at: 3, limits: fixture.bootstrap.limits)
+        #expect(transfer.operation == .transferFromHost3D)
+        #expect(transfer.resourceGeneration == 53)
+        #expect(try fixture.channel.sharedRegionBytes(
+            at: 2,
+            regionIndex: 0,
+            limits: fixture.bootstrap.limits,
+            using: rendererBacking
+        ) == Array(outsideMutation[0..<32]))
+        #expect(try fixture.channel.sharedRegionBytes(
+            at: 2,
+            regionIndex: 1,
+            limits: fixture.bootstrap.limits,
+            using: rendererBacking
+        ) == Array(outsideMutation[32..<64]))
+        var concurrentGuestMutation = outsideMutation
+        concurrentGuestMutation.replaceSubrange(0..<28, with: repeatElement(UInt8(0xCC), count: 28))
+        concurrentGuestMutation.replaceSubrange(36..<64, with: repeatElement(UInt8(0xCC), count: 28))
+        memory.put(Array(concurrentGuestMutation[0..<32]), at: 0x1000)
+        memory.put(Array(concurrentGuestMutation[32..<64]), at: 0x1100)
+        var workerBytes = outsideMutation
+        workerBytes.replaceSubrange(28..<36, with: repeatElement(UInt8(0xA5), count: 8))
+        try fixture.channel.writeSharedRegionBytes(
+            Array(workerBytes[0..<32]),
+            at: 2,
+            regionIndex: 0,
+            limits: fixture.bootstrap.limits,
+            using: rendererBacking
+        )
+        try fixture.channel.writeSharedRegionBytes(
+            Array(workerBytes[32..<64]),
+            at: 2,
+            regionIndex: 1,
+            limits: fixture.bootstrap.limits,
+            using: rendererBacking
+        )
+        fixture.channel.complete(
+            at: 3,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        try await readback.value
+
+        var expectedGuestBytes = concurrentGuestMutation
+        expectedGuestBytes.replaceSubrange(28..<36, with: repeatElement(UInt8(0xA5), count: 8))
+        let firstGuestEntry = try memory.read(at: 0x1000, byteCount: 32)
+        let secondGuestEntry = try memory.read(at: 0x1100, byteCount: 32)
+        let actualGuestBytes = firstGuestEntry + secondGuestEntry
+        #expect(actualGuestBytes == expectedGuestBytes)
     }
 
     @Test func doryPCVirGLPristineResetRebindsBeforeTheFirstWorkerCommand() async throws {

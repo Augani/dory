@@ -1,0 +1,29 @@
+{
+  "schema": "dory.pc-virgl-readback-review@1",
+  "baseCommit": "b5631762540691713bb2ed6f612ad9e7b5c2eb0b",
+  "sourceSHA256": {
+    "Packages/ContainerizationEngine/Sources/DoryHV/DoryPCVirGLRendererAuthority.swift": "cb8b8910e710ae6ed26f0e5dd91f9a18213aab4a7df497754f171439c7c2e3f6",
+    "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryRendererWorkerBrokerTests.swift": "5f2db57c08b38aabd5f983a918615dd010403b6d65ca7b32e367f60734570d18"
+  },
+  "scope": "Refresh bounded staging and copy back only renderer-changed byte runs, scanning scatter entries once. Preserve unrelated guest writes made during readback.",
+  "validation": [
+    {
+      "log": "pc-virgl-readback-focused.log.gz",
+      "result": "5 tests passed",
+      "rawSHA256": "e95129244223960805c2e92e0a8b349ebb3f9f60caf5ccb080a304bf90237ac9",
+      "publishedUncompressedSHA256": "e95129244223960805c2e92e0a8b349ebb3f9f60caf5ccb080a304bf90237ac9"
+    },
+    {
+      "log": "pc-virgl-readback-lane.log.gz",
+      "result": "16 tests passed",
+      "rawSHA256": "72e935d563b6707eaa4cf1b060bdae3e7b74b29f234576b8f6a02baa81389a37",
+      "publishedUncompressedSHA256": "72e935d563b6707eaa4cf1b060bdae3e7b74b29f234576b8f6a02baa81389a37"
+    }
+  ],
+  "normalization": "Home-directory prefix replaced with <HOME>.",
+  "limitations": [
+    "Guest must not concurrently modify the transfer output region before completion.",
+    "Readback snapshots add memory up to one staging backing, bounded by lane maximumReferencedBytes.",
+    "GPU fence-to-used-ring integration and physical accelerated PC guest qualification remain open."
+  ]
+}

@@ -214,7 +214,11 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         guard lock.withLock({ backings[resourceID] == nil }) else {
             throw DoryPCVirGLRendererAuthorityError.duplicateBacking(resourceID)
         }
-        let backing = try DoryPCVirGLBackingAuthority(entries: entries, memory: memory)
+        let backing = try DoryPCVirGLBackingAuthority(
+            entries: entries,
+            memory: memory,
+            maximumByteCount: lane.maximumReferencedBytes
+        )
         try wait(deviceGeneration: deviceGeneration) { completion in
             try lane.attachBacking(
                 resourceID: resourceID,
@@ -300,42 +304,57 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         else {
             throw DoryPCVirGLRendererAuthorityError.missingBacking(transfer.resourceID)
         }
-        if transfer.direction == .toHost { try backing.synchronizeFromGuest(memory) }
-        let payload = try DoryRendererTransfer3DPayload(
-            level: transfer.level,
-            stride: transfer.stride,
-            layerStride: transfer.layerStride,
-            offset: transfer.offset,
-            x: transfer.x,
-            y: transfer.y,
-            z: transfer.z,
-            width: transfer.width,
-            height: transfer.height,
-            depth: transfer.depth
-        )
-        try wait(deviceGeneration: deviceGeneration) { completion in
-            switch transfer.direction {
-            case .toHost:
-                try lane.transferToHost3D(
-                    resourceID: transfer.resourceID,
-                    resourceGeneration: resourceGeneration,
-                    contextID: transfer.contextID,
-                    payload: payload,
-                    deviceGeneration: deviceGeneration,
-                    completion: completion
-                )
-            case .fromHost:
-                try lane.transferFromHost3D(
-                    resourceID: transfer.resourceID,
-                    resourceGeneration: resourceGeneration,
-                    contextID: transfer.contextID,
-                    payload: payload,
-                    deviceGeneration: deviceGeneration,
-                    completion: completion
+        try backing.withTransferLock {
+            // Refresh the staging file before both transfer directions. A readback then copies only
+            // the worker-changed bytes back to guest memory, so unrelated guest/DMA changes outside
+            // the renderer output are not overwritten by the stale attach-time snapshot.
+            // The guest must leave the transfer's output region untouched until completion. Bytes
+            // the renderer leaves equal to the baseline already hold the requested output there.
+            try backing.synchronizeFromGuest(memory)
+            let readbackBaseline = transfer.direction == .fromHost
+                ? backing.snapshotBytes()
+                : nil
+            let payload = try DoryRendererTransfer3DPayload(
+                level: transfer.level,
+                stride: transfer.stride,
+                layerStride: transfer.layerStride,
+                offset: transfer.offset,
+                x: transfer.x,
+                y: transfer.y,
+                z: transfer.z,
+                width: transfer.width,
+                height: transfer.height,
+                depth: transfer.depth
+            )
+            try wait(deviceGeneration: deviceGeneration) { completion in
+                switch transfer.direction {
+                case .toHost:
+                    try lane.transferToHost3D(
+                        resourceID: transfer.resourceID,
+                        resourceGeneration: resourceGeneration,
+                        contextID: transfer.contextID,
+                        payload: payload,
+                        deviceGeneration: deviceGeneration,
+                        completion: completion
+                    )
+                case .fromHost:
+                    try lane.transferFromHost3D(
+                        resourceID: transfer.resourceID,
+                        resourceGeneration: resourceGeneration,
+                        contextID: transfer.contextID,
+                        payload: payload,
+                        deviceGeneration: deviceGeneration,
+                        completion: completion
+                    )
+                }
+            }
+            if let readbackBaseline {
+                try backing.synchronizeChangedBytesToGuest(
+                    memory,
+                    comparedTo: readbackBaseline
                 )
             }
         }
-        if transfer.direction == .fromHost { try backing.synchronizeToGuest(memory) }
     }
 
     public func flushResource(_ scanouts: [DoryVirtioGPUAcceleratedScanoutFlush]) throws {
@@ -543,11 +562,16 @@ private final class DoryPCVirGLBackingAuthority: @unchecked Sendable {
     let entries: [DoryVirtioGPUBackingEntry]
     let regions: DoryRendererWorkerSharedRegionSet
 
+    private let transferLock = NSLock()
     private let mapping: UnsafeMutableRawPointer
     private let byteCount: Int
     private let descriptor: FileHandle
 
-    init(entries: [DoryVirtioGPUBackingEntry], memory: any DoryVirtioGuestMemory) throws {
+    init(
+        entries: [DoryVirtioGPUBackingEntry],
+        memory: any DoryVirtioGuestMemory,
+        maximumByteCount: UInt64
+    ) throws {
         guard !entries.isEmpty else {
             throw DoryPCVirGLRendererAuthorityError.missingBacking(0)
         }
@@ -557,6 +581,9 @@ private final class DoryPCVirGLBackingAuthority: @unchecked Sendable {
                 throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
             }
             return sum
+        }
+        guard total <= maximumByteCount else {
+            throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
         }
         let templateURL = URL(fileURLWithPath: NSTemporaryDirectory(), isDirectory: true)
             .appendingPathComponent("dory-pc-virgl.XXXXXX")
@@ -626,6 +653,10 @@ private final class DoryPCVirGLBackingAuthority: @unchecked Sendable {
 
     deinit { munmap(mapping, byteCount) }
 
+    func withTransferLock<T>(_ body: () throws -> T) throws -> T {
+        try transferLock.withLock(body)
+    }
+
     func synchronizeFromGuest(_ memory: any DoryVirtioGuestMemory) throws {
         var offset = 0
         for entry in entries {
@@ -643,15 +674,73 @@ private final class DoryPCVirGLBackingAuthority: @unchecked Sendable {
         }
     }
 
-    func synchronizeToGuest(_ memory: any DoryVirtioGuestMemory) throws {
-        var offset = 0
-        for entry in entries {
-            let count = Int(entry.length)
-            let bytes = Array(
-                UnsafeRawBufferPointer(start: mapping.advanced(by: offset), count: count)
-            )
-            try memory.write(at: entry.guestAddress, bytes: bytes)
-            offset += count
+    func snapshotBytes() -> [UInt8] {
+        Array(UnsafeRawBufferPointer(start: mapping, count: byteCount))
+    }
+
+    func synchronizeChangedBytesToGuest(
+        _ memory: any DoryVirtioGuestMemory,
+        comparedTo baseline: [UInt8]
+    ) throws {
+        guard baseline.count == byteCount else {
+            throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
         }
+        let current = UnsafeRawBufferPointer(start: mapping, count: byteCount)
+        var entryBase = 0
+        for entry in entries {
+            let entryLength = Int(entry.length)
+            defer { entryBase += entryLength }
+            var runStart: Int?
+            for entryOffset in 0..<entryLength {
+                let absoluteOffset = entryBase + entryOffset
+                if current[absoluteOffset] != baseline[absoluteOffset] {
+                    if runStart == nil { runStart = entryOffset }
+                    continue
+                }
+                if let start = runStart {
+                    try writeEntryRun(
+                        memory,
+                        entry: entry,
+                        entryBase: entryBase,
+                        entryOffset: start,
+                        byteCount: entryOffset - start
+                    )
+                    runStart = nil
+                }
+            }
+            if let start = runStart {
+                try writeEntryRun(
+                    memory,
+                    entry: entry,
+                    entryBase: entryBase,
+                    entryOffset: start,
+                    byteCount: entryLength - start
+                )
+            }
+        }
+    }
+
+    private func writeEntryRun(
+        _ memory: any DoryVirtioGuestMemory,
+        entry: DoryVirtioGPUBackingEntry,
+        entryBase: Int,
+        entryOffset: Int,
+        byteCount: Int
+    ) throws {
+        guard byteCount > 0,
+              entryOffset >= 0,
+              entryOffset <= Int(entry.length),
+              byteCount <= Int(entry.length) - entryOffset,
+              entry.guestAddress <= UInt64.max - UInt64(entryOffset) else {
+            throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+        }
+        let bytes = Array(UnsafeRawBufferPointer(
+            start: mapping.advanced(by: entryBase + entryOffset),
+            count: byteCount
+        ))
+        try memory.write(
+            at: entry.guestAddress + UInt64(entryOffset),
+            bytes: bytes
+        )
     }
 }
