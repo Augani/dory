@@ -1,0 +1,140 @@
+{
+  "activationPlanRevision" : 1,
+  "bundlePath" : "\/Users\/augustusotu\/.dory\/qualification\/dory-release-native-mac-running-receipt-20260905-194718\/evidence\/fixture\/Library\/Application Support\/Dory\/Dory.dorydrive\/machines\/native-mac-release-daemon\/Machine.dorymac",
+  "closedSavedStateBytes" : 79695872,
+  "fixtureRoot" : "\/Users\/augustusotu\/.dory\/qualification\/dory-release-native-mac-running-receipt-20260905-194718\/evidence\/fixture",
+  "helperExecutablePath" : "\/Users\/augustusotu\/.dory\/qualification\/dory-release-native-mac-final-missing-ipsw-20260905194053\/helper\/dory-vmm",
+  "helperSHA256" : "37ceff70995f1f38c2aa34a140d881f7d12e8d6e34d46bc4073445c2f6175a8d",
+  "hostPID" : 50356,
+  "machineDirectory" : "\/Users\/augustusotu\/.dory\/qualification\/dory-release-native-mac-running-receipt-20260905-194718\/evidence\/fixture\/Library\/Application Support\/Dory\/Dory.dorydrive\/machines\/native-mac-release-daemon",
+  "machineID" : "native-mac-release-daemon",
+  "manifestHardwareModelSHA256" : "976e66740c64041cf9f127588f93eabf7efb9e7d3cbaee9582bcded88ba5e8d3",
+  "manifestInstallationState" : "stopped",
+  "manifestMachineIdentifierSHA256" : "304a1502fe0202274a25ce8ac9909cc9d688e974f6a620dbecd6089b9e43f1b9",
+  "partialPayloadRemovedBeforeRecovery" : true,
+  "recordedAtUnix" : 1788637656.467814,
+  "restoreImagePresentAtReceipt" : false,
+  "savedStatePath" : "\/Users\/augustusotu\/.dory\/qualification\/dory-release-native-mac-running-receipt-20260905-194718\/evidence\/fixture\/Library\/Application Support\/Dory\/Dory.dorydrive\/machines\/native-mac-release-daemon\/saved-state-v1\/state.bin",
+  "savedStateWrapperPresentAfterColdStop" : false,
+  "schema" : "dory.release-activation-native-mac-saved-state-qualification@1",
+  "scope" : "private signed doryd-identity host using ProductionTrustFactory.activate with fixture host admission facts, fixture-signed catalog authority, and substituted runtime verifier; not installed launchd daemon, production catalog trust, or real host-probe qualification",
+  "sourceSHA256" : {
+    "dory-core-swift\/Sources\/DorydKit\/MachineManager.swift" : "9616210ac827909c561071461fb1016248c161c9403dfdd4f743d1d7d20b37ab",
+    "dory-core-swift\/Tests\/DorydKitTests\/DoryDaemonNativeMacReleaseActivationQualificationTests.swift" : "569c3de2fc49edbd46bd4480f79458d4266d591471c2fdacc72595975f833c04",
+    "dory-core-swift\/Tests\/DorydKitTests\/DoryDaemonVirtualMachineProductionTrustTests.swift" : "53a38d9ae8176a4f096d16e206740e4aa3b72ce2eda266f6ac118e2187724edc"
+  },
+  "statuses" : {
+    "close" : {
+      "activeOperationID" : null,
+      "controlSocketPath" : null,
+      "handoffSocketPath" : null,
+      "lastError" : null,
+      "pid" : null,
+      "runtimePlanRevision" : 3,
+      "savedStatePresent" : true,
+      "state" : "suspended"
+    },
+    "coldStop" : {
+      "activeOperationID" : null,
+      "controlSocketPath" : null,
+      "handoffSocketPath" : null,
+      "lastError" : null,
+      "pid" : null,
+      "runtimePlanRevision" : 3,
+      "savedStatePresent" : false,
+      "state" : "stopped"
+    },
+    "faultReadySuspend" : {
+      "activeOperationID" : null,
+      "controlSocketPath" : null,
+      "handoffSocketPath" : null,
+      "lastError" : null,
+      "pid" : null,
+      "runtimePlanRevision" : 5,
+      "savedStatePresent" : true,
+      "state" : "suspended"
+    },
+    "finalStop" : {
+      "activeOperationID" : null,
+      "controlSocketPath" : null,
+      "handoffSocketPath" : null,
+      "lastError" : null,
+      "pid" : null,
+      "runtimePlanRevision" : 7,
+      "savedStatePresent" : false,
+      "state" : "stopped"
+    },
+    "finalSuspend" : {
+      "activeOperationID" : null,
+      "controlSocketPath" : null,
+      "handoffSocketPath" : null,
+      "lastError" : null,
+      "pid" : null,
+      "runtimePlanRevision" : 7,
+      "savedStatePresent" : true,
+      "state" : "suspended"
+    },
+    "normalColdRestart" : {
+      "activeOperationID" : null,
+      "controlSocketPath" : "\/tmp\/dory-release-vzmac-50356-FA98C30C\/runtime\/1e4e4b6f2e4dc2972062b920\/c.sock",
+      "handoffSocketPath" : null,
+      "lastError" : null,
+      "pid" : 50425,
+      "runtimePlanRevision" : 4,
+      "savedStatePresent" : false,
+      "state" : "running"
+    },
+    "recoveredAfterPartialDiscard" : {
+      "activeOperationID" : null,
+      "controlSocketPath" : null,
+      "handoffSocketPath" : null,
+      "lastError" : null,
+      "pid" : null,
+      "runtimePlanRevision" : 5,
+      "savedStatePresent" : false,
+      "state" : "stopped"
+    },
+    "recoveredColdStart" : {
+      "activeOperationID" : null,
+      "controlSocketPath" : "\/tmp\/dory-release-vzmac-50356-FA98C30C\/runtime\/1e4e4b6f2e4dc2972062b920\/c.sock",
+      "handoffSocketPath" : null,
+      "lastError" : null,
+      "pid" : 50472,
+      "runtimePlanRevision" : 6,
+      "savedStatePresent" : false,
+      "state" : "running"
+    },
+    "restore" : {
+      "activeOperationID" : "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+      "controlSocketPath" : "\/tmp\/dory-release-vzmac-50356-FA98C30C\/runtime\/1e4e4b6f2e4dc2972062b920\/c.sock",
+      "handoffSocketPath" : null,
+      "lastError" : null,
+      "pid" : 50408,
+      "runtimePlanRevision" : 2,
+      "savedStatePresent" : false,
+      "state" : "running"
+    },
+    "start" : {
+      "activeOperationID" : null,
+      "controlSocketPath" : "\/tmp\/dory-release-vzmac-50356-FA98C30C\/runtime\/1e4e4b6f2e4dc2972062b920\/c.sock",
+      "handoffSocketPath" : null,
+      "lastError" : null,
+      "pid" : 50362,
+      "runtimePlanRevision" : 1,
+      "savedStatePresent" : false,
+      "state" : "running"
+    },
+    "suspend" : {
+      "activeOperationID" : null,
+      "controlSocketPath" : null,
+      "handoffSocketPath" : null,
+      "lastError" : null,
+      "pid" : null,
+      "runtimePlanRevision" : 2,
+      "savedStatePresent" : true,
+      "state" : "suspended"
+    }
+  },
+  "testSigningKeyPath" : "\/Users\/augustusotu\/.dory\/qualification\/dory-release-native-mac-running-receipt-20260905-194718\/evidence\/test-signing-key.raw",
+  "testSigningKeySHA256" : "80d44ee7c4b46ae016bc9636de767fe4f482affea0a534ea641034eabcdbef15"
+}

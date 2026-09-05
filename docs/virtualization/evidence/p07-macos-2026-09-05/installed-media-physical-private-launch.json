@@ -1,0 +1,24 @@
+{
+  "argv": [
+    "${HOME}/.dory/qualification/dory-release-native-mac-final-missing-ipsw-20260905194053/host/doryd",
+    "-XCTest",
+    "DorydKitTests.DoryDaemonNativeMacReleaseActivationQualificationTests/testActualNativeMacSavedStateThroughProductionActivation",
+    "${HOME}/.dory/qualification/byte-memory-flags-20260905.EE6Inb/scratch-target/arm64-apple-macosx/debug/dory-core-swiftPackageTests.xctest"
+  ],
+  "environmentOverrides": {
+    "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "DYLD_FRAMEWORK_PATH": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/Frameworks:/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer/Platforms/MacOSX.platform/Developer/Library/PrivateFrameworks:/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer/../SharedFrameworks",
+    "DYLD_LIBRARY_PATH": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer/Platforms/MacOSX.platform/Developer/usr/lib:/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer/usr/lib",
+    "DORY_NATIVE_MAC_RELEASE_DAEMON_FIXTURE_START": "1",
+    "DORY_NATIVE_MAC_REAL_VMM_EXECUTABLE": "${HOME}/.dory/qualification/dory-release-native-mac-final-missing-ipsw-20260905194053/helper/dory-vmm",
+    "DORY_NATIVE_MAC_REAL_GVPROXY": "/Applications/Dory.app/Contents/Helpers/gvproxy",
+    "DORY_NATIVE_MAC_PREPARED_BUNDLE": "${HOME}/.dory/qualification/dory-production-planning-composition-D638FBB6-9DD1-4281-87CD-DF06B806F5C5/manager-state/native-mac-manager-saved-state/Machine.dorymac",
+    "DORY_NATIVE_MAC_IPSW": "${HOME}/.dory/qualification/dory-production-planning-composition-D638FBB6-9DD1-4281-87CD-DF06B806F5C5/manager-state/native-mac-manager-saved-state/Restore.ipsw",
+    "DORY_NATIVE_MAC_RELEASE_DAEMON_EVIDENCE_ROOT": "${HOME}/.dory/qualification/dory-release-native-mac-running-receipt-20260905-194718/evidence"
+  },
+  "cwd": "${HOME}/.dory/qualification/byte-memory-flags-20260905.EE6Inb/source",
+  "hostSHA256": "ef7749440d84609714362920b5bbb36018cb2974bb147f79d54945cfb0684479",
+  "helperSHA256": "37ceff70995f1f38c2aa34a140d881f7d12e8d6e34d46bc4073445c2f6175a8d",
+  "testBinarySHA256": "88217fc328e1b9267043227227b2ad4ebf5e81bd469ce32f51242f4c096b1fb8",
+  "testSourceSHA256": "569c3de2fc49edbd46bd4480f79458d4266d591471c2fdacc72595975f833c04"
+}

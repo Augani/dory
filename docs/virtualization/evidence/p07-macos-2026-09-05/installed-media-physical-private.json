@@ -1,0 +1,57 @@
+{
+  "scope": "Actual signed VZ Mac helper lifecycle through private signed XCTest host and ProductionTrustFactory activation. Fixture host admission facts, fixture-signed catalog, and substituted runtime verifier; not installed launchd or real production catalog/host-probe qualification.",
+  "implementationCommits": [
+    "d6d87cf80",
+    "3ff5cdcd3",
+    "f70233ba9",
+    "c7e105fcc"
+  ],
+  "testResult": "1 physical lifecycle test passed in17.187seconds",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DorydKit/MachineManager.swift": "9616210ac827909c561071461fb1016248c161c9403dfdd4f743d1d7d20b37ab",
+    "dory-core-swift/Tests/DorydKitTests/DoryDaemonNativeMacReleaseActivationQualificationTests.swift": "569c3de2fc49edbd46bd4480f79458d4266d591471c2fdacc72595975f833c04",
+    "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift": "53a38d9ae8176a4f096d16e206740e4aa3b72ce2eda266f6ac118e2187724edc"
+  },
+  "helperSHA256": "37ceff70995f1f38c2aa34a140d881f7d12e8d6e34d46bc4073445c2f6175a8d",
+  "observations": {
+    "restoreImagePresent": false,
+    "savedStateBytesBeforeColdStop": 79695872,
+    "savedStateWrapperAfterColdStop": false,
+    "states": {
+      "close": "suspended",
+      "coldStop": "stopped",
+      "faultReadySuspend": "suspended",
+      "finalStop": "stopped",
+      "finalSuspend": "suspended",
+      "normalColdRestart": "running",
+      "recoveredAfterPartialDiscard": "stopped",
+      "recoveredColdStart": "running",
+      "restore": "running",
+      "start": "running",
+      "suspend": "suspended"
+    }
+  },
+  "artifacts": [
+    {
+      "file": "installed-media-physical-private-receipt.json",
+      "sha256": "cf7f641bacc1a9f715e36a1049640a451ca7b0271aeb75c7578883d397a27f56",
+      "originalSHA256": "cf7f641bacc1a9f715e36a1049640a451ca7b0271aeb75c7578883d397a27f56"
+    },
+    {
+      "file": "installed-media-physical-private-launch.json",
+      "sha256": "63a060898ce69e2e366adfee9d3f2566de6f300cf7555f86af67117b84deb90e",
+      "originalSHA256": "189b5266d934ae4d4a10c77772428d894cc4cf6ccdbcdabf6ad8cc57a3e09019"
+    },
+    {
+      "file": "installed-media-physical-private.log.gz",
+      "sha256": "6199d8eed3d12cbf265a99e1656aac7d2b46da693376a59f26e3843d24c6ab99",
+      "originalSHA256": "ba740e139fe6b16a6490b572e9adb335cba150a17dbfcbe9c9528054ba658812"
+    }
+  ],
+  "remaining": [
+    "Release launchd composition with real host probe and production catalog admission",
+    "Post-boot and post-restore guest workload and Metal evidence",
+    "Interruption at every publication boundary"
+  ],
+  "publication": "Public copies replace the machine-local home path with ${HOME}; hashes of the retained original artifacts are recorded separately."
+}
