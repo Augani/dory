@@ -183,6 +183,14 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         }
     }
 
+    /// True when this exact authenticated worker generation remains usable for a replacement PC
+    /// machine after the guest requested a reset. A non-pristine reset revokes the one-shot worker;
+    /// the machine owner must obtain a fresh daemon-authenticated renderer bootstrap before it can
+    /// advertise accelerated graphics again.
+    public var canBackReplacementMachineAfterReset: Bool {
+        lock.withLock { active }
+    }
+
     public func createContext(id: UInt32, capsetID: UInt32, name: String) throws {
         let generation = try admit()
         try wait(deviceGeneration: generation) { completion in

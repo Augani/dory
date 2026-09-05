@@ -1008,6 +1008,7 @@ import Testing
         )
 
         authority.reset()
+        #expect(authority.canBackReplacementMachineAfterReset)
         let context = Task.detached {
             try authority.createContext(id: 7, capsetID: 2, name: "mesa")
         }
@@ -1031,6 +1032,7 @@ import Testing
         )
 
         authority.reset()
+        #expect(!authority.canBackReplacementMachineAfterReset)
         #expect(throws: DoryPCVirGLRendererAuthorityError.rendererUnavailable) {
             try authority.createContext(id: 7, capsetID: 2, name: "mesa")
         }

@@ -1,0 +1,42 @@
+{
+  "date": "2026-09-05",
+  "fresh_generation_contract": {
+    "candidate_files": [
+      "dory-core-swift/Sources/DorydKit/MachineManager.swift",
+      "dory-core-swift/Sources/DoryOperations/DoryPCRuntimeLaunchEnvelope.swift",
+      "Packages/ContainerizationEngine/Sources/dory-hv/DesktopRendererWorkerLaunch.swift",
+      "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift",
+      "Packages/ContainerizationEngine/Sources/DoryHV/DoryPCVirGLRendererAuthority.swift",
+      "Packages/ContainerizationEngine/Sources/DoryHV/DoryRendererWorkerVirtioCommandLane.swift",
+      "Packages/ContainerizationEngine/Sources/DoryHV/VirtioGPU.swift"
+    ],
+    "owner": "daemon or launch owner, not guest device code",
+    "required_path": [
+      "MachineManager resolves the same production graphics authority and stages a new renderer bootstrap using the existing RawHVRendererBootstrapRequest invariants.",
+      "A restartable DesktopRendererWorkerLaunch/session API in dory-hv asks that owner for a new authenticated bootstrap when DoryPCMode sees a non-pristine reset.",
+      "The new generation must create a new DoryRendererWorkerBroker and DoryRendererWorkerVirtioCommandLane, verify live capability receipt, and publish updated rendererGeneration / receipt SHA / producer-fence proof for display readiness.",
+      "Old generation scanout leases and pending fences must be revoked before the replacement machine receives the fresh authority. Stale callbacks must remain generation-scoped."
+    ]
+  },
+  "implemented": [
+    "Exposes replacement usability from the existing active state, without duplicating lifecycle state.",
+    "DoryPCMode refuses to construct a replacement accelerated DoryPC machine with a revoked renderer worker authority; it fails the lifecycle with an explicit fresh-generation-required error.",
+    "Focused tests assert pristine reset remains reusable and overflow/non-pristine reset marks the authority unusable."
+  ],
+  "not_completed": [
+    "Fresh renderer worker generation after non-pristine guest reset is still not implemented.",
+    "The runner cannot mint a fresh worker from its current launch envelope because the daemon stages one unlinked inherited renderer-bootstrap descriptor, and DesktopRendererWorkerLaunch consumes it before startup."
+  ],
+  "notes": [
+    "DoryPCMode hash includes root committed interrupt-progress diagnostics plus this reset guard if present in shared tree.",
+    "This is an interim fail-closed layer; fresh daemon-provisioned renderer generations remain required for working accelerated reset lifecycle."
+  ],
+  "scope": "PC renderer reset lifecycle, first bounded fail-closed layer",
+  "source_sha256": {
+    "Packages/ContainerizationEngine/Sources/DoryHV/DoryPCVirGLRendererAuthority.swift": "b9f15f55ee8952d0f3be598ad881ab8f53a2578c75e99bb40d33862201a9fde7",
+    "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift": "c94a382cde42d17b1992bcd7be197a04d17e5e9312a04a07b66e8d620602d409",
+    "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryRendererWorkerBrokerTests.swift": "ff943574d9cc9b95482a7d5f9208ee1526540e9f6ed61cec1584adfa99b9e623"
+  },
+  "test_log": "${HOME}/.dory/qualification/renderer-reset-20260905/focused-reset-guard-trimmed.log",
+  "test_log_sha256": "e03f20bb8817c337e74c40bd3eb7e8fb7fb8ecf05de55b272ec7edbdf1d60563"
+}

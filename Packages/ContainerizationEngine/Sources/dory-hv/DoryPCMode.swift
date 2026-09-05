@@ -1004,6 +1004,12 @@ enum DoryPCMode {
                         )
                         let filesystemFunctions = try filesystemRuntime?
                             .replaceAfterMachineReset() ?? []
+                        if let gpuAccelerationAuthority,
+                           !gpuAccelerationAuthority.canBackReplacementMachineAfterReset {
+                            throw VMError.bootFailure(
+                                "DoryPC accelerated graphics reset revoked the renderer worker; a fresh signed renderer generation is required"
+                            )
+                        }
                         let replacement = try configuration.authority.makeMachine(
                             displaySink: displaySink,
                             gpuAccelerationAuthority: gpuAccelerationAuthority,
