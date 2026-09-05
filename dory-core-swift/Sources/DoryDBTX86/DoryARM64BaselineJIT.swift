@@ -3927,9 +3927,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       }
       if cached.memoryCodeGeneration != nil { codeGenerationMismatchCount &+= 1 }
       let currentBytes = try speculativeInstructionBytes(using: byteProvider, maximumCount: byteCount)
-      guard currentBytes.count == byteCount else { return nil }
       let generation = Self.fingerprint(bytes: currentBytes, mode: mode)
-      if generation == cached.codeGeneration {
+      // A replacement can be shorter than the cached block, including at a fetch
+      // boundary. Invalidate and decode the available bytes before declining it.
+      if currentBytes.count == byteCount, generation == cached.codeGeneration {
         byteValidationHitCount &+= 1
         let resident = ResidentBlock(
           block: cached.block,

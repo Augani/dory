@@ -1,0 +1,19 @@
+{
+  "scope": "JIT resident cache replacement with fewer available instruction bytes",
+  "baselineHEAD": "73869ec524de8418bd22901130facc6171e8ff07",
+  "change": "Invalidate stale resident and attempt decoding available replacement bytes; incomplete replacements still decline without changing guest state.",
+  "qualification": {
+    "isolatedEmitterSHA256": "f2205b2b50e8418c9e9864aed0e7e091e4ba8987c09d565b8502ed8ceadbe739",
+    "stagedEmitterSHA256": "f2205b2b50e8418c9e9864aed0e7e091e4ba8987c09d565b8502ed8ceadbe739",
+    "testSHA256": "02af292917d0bd82c035a7a56a353ae0fcea09bf837c81a253080787ae30c7ea",
+    "before": "One regression test failed on original code: shorter NOP replacement returned nil.",
+    "after": "112 tests in 2 suites passed; includes baseline and optimizing tiers and incomplete replacement state preservation.",
+    "beforeLogSHA256": "c151010d89b7a028a5a5011106d3ad6cb102f743a897762346b6c43130800004",
+    "afterLogSHA256": "2369501223136fa0020609661627a6e7a5a55f3a8050f07052e3f116594001be",
+    "privateLogDirectory": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs"
+  },
+  "limitations": [
+    "No end-to-end guest boot or speedup claim.",
+    "Agent bit-scan emitter changes excluded from this qualification and commit."
+  ]
+}
