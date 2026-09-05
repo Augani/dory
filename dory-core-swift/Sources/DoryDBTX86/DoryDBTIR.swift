@@ -89,7 +89,9 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case bitScan(reverse: Bool, destination: DoryIROperand, source: DoryIROperand)
   case byteSwap(DoryIROperand)
   case stackPush(source: DoryIROperand)
+  case stackPushFlags
   case stackPop(destination: DoryIROperand)
+  case clearInterruptFlag
   case signedMultiply(destination: DoryIROperand, lhs: DoryIROperand, rhs: DoryIROperand)
   case extendMove(destination: DoryIROperand, source: DoryIROperand, signed: Bool)
   case effectiveAddress(destination: DoryIROperand, address: DoryIRMemoryAddress)
@@ -363,6 +365,8 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .pushFlags(.quadword) where mode == .long64:
+      return ([.stackPushFlags], nil)
     case .pop(let destination) where mode == .long64:
       return (
         [
@@ -375,6 +379,8 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .setInterruptsEnabled(false) where mode == .long64:
+      return ([.clearInterruptFlag], nil)
     case .signedMultiply(let destination, let lhs, let rhs):
       return (
         [
@@ -566,6 +572,8 @@ public struct DoryX86IRTranslator: Sendable {
       case .memory:
         return false
       }
+    case .stackPushFlags:
+      return true
     case .stackPop(let destination):
       guard case .register(let register) = destination,
         register.width == .i64,
@@ -610,6 +618,8 @@ public struct DoryX86IRTranslator: Sendable {
       return [address.base, address.index].compactMap { $0 }.allSatisfy {
         isJITGeneralRegister($0) && $0.width == address.addressWidth
       }
+    case .clearInterruptFlag:
+      return true
     case .helper:
       return false
     }
@@ -660,7 +670,7 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(source) ? .read : .none
     case .byteSwap:
       return .none
-    case .stackPush:
+    case .stackPush, .stackPushFlags:
       return .write
     case .stackPop:
       return .read
@@ -670,7 +680,7 @@ public struct DoryX86IRTranslator: Sendable {
     case .extendMove(let destination, let source, _):
       if isMemory(destination) { return .write }
       return isMemory(source) ? .read : .none
-    case .effectiveAddress, .helper:
+    case .effectiveAddress, .clearInterruptFlag, .helper:
       return .none
     }
   }

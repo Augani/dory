@@ -68,6 +68,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private static let ripOffset = 16 * 8
   private static let rflagsOffset = 17 * 8
   private static let rspOffset = 4 * 8
+  private static let pushedRFLAGSImageMask =
+    ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
   private static let arithmeticFlagMask: UInt64 =
     DoryX86RFLAGS.carry.rawValue
     | DoryX86RFLAGS.parity.rawValue
@@ -90,14 +92,17 @@ public struct DoryARM64BaselineEmitter: Sendable {
     let usesMemory = memoryCallbackCount > 0
     let guardsTerminator = requiresRuntimeAddressGuard(block.terminator)
     let guardsStack = block.statements.contains {
-      switch $0 { case .stackPush, .stackPop: true; default: false }
+      switch $0 { case .stackPush, .stackPushFlags, .stackPop: true; default: false }
     }
     // Translated writes end a block. Also reject hand-crafted IR that would reach a new
     // address guard after a successful write, since register checkpoints cannot undo RAM/I/O.
     var wroteMemory = false
     for statement in block.statements {
       if wroteMemory {
-        switch statement { case .stackPush, .stackPop: return fallback(block); default: break }
+        switch statement {
+        case .stackPush, .stackPushFlags, .stackPop: return fallback(block)
+        default: break
+        }
       }
       wroteMemory = wroteMemory || writesMemory(statement)
     }
@@ -141,7 +146,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private func writesMemory(_ statement: DoryIRStatement) -> Bool {
     switch statement {
     case .copy(.memory, _), .binary(_, .memory, _, true), .unary(_, .memory),
-      .shift(_, .memory, _), .stackPush: true
+      .shift(_, .memory, _), .stackPush, .stackPushFlags: true
     default: false
     }
   }
@@ -195,8 +200,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitByteSwap(operand, into: &words)
     case .stackPush(let source):
       return emitStackPush(source: source, into: &words)
+    case .stackPushFlags:
+      return emitStackPushFlags(into: &words)
     case .stackPop(let destination):
       return emitStackPop(destination: destination, into: &words)
+    case .clearInterruptFlag:
+      return emitClearInterruptFlag(into: &words)
     case .signedMultiply(let destination, let lhs, let rhs):
       return emitSignedMultiply(destination: destination, lhs: lhs, rhs: rhs, into: &words)
     case .extendMove(let destination, let source, let signed):
@@ -243,12 +252,38 @@ public struct DoryARM64BaselineEmitter: Sendable {
     guard load(source, matching: .i64, into: 10, words: &words) else { return false }
 
     // Read the source before changing the temporary RSP so `push rsp` stores the old value.
+    return emitStackPushLoadedValue(register: 10, into: &words)
+  }
+
+  private func emitStackPushFlags(into words: inout [UInt32]) -> Bool {
+    words.append(encodeLoad64(register: 10, base: 0, byteOffset: Self.rflagsOffset))
+    emitImmediate(Self.pushedRFLAGSImageMask, register: 11, into: &words)
+    words.append(encodeLogical(.and, left: 10, right: 11, destination: 10))
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 11, into: &words)
+    words.append(encodeLogical(.or, left: 10, right: 11, destination: 10))
+    return emitStackPushLoadedValue(register: 10, into: &words)
+  }
+
+  private func emitStackPushLoadedValue(
+    register valueRegister: UInt32,
+    into words: inout [UInt32]
+  ) -> Bool {
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
     emitImmediate(UInt64(bitPattern: -8), register: 11, into: &words)
     words.append(encodeAdd(is64Bit: true, left: 9, right: 11, destination: 12))
     emitCanonicalStackSpanGuard(addressRegister: 12, into: &words)
     words.append(encodeStore64(register: 12, base: 0, byteOffset: Self.rspOffset))
-    emitMemoryWrite(addressRegister: 12, valueRegister: 10, width: .i64, words: &words)
+    emitMemoryWrite(addressRegister: 12, valueRegister: valueRegister, width: .i64, words: &words)
+    return true
+  }
+
+  private func emitClearInterruptFlag(into words: inout [UInt32]) -> Bool {
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
+    emitImmediate(~DoryX86RFLAGS.interruptEnable.rawValue, register: 10, into: &words)
+    words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 10, into: &words)
+    words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
     return true
   }
 
@@ -463,7 +498,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       if case .memory = destination { return 1 }
       if case .memory = source { return 1 }
       return 0
-    case .stackPush, .stackPop:
+    case .stackPush, .stackPushFlags, .stackPop:
       return 1
     case .byteSwap:
       return 0
@@ -475,7 +510,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .extendMove(_, let source, _):
       if case .memory = source { return 1 }
       return 0
-    case .effectiveAddress, .helper:
+    case .effectiveAddress, .clearInterruptFlag, .helper:
       return 0
     }
   }
@@ -2746,6 +2781,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   ) throws -> DoryARM64ExecutionSummary? {
     guard maximumInstructions > 0, state.interruptShadow == nil,
       !state.rflags.contains(.virtual8086),
+      !state.rflags.contains(.resume),
       !DoryX86AlignmentPolicy.isEnabled(state: state),
       mode == .long64 || (mode == .protected32 && state.cs.base == 0 && state.cs.limit == .max)
     else { return nil }
@@ -3089,6 +3125,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   ) throws -> ResidentExecution? {
     guard maximumInstructions > 0, state.interruptShadow == nil,
       !state.rflags.contains(.virtual8086),
+      !state.rflags.contains(.resume),
       !DoryX86AlignmentPolicy.isEnabled(state: state),
       mode == .long64 || (mode == .protected32 && state.cs.base == 0 && state.cs.limit == .max)
     else { return nil }
@@ -3301,6 +3338,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     // Both resident and shared-code lookup keys include this privilege level.
     if key.privilegeLevel != 0, mode != .real16,
       case .exit(.halt, _) = block.terminator
+    {
+      return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
+    }
+    if key.privilegeLevel != 0,
+      block.statements.contains(where: {
+        if case .clearInterruptFlag = $0 { return true }
+        return false
+      })
     {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }

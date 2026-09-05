@@ -981,6 +981,7 @@ import Testing
       let cases: [([UInt8], DoryX86GeneralRegisters)] = [
         ([0x41, 0x55], .init(rsp: 4, r13: 0x1122_3344_5566_7788)),
         ([0x6A, 0xFE], .init(rsp: 4)),
+        ([0x9C], .init(rsp: 4)),
         ([0x5A], .init(rdx: 0xDEAD_BEEF, rsp: 0x100)),
       ]
 
@@ -1225,6 +1226,7 @@ import Testing
       ([0x41, 0x55], 0x12E4_D060A),  // push r13
       ([0x5A], 0x12E4_D06C9),  // pop rdx
       ([0x6A, 0xFE], 0x1FDC_1959),  // push -2
+      ([0x9C], 0x910F_3033),  // pushfq in the Linux timer-accounting spinlock path
     ]
     for (bytes, address) in measured {
       let block = try DoryX86IRTranslator().translate(bytes, at: address, mode: .long64)
@@ -1263,6 +1265,7 @@ import Testing
       ([0x8F, 0x00], .long64),  // pop qword ptr [rax]
       ([0x66, 0x50], .long64),  // push ax
       ([0x66, 0x6A, 0xFE], .long64),  // push imm8 as a word
+      ([0x66, 0x9C], .long64),  // pushfw keeps distinct low-word semantics
       ([0x66, 0x58], .long64),  // pop ax
       ([0x50], .protected32),
     ]
@@ -1288,6 +1291,171 @@ import Testing
       )
       #expect(DoryARM64BaselineEmitter().compile(block).tier == .interpreterFallback)
     }
+  }
+
+  @Test func measuredInterruptFlagSitesCompileWithBoundedPrivilegeScope() throws {
+    let cli = try DoryX86IRTranslator().translate(
+      [0xFA],
+      at: 0x910F_3034,
+      mode: .long64
+    )
+    #expect(cli.statements == [.clearInterruptFlag])
+    #expect(DoryARM64BaselineEmitter().compile(cli).tier == .baseline)
+    #expect(!DoryARM64BaselineEmitter().compile(cli).requiresMemoryCallbacks)
+
+    let sti = try DoryX86IRTranslator().translate([0xFB], at: 0, mode: .long64)
+    #expect(DoryARM64BaselineEmitter().compile(sti).tier == .interpreterFallback)
+
+    let protected = try DoryX86IRTranslator().translate([0xFA], at: 0, mode: .protected32)
+    #expect(DoryARM64BaselineEmitter().compile(protected).tier == .interpreterFallback)
+  }
+
+  @Test func pushFlagsAndCliExecuteNativeLongModeKernelFastPath() throws {
+    #if arch(arm64)
+      let flags: DoryX86RFLAGS = [
+        .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .sign, .trap,
+        .interruptEnable, .direction, .overflow, .nestedTask,
+        .virtualInterrupt, .virtualInterruptPending, .identification,
+      ]
+
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          optimization: optimization
+        )
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+        var pushed = try DoryX86ArchitecturalState(
+          registers: .init(rsp: 0x100),
+          rip: 0x910F_3033,
+          rflags: flags
+        )
+
+        let pushExecution = try #require(
+          executor.execute(
+            bytes: [0x9C],
+            at: pushed.rip,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &pushed,
+            memory: memory
+          )
+        )
+        let expectedFlagsImage =
+          (flags.rawValue
+            & ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue))
+          | DoryX86RFLAGS.reservedOne.rawValue
+        let expectedBytes = (0..<8).map {
+          UInt8(truncatingIfNeeded: expectedFlagsImage >> UInt64($0 * 8))
+        }
+        #expect(pushExecution.block.tier.rawValue == optimization.rawValue)
+        #expect(pushExecution.block.requiresMemoryCallbacks)
+        #expect(pushed.registers.rsp == 0xF8)
+        #expect(pushed.rip == 0x910F_3034)
+        #expect(pushed.rflags == flags)
+        #expect(try memory.read(at: 0xF8, byteCount: 8) == expectedBytes)
+
+        var cleared = pushed
+        let cliExecution = try #require(
+          executor.execute(
+            bytes: [0xFA],
+            at: cleared.rip,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &cleared,
+            memory: memory
+          )
+        )
+        #expect(cliExecution.block.tier.rawValue == optimization.rawValue)
+        #expect(!cliExecution.block.requiresMemoryCallbacks)
+        #expect(!cleared.rflags.contains(.interruptEnable))
+        #expect(cleared.rflags.contains(.reservedOne))
+        #expect(cleared.rflags.rawValue == flags.rawValue & ~DoryX86RFLAGS.interruptEnable.rawValue)
+        #expect(cleared.rip == 0x910F_3035)
+        #expect(cleared.interruptShadow == nil)
+      }
+    #endif
+  }
+
+  @Test func cliFallsBackBeforeUserPrivilegeGeneralProtection() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let initial = try DoryX86ArchitecturalState(
+        rip: 0,
+        rflags: [.reservedOne, .interruptEnable],
+        cs: .init(selector: 3, attributes: 0xA0FB, limit: .max)
+      )
+      var state = initial
+
+      #expect(
+        try executor.execute(
+          bytes: [0xFA],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state
+        ) == nil
+      )
+      #expect(state == initial)
+
+      var interpreted = initial
+      guard
+        case .exception(let exception) = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: try DoryX86ByteArrayMemory(bytes: [0xFA]),
+          mode: .long64)
+      else {
+        Issue.record("user CLI did not fault through the interpreter fallback")
+        return
+      }
+      #expect(exception.kind == .generalProtection)
+      #expect(exception.instructionPointer == initial.rip)
+      #expect(interpreted == initial)
+    #endif
+  }
+
+  @Test func resumeFlagDeclinesNativeExecutionBeforePushFlagsSideEffects() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+      try memory.write(at: 0, bytes: [0x9C])
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rsp: 0x100),
+        rip: 0,
+        rflags: [.reservedOne, .resume, .interruptEnable]
+      )
+      var state = initial
+
+      #expect(
+        try executor.execute(
+          bytes: [0x9C],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        ) == nil
+      )
+      #expect(state == initial)
+
+      var interpreted = initial
+      guard
+        case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: memory,
+          mode: .long64)
+      else {
+        Issue.record("PUSHFQ with RF active did not retire through the interpreter fallback")
+        return
+      }
+      #expect(!interpreted.rflags.contains(.resume))
+      #expect(interpreted.rflags.contains(.interruptEnable))
+      #expect(interpreted.registers.rsp == 0xF8)
+      #expect(try memory.read(at: 0xF8, byteCount: 8) == [0x02, 0x02, 0, 0, 0, 0, 0, 0])
+    #endif
   }
 
   @Test func returnAndPopAndIndirectJumpStayNativeInLongMode() throws {

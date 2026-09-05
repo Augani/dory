@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-05",
+  "baseCommit": "45d27bbe1ea907b3105cc17af35ec6ec0e0c6d84",
+  "scope": "Native long64 PUSHFQ and CPL0 CLI; not whole-guest performance qualification",
+  "sources": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "d3e3340e202f87b0ab0e40839cf783d8541425ca1f5f015e7e2dfe2b5c9d80eb",
+    "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift": "87169c8c12a8fee4f6e19ca5196614f95a3e6ac965554519e5e21e19d935a42c",
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "ac0a878909024e093b851225f73d600146e389e5ddba7405b0838a9b5a33ce7d",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "07ff2d57e7a1655cd693660230c09f3956a3a5c6439a2a77d545c8a34ffe70e1"
+  },
+  "verification": {
+    "releaseTargetBuild": {
+      "target": "DoryDBTX86",
+      "log": "/private/tmp/dory-core-pushf-cli-build-current-0905.log",
+      "sha256": "3a623feb531b51d4d981857405860d6a40afb7a6b6edd4202df5fd63cd1c3c7b",
+      "result": "passed"
+    },
+    "executableHarness": {
+      "source": "/private/tmp/dory-pushf-cli-harness-0905.swift",
+      "sourceSHA256": "1f5c4b53a5c83f4cc0a0eb73e14a4891515fd4480e731076ef1b26d7d03a574e",
+      "log": "/private/tmp/dory-pushf-cli-harness-run-0905b.log",
+      "logSHA256": "98c5c28d376e27f285a9153f2f81187ac59d0b315392e33d2b1d65345b849ce7",
+      "result": "passed; independently rerun by coordinator",
+      "coverage": [
+        "baseline and optimizing native flags/stack outputs",
+        "CPL3 CLI declines before interpreter #GP",
+        "RF-active state declines before interpreter clears RF",
+        "faulting stack push preserves restartable state",
+        "PUSHFW/STI/protected forms remain fallback"
+      ]
+    }
+  },
+  "guestDiagnostic": {
+    "result": "/private/tmp/dory-pc-pushf-cli-hostclock-0905.141552/host-monotonic/result.json",
+    "sha256": "b8693e88dfdce0bb69c4cb2dbbb10a855811059c1007c42ba2266dd45007da0b",
+    "instructionBudget": 1500000000,
+    "userspaceReached": false,
+    "scope": "Diagnostic runner included subsequently reverted Intel CPU/CPUID experiment; does not qualify current production CPU profile or demonstrate matched performance improvement"
+  },
+  "limits": [
+    "Standalone executable harness passed; full Swift Testing suite was not executed for this batch.",
+    "Ordinary production UEFI boot performance, independent architectural reference and release qualification remain open."
+  ]
+}

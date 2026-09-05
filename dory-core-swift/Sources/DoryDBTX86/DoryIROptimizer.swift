@@ -95,7 +95,7 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         invalidate(operand, knownConstants: &knownConstants)
 
-      case .stackPush:
+      case .stackPush, .stackPushFlags:
         statements.append(statement)
         invalidateStackPointer(knownConstants: &knownConstants)
 
@@ -115,6 +115,9 @@ public struct DoryIROptimizer: Sendable {
       case .effectiveAddress(let destination, _):
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)
+
+      case .clearInterruptFlag:
+        statements.append(statement)
 
       case .helper:
         statements.append(statement)
