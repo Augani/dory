@@ -7099,6 +7099,91 @@ public struct DoryX86Interpreter: Sendable {
       }
     }
 
+    if operation == .move,
+      repeated,
+      width != .byte,
+      addressWidth == .quadword,
+      !state.rflags.contains(.direction),
+      !DoryX86AlignmentPolicy.isEnabled(state: state),
+      let bulkMemory = memory as? any DoryX86BulkMemory
+    {
+      while remaining != 0, completed < iterationBudget {
+        let sourceAddress = stringSourceAddress(
+          addressWidth: addressWidth,
+          instruction: instruction,
+          mode: mode,
+          state: state
+        )
+        let destinationAddress = stringDestinationAddress(
+          addressWidth: addressWidth,
+          mode: mode,
+          state: state
+        )
+        let maximumElementCount = Int(min(remaining, iterationBudget - completed))
+        let requestedByteCount = maximumElementCount * width.byteCount
+        let sourceOperand = stringMemoryOperand(
+          source: true,
+          width: width,
+          addressWidth: addressWidth,
+          instruction: instruction,
+          mode: mode
+        )
+        let destinationOperand = stringMemoryOperand(
+          source: false,
+          width: width,
+          addressWidth: addressWidth,
+          instruction: instruction,
+          mode: mode
+        )
+        guard
+          bulkStringSpanIsArchitecturallyValid(
+            sourceOperand,
+            effectiveOffset: stringRegister(.rsi, width: addressWidth, state: state),
+            byteCount: requestedByteCount,
+            write: false,
+            instruction: instruction,
+            state: state
+          ),
+          bulkStringSpanIsArchitecturallyValid(
+            destinationOperand,
+            effectiveOffset: stringRegister(.rdi, width: addressWidth, state: state),
+            byteCount: requestedByteCount,
+            write: true,
+            instruction: instruction,
+            state: state
+          ),
+          instruction.nextInstructionAddress >= instruction.address
+        else { break }
+        do {
+          guard
+            let copied = try bulkMemory.copyForwardNonoverlappingElements(
+              from: sourceAddress,
+              to: destinationAddress,
+              elementByteCount: width.byteCount,
+              maximumElementCount: maximumElementCount,
+              excludingDestinationRanges: [instruction.address..<instruction.nextInstructionAddress]
+            ),
+            copied > 0
+          else { break }
+          precondition(copied <= maximumElementCount)
+          let elementCount = UInt64(copied)
+          let byteCount = elementCount &* UInt64(width.byteCount)
+          advanceStringRegister(
+            .rsi, by: byteCount, decrement: false, width: addressWidth, state: &state)
+          advanceStringRegister(
+            .rdi, by: byteCount, decrement: false, width: addressWidth, state: &state)
+          completed &+= elementCount
+          remaining &-= elementCount
+          writeStringRegister(.rcx, value: remaining, width: addressWidth, state: &state)
+        } catch let error as DoryX86MemoryError {
+          if completed != 0 { throw DoryX86PartialMemoryFault(error: error) }
+          throw error
+        }
+      }
+      if remaining == 0 { return true }
+      if completed == iterationBudget { return false }
+    }
+
     if operation == .store,
       repeated,
       addressWidth == .quadword,

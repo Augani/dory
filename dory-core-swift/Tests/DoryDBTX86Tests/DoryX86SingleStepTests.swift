@@ -144,6 +144,31 @@ import Testing
     #expect(state.debug.dr6 == 0x1_4005)
   }
 
+  @Test func repeatedQwordStringTrapsAfterOneRestartableIteration() throws {
+    let memory = try memory([0xF3, 0x48, 0xA5]) // REP MOVSQ
+    try memory.write(at: 0x200, bytes: [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x17, 0x28])
+    try memory.write(at: 0x208, bytes: [0x31, 0x42, 0x53, 0x64, 0x75, 0x86, 0x97, 0xA8])
+    try memory.write(at: 0x300, bytes: Array(repeating: 0, count: 16))
+    var state = try state(.long64, flags: [.reservedOne, .trap, .resume])
+    state.registers.rcx = 2
+    state.registers.rsi = 0x200
+    state.registers.rdi = 0x300
+    state.debug.dr6 = 5
+
+    #expect(DoryX86Interpreter().step(state: &state, memory: memory, mode: .long64)
+      == .exception(.init(kind: .debug, vector: 1, instructionPointer: 0x100)))
+    #expect(state.rip == 0x100)
+    #expect(state.registers.rcx == 1)
+    #expect(state.registers.rsi == 0x208)
+    #expect(state.registers.rdi == 0x308)
+    #expect(
+      try memory.read(at: 0x300, byteCount: 16)
+        == [0xA1, 0xB2, 0xC3, 0xD4, 0xE5, 0xF6, 0x17, 0x28, 0, 0, 0, 0, 0, 0, 0, 0]
+    )
+    #expect(state.rflags == [.reservedOne, .trap])
+    #expect(state.debug.dr6 == 0x1_4005)
+  }
+
   @Test func haltedInstructionSingleStepsInsteadOfLeavingTheProcessorHalted() throws {
     let memory = try memory([0xF4]) // HLT
     var state = try state(.real16, flags: [.reservedOne, .trap, .resume])

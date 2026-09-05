@@ -1,0 +1,14 @@
+{
+  "scope": "Forward long-address-width REP MOVSW/MOVSD/MOVSQ use existing whole-element ordinary-RAM copy authority. DF and alignment-sensitive execution retain scalar handling. Canonical-span guards, active-code exclusions, partial-prefix retirement,4096-element interrupt budget and one-element single-step budget remain intact.",
+  "motivation": "Live production boot profiled REP MOVSQ in timekeeping_advance as interpreter work; current live runner predates this change.",
+  "validation": "151 tests in five interpreter/paging/memory/single-step/canonical suites passed. Qword tests cover a truly nonoverlapping4097-element copy with an interruptible boundary, sequential overlapping-copy results, one-iteration TF trap, and canonical-boundary partial progress. Existing physical code-alias and whole-element page-boundary checks also pass.",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryX86Interpreter.swift": "152f72ccadbd279be885308b6d19dfc7ea40dfe7930b90c308f2738276ef0a34",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86InterpreterTests.swift": "70011d2e6616e95e400b1eb08e56169b7825c4f034fc906e65f0bd42ed1fd276",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86REPStringCanonicalBoundaryTests.swift": "1e03f45f7da036b8948e843d5f0ec52d5f18854314dc36658e47eb051c1158e6",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryX86SingleStepTests.swift": "b594ab7787fa9af08a08a8bdfc214eb69ffdfdbe7797dfdbbc45091ba8b9b29b"
+  },
+  "log": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/rep-bulk-final.log",
+  "logSHA256": "4a62da2e96428f2846e6303f2bcbcbb6c1749dcd16fcb1592e60a6909fce4dfc",
+  "limitation": "Exact changed files in isolated qualification checkout; no production boot or speedup claim."
+}

@@ -8,6 +8,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   private let backing: DoryX86ByteArrayMemory
   private let lock = NSLock()
   private var _bulkCallCount = 0
+  private var _bulkElementCallCount = 0
   private var _bulkFillCallCount = 0
 
   init(baseAddress: UInt64, bytes: [UInt8]) throws {
@@ -15,6 +16,7 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
   }
 
   var bulkCallCount: Int { lock.withLock { _bulkCallCount } }
+  var bulkElementCallCount: Int { lock.withLock { _bulkElementCallCount } }
   var bulkFillCallCount: Int { lock.withLock { _bulkFillCallCount } }
 
   func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {
@@ -45,6 +47,23 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
       from: sourceAddress,
       to: destinationAddress,
       maximumByteCount: maximumByteCount
+    )
+  }
+
+  func copyForwardNonoverlappingElements(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    elementByteCount: Int,
+    maximumElementCount: Int,
+    excludingDestinationRanges: [Range<UInt64>]
+  ) throws -> Int? {
+    lock.withLock { _bulkElementCallCount += 1 }
+    return try backing.copyForwardNonoverlappingElements(
+      from: sourceAddress,
+      to: destinationAddress,
+      elementByteCount: elementByteCount,
+      maximumElementCount: maximumElementCount,
+      excludingDestinationRanges: excludingDestinationRanges
     )
   }
 
@@ -2260,6 +2279,43 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(try memory.read(at: 0x12_000, byteCount: Int(count)) == Array(bytes[0x100..<0x1101]))
   }
 
+  @Test func longRepeatQwordMovesUseBulkRAMAndYieldAtAnInterruptibleBoundary() throws {
+    let count: UInt64 = 4_097
+    var bytes = [0xF3, 0x48, 0xA5] + [UInt8](repeating: 0, count: 0x1_2FFD)
+    for index in 0..<(Int(count) * 8) {
+      bytes[0x1000 + index] = UInt8(truncatingIfNeeded: index)
+    }
+    let memory = try BulkRecordingMemory(baseAddress: 0x30_000, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: count, rsi: 0x31_000, rdi: 0x3A_000),
+      rip: 0x30_000
+    )
+
+    let first = interpreter.step(state: &state, memory: memory, mode: .long64)
+    guard case .yielded = first else {
+      Issue.record("long REP MOVSQ did not yield: \(first)")
+      return
+    }
+    #expect(state.rip == 0x30_000)
+    #expect(state.registers.rcx == 1)
+    #expect(state.registers.rsi == 0x31_000 + 4_096 * 8)
+    #expect(state.registers.rdi == 0x3A_000 + 4_096 * 8)
+    #expect(memory.bulkElementCallCount == 1)
+
+    let second = interpreter.step(state: &state, memory: memory, mode: .long64)
+    guard case .retired = second else {
+      Issue.record("final REP MOVSQ iteration did not retire: \(second)")
+      return
+    }
+    #expect(state.registers.rcx == 0)
+    #expect(state.rip == 0x30_003)
+    #expect(memory.bulkElementCallCount == 2)
+    #expect(
+      try memory.read(at: 0x3A_000, byteCount: Int(count) * 8)
+        == Array(bytes[0x1000..<(0x1000 + Int(count) * 8)])
+    )
+  }
+
   @Test func longRepeatStoresUseBulkRAMAndYieldAtAnInterruptibleBoundary() throws {
     let count: UInt64 = 4_097
     let pattern: UInt64 = 0x1122_3344_5566_7788
@@ -2314,6 +2370,31 @@ private final class BulkRecordingMemory: DoryX86BulkMemory, @unchecked Sendable 
     #expect(state.registers.rcx == 0)
     #expect(state.registers.rsi == 0x14_023)
     #expect(state.registers.rdi == 0x14_024)
+  }
+
+  @Test func overlappingRepeatQwordMovePreservesSequentialX86Semantics() throws {
+    var bytes = [0xF3, 0x48, 0xA5] + [UInt8](repeating: 0, count: 0x80)
+    let original = Array(UInt8(1)...UInt8(32))
+    bytes.replaceSubrange(0x20..<0x40, with: original)
+    let memory = try BulkRecordingMemory(baseAddress: 0x15_000, bytes: bytes)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 3, rsi: 0x15_020, rdi: 0x15_028),
+      rip: 0x15_000
+    )
+
+    guard case .retired = interpreter.step(state: &state, memory: memory, mode: .long64)
+    else {
+      Issue.record("overlapping REP MOVSQ did not retire")
+      return
+    }
+    #expect(memory.bulkElementCallCount == 1)
+    #expect(
+      try memory.read(at: 0x15_020, byteCount: 32)
+        == Array(repeating: Array(UInt8(1)...UInt8(8)), count: 4).flatMap { $0 }
+    )
+    #expect(state.registers.rcx == 0)
+    #expect(state.registers.rsi == 0x15_038)
+    #expect(state.registers.rdi == 0x15_040)
   }
 
   @Test func realModeFetchAndDataAccessUseSegmentBases() throws {

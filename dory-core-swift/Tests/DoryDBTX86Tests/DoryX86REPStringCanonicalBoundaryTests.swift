@@ -99,6 +99,38 @@ import Testing
     #expect(state.registers.rdi == 0x2001)
   }
 
+  @Test func bulkMOVSQDeclinesSourceSpanAtCanonicalBoundaryAndCommitsOnlyValidPrefix() throws {
+    let memory = SparseStringBulkMemory()
+    memory.install([0xF3, 0x48, 0xA5], at: rip)  // REP MOVSQ
+    memory.install([0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17], at: lastLowCanonical - 7)
+    memory.install([0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], at: 0x2000)
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 2, rsi: lastLowCanonical - 7, rdi: 0x2000), rip: rip)
+
+    #expect(
+      interpreter.step(state: &state, memory: memory, mode: .long64)
+        == .exception(
+          .init(
+            kind: .generalProtection,
+            vector: 13,
+            errorCode: 0,
+            instructionPointer: rip,
+            commitsPartialProgress: true
+          )))
+    #expect(memory.bulkCopyElementCalls == 0)
+    #expect(
+      memory.dataReads == (0..<8).map { lastLowCanonical - 7 + UInt64($0) })
+    #expect(memory.dataWrites == (0..<8).map { UInt64(0x2000 + $0) })
+    #expect(
+      memory.bytes(at: 0x2000, count: 16)
+        == [0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0, 0, 0, 0, 0, 0, 0, 0]
+    )
+    #expect(state.rip == rip)
+    #expect(state.registers.rcx == 1)
+    #expect(state.registers.rsi == firstNoncanonical)
+    #expect(state.registers.rdi == 0x2008)
+  }
+
   @Test func bulkSTOSDeclinesDestinationSpanAndPreservesREPRestartState() throws {
     let memory = SparseStringBulkMemory()
     memory.install([0xF3, 0xAA], at: rip)  // REP STOSB
@@ -145,6 +177,36 @@ import Testing
     #expect(moveMemory.bytes(at: 0x3000, count: 2) == [0x31, 0x32])
     #expect(moveState.registers.rcx == 0)
 
+    let qwordMoveMemory = SparseStringBulkMemory()
+    qwordMoveMemory.install([0xF3, 0x48, 0xA5], at: rip)  // REP MOVSQ
+    qwordMoveMemory.install(
+      [
+        0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+        0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xF0, 0x12,
+      ], at: 0x5000)
+    qwordMoveMemory.install(Array(repeating: 0, count: 16), at: 0x6000)
+    var qwordMoveState = try DoryX86ArchitecturalState(
+      registers: .init(rcx: 2, rsi: 0x5000, rdi: 0x6000), rip: rip)
+
+    guard
+      case .retired = interpreter.step(
+        state: &qwordMoveState, memory: qwordMoveMemory, mode: .long64)
+    else {
+      Issue.record("canonical REP MOVSQ did not retire")
+      return
+    }
+    #expect(qwordMoveMemory.bulkCopyElementCalls == 1)
+    #expect(
+      qwordMoveMemory.bytes(at: 0x6000, count: 16)
+        == [
+          0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88,
+          0x99, 0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xF0, 0x12,
+        ]
+    )
+    #expect(qwordMoveState.registers.rcx == 0)
+    #expect(qwordMoveState.registers.rsi == 0x5010)
+    #expect(qwordMoveState.registers.rdi == 0x6010)
+
     let storeMemory = SparseStringBulkMemory()
     storeMemory.install([0xF3, 0x48, 0xAB], at: rip)  // REP STOSQ
     storeMemory.install(Array(repeating: 0, count: 16), at: 0x4000)
@@ -173,6 +235,7 @@ import Testing
 private final class SparseStringBulkMemory: DoryX86BulkMemory, @unchecked Sendable {
   private var storage: [UInt64: UInt8] = [:]
   private(set) var bulkCopyCalls = 0
+  private(set) var bulkCopyElementCalls = 0
   private(set) var bulkFillCalls = 0
   private(set) var dataReads: [UInt64] = []
   private(set) var dataWrites: [UInt64] = []
@@ -247,6 +310,26 @@ private final class SparseStringBulkMemory: DoryX86BulkMemory, @unchecked Sendab
   ) throws -> Int? {
     bulkFillCalls += 1
     let bytes = Array(repeating: pattern, count: maximumElementCount).flatMap { $0 }
+    try write(at: destinationAddress, bytes: bytes)
+    return maximumElementCount
+  }
+
+  func copyForwardNonoverlappingElements(
+    from sourceAddress: UInt64,
+    to destinationAddress: UInt64,
+    elementByteCount: Int,
+    maximumElementCount: Int,
+    excludingDestinationRanges: [Range<UInt64>]
+  ) throws -> Int? {
+    bulkCopyElementCalls += 1
+    let byteCount = elementByteCount * maximumElementCount
+    guard byteCount > 0 else { return 0 }
+    let destinationRange = destinationAddress..<(destinationAddress + UInt64(byteCount))
+    guard
+      !excludingDestinationRanges.contains(where: { !$0.isEmpty && $0.overlaps(destinationRange) }
+      )
+    else { return nil }
+    let bytes = try read(at: sourceAddress, byteCount: byteCount)
     try write(at: destinationAddress, bytes: bytes)
     return maximumElementCount
   }
