@@ -1,0 +1,27 @@
+{
+  "commit": "4e1f534d8",
+  "scope": "PC renderer authority failure completes pending guest fences once with outcomeUnknown; stale success callbacks do not retire failed-generation work.",
+  "verification": "Extended existing timeout test fails with 2 missing-completion assertions on prior implementation; 60 tests in 3 broker, command-lane, and GPU integration suites pass with fix.",
+  "sourceSHA256": {
+    "Packages/ContainerizationEngine/Sources/DoryHV/DoryPCVirGLRendererAuthority.swift": "39ccaffbdd9711301acd87a532132ba335d173cb45ad17eb48966dd21ef565f4",
+    "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryRendererWorkerBrokerTests.swift": "f29b07bf4f01d5290b75acaeb990c5ba8d45640fd4f9a9cdddf48f10628ecb54"
+  },
+  "logs": [
+    {
+      "file": "pc-gpu-timeout-fence-red-selected-0905.log.gz",
+      "sha256": "07548a20d88dc4416c8f9d43bb49bd5305684b1cbe4e6a005b2e24f41cbf7216",
+      "originalSHA256": "c683848ba08b44d4c6733dce224f1cec4d04ead2c36b5b8c664d7540b8a126c6"
+    },
+    {
+      "file": "pc-gpu-timeout-fence-green-0905.log.gz",
+      "sha256": "794d14037ea8563f923e5cc9764548454d01a6eb40c7f5b12cee1aaf739c6a33",
+      "originalSHA256": "6ebe8368198c9c99da3be094b5e1c9f56a34f4f46164c2bcb45d5ac37fcb0f21"
+    }
+  ],
+  "publication": "Machine-local home paths replaced with ${HOME} in public log copies; originals retained privately.",
+  "notQualified": [
+    "Real accelerated desktop and container workload matrix",
+    "Fresh worker recreation after device reset",
+    "Full renderer failure/recovery matrix"
+  ]
+}
