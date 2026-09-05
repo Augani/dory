@@ -1,0 +1,145 @@
+{
+  "commits": {
+    "decoder": "e8dd26c53",
+    "signalCallback": "5cae83284"
+  },
+  "findings": [
+    "Debug interpreter call chain exhausted host thread stack in monolithic decoder; extracting only entire0F block remained insufficient, separate system/vector/extended frames passed.",
+    "Old PID69718 termination signal triggered inherited MainActor callback assertion on signalQueue; explicit Sendable fixes callback isolation."
+  ],
+  "logs": [
+    {
+      "log": "decoder-stack-before.log.gz",
+      "sha256Uncompressed": "780f96ba582fefb5f438abeef02b0a1304d4cbda1b9b520511bdf2e8ed4673b9",
+      "scope": "Original filtered suite reproducibly terminates SIGBUS"
+    },
+    {
+      "log": "decoder-stack-after.log.gz",
+      "sha256Uncompressed": "0fb82ef16542752239114844555b6281cedab44f739d5ba2955247f15327e717",
+      "scope": "106 existing tests in9 suites pass"
+    },
+    {
+      "log": "signal-callback-build.log.gz",
+      "sha256Uncompressed": "eb248afdf25484bad6761f66bc5750233266ce5802662aafa157e5965e9926b4",
+      "scope": "dory-hv linked; physical termination of fixed binary remains unverified"
+    }
+  ],
+  "crashEvidence": [
+    {
+      "sourceReport": "swiftpm-testing-helper-2026-09-05-184908.ips",
+      "sha256": "766e93c6f317677f09733ce6ba6d695c3604143c1add75e7cc300f5c51b21822",
+      "exception": {
+        "codes": "0x0000000000000002, 0x000000016fe1bff8",
+        "message": "Could not determine thread index for stack guard region",
+        "rawCodes": [
+          2,
+          6172033016
+        ],
+        "type": "EXC_BAD_ACCESS",
+        "signal": "SIGBUS",
+        "subtype": "KERN_PROTECTION_FAILURE at 0x000000016fe1bff8"
+      },
+      "frames": [
+        {
+          "symbol": "___chkstk_darwin",
+          "sourceFile": null,
+          "sourceLine": null
+        },
+        {
+          "symbol": "DoryX86Decoder.decode(_:at:mode:)",
+          "sourceFile": "DoryX86Decoder.swift",
+          "sourceLine": 34
+        },
+        {
+          "symbol": "DoryX86Decoder.decode(_:at:mode:)",
+          "sourceFile": "DoryX86Decoder.swift",
+          "sourceLine": 34
+        },
+        {
+          "symbol": "DoryX86Decoder.decode(_:at:mode:)",
+          "sourceFile": "DoryX86Decoder.swift",
+          "sourceLine": 31
+        },
+        {
+          "symbol": "DoryX86Interpreter.decodeInstruction(at:memoryAddress:memory:mode:maximumByteCount:)",
+          "sourceFile": "DoryX86Interpreter.swift",
+          "sourceLine": 6264
+        },
+        {
+          "symbol": "DoryX86Interpreter.executeStep(state:memory:mode:pagingUnit:translatedMemory:ioBus:singleStepSuppressed:)",
+          "sourceFile": "DoryX86Interpreter.swift",
+          "sourceLine": 174
+        },
+        {
+          "symbol": "DoryX86Interpreter.step(state:memory:mode:pagingUnit:translatedMemory:ioBus:)",
+          "sourceFile": "DoryX86Interpreter.swift",
+          "sourceLine": 88
+        },
+        {
+          "symbol": "DoryPCDirectKernelMachine.execute(processor:state:maximumInstructions:jitInstructionBudget:)",
+          "sourceFile": "DoryPCDirectKernelMachine.swift",
+          "sourceLine": 950
+        }
+      ]
+    },
+    {
+      "sourceReport": "dory-hv-2026-09-05-184914.ips",
+      "sha256": "f6ae75590b1d815d054f585450594bced24aa6708522be28f9154e65b90a87da",
+      "exception": {
+        "codes": "0x0000000000000001, 0x0000000196cbaa1c",
+        "rawCodes": [
+          1,
+          6824897052
+        ],
+        "type": "EXC_BREAKPOINT",
+        "signal": "SIGTRAP"
+      },
+      "frames": [
+        {
+          "symbol": "_dispatch_assert_queue_fail",
+          "sourceFile": null,
+          "sourceLine": null
+        },
+        {
+          "symbol": "dispatch_assert_queue$V2.cold.1",
+          "sourceFile": null,
+          "sourceLine": null
+        },
+        {
+          "symbol": "dispatch_assert_queue",
+          "sourceFile": null,
+          "sourceLine": null
+        },
+        {
+          "symbol": "_swift_task_checkIsolatedSwift",
+          "sourceFile": null,
+          "sourceLine": null
+        },
+        {
+          "symbol": "swift_task_isCurrentExecutorWithFlagsImpl(swift::SerialExecutorRef, swift::swift_task_is_current_executor_flag)",
+          "sourceFile": null,
+          "sourceLine": null
+        },
+        {
+          "symbol": "closure #1 in DoryPCMode.Controller.installSignals()",
+          "sourceFile": "DoryPCMode.swift",
+          "sourceLine": null
+        },
+        {
+          "symbol": "<deduplicated_symbol>",
+          "sourceFile": null,
+          "sourceLine": null
+        },
+        {
+          "symbol": "_dispatch_client_callout",
+          "sourceFile": null,
+          "sourceLine": null
+        }
+      ]
+    }
+  ],
+  "limitations": [
+    "No full guest boot or performance qualification from these checks.",
+    "Physical signed runner termination with fixed callback still needs verification."
+  ]
+}
