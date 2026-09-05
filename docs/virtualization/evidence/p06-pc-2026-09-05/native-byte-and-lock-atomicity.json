@@ -1,0 +1,13 @@
+{
+  "scope": "Native non-LOCK byte-memory AND for the measured hrtimer path. Central translation guard preserves LOCK atomicity by retaining interpreter execution except for CMPXCHG, which has an atomic native callback.",
+  "validation": "111 JIT tests pass across both tiers. Includes register/address aliasing, full-state/memory parity, declined reads, rejected writes after successful reads, unchanged memory and flags on fault, and LOCK AND/ADD/INC declining before memory side effects. Existing atomic CMPXCHG tests pass.",
+  "cleanup": "Removed a default-cache-size equality test that did not exercise the working-set behavior its name claimed. Existing cache wrap and lookup behavior tests remain.",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "58821d7ec27eef28aafa859d62767e1788e6a5d38ee6cf6b2e6937086406b37b",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "cf2734fd69412b64e488363c246db73db3c908dd85ec8c54f0f92d2bf731ceae",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "b64bd7aa9ad9484d16444cba51693d53faad7555a565cb3289e2e7fcd9e87fb1"
+  },
+  "log": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/native-byte-and-lock-final.log",
+  "logSHA256": "81c69609e51cee5c1212782e39c6e2aa00ada553f33fb4fe4055953009426862",
+  "limitation": "Exact changed files in isolated qualification checkout; current live production runner predates this patch. No boot speedup claim."
+}

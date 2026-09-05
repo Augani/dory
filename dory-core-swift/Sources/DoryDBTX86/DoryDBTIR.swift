@@ -226,6 +226,9 @@ public struct DoryX86IRTranslator: Sendable {
     _ instruction: DoryX86DecodedInstruction,
     mode: DoryX86ExecutionMode
   ) -> (statements: [DoryIRStatement], terminator: DoryIRTerminator?) {
+    if instruction.prefixes.lock, !supportsNativeLockPrefix(instruction.operation) {
+      return fallback(instruction, reason: .interpreter)
+    }
     if DoryX86LegacyFloatingPointPolicy.isX87NoOperation(instruction) {
       // FNOP is still an x87 instruction: preserve its feature and EM/TS checks.
       return fallback(instruction, reason: .interpreter)
@@ -568,6 +571,11 @@ public struct DoryX86IRTranslator: Sendable {
     }
   }
 
+  private func supportsNativeLockPrefix(_ operation: DoryX86InstructionOperation) -> Bool {
+    if case .compareExchange = operation { return true }
+    return false
+  }
+
   private func requiresJITFallback(
     _ lowering: (statements: [DoryIRStatement], terminator: DoryIRTerminator?)
   ) -> Bool {
@@ -642,7 +650,9 @@ public struct DoryX86IRTranslator: Sendable {
       case .memory(let address, let width)
       where isJITMemoryAddress(address)
         && ((width == .i32 || width == .i64)
-          || (width == .i8 && !writesDestination && (operation == .compare || operation == .test))):
+          || (width == .i8
+            && ((!writesDestination && (operation == .compare || operation == .test))
+              || (writesDestination && operation == .and)))):
         targetWidth = width
       default:
         return false
