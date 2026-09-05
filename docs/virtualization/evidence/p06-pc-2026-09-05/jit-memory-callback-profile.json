@@ -1,0 +1,31 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "source_commit": "16bf3f586",
+  "fixture_commit": "89ac43f57",
+  "sample": {
+    "pid": 68641,
+    "duration_seconds": 10,
+    "interval_milliseconds": 5,
+    "main_thread_samples": 1527,
+    "callback_setup_call_samples": 234,
+    "protocol_conformance_child_samples": 222,
+    "scope": "Early HPET-disabled host-monotonic diagnostic boot; not a whole-workload benchmark"
+  },
+  "change": "Skip per-block memory callback context construction when compiler metadata proves the block has no memory callbacks. Keep callback-bearing block setup and restartable-fault handling.",
+  "validation": {
+    "tests": 103,
+    "suites": 5,
+    "issues": 0,
+    "baseline_findings": "The unchanged baseline and candidate both had73 issues from two native-only fixtures enabling TF. Production routes TF execution to the interpreter. Corrected fixture inputs and retained dedicated single-step coverage."
+  },
+  "artifact_sha256": {
+    "sample": "d0c16a9d4627fcac61d2492e1a2ddf62437eec60301c68fff0443e0e5117869f",
+    "baseline_tests": "0e3d873e34d80b0e6a078af94bb113142ab0bd5879e95f338d36ebb116b4aa3c",
+    "final_tests": "9a706eb73c9876ecc869796dfdc7d13ed62471aa7686bb5617af423064c29d8d"
+  },
+  "remaining": [
+    "Measure comparable before/after boot throughput.",
+    "Reach Linux userspace with production clock semantics."
+  ]
+}
