@@ -41,5 +41,18 @@
     "Bind kernel and Mesa artifacts to the production graphics launch authority",
     "Verify real guest accelerated GLX output and renderer identity",
     "Qualify sustained graphics and failure recovery"
-  ]
+  ],
+  "restored_profile_rebuild": {
+    "date": "2026-09-05",
+    "verification_exit_code": 0,
+    "matches_original": {
+      "input_sha256": true,
+      "primary_sha256": true,
+      "secondary_sha256": true,
+      "compressed_sha256": true,
+      "config_sha256": true,
+      "toolchain_sha256": true
+    },
+    "scope": "Same host and pinned toolchain; this does not establish reproducibility across hosts."
+  }
 }

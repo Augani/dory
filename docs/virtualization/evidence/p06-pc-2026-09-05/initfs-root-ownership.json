@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "scope": "Rebuilt amd64 initfs with managed root ownership; no Linux boot or graphics execution claim",
+  "verification_command": "./guest/initfs/verify-build.sh amd64",
+  "verification_exit_code": 0,
+  "build_stamp": {
+    "schema": "3",
+    "arch": "amd64",
+    "input_sha256": "d6cab5c1e6a99e46b766b67172a4da4b610da74e554a33c8ab666e9801ba78b2",
+    "agent_sha256": "bf05db6232afa5b4943375f163af16de302693032aeee0efb0002f9391f7cda3",
+    "image_sha256": "d851c88763032f2b6169c2427f88c2d971b9ca93b8ec2e3800939bf0c6c063b9"
+  },
+  "source_sha256": {
+    "guest/initfs/build.sh": "6978ddf06935de81b07ea3780c56097ed3f865d07b4b544a0dabe8d7b9a4060c",
+    "guest/initfs/verify-build.sh": "fce8365e39f19090a169390ce29e861ea7b64263e5988418017fcba87797a992"
+  }
+}
