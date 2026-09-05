@@ -485,7 +485,10 @@ import Testing
 }
 
 @Suite struct DoryRendererWorkerVirtioCommandLaneTests {
-    @Test func doryPCVirGLAuthorityUsesOnlyAuthenticatedVirGLAndDescriptorBackedStaging() async throws {
+    @Test(arguments: [false, true])
+    func doryPCVirGLAuthorityUsesOnlyAuthenticatedVirGLAndDescriptorBackedStaging(
+        rejectSecondScanout: Bool
+    ) async throws {
         let fixture = try rendererBrokerFixture()
         let lane = try DoryRendererWorkerVirtioCommandLane(
             broker: fixture.broker,
@@ -496,7 +499,8 @@ import Testing
             lane: lane,
             deviceGeneration: 11,
             scanoutSink: {
-                scanoutRecorder.accept($0)
+                guard $0.flush.scanoutID == 0 else { return false }
+                return scanoutRecorder.accept($0)
             }
         )
 
@@ -678,7 +682,20 @@ import Testing
             stride: 16,
             storageOffset: 0
         )
-        let present = Task.detached { try authority.flushResource([flush]) }
+        let secondFlush = DoryVirtioGPUAcceleratedScanoutFlush(
+            scanoutID: 1,
+            resourceID: flush.resourceID,
+            sourceRectangle: flush.sourceRectangle,
+            damagedRectangle: flush.damagedRectangle,
+            resourceWidth: flush.resourceWidth,
+            resourceHeight: flush.resourceHeight,
+            virglFormat: flush.virglFormat,
+            stride: flush.stride,
+            storageOffset: flush.storageOffset
+        )
+        let present = Task.detached {
+            try authority.flushResource(rejectSecondScanout ? [flush, secondFlush] : [flush])
+        }
         #expect(await rendererEventually { fixture.channel.sendCount == 6 })
         let acquire = try fixture.channel.command(
             at: 5,
@@ -729,7 +746,59 @@ import Testing
                     descriptors: [scanoutDescriptor]
                 ))
         )
-        try await present.value
+        if rejectSecondScanout {
+            #expect(await rendererEventually { fixture.channel.sendCount == 7 })
+            let (secondDescriptor, secondFileSize) = try makeUnlinkedRegion(
+                byteCount: 4_096,
+                readOnly: false
+            )
+            let secondLease = try DoryRendererScanoutLease(
+                workerGeneration: fixture.bootstrap.generation,
+                resourceID: 29,
+                resourceGeneration: 41,
+                leaseID: .init(rawValue: UUID()),
+                releaseToken: .init(rawValue: UUID()),
+                sharedRegionID: .random(),
+                sharedMemoryDescriptorIndex: 0,
+                synchronization: .managedGuestProducerCompleteFlush,
+                pixelFormat: .bgra8Unorm,
+                yOriginTop: false,
+                width: 4,
+                height: 2,
+                stride: 16,
+                rowAlignment: 16,
+                storageOffset: 0,
+                declaredFileSize: secondFileSize,
+                leaseByteCount: 32,
+                limits: fixture.bootstrap.limits
+            )
+            fixture.channel.complete(
+                at: 6,
+                with: .success(
+                    DoryRendererWorkerChannelReply(
+                        payload: DoryRendererScanoutLeaseCodec.encode(secondLease),
+                        descriptors: [secondDescriptor]
+                    ))
+            )
+            do {
+                try await present.value
+                Issue.record("Rejected scanout batch unexpectedly succeeded")
+            } catch {
+                #expect(error as? DoryPCVirGLRendererAuthorityError == .rendererUnavailable)
+            }
+            #expect(await rendererEventually { fixture.channel.sendCount == 8 })
+            let rejectedRelease = try fixture.channel.command(at: 7, limits: fixture.bootstrap.limits)
+            #expect(rejectedRelease.operation == .releaseScanoutLease)
+            #expect(try DoryRendererScanoutReleaseToken.decodeCommandPayload(rejectedRelease.payload)
+                == secondLease.releaseToken)
+            fixture.channel.complete(
+                at: 7,
+                with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+            )
+            #expect(await rendererEventually { lane.snapshot().liveScanoutLeases == 1 })
+        } else {
+            try await present.value
+        }
         let update = try #require(scanoutRecorder.update)
         #expect(update.flush == flush)
         #expect(try update.withSharedMemory { lease, _ in lease } == scanoutLease)
@@ -750,10 +819,11 @@ import Testing
             }.stride == 16
         )
 
+        let releaseIndex = rejectSecondScanout ? 8 : 6
         update.retire()
-        #expect(await rendererEventually { fixture.channel.sendCount == 7 })
+        #expect(await rendererEventually { fixture.channel.sendCount == releaseIndex + 1 })
         let release = try fixture.channel.command(
-            at: 6,
+            at: releaseIndex,
             limits: fixture.bootstrap.limits
         )
         #expect(release.operation == .releaseScanoutLease)
@@ -762,7 +832,7 @@ import Testing
                 == scanoutLease.releaseToken
         )
         fixture.channel.complete(
-            at: 6,
+            at: releaseIndex,
             with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
         )
         #expect(await rendererEventually { lane.snapshot().liveScanoutLeases == 0 })

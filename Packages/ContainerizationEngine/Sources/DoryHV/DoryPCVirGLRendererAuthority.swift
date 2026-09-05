@@ -479,6 +479,7 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         }
         let deviceGeneration = try admit()
         var updates: [DoryPCVirGLScanoutUpdate] = []
+        var acceptedCount = 0
         updates.reserveCapacity(scanouts.count)
         do {
             for flush in scanouts {
@@ -514,11 +515,15 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
                     )
                 )
             }
-            guard updates.allSatisfy({ scanoutSink($0) }) else {
-                throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+            for update in updates {
+                guard scanoutSink(update) else {
+                    throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+                }
+                acceptedCount += 1
             }
         } catch {
-            for update in updates { update.retire() }
+            // Accepted updates belong to the display until it retires them.
+            for update in updates.dropFirst(acceptedCount) { update.retire() }
             throw error
         }
     }
