@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "scope": "Actual Apple installation through dory-vmm helper exposed duplicate start; focused fix regression",
+  "observation": {
+    "helper_pid": 46574,
+    "installation_journal_phase": "completed",
+    "installation_progress": 1,
+    "failure": "VZErrorDomain Code4: transition from running to running is invalid",
+    "helper_exit": 2
+  },
+  "fix": "Preserve observed VZ state at install completion and skip first-boot start when already running.",
+  "regression": {
+    "suite": "DoryVZMacAdapterTests",
+    "passed": 10,
+    "failed": 0
+  },
+  "evidence_sha256": {
+    "failure_log": "4a94081b7bfbe32038ded48b194facef4689d2bb67df0796604d94c62b76eadd",
+    "install_journal": "48e1c969c7772e346760c58d342a806eb14bc4758b7b92cf5bc8242830c54f12",
+    "regression_log": "3b7f8da4948d34534794e0624d5ff1d9d10ebba9da6d66f9564778d6f2b9c643"
+  },
+  "remaining": "Rebuild signed helper and verify actual install handoff plus managed suspend/restore with the corrected source; no physical fix success claimed yet."
+}

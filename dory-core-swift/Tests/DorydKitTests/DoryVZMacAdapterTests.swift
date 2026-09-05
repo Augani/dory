@@ -20,21 +20,22 @@ final class DoryVZMacAdapterTests: XCTestCase {
         }
     }
 
-    func testFailedSuspendProjectsObservedRuntimeState() {
+
+    func testObservedRuntimeStateProjection() {
         XCTAssertEqual(
-            DoryVZMacAdapter.stateAfterFailedSuspend(runtimeState: .paused),
-            .paused
-        )
-        XCTAssertEqual(
-            DoryVZMacAdapter.stateAfterFailedSuspend(runtimeState: .running),
+            DoryVZMacAdapter.observedState(runtimeState: .running),
             .running
         )
         XCTAssertEqual(
-            DoryVZMacAdapter.stateAfterFailedSuspend(runtimeState: .stopped),
+            DoryVZMacAdapter.observedState(runtimeState: .paused),
+            .paused
+        )
+        XCTAssertEqual(
+            DoryVZMacAdapter.observedState(runtimeState: .stopped),
             .stopped
         )
         XCTAssertEqual(
-            DoryVZMacAdapter.stateAfterFailedSuspend(runtimeState: .other),
+            DoryVZMacAdapter.observedState(runtimeState: .other),
             .failed
         )
     }
@@ -83,6 +84,23 @@ final class DoryVZMacAdapterTests: XCTestCase {
             error.description,
             "VZMac is running; expected stopped or suspended"
         )
+    }
+
+
+    @MainActor
+    func testInstallLifecycleSkipsFirstBootStartWhenInstallerLeavesGuestRunning() async throws {
+        let lifecycle = DoryVZMacDesktopInstallLifecycle()
+        var startCount = 0
+
+        try await lifecycle.installThenStart {
+        } alreadyRunning: {
+            true
+        } start: {
+            startCount += 1
+        }
+
+        XCTAssertEqual(startCount, 0)
+        XCTAssertTrue(lifecycle.shouldFinishStoppedObservation(operation: .install))
     }
 
     @MainActor

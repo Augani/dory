@@ -141,7 +141,7 @@ public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelega
                 operationID: operationID,
                 progress: progress
             )
-            endTransition(.stopped)
+            endTransition(Self.observedState(runtimeState: Self.managedState(for: runtime.virtualMachine.state)))
         } catch {
             endTransition(.failed, failure: error)
             throw error
@@ -202,7 +202,7 @@ public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelega
             endTransition(.suspended)
         } catch {
             endTransition(
-                Self.stateAfterFailedSuspend(runtimeState: Self.managedState(for: runtime.virtualMachine.state)),
+                Self.observedState(runtimeState: Self.managedState(for: runtime.virtualMachine.state)),
                 failure: error
             )
             throw error
@@ -260,7 +260,7 @@ public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelega
         onObservation?(observation)
     }
 
-    nonisolated static func stateAfterFailedSuspend(
+    nonisolated static func observedState(
         runtimeState: DoryVZMacManagedRuntimeState
     ) -> DoryVZMacAdapterState {
         switch runtimeState {

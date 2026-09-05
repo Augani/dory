@@ -24,13 +24,16 @@ final class DoryVZMacDesktopInstallLifecycle {
 
     func installThenStart(
         install: @MainActor () async throws -> Void,
+        alreadyRunning: @MainActor () -> Bool = { false },
         start: @MainActor () async throws -> Void
     ) async throws {
         phase = .installingRestore
         do {
             try await install()
-            phase = .startingFirstBoot
-            try await start()
+            if !alreadyRunning() {
+                phase = .startingFirstBoot
+                try await start()
+            }
             phase = .idle
         } catch {
             phase = .idle
@@ -549,10 +552,9 @@ private final class DoryVZMacDesktopApplication: NSObject, NSApplicationDelegate
                         ) { [weak self] fraction in
                             self?.window.title = "\(self?.machineName ?? "macOS") — Installing macOS \(Int(fraction * 100))%"
                         }
+                    } alreadyRunning: {
+                        adapter.observation.state == .running
                     } start: {
-                        // Apple's installer leaves the VM stopped after restore. Keep creation and
-                        // first boot one supervised operation and publish readiness only after the
-                        // installed guest is actually running.
                         try await adapter.start()
                     }
                 case .run:
