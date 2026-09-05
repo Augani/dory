@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "diagnosticCommit": "26e093014",
+  "scope": "Existing firmware-only boot probe; no guest userspace or EFI runtime success claim",
+  "run": {
+    "stop": "poweredOff(instructionCount: 18139788)",
+    "completedInstructions": 18139788,
+    "serialMarkerMatched": true,
+    "runnerSHA256": "11996c8bd2feae22d144751eba312e36d733a00c06d3a804275efe5b1af21420",
+    "firmwareCodeSHA256": "a7d2011d631d5ed4abf1fab2566571d5fc6d506f953d97b5a02ef6dcfb6124ec"
+  },
+  "pointerObservations": [
+    "\u001b[2J\u001b[001;001H\u001b[=3h\u001b[2J\u001b[001;001HDORY-PC-UEFI-RUNTIME GetVariable=0x000000003fdc3743 memType=0x0000000000000003 phys=0x000000003fdb5000 virt=0x0000000000000000 pages=0x0000000000000020 attr=0x000000000000000f imageBase=0x000000003fdb5000 imageSize=0x0000000000020000 codeType=0x0000000000000003 dataType=0x0000000000000004",
+    "DORY-PC-UEFI-RUNTIME SetVariable=0x000000003fdc3743 memType=0x0000000000000003 phys=0x000000003fdb5000 virt=0x0000000000000000 pages=0x0000000000000020 attr=0x000000000000000f imageBase=0x000000003fdb5000 imageSize=0x0000000000020000 codeType=0x0000000000000003 dataType=0x0000000000000004",
+    "DORY-PC-UEFI-RUNTIME GetNextVariableName=0x000000003fdc3722 memType=0x0000000000000003 phys=0x000000003fdb5000 virt=0x0000000000000000 pages=0x0000000000000020 attr=0x000000000000000f imageBase=0x000000003fdb5000 imageSize=0x0000000000020000 codeType=0x0000000000000003 dataType=0x0000000000000004",
+    "DORY-PC-UEFI-RUNTIME QueryVariableInfo=0x000000003fdc3738 memType=0x0000000000000003 phys=0x000000003fdb5000 virt=0x0000000000000000 pages=0x0000000000000020 attr=0x000000000000000f imageBase=0x000000003fdb5000 imageSize=0x0000000000020000 codeType=0x0000000000000003 dataType=0x0000000000000004",
+    "DORY-PC-UEFI-RUNTIME ResetSystem=0x000000003f894124 memType=0x0000000000000005 phys=0x000000003f893000 virt=0x0000000000000000 pages=0x0000000000000004 attr=0x800000000000000f imageBase=0x000000003f893000 imageSize=0x0000000000004000 codeType=0x0000000000000005 dataType=0x0000000000000006"
+  ],
+  "finding": "GetVariable and SetVariable point to the same address0x3fdc3743 in a128KiB BootServicesCode image. GetNextVariableName and QueryVariableInfo are adjacent in that image. These match DXE Core default CoreEfiNotAvailableYetArg* runtime table entries, not Dory variable-driver functions. ResetSystem separately has RuntimeServicesCode memory and runtime attribute.",
+  "nextAction": "Determine why DoryVariableRuntimeDxe does not install its services: dispatch/entry status, runtime MMIO setup and bridge validation. Do not promote DXE Core stub memory to runtime as a workaround.",
+  "baselineFaultAddress": "0x3fdc3743",
+  "sourceRevision": "2970e5699ba6267f3384ffab20f96647578aebc8",
+  "artifacts": [
+    {
+      "path": "/tmp/dory-root-efi-runtime-pointer-probe-0905.json",
+      "sha256": "4f1f4903df8e30501b8c35a2a9856b50a02c07061f987e690483f74fc9169c86"
+    },
+    {
+      "path": "/private/tmp/dory-clean-edk2-cache-furncfq6/edk2/MdeModulePkg/Core/Dxe/DxeMain/DxeMain.c",
+      "sha256": "91381e31a89cb393fbda9704916546ab4282122135f58fc02a7f28b8cbed107c"
+    }
+  ]
+}
