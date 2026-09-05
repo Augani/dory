@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "sourceCommit": "1102aa702",
+  "scope": "Pinned patched Docker producer and explicit local initfs override admission; no refreshed runtime qualification",
+  "sourceFiles": [
+    {
+      "path": "guest/initfs/vendor/docker-29.6.1-dory1/Dockerfile",
+      "sha256": "63bd0cba041e3c142d9e2ebef31f979f11bcf89508b37e108b213acca486599b"
+    },
+    {
+      "path": "guest/initfs/vendor/docker-29.6.1-dory1/rebuild.sh",
+      "sha256": "262654dbd6a94d3791cd5fef541b47bc3ef3f4e41f0d92cc10ac322d56b90229"
+    },
+    {
+      "path": "guest/initfs/build.sh",
+      "sha256": "4a7003c7c130b54d0d11af9e75187841fdd84930fb1790d3755d164983290b6e"
+    },
+    {
+      "path": "guest/initfs/input-fingerprint.sh",
+      "sha256": "60917febf797e822995ab923d26cf64413c40f0b6509d23b9e78fce9c30c7729"
+    }
+  ],
+  "producerInputs": {
+    "arm64": "8a5b43ec33fd2de3a7a1e322dd6a0c69f503de55aa5a637b80cc5417b00dcd6b",
+    "amd64": "6e5cb6d5ab61a1e1103bf3fa1c80e64821c1573fbaad053449f05edeb4bf0278"
+  },
+  "rootVerification": {
+    "shellSyntax": "passed",
+    "staleArm64Receipt": "rejected with exit 1 and producer input mismatch"
+  },
+  "remaining": [
+    "Rebuild ARM64 against frozen producer source; current archive receipt is stale",
+    "Run actual patched daemon and interrupted-container recovery campaign",
+    "Investigate upstream and patched AMD64 static dockerd exit255 under FEX",
+    "Qualify and integrate final artifacts; running guest retains upstream Docker"
+  ],
+  "amd64UpstreamObservation": {
+    "container": "c568b6aed0b3",
+    "exitCode": 255,
+    "oomKilled": false,
+    "source": "agent diagnostic /private/tmp/dory-amd64-dockerd-fex-diag.81992",
+    "independentlyRepeatedByRoot": false
+  }
+}
