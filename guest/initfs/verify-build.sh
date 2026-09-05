@@ -100,6 +100,44 @@ if [ "$ARCH" = arm64 ]; then
   done
 fi
 
+if [ "$ARCH" = amd64 ]; then
+  for required in \
+    /lib64/ld-linux-x86-64.so.2 \
+    /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 \
+    /lib/x86_64-linux-gnu/libc.so.6 \
+    /lib/x86_64-linux-gnu/libdl.so.2 \
+    /lib/x86_64-linux-gnu/libm.so.6 \
+    /lib/x86_64-linux-gnu/libpthread.so.0 \
+    /lib/x86_64-linux-gnu/libgcc_s.so.1 \
+    /usr/lib/x86_64-linux-gnu/libstdc++.so.6 \
+    /usr/lib/x86_64-linux-gnu/libX11.so.6 \
+    /usr/lib/x86_64-linux-gnu/libX11-xcb.so.1 \
+    /usr/lib/x86_64-linux-gnu/libXext.so.6 \
+    /usr/lib/x86_64-linux-gnu/libXxf86vm.so.1 \
+    /usr/lib/x86_64-linux-gnu/libxcb.so.1 \
+    /usr/lib/x86_64-linux-gnu/libxcb-dri3.so.0 \
+    /usr/lib/x86_64-linux-gnu/libxcb-glx.so.0 \
+    /usr/lib/x86_64-linux-gnu/libxcb-present.so.0 \
+    /usr/lib/x86_64-linux-gnu/libxcb-randr.so.0 \
+    /usr/lib/x86_64-linux-gnu/libxcb-shm.so.0 \
+    /usr/lib/x86_64-linux-gnu/libxcb-sync.so.1 \
+    /usr/lib/x86_64-linux-gnu/libxcb-xfixes.so.0 \
+    /usr/lib/x86_64-linux-gnu/libxshmfence.so.1 \
+    /lib/x86_64-linux-gnu/libz.so.1 \
+    /usr/lib/x86_64-linux-gnu/libzstd.so.1 \
+    /usr/lib/dory/engine-gpu-runtime.env \
+    /opt/dory/mesa/lib/dri/virtio_gpu_dri.so \
+    /opt/dory/mesa/lib/libGL.so \
+    /opt/dory/mesa/lib/libGL.so.1 \
+    /opt/dory/mesa/lib/libGL.so.1.2.0 \
+    /opt/dory/mesa/lib/libgallium-26.0.0-devel.so \
+    /opt/dory/mesa/share/dory/runtime.env \
+    /opt/dory/mesa/share/dory/build-packages.txt; do
+    "$DEBUGFS" -R "stat $required" "$IMAGE" 2>&1 | grep -q '^Inode:' \
+      || fail "$IMAGE is missing required PC VirGL2 runtime path $required"
+  done
+fi
+
 AGENT_DUMP="$(mktemp /tmp/dory-agent-verify.XXXXXX)"
 FEX_DUMP=""
 FEX_SERVER_DUMP=""
@@ -109,10 +147,16 @@ RUNC_REAL_DUMP=""
 GPU_RUNTIME_DUMP=""
 VENUS_ICD_DUMP=""
 VENUS_MANIFEST_DUMP=""
+PC_MESA_EXTRACT=""
+PC_MESA_DUMP=""
+PC_MESA_REFERENCE=""
 cleanup() {
   rm -f "$AGENT_DUMP" "$FEX_DUMP" "$FEX_SERVER_DUMP" "$FEX_BUILD_PACKAGES_DUMP" \
     "$DORY_RUNC_DUMP" "$RUNC_REAL_DUMP" "$GPU_RUNTIME_DUMP" "$VENUS_ICD_DUMP" \
     "$VENUS_MANIFEST_DUMP"
+  [ -z "$PC_MESA_EXTRACT" ] || rm -rf "$PC_MESA_EXTRACT"
+  [ -z "$PC_MESA_DUMP" ] || rm -rf "$PC_MESA_DUMP"
+  [ -z "$PC_MESA_REFERENCE" ] || rm -rf "$PC_MESA_REFERENCE"
 }
 trap cleanup EXIT
 "$DEBUGFS" -R "dump /usr/bin/dory-agent $AGENT_DUMP" "$IMAGE" >/dev/null 2>&1 \
@@ -212,6 +256,60 @@ PY
     || fail "$IMAGE dory-runc is not a static arm64 Linux binary"
   file "$RUNC_REAL_DUMP" | grep -Eq 'ELF 64-bit.*(ARM aarch64|arm64).*(static-pie|statically) linked' \
     || fail "$IMAGE runc.real is not Docker's static arm64 runtime"
+fi
+
+if [ "$ARCH" = amd64 ]; then
+  "$ROOT/guest/mesa/verify-pc-virgl2-build.sh" x86_64 >/dev/null
+  expected_mesa_sha="$(shasum -a 256 "$ROOT/guest/out/dory-mesa-virgl2-x86_64.tar.zst" | awk '{print $1}')"
+  GPU_RUNTIME_DUMP="$(mktemp /tmp/dory-engine-gpu-runtime-verify.XXXXXX)"
+  "$DEBUGFS" -R "dump /usr/lib/dory/engine-gpu-runtime.env $GPU_RUNTIME_DUMP" \
+    "$IMAGE" >/dev/null 2>&1 || fail "could not extract the PC VirGL2 runtime receipt"
+  grep -Fqx 'schema=2' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE contains an unsupported PC VirGL2 runtime receipt"
+  grep -Fqx "mesa_runtime_sha256=$expected_mesa_sha" "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE embeds a PC VirGL2 runtime outside the verified producer artifact"
+  grep -Fqx 'mesa_runtime_contract=DoryRendererArtifactManifest.guestMesa.pcVirGL2' \
+    "$GPU_RUNTIME_DUMP" || fail "$IMAGE does not bind the PC VirGL2 Mesa runtime digest contract"
+  grep -Fqx 'mesa_profile=pc-virgl2' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not bind the PC VirGL2 Mesa profile"
+  grep -Fqx 'mesa_architecture=x86_64' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not bind the PC VirGL2 Mesa architecture"
+  grep -Fqx 'mesa_gl_loader=/opt/dory/mesa/lib/libGL.so.1' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not bind the PC VirGL2 GL loader path"
+  grep -Fqx 'mesa_dri_driver=/opt/dory/mesa/lib/dri/virtio_gpu_dri.so' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not bind the PC VirGL2 DRI driver path"
+  grep -Fqx 'required_guest_ld_library_path=/opt/dory/mesa/lib' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not bind the PC VirGL2 GL loader search path"
+  grep -Fqx 'required_guest_libgl_drivers_path=/opt/dory/mesa/lib/dri' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not bind the PC VirGL2 DRI search path"
+  grep -Fqx 'producer_fence_contract=doryPCX8664LinuxVirGL2PrepareFBV1' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not bind the PC VirGL2 producer-fence contract"
+  grep -Fqx 'producer_fence_contract_raw=2' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not bind the PC VirGL2 producer-fence wire value"
+  grep -Fqx 'debian_suite=bookworm' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not record the pinned PC VirGL2 userland suite"
+  grep -Fqx 'debian_snapshot=20260713T000000Z' "$GPU_RUNTIME_DUMP" \
+    || fail "$IMAGE does not record the pinned PC VirGL2 userland snapshot"
+
+  PC_MESA_EXTRACT="$(mktemp -d /tmp/dory-pc-mesa-reference.XXXXXX)"
+  PC_MESA_DUMP="$(mktemp -d /tmp/dory-pc-mesa-image.XXXXXX)"
+  PC_MESA_REFERENCE="$PC_MESA_EXTRACT/opt/dory/mesa"
+  zstd -q -d -c "$ROOT/guest/out/dory-mesa-virgl2-x86_64.tar.zst" \
+    | tar -xf - -C "$PC_MESA_EXTRACT"
+  for embedded in \
+    lib/dri/virtio_gpu_dri.so \
+    lib/libGL.so \
+    lib/libGL.so.1 \
+    lib/libGL.so.1.2.0 \
+    lib/libgallium-26.0.0-devel.so \
+    share/dory/build-packages.txt \
+    share/dory/runtime.env; do
+    mkdir -p "$PC_MESA_DUMP/$(dirname "$embedded")"
+    "$DEBUGFS" -R "dump /opt/dory/mesa/$embedded $PC_MESA_DUMP/$embedded" \
+      "$IMAGE" >/dev/null 2>&1 || fail "could not extract embedded PC VirGL2 runtime file $embedded"
+    cmp -s "$PC_MESA_REFERENCE/$embedded" "$PC_MESA_DUMP/$embedded" \
+      || fail "$IMAGE embeds PC VirGL2 runtime bytes that differ from the verified producer artifact: $embedded"
+  done
 fi
 
 echo "verified $ARCH initfs input fingerprint $EXPECTED_INPUT"

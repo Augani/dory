@@ -6,6 +6,7 @@ INITFS_DIR="$ROOT/guest/initfs"
 OUT_DIR="$ROOT/guest/out"
 CACHE_DIR="${DORY_INITFS_CACHE:-$ROOT/guest/.cache/initfs}"
 PINS="$INITFS_DIR/PINS"
+PC_VIRGL2_PINS="$INITFS_DIR/PINS.pc-virgl2-x86_64"
 SIZE_MB="${DORY_INITFS_SIZE_MB:-1024}"
 
 mkdir -p "$OUT_DIR" "$CACHE_DIR"
@@ -33,14 +34,20 @@ find_mke2fs() {
 }
 
 pin_field() {
-  local key="$1" field="$2"
-  awk -v key="$key" -v field="$field" '
-    $1 == key {
-      if (field == "url") print $2
-      else if (field == "sha256") print $3
-      exit
-    }
-  ' "$PINS"
+  local key="$1" field="$2" pins value
+  for pins in "$PINS" "$PC_VIRGL2_PINS"; do
+    [ -f "$pins" ] || continue
+    value="$(
+      awk -v key="$key" -v field="$field" '
+        $1 == key {
+          if (field == "url") print $2
+          else if (field == "sha256") print $3
+          exit
+        }
+      ' "$pins"
+    )"
+    [ -z "$value" ] || { printf '%s\n' "$value"; return 0; }
+  done
 }
 
 sha256_file() {
@@ -336,6 +343,81 @@ PY
   } > "$receipt"
 }
 
+install_pc_virgl2_runtime() {
+  local arch="$1" dest="$2" pkg deb runtime receipt actual_runtime manifest
+  [ "$arch" = amd64 ] || return 0
+
+  "$ROOT/guest/mesa/build-pc-virgl2.sh" x86_64
+  "$ROOT/guest/mesa/verify-pc-virgl2-build.sh" x86_64 >/dev/null
+
+  for pkg in \
+    debian_gcc_12_base_amd64 \
+    debian_libgcc_s1_amd64 \
+    debian_libc6_amd64 \
+    debian_libbsd0_amd64 \
+    debian_libmd0_amd64 \
+    debian_libstdcxx6_amd64 \
+    debian_libxau6_amd64 \
+    debian_libxdmcp6_amd64 \
+    debian_libxcb1_amd64 \
+    debian_libx11_data \
+    debian_libx11_6_amd64 \
+    debian_libx11_xcb1_amd64 \
+    debian_libxext6_amd64 \
+    debian_libxxf86vm1_amd64 \
+    debian_libxcb_dri3_0_amd64 \
+    debian_libxcb_glx0_amd64 \
+    debian_libxcb_present0_amd64 \
+    debian_libxcb_randr0_amd64 \
+    debian_libxcb_shm0_amd64 \
+    debian_libxcb_sync1_amd64 \
+    debian_libxcb_xfixes0_amd64 \
+    debian_libxshmfence1_amd64 \
+    debian_zlib1g_amd64 \
+    debian_libzstd1_amd64; do
+    deb="$(fetch_pin "$pkg")"
+    extract_deb "$deb" "$dest"
+  done
+
+  runtime="$OUT_DIR/dory-mesa-virgl2-x86_64.tar.zst"
+  actual_runtime="$(sha256_file "$runtime")"
+  while IFS= read -r member; do
+    member="${member#./}"
+    member="${member%/}"
+    case "$member" in
+      ""|"."|opt|opt/dory|opt/dory/mesa|opt/dory/mesa/*) ;;
+      *)
+        echo "Dory PC VirGL2 runtime contains an unexpected path: $member" >&2
+        exit 1
+        ;;
+    esac
+  done < <(zstd -q -d -c "$runtime" | tar -tf -)
+  zstd -q -d -c "$runtime" | tar -xf - -C "$dest"
+
+  manifest="$dest/opt/dory/mesa/share/dory/runtime.env"
+  [ -s "$manifest" ] || {
+    echo "Dory PC VirGL2 runtime did not install its runtime manifest" >&2
+    exit 1
+  }
+  install -d -m0755 "$dest/usr/lib/dory"
+  receipt="$dest/usr/lib/dory/engine-gpu-runtime.env"
+  {
+    printf 'schema=2\n'
+    printf 'mesa_runtime_sha256=%s\n' "$actual_runtime"
+    printf 'mesa_runtime_contract=%s\n' "DoryRendererArtifactManifest.guestMesa.pcVirGL2"
+    printf 'mesa_profile=%s\n' "pc-virgl2"
+    printf 'mesa_architecture=%s\n' "x86_64"
+    printf 'mesa_gl_loader=%s\n' "/opt/dory/mesa/lib/libGL.so.1"
+    printf 'mesa_dri_driver=%s\n' "/opt/dory/mesa/lib/dri/virtio_gpu_dri.so"
+    printf 'required_guest_ld_library_path=%s\n' "/opt/dory/mesa/lib"
+    printf 'required_guest_libgl_drivers_path=%s\n' "/opt/dory/mesa/lib/dri"
+    printf 'producer_fence_contract=%s\n' "doryPCX8664LinuxVirGL2PrepareFBV1"
+    printf 'producer_fence_contract_raw=%s\n' "2"
+    printf 'debian_suite=%s\n' "bookworm"
+    printf 'debian_snapshot=%s\n' "20260713T000000Z"
+  } > "$receipt"
+}
+
 write_runtime_files() {
   local arch="$1" rootfs="$2" agent="$3" wrapper="$4"
   mkdir -p "$rootfs"/{dev,proc,sys,run,tmp,var/log,var/run,var/lib/docker,usr/bin,usr/local/bin,etc,sbin}
@@ -391,6 +473,7 @@ build_arch() {
   install_docker_static "$docker_tar" "$rootfs"
   install_crun "$arch" "$rootfs"
   install_venus_runtime "$arch" "$rootfs"
+  install_pc_virgl2_runtime "$arch" "$rootfs"
   install_fex "$arch" "$rootfs"
   write_runtime_files "$arch" "$rootfs" "$agent" "$wrapper"
 

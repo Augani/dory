@@ -81,6 +81,15 @@ if [ "$ARCH" = arm64 ]; then
   )
 fi
 
+if [ "$ARCH" = amd64 ]; then
+  INPUTS+=(
+    guest/mesa/build-pc-virgl2.sh
+    guest/mesa/input-pc-virgl2-fingerprint.sh
+    guest/mesa/verify-pc-virgl2-build.sh
+    guest/initfs/PINS.pc-virgl2-x86_64
+  )
+fi
+
 if command -v rust-lld >/dev/null 2>&1; then
   LINKER="$(command -v rust-lld)"
 elif [ -n "$CROSS_CC" ] && command -v "$CROSS_CC" >/dev/null 2>&1; then

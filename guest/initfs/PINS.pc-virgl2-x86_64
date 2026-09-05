@@ -1,0 +1,29 @@
+# Pinned Debian Bookworm x86_64 loader closure for the Dory PC VirGL2 Mesa runtime.
+#
+# These packages come from the same 20260713T000000Z Debian snapshot as guest/mesa/PINS. They supply
+# the glibc loader and direct GLX/X11/XCB SONAME dependencies recorded in
+# guest/out/dory-mesa-virgl2-x86_64.tar.zst's runtime.env. They do not provide an X server or
+# qualify a product graphics launch by themselves.
+debian_gcc_12_base_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/gcc-12/gcc-12-base_12.2.0-14+deb12u1_amd64.deb 1896a2aacf4ad681ff5eacc24a5b0ca4d5d9c9b9c9e4b6de5197bc1e116ea619
+debian_libbsd0_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libb/libbsd/libbsd0_0.11.7-2_amd64.deb bb31cc8b40f962a85b2cec970f7f79cc704a1ae4bad24257a822055404b2c60b
+debian_libc6_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/glibc/libc6_2.36-9+deb12u14_amd64.deb ba4f88f73dbc3ae9055f3c20f4523bfdbaf1ad13ff95e258924f77d20b4fbedf
+debian_libgcc_s1_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/gcc-12/libgcc-s1_12.2.0-14+deb12u1_amd64.deb 3016e62cb4b7cd8038822870601f5ed131befe942774d0f745622cc77d8a88f7
+debian_libmd0_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libm/libmd/libmd0_1.0.4-2_amd64.deb 03539fd30c509e27101d13a56e52eda9062bdf1aefe337c07ab56def25a13eab
+debian_libstdcxx6_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/g/gcc-12/libstdc++6_12.2.0-14+deb12u1_amd64.deb 5cd3171216d4ab0fc911cfe9c35509bf2dd8f47761c43b7f6a4296701551a24d
+debian_libx11_6_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libx11/libx11-6_1.8.4-2+deb12u2_amd64.deb d88c973e79fd9b65838d77624142952757e47a6eb1a58602acf0911cf35989f4
+debian_libx11_xcb1_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libx11/libx11-xcb1_1.8.4-2+deb12u2_amd64.deb f5da45e1d881a793250a96613f28c471a248877f1a0f18a5c90e2a620a76c898
+debian_libxau6_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxau/libxau6_1.0.9-1_amd64.deb 679db1c4579ec7c61079adeaae8528adeb2e4bf5465baa6c56233b995d714750
+debian_libxcb1_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb1_1.15-1_amd64.deb fdc61332a3892168f3cc9cfa1fe9cf11a91dc3e0acacbc47cbc50ebaa234cc71
+debian_libxcb_dri3_0_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb-dri3-0_1.15-1_amd64.deb 02699b144b9467de8636d27a76984b8f4e7b66e2d25d96df2b9677be86ee9a29
+debian_libxcb_glx0_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb-glx0_1.15-1_amd64.deb 1bce55fc292d93fa5f7fa50f84cef99ec29be70d0ffe98e86b8008e59f4a34fa
+debian_libxcb_present0_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb-present0_1.15-1_amd64.deb 89383e627a4d17b9390d609b2459481bfd2029566367b43068586769e418b6e5
+debian_libxcb_randr0_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb-randr0_1.15-1_amd64.deb f86e3d8ff8622871008833e9d064919b7a6237399c903c59fc330ff00f199ff5
+debian_libxcb_shm0_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb-shm0_1.15-1_amd64.deb c1afcef29dc78b95c475159b181b28b1dedaf1d5aa06efd2fa6d90c73bfbe0e5
+debian_libxcb_sync1_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb-sync1_1.15-1_amd64.deb 3366ce715220d38dd0148b78a8e738137bade25ef7eec0698850c6f66800844f
+debian_libxcb_xfixes0_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxcb/libxcb-xfixes0_1.15-1_amd64.deb d744a7ebad2cbcf301c96cd6a1ab3ee856e436fc7be5cff5b7c28ac2ac181a64
+debian_libxdmcp6_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxdmcp/libxdmcp6_1.1.2-3_amd64.deb ecb8536f5fb34543b55bb9dc5f5b14c9dbb4150a7bddb3f2287b7cab6e9d25ef
+debian_libxext6_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxext/libxext6_1.3.4-1+b1_amd64.deb 504b7be9d7df4f6f4519e8dd4d6f9d03a9fb911a78530fa23a692fba3058cba6
+debian_libxshmfence1_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxshmfence/libxshmfence1_1.3-1_amd64.deb 1a38142e40e3d32dc4f9a326bf5617363b7d9b4bb762fdcdd262f2192092024d
+debian_libxxf86vm1_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libx/libxxf86vm/libxxf86vm1_1.1.4-1+b2_amd64.deb 6f4ca916aaec26d7000fa7f58de3f71119309ab7590ce1f517abfe1825a676c7
+debian_libzstd1_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/libz/libzstd/libzstd1_1.5.4+dfsg2-5_amd64.deb 6315b5ac38b724a710fb96bf1042019398cb656718b1522279a5185ed39318fa
+debian_zlib1g_amd64 https://snapshot.debian.org/archive/debian/20260713T000000Z/pool/main/z/zlib/zlib1g_1.2.13.dfsg-1_amd64.deb d7dd1d1411fedf27f5e27650a6eff20ef294077b568f4c8c5e51466dc7c08ce4
