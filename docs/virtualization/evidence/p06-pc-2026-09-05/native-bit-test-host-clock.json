@@ -1,0 +1,42 @@
+{
+  "schema": "dory.pc-host-clock-hotspot-review@1",
+  "date": "2026-09-05",
+  "scope": "Bounded diagnostic EFI boot after native CMPXCHG, RDTSC, CLD/STD and register bit-test changes.",
+  "runnerSHA256": "769e384326627cf96262149f602443800961ae2bd0533bae9ca18b4363947b6b",
+  "firmwareSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
+  "clockSource": "host-monotonic",
+  "cpuProfileIdentifier": "dory.x86_64.compat-v1",
+  "stop": "instructionBudget(1500000000)",
+  "completedInstructions": 1500000000,
+  "nativeInstructions": 1485208111,
+  "interpreterInstructions": 14791889,
+  "instructionPointer": "0xffffffff820fb732",
+  "serialMarkerMatched": false,
+  "artifacts": [
+    {
+      "file": "native-bit-test-host-clock-result.json.gz",
+      "rawSHA256": "a059f82984061e739a2b1c0993b9b1e1052054a1d37f5595952dbc6e1538d78c",
+      "publishedUncompressedSHA256": "a059f82984061e739a2b1c0993b9b1e1052054a1d37f5595952dbc6e1538d78c"
+    },
+    {
+      "file": "native-bit-test-host-clock-stderr.log.gz",
+      "rawSHA256": "ebe01fa5593d4c90877925f847c39a16aa3e9b02a1902fd8d490c66b4040df23",
+      "publishedUncompressedSHA256": "ebe01fa5593d4c90877925f847c39a16aa3e9b02a1902fd8d490c66b4040df23"
+    },
+    {
+      "file": "native-bit-test-host-clock-inputs.txt.gz",
+      "rawSHA256": "bb310e14b5d734291935c8e32045ef20bb2139b69165ab02c0884842525bd915",
+      "publishedUncompressedSHA256": "97b806dc69d228d44f95b236e5f7da438bd8d6d1857317c5073169738de813e4"
+    }
+  ],
+  "normalization": "Home-directory prefix replaced with <HOME>; original digests retained.",
+  "findings": [
+    "Reached Linux early initialization and exhausted the 1.5-billion-instruction diagnostic budget.",
+    "Byte memory CMP and memory BTR are measured fallback hotspots; the result does not establish that boot is stuck."
+  ],
+  "limitations": [
+    "Smoke runner lacks the dorycfg share needed for its requested DORYCFG-BOOT-SCRIPT-START marker. The marker cannot qualify readiness in this composition.",
+    "A prior diagnostic used 3 billion instructions to reach /sbin/init. Production userspace qualification requires the real configuration share.",
+    "No accelerated GPU, installed desktop, or end-to-end performance claim."
+  ]
+}
