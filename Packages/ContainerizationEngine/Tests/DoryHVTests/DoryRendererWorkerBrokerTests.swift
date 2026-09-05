@@ -1039,6 +1039,61 @@ import Testing
         #expect(await rendererEventually { fixture.channel.invalidateCount == 1 })
     }
 
+    @Test func doryPCVirGLNonPristineResetInstallsFreshRendererGeneration() async throws {
+        let oldFixture = try rendererBrokerFixture(
+            limits: rendererLimits(maximumInFlight: 4),
+            workerGeneration: 7
+        )
+        let oldLane = try DoryRendererWorkerVirtioCommandLane(
+            broker: oldFixture.broker,
+            deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: oldLane,
+            deviceGeneration: 11
+        )
+        let first = Task.detached {
+            try authority.createContext(id: 7, capsetID: 2, name: "mesa")
+        }
+        try #require(await rendererEventually { oldFixture.channel.sendCount == 1 })
+        oldFixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        try await first.value
+
+        #expect(throws: DoryPCVirGLRendererAuthorityError.rendererUnavailable) {
+            try authority.installReplacementAfterReset(lane: oldLane)
+        }
+        authority.reset()
+        #expect(!authority.canBackReplacementMachineAfterReset)
+        #expect(await rendererEventually { oldFixture.channel.invalidateCount == 1 })
+
+        let newFixture = try rendererBrokerFixture(
+            limits: rendererLimits(maximumInFlight: 4),
+            workerGeneration: 8
+        )
+        let newLane = try DoryRendererWorkerVirtioCommandLane(
+            broker: newFixture.broker,
+            deviceGeneration: 1
+        )
+        try authority.installReplacementAfterReset(lane: newLane)
+        #expect(authority.canBackReplacementMachineAfterReset)
+        #expect(newLane.snapshot().state == .active(deviceGeneration: 12))
+
+        oldFixture.channel.emit(.interrupted)
+        let second = Task.detached {
+            try authority.createContext(id: 8, capsetID: 2, name: "mesa")
+        }
+        try #require(await rendererEventually { newFixture.channel.sendCount == 1 })
+        #expect(oldFixture.channel.sendCount == 1)
+        newFixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        try await second.value
+    }
+
     @Test func staleGenerationRevocationPreservesReboundRendererCommands() async throws {
         let fixture = try rendererBrokerFixture()
         let lane = try DoryRendererWorkerVirtioCommandLane(

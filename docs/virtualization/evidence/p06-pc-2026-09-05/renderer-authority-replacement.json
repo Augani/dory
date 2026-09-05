@@ -1,0 +1,24 @@
+{
+  "scope": "DoryPC VirGL command authority fresh worker lane installation after used-device reset",
+  "sourceSHA256": {
+    "Packages/ContainerizationEngine/Sources/DoryHV/DoryPCVirGLRendererAuthority.swift": "0252a097492ca9d223785d067c7a10d12b3279ca4087b61546ab68d80d372441",
+    "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryRendererWorkerBrokerTests.swift": "125ea5e67b82c3f3f7226124d91726a8e331fca002fc0692a42ec45e237c80ce"
+  },
+  "changes": [
+    "Capture lane and device generation atomically for each admitted command.",
+    "Retire pending fence obligations and revoke the captured old lane on reset or unknown outcome.",
+    "Install a pristine replacement with matching capabilities and a new device generation.",
+    "Guard resource-map mutations and capture resource/backing identity against reset generation.",
+    "Release old scanout leases through the admitted lane rather than the current replacement."
+  ],
+  "qualification": {
+    "result": "61 tests in 3 suites passed in isolated source",
+    "privateLog": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/renderer-authority-root.log",
+    "logSHA256": "fb703439b3755f94a396b7fda6b618148d28ad88ee3ffcc54a17aae0a8f33e7f",
+    "newRegression": "Use old worker generation7/device11, reset, install worker8/device12, inject old channel interruption, then complete a command on new lane."
+  },
+  "limitations": [
+    "Daemon replacement staging, UI callback retirement, readiness publication and full VM reset are separate unfinished integration work.",
+    "No physical GPU reset or release qualification claim."
+  ]
+}

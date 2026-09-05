@@ -100,7 +100,14 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
 {
     public let capabilities: DoryVirtioGPUAccelerationCapabilities
 
-    private let lane: DoryRendererWorkerVirtioCommandLane
+    private struct ActiveLane: Sendable {
+        let lane: DoryRendererWorkerVirtioCommandLane
+        let deviceGeneration: UInt64
+    }
+
+    private static let initialRendererDeviceGeneration: UInt64 = 1
+
+    private var lane: DoryRendererWorkerVirtioCommandLane
     private let scanoutSink: (@Sendable (DoryPCVirGLScanoutUpdate) -> Bool)?
     private struct PendingFenceKey: Hashable {
         let deviceGeneration: UInt64
@@ -145,6 +152,11 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         self.deviceGeneration = deviceGeneration
         self.commandTimeout = commandTimeout
         self.scanoutSink = scanoutSink
+        installCallbacks(on: lane)
+    }
+
+
+    private func installCallbacks(on lane: DoryRendererWorkerVirtioCommandLane) {
         lane.installCallbacks(
             fence: { [weak self] generation, contextID, ringIndex, hostFenceID in
                 self?.completeFence(
@@ -160,14 +172,44 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         )
     }
 
+    public func installReplacementAfterReset(lane replacementLane: DoryRendererWorkerVirtioCommandLane) throws {
+        let virgl = replacementLane.authenticatedCapsets.filter { $0.id == 2 }
+        let replacementCapabilities = try DoryVirtioGPUAccelerationCapabilities(
+            features: [.gpuVirgl, .gpuResourceUUID, .gpuContextInit],
+            capsets: virgl.map {
+                .init(id: $0.id, maximumVersion: $0.maxVersion, data: $0.data)
+            }
+        )
+        guard replacementCapabilities == capabilities else {
+            throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+        }
+        try lock.withLock {
+            guard !active else { throw DoryPCVirGLRendererAuthorityError.rendererUnavailable }
+            let successor = deviceGeneration &+ 1
+            guard successor != 0,
+                  replacementLane.rebindPristineDeviceGeneration(from: Self.initialRendererDeviceGeneration, to: successor)
+            else { throw DoryPCVirGLRendererAuthorityError.rendererUnavailable }
+            pendingFences.removeAll(keepingCapacity: false)
+            resourceGenerations.removeAll(keepingCapacity: false)
+            backings.removeAll(keepingCapacity: false)
+            installCallbacks(on: replacementLane)
+            lane = replacementLane
+            deviceGeneration = successor
+            nextHostFenceID = 1
+            admittedCommand = false
+            active = true
+        }
+    }
+
     public func reset() {
-        let generationToRevoke = lock.withLock { () -> UInt64? in
+        let revoked = lock.withLock { () -> (lane: DoryRendererWorkerVirtioCommandLane, deviceGeneration: UInt64, pending: [PendingFence])? in
             guard active else { return nil }
             let source = deviceGeneration
+            let sourceLane = lane
             active = false
             let successor = deviceGeneration &+ 1
             if successor != 0, !admittedCommand,
-                lane.rebindPristineDeviceGeneration(from: source, to: successor)
+                sourceLane.rebindPristineDeviceGeneration(from: source, to: successor)
             {
                 deviceGeneration = successor
                 active = true
@@ -175,11 +217,15 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
             }
             resourceGenerations.removeAll(keepingCapacity: false)
             backings.removeAll(keepingCapacity: false)
-            return source
+            return (
+                sourceLane,
+                source,
+                takePendingFencesLocked(deviceGeneration: source)
+            )
         }
-        if let generationToRevoke {
-            cancelPendingFences(deviceGeneration: generationToRevoke)
-            lane.revoke(deviceGeneration: generationToRevoke)
+        if let revoked {
+            for pending in revoked.pending { pending.completion(.outcomeUnknown) }
+            revoked.lane.revoke(deviceGeneration: revoked.deviceGeneration)
         }
     }
 
@@ -192,31 +238,31 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
     }
 
     public func createContext(id: UInt32, capsetID: UInt32, name: String) throws {
-        let generation = try admit()
-        try wait(deviceGeneration: generation) { completion in
-            try lane.createContext(
+        let admitted = try admit()
+        try wait(deviceGeneration: admitted.deviceGeneration) { completion in
+            try admitted.lane.createContext(
                 contextID: id,
                 capsetID: capsetID,
                 name: name,
-                deviceGeneration: generation,
+                deviceGeneration: admitted.deviceGeneration,
                 completion: completion
             )
         }
     }
 
     public func destroyContext(id: UInt32) throws {
-        let generation = try admit()
-        try wait(deviceGeneration: generation) { completion in
-            try lane.destroyContext(
+        let admitted = try admit()
+        try wait(deviceGeneration: admitted.deviceGeneration) { completion in
+            try admitted.lane.destroyContext(
                 contextID: id,
-                deviceGeneration: generation,
+                deviceGeneration: admitted.deviceGeneration,
                 completion: completion
             )
         }
     }
 
     public func createResource3D(_ resource: DoryVirtioGPUResource3D) throws {
-        let generation = try admit()
+        let admitted = try admit()
         let payload = try DoryRendererResource3DCreatePayload(
             target: resource.target,
             format: resource.format,
@@ -229,15 +275,20 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
             samples: resource.samples,
             flags: resource.flags
         )
-        let resourceGeneration: UInt64 = try wait(deviceGeneration: generation) { completion in
-            try lane.createResource3D(
+        let resourceGeneration: UInt64 = try wait(deviceGeneration: admitted.deviceGeneration) { completion in
+            try admitted.lane.createResource3D(
                 resourceID: resource.resourceID,
                 payload: payload,
-                deviceGeneration: generation,
+                deviceGeneration: admitted.deviceGeneration,
                 completion: completion
             )
         }
-        lock.withLock { resourceGenerations[resource.resourceID] = resourceGeneration }
+        try lock.withLock {
+            guard active, deviceGeneration == admitted.deviceGeneration else {
+                throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+            }
+            resourceGenerations[resource.resourceID] = resourceGeneration
+        }
     }
 
     public func attachBacking(
@@ -245,84 +296,92 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         entries: [DoryVirtioGPUBackingEntry],
         memory: any DoryVirtioGuestMemory
     ) throws {
-        let deviceGeneration = try admit()
-        let resourceGeneration = try generation(for: resourceID)
+        let admitted = try admit()
+        let resourceGeneration = try generation(for: resourceID, admitted: admitted)
         guard lock.withLock({ backings[resourceID] == nil }) else {
             throw DoryPCVirGLRendererAuthorityError.duplicateBacking(resourceID)
         }
         let backing = try DoryPCVirGLBackingAuthority(
             entries: entries,
             memory: memory,
-            maximumByteCount: lane.maximumReferencedBytes
+            maximumByteCount: admitted.lane.maximumReferencedBytes
         )
-        try wait(deviceGeneration: deviceGeneration) { completion in
-            try lane.attachBacking(
+        try wait(deviceGeneration: admitted.deviceGeneration) { completion in
+            try admitted.lane.attachBacking(
                 resourceID: resourceID,
                 resourceGeneration: resourceGeneration,
                 regions: backing.regions,
-                deviceGeneration: deviceGeneration,
+                deviceGeneration: admitted.deviceGeneration,
                 completion: completion
             )
         }
-        lock.withLock { backings[resourceID] = backing }
+        try lock.withLock {
+            guard active, deviceGeneration == admitted.deviceGeneration else {
+                throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+            }
+            backings[resourceID] = backing
+        }
     }
 
     public func detachBacking(resourceID: UInt32) throws {
-        let deviceGeneration = try admit()
-        let resourceGeneration = try generation(for: resourceID)
+        let admitted = try admit()
+        let resourceGeneration = try generation(for: resourceID, admitted: admitted)
         guard lock.withLock({ backings[resourceID] != nil }) else {
             throw DoryPCVirGLRendererAuthorityError.missingBacking(resourceID)
         }
-        try wait(deviceGeneration: deviceGeneration) { completion in
-            try lane.detachBacking(
+        try wait(deviceGeneration: admitted.deviceGeneration) { completion in
+            try admitted.lane.detachBacking(
                 resourceID: resourceID,
                 resourceGeneration: resourceGeneration,
-                deviceGeneration: deviceGeneration,
+                deviceGeneration: admitted.deviceGeneration,
                 completion: completion
             )
         }
-        _ = lock.withLock { backings.removeValue(forKey: resourceID) }
+        lock.withLock {
+            guard active, deviceGeneration == admitted.deviceGeneration else { return }
+            backings.removeValue(forKey: resourceID)
+        }
     }
 
     public func attachResource(contextID: UInt32, resourceID: UInt32) throws {
-        let deviceGeneration = try admit()
-        let resourceGeneration = try generation(for: resourceID)
-        try wait(deviceGeneration: deviceGeneration) { completion in
-            try lane.attachResource(
+        let admitted = try admit()
+        let resourceGeneration = try generation(for: resourceID, admitted: admitted)
+        try wait(deviceGeneration: admitted.deviceGeneration) { completion in
+            try admitted.lane.attachResource(
                 contextID: contextID,
                 resourceID: resourceID,
                 resourceGeneration: resourceGeneration,
-                deviceGeneration: deviceGeneration,
+                deviceGeneration: admitted.deviceGeneration,
                 completion: completion
             )
         }
     }
 
     public func detachResource(contextID: UInt32, resourceID: UInt32) throws {
-        let deviceGeneration = try admit()
-        let resourceGeneration = try generation(for: resourceID)
-        try wait(deviceGeneration: deviceGeneration) { completion in
-            try lane.detachResource(
+        let admitted = try admit()
+        let resourceGeneration = try generation(for: resourceID, admitted: admitted)
+        try wait(deviceGeneration: admitted.deviceGeneration) { completion in
+            try admitted.lane.detachResource(
                 contextID: contextID,
                 resourceID: resourceID,
                 resourceGeneration: resourceGeneration,
-                deviceGeneration: deviceGeneration,
+                deviceGeneration: admitted.deviceGeneration,
                 completion: completion
             )
         }
     }
 
     public func submit3D(contextID: UInt32, command: [UInt8]) throws {
-        let generation = try admit()
+        let admitted = try admit()
         let regions = try DoryRendererWorkerSharedRegionSet.immutableSubmit3D(
             bytes: command,
             maximumByteCount: DoryRendererWorkerLimits.production.maximumCommandBytes
         )
-        try wait(deviceGeneration: generation) { completion in
-            try lane.submit3D(
+        try wait(deviceGeneration: admitted.deviceGeneration) { completion in
+            try admitted.lane.submit3D(
                 contextID: contextID,
                 regions: regions,
-                deviceGeneration: generation,
+                deviceGeneration: admitted.deviceGeneration,
                 completion: completion
             )
         }
@@ -334,44 +393,44 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         fence: DoryVirtioGPUFenceRequest,
         completion: @escaping @Sendable (DoryVirtioGPUFenceCompletion) -> Void
     ) throws {
-        let generation = try admit()
+        let admitted = try admit()
         let regions = try DoryRendererWorkerSharedRegionSet.immutableSubmit3D(
             bytes: command,
             maximumByteCount: DoryRendererWorkerLimits.production.maximumCommandBytes
         )
         let hostFenceID = try reserveHostFence(
-            deviceGeneration: generation,
+            deviceGeneration: admitted.deviceGeneration,
             guest: fence,
             completion: completion
         )
         do {
-            try lane.submit3DThenCreateFence(
+            try admitted.lane.submit3DThenCreateFence(
                 contextID: contextID,
                 regions: regions,
                 ringIndex: fence.contextFence ? fence.ringIndex : 0,
                 fenceID: hostFenceID,
                 contextFence: fence.contextFence,
-                deviceGeneration: generation
+                deviceGeneration: admitted.deviceGeneration
             ) { [weak self] disposition in
                 switch disposition {
                 case .fenceArmed:
                     return
                 case .provenRejected:
                     self?.finishFence(
-                        deviceGeneration: generation,
+                        deviceGeneration: admitted.deviceGeneration,
                         hostFenceID: hostFenceID,
                         result: .rejected
                     )
                 case .outcomeUnknown:
                     self?.finishFence(
-                        deviceGeneration: generation,
+                        deviceGeneration: admitted.deviceGeneration,
                         hostFenceID: hostFenceID,
                         result: .outcomeUnknown
                     )
                 }
             }
         } catch {
-            removeFence(deviceGeneration: generation, hostFenceID: hostFenceID)
+            removeFence(deviceGeneration: admitted.deviceGeneration, hostFenceID: hostFenceID)
             throw error
         }
     }
@@ -380,9 +439,9 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         _ fence: DoryVirtioGPUFenceRequest,
         completion: @escaping @Sendable (DoryVirtioGPUFenceCompletion) -> Void
     ) throws {
-        let generation = try admit()
+        let admitted = try admit()
         let hostFenceID = try reserveHostFence(
-            deviceGeneration: generation,
+            deviceGeneration: admitted.deviceGeneration,
             guest: fence,
             completion: completion
         )
@@ -390,28 +449,28 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
             let fenceCompletion: DoryRendererWorkerVirtioCommandLane.Completion = { [weak self] result in
                 guard case .failure = result else { return }
                 self?.finishFence(
-                    deviceGeneration: generation,
+                    deviceGeneration: admitted.deviceGeneration,
                     hostFenceID: hostFenceID,
                     result: .outcomeUnknown
                 )
             }
             if fence.contextFence {
-                try lane.createContextFence(
+                try admitted.lane.createContextFence(
                     contextID: fence.contextID,
                     ringIndex: fence.ringIndex,
                     fenceID: hostFenceID,
-                    deviceGeneration: generation,
+                    deviceGeneration: admitted.deviceGeneration,
                     completion: fenceCompletion
                 )
             } else {
-                try lane.createGlobalFence(
+                try admitted.lane.createGlobalFence(
                     fenceID: hostFenceID,
-                    deviceGeneration: generation,
+                    deviceGeneration: admitted.deviceGeneration,
                     completion: fenceCompletion
                 )
             }
         } catch {
-            removeFence(deviceGeneration: generation, hostFenceID: hostFenceID)
+            removeFence(deviceGeneration: admitted.deviceGeneration, hostFenceID: hostFenceID)
             throw error
         }
     }
@@ -421,11 +480,12 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         entries: [DoryVirtioGPUBackingEntry],
         memory: any DoryVirtioGuestMemory
     ) throws {
-        let deviceGeneration = try admit()
-        let resourceGeneration = try generation(for: transfer.resourceID)
-        guard let backing = lock.withLock({ backings[transfer.resourceID] }),
-            backing.entries == entries
-        else {
+        let admitted = try admit()
+        let (resourceGeneration, backing) = try generationAndBacking(
+            for: transfer.resourceID,
+            admitted: admitted
+        )
+        guard backing.entries == entries else {
             throw DoryPCVirGLRendererAuthorityError.missingBacking(transfer.resourceID)
         }
         try backing.withTransferLock {
@@ -450,24 +510,24 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
                 height: transfer.height,
                 depth: transfer.depth
             )
-            try wait(deviceGeneration: deviceGeneration) { completion in
+            try wait(deviceGeneration: admitted.deviceGeneration) { completion in
                 switch transfer.direction {
                 case .toHost:
-                    try lane.transferToHost3D(
+                    try admitted.lane.transferToHost3D(
                         resourceID: transfer.resourceID,
                         resourceGeneration: resourceGeneration,
                         contextID: transfer.contextID,
                         payload: payload,
-                        deviceGeneration: deviceGeneration,
+                        deviceGeneration: admitted.deviceGeneration,
                         completion: completion
                     )
                 case .fromHost:
-                    try lane.transferFromHost3D(
+                    try admitted.lane.transferFromHost3D(
                         resourceID: transfer.resourceID,
                         resourceGeneration: resourceGeneration,
                         contextID: transfer.contextID,
                         payload: payload,
-                        deviceGeneration: deviceGeneration,
+                        deviceGeneration: admitted.deviceGeneration,
                         completion: completion
                     )
                 }
@@ -485,19 +545,19 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         guard !scanouts.isEmpty, let scanoutSink else {
             throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
         }
-        let deviceGeneration = try admit()
+        let admitted = try admit()
         var updates: [DoryPCVirGLScanoutUpdate] = []
         var acceptedCount = 0
         updates.reserveCapacity(scanouts.count)
         do {
             for flush in scanouts {
-                let resourceGeneration = try generation(for: flush.resourceID)
+                let resourceGeneration = try generation(for: flush.resourceID, admitted: admitted)
                 guard flush.storageOffset <= UInt64(UInt32.max) else {
                     throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
                 }
                 let stride = try resolvedStride(for: flush)
-                let scanout = try waitScanout(deviceGeneration: deviceGeneration) { completion in
-                    try lane.acquireScanoutLease(
+                let scanout = try waitScanout(deviceGeneration: admitted.deviceGeneration) { completion in
+                    try admitted.lane.acquireScanoutLease(
                         resourceID: flush.resourceID,
                         resourceGeneration: resourceGeneration,
                         width: flush.resourceWidth,
@@ -505,7 +565,7 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
                         virglFormat: flush.virglFormat,
                         stride: stride,
                         storageOffset: UInt32(flush.storageOffset),
-                        deviceGeneration: deviceGeneration,
+                        deviceGeneration: admitted.deviceGeneration,
                         completion: completion
                     )
                 }
@@ -518,7 +578,7 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
                                 scanout.discardTransport()
                                 return
                             }
-                            self.releaseScanout(scanout)
+                            self.releaseScanout(scanout, admitted: admitted)
                         }
                     )
                 )
@@ -537,35 +597,56 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
     }
 
     public func unrefResource(resourceID: UInt32) throws {
-        let deviceGeneration = try admit()
-        let resourceGeneration = try generation(for: resourceID)
-        try wait(deviceGeneration: deviceGeneration) { completion in
-            try lane.unrefResource(
+        let admitted = try admit()
+        let resourceGeneration = try generation(for: resourceID, admitted: admitted)
+        try wait(deviceGeneration: admitted.deviceGeneration) { completion in
+            try admitted.lane.unrefResource(
                 resourceID: resourceID,
                 resourceGeneration: resourceGeneration,
-                deviceGeneration: deviceGeneration,
+                deviceGeneration: admitted.deviceGeneration,
                 completion: completion
             )
         }
         lock.withLock {
+            guard active, deviceGeneration == admitted.deviceGeneration else { return }
             resourceGenerations.removeValue(forKey: resourceID)
             backings.removeValue(forKey: resourceID)
         }
     }
 
-    private func admit() throws -> UInt64 {
+    private func admit() throws -> ActiveLane {
         try lock.withLock {
             guard active else { throw DoryPCVirGLRendererAuthorityError.rendererUnavailable }
             admittedCommand = true
-            return deviceGeneration
+            return ActiveLane(lane: lane, deviceGeneration: deviceGeneration)
         }
     }
 
-    private func generation(for resourceID: UInt32) throws -> UInt64 {
-        guard let generation = lock.withLock({ resourceGenerations[resourceID] }) else {
+    private func generation(for resourceID: UInt32, admitted: ActiveLane) throws -> UInt64 {
+        guard let generation = lock.withLock({ () -> UInt64? in
+            guard active, deviceGeneration == admitted.deviceGeneration else { return nil }
+            return resourceGenerations[resourceID]
+        }) else {
             throw DoryPCVirGLRendererAuthorityError.unknownResource(resourceID)
         }
         return generation
+    }
+
+    private func generationAndBacking(
+        for resourceID: UInt32,
+        admitted: ActiveLane
+    ) throws -> (generation: UInt64, backing: DoryPCVirGLBackingAuthority) {
+        guard let admitted = lock.withLock({ () -> (UInt64, DoryPCVirGLBackingAuthority)? in
+            guard active, deviceGeneration == admitted.deviceGeneration,
+                  let generation = resourceGenerations[resourceID],
+                  let backing = backings[resourceID] else {
+                return nil
+            }
+            return (generation, backing)
+        }) else {
+            throw DoryPCVirGLRendererAuthorityError.missingBacking(resourceID)
+        }
+        return admitted
     }
 
     private func reserveHostFence(
@@ -660,11 +741,6 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         pending?.completion(result)
     }
 
-    private func cancelPendingFences(deviceGeneration: UInt64) {
-        let cancelled = lock.withLock { takePendingFencesLocked(deviceGeneration: deviceGeneration) }
-        for pending in cancelled { pending.completion(.outcomeUnknown) }
-    }
-
     private func takePendingFencesLocked(deviceGeneration: UInt64) -> [PendingFence] {
         let matches = pendingFences.filter { $0.key.deviceGeneration == deviceGeneration }
         for key in matches.keys { pendingFences.removeValue(forKey: key) }
@@ -713,18 +789,19 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
     }
 
     private func terminateUnknownOutcome(deviceGeneration failedGeneration: UInt64) {
-        let cancelled = lock.withLock { () -> [PendingFence]? in
+        let revoked = lock.withLock { () -> (lane: DoryRendererWorkerVirtioCommandLane, pending: [PendingFence])? in
             guard active, deviceGeneration == failedGeneration else { return nil }
+            let failedLane = lane
             active = false
             resourceGenerations.removeAll(keepingCapacity: false)
             backings.removeAll(keepingCapacity: false)
-            return takePendingFencesLocked(deviceGeneration: failedGeneration)
+            return (failedLane, takePendingFencesLocked(deviceGeneration: failedGeneration))
         }
-        guard let cancelled else { return }
+        guard let revoked else { return }
         // Revocation cancels worker event sources without invoking their completion sinks.
         // Retire our guest-facing obligations before those callbacks become unreachable.
-        for pending in cancelled { pending.completion(.outcomeUnknown) }
-        lane.revoke(deviceGeneration: failedGeneration)
+        for pending in revoked.pending { pending.completion(.outcomeUnknown) }
+        revoked.lane.revoke(deviceGeneration: failedGeneration)
     }
 
     private func resolvedStride(for flush: DoryVirtioGPUAcceleratedScanoutFlush) throws -> UInt32 {
@@ -739,9 +816,14 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         return stride
     }
 
-    private func releaseScanout(_ scanout: DoryRendererWorkerScanoutAuthority) {
-        let generation = lock.withLock { active ? deviceGeneration : nil }
-        guard let generation else {
+    private func releaseScanout(
+        _ scanout: DoryRendererWorkerScanoutAuthority,
+        admitted: ActiveLane
+    ) {
+        let canRelease = lock.withLock {
+            active && deviceGeneration == admitted.deviceGeneration
+        }
+        guard canRelease else {
             scanout.discardTransport()
             return
         }
@@ -749,22 +831,22 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
             let completion: DoryRendererWorkerVirtioCommandLane.Completion = { _ in }
             switch scanout {
             case .sharedMemory(let value):
-                try lane.releaseScanoutLease(
+                try admitted.lane.releaseScanoutLease(
                     value.lease,
-                    deviceGeneration: generation,
+                    deviceGeneration: admitted.deviceGeneration,
                     completion: completion
                 )
             case .sharedTexture(let value):
-                try lane.releaseScanoutLease(
+                try admitted.lane.releaseScanoutLease(
                     value.lease,
-                    deviceGeneration: generation,
+                    deviceGeneration: admitted.deviceGeneration,
                     completion: completion
                 )
             }
             scanout.discardTransport()
         } catch {
             scanout.discardTransport()
-            terminateUnknownOutcome(deviceGeneration: generation)
+            terminateUnknownOutcome(deviceGeneration: admitted.deviceGeneration)
         }
     }
 }
