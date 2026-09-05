@@ -81,5 +81,36 @@
     "VK_NOT_READY was observed before the kill; the observation does not establish fence status at the exact signal instant.",
     "The interrupted container reappeared as Created with exit=0 after restart. Interrupted workload state reconciliation remains unresolved.",
     "The engine retained zero uncertain fenced chains; this campaign does not qualify all outstanding command or fence failure paths."
-  ]
+  ],
+  "start_checkpoint_diagnosis": {
+    "independently_read_metadata": [
+      {
+        "path": "/containers/d4af810324273b623130cd39f20c240a15dfd421064f2727d66d528f31b50ef1/config.v2.json",
+        "sha256": "3bfa7993428aa45e44b45db5e8613a00af23b492d10fd95e6fc55016d23eeaf0",
+        "state": {
+          "Running": false,
+          "Pid": 0,
+          "ExitCode": 0,
+          "StartedAt": "0001-01-01T00:00:00Z",
+          "FinishedAt": "0001-01-01T00:00:00Z"
+        }
+      },
+      {
+        "path": "/containers/d4af810324273b623130cd39f20c240a15dfd421064f2727d66d528f31b50ef1/.tmp-config.v2.json4287492043",
+        "sha256": "b068f52e8f38019ba57b1e8a65ca31e1aa5f16791c11fe6d2c06c3941f05b8ab",
+        "state": {
+          "Running": true,
+          "Pid": 733,
+          "ExitCode": 0,
+          "StartedAt": "2026-09-05T04:33:03.800539944Z",
+          "FinishedAt": "0001-01-01T00:00:00Z"
+        }
+      }
+    ],
+    "upstream_source": "https://raw.githubusercontent.com/moby/moby/docker-v29.6.1/daemon/start.go",
+    "ordering": "Task.Start precedes State.SetRunning and CheckpointTo (lines228\u2013241).",
+    "interpretation": "Consistent with engine loss during the Docker start checkpoint before atomic rename; not proof of Dory block flush failure.",
+    "unverified": "Exact HTTP start acknowledgement and checkpoint completion at fault time.",
+    "next": "Review durable start ordering inside Docker; do not delete containers or promote orphan temp files heuristically."
+  }
 }
