@@ -1597,7 +1597,7 @@ public struct DoryX86InterruptDelivery: Sendable {
         mode: mode,
         isImplicitSupervisorAccess: isImplicitSupervisorAccess,
         supportsOneGiBPages: profile.supports(.oneGiBPages),
-        supportsPAT: profile.cpuid(leaf: 1).edx & (1 << 16) != 0
+        supportsPAT: profile.supports(.pageAttributeTable)
       )
     )
   }

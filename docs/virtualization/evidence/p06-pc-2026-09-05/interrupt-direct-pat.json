@@ -1,0 +1,16 @@
+{
+  "log": "${HOME}/.dory/qualification/pc-interrupt-direct-pat-20260905/focused-interrupt-tests-isolated.log",
+  "schema": "dory-interrupt-direct-pat-validation-v1",
+  "scope": "one-line interrupt translated-memory PAT predicate, isolated source focused interrupt/IRET tests",
+  "sourceHashes": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryX86Interrupts.swift": "c741953d9ab5e63df492d714d4ebbd8b56c52d48cc04bbbd5a89147d58d147c9"
+  },
+  "sourceHead": "7035d0e5925100ed77e41639ff79a6cf9d08b338",
+  "sourceStatus": [
+    " M dory-core-swift/Sources/DoryDBTX86/DoryX86Interrupts.swift"
+  ],
+  "logSHA256": "8e05325e96a9177f66d000da4319558802b50aac195949225ba16937ecc2ced2",
+  "validation": "38 tests across 7 interrupt, IRET, NMI and REP suites passed.",
+  "semanticReview": "CPUID leaf 1 EDX bit 16 is generated directly from supports(.pageAttributeTable); querying the immutable cached feature mask gives the same predicate.",
+  "limitation": "Host sample did not establish meaningful interrupt-delivery cost; this removes redundant work without claiming a boot speedup."
+}
