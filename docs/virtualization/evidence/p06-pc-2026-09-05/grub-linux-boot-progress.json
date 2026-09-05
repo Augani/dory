@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "scope": "Independent inspection of GRUB-to-Linux diagnostic boot; not userspace or GPU qualification",
+  "raw_result_sha256": "fb2e64c43ed320dcfe7d62852cff54c1bede3edb6ce6429589cd60a2216f6a81",
+  "inputs": {
+    "BOOTX64.EFI": "94bc808425ae1bf0e7b7491816cbda31f6580153009735e3f66e8a9af8a96886",
+    "grub.cfg": "32ba704d6eeda529ff5abd9315ce96ce964cb7c74159bb70f7a479027956a0ef",
+    "installer-esp.img": "f27a4401de58bfde59bceeff723fffb370b11f7848390452dba7658231067e05"
+  },
+  "runner_sha256": "38dd1478e6b2c2cae6cbfb54ec78dd2fe96b5b658c1accbb70ff2226d948602c",
+  "firmware_sha256": "461cc0af580f1cfc91c944250950f18ea151c70e2d12e34739ad1ec38c47f4ca",
+  "kernel_sha256": "7b25d6c81f8c42624fad40f410baaddee3f4f9694a9239bf1e3c5cd41d72093d",
+  "completed_instructions": 1200000000,
+  "stop": "instructionBudget(1200000000)",
+  "serial_marker_matched": false,
+  "terminal_rip": "0xffffffff817ef209",
+  "terminal_symbol": "fast_mix (random.c)",
+  "stack_return_symbols": [
+    "add_interrupt_randomness",
+    "handle_irq_event",
+    "handle_level_irq"
+  ],
+  "observed": [
+    "GRUB executes the unmodified kernel with explicit boot arguments including noapic and nokaslr.",
+    "Linux serial reaches HPET clocksource registration.",
+    "Terminal stack is inside IRQ handling; this alone does not establish an interrupt storm."
+  ],
+  "remaining": [
+    "Reach userspace with standard interrupt routing.",
+    "Diagnose timer/IRQ progress and boot throughput.",
+    "Run actual GLX workload before enabling PC GPU admission."
+  ]
+}
