@@ -699,11 +699,6 @@ public final class DoryVZMacRuntime {
         }
     }
 
-    private func requireManagedSavedStateFile(_ url: URL) throws {
-        let descriptor = try openManagedSavedStateFile(url, requirePrivateMode: true)
-        close(descriptor)
-    }
-
     private func openManagedSavedStateFile(
         _ url: URL,
         requirePrivateMode: Bool
