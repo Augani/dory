@@ -1129,13 +1129,14 @@ public final class DockerTier: @unchecked Sendable {
             }
             roots.append(arguments[index + 1])
         }
-        guard roots.count == 1,
-              let root = roots.first,
+        let root = roots.count == 1 ? roots[0] : nil
+        let canonicalRoot = root.flatMap { try? DoryDataDrive.canonicalPath($0) }
+        guard let root,
               root.hasPrefix("/"),
               root != "/",
               !root.hasSuffix("/"),
               !root.unicodeScalars.contains(where: { $0.value < 0x20 || $0.value == 0x7f }),
-              URL(fileURLWithPath: root).standardizedFileURL.path == root else {
+              canonicalRoot == root else {
             throw TierError.repairUnavailable(
                 "managed helper does not have one canonical data-drive launch authority"
             )

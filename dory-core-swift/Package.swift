@@ -3,6 +3,7 @@ import Foundation
 import PackageDescription
 
 let packageRoot = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
+let dorydInfoPlist = packageRoot.appendingPathComponent("Sources/doryd/Info.plist").path
 let doryVMMInfoPlist = packageRoot.appendingPathComponent("Sources/dory-vmm/Info.plist").path
 let doryVZMacCameraQualificationInfoPlist =
   packageRoot
@@ -269,7 +270,16 @@ let package = Package(
     ),
     .executableTarget(
       name: "doryd",
-      dependencies: ["DorydKit"]
+      dependencies: ["DorydKit"],
+      exclude: ["Info.plist"],
+      linkerSettings: [
+        .unsafeFlags([
+          "-Xlinker", "-sectcreate",
+          "-Xlinker", "__TEXT",
+          "-Xlinker", "__info_plist",
+          "-Xlinker", dorydInfoPlist,
+        ])
+      ]
     ),
     .executableTarget(
       name: "dorydctl",

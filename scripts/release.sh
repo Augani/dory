@@ -748,7 +748,7 @@ verify_full_bundle() {
         --runner-app "$runner_app" \
         --doryd "$helpers/doryd" \
         --expected-team "$TEAM" \
-        || release_error "final doryd renderer release identity is invalid"
+        || release_error "final doryd signed renderer release identity is invalid"
       ;;
     disabled)
       python3 "$REPO_ROOT/scripts/renderer-release-identity.py" verify-absent \

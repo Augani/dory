@@ -387,14 +387,14 @@ renderer_release_identity_mode() {
 }
 
 codesign_production_release_identity() {
-  local path="$1" entitlements="$2" id="${DORY_SIGN_ID:-Developer ID Application}"
+  local path="$1" id="${DORY_SIGN_ID:-Developer ID Application}"
   local _attempt error_file
   [ "$id" != - ] \
     || { echo "    ERROR: production renderer release identity cannot use ad-hoc signing" >&2; return 1; }
   error_file="$(mktemp "${TMPDIR:-/tmp}/dory-release-identity-codesign.XXXXXX")"
   for _attempt in 1 2 3; do
     if /usr/bin/codesign --force --options runtime --timestamp --identifier doryd \
-        --entitlements "$entitlements" --sign "$id" "$path" 2>"$error_file"; then
+        --sign "$id" "$path" 2>"$error_file"; then
       rm -f "$error_file"
       return 0
     fi
@@ -407,7 +407,7 @@ codesign_production_release_identity() {
 }
 
 finalize_doryd_signature() {
-  local mode expected_team temporary entitlements
+  local mode expected_team
   [ "${DORY_BUNDLE_DORYD:-1}" = 1 ] || return 0
   [ -x "$DORYD_EXECUTABLE" ] && [ ! -L "$DORYD_EXECUTABLE" ] \
     || { echo "    ERROR: deferred doryd executable is missing or indirect" >&2; return 1; }
@@ -428,22 +428,17 @@ finalize_doryd_signature() {
   [ "$expected_team" = 864H636QW4 ] \
     || { echo "    ERROR: production renderer release identity requires Dory team 864H636QW4" >&2; return 1; }
 
-  echo "==> Binding final Runner + Worker Code Directory hashes into doryd…"
-  temporary="$(mktemp -d "${TMPDIR:-/tmp}/dory-renderer-release-identity.XXXXXX")"
-  entitlements="$temporary/doryd-renderer-release-identity.entitlements"
-  (
-    trap 'rm -f "$entitlements"; rmdir "$temporary" 2>/dev/null || true' EXIT
-    python3 "$REPO_ROOT/scripts/renderer-release-identity.py" create-entitlements \
-      --runner-app "$HV_RUNNER_APP" \
-      --expected-team "$expected_team" \
-      --output "$entitlements"
-    codesign_production_release_identity "$DORYD_EXECUTABLE" "$entitlements"
-    python3 "$REPO_ROOT/scripts/renderer-release-identity.py" verify \
-      --runner-app "$HV_RUNNER_APP" \
-      --doryd "$DORYD_EXECUTABLE" \
-      --expected-team "$expected_team"
-  )
-  echo "    sealed Helpers/doryd after the immutable runner graph"
+  echo "==> Binding final Runner + Worker Code Directory hashes into doryd signed metadata…"
+  python3 "$REPO_ROOT/scripts/renderer-release-identity.py" embed-info-plist \
+    --runner-app "$HV_RUNNER_APP" \
+    --doryd "$DORYD_EXECUTABLE" \
+    --expected-team "$expected_team"
+  codesign_production_release_identity "$DORYD_EXECUTABLE"
+  python3 "$REPO_ROOT/scripts/renderer-release-identity.py" verify \
+    --runner-app "$HV_RUNNER_APP" \
+    --doryd "$DORYD_EXECUTABLE" \
+    --expected-team "$expected_team"
+  echo "    sealed Helpers/doryd signed metadata after the immutable runner graph"
 }
 
 find_debugfs() {

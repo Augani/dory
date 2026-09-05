@@ -2304,6 +2304,99 @@ final class DockerTierTests: XCTestCase {
         XCTAssertEqual(client.resourceProbeCount, 2)
     }
 
+    func testManagedFreshSelectedDriveAcceptsPhysicalPrivateTmpDataDriveAuthority() throws {
+        let base = try DoryDataDrive.canonicalPath(
+            "/private/tmp/dory-test-tier-private-data-drive-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        )
+        let home = base + "/home"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let selectionStore = try DoryDataDriveSelectionStore(home: home)
+        let selectionAuthority = try selectionStore.acquireAuthority()
+        let drive = try selectionStore.prepareSelection(authority: selectionAuthority)
+        let trustedDriveRoot = try DoryTrustedDirectoryRoot(
+            canonicalAbsolutePath: drive.root
+        )
+        XCTAssertTrue(drive.root.hasPrefix("/private/tmp/"), drive.root)
+
+        let filesystemUUID = UUID(uuidString: "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee")!
+        let helper = ReadyDockerManagedProcess(pid: 44_009) {
+            try writeMinimalExt4SuperblockInPlace(
+                at: drive.engineDataDiskPath,
+                filesystemUUID: filesystemUUID
+            )
+        }
+        let client = GuestResourceProbeAgentClient(records: [
+            .success(guestResourceRecord(filesystemUUID: filesystemUUID)),
+            .success(guestResourceRecord(filesystemUUID: filesystemUUID)),
+        ])
+        let agent = AgentControl(
+            configuration: AgentControlConfiguration(forwardSocketPath: base + "/agent.sock")
+        ) { _ in client }
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", drive.root]
+                )
+            ),
+            agentControl: agent,
+            dockerReadyWaiter: { _, _, _ in true },
+            dataDriveSelectionAuthority: selectionAuthority,
+            dataDriveTrustedRoot: trustedDriveRoot,
+            newGuestDataDiskFilesystemUUID: { filesystemUUID }
+        )
+        tier.installManagedProcessFactory { _, _ in helper }
+        defer { tier.stop() }
+
+        try tier.start()
+
+        XCTAssertEqual(tier.status().state, .running)
+        XCTAssertEqual(try XCTUnwrap(tier.guestResourceSnapshot()).dataDiskFilesystemUUID, filesystemUUID)
+    }
+
+    func testManagedFreshSelectedDriveRejectsTmpSymlinkSpelledDataDriveAuthority() throws {
+        let base = try DoryDataDrive.canonicalPath(
+            "/private/tmp/dory-test-tier-tmp-symlink-data-drive-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        )
+        let home = base + "/home"
+        try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let selectionStore = try DoryDataDriveSelectionStore(home: home)
+        let selectionAuthority = try selectionStore.acquireAuthority()
+        let drive = try selectionStore.prepareSelection(authority: selectionAuthority)
+        let trustedDriveRoot = try DoryTrustedDirectoryRoot(
+            canonicalAbsolutePath: drive.root
+        )
+        let tmpSpelledRoot = "/tmp/" + String(drive.root.dropFirst("/private/tmp/".count))
+        XCTAssertEqual(try DoryDataDrive.canonicalPath(tmpSpelledRoot), drive.root)
+
+        let tier = DockerTier(
+            configuration: DockerTierConfiguration(
+                home: home,
+                forwardSocketPath: base + "/forward.sock",
+                hvProcess: HvProcessConfiguration(
+                    executablePath: "/bin/false",
+                    arguments: ["--data-drive", tmpSpelledRoot]
+                )
+            ),
+            dockerReadyWaiter: { _, _, _ in true },
+            dataDriveSelectionAuthority: selectionAuthority,
+            dataDriveTrustedRoot: trustedDriveRoot
+        )
+        defer { tier.stop() }
+
+        XCTAssertThrowsError(try tier.start()) { error in
+            XCTAssertTrue("\(error)".contains("canonical data-drive launch authority"), "\(error)")
+        }
+        XCTAssertEqual(tier.status().state, .failed)
+        XCTAssertNil(tier.status().hvPID)
+    }
+
     func testPinnedSelectedDriveRejectsSameIdentityCloneBeforeHelperOrDiskMutation() throws {
         let base = "/Users/Shared/dory-test-tier-pinned-drive-swap-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         let home = base + "/home"

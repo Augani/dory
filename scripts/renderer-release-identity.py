@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create and verify doryd's directed production renderer release identity."""
+"""Create and verify doryd's signed renderer release identity carrier."""
 
 from __future__ import annotations
 
@@ -20,8 +20,9 @@ RUNNER_EXECUTABLE = "dory-hv"
 WORKER_IDENTIFIER = "com.pythonxi.Dory.HVRunner.RendererWorker"
 WORKER_EXECUTABLE = "DoryRendererWorker"
 DORYD_IDENTIFIER = "doryd"
-ENTITLEMENT_NAME = "com.pythonxi.dory.renderer-release-identity.v1"
-ENTITLEMENT_SCHEMA_VERSION = 1
+INFO_PLIST_KEY = "DoryRendererReleaseIdentityV1"
+INFO_PLIST_PADDING_KEY = "DoryRendererReleaseIdentityPadding"
+IDENTITY_SCHEMA_VERSION = 1
 IDENTITY_KEYS = frozenset({
     "schema-version",
     "runner-cdhash",
@@ -142,11 +143,7 @@ def exact_detail_values(details: str, field: str) -> list[str]:
 
 
 def parse_production_signature_details(
-    details: str,
-    *,
-    label: str,
-    expected_identifier: str,
-    expected_team: str,
+    details: str, *, label: str, expected_identifier: str, expected_team: str
 ) -> str:
     if expected_team != PRODUCTION_TEAM_IDENTIFIER:
         fail(
@@ -277,7 +274,7 @@ def tuple_definition_digest(repo_root: pathlib.Path) -> str:
     return parse_tuple_definition_digest(output)
 
 
-def release_identity_entitlements(
+def release_identity_payload(
     *, runner_cdhash: str, worker_cdhash: str, tuple_digest: str
 ) -> dict[str, object]:
     for value, label in (
@@ -289,91 +286,144 @@ def release_identity_entitlements(
     if not HASH_64.fullmatch(tuple_digest) or tuple_digest == "0" * 64:
         fail("tuple-definition-sha256 must be nonzero canonical 64-hex")
     return {
-        ENTITLEMENT_NAME: {
-            "schema-version": ENTITLEMENT_SCHEMA_VERSION,
-            "runner-cdhash": runner_cdhash,
-            "renderer-worker-cdhash": worker_cdhash,
-            "tuple-definition-sha256": tuple_digest,
-        }
+        "schema-version": IDENTITY_SCHEMA_VERSION,
+        "runner-cdhash": runner_cdhash,
+        "renderer-worker-cdhash": worker_cdhash,
+        "tuple-definition-sha256": tuple_digest,
     }
 
 
-def validate_release_identity_entitlements(
-    value: dict[str, object], expected: dict[str, object]
+def validate_release_identity_payload(
+    value: object, expected: dict[str, object]
 ) -> None:
-    if set(value) != {ENTITLEMENT_NAME}:
-        fail("doryd entitlement top level must contain only the renderer release identity")
-    nested = value.get(ENTITLEMENT_NAME)
-    if not isinstance(nested, dict) or set(nested) != IDENTITY_KEYS:
+    if not isinstance(value, dict) or set(value) != IDENTITY_KEYS:
         fail("doryd renderer release identity has a noncanonical key set")
-    if type(nested.get("schema-version")) is not int:  # bool is not an integer here.
+    if type(value.get("schema-version")) is not int:  # bool is not an integer here.
         fail("doryd renderer release identity schema-version must be an integer")
     for field in (
         "runner-cdhash",
         "renderer-worker-cdhash",
         "tuple-definition-sha256",
     ):
-        if type(nested.get(field)) is not str:
+        if type(value.get(field)) is not str:
             fail(f"doryd renderer release identity {field} must be a string")
     if value != expected:
         fail("doryd renderer release identity differs from the final signed graph")
 
 
-def canonical_entitlement_bytes(value: dict[str, object]) -> bytes:
+def canonical_plist_bytes(value: dict[str, object]) -> bytes:
     return plistlib.dumps(value, fmt=plistlib.FMT_XML, sort_keys=True)
 
 
-def write_entitlements(path: pathlib.Path, value: dict[str, object]) -> None:
-    direct_directory(path.parent, "entitlement temporary directory")
-    raw = canonical_entitlement_bytes(value)
-    try:
-        with path.open("xb") as handle:
-            handle.write(raw)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.chmod(path, 0o600)
-    except OSError as error:
-        fail(f"cannot create canonical temporary doryd entitlement: {error}")
-    if path.read_bytes() != raw:
-        fail("canonical temporary doryd entitlement changed after creation")
-    validate_release_identity_entitlements(read_plist(path, "doryd entitlement"), value)
+def cstring(raw: bytes) -> str:
+    return raw.split(b"\0", 1)[0].decode("utf-8", "strict")
 
 
-def read_signed_entitlements(
-    path: pathlib.Path, label: str, *, allow_empty: bool = False
-) -> dict[str, object]:
+def macho_info_plist_section(raw: bytes) -> tuple[int, int]:
+    if len(raw) < 32:
+        fail("doryd Mach-O is truncated")
+    if int.from_bytes(raw[0:4], "big") in (0xCAFEBABE, 0xCAFEBABF):
+        fail("renderer release identity currently supports the exact arm64 doryd Mach-O only")
+    if int.from_bytes(raw[0:4], "little") != 0xFEEDFACF:
+        fail("doryd must be a 64-bit Mach-O executable")
+    ncmds = int.from_bytes(raw[16:20], "little")
+    sizeofcmds = int.from_bytes(raw[20:24], "little")
+    cursor = 32
+    end = cursor + sizeofcmds
+    if end > len(raw):
+        fail("doryd Mach-O load commands exceed file")
+    sections: list[tuple[int, int]] = []
+    for _ in range(ncmds):
+        if cursor + 8 > end:
+            fail("doryd Mach-O load command is truncated")
+        cmd = int.from_bytes(raw[cursor:cursor + 4], "little")
+        cmdsize = int.from_bytes(raw[cursor + 4:cursor + 8], "little")
+        if cmdsize < 8 or cursor + cmdsize > end:
+            fail("doryd Mach-O load command size is invalid")
+        if cmd == 0x19:  # LC_SEGMENT_64
+            if cmdsize < 72:
+                fail("doryd LC_SEGMENT_64 is truncated")
+            nsects = int.from_bytes(raw[cursor + 64:cursor + 68], "little")
+            section_cursor = cursor + 72
+            for _section in range(nsects):
+                if section_cursor + 80 > cursor + cmdsize:
+                    fail("doryd section table is truncated")
+                sectname = cstring(raw[section_cursor:section_cursor + 16])
+                segname = cstring(raw[section_cursor + 16:section_cursor + 32])
+                size = int.from_bytes(raw[section_cursor + 40:section_cursor + 48], "little")
+                offset = int.from_bytes(raw[section_cursor + 48:section_cursor + 52], "little")
+                if segname == "__TEXT" and sectname == "__info_plist":
+                    if offset <= 0 or size <= 0 or offset + size > len(raw):
+                        fail("doryd __TEXT,__info_plist section bounds are invalid")
+                    sections.append((offset, size))
+                section_cursor += 80
+        cursor += cmdsize
+    if len(sections) != 1:
+        fail("doryd must contain exactly one embedded __TEXT,__info_plist section")
+    return sections[0]
+
+
+def identity_info_plist(base_plist: dict[str, object], payload: dict[str, object], size: int) -> bytes:
+    if size > MAX_PLIST_BYTES:
+        fail("doryd embedded Info.plist section exceeds bounded size")
+    candidate = dict(base_plist)
+    candidate[INFO_PLIST_KEY] = payload
+    candidate[INFO_PLIST_PADDING_KEY] = ""
+    raw = canonical_plist_bytes(candidate)
+    if len(raw) > size:
+        fail("doryd embedded Info.plist section is too small for renderer release identity")
+    candidate[INFO_PLIST_PADDING_KEY] = "X" * (size - len(raw))
+    padded = canonical_plist_bytes(candidate)
+    if len(padded) != size:
+        fail("doryd embedded Info.plist cannot be padded to the existing section size")
+    return padded
+
+
+def patch_doryd_info_plist(path: pathlib.Path, payload: dict[str, object]) -> None:
+    direct_regular_file(path, "doryd", executable=True)
+    raw = bytearray(path.read_bytes())
+    offset, size = macho_info_plist_section(raw)
     try:
-        result = subprocess.run(
-            [CODESIGN, "-d", "--entitlements", ":-", os.fspath(path)],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        if allow_empty and not result.stdout:
-            return {}
-        value = plistlib.loads(result.stdout)
-    except (OSError, subprocess.CalledProcessError, plistlib.InvalidFileException) as error:
-        fail(f"inspect {label} entitlements failed: {error}")
+        existing = plistlib.loads(bytes(raw[offset:offset + size]))
+    except plistlib.InvalidFileException as error:
+        fail(f"doryd embedded Info.plist is invalid before patching: {error}")
+    if not isinstance(existing, dict):
+        fail("doryd embedded Info.plist root must be a dictionary")
+    existing.pop(INFO_PLIST_KEY, None)
+    raw[offset:offset + size] = identity_info_plist(existing, payload, size)
+    path.write_bytes(raw)
+
+
+def embedded_info_plist(path: pathlib.Path, label: str) -> dict[str, object]:
+    raw = path.read_bytes()
+    offset, size = macho_info_plist_section(raw)
+    try:
+        value = plistlib.loads(raw[offset:offset + size])
+    except plistlib.InvalidFileException as error:
+        fail(f"inspect {label} embedded Info.plist failed: {error}")
     if not isinstance(value, dict):
-        fail(f"{label} entitlements root must be a dictionary")
+        fail(f"{label} embedded Info.plist root must be a dictionary")
     return value
 
 
-def create_entitlements(arguments: argparse.Namespace) -> None:
+def embed_info_plist(arguments: argparse.Namespace) -> None:
     runner_cdhash, worker_cdhash = verify_runner_graph(
         arguments.runner_app, arguments.expected_team
     )
     tuple_digest = tuple_definition_digest(arguments.repo_root)
-    value = release_identity_entitlements(
+    value = release_identity_payload(
         runner_cdhash=runner_cdhash,
         worker_cdhash=worker_cdhash,
         tuple_digest=tuple_digest,
     )
-    write_entitlements(arguments.output, value)
+    patch_doryd_info_plist(arguments.doryd, value)
+    validate_release_identity_payload(
+        embedded_info_plist(arguments.doryd, "doryd").get(INFO_PLIST_KEY), value
+    )
     print(f"renderer.release-identity.runner-cdhash={runner_cdhash}")
     print(f"renderer.release-identity.worker-cdhash={worker_cdhash}")
     print(f"renderer.release-identity.tuple-definition-sha256={tuple_digest}")
-    print(f"renderer.release-identity.entitlements={arguments.output}")
+    print("renderer.release-identity.carrier=embedded-info-plist")
 
 
 def verify_identity(arguments: argparse.Namespace) -> None:
@@ -383,7 +433,7 @@ def verify_identity(arguments: argparse.Namespace) -> None:
         arguments.runner_app, arguments.expected_team
     )
     tuple_digest = tuple_definition_digest(arguments.repo_root)
-    expected = release_identity_entitlements(
+    expected = release_identity_payload(
         runner_cdhash=runner_cdhash,
         worker_cdhash=worker_cdhash,
         tuple_digest=tuple_digest,
@@ -394,8 +444,8 @@ def verify_identity(arguments: argparse.Namespace) -> None:
         expected_identifier=DORYD_IDENTIFIER,
         expected_team=arguments.expected_team,
     )
-    validate_release_identity_entitlements(
-        read_signed_entitlements(doryd, "doryd"), expected
+    validate_release_identity_payload(
+        embedded_info_plist(doryd, "doryd").get(INFO_PLIST_KEY), expected
     )
     print(f"renderer.release-identity.runner-cdhash={runner_cdhash}")
     print(f"renderer.release-identity.worker-cdhash={worker_cdhash}")
@@ -406,9 +456,9 @@ def verify_identity(arguments: argparse.Namespace) -> None:
 def verify_absent(arguments: argparse.Namespace) -> None:
     doryd = direct_regular_file(arguments.doryd, "doryd", executable=True)
     command_output([CODESIGN, "--verify", "--strict", os.fspath(doryd)], "verify doryd")
-    entitlements = read_signed_entitlements(doryd, "doryd", allow_empty=True)
-    if entitlements:
-        fail("non-production doryd must not carry any signed entitlements")
+    info = embedded_info_plist(doryd, "doryd")
+    if INFO_PLIST_KEY in info:
+        fail("non-production doryd must not carry a renderer release identity")
     print("renderer.release-identity=absent-fail-closed")
 
 
@@ -417,9 +467,9 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     commands = result.add_subparsers(dest="command", required=True)
 
-    create = commands.add_parser("create-entitlements")
+    create = commands.add_parser("embed-info-plist")
     create.add_argument("--runner-app", required=True, type=pathlib.Path)
-    create.add_argument("--output", required=True, type=pathlib.Path)
+    create.add_argument("--doryd", required=True, type=pathlib.Path)
     create.add_argument("--expected-team", default=PRODUCTION_TEAM_IDENTIFIER)
     create.add_argument("--repo-root", type=pathlib.Path, default=repo_root)
 
@@ -436,15 +486,15 @@ def parser() -> argparse.ArgumentParser:
 
 def main() -> int:
     arguments = parser().parse_args()
-    if arguments.command in {"create-entitlements", "verify"}:
+    if arguments.command in {"embed-info-plist", "verify"}:
         if arguments.expected_team != PRODUCTION_TEAM_IDENTIFIER:
             fail(
                 "renderer release identity can only bind Dory production team "
                 f"{PRODUCTION_TEAM_IDENTIFIER}"
             )
         arguments.repo_root = arguments.repo_root.resolve(strict=True)
-    if arguments.command == "create-entitlements":
-        create_entitlements(arguments)
+    if arguments.command == "embed-info-plist":
+        embed_info_plist(arguments)
     elif arguments.command == "verify":
         verify_identity(arguments)
     elif arguments.command == "verify-absent":

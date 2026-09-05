@@ -35,9 +35,16 @@ final class DoryContainerRendererLaunchAuthority: Sendable {
     static func prepare(
         runnerPath: String,
         kernelPath: String,
-        stateDirectory: String
+        stateDirectory: String,
+        releaseIdentityProvider: any DoryRendererReleaseIdentityProviding =
+            DoryCurrentTaskRendererReleaseIdentityProvider()
     ) throws -> Self {
         let (runtime, runnerIdentity, workerIdentity) = try Self.verifiedRuntime(at: runnerPath)
+        let releaseIdentity = try validatedDaemonReleaseIdentity(
+            provider: releaseIdentityProvider,
+            runnerIdentity: runnerIdentity,
+            workerIdentity: workerIdentity
+        )
         let kernelDigest = try digestKernel(at: kernelPath)
         // Do not repair permissions on an existing directory: the trusted-root acquisition must
         // reject an unsafe or replaced state root instead of granting it launch authority.
@@ -68,15 +75,25 @@ final class DoryContainerRendererLaunchAuthority: Sendable {
         }
         return Self(
             bootstrap: bootstrap, kernelSHA256: kernelDigest,
-            releaseIdentity: DoryRendererReleaseIdentityV1(
-                runnerCodeDirectoryHash: runnerIdentity,
-                rendererWorkerCodeDirectoryHash: workerIdentity,
-                tupleDefinitionSHA256: try DoryRendererArtifactDigest(
-                    lowercaseSHA256: DoryRendererSourceTuple.productionDefinitionSHA256,
-                    field: "rendererTupleDefinition"
-                )
-            )
+            releaseIdentity: releaseIdentity
         )
+    }
+
+    static func validatedDaemonReleaseIdentity(
+        provider: any DoryRendererReleaseIdentityProviding,
+        runnerIdentity: DoryCodeDirectoryHash,
+        workerIdentity: DoryCodeDirectoryHash
+    ) throws -> DoryRendererReleaseIdentityV1 {
+        let identity = try provider.loadReleaseIdentity()
+        guard identity.tupleDefinitionSHA256.lowercaseSHA256
+                == DoryRendererSourceTuple.productionDefinitionSHA256 else {
+            throw DoryRendererReleaseIdentityError.tupleDefinitionMismatch
+        }
+        guard identity.runnerCodeDirectoryHash == runnerIdentity,
+              identity.rendererWorkerCodeDirectoryHash == workerIdentity else {
+            throw DoryRendererReleaseIdentityError.releaseIdentityMismatch
+        }
+        return identity
     }
 
     static func verifiedRuntime(at path: String) throws -> (

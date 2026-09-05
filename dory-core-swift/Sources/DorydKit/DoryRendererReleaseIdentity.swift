@@ -4,22 +4,26 @@ import Foundation
 import Security
 
 /// Fail-closed decoding and acquisition failures for the renderer identity sealed into the live
-/// production daemon. The entitlement is an identity carrier only; it grants no OS privilege.
+/// production daemon's signed executable metadata. The payload is identity data only; it grants no
+/// OS privilege and is accepted only after the live daemon satisfies its production requirement.
 enum DoryRendererReleaseIdentityError: Error, Equatable, Sendable {
     case productionDaemonIdentityUnavailable
     case currentTaskUnavailable
-    case entitlementUnavailable
-    case nonCanonicalEntitlement
+    case signingInformationUnavailable
+    case securedInfoPlistUnavailable
+    case identityUnavailable
+    case nonCanonicalIdentity
     case unsupportedSchemaVersion(Int)
     case invalidCodeDirectoryHash(field: String)
     case tupleDefinitionMismatch
+    case releaseIdentityMismatch
 }
 
 /// The acyclic release binding produced after the nested worker and runner receive their final
 /// signatures and before doryd receives its final signature. It intentionally does not contain
 /// doryd's own CDHash.
 struct DoryRendererReleaseIdentityV1: Equatable, Sendable {
-    static let entitlementName = "com.pythonxi.dory.renderer-release-identity.v1"
+    static let securedInfoPlistKey = "DoryRendererReleaseIdentityV1"
     static let schemaVersion = 1
 
     private static let schemaVersionKey = "schema-version"
@@ -37,19 +41,19 @@ struct DoryRendererReleaseIdentityV1: Equatable, Sendable {
     let rendererWorkerCodeDirectoryHash: DoryCodeDirectoryHash
     let tupleDefinitionSHA256: DoryRendererArtifactDigest
 
-    /// Decodes the already-parsed entitlement value. Exact keys, scalar types, lowercase hash
+    /// Decodes the already-parsed signed identity value. Exact keys, scalar types, lowercase hash
     /// spellings, and the compiled tuple definition are all part of the canonical form.
-    static func decode(entitlementDictionary: [String: Any]) throws -> Self {
-        guard Set(entitlementDictionary.keys) == canonicalKeys,
+    static func decode(identityDictionary: [String: Any]) throws -> Self {
+        guard Set(identityDictionary.keys) == canonicalKeys,
               let rawSchemaVersion = exactInteger(
-                entitlementDictionary[schemaVersionKey]
+                identityDictionary[schemaVersionKey]
               ),
-              let runnerCDHash = entitlementDictionary[runnerCDHashKey] as? String,
+              let runnerCDHash = identityDictionary[runnerCDHashKey] as? String,
               let rendererWorkerCDHash =
-                entitlementDictionary[rendererWorkerCDHashKey] as? String,
+                identityDictionary[rendererWorkerCDHashKey] as? String,
               let tupleDefinitionSHA256 =
-                entitlementDictionary[tupleDefinitionSHA256Key] as? String else {
-            throw DoryRendererReleaseIdentityError.nonCanonicalEntitlement
+                identityDictionary[tupleDefinitionSHA256Key] as? String else {
+            throw DoryRendererReleaseIdentityError.nonCanonicalIdentity
         }
         guard rawSchemaVersion == schemaVersion else {
             throw DoryRendererReleaseIdentityError.unsupportedSchemaVersion(
@@ -92,7 +96,7 @@ struct DoryRendererReleaseIdentityV1: Equatable, Sendable {
         } catch {
             // Equality with the compiled definition should make this unreachable, but decoding
             // still fails closed if that compile-time constant is malformed.
-            throw DoryRendererReleaseIdentityError.nonCanonicalEntitlement
+            throw DoryRendererReleaseIdentityError.nonCanonicalIdentity
         }
         return Self(
             runnerCodeDirectoryHash: runner,
@@ -148,31 +152,61 @@ enum DoryProductionRendererReleaseIdentityAuthority {
     }
 }
 
-/// Reads the entitlement attached to the live doryd task, after proving that the task satisfies
-/// doryd's complete production requirement. Adjacent files and bundle metadata are never inputs.
+/// Reads the secured Info.plist embedded in the live doryd executable, after proving that the task
+/// satisfies doryd's complete production requirement. Mutable bundle resources, adjacent files,
+/// environment variables, and unprovisionable private entitlements are never inputs.
 struct DoryCurrentTaskRendererReleaseIdentityProvider:
     DoryRendererReleaseIdentityProviding,
     Sendable
 {
     func loadReleaseIdentity() throws -> DoryRendererReleaseIdentityV1 {
-        guard DorydXPCSecurity.currentProcessSatisfiesProductionDaemonRequirement() else {
-            throw DoryRendererReleaseIdentityError.productionDaemonIdentityUnavailable
-        }
-        guard let task = SecTaskCreateFromSelf(nil) else {
+        var code: SecCode?
+        guard SecCodeCopySelf(SecCSFlags(), &code) == errSecSuccess,
+              let code else {
             throw DoryRendererReleaseIdentityError.currentTaskUnavailable
         }
-        guard let value = SecTaskCopyValueForEntitlement(
-            task,
-            DoryRendererReleaseIdentityV1.entitlementName as CFString,
-            nil
-        ) else {
-            throw DoryRendererReleaseIdentityError.entitlementUnavailable
+        var requirement: SecRequirement?
+        guard SecRequirementCreateWithString(
+            DorydXPCSecurity.productionDaemonRequirement as CFString,
+            SecCSFlags(),
+            &requirement
+        ) == errSecSuccess,
+        let requirement,
+        SecCodeCheckValidity(code, SecCSFlags(), requirement) == errSecSuccess else {
+            throw DoryRendererReleaseIdentityError.productionDaemonIdentityUnavailable
         }
-        guard let dictionary = value as? [String: Any] else {
-            throw DoryRendererReleaseIdentityError.nonCanonicalEntitlement
+        var staticCode: SecStaticCode?
+        guard SecCodeCopyStaticCode(code, SecCSFlags(), &staticCode) == errSecSuccess,
+              let staticCode,
+              SecStaticCodeCheckValidity(staticCode, SecCSFlags(rawValue: kSecCSStrictValidate), requirement)
+                == errSecSuccess else {
+            throw DoryRendererReleaseIdentityError.signingInformationUnavailable
         }
-        return try DoryRendererReleaseIdentityV1.decode(
-            entitlementDictionary: dictionary
+        var signingInformation: CFDictionary?
+        guard SecCodeCopySigningInformation(
+            staticCode,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &signingInformation
+        ) == errSecSuccess,
+        let values = signingInformation as? [CFString: Any] else {
+            throw DoryRendererReleaseIdentityError.signingInformationUnavailable
+        }
+        guard let securedInfoPlist = values[kSecCodeInfoPList] as? [String: Any] else {
+            throw DoryRendererReleaseIdentityError.securedInfoPlistUnavailable
+        }
+        guard let dictionary = securedInfoPlist[
+            DoryRendererReleaseIdentityV1.securedInfoPlistKey
+        ] as? [String: Any] else {
+            throw DoryRendererReleaseIdentityError.identityUnavailable
+        }
+        let identity = try DoryRendererReleaseIdentityV1.decode(
+            identityDictionary: dictionary
         )
+        // Signing information can read disk-backed metadata. Recheck the live code after
+        // decoding so an executable substitution cannot become this process's release pin.
+        guard SecCodeCheckValidity(code, SecCSFlags(), requirement) == errSecSuccess else {
+            throw DoryRendererReleaseIdentityError.productionDaemonIdentityUnavailable
+        }
+        return identity
     }
 }
