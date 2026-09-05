@@ -113,7 +113,8 @@ public struct DoryIROptimizer: Sendable {
         invalidate(.register(.init(bank: "x86.gpr", index: 0, width: .i64)), knownConstants: &knownConstants)
         invalidate(.register(.init(bank: "x86.gpr", index: 2, width: .i64)), knownConstants: &knownConstants)
 
-      case .doubleShiftRightCL(let destination, _):
+      case .doubleShiftRightCL(let destination, _),
+        .doubleShiftRightImmediate(let destination, _, _):
         statements.append(statement)
         invalidate(destination, knownConstants: &knownConstants)
 

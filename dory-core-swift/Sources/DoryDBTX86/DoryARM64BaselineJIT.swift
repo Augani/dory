@@ -180,7 +180,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination) || isFSOrGS(lhs) || isFSOrGS(rhs)
       case .unsignedAccumulatorMultiply(let source), .unsignedAccumulatorDivide(let source):
         return isFSOrGS(source)
-      case .doubleShiftRightCL(let destination, let source):
+      case .doubleShiftRightCL(let destination, let source),
+        .doubleShiftRightImmediate(let destination, let source, _):
         return isFSOrGS(destination) || isFSOrGS(source)
       case .compareExchange(let destination, let source):
         return isFSOrGS(destination) || isFSOrGS(source)
@@ -266,7 +267,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .unsignedAccumulatorDivide(let source):
       return emitUnsignedAccumulatorDivide(source: source, into: &words)
     case .doubleShiftRightCL(let destination, let source):
-      return emitDoubleShiftRightCL(destination: destination, source: source, into: &words)
+      return emitDoubleShiftRight(destination: destination, source: source, into: &words)
+    case .doubleShiftRightImmediate(let destination, let source, let count):
+      return emitDoubleShiftRight(
+        destination: destination, source: source, immediateCount: count, into: &words)
     case .compareExchange(let destination, let source):
       return emitCompareExchange(destination: destination, source: source, into: &words)
     case .signedMultiply(let destination, let lhs, let rhs):
@@ -666,7 +670,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .unsignedAccumulatorMultiply(let source), .unsignedAccumulatorDivide(let source):
       if case .memory = source { return 1 }
       return 0
-    case .doubleShiftRightCL(let destination, let source):
+    case .doubleShiftRightCL(let destination, let source),
+        .doubleShiftRightImmediate(let destination, let source, _):
       if case .memory = destination { return 1 }
       if case .memory = source { return 1 }
       return 0
@@ -832,9 +837,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
     return true
   }
 
-  private func emitDoubleShiftRightCL(
+  private func emitDoubleShiftRight(
     destination: DoryIROperand,
     source: DoryIROperand,
+    immediateCount: UInt8? = nil,
     into words: inout [UInt32]
   ) -> Bool {
     guard case .register(let target) = destination,
@@ -845,7 +851,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
     words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(sourceRegister.index) * 8))
-    words.append(encodeLoad64(register: 11, base: 0, byteOffset: 8))
+    if let immediateCount {
+      emitImmediate(UInt64(immediateCount), register: 11, into: &words)
+    } else {
+      words.append(encodeLoad64(register: 11, base: 0, byteOffset: 8))
+    }
     emitImmediate(0x3f, register: 15, into: &words)
     words.append(encodeLogical(.and, left: 11, right: 15, destination: 11))
     words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 11, 31, 31))
@@ -3961,7 +3971,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     if key.privilegeLevel != 0,
       block.statements.contains(where: {
         switch $0 {
-        case .unsignedAccumulatorMultiply, .unsignedAccumulatorDivide, .doubleShiftRightCL:
+        case .unsignedAccumulatorMultiply, .unsignedAccumulatorDivide, .doubleShiftRightCL,
+          .doubleShiftRightImmediate:
           return true
         default:
           return false

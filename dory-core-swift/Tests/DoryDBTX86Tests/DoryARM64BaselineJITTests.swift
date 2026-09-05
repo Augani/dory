@@ -2771,6 +2771,36 @@ import Testing
     #endif
   }
 
+  @Test func immediateDoubleShiftMatchesInterpreterAcrossCountsAndAliases() throws {
+    #if arch(arm64)
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 256 * 1024, optimization: optimization
+        )
+        for count in [UInt8(0), 1, 2, 31, 32, 63, 64, 65, 255] {
+          for modRM in [UInt8(0xD0), 0xC0, 0xC8, 0xD1] {
+            for flags: DoryX86RFLAGS in [
+              [.reservedOne],
+              [.reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .sign, .overflow, .direction],
+            ] {
+              try assertNativeArithmeticParity(
+                bytes: [0x48, 0x0F, 0xAC, modRM, count],
+                registers: .init(
+                  rax: 0x8123_4567_89AB_CDEF,
+                  rcx: 0x0123_4567_89AB_CD17,
+                  rdx: 0x7EDC_BA98_7654_3210
+                ),
+                flags: flags,
+                executor: executor,
+                optimization: optimization
+              )
+            }
+          }
+        }
+      }
+    #endif
+  }
+
   @Test func unsignedAccumulatorDivideMatchesInterpreterForZeroHighDividend() throws {
     #if arch(arm64)
       struct Case {
@@ -2894,6 +2924,7 @@ import Testing
         [UInt8]([0x48, 0xF7, 0x20]),  // mul qword ptr [rax]
         [UInt8]([0x48, 0xF7, 0x30]),  // div qword ptr [rax]
         [UInt8]([0x48, 0x0F, 0xAD, 0x10]),  // shrd qword ptr [rax],rdx,cl
+        [UInt8]([0x48, 0x0F, 0xAC, 0x10, 32]),  // shrd qword ptr [rax],rdx,32
       ] {
         let translated = try DoryX86IRTranslator().translate(bytes, at: 0, mode: .long64)
         #expect(DoryARM64BaselineEmitter().compile(translated).tier == .interpreterFallback)
@@ -2953,6 +2984,14 @@ import Testing
       ) == nil)
       #expect(try executor.execute(
         bytes: [0x48, 0xF7, 0xF1],
+        at: 0,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &userState
+      ) == nil)
+      #expect(try executor.execute(
+        bytes: [0x48, 0x0F, 0xAC, 0xD0, 32],
         at: 0,
         mode: .long64,
         addressSpaceID: 0,
