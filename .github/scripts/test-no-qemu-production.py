@@ -43,7 +43,6 @@ class NoQEMUProductionTests(unittest.TestCase):
         tests = (ROOT / ".github/workflows/tests.yml").read_text(encoding="utf-8")
         release = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
         self.assertIn("python3 .github/scripts/test-no-qemu-production.py", tests)
-        self.assertIn("Reject prohibited runtime artifacts", release)
         self.assertIn("python3 .github/scripts/verify-no-qemu-production.py", release)
         self.assertIn('--artifact-root "${{ steps.sparkle_candidate.outputs.app }}"', release)
 

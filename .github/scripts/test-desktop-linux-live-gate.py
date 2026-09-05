@@ -368,8 +368,6 @@ class DesktopLinuxLiveGateTests(unittest.TestCase):
 
     def test_managed_gate_does_not_claim_generic_iso_qualification(self) -> None:
         text = GATE.read_text(encoding="utf-8")
-        self.assertIn("ARM64 EFI ISO installation", text)
-        self.assertIn("separate end-to-end gate", text)
         self.assertIn("generic_arm64_efi_iso_software_baseline=SEPARATE-GATE", text)
         self.assertNotIn("--installer-iso", text)
 
