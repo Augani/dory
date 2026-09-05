@@ -12,7 +12,7 @@ import Testing
     try machine.localAPIC.inject(vector: 0x30)
     let initialRBX = try #require(machine.state).registers.rbx
 
-    let stop = try machine.run(maximumInstructions: 16, exceptionPolicy: .deliver)
+    let stop = try machine.runOnDedicatedStack(maximumInstructions: 16, exceptionPolicy: .deliver)
     guard case .halted = stop else {
       Issue.record("Expected serial #GP handler to halt, got \(stop)")
       return
@@ -31,14 +31,14 @@ import Testing
   @Test func faultEnteringAcceptedNMIIsSerialAndKeepsNMIBlocked() throws {
     let machine = try makeMachine(code: setupCode(following: [0xF4]))
     try installTables(machine, validVectors: [13: 0x10_0100])
-    #expect(try machine.run(maximumInstructions: 4) == .halted(instructionCount: 3))
+    #expect(try machine.runOnDedicatedStack(maximumInstructions: 4) == .halted(instructionCount: 3))
 
     try machine.multiprocessorController.handleInterruptCommand(
       sourceAPICID: 0,
       high: 0,
       low: UInt32(4 << 8 | 1 << 18)
     )
-    let stop = try machine.run(maximumInstructions: 8, exceptionPolicy: .deliver)
+    let stop = try machine.runOnDedicatedStack(maximumInstructions: 8, exceptionPolicy: .deliver)
     guard case .halted = stop else {
       Issue.record("Expected serial #GP handler to halt, got \(stop)")
       return
@@ -54,14 +54,14 @@ import Testing
   @Test func faultWhileEnteringDoubleFaultStopsTheCoreAsTripleFault() throws {
     let machine = try makeMachine(code: setupCode(following: [0xF4]))
     try installTables(machine, validVectors: [:])
-    #expect(try machine.run(maximumInstructions: 4) == .halted(instructionCount: 3))
+    #expect(try machine.runOnDedicatedStack(maximumInstructions: 4) == .halted(instructionCount: 3))
 
     try machine.multiprocessorController.handleInterruptCommand(
       sourceAPICID: 0,
       high: 0,
       low: UInt32(4 << 8 | 1 << 18)
     )
-    let stop = try machine.run(maximumInstructions: 8, exceptionPolicy: .deliver)
+    let stop = try machine.runOnDedicatedStack(maximumInstructions: 8, exceptionPolicy: .deliver)
     guard case .tripleFault(let source, _) = stop else {
       Issue.record("Expected processor shutdown to stop the core, got \(stop)")
       return

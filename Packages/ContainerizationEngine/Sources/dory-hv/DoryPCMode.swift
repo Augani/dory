@@ -329,10 +329,7 @@ enum DoryPCMode {
         private let mailbox: DesktopFrameMailbox?
         private let window: NSWindow?
         private let readyPublisher: ReadyPublisher
-        private let executionQueue = DispatchQueue(
-            label: "dev.dory.dory-hv.dorypc.execution",
-            qos: .userInitiated
-        )
+        private var executionThread: Thread?
         private let signalQueue = DispatchQueue(
             label: "dev.dory.dory-hv.dorypc.signals",
             qos: .userInitiated
@@ -832,7 +829,12 @@ enum DoryPCMode {
         }
 
         private func startExecution() {
-            executionQueue.async { [weak self] in self?.execute() }
+            let thread = Thread { [weak self] in self?.execute() }
+            thread.name = "dev.dory.dory-hv.dorypc.execution"
+            thread.qualityOfService = RawHVSchedulingPolicy.machineOwnerThreadQualityOfService
+            thread.stackSize = RawHVSchedulingPolicy.machineOwnerThreadStackSize
+            executionThread = thread
+            thread.start()
         }
 
         private func startGuestServicePreparation() {

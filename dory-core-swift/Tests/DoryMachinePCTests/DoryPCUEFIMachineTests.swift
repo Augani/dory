@@ -20,10 +20,10 @@ import Testing
       try machine.memory.read(at: DoryPCV1ABI.acpiBase, byteCount: 8) == Array("RSD PTR ".utf8))
     #expect(
       try machine.memory.read(at: DoryPCV1ABI.smbiosBase, byteCount: 5) == Array("_SM3_".utf8))
-    #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+    #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
     #expect(machine.state?.rip == 0xfff1)
-    #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
-    #expect(try machine.run(maximumInstructions: 1) == .halted(instructionCount: 0))
+    #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
+    #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .halted(instructionCount: 0))
   }
 
   @Test func requiresFirmwareAndAllowsOnlyOneBootPayload() throws {

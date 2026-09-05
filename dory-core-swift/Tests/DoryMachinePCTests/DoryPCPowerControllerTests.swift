@@ -49,7 +49,7 @@ import Testing
       width: .word
     )
     try powerOff.load(kernel: makeMinimalELF())
-    #expect(try powerOff.run(maximumInstructions: 1) == .poweredOff(instructionCount: 0))
+    #expect(try powerOff.runOnDedicatedStack(maximumInstructions: 1) == .poweredOff(instructionCount: 0))
 
     let reset = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
     try reset.ioBus.write(
@@ -58,7 +58,7 @@ import Testing
       width: .byte
     )
     try reset.load(kernel: makeMinimalELF())
-    #expect(try reset.run(maximumInstructions: 1) == .reset(instructionCount: 0))
+    #expect(try reset.runOnDedicatedStack(maximumInstructions: 1) == .reset(instructionCount: 0))
   }
 }
 

@@ -22,7 +22,7 @@ import Testing
         #expect(!before.rflags.contains(.zero) && before.registers.rbx != 0)
         let statistics = machine.executionStatistics
         if enabled {
-          #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+          #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
           let after = try #require(machine.state)
           #expect(after.rip == before.rip + 3 && after.registers.rax == before.registers.rbx)
           switch tier {
@@ -35,7 +35,7 @@ import Testing
           }
         } else {
           for _ in 0..<2 {
-            let result = try machine.run(maximumInstructions: 1)
+            let result = try machine.runOnDedicatedStack(maximumInstructions: 1)
             #expect(result == .exception(.init(kind: .invalidOpcode, vector: 6,
               instructionPointer: before.rip), instructionCount: 0))
             let after = try #require(machine.state)

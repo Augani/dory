@@ -31,7 +31,7 @@ import Testing
       let machine = try makeMachine(tier: tier)
       var elapsedTicks: UInt64 = 0
       for budget: UInt64 in [1, 1, 1, 7, 17, 973] {
-        #expect(try machine.run(maximumInstructions: budget) == .instructionBudget(budget))
+        #expect(try machine.runOnDedicatedStack(maximumInstructions: budget) == .instructionBudget(budget))
         elapsedTicks += budget
         try expectCoherentClocks(machine, elapsedMachineTicks: elapsedTicks)
       }
@@ -43,20 +43,20 @@ import Testing
     for tier in executionTiers {
       let clock = ManualClock()
       let machine = try makeMachine(tier: tier, clockSource: clock.source)
-      #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
       var elapsedNanoseconds: UInt64 = 0
       // At 100 ms the PM timer reads 357954, while HPET reads 1000000. The final
       // five-second sample crosses the advertised 24-bit PM timer wrap.
       for increment: UInt64 in [99, 1, 99, 1, 100, 999_700, 99_000_000, 4_900_000_000] {
         clock.advance(nanoseconds: increment)
         elapsedNanoseconds += increment
-        #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+        #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
         try expectCoherentClocks(machine, elapsedMachineTicks: elapsedNanoseconds / 100)
       }
       #expect(elapsedNanoseconds == 5_000_000_000)
       #expect(try readPMTimer(machine) == 1_120_509)
       // Extra retirement at an unchanged host sample advances none of the devices.
-      #expect(try machine.run(maximumInstructions: 32) == .instructionBudget(32))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 32) == .instructionBudget(32))
       try expectCoherentClocks(machine, elapsedMachineTicks: 50_000_000)
     }
   }
@@ -64,17 +64,17 @@ import Testing
   @Test func hostResumeDropsSuspendedTimeWithoutDiscardingPMOscillatorFraction() throws {
     let clock = ManualClock()
     let machine = try makeMachine(clockSource: clock.source)
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     clock.advance(nanoseconds: 200)
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     try expectCoherentClocks(machine, elapsedMachineTicks: 2)
     #expect(try readPMTimer(machine) == 0)
 
     clock.suspendAndResume(after: 30_000_000_000)
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     try expectCoherentClocks(machine, elapsedMachineTicks: 2)
     clock.advance(nanoseconds: 100)
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     try expectCoherentClocks(machine, elapsedMachineTicks: 3)
     #expect(try readPMTimer(machine) == 1)
   }
@@ -85,7 +85,7 @@ import Testing
         let machine = try makeMachine(tier: tier, tscFrequencyHz: frequency)
         var elapsedTicks: UInt64 = 0
         for budget: UInt64 in [1, 1, 1, 7, 17, 973] {
-          #expect(try machine.run(maximumInstructions: budget) == .instructionBudget(budget))
+          #expect(try machine.runOnDedicatedStack(maximumInstructions: budget) == .instructionBudget(budget))
           elapsedTicks += budget
           // Independent 128-bit arithmetic gives the exact mathematical result here.
           let expected = UInt64(10_000_000).dividingFullWidth(
@@ -102,15 +102,15 @@ import Testing
   @Test func hostTSCRateWrapsOnlyTheCounterAndExcludesSuspendedTime() throws {
     let clock = ManualClock()
     let machine = try makeMachine(clockSource: clock.source, tscFrequencyHz: .max)
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     clock.advance(nanoseconds: 1_000_000_000)
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     #expect(machine.state?.tsc == UInt64.max)
     clock.suspendAndResume(after: 30_000_000_000)
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     #expect(machine.state?.tsc == UInt64.max)
     clock.advance(nanoseconds: 1_000_000_000)
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     #expect(machine.state?.tsc == UInt64.max - 1)
     #expect(machine.hpet.snapshot().mainCounter == 20_000_000)
     #expect(try readPMTimer(machine) == 7_159_090)

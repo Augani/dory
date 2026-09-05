@@ -8,7 +8,7 @@ import Testing
   @Test func selectedPhysicalWidthReachesBothJITsAndRunPreservesTheLoadedPDPTEs() throws {
     for tier in executionTiers {
       let machine = try makeMachine(tier: tier, physicalAddressBits: 48)
-      #expect(try machine.run(maximumInstructions: 6) == .instructionBudget(6))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 6) == .instructionBudget(6))
       let initial = try #require(machine.state)
       #expect(initial.control.isLegacyPAEPagingActive)
       #expect(initial.control.legacyPAEPDPTEs == .init(0xA001, (1 << 40) | 1))
@@ -17,7 +17,7 @@ import Testing
       // would reject this reserved bit, even though no control-register reload occurred.
       try write(UInt64(3), to: machine, at: 0x9008)
       let before = machine.executionStatistics
-      let stop = try machine.run(maximumInstructions: 64)
+      let stop = try machine.runOnDedicatedStack(maximumInstructions: 64)
       try #require(stop == .instructionBudget(64))
       let resumed = try #require(machine.state)
       #expect(resumed.registers.rbx == initial.registers.rbx + 32)
@@ -46,7 +46,7 @@ import Testing
   @Test func narrowerPhysicalWidthRejectsPagingEnableWithoutPublishingControlOrLatch() throws {
     for tier in executionTiers {
       let machine = try makeMachine(tier: tier, physicalAddressBits: 40)
-      #expect(try machine.run(maximumInstructions: 5) == .instructionBudget(5))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 5) == .instructionBudget(5))
       let before = try #require(machine.state)
       #expect(!before.control.isLegacyPAEPagingActive)
       #expect(before.control.legacyPAEPDPTEs == nil)
@@ -55,7 +55,7 @@ import Testing
       // All four present PDPTEs are checked, including this unused entry above MAXPHYADDR.
       // The same failing instruction can be retried without publishing partial controls.
       for _ in 0..<2 {
-        let stop = try machine.run(maximumInstructions: 1)
+        let stop = try machine.runOnDedicatedStack(maximumInstructions: 1)
         guard case .exception(let exception, let count) = stop else {
           Issue.record("Expected paging-enable #GP, got \(stop)")
           continue

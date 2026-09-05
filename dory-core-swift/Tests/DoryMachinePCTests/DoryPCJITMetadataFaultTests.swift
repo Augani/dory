@@ -38,7 +38,7 @@ import Testing
       // Two 4 MiB linear ranges initially alias the same low physical memory.
       try write32(0x83, to: machine, at: 0x80000)
       try write32(0x83, to: machine, at: 0x80004)
-      #expect(try machine.run(maximumInstructions: 13) == .instructionBudget(13))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 13) == .instructionBudget(13))
       let warmed = try #require(machine.state)
       #expect(warmed.rip == 0x100080)
       #expect(try read32(machine, at: 0x180000) == 1)
@@ -47,7 +47,7 @@ import Testing
 
       // Previously, the positive JIT generation probe threw to the host from this run.
       for attempt in 0..<2 {
-        let stop = try machine.run(maximumInstructions: 16)
+        let stop = try machine.runOnDedicatedStack(maximumInstructions: 16)
         guard case .exception(let exception, let completed) = stop else {
           Issue.record("Expected precise revoked-code page fault, got \(stop)")
           continue
@@ -68,7 +68,7 @@ import Testing
 
       // Restoring the missing mapping lets the same architectural instruction resume.
       try write32(0x83, to: machine, at: 0x80004)
-      #expect(try machine.run(maximumInstructions: 3) == .instructionBudget(3))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 3) == .instructionBudget(3))
       let resumed = try #require(machine.state)
       #expect(resumed.rip == 0x100080)
       #expect(resumed.registers.rbx == originalRBX + 1)

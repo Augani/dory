@@ -17,7 +17,7 @@ import Testing
         ])
       let initialRBX = try #require(machine.state).registers.rbx
 
-      #expect(try machine.run(maximumInstructions: 3) == .instructionBudget(3))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 3) == .instructionBudget(3))
       let state = try #require(machine.state)
       #expect(state.registers.rbx == initialRBX + 1)
       #expect(state.registers.rcx == 1)
@@ -46,7 +46,7 @@ import Testing
       try machine.localAPIC.inject(vector: 0x30)
       #expect(machine.localAPIC.snapshot().interruptRequest == [0x30])
 
-      let stop = try machine.run(maximumInstructions: 8)
+      let stop = try machine.runOnDedicatedStack(maximumInstructions: 8)
       guard case .tripleFault(let source, let count) = stop,
         case .interrupt(let vector, let interruptSource, let processor) = source
       else {
@@ -75,7 +75,7 @@ import Testing
       try machine.legacyPIC.raise(irq: 0)
       #expect(machine.legacyPIC.snapshot().masterRequest == 1)
 
-      let stop = try machine.run(maximumInstructions: 8)
+      let stop = try machine.runOnDedicatedStack(maximumInstructions: 8)
       guard case .tripleFault(let source, let count) = stop,
         case .interrupt(let vector, let interruptSource, let processor) = source
       else {
@@ -116,14 +116,14 @@ import Testing
           0xFF, 0xFF, 0, 0, 0, 0x9B, 0xCF, 0,
           0xFF, 0xFF, 0, 0, 0, 0x93, 0xCF, 0,
         ])
-      #expect(try machine.run(maximumInstructions: 5) == .instructionBudget(5))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 5) == .instructionBudget(5))
       let before = try #require(machine.state)
       #expect(before.interruptShadow == .movSS)
       #expect(before.ss.selector == 0x10)
 
       try configurePIC(machine)
       try machine.legacyPIC.raise(irq: 0)
-      let stop = try machine.run(maximumInstructions: 8)
+      let stop = try machine.runOnDedicatedStack(maximumInstructions: 8)
       guard case .tripleFault(_, let count) = stop else {
         Issue.record("Expected PIC delivery through the deliberately absent IDT, got \(stop)")
         continue

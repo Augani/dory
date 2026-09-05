@@ -13,7 +13,7 @@ import Testing
     #expect(try machine.memoryBytes(atLinearAddress: entry, maximumCount: 2) == [0x90, 0xF4])
     #expect(try machine.memoryBytes(atLinearAddress: entry, maximumCount: 0) == [])
     #expect(try machine.memoryBytes(forProcessor: 1, atLinearAddress: entry, maximumCount: 1) == nil)
-    #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+    #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
     #expect(try machine.instructionBytes(maximumCount: 1) == [0xF4])
     #expect(try machine.instructionBytes(maximumCount: 0) == [])
     #expect(try machine.instructionBytes(forProcessor: 1) == nil)
@@ -36,7 +36,7 @@ import Testing
     ]
 
     try machine.load(kernel: makeELF(code: code), commandLine: "console=ttyS0")
-    let stop = try machine.run(maximumInstructions: 16)
+    let stop = try machine.runOnDedicatedStack(maximumInstructions: 16)
 
     #expect(stop == .halted(instructionCount: 4))
     #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "D")])
@@ -67,7 +67,7 @@ import Testing
     try machine.physicalMemory.write(at: 0xFEE0_0310, bytes: [0, 0, 0, 1])
     try machine.physicalMemory.write(at: 0xFEE0_0300, bytes: [8, 6, 0, 0])
 
-    #expect(try machine.run(maximumInstructions: 16) == .halted(instructionCount: 5))
+    #expect(try machine.runOnDedicatedStack(maximumInstructions: 16) == .halted(instructionCount: 5))
     #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "A")])
     #expect(machine.state(forProcessor: 1)?.cs.base == 0x8000)
     let snapshots = machine.processorExecutionSnapshots
@@ -94,14 +94,14 @@ import Testing
       bootLayout: layout
     )
     try budgeted.load(kernel: makeELF(code: [0x90, 0xEB, 0xFD]), commandLine: "x")
-    #expect(try budgeted.run(maximumInstructions: 5) == .instructionBudget(5))
+    #expect(try budgeted.runOnDedicatedStack(maximumInstructions: 5) == .instructionBudget(5))
 
     let faulting = try DoryPCDirectKernelMachine(
       memoryBytes: 2 * 1024 * 1024,
       bootLayout: layout
     )
     try faulting.load(kernel: makeELF(code: [0x0F, 0x0B]), commandLine: "x")
-    guard case .exception(let exception, let count) = try faulting.run(maximumInstructions: 1)
+    guard case .exception(let exception, let count) = try faulting.runOnDedicatedStack(maximumInstructions: 1)
     else {
       Issue.record("expected invalid opcode")
       return
@@ -177,7 +177,7 @@ import Testing
         commandLine: "x"
       )
 
-      #expect(try machine.run(maximumInstructions: 8) == .halted(instructionCount: 3))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 8) == .halted(instructionCount: 3))
       #expect(machine.state?.registers.rax == 3)
       #expect(machine.executionStatistics.baselineJITInstructions == 3)
       #expect(machine.executionStatistics.baselineJITBlocks == 1)
@@ -197,7 +197,7 @@ import Testing
         try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
 
         #expect(
-          try machine.run(maximumInstructions: UInt64(budget))
+          try machine.runOnDedicatedStack(maximumInstructions: UInt64(budget))
             == .instructionBudget(UInt64(budget)))
         let diagnostics = try #require(machine.baselineJITDiagnostics)
         #expect(diagnostics.chainedExecutionCalls == expectedCalls)
@@ -218,7 +218,7 @@ import Testing
       // while the resident resolver's 64-instruction budget remains stable.
       try machine.load(kernel: makeELF(code: [0x0F, 0xA2, 0xEB, 0xFC]), commandLine: "x")
 
-      #expect(try machine.run(maximumInstructions: 130) == .instructionBudget(130))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 130) == .instructionBudget(130))
       let diagnostics = try #require(machine.baselineJITDiagnostics)
       let hotSite = try #require(diagnostics.negativeCacheHotSites.first)
       #expect(hotSite.guestRIP == 0x10_0000)
@@ -247,7 +247,7 @@ import Testing
       try machine.physicalMemory.write(at: 0xFEE0_0310, bytes: [0, 0, 0, 1])
       try machine.physicalMemory.write(at: 0xFEE0_0300, bytes: [8, 6, 0, 0])
 
-      #expect(try machine.run(maximumInstructions: 130) == .instructionBudget(130))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 130) == .instructionBudget(130))
       let diagnostics = try #require(machine.baselineJITDiagnostics)
       #expect(diagnostics.chainedExecutionCalls == 2)
       #expect(diagnostics.chainedRequestedInstructions == 128)
@@ -275,7 +275,7 @@ import Testing
         initialCount: 250
       )
 
-      #expect(try machine.run(maximumInstructions: 4) == .instructionBudget(4))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 4) == .instructionBudget(4))
       let diagnostics = try #require(machine.baselineJITDiagnostics)
       // The first four-instruction request declines STI to the interpreter. The shadow forces the
       // following jump through the interpreter, then the second request is capped to two ticks.
@@ -306,7 +306,7 @@ import Testing
         commandLine: "x"
       )
 
-      #expect(try machine.run(maximumInstructions: 8) == .halted(instructionCount: 4))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 8) == .halted(instructionCount: 4))
       #expect(machine.state?.registers.rax == 1)
       #expect(machine.state?.registers.rbx == 3)
       #expect(machine.executionStatistics.optimizingJITInstructions == 0)
@@ -336,7 +336,7 @@ import Testing
         commandLine: "x"
       )
 
-      #expect(try machine.run(maximumInstructions: 16) == .halted(instructionCount: 5))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 16) == .halted(instructionCount: 5))
       #expect(machine.state?.registers.rbx == 3)
       #expect(machine.executionStatistics.baselineJITInstructions == 5)
       #expect(machine.executionStatistics.baselineJITBlocks == 1)
@@ -358,12 +358,12 @@ import Testing
       // jmp $ keeps every bounded run at the same guest RIP, modelling a hot dispatch head.
       try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
 
-      #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
-      #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
       #expect(machine.executionStatistics.baselineJITInstructions == 2)
       #expect(machine.executionStatistics.optimizingJITInstructions == 0)
 
-      #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
       #expect(machine.executionStatistics.baselineJITInstructions == 2)
       #expect(machine.executionStatistics.optimizingJITInstructions == 1)
       #expect(machine.executionStatistics.interpreterInstructions == 0)
@@ -389,7 +389,7 @@ import Testing
         commandLine: "x"
       )
 
-      #expect(try machine.run(maximumInstructions: 16) == .halted(instructionCount: 7))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 16) == .halted(instructionCount: 7))
       #expect(machine.state?.registers.rax == 400)
       #expect(machine.state?.tsc == 700)
     }
@@ -415,7 +415,7 @@ import Testing
         byteCount: 4
       )
 
-      #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
       return machine.localAPIC.snapshot().timer.currentCount
     }
 
@@ -455,27 +455,27 @@ import Testing
       bytes: [1, 0, 0, 0, 0, 0, 0, 0]
     )
 
-    #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+    #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
     #expect(machine.state?.tsc == 0)
 
     clock.advance(nanoseconds: 1_000_000)
-    #expect(try machine.run(maximumInstructions: 1) == .instructionBudget(1))
+    #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
     #expect(machine.state?.tsc == 1_000_000)
     #expect(machine.hpet.snapshot().mainCounter == 10_000)
 
     // Sub-tick samples retain their remainder rather than losing virtual time.
     clock.advance(nanoseconds: 99)
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     #expect(machine.state?.tsc == 1_000_000)
     clock.advance(nanoseconds: 1)
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     #expect(machine.state?.tsc == 1_000_100)
 
     clock.suspendAndResume(after: 30_000_000_000)
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     #expect(machine.state?.tsc == 1_000_100)
     clock.advance(nanoseconds: 100)
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     #expect(machine.state?.tsc == 1_000_200)
   }
 
@@ -485,14 +485,14 @@ import Testing
       processorCount: 2
     )
     try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
-    _ = try machine.run(maximumInstructions: 8)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 8)
 
     try machine.multiprocessorController.handleInterruptCommand(
       sourceAPICID: 0,
       high: 1 << 24,
       low: UInt32(5 << 8) | UInt32(1 << 14)
     )
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     var snapshots = machine.processorExecutionSnapshots
     #expect(snapshots[0].state?.tsc == snapshots[1].state?.tsc)
 
@@ -501,7 +501,7 @@ import Testing
       high: 1 << 24,
       low: UInt32(6 << 8) | 8
     )
-    _ = try machine.run(maximumInstructions: 1)
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 1)
     snapshots = machine.processorExecutionSnapshots
     #expect(snapshots[0].state?.tsc == snapshots[1].state?.tsc)
   }
@@ -528,7 +528,7 @@ import Testing
       try machine.ioBus.write(port: 0x40, value: 0xE8, width: .byte)
       try machine.ioBus.write(port: 0x40, value: 0x03, width: .byte)
 
-      #expect(try machine.run(maximumInstructions: 100) == .instructionBudget(100))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 100) == .instructionBudget(100))
       #expect(machine.legacyPIT.snapshot().current == 989)
     }
   }
@@ -547,7 +547,7 @@ import Testing
           commandLine: "x"
         )
 
-        #expect(try machine.run(maximumInstructions: 4) == .halted(instructionCount: 2))
+        #expect(try machine.runOnDedicatedStack(maximumInstructions: 4) == .halted(instructionCount: 2))
         #expect(try machine.memory.read(at: 0x100, byteCount: 4) == [1, 0, 0, 0])
         #expect(machine.executionStatistics.interpreterInstructions == 1)
       }
@@ -585,7 +585,7 @@ import Testing
       ]
       try machine.load(kernel: makeELF(code: code), commandLine: "x")
 
-      #expect(try machine.run(maximumInstructions: 32) == .halted(instructionCount: 13))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 32) == .halted(instructionCount: 13))
       #expect(try machine.ioBus.read(port: 0x61, width: .byte) & 0x01 == 1)
     }
   }
@@ -614,7 +614,7 @@ import Testing
       ]
       try machine.load(kernel: makeELF(code: code), commandLine: "x")
 
-      #expect(try machine.run(maximumInstructions: 16) == .halted(instructionCount: 6))
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 16) == .halted(instructionCount: 6))
       let state = try #require(machine.state)
       #expect(state.registers.rax & 0xFF == 0xFF)
       #expect(!state.rflags.contains(.zero))
@@ -649,7 +649,7 @@ import Testing
         )
         try machine.memory.write(at: 0x80000, bytes: [0x83, 0x00, 0x00, 0x00])
 
-        guard case .exception(let exception, _) = try machine.run(maximumInstructions: 16) else {
+        guard case .exception(let exception, _) = try machine.runOnDedicatedStack(maximumInstructions: 16) else {
           Issue.record("expected page fault")
           continue
         }
@@ -678,7 +678,7 @@ import Testing
     ]
 
     try machine.load(kernel: makeELF(code: code), commandLine: "x")
-    #expect(try machine.run(maximumInstructions: 4) == .halted(instructionCount: 2))
+    #expect(try machine.runOnDedicatedStack(maximumInstructions: 4) == .halted(instructionCount: 2))
     #expect(machine.localAPIC.snapshot().softwareEnabled)
     #expect(try machine.physicalMemory.read(at: 0xFEE0_0020, byteCount: 4) == [0, 0, 0, 0])
   }
@@ -728,7 +728,7 @@ import Testing
       ]
     )
 
-    let stop = try machine.run(maximumInstructions: 16, exceptionPolicy: .deliver)
+    let stop = try machine.runOnDedicatedStack(maximumInstructions: 16, exceptionPolicy: .deliver)
 
     #expect(stop == .halted(instructionCount: 7))
     #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "E")])
@@ -772,7 +772,7 @@ import Testing
       initialCount: 250
     )
 
-    let stop = try machine.run(maximumInstructions: 16, exceptionPolicy: .deliver)
+    let stop = try machine.runOnDedicatedStack(maximumInstructions: 16, exceptionPolicy: .deliver)
 
     #expect(stop == .halted(instructionCount: 8))
     #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "T")])
@@ -817,7 +817,7 @@ import Testing
     try machine.ioBus.write(port: 0x40, value: 5, width: .byte)
     try machine.ioBus.write(port: 0x40, value: 0, width: .byte)
 
-    let stop = try machine.run(maximumInstructions: 16, exceptionPolicy: .deliver)
+    let stop = try machine.runOnDedicatedStack(maximumInstructions: 16, exceptionPolicy: .deliver)
 
     #expect(stop == .halted(instructionCount: 8))
     #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "P")])
@@ -833,7 +833,7 @@ import Testing
       initialCount: 1
     )
 
-    let stop = try machine.run(maximumInstructions: 16, exceptionPolicy: .deliver)
+    let stop = try machine.runOnDedicatedStack(maximumInstructions: 16, exceptionPolicy: .deliver)
 
     #expect(stop == .halted(instructionCount: 2))
     #expect(machine.localAPIC.snapshot().timer.currentCount == 1)
@@ -863,7 +863,7 @@ import Testing
       try machine.physicalMemory.writeScalar(at: 0xFED0_0108 + UInt64(timer * 0x20),
         value: 10, byteCount: 8)
       try machine.physicalMemory.writeScalar(at: 0xFED0_0010, value: legacy ? 3 : 1, byteCount: 8)
-      #expect(try machine.run(maximumInstructions: 16, exceptionPolicy: .deliver)
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 16, exceptionPolicy: .deliver)
         == .halted(instructionCount: 8))
       #expect(machine.serial.drainTransmittedBytes() == [UInt8(ascii: "H")])
     }
@@ -883,7 +883,7 @@ import Testing
         try machine.physicalMemory.writeScalar(at: 0xFED0_0010, value: 3, byteCount: 8)
         // Deliberately omit an IDT: observing delivery before the 20-instruction budget proves
         // that batching stopped at the accepted timer deadline instead of overrunning it.
-        let stop = try machine.run(maximumInstructions: 20)
+        let stop = try machine.runOnDedicatedStack(maximumInstructions: 20)
         guard case .tripleFault(let source, let count) = stop,
           case .interrupt(let vector, _, let processor) = source
         else {

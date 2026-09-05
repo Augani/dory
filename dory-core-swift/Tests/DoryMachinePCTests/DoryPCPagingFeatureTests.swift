@@ -30,7 +30,7 @@ import Testing
         try machine.load(kernel: elf(setup + loop), commandLine: "x")
         try write64(0x81027, at: 0x80000, to: machine)
         try write64(0x83, at: 0x81000, to: machine)
-        #expect(try machine.run(maximumInstructions: 10) == .instructionBudget(10))
+        #expect(try machine.runOnDedicatedStack(maximumInstructions: 10) == .instructionBudget(10))
         let initial = try #require(machine.state)
         #expect(initial.rip == 0x100000 + UInt64(setup.count))
         #expect(initial.control.efer & (1 << 10) != 0)
@@ -39,7 +39,7 @@ import Testing
         if supportsOneGiBPages {
           #expect(try machine.instructionBytes(maximumCount: 4) == loop)
           #expect(try machine.memoryBytes(atLinearAddress: initial.rip, maximumCount: 4) == loop)
-          #expect(try machine.run(maximumInstructions: 64) == .instructionBudget(64))
+          #expect(try machine.runOnDedicatedStack(maximumInstructions: 64) == .instructionBudget(64))
           let after = try #require(machine.state)
           #expect(after.registers.rbx == initial.registers.rbx + 32)
           #expect(after.rip == initial.rip)
@@ -60,7 +60,7 @@ import Testing
             try machine.memoryBytes(atLinearAddress: initial.rip, maximumCount: 4)
           }
           for _ in 0..<2 {
-            let result = try machine.run(maximumInstructions: 64)
+            let result = try machine.runOnDedicatedStack(maximumInstructions: 64)
             guard case .exception(let exception, let count) = result else {
               Issue.record("Expected reserved-page fetch fault, got \(result)")
               continue

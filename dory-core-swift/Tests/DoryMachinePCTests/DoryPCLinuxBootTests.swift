@@ -57,7 +57,7 @@ final class DoryPCLinuxBootTests: XCTestCase {
         var stop: DoryPCMachineStop = .instructionBudget(0)
         while executed < maximumInstructions, DispatchTime.now().uptimeNanoseconds < deadline {
             let quantum = min(10_000, maximumInstructions - executed)
-            stop = try machine.run(maximumInstructions: quantum, exceptionPolicy: .deliver)
+            stop = try machine.runOnDedicatedStack(maximumInstructions: quantum, exceptionPolicy: .deliver)
             serial += machine.serial.drainTransmittedBytes()
             // Bound retained diagnostics even when a guest floods its serial console.
             if serial.count > 65_536 { serial.removeFirst(serial.count - 65_536) }

@@ -32,10 +32,10 @@ import Testing
   @inline(never)
   private func prepareInterruptTables(_ machine: DoryPCDirectKernelMachine) throws {
     // Retire LIDT and LGDT before injecting an NMI.
-    let lidtStop = try machine.run(maximumInstructions: 1)
+    let lidtStop = try machine.runOnDedicatedStack(maximumInstructions: 1)
     #expect(lidtStop == .instructionBudget(1))
     #expect(machine.state?.rip == 0x10_0007)
-    let lgdtStop = try machine.run(maximumInstructions: 1)
+    let lgdtStop = try machine.runOnDedicatedStack(maximumInstructions: 1)
     #expect(lgdtStop == .instructionBudget(1))
     #expect(machine.state?.rip == 0x10_000E)
   }
@@ -43,7 +43,7 @@ import Testing
   @inline(never)
   private func enterFirstNMI(_ machine: DoryPCDirectKernelMachine) throws {
     try injectSelfNMI(machine)
-    let firstHandlerStop = try machine.run(maximumInstructions: 1, exceptionPolicy: .deliver)
+    let firstHandlerStop = try machine.runOnDedicatedStack(maximumInstructions: 1, exceptionPolicy: .deliver)
     #expect(firstHandlerStop == .instructionBudget(1))
     #expect(machine.state?.nmiBlocked == true)
     #expect(machine.state?.rip == 0x10_0101) // Handler NOP retired; IRET is next.
@@ -61,20 +61,20 @@ import Testing
         0xF4,
       ])
     let initialRBX = machine.state?.registers.rbx
-    let movSSStop = try machine.run(maximumInstructions: 2, exceptionPolicy: .deliver)
+    let movSSStop = try machine.runOnDedicatedStack(maximumInstructions: 2, exceptionPolicy: .deliver)
     #expect(movSSStop == .instructionBudget(2))
     #expect(machine.state?.interruptShadow == .movSS)
     #expect(machine.state?.rip == 0x10_0015)
 
     try injectSelfNMI(machine)
-    let protectedStop = try machine.run(maximumInstructions: 1, exceptionPolicy: .deliver)
+    let protectedStop = try machine.runOnDedicatedStack(maximumInstructions: 1, exceptionPolicy: .deliver)
     #expect(protectedStop == .instructionBudget(1))
     #expect(machine.state?.registers.rbx == initialRBX.map { $0 + 1 })
     #expect(machine.state?.interruptShadow == nil)
     #expect(machine.state?.nmiBlocked == false)
     #expect(machine.state?.rip == 0x10_0017)
 
-    let handlerStop = try machine.run(maximumInstructions: 1, exceptionPolicy: .deliver)
+    let handlerStop = try machine.runOnDedicatedStack(maximumInstructions: 1, exceptionPolicy: .deliver)
     #expect(handlerStop == .instructionBudget(1))
     #expect(machine.state?.nmiBlocked == true)
     #expect(machine.state?.rip == 0x10_0101)
@@ -84,7 +84,7 @@ import Testing
   private func retireIRETWithCoalescedNMI(_ machine: DoryPCDirectKernelMachine) throws {
     try injectSelfNMI(machine)
     try injectSelfNMI(machine) // Multiple blocked requests coalesce into one pending NMI.
-    let firstIRETStop = try machine.run(maximumInstructions: 1, exceptionPolicy: .deliver)
+    let firstIRETStop = try machine.runOnDedicatedStack(maximumInstructions: 1, exceptionPolicy: .deliver)
     #expect(firstIRETStop == .instructionBudget(1))
     #expect(machine.state?.nmiBlocked == false)
     #expect(machine.state?.rip == 0x10_000E)
@@ -93,22 +93,22 @@ import Testing
 
   @inline(never)
   private func enterDeferredNMIAndHalt(_ machine: DoryPCDirectKernelMachine) throws {
-    let secondHandlerStop = try machine.run(maximumInstructions: 1, exceptionPolicy: .deliver)
+    let secondHandlerStop = try machine.runOnDedicatedStack(maximumInstructions: 1, exceptionPolicy: .deliver)
     #expect(secondHandlerStop == .instructionBudget(1))
     #expect(machine.state?.nmiBlocked == true)
     #expect(machine.state?.rip == 0x10_0101)
-    let secondIRETStop = try machine.run(maximumInstructions: 1, exceptionPolicy: .deliver)
+    let secondIRETStop = try machine.runOnDedicatedStack(maximumInstructions: 1, exceptionPolicy: .deliver)
     #expect(secondIRETStop == .instructionBudget(1))
     #expect(machine.state?.nmiBlocked == false)
     #expect(machine.state?.rip == 0x10_000E)
-    let haltStop = try machine.run(maximumInstructions: 2, exceptionPolicy: .deliver)
+    let haltStop = try machine.runOnDedicatedStack(maximumInstructions: 2, exceptionPolicy: .deliver)
     #expect(haltStop == .halted(instructionCount: 1))
   }
 
   @inline(never)
   private func enterNMIForResetTest(_ machine: DoryPCDirectKernelMachine) throws {
     try injectSelfNMI(machine)
-    let handlerStop = try machine.run(maximumInstructions: 1, exceptionPolicy: .deliver)
+    let handlerStop = try machine.runOnDedicatedStack(maximumInstructions: 1, exceptionPolicy: .deliver)
     #expect(handlerStop == .instructionBudget(1))
     #expect(machine.state?.nmiBlocked == true)
   }
@@ -121,7 +121,7 @@ import Testing
       high: 0,
       low: UInt32(5 << 8 | 1 << 18)
     )
-    let initStop = try machine.run(maximumInstructions: 1)
+    let initStop = try machine.runOnDedicatedStack(maximumInstructions: 1)
     #expect(initStop == .halted(instructionCount: 0))
     #expect(machine.state?.nmiBlocked == false)
     #expect(machine.state?.interruptShadow == nil)
@@ -141,14 +141,14 @@ import Testing
       low: UInt32(0x40 | 6 << 8 | 1 << 18)
     )
 
-    let startupStop = try machine.run(maximumInstructions: 1)
+    let startupStop = try machine.runOnDedicatedStack(maximumInstructions: 1)
     #expect(startupStop == .instructionBudget(1))
     #expect(machine.state?.nmiBlocked == false)
     #expect(machine.state?.cs.selector == 0x4000)
     #expect(machine.state?.cs.base == 0x40_000)
     #expect(machine.state?.rip == 2)
     #expect(machine.state?.registers.rax == 0x5A)
-    let finalStop = try machine.run(maximumInstructions: 2)
+    let finalStop = try machine.runOnDedicatedStack(maximumInstructions: 2)
     #expect(finalStop == .halted(instructionCount: 1))
   }
 
