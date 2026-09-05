@@ -1,0 +1,60 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "sourceCommit": "748a87fe4",
+  "fixtureCorrectionCommit": "350c7359c",
+  "change": "Cache dependency-resolved feature membership in immutable profile; preserve public requested feature set, qualification filtering, Codable keys and CPUID semantics",
+  "profileObservation": {
+    "pid": 89066,
+    "durationSeconds": 5,
+    "mainThreadSamples": 411,
+    "supportsRecursiveSamples": 35,
+    "scope": "EFI-disabled deterministic Linux diagnostic, not production workload benchmark"
+  },
+  "semanticComparison": {
+    "generatedProfiles": 10000,
+    "admission": "alternating public qualified and internal full-feature profiles",
+    "checks": "all feature support and selected CPUID leaves",
+    "baselineChecksum": "11213431319752806263",
+    "candidateChecksum": "11213431319752806263"
+  },
+  "isolatedLookupMeasurement": {
+    "iterations": 10000000,
+    "baselineNanoseconds": 220393042,
+    "candidateNanoseconds": 18963292,
+    "matchingPositiveCount": 6363639,
+    "wholeBootSpeedupEstablished": false
+  },
+  "tests": {
+    "passed": 56,
+    "suites": 4,
+    "fixtureFinding": "Both old and candidate builds had identical IRET fixture #GP(16); adding missing SS descriptor at GDT0x5010 preserves intended paging assertions",
+    "remaining": "PC paging debug test crashes on decoder stack guard in both old and candidate builds; no passing PC integration result claimed"
+  },
+  "artifacts": [
+    {
+      "path": "/tmp/dory-profile-cache-0905/baseline.swift",
+      "sha256": "6eedd1d219d64883368b204625c66e35464e20ca11ad7953625c4bcfcf1ac284"
+    },
+    {
+      "path": "/tmp/dory-profile-cache-0905/main.swift",
+      "sha256": "604e9db3475511b810ec64f18b4fda587f8cf5fc39d08faf3afb53c463c1f1e8"
+    },
+    {
+      "path": "/tmp/dory-root-pc-efi-control-profile-0905.txt",
+      "sha256": "c401701a0307a342d19d494b04688cbc06a8ccd714d7d2049020b7d87812cec5"
+    },
+    {
+      "path": "/tmp/dory-root-cpu-profile-cache-fixed-unit-tests-0905.log",
+      "sha256": "ff4975b15c2f46062bd8970f58f0505839e0c9f06a5c27530121d0d8be6ec18a"
+    },
+    {
+      "path": "/tmp/dory-root-cpu-profile-unit-baseline-tests-0905.log",
+      "sha256": "c2e47ad8be0f6103c77f74a387f3a99df3f91cf2678ab5678fa5c6c4caa9fc10"
+    },
+    {
+      "path": "/tmp/dory-root-cpu-profile-pc-baseline-tests-0905.log",
+      "sha256": "6ff863b414d9a8c342d9fa4f21475f29eb0f3cb9d32493d0ead7fe33ce4c5eb3"
+    }
+  ]
+}
