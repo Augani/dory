@@ -481,6 +481,24 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(translatedInstaller.definition.resources == DoryVMProductionResourceBudget.make(for: translatedInstaller.definition))
         #expect(try translatedInstaller.legacyConfiguration() == x86Installer)
 
+        let translatedSettings = try DoryMachineTypedSettingsSnapshot(
+            definition: translatedInstaller.definition
+        )
+        #expect(translatedSettings.runtimePreference == .accelerated)
+        let replaced = try translatedSettings.replacementPatch.applying(
+            to: translatedInstaller.definition, displayMode: .desktop
+        )
+        #expect(replaced.platform == translatedInstaller.definition.platform)
+        #expect(replaced.platform?.executionEngine == .x86ToARM64)
+        #expect(replaced.translationConsent == .explicit)
+        #expect(replaced.graphics == translatedInstaller.definition.graphics)
+        var withoutConsent = translatedInstaller.definition
+        withoutConsent.translationConsent = .notRequired
+        #expect(throws: (any Error).self) {
+            try DoryMachineTypedSettingsPatch(runtimePreference: .set(.accelerated))
+                .applying(to: withoutConsent, displayMode: .desktop)
+        }
+
         let direct = try migrate(
             legacy,
             capacity: 64 * gibibyte,

@@ -135,14 +135,10 @@ public struct DoryMachineTypedSettingsSnapshot: Codable, Sendable, Equatable, Ha
         switch definition.platform?.executionEngine {
         case nil:
             runtimePreference = .automatic
-        case .nativeARM64?:
+        case .nativeARM64?, .x86ToARM64?:
             runtimePreference = .accelerated
         case .vzMac?:
             runtimePreference = .compatible
-        case .x86ToARM64?:
-            throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
-                "desktopRuntimePreference"
-            )
         }
         switch definition.graphics.acceptableLevels {
         case [.hardwareAccelerated3D, .hostAcceleratedDisplay, .software]:
@@ -886,7 +882,8 @@ public struct DoryMachineTypedSettingsPatch: Sendable, Equatable, Codable {
                     translationConsent: definition.translationConsent
                 )
             ).get()
-            guard resolution.platform.executionEngine == .nativeARM64 else {
+            guard resolution.platform.executionEngine == .nativeARM64
+                    || resolution.platform.executionEngine == .x86ToARM64 else {
                 throw DoryMachineTypedWriteAuthorityError.unsupportedByLegacyRuntime(
                     "desktopRuntimePreference"
                 )

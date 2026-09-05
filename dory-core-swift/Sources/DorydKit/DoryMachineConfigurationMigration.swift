@@ -335,7 +335,8 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
 
     private func applyPlatform(to environment: inout [String: String]) throws {
         guard definition.platform != baselineDefinition.platform else { return }
-        guard bootContract == .managedDirectKernel || bootContract == .efiInstalledDirectBoot,
+        guard bootContract == .managedDirectKernel || bootContract == .efiInstalledDirectBoot
+                || (bootContract == .efiInstaller && definition.guest.architecture == .x86_64),
               authoritativeLegacyConfiguration.displayMode == .desktop else {
             throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
                 "platform"
@@ -345,14 +346,10 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
         switch definition.platform?.executionEngine {
         case nil:
             raw = DoryDesktopVMMPreference.automatic.rawValue
-        case .nativeARM64?:
+        case .nativeARM64?, .x86ToARM64?:
             raw = DoryDesktopVMMPreference.accelerated.rawValue
         case .vzMac?:
             raw = DoryDesktopVMMPreference.compatible.rawValue
-        case .x86ToARM64?:
-            throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
-                "platform"
-            )
         }
         environment[DoryDesktopVMMPreference.environmentKey] = raw
     }

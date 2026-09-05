@@ -1,0 +1,10 @@
+{
+  "change": "Map the x86ToARM64 platform to the existing raw-Hypervisor accelerated preference in typed snapshots, explicit setting application and legacy projection",
+  "verification": "34 tests across migration and typed-setting suites passed. x86 replacement preserves platform,graphics,explicit consent; missing translation consent rejected by resolver.",
+  "sourceHashes": {
+    "dory-core-swift/Sources/DorydKit/DoryMachineTypedWriteAuthority.swift": "9fb216b8f5103a1b591a37f166a0db91e9a97eaaebc12c0c73c3a9e1f3a45dce",
+    "dory-core-swift/Sources/DorydKit/DoryMachineConfigurationMigration.swift": "6e06a26811d4860c1b9248672bf01d73f1609f5959144e76b77f601e5f649a4f",
+    "dory-core-swift/Tests/DorydKitTests/DoryMachineConfigurationMigrationTests.swift": "2967ddde257a881fe849199cb0c56fe04f9fabb6f20bfb719aed4c3e0aa13049"
+  },
+  "logSHA256": "a46cf8e9a6591e3df36ebc785057aa7afbca94ea042b06eeddfca610260a0076"
+}
