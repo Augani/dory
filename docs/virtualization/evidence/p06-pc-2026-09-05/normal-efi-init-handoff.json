@@ -1,0 +1,55 @@
+{
+  "date": "2026-09-05",
+  "scope": "Normal EFI boot of Linux6.12.106 to init using diagnostic PC smoke runner",
+  "receipt": {
+    "path": "/private/tmp/dory-pc-full-linux-runtime-fix-20260905090507/smoke-baseline-jit-normal-efi-3b.json",
+    "sha256": "6aeb26bf3f9be13790a4819d20c8968c298b2f4a01c96ca40c4a6bfea1103838"
+  },
+  "stop": "instructionBudget(3000000000)",
+  "completedInstructions": 3000000000,
+  "serialDroppedBytes": 0,
+  "observations": [
+    "[    0.000000] efi: EFI v2.7 by EDK II",
+    "[   16.668689] efivars: Registered efivars operations",
+    "[  142.855479] virtio-pci 0000:00:09.0: virtio_pci: bad capability len 0 (>0 expected)",
+    "[  144.507620] xhci_hcd 0000:00:07.0: new USB bus registered, assigned bus number 1",
+    "[  144.547580] xhci_hcd 0000:00:07.0: new USB bus registered, assigned bus number 2",
+    "[  149.506658] VFS: Mounted root (ext4 filesystem) on device 253:0.",
+    "[  182.276867] Run /sbin/init as init process",
+    "[  186.375395] virtio-fs: tag <dorycfg> not found"
+  ],
+  "blockDevices": [
+    {
+      "failedRequestCount": 0,
+      "identifier": "system-disk",
+      "requestCount": 567,
+      "successfulRequestCount": 567,
+      "unsupportedRequestCount": 0,
+      "writeByteCount": 20480
+    },
+    {
+      "failedRequestCount": 0,
+      "identifier": "installer-media",
+      "requestCount": 426,
+      "successfulRequestCount": 426,
+      "unsupportedRequestCount": 0,
+      "writeByteCount": 0
+    }
+  ],
+  "softwareGPU": {
+    "completedCommands": 131,
+    "failedCommands": 0
+  },
+  "fixesExercised": [
+    "Real firmware variable runtime driver initialization",
+    "xHCI split32-bit address register writes"
+  ],
+  "remaining": [
+    "Guest readiness not reached within3B budget",
+    "Smoke runner lacks production dorycfg virtio-fs share; next gate uses production runtime composition",
+    "RNG zero-length capability rejection fixed subsequently in5771975ed; rerun required",
+    "No accelerated GPU or full desktop claim",
+    "EFI runtime variable read/write persistence not qualified merely by efivars registration"
+  ],
+  "independentReview": "Coordinator inspected original JSON and serial output; receipt digest matched agent report. No exception stop; process exhausted its instruction budget."
+}
