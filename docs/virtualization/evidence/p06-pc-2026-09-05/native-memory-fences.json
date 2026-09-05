@@ -1,0 +1,20 @@
+{
+  "scope": "Native long-mode LFENCE/MFENCE/SFENCE with a dedicated memory synchronization callback, full ARM64 DSB SY + ISB barriers, isolated retirement boundaries, and SSE/SSE2 feature gates.",
+  "validation": "130 tests in four suites passed. Covers both JIT tiers, owner synchronization after a store, faults before/after fences, exact architectural state, disabled features, absent memory authority, malformed replayable IR, and existing decode/canonical/system-instruction boundaries.",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "1da0812882a5f0f306b7fa29aeca1191155c6901ef67ba3e8f9ebb726e8d1bb0",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "9fe442fff5b49f2d882760f1543d98cd577b5a83d530ba5d6bb1e738ae8a82e4",
+    "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift": "4164c41c3d9cd644d4183e7859e1cdde8c4e22666ed8a27b92f7a9d3cd230939",
+    "dory-core-swift/Sources/DoryJITRuntimeC/DoryJITRuntimeC.c": "34a80f003edb6b03b95b888c381c7ba2b7220536c034b0c0d83247e03d4382fe",
+    "dory-core-swift/Sources/DoryJITRuntimeC/include/DoryJITRuntimeC.h": "b6b8023451b10cadd40e0a2c68ef29a9201bd9ba4f0c64307a93312d8d67fdb1",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "16a0d5d92488160410a85768783b5efd77c49cb74e01836725db99f48ca48e4d"
+  },
+  "log": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/native-fences-final.log",
+  "logSHA256": "60d223b50fb35437c16ba001d32c1dccd769615d051789922a551fa85cd4c811",
+  "architecturalReferences": [
+    "https://cdrdv2-public.intel.com/774492/325383-sdm-vol-2abcd.pdf",
+    "https://developer.arm.com/community/arm-community-blogs/b/architectures-and-processors-blog/posts/memory-access-ordering-part-3---memory-access-ordering-in-the-arm-architecture"
+  ],
+  "encodingValidation": "Apple clang arm64 assembler and otool confirmed DSB SY d5033f9f, ISB d5033fdf, MOV x24,x5 aa0503f8.",
+  "limitation": "Exact changed sources tested in an isolated qualification checkout; not all-HEAD or production boot qualification. Full barriers conservatively order all three fence kinds. No measured boot speedup claimed."
+}

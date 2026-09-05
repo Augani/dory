@@ -2291,6 +2291,100 @@ import Testing
     #endif
   }
 
+  @Test func nativeFencesPreserveMemorySynchronizationAndFaultBoundaries() throws {
+    #if arch(arm64)
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        for opcode: UInt8 in [0xE8, 0xF0, 0xF8] { // LFENCE, MFENCE, SFENCE
+          let memory = try SelectiveRestartableMemory(byteCount: 0x100, declinedAddress: .max)
+          let executor = try DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024, optimization: optimization)
+          // Store; fence; faulting load. A later fault must neither undo the store nor
+          // replay synchronization, and a prior fault must never reach synchronization.
+          let bytes: [UInt8] = [0x48, 0x89, 0x08, 0x0F, 0xAE, opcode, 0x48, 0x8B, 0x1A]
+          var state = try DoryX86ArchitecturalState(
+            registers: .init(rax: 0x80, rcx: 0x1234, rdx: 0x100), rip: 0x1000,
+            rflags: [.reservedOne, .carry, .overflow, .direction])
+          let initial = state
+          let summary = try #require(executor.executeChainedSummary(
+            byteProvider: { address, count in
+              let offset = Int(address - 0x1000)
+              return Array(bytes.dropFirst(offset).prefix(count))
+            }, at: state.rip, mode: .long64, addressSpaceID: 0,
+            maximumInstructions: 3, state: &state, memory: memory))
+          #expect(summary.guestInstructionCount == 2)
+          #expect(state.rip == 0x1006)
+          #expect(state.registers == initial.registers)
+          #expect(state.rflags == initial.rflags)
+          #expect(memory.synchronizationWriteCounts == [1])
+          #expect(try memory.backing.readScalar(at: 0x80, byteCount: 8) == 0x1234)
+
+          let faultBefore: [UInt8] = [0x48, 0x8B, 0x1A, 0x0F, 0xAE, opcode]
+          state.rip = 0x2000
+          let before = state
+          _ = try executor.executeChainedSummary(
+            byteProvider: { address, count in
+              Array(faultBefore.dropFirst(Int(address - 0x2000)).prefix(count))
+            }, at: state.rip, mode: .long64, addressSpaceID: 0,
+            maximumInstructions: 2, state: &state, memory: memory)
+          #expect(state == before)
+          #expect(memory.synchronizationWriteCounts == [1])
+        }
+      }
+    #endif
+  }
+
+  @Test func nativeFencesRespectFeatureProfilesAndRequireMemoryAuthority() throws {
+    #if arch(arm64)
+      let baseline = DoryX86CPUProfile.compatibleV1
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        for hidden: Set<DoryX86Feature> in [[.sse, .sse2], [.sse2]] {
+          let profile = DoryX86CPUProfile(
+            identifier: "test.native-fence-gate", features: baseline.features.subtracting(hidden),
+            physicalAddressBits: baseline.physicalAddressBits,
+            linearAddressBits: baseline.linearAddressBits,
+            virtualTSCFrequencyHz: baseline.virtualTSCFrequencyHz)
+          let executor = try DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024, profile: profile, optimization: optimization)
+          for opcode: UInt8 in [0xE8, 0xF0, 0xF8] {
+            let memory = try SelectiveRestartableMemory(byteCount: 0x100, declinedAddress: .max)
+            var state = try DoryX86ArchitecturalState(rip: 0x1000 + UInt64(opcode) * 16)
+            let initial = state
+            let execution = try executor.execute(
+              bytes: [0x0F, 0xAE, opcode], at: state.rip, mode: .long64,
+              addressSpaceID: 0, maximumInstructions: 1, state: &state, memory: memory)
+            let allowed = opcode == 0xF8 && !hidden.contains(.sse)
+            #expect((execution != nil) == allowed)
+            #expect(memory.synchronizationWriteCounts.count == (allowed ? 1 : 0))
+            var expected = initial
+            if allowed { expected.rip += 3 }
+            #expect(state == expected)
+          }
+        }
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096, optimization: optimization)
+        var state = try DoryX86ArchitecturalState(rip: 0x3000)
+        let original = state
+        #expect(try executor.execute(
+          bytes: [0x0F, 0xAE, 0xE8], at: state.rip, mode: .long64,
+          addressSpaceID: 0, maximumInstructions: 1, state: &state) == nil)
+        #expect(state == original)
+      }
+    #endif
+  }
+
+  @Test func nativeFenceRejectsIRThatCouldReplaySynchronization() throws {
+    let fence = DoryIRStatement.memoryFence(.load)
+    let emitter = DoryARM64BaselineEmitter()
+    for block in [
+      DoryIRBasicBlock(guestStart: 0, guestByteCount: 6, guestInstructionCount: 2,
+        statements: [fence, fence], terminator: .next(6)),
+      DoryIRBasicBlock(guestStart: 0, guestByteCount: 4, guestInstructionCount: 1,
+        statements: [fence], terminator: .returnFromCall(popBytes: 0)),
+    ] {
+      #expect(emitter.compile(block).tier == .interpreterFallback)
+    }
+  }
+
   @Test func pushFlagsAndCliExecuteNativeLongModeKernelFastPath() throws {
     #if arch(arm64)
       let flags: DoryX86RFLAGS = [
@@ -5170,11 +5264,17 @@ private final class SelectiveRestartableMemory: DoryX86ScalarMemory,
   let rejectedWriteAddress: UInt64?
   private(set) var restartableReads = 0
   private(set) var scalarWrites = 0
+  private(set) var synchronizationWriteCounts: [Int] = []
 
   init(byteCount: Int, declinedAddress: UInt64, rejectedWriteAddress: UInt64? = nil) throws {
     backing = try DoryX86ByteArrayMemory(byteCount: byteCount)
     self.declinedAddress = declinedAddress
     self.rejectedWriteAddress = rejectedWriteAddress
+  }
+
+  func synchronize() {
+    synchronizationWriteCounts.append(scalarWrites)
+    backing.synchronize()
   }
 
   func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {

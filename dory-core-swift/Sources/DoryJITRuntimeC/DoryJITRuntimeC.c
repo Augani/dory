@@ -186,6 +186,7 @@ int dory_jit_region_execute(
     dory_jit_memory_read_function memory_read,
     dory_jit_memory_write_function memory_write,
     dory_jit_memory_compare_exchange_function memory_compare_exchange,
+    dory_jit_memory_synchronize_function memory_synchronize,
     uint32_t *exit_code_out
 ) {
     void *entry = dory_jit_region_entry(region, offset);
@@ -197,13 +198,14 @@ int dory_jit_region_execute(
         void *,
         dory_jit_memory_read_function,
         dory_jit_memory_write_function,
-        dory_jit_memory_compare_exchange_function
+        dory_jit_memory_compare_exchange_function,
+        dory_jit_memory_synchronize_function
     );
     union {
         void *pointer;
         dory_jit_function function;
     } callable = {.pointer = entry};
-    *exit_code_out = callable.function(context, memory_context, memory_read, memory_write, memory_compare_exchange);
+    *exit_code_out = callable.function(context, memory_context, memory_read, memory_write, memory_compare_exchange, memory_synchronize);
     return 0;
 }
 
@@ -229,7 +231,8 @@ int dory_jit_region_execute_batch(
         void *,
         dory_jit_memory_read_function,
         dory_jit_memory_write_function,
-        dory_jit_memory_compare_exchange_function
+        dory_jit_memory_compare_exchange_function,
+        dory_jit_memory_synchronize_function
     );
     uint32_t executed = 0;
     uint32_t instructions = 0;
@@ -249,7 +252,7 @@ int dory_jit_region_execute_batch(
         } callable = {.pointer = entry};
         // Batch callers admit only blocks without memory callbacks. Keeping callback authority
         // absent makes that contract fail closed if a mismatched block ever reaches this path.
-        exit_code = callable.function(context, NULL, NULL, NULL, NULL);
+        exit_code = callable.function(context, NULL, NULL, NULL, NULL, NULL);
         executed++;
         instructions += guest_instruction_counts[index];
         if (exit_code != 0) {
@@ -304,6 +307,7 @@ int dory_jit_region_execute(
     dory_jit_memory_read_function memory_read,
     dory_jit_memory_write_function memory_write,
     dory_jit_memory_compare_exchange_function memory_compare_exchange,
+    dory_jit_memory_synchronize_function memory_synchronize,
     uint32_t *exit_code_out
 ) {
     (void)region;
@@ -313,6 +317,7 @@ int dory_jit_region_execute(
     (void)memory_read;
     (void)memory_write;
     (void)memory_compare_exchange;
+    (void)memory_synchronize;
     (void)exit_code_out;
     return ENOTSUP;
 }

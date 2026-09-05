@@ -92,6 +92,13 @@ public struct DoryARM64BaselineEmitter: Sendable {
     if containsFSOrGSMemoryAddress(block) {
       guard executionMode == .long64 else { return fallback(block) }
     }
+    // A synchronization callback cannot be rolled back. Accept only the isolated shape
+    // produced by the translator, including when callers supply hand-crafted IR.
+    if block.statements.contains(where: { if case .memoryFence = $0 { true } else { false } }) {
+      guard block.statements.count == 1, block.guestInstructionCount == 1,
+        case .next = block.terminator
+      else { return fallback(block) }
+    }
     var words: [UInt32] = []
     let memoryCallbackCount =
       block.statements.reduce(0) { $0 + self.memoryCallbackCount($1) }
@@ -189,7 +196,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination) || isFSOrGS(source)
       case .effectiveAddress:
         return false
-      case .stackPushFlags, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .helper:
+      case .stackPushFlags, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .memoryFence, .helper:
         return false
       }
     }
@@ -223,6 +230,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private func emit(_ statement: DoryIRStatement, into words: inout [UInt32]) -> Bool {
     switch statement {
+    case .memoryFence:
+      words.append(encodeLogical(.or, left: 31, right: 20, destination: 0))
+      words.append(0xD63F_0000 | 24 << 5)  // blr x24 (memory owner's synchronize callback)
+      // Use a full completion barrier for all fence kinds. ISB also prevents following
+      // native instructions from executing ahead of LFENCE's completion boundary.
+      words.append(0xD503_3F9F)  // dsb sy
+      words.append(0xD503_3FDF)  // isb
+      words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
+      return true
     case .copy(let destination, let source):
       return emitCopy(destination: destination, source: source, into: &words)
     case .binary(let operation, let destination, let source, let writesDestination):
@@ -706,7 +722,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .extendMove(_, let source, _):
       if case .memory = source { return 1 }
       return 0
-    case .compareExchange:
+    case .compareExchange, .memoryFence:
       return 1
     case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .helper:
       return 0
@@ -1435,6 +1451,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       0xAA02_03F5,  // mov x21,x2 (read callback)
       0xAA03_03F6,  // mov x22,x3 (write callback)
       0xAA04_03F7,  // mov x23,x4 (atomic compare-exchange callback)
+      0xAA05_03F8,  // mov x24,x5 (synchronize callback)
     ]
   }
 
@@ -2693,6 +2710,13 @@ private struct DoryJITMemoryCallbackContext {
   var failed = false
 }
 
+private let doryJITMemorySynchronize: dory_jit_memory_synchronize_function = { opaque in
+  guard let opaque else { return }
+  let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
+  guard !context.pointee.failed else { return }
+  context.pointee.capabilities.memory.synchronize()
+}
+
 private let doryJITMemoryRead: dory_jit_memory_read_function = { opaque, address, byteCount in
   guard let opaque, [1, 2, 4, 8].contains(byteCount) else { return 0 }
   let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
@@ -2874,6 +2898,7 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
           doryJITMemoryRead,
           doryJITMemoryWrite,
           doryJITMemoryCompareExchange,
+          doryJITMemorySynchronize,
           &rawExit
         )
       }
@@ -2887,6 +2912,7 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
         doryJITMemoryRead,
         doryJITMemoryWrite,
         doryJITMemoryCompareExchange,
+        doryJITMemorySynchronize,
         &rawExit
       )
     }
@@ -3990,6 +4016,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     if !profile.supports(.cmov), translated.statements.contains(where: {
       if case .conditionalMove = $0 { return true }
       return false
+    }) {
+      return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
+    }
+    if translated.statements.contains(where: {
+      guard case .memoryFence(let kind) = $0 else { return false }
+      return !profile.supports(kind == .store ? .sse : .sse2)
     }) {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }

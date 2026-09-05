@@ -25,6 +25,8 @@ typedef int32_t (*dory_jit_memory_compare_exchange_function)(
     uint64_t *observed_out
 );
 
+typedef void (*dory_jit_memory_synchronize_function)(void *memory_context);
+
 int dory_jit_region_create(size_t minimum_capacity, dory_jit_region **region_out);
 void dory_jit_region_destroy(dory_jit_region *region);
 size_t dory_jit_region_capacity(const dory_jit_region *region);
@@ -43,6 +45,7 @@ int dory_jit_region_execute(
     dory_jit_memory_read_function memory_read,
     dory_jit_memory_write_function memory_write,
     dory_jit_memory_compare_exchange_function memory_compare_exchange,
+    dory_jit_memory_synchronize_function memory_synchronize,
     uint32_t *exit_code_out
 );
 int dory_jit_region_execute_batch(

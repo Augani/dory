@@ -94,6 +94,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case stackPushFlags
   case stackPop(destination: DoryIROperand)
   case clearInterruptFlag
+  case memoryFence(DoryX86MemoryFence)
   case setDirectionFlag(enabled: Bool)
   case readTimestampCounter
   case unsignedAccumulatorMultiply(source: DoryIROperand)
@@ -232,10 +233,10 @@ public struct DoryX86IRTranslator: Sendable {
     switch instruction.operation {
     case .noOperation, .processorPause:
       return ([], nil)
-    case .memoryFence:
-      // A fence must reach the memory implementation's ordering callback. Until native IR
-      // represents that effect, retire it through the interpreter at its exact boundary.
-      return fallback(instruction, reason: .interpreter)
+    case .memoryFence(let kind):
+      guard mode == .long64 else { return fallback(instruction, reason: .interpreter) }
+      // Isolate synchronization from reads that can fail and require block replay.
+      return ([.memoryFence(kind)], .next(instruction.nextInstructionAddress))
     case .move(let destination, let source):
       // MOVNTI shares .move with ordinary stores but requires SSE2. Native entry
       // has no selected feature profile; preserve the precise interpreter gate.
@@ -578,7 +579,7 @@ public struct DoryX86IRTranslator: Sendable {
   ) -> Bool {
     lowering.statements.contains {
       switch $0 {
-      case .readTimestampCounter, .unsignedAccumulatorDivide:
+      case .readTimestampCounter, .unsignedAccumulatorDivide, .memoryFence:
         return true
       default:
         return false
@@ -787,7 +788,7 @@ public struct DoryX86IRTranslator: Sendable {
         register.width == width && isJITGeneralRegister(register)
       else { return false }
       return true
-    case .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter:
+    case .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .memoryFence:
       return true
     case .helper:
       return false
@@ -862,7 +863,7 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(source) ? .read : .none
     case .compareExchange:
       return .write
-    case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .helper:
+    case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .memoryFence, .helper:
       return .none
     }
   }
