@@ -1189,15 +1189,16 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   }
 
   private func ioAPICCanAccept(pin: Int) -> Bool {
-    guard let route = try? ioAPIC.route(for: pin), !route.masked,
-      let index = processorIndex(route.destinationAPICID),
-      let state = loadedStates[index]?.value
-    else { return false }
-    return localAPICs[index].canAccept(
-      vector: route.vector,
-      interruptsEnabled: maskableInterruptsEnabled(state),
-      externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
-    )
+    (try? ioAPIC.canDeliver(pin: pin) { [self] apic, vector in
+      guard let index = processorIndex(apic.apicID), let state = loadedStates[index]?.value else {
+        return false
+      }
+      return apic.canAccept(
+        vector: vector,
+        interruptsEnabled: maskableInterruptsEnabled(state),
+        externalPriority: UInt8(truncatingIfNeeded: state.control.cr8) << 4
+      )
+    }) ?? false
   }
 
   private func powerStop(instructionCount: UInt64) -> DoryPCMachineStop? {

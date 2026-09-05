@@ -911,6 +911,8 @@ public final class DoryPCIOAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
       var route = try ioAPIC.route(for: pin)
       if index.isMultiple(of: 2) {
         route.vector = UInt8(truncatingIfNeeded: value)
+        route.deliveryMode = DoryPCIOAPICDeliveryMode(rawValue: UInt8((value >> 8) & 0x7)) ?? .fixed
+        route.destinationMode = value & (1 << 11) != 0 ? .logical : .physical
         route.activeLow = value & (1 << 13) != 0
         route.levelTriggered = value & (1 << 15) != 0
         route.masked = value & (1 << 16) != 0
@@ -931,6 +933,8 @@ public final class DoryPCIOAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
     let route = snapshot.route
     if !index.isMultiple(of: 2) { return route.destinationAPICID << 24 }
     return UInt32(route.vector)
+      | UInt32(route.deliveryMode.rawValue) << 8
+      | (route.destinationMode == .logical ? 1 << 11 : 0)
       | (route.activeLow ? 1 << 13 : 0)
       | (snapshot.remoteIRR ? 1 << 14 : 0)
       | (route.levelTriggered ? 1 << 15 : 0)

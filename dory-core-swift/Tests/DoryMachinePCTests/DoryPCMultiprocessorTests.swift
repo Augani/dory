@@ -105,6 +105,27 @@ import Testing
     #expect(apics[2].acknowledge(interruptsEnabled: true) == 0x52)
   }
 
+  @Test func lowestPriorityICRUsesArbitrationPriorityBeforeAPICIDTieBreak() throws {
+    let apics = (0..<4).map { DoryPCLocalAPIC(apicID: UInt32($0)) }
+    for apic in apics { try apic.configureSpuriousVector(0xFF, softwareEnabled: true) }
+    let controller = try DoryPCMultiprocessorController(localAPICs: apics)
+    apics[1].setTaskPriority(0x50)
+    apics[2].setTaskPriority(0x10)
+    apics[3].setTaskPriority(0x10)
+    try apics[2].inject(vector: 0x70)
+
+    try controller.handleInterruptCommand(
+      sourceAPICID: 0,
+      high: 0,
+      low: UInt32(0x63) | UInt32(1 << 8) | UInt32(3 << 18)
+    )
+
+    #expect(apics[1].acknowledge(interruptsEnabled: true) == nil)
+    #expect(apics[2].acknowledge(interruptsEnabled: true) == 0x70)
+    #expect(apics[2].acknowledge(interruptsEnabled: true) == nil)
+    #expect(apics[3].acknowledge(interruptsEnabled: true) == 0x63)
+  }
+
   @Test func localAPICMMIOPublishesAndExecutesICRRegisters() throws {
     let apics = [DoryPCLocalAPIC(apicID: 0), DoryPCLocalAPIC(apicID: 1)]
     let controller = try DoryPCMultiprocessorController(localAPICs: apics)

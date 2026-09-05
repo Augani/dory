@@ -116,6 +116,22 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
     }
   }
 
+  /// Dory's serialized xAPIC model uses the APR class for lowest-priority routing: the
+  /// task, pending-request, and in-service priority classes choose the recipient, with APIC ID
+  /// used only as this emulator's deterministic tie-breaker. This is virtual routing policy, not
+  /// an attempt to model physical APIC-bus focus/arbitration side effects.
+  func arbitrationPriority() -> UInt8 {
+    lock.withLock {
+      let tpr = taskPriority
+      let irr = interruptRequest.max() ?? 0
+      let isr = inService.max() ?? 0
+      if tpr & 0xF0 >= irr & 0xF0, tpr & 0xF0 > isr & 0xF0 {
+        return tpr
+      }
+      return max(max(tpr & 0xF0, isr & 0xF0), irr & 0xF0)
+    }
+  }
+
   public func inject(vector: UInt8, levelTriggered: Bool = false) throws {
     try validate(vector)
     lock.withLock { injectLocked(vector: vector, levelTriggered: levelTriggered) }
@@ -301,9 +317,42 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   }
 }
 
+func doryPCLowestPriorityTarget(in targets: [DoryPCLocalAPIC]) -> DoryPCLocalAPIC? {
+  targets.map { (apic: $0, priority: $0.arbitrationPriority()) }
+    .min { left, right in
+      if left.priority != right.priority { return left.priority < right.priority }
+      return left.apic.apicID < right.apic.apicID
+    }?.apic
+}
+
+public enum DoryPCIOAPICDeliveryMode: UInt8, Codable, Sendable, Hashable {
+  case fixed = 0
+  case lowestPriority = 1
+  case smi = 2
+  case reserved3 = 3
+  case nmi = 4
+  case initDelivery = 5
+  case reserved6 = 6
+  case extINT = 7
+
+  var isDeliverableThroughIRQLine: Bool {
+    switch self {
+    case .fixed, .lowestPriority: true
+    case .smi, .reserved3, .nmi, .initDelivery, .reserved6, .extINT: false
+    }
+  }
+}
+
+public enum DoryPCIOAPICDestinationMode: String, Codable, Sendable, Hashable {
+  case physical
+  case logical
+}
+
 public struct DoryPCIOAPICRoute: Codable, Sendable, Hashable {
   public var vector: UInt8
   public var destinationAPICID: UInt32
+  public var deliveryMode: DoryPCIOAPICDeliveryMode
+  public var destinationMode: DoryPCIOAPICDestinationMode
   public var masked: Bool
   public var levelTriggered: Bool
   public var activeLow: Bool
@@ -311,15 +360,43 @@ public struct DoryPCIOAPICRoute: Codable, Sendable, Hashable {
   public init(
     vector: UInt8 = 0x20,
     destinationAPICID: UInt32 = 0,
+    deliveryMode: DoryPCIOAPICDeliveryMode = .fixed,
+    destinationMode: DoryPCIOAPICDestinationMode = .physical,
     masked: Bool = true,
     levelTriggered: Bool = false,
     activeLow: Bool = false
   ) {
     self.vector = vector
     self.destinationAPICID = destinationAPICID
+    self.deliveryMode = deliveryMode
+    self.destinationMode = destinationMode
     self.masked = masked
     self.levelTriggered = levelTriggered
     self.activeLow = activeLow
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case vector
+    case destinationAPICID
+    case deliveryMode
+    case destinationMode
+    case masked
+    case levelTriggered
+    case activeLow
+  }
+
+  public init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    vector = try container.decode(UInt8.self, forKey: .vector)
+    destinationAPICID = try container.decode(UInt32.self, forKey: .destinationAPICID)
+    deliveryMode =
+      try container.decodeIfPresent(DoryPCIOAPICDeliveryMode.self, forKey: .deliveryMode) ?? .fixed
+    destinationMode =
+      try container.decodeIfPresent(DoryPCIOAPICDestinationMode.self, forKey: .destinationMode)
+      ?? .physical
+    masked = try container.decode(Bool.self, forKey: .masked)
+    levelTriggered = try container.decode(Bool.self, forKey: .levelTriggered)
+    activeLow = try container.decode(Bool.self, forKey: .activeLow)
   }
 }
 
@@ -336,6 +413,7 @@ public final class DoryPCIOAPIC: @unchecked Sendable {
     var route = DoryPCIOAPICRoute(vector: 0)
     var asserted = false
     var remoteIRR = false
+    var deliveredAPICIDs: Set<UInt32> = []
   }
 
   public let pinCount: Int
@@ -378,16 +456,15 @@ public final class DoryPCIOAPIC: @unchecked Sendable {
 
   private func storeRedirectionEntry(pin: Int, route: DoryPCIOAPICRoute) throws {
     guard pins.indices.contains(pin) else { throw DoryPCAPICError.invalidPin(pin) }
-    let delivery: (DoryPCLocalAPIC, UInt8)? = lock.withLock {
+    let deliveries: [(DoryPCLocalAPIC, UInt8, Bool)] = lock.withLock {
       pins[pin].route = route
       guard route.levelTriggered, route.vector >= 0x10, !route.masked, pins[pin].asserted,
-        !pins[pin].remoteIRR, let target = localAPICs[route.destinationAPICID]
-      else { return nil }
-      pins[pin].remoteIRR = true
-      return (target, route.vector)
+        !pins[pin].remoteIRR
+      else { return [] }
+      return deliverLocked(pin: pin, route: route, levelTriggered: true)
     }
-    if let delivery {
-      try delivery.0.inject(vector: delivery.1, levelTriggered: true)
+    for delivery in deliveries {
+      try delivery.0.inject(vector: delivery.1, levelTriggered: delivery.2)
     }
   }
 
@@ -395,22 +472,19 @@ public final class DoryPCIOAPIC: @unchecked Sendable {
   /// device cores use this logical API and therefore never duplicate active-low conversion.
   public func setAsserted(_ asserted: Bool, pin: Int) throws {
     guard pins.indices.contains(pin) else { throw DoryPCAPICError.invalidPin(pin) }
-    let delivery: (DoryPCLocalAPIC, UInt8, Bool)? = lock.withLock {
+    let deliveries: [(DoryPCLocalAPIC, UInt8, Bool)] = lock.withLock {
       let previous = pins[pin].asserted
       pins[pin].asserted = asserted
       let route = pins[pin].route
-      guard route.vector >= 0x10, !route.masked,
-        let target = localAPICs[route.destinationAPICID]
-      else { return nil }
+      guard route.vector >= 0x10, !route.masked else { return [] }
       if route.levelTriggered {
-        guard asserted, !pins[pin].remoteIRR else { return nil }
-        pins[pin].remoteIRR = true
-        return (target, route.vector, true)
+        guard asserted, !pins[pin].remoteIRR else { return [] }
+        return deliverLocked(pin: pin, route: route, levelTriggered: true)
       }
-      guard asserted, !previous else { return nil }
-      return (target, route.vector, false)
+      guard asserted, !previous else { return [] }
+      return deliverLocked(pin: pin, route: route, levelTriggered: false)
     }
-    if let delivery {
+    for delivery in deliveries {
       try delivery.0.inject(vector: delivery.1, levelTriggered: delivery.2)
     }
   }
@@ -422,19 +496,81 @@ public final class DoryPCIOAPIC: @unchecked Sendable {
       var result: [(DoryPCLocalAPIC, UInt8)] = []
       for index in pins.indices {
         let route = pins[index].route
-        guard route.levelTriggered, pins[index].remoteIRR,
-          route.vector == vector, route.destinationAPICID == destinationAPICID
+        guard route.levelTriggered, pins[index].remoteIRR, route.vector == vector,
+          pins[index].deliveredAPICIDs.contains(destinationAPICID)
         else { continue }
         pins[index].remoteIRR = false
-        if pins[index].asserted, !route.masked, let target = localAPICs[destinationAPICID] {
-          pins[index].remoteIRR = true
-          result.append((target, vector))
+        pins[index].deliveredAPICIDs.removeAll(keepingCapacity: true)
+        if pins[index].asserted, !route.masked {
+          result.append(
+            contentsOf: deliverLocked(pin: index, route: route, levelTriggered: true).map {
+              ($0.0, $0.1)
+            })
         }
       }
       return result
     }
     for delivery in deliveries {
       try delivery.0.inject(vector: delivery.1, levelTriggered: true)
+    }
+  }
+
+  private func deliverLocked(
+    pin: Int,
+    route: DoryPCIOAPICRoute,
+    levelTriggered: Bool
+  ) -> [(DoryPCLocalAPIC, UInt8, Bool)] {
+    guard route.deliveryMode.isDeliverableThroughIRQLine else { return [] }
+    let targets = resolvedTargetsLocked(route: route)
+    let selected: [DoryPCLocalAPIC]
+    switch route.deliveryMode {
+    case .fixed:
+      selected = targets
+    case .lowestPriority:
+      selected = doryPCLowestPriorityTarget(in: targets).map { [$0] } ?? []
+    case .smi, .reserved3, .nmi, .initDelivery, .reserved6, .extINT:
+      selected = []
+    }
+    guard !selected.isEmpty else { return [] }
+    if levelTriggered {
+      pins[pin].remoteIRR = true
+      pins[pin].deliveredAPICIDs = Set(selected.map(\.apicID))
+    }
+    return selected.map { ($0, route.vector, levelTriggered) }
+  }
+
+  private func resolvedTargetsLocked(route: DoryPCIOAPICRoute) -> [DoryPCLocalAPIC] {
+    let destination = UInt8(truncatingIfNeeded: route.destinationAPICID)
+    switch route.destinationMode {
+    case .physical:
+      if destination == 0xFF { return localAPICs.values.sorted { $0.apicID < $1.apicID } }
+      return localAPICs[UInt32(destination)].map { [$0] } ?? []
+    case .logical:
+      return localAPICs.values.filter { $0.matchesLogicalDestination(destination) }
+        .sorted { $0.apicID < $1.apicID }
+    }
+  }
+
+  func canDeliver(
+    pin: Int,
+    canAccept: (DoryPCLocalAPIC, UInt8) -> Bool
+  ) throws -> Bool {
+    try lock.withLock {
+      guard pins.indices.contains(pin) else { throw DoryPCAPICError.invalidPin(pin) }
+      let route = pins[pin].route
+      guard route.vector >= 0x10, !route.masked, route.deliveryMode.isDeliverableThroughIRQLine,
+        !(route.levelTriggered && pins[pin].remoteIRR)
+      else { return false }
+      let targets = resolvedTargetsLocked(route: route)
+      switch route.deliveryMode {
+      case .fixed:
+        return targets.contains { canAccept($0, route.vector) }
+      case .lowestPriority:
+        guard let target = doryPCLowestPriorityTarget(in: targets) else { return false }
+        return canAccept(target, route.vector)
+      case .smi, .reserved3, .nmi, .initDelivery, .reserved6, .extINT:
+        return false
+      }
     }
   }
 

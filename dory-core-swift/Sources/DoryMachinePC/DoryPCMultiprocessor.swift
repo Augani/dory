@@ -57,7 +57,7 @@ public final class DoryPCMultiprocessorController: @unchecked Sendable {
     case 0:
       for target in targets { try target.inject(vector: vector) }
     case 1:
-      if let target = targets.min(by: { $0.apicID < $1.apicID }) {
+      if let target = doryPCLowestPriorityTarget(in: targets) {
         try target.inject(vector: vector)
       }
     case 4:

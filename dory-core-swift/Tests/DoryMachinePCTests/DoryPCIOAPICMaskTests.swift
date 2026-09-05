@@ -143,4 +143,195 @@ import Testing
       #expect(try io.route(for: pin) == .init(vector: 0, masked: true))
     }
   }
+
+  @Test(arguments: [false, true])
+  func guestMMIOFixedDeliveryRoutesThroughLogicalDestinationMode(cluster: Bool) throws {
+    let fixture = try ioAPICBusFixture(apicCount: 4)
+    let logicalIDs: [UInt32] = cluster ? [0x11, 0x12, 0x14, 0x21] : [1, 2, 4, 8]
+    for index in fixture.apics.indices {
+      let localMMIO = DoryPCLocalAPICMMIO(apic: fixture.apics[index])
+      try localMMIO.write(
+        offset: 0xE0, bytes: ioAPICTestLittleEndian(cluster ? UInt32(0) : 0xFFFF_FFFF))
+      try localMMIO.write(offset: 0xD0, bytes: ioAPICTestLittleEndian(logicalIDs[index] << 24))
+    }
+    try writeIOAPICRedirection(
+      bus: fixture.bus,
+      mmio: fixture.mmio,
+      pin: 3,
+      low: UInt32(0x44) | (1 << 11),
+      high: UInt32(cluster ? 0x15 : 0x05) << 24
+    )
+    #expect(
+      try readIOAPICRedirectionLow(bus: fixture.bus, mmio: fixture.mmio, pin: 3) == UInt32(0x44)
+        | (1 << 11))
+
+    try fixture.ioAPIC.setAsserted(true, pin: 3)
+
+    for index in fixture.apics.indices {
+      #expect(
+        fixture.apics[index].acknowledge(interruptsEnabled: true)
+          == ([0, 2].contains(index) ? 0x44 : nil))
+      _ = fixture.apics[index].endOfInterrupt()
+    }
+  }
+
+  @Test func guestMMIOLowestPrioritySelectsLowestProcessorPriorityThenAPICID() throws {
+    let fixture = try ioAPICBusFixture(apicCount: 3)
+    for index in fixture.apics.indices {
+      let localMMIO = DoryPCLocalAPICMMIO(apic: fixture.apics[index])
+      try localMMIO.write(offset: 0xE0, bytes: ioAPICTestLittleEndian(UInt32(0xFFFF_FFFF)))
+      try localMMIO.write(offset: 0xD0, bytes: ioAPICTestLittleEndian(UInt32(1 << index) << 24))
+    }
+    fixture.apics[0].setTaskPriority(0x40)
+    fixture.apics[1].setTaskPriority(0x10)
+    fixture.apics[2].setTaskPriority(0x10)
+    try writeIOAPICRedirection(
+      bus: fixture.bus,
+      mmio: fixture.mmio,
+      pin: 5,
+      low: UInt32(0x55) | (1 << 8) | (1 << 11),
+      high: UInt32(0x07) << 24
+    )
+
+    try fixture.ioAPIC.setAsserted(true, pin: 5)
+    #expect(fixture.apics[0].acknowledge(interruptsEnabled: true) == nil)
+    #expect(fixture.apics[1].acknowledge(interruptsEnabled: true) == 0x55)
+    #expect(fixture.apics[2].acknowledge(interruptsEnabled: true) == nil)
+
+    try fixture.ioAPIC.setAsserted(false, pin: 5)
+    try fixture.ioAPIC.setAsserted(true, pin: 5)
+    #expect(fixture.apics[0].acknowledge(interruptsEnabled: true) == nil)
+    #expect(fixture.apics[1].acknowledge(interruptsEnabled: true) == nil)
+    #expect(fixture.apics[2].acknowledge(interruptsEnabled: true) == 0x55)
+  }
+
+  @Test func guestMMIOLogicalLevelInterruptReassertsAfterDeliveredAPICEOI() throws {
+    let fixture = try ioAPICBusFixture(apicCount: 2)
+    for index in fixture.apics.indices {
+      let localMMIO = DoryPCLocalAPICMMIO(apic: fixture.apics[index])
+      try localMMIO.write(offset: 0xE0, bytes: ioAPICTestLittleEndian(UInt32(0xFFFF_FFFF)))
+      try localMMIO.write(offset: 0xD0, bytes: ioAPICTestLittleEndian(UInt32(1 << index) << 24))
+    }
+    try writeIOAPICRedirection(
+      bus: fixture.bus,
+      mmio: fixture.mmio,
+      pin: 7,
+      low: UInt32(0x57) | (1 << 11) | (1 << 15),
+      high: UInt32(0x02) << 24
+    )
+
+    try fixture.ioAPIC.setAsserted(true, pin: 7)
+    #expect(fixture.apics[1].acknowledge(interruptsEnabled: true) == 0x57)
+    #expect(
+      try readIOAPICRedirectionLow(bus: fixture.bus, mmio: fixture.mmio, pin: 7) == UInt32(0x57)
+        | (1 << 11) | (1 << 14) | (1 << 15))
+    #expect(fixture.apics[1].endOfInterrupt() == 0x57)
+    try fixture.ioAPIC.endOfInterrupt(vector: 0x57, destinationAPICID: 1)
+    #expect(fixture.apics[1].acknowledge(interruptsEnabled: true) == 0x57)
+    try fixture.ioAPIC.setAsserted(false, pin: 7)
+    #expect(fixture.apics[1].endOfInterrupt() == 0x57)
+    try fixture.ioAPIC.endOfInterrupt(vector: 0x57, destinationAPICID: 1)
+    #expect(
+      try readIOAPICRedirectionLow(bus: fixture.bus, mmio: fixture.mmio, pin: 7) == UInt32(0x57)
+        | (1 << 11) | (1 << 15))
+  }
+
+  @Test func logicalCanDeliverTracksMaskDestinationAndRemoteIRRState() throws {
+    let fixture = try ioAPICBusFixture(apicCount: 2)
+    for index in fixture.apics.indices {
+      let localMMIO = DoryPCLocalAPICMMIO(apic: fixture.apics[index])
+      try localMMIO.write(offset: 0xE0, bytes: ioAPICTestLittleEndian(UInt32(0xFFFF_FFFF)))
+      try localMMIO.write(offset: 0xD0, bytes: ioAPICTestLittleEndian(UInt32(1 << index) << 24))
+    }
+    try writeIOAPICRedirection(
+      bus: fixture.bus,
+      mmio: fixture.mmio,
+      pin: 6,
+      low: UInt32(0x66) | (1 << 11) | (1 << 15),
+      high: UInt32(0x02) << 24
+    )
+
+    #expect(try fixture.ioAPIC.canDeliver(pin: 6) { $0.apicID == 1 && $1 == 0x66 })
+    try fixture.ioAPIC.setAsserted(true, pin: 6)
+    #expect(!(try fixture.ioAPIC.canDeliver(pin: 6) { _, _ in true }))
+    #expect(fixture.apics[1].acknowledge(interruptsEnabled: true) == 0x66)
+    #expect(fixture.apics[1].endOfInterrupt() == 0x66)
+    try fixture.ioAPIC.endOfInterrupt(vector: 0x66, destinationAPICID: 1)
+    #expect(try fixture.ioAPIC.canDeliver(pin: 6) { $0.apicID == 1 && $1 == 0x66 } == false)
+    #expect(fixture.apics[1].acknowledge(interruptsEnabled: true) == 0x66)
+    #expect(fixture.apics[1].endOfInterrupt() == 0x66)
+    try fixture.ioAPIC.setAsserted(false, pin: 6)
+    try fixture.ioAPIC.endOfInterrupt(vector: 0x66, destinationAPICID: 1)
+    #expect(try fixture.ioAPIC.canDeliver(pin: 6) { $0.apicID == 1 && $1 == 0x66 })
+  }
+
+  @Test func guestMMIOUnsupportedDeliveryModesReadBackWithoutHostExceptionOrInterrupt() throws {
+    let fixture = try ioAPICBusFixture(apicCount: 1)
+    for mode: UInt32 in [2, 3, 4, 5, 6, 7] {
+      try fixture.ioAPIC.setAsserted(false, pin: 1)
+      try writeIOAPICRedirection(
+        bus: fixture.bus,
+        mmio: fixture.mmio,
+        pin: 1,
+        low: UInt32(0x61) | (mode << 8),
+        high: 0
+      )
+      #expect(
+        try readIOAPICRedirectionLow(bus: fixture.bus, mmio: fixture.mmio, pin: 1) == UInt32(0x61)
+          | (mode << 8))
+      try fixture.ioAPIC.setAsserted(true, pin: 1)
+      #expect(fixture.apics[0].acknowledge(interruptsEnabled: true) == nil)
+    }
+  }
+
+}
+
+private struct IOAPICBusFixture {
+  let bus: DoryPCPhysicalMemoryBus
+  let ioAPIC: DoryPCIOAPIC
+  let mmio: DoryPCIOAPICMMIO
+  let apics: [DoryPCLocalAPIC]
+}
+
+private func ioAPICBusFixture(apicCount: Int) throws -> IOAPICBusFixture {
+  let ram = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+  let bus = try DoryPCPhysicalMemoryBus(ram: ram)
+  let apics = (0..<apicCount).map { DoryPCLocalAPIC(apicID: UInt32($0)) }
+  for apic in apics {
+    try apic.configureSpuriousVector(0xFF, softwareEnabled: true)
+  }
+  let ioAPIC = DoryPCIOAPIC()
+  for apic in apics { try ioAPIC.attach(apic) }
+  ioAPIC.seal()
+  let mmio = DoryPCIOAPICMMIO(ioAPIC: ioAPIC)
+  try bus.attach(mmio)
+  bus.seal()
+  return IOAPICBusFixture(bus: bus, ioAPIC: ioAPIC, mmio: mmio, apics: apics)
+}
+
+private func writeIOAPICRedirection(
+  bus: DoryPCPhysicalMemoryBus,
+  mmio: DoryPCIOAPICMMIO,
+  pin: Int,
+  low: UInt32,
+  high: UInt32
+) throws {
+  let register = UInt64(0x10 + pin * 2)
+  try bus.writeScalar(at: mmio.baseAddress, value: register, byteCount: 4)
+  try bus.writeScalar(at: mmio.baseAddress + 0x10, value: UInt64(low), byteCount: 4)
+  try bus.writeScalar(at: mmio.baseAddress, value: register + 1, byteCount: 4)
+  try bus.writeScalar(at: mmio.baseAddress + 0x10, value: UInt64(high), byteCount: 4)
+}
+
+private func readIOAPICRedirectionLow(
+  bus: DoryPCPhysicalMemoryBus,
+  mmio: DoryPCIOAPICMMIO,
+  pin: Int
+) throws -> UInt32 {
+  try bus.writeScalar(at: mmio.baseAddress, value: UInt64(0x10 + pin * 2), byteCount: 4)
+  return UInt32(try bus.readScalar(at: mmio.baseAddress + 0x10, byteCount: 4))
+}
+
+private func ioAPICTestLittleEndian<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
+  (0..<MemoryLayout<T>.size).map { UInt8(truncatingIfNeeded: value >> T($0 * 8)) }
 }

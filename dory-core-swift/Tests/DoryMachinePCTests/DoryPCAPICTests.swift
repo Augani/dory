@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 
 @testable import DoryMachinePC
@@ -101,6 +102,28 @@ import Testing
     try io.setAsserted(false, pin: 9)
     try io.endOfInterrupt(vector: 0x39, destinationAPICID: 0)
     #expect(local.acknowledge(interruptsEnabled: true) == nil)
+  }
+
+  @Test func ioAPICRouteDecodesLegacySnapshotsAsFixedPhysicalDelivery() throws {
+    let json = #"""
+      {
+        "vector": 65,
+        "destinationAPICID": 2,
+        "masked": false,
+        "levelTriggered": true,
+        "activeLow": true
+      }
+      """#.data(using: .utf8)!
+
+    let route = try JSONDecoder().decode(DoryPCIOAPICRoute.self, from: json)
+
+    #expect(route.vector == 0x41)
+    #expect(route.destinationAPICID == 2)
+    #expect(route.deliveryMode == .fixed)
+    #expect(route.destinationMode == .physical)
+    #expect(!route.masked)
+    #expect(route.levelTriggered)
+    #expect(route.activeLow)
   }
 
   @Test func topologyAndInputValidationFailClosed() throws {
