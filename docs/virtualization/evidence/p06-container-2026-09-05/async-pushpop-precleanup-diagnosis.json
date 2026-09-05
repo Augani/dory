@@ -1,0 +1,33 @@
+{
+  "scope": "Private asynchronous x86 signal diagnostic; not release qualification or a proven root cause",
+  "observations": [
+    "v6 reads Linux amd64 ucontext RBX at byte offset128 and writes a bounded56-byte failure record.",
+    "v6 snapshots RSP and preserved GPRs at hot_end before kill/wait cleanup syscalls.",
+    "Three baseline runs exit82; three candidate runs exit139 after emitting the same failure record.",
+    "Recorded resume RIP0x201221, RSP0x7fffffffed60 and RBX0; pre-cleanup final RSP0x7fffffffed68 and RBX1."
+  ],
+  "interpretation": "Consistent with an incoherent interrupted instruction boundary; verify exact ELF symbol mapping and host-PC-to-guest-state reconstruction before modifying restoration. This does not establish the exact source defect.",
+  "limitations": [
+    "No native x86 control run recorded here.",
+    "Candidate still fails; production FEX pin remains unchanged.",
+    "Probe success-message length still needs correction; failure record length is bounded."
+  ],
+  "artifacts": {
+    "pushpop_oneshot_v6.S": {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-self-sender-pushpop-oneshot-1788648400/pushpop_oneshot_v6.S",
+      "sha256": "734eee751e7c29cf5f66674763d527f5c84d8afede05b3732174c29bb7431f51"
+    },
+    "build-v6.log": {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-self-sender-pushpop-oneshot-1788648400/build-v6.log",
+      "sha256": "3cd518911e9de78ddf276d535c44bfde660cfa0cfb918da01eb712b1af88ea8c"
+    },
+    "run-v6.log": {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-self-sender-pushpop-oneshot-1788648400/run-v6.log",
+      "sha256": "b0e4b0d1328172d6a842858cd95804e8e40613717f3307b4b7efb46ce19a8d30"
+    },
+    "pushpop-v5-hot.objdump": {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-self-sender-pushpop-oneshot-1788648400/pushpop-v5-hot.objdump",
+      "sha256": "75f8928bac63fa76782b3639c9da347078c2720a0a91f6d3782b4ecf7b6cfcbd"
+    }
+  }
+}
