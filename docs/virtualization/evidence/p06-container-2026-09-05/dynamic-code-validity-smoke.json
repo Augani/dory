@@ -30,5 +30,15 @@
     "result": "signed-carrier=pass",
     "binarySHA256": "c1c6f6631e83a8b88e5970f144a1c4c195656d2918e375dde7f471ef2539fdd7"
   },
-  "scope": "Live code-signature API regression and signed carrier feasibility only. Production renderer carrier migration and GPU guest compute remain unverified."
+  "scope": "Live code-signature API regression and signed carrier feasibility only. Production renderer carrier migration and GPU guest compute remain unverified.",
+  "postlinkCarrierSmoke": {
+    "method": "Compile a private arm64 probe using the doryd Info.plist template; stamp it with the current renderer-release-identity.py patcher, sign with Developer ID, read the secured plist, then change the runner hash without resigning.",
+    "payloadRoundtrip": "pass",
+    "signedExecution": "signed-carrier=pass",
+    "tamperedSignatureVerificationExitCode": 1,
+    "tamperedSignatureDiagnostic": "invalid Info.plist (plist or signature have been modified)",
+    "signedBinarySHA256": "842672692b2b7f297bab862e8053540bff3ae53214a6382d2e94e9fbbef0bf0d",
+    "tamperedBinarySHA256": "e9a2ce9b584231090ee6dfa6688339e247943aa8a9e2834b8e35b95935407349",
+    "scope": "Carrier and tamper smoke with placeholder identity hashes, not a production renderer launch or GPU workload."
+  }
 }
