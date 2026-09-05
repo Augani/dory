@@ -1,0 +1,151 @@
+{
+  "artifacts": {
+    "coldPostCommandSerialReceipt": {
+      "exists": true,
+      "gid": 0,
+      "mode": "0o644",
+      "sha256": "9b3c197371a619cff4c8701c9170b0841682f0499c5998e9a4225814ab52c7b3",
+      "size": 147,
+      "uid": 501,
+      "path": "/private/tmp/dory-rawarm-manager-0905.405d3e5a/actual-manager-cold-reopen-serial.log"
+    },
+    "firstPostCommandSerialReceipt": {
+      "exists": true,
+      "gid": 0,
+      "mode": "0o644",
+      "sha256": "9b3c197371a619cff4c8701c9170b0841682f0499c5998e9a4225814ab52c7b3",
+      "size": 147,
+      "uid": 501,
+      "path": "/private/tmp/dory-rawarm-manager-0905.405d3e5a/actual-manager-detach-serial.log"
+    },
+    "fullConsoleLog": {
+      "exists": true,
+      "gid": 0,
+      "mode": "0o600",
+      "sha256": "4d832184b6356745227896042e7e5f9c50fead3a843ddf4d543f5257ce811c69",
+      "size": 13680,
+      "uid": 501
+    },
+    "machineJSON": {
+      "exists": true,
+      "gid": 0,
+      "mode": "0o600",
+      "sha256": "050d2cac5019a1622b52b095a20e6fa477dab1c92bac9c6cd33d3f906d8aeeab",
+      "size": 473,
+      "uid": 501,
+      "path": "/Users/Shared/dra-7A537F82/Library/Application Support/Dory/Dory.dorydrive/machines/rawarm-alpine/machine.json"
+    },
+    "uefiVariables": {
+      "exists": true,
+      "gid": 0,
+      "mode": "0o600",
+      "sha256": "dd5a4fa5356532c26fea9c9b2b1f4cf5c633b0bb7fbe4093643e3baa564ef9bc",
+      "size": 5811,
+      "uid": 501
+    }
+  },
+  "date": "2026-09-05",
+  "execution": {
+    "entryPoint": "ActualRawARMManagerQualificationXCTest/testActualRawARMHelperDetachesInstallerAndColdReopensStoppedAlpineClone",
+    "logPath": "/tmp/dory-actual-rawarm-manager-signedhost-final-0905i.log",
+    "logSHA256": "f485e24760c948a78ee8d70298e805c05535887445cd858952a8a1c6e73b9fb5",
+    "physicalObservationSourceNote": "This run used the final single-entry throwing-check harness and exited with DORY_FINAL_RAWARM_RC=0.",
+    "result": "passed",
+    "shellWrapperExit": 0,
+    "sourceValidationAfterHarnessCleanup": {
+      "logPath": "/tmp/dory-rawarm-xctest-wrapper-finalcleanup-compile-0905.log",
+      "logSHA256": "4048f98deeaa7bc35fcb61ac59b82ff6e5baec54bf34201c0a598a8d6651594d",
+      "notes": [
+        "single XCTest entry point only",
+        "physical body uses throwing checks instead of Swift Testing expectations on a raw Thread",
+        "main run loop remains available while MachineManager runs on a dedicated 8 MiB thread",
+        "no shorter outer timeout abandons the worker; inner manager and serial waits remain bounded"
+      ],
+      "result": "passed with fixture skipped when env absent"
+    },
+    "xcodeDeveloperDir": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "xctestDurationSeconds": 99.861,
+    "xctestFailures": 0,
+    "xctestTests": 1
+  },
+  "fixture": {
+    "armVirtFirmwareBundle": "/private/tmp/dory-armvirt-firmware-0905",
+    "expectedConsoleMarker": "DORY_COLD_REOPEN_VERIFIED",
+    "inputRoot": "/private/tmp/dory-rawarm-manager-0905.405d3e5a",
+    "installerISO": "/private/tmp/dory-arm-smp-0905.LAhbHr/alpine-standard-3.24.1-aarch64.iso",
+    "retainedManagerFixtureRoot": "/Users/Shared/dra-7A537F82",
+    "seedRootfs": "/private/tmp/dory-rawarm-manager-0905.405d3e5a/seed/rootfs.ext4",
+    "seedRootfsExtendedSparseForDesktopAdmission": true,
+    "seedRootfsSHA256": "c3e355bf7bcf42a07cc3c6c3e96b9c97a05ce8dcc85912a9fb81c9a88f5b8a85",
+    "seedRootfsVirtualSizeBytes": 34359738368,
+    "seedVariableStoreSHA256": "9be33307564567db5dae779a04a04ea25f85c0af3389ce998a2fcea4dbbec248",
+    "sourceBundle": "/private/tmp/dory-arm-smp-0905.LAhbHr/alpine-process-cold-bundle"
+  },
+  "helper": {
+    "bundleIdentifier": "com.pythonxi.Dory.HVRunner",
+    "cdhash": "07c733c1b2594e01e790e63f44dae2f391f36ec8",
+    "gvproxy": "/tmp/dory-arm-smp-0905.LAhbHr/gvproxy-pinned",
+    "path": "/private/tmp/dory-renderer-gpu-0905/Xcode/Build/Products/Release/DoryHVRunner.app/Contents/MacOS/dory-hv",
+    "teamIdentifier": "864H636QW4"
+  },
+  "limitations": [
+    "This qualifies the real helper through a private signed test host, not the installed release daemon or notarized app bundle.",
+    "It uses an isolated Alpine clone already prepared by prior P05 cold-process work; it does not prove Debian, x86, or broad distro install UX.",
+    "It proves installer detach and cold process reopen, not live snapshot/restore or long soak."
+  ],
+  "observedBehavior": {
+    "backend": "doryHypervisor",
+    "bootMode": "efi",
+    "coldReopen": "after manager stop/reactivation, real helper booted again from installed disk without installer media and emitted the marker again",
+    "cpuCount": 2,
+    "displayMode": "desktop",
+    "finalDisposableVMState": "stopped; no DoryHVRunner/dory-hv process from this fixture remained live after the run",
+    "firmwarePlatform": "armVirtV1",
+    "firstStart": "real helper booted Alpine from installed disk and emitted the marker after serial login command",
+    "installerTransition": "attached installer ISO was detached; persisted machine.json no longer contains installerISOPath",
+    "machineID": "rawarm-alpine",
+    "memoryMB": 4096,
+    "serialReceiptScope": "The two short receipt files contain the post-command marker response from each boot; the retained full console log contains UEFI, GRUB, Alpine login, shutdown, and both marker interactions."
+  },
+  "qualificationHost": {
+    "classification": "private Developer ID-signed qualification host; not the installed release daemon",
+    "path": "/private/tmp/dory-signed-qualification-host-0905-084135-dyld/xctest-doryd",
+    "requirement": "anchor apple generic and certificate leaf[subject.OU] = \"864H636QW4\" and identifier \"doryd\"",
+    "selfValidationObserved": true
+  },
+  "schema": 1,
+  "scope": "Actual desktop ARM raw-Hypervisor MachineManager installer detach and cold reopen using a private signed qualification host. This is real DoryHVRunner/Hypervisor guest execution, not release-daemon qualification and not a fake helper receipt.",
+  "source": {
+    "dirtyFilesAtEvidenceRefresh": [
+      " A docs/virtualization/evidence/p05-arm-2026-09-05/actual-manager-desktop-installer-detach-cold-reopen.json",
+      " A docs/virtualization/evidence/p07-macos-2026-09-05/unlocked-restore-observation.json",
+      " M dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift",
+      " M guest/initfs/build.sh",
+      " M guest/initfs/vendor/fex-2607-dory1/FEX",
+      " M guest/initfs/vendor/fex-2607-dory1/README.md",
+      " M guest/initfs/vendor/fex-2607-dory1/rebuild.sh",
+      " M guest/initfs/verify-build.sh",
+      " M patches/fex-restore-complete-signal-context.patch"
+    ],
+    "dirtyFilesAtEvidenceWrite": [
+      " M dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift",
+      " M guest/initfs/vendor/fex-2607-dory1/FEX",
+      " M guest/initfs/vendor/fex-2607-dory1/README.md",
+      " M guest/initfs/vendor/fex-2607-dory1/rebuild.sh",
+      " M patches/fex-restore-complete-signal-context.patch"
+    ],
+    "repositoryHeadAtEvidenceRefresh": "dd937e4ad6655e44b3ddf9cd2ef6bf10cb28b922",
+    "repositoryHeadAtObservation": "c8bfc2b0ff19fe21c1d8bef12932e8f91179201b",
+    "testSource": "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift",
+    "testSourceSHA256": "f45c88e711e242353e79efde930d81e2abcf68392a0ff5e75d2bdb4cdf0be244"
+  },
+  "independentReview": {
+    "checks": [
+      "Final0905i XCTest log digest and1test/0failures verified",
+      "Persisted machine configuration digest verified; installerISOPath absent",
+      "Both post-command serial receipt digests verified",
+      "Reviewed final throwing assertions, single test registration, fresh output boundary and physical-only fixture overrides"
+    ],
+    "scope": "Real helper via private signed qualification host; no release-daemon or new installer qualification claim"
+  }
+}

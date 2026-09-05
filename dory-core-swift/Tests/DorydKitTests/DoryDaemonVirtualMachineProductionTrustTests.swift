@@ -1277,7 +1277,7 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
                 DoryMachineConfiguration.self,
                 from: Data(contentsOf: URL(fileURLWithPath: directory + "/machine.json"))
             )
-            #expect(stored.installerISOPath == nil)
+            try requireActualRawARM(stored.installerISOPath == nil, "persisted configuration should clear installerISOPath")
             let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
             #expect(try journal.read(operationID).state.status == .completed)
             let checkpoint = try installerFirmwareCheckpoint(journal: journal, operationID: operationID)
@@ -1296,13 +1296,13 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             defer { recovered.machineManager.stopAll() }
             defer { try? recovered.machineManager.delete(id: id) }
             let cold = try startAuthenticatedProductionMachine(recovered.machineManager, id: id)
-            #expect(cold.state == .running)
-            #expect(!cold.installerMediaAttached)
+            try requireActualRawARM(cold.state == .running, "cold reopened helper should be running")
+            try requireActualRawARM(!cold.installerMediaAttached, "cold reopened machine should not reattach installer media")
             let coldPlan = try recovered.planning.plans.read(id: id)
-            #expect(coldPlan.backend == .doryHypervisor)
-            #expect(coldPlan.bootMedia.media.kind == .virtualDisk)
-            #expect(coldPlan.firmware?.platform == .armVirtV1)
-            #expect(cold.runtimeIdentity.resolvedPlan == coldPlan)
+            try requireActualRawARM(coldPlan.backend == .doryHypervisor, "cold plan should retain raw Hypervisor backend")
+            try requireActualRawARM(coldPlan.bootMedia.media.kind == .virtualDisk, "cold plan should boot the installed disk")
+            try requireActualRawARM(coldPlan.firmware?.platform == .armVirtV1, "cold plan should retain ARMVirt firmware")
+            try requireActualRawARM(cold.runtimeIdentity.resolvedPlan == coldPlan, "cold runtime identity should bind the cold resolved plan")
             #expect(try DoryUEFIVariableStoreFile(directory: directory + "/uefi-variables")
                 .load().snapshot == installerVariables)
         }
@@ -1340,6 +1340,149 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             let status = try #require(context.machineManager.status(id: id))
             #expect(status.installerMediaAttached)
             #expect(status.runtimeIdentity.resolvedPlan == plan)
+        }
+    }
+
+
+    fileprivate func runActualRawARMHelperDetachesInstallerAndColdReopensStoppedAlpineClone() throws {
+        guard let requestedInputRoot = ProcessInfo.processInfo.environment["DORY_RAWARM_MANAGER_FIXTURE_ROOT"] else {
+            throw MachineManagerError.persistence("missing DORY_RAWARM_MANAGER_FIXTURE_ROOT")
+        }
+        let inputRoot = URL(fileURLWithPath: requestedInputRoot, isDirectory: true).standardizedFileURL.path
+        let inputURL = URL(fileURLWithPath: inputRoot, isDirectory: true)
+        let input = try actualRawARMFixtureInput(root: inputRoot)
+        try withProductionIntegrationTestStack {
+            let shortFixtureRoot = URL(
+                fileURLWithPath: "/Users/Shared/dra-\(UUID().uuidString.prefix(8))",
+                isDirectory: true
+            )
+            let fixture = try ProductionTrustFixture(
+                actualRawHelperExecutablePath: input.signedHelperExecutable,
+                actualRawHelperGVProxyPath: input.gvproxy,
+                actualARMVirtFirmwareBundlePath: input.armVirtFirmwareBundle,
+                fixtureRootOverride: shortFixtureRoot,
+                requiresReadyHandoffOverride: true
+            )
+            try Data((fixture.root.path + "\n").utf8).write(
+                to: inputURL.appendingPathComponent("actual-manager-fixture-root.txt")
+            )
+            // Retain the fixture state and logs as the physical qualification receipt.
+            let activation = fixture.factory.activate(
+                store: fixture.store,
+                machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion,
+                publicKey: fixture.publicKey,
+                expectedArchitecture: "arm64"
+            )
+            guard case let .activated(context) = activation else {
+                throw MachineManagerError.persistence("actual raw ARM production activation failed: \(activation)")
+            }
+            defer { context.machineManager.stopAll() }
+            let id = "rawarm-alpine"
+            let service = DorydService(
+                socketPath: "/unused",
+                machineManager: context.machineManager,
+                productionPlanningController: context.planningController
+            )
+            let create = LockedPlanningCreateReply()
+            service.machineCreate([
+                "id": id,
+                "guestArchitecture": "arm64",
+                "kernelPath": "",
+                "rootfsPath": input.seedRootfs,
+                "bootMode": "efi",
+                "installerISOPath": input.installerISO,
+                "displayMode": "desktop",
+                "memoryMB": UInt64(4_096),
+                "cpuCount": 2,
+            ]) { create.set(ok: $0, body: $1, message: $2) }
+            guard create.value.ok else {
+                throw MachineManagerError.persistence("actual raw ARM create failed: \(create.value.message)")
+            }
+            let machineDirectory = fixture.machineConfiguration.stateDirectory + "/" + id
+            guard let initialStatus = context.machineManager.status(id: id) else {
+                throw MachineManagerError.persistence("actual raw ARM status missing after create")
+            }
+            try requireActualRawARM(initialStatus.installerMediaAttached, "created machine should retain installer media")
+            let createPlan = try context.planning.plans.read(id: id)
+            try requireActualRawARM(createPlan.backend == .doryHypervisor, "created plan should select raw Hypervisor backend")
+            try requireActualRawARM(createPlan.bootMedia.media.kind == .installerISO, "created plan should boot installer ISO")
+            try requireActualRawARM(createPlan.firmware?.platform == .armVirtV1, "created plan should use ARMVirt firmware")
+
+            let coldSnapshot = try DoryUEFIVariableStoreFile.decodeColdSnapshot(
+                Data(contentsOf: URL(fileURLWithPath: input.seedVariables))
+            )
+            try requireActualRawARM(coldSnapshot.platform == .armVirtV1, "seed UEFI snapshot should be ARMVirt")
+            try requireActualRawARM(coldSnapshot.generation > 0, "seed UEFI snapshot should carry a positive generation")
+            let variableStore = try DoryUEFIVariableStoreFile(
+                directory: machineDirectory + "/uefi-variables"
+            )
+            try variableStore.prepare()
+            do {
+                _ = try variableStore.replaceFromColdSnapshot(coldSnapshot)
+            } catch DoryUEFIVariableStoreFileError.recoveryRequired,
+                    DoryUEFIVariableStoreFileError.storeNotInitialized {
+                try variableStore.initializeFromColdSnapshot(coldSnapshot)
+            }
+            try requireActualRawARM(try variableStore.load().snapshot == coldSnapshot, "manager variable store should match seed ARMVirt snapshot")
+
+            let detachOperation = UUID()
+            let detached = try context.machineManager.transitionInstallerMedia(
+                id: id,
+                attached: false,
+                operationID: detachOperation,
+                productionPlanningController: context.planningController
+            )
+            try requireActualRawARM(!detached.installerMediaAttached, "installer detach should clear attached state")
+            let running = try waitForActualRawARMRunning(context.machineManager, id: id)
+            try requireActualRawARM(running.state == .running, "actual raw ARM helper should be running after detach")
+            try requireActualRawARM(running.pid != nil, "actual raw ARM helper should publish a pid")
+            let firstSerial = try verifyActualRawARMAlpineSerialMarker(
+                context.machineManager,
+                id: id,
+                marker: input.expectedConsole
+            )
+            try Data(firstSerial.text.utf8).write(
+                to: URL(fileURLWithPath: inputRoot + "/actual-manager-detach-serial.log")
+            )
+            let detachedPlan = try context.planning.plans.read(id: id)
+            try requireActualRawARM(detachedPlan.backend == .doryHypervisor, "detached plan should retain raw Hypervisor backend")
+            try requireActualRawARM(detachedPlan.bootMedia.media.kind == .virtualDisk, "detached plan should boot the installed disk")
+            try requireActualRawARM(detachedPlan.firmware?.platform == .armVirtV1, "detached plan should retain ARMVirt firmware")
+            try requireActualRawARM(running.runtimeIdentity.resolvedPlan == detachedPlan, "running identity should bind the detached resolved plan")
+            let stored = try JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: Data(contentsOf: URL(fileURLWithPath: machineDirectory + "/machine.json"))
+            )
+            try requireActualRawARM(stored.installerISOPath == nil, "persisted configuration should clear installerISOPath")
+
+            _ = try context.machineManager.stop(id: id)
+            let reactivation = fixture.factory.activate(
+                store: fixture.store,
+                machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion,
+                publicKey: fixture.publicKey,
+                expectedArchitecture: "arm64"
+            )
+            guard case let .activated(recovered) = reactivation else {
+                throw MachineManagerError.persistence("actual raw ARM reactivation failed: \(reactivation)")
+            }
+            defer { recovered.machineManager.stopAll() }
+            let cold = try startActualRawARMAndWaitForSerial(
+                recovered.machineManager,
+                id: id,
+                marker: input.expectedConsole,
+                cursor: firstSerial.cursor,
+                receiptPath: inputRoot + "/actual-manager-cold-reopen-serial.log"
+            )
+            try requireActualRawARM(cold.state == .running, "cold reopened helper should be running")
+            try requireActualRawARM(!cold.installerMediaAttached, "cold reopened machine should not reattach installer media")
+            let coldPlan = try recovered.planning.plans.read(id: id)
+            try requireActualRawARM(coldPlan.backend == .doryHypervisor, "cold plan should retain raw Hypervisor backend")
+            try requireActualRawARM(coldPlan.bootMedia.media.kind == .virtualDisk, "cold plan should boot the installed disk")
+            try requireActualRawARM(coldPlan.firmware?.platform == .armVirtV1, "cold plan should retain ARMVirt firmware")
+            try requireActualRawARM(cold.runtimeIdentity.resolvedPlan == coldPlan, "cold runtime identity should bind the cold resolved plan")
+            _ = try recovered.machineManager.stop(id: id)
         }
     }
 
@@ -3225,6 +3368,67 @@ private final class ConfigurationUpdateFaultObservation: @unchecked Sendable {
     var wasObserved: Bool { lock.withLock { observed } }
 }
 
+private func requireActualRawARM(_ condition: @autoclosure () throws -> Bool, _ message: String) throws {
+    guard try condition() else {
+        throw MachineManagerError.persistence("actual raw ARM qualification failed: \(message)")
+    }
+}
+
+final class ActualRawARMManagerQualificationXCTest: XCTestCase {
+    func testActualRawARMHelperDetachesInstallerAndColdReopensStoppedAlpineClone() throws {
+        guard ProcessInfo.processInfo.environment["DORY_RAWARM_MANAGER_FIXTURE_START"] == "1",
+              ProcessInfo.processInfo.environment["DORY_RAWARM_MANAGER_FIXTURE_ROOT"] != nil else {
+            throw XCTSkip("set DORY_RAWARM_MANAGER_FIXTURE_START=1 and DORY_RAWARM_MANAGER_FIXTURE_ROOT to run the physical raw ARM manager qualification")
+        }
+        FileHandle.standardError.write(
+            Data("actual raw ARM qualification host pid=\(getpid()) main=\(Thread.isMainThread)\n".utf8)
+        )
+        try DorySecurityDynamicCodeValidator.validate(
+            pid: getpid(),
+            requirementText: DorydXPCSecurity.productionDaemonRequirement
+        )
+        FileHandle.standardError.write(
+            Data("actual raw ARM qualification host satisfies production daemon launch requirement\n".utf8)
+        )
+        let box = LockedPhysicalQualificationResult()
+        let thread = Thread {
+            do {
+                try DoryDaemonVirtualMachineProductionTrustTests()
+                    .runActualRawARMHelperDetachesInstallerAndColdReopensStoppedAlpineClone()
+                box.finish(.success(()))
+            } catch {
+                box.finish(.failure(error))
+            }
+        }
+        thread.name = "dory-actual-rawarm-manager-qualification"
+        thread.stackSize = 8 * 1_024 * 1_024
+        thread.start()
+        while !box.isFinished {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.05))
+        }
+        try box.result!.get()
+    }
+}
+
+private final class LockedPhysicalQualificationResult: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Result<Void, Error>?
+
+    var result: Result<Void, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    var isFinished: Bool { result != nil }
+
+    func finish(_ result: Result<Void, Error>) {
+        lock.lock()
+        stored = result
+        lock.unlock()
+    }
+}
+
 final class LockedPlanningCreateReply: @unchecked Sendable {
     struct Value {
         var ok = false
@@ -3246,6 +3450,136 @@ final class LockedPlanningCreateReply: @unchecked Sendable {
         stored = Value(ok: ok, body: body, message: message)
         lock.unlock()
     }
+}
+
+
+private struct ActualRawARMFixtureInput {
+    let seedRootfs: String
+    let seedVariables: String
+    let installerISO: String
+    let armVirtFirmwareBundle: String
+    let signedHelperExecutable: String
+    let gvproxy: String
+    let expectedConsole: String
+}
+
+private func actualRawARMFixtureInput(root: String) throws -> ActualRawARMFixtureInput {
+    let data = try Data(contentsOf: URL(fileURLWithPath: root + "/qualification-input.json"))
+    let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    func string(_ key: String) throws -> String {
+        guard let value = object[key] as? String, !value.isEmpty else {
+            throw MachineManagerError.persistence("missing raw ARM fixture input \(key)")
+        }
+        return value
+    }
+    func standardized(_ value: String) -> String {
+        URL(fileURLWithPath: value).standardizedFileURL.path
+    }
+    let seed = standardized(try string("seedDirectory"))
+    return ActualRawARMFixtureInput(
+        seedRootfs: seed + "/rootfs.ext4",
+        seedVariables: seed + "/uefi-variables/uefi-variables.json",
+        installerISO: standardized(try string("installerISO")),
+        armVirtFirmwareBundle: standardized(try string("armVirtFirmwareBundle")),
+        signedHelperExecutable: standardized(try string("signedHelperExecutable")),
+        gvproxy: standardized(try string("gvproxy")),
+        expectedConsole: try string("expectedConsole")
+    )
+}
+
+@discardableResult
+private func startActualRawARMAndWaitForSerial(
+    _ manager: MachineManager,
+    id: String,
+    marker: String,
+    cursor: DoryMachineSerialConsoleCursor? = nil,
+    receiptPath: String? = nil
+) throws -> DoryMachineStatus {
+    _ = try manager.start(id: id)
+    let running = try waitForActualRawARMRunning(manager, id: id)
+    let serial = try verifyActualRawARMAlpineSerialMarker(
+        manager,
+        id: id,
+        marker: marker,
+        cursor: cursor
+    )
+    if let receiptPath {
+        try Data(serial.text.utf8).write(to: URL(fileURLWithPath: receiptPath))
+    }
+    return running
+}
+
+private func waitForActualRawARMRunning(
+    _ manager: MachineManager,
+    id: String,
+    timeout: TimeInterval = 120
+) throws -> DoryMachineStatus {
+    let deadline = Date().addingTimeInterval(timeout)
+    while Date() < deadline {
+        if let status = manager.status(id: id) {
+            if status.state == .running { return status }
+            if status.state == .failed {
+                throw MachineManagerError.persistence(status.lastError ?? "actual raw ARM helper failed")
+            }
+        }
+        Thread.sleep(forTimeInterval: 0.1)
+    }
+    throw MachineManagerError.persistence("actual raw ARM helper did not become running")
+}
+
+private struct ActualRawARMSerialReceipt {
+    let text: String
+    let cursor: DoryMachineSerialConsoleCursor
+}
+
+private func verifyActualRawARMAlpineSerialMarker(
+    _ manager: MachineManager,
+    id: String,
+    marker: String,
+    cursor initialCursor: DoryMachineSerialConsoleCursor? = nil,
+    timeout: TimeInterval = 180
+) throws -> ActualRawARMSerialReceipt {
+    let deadline = Date().addingTimeInterval(timeout)
+    var cursor = initialCursor ?? DoryMachineSerialConsoleCursor()
+    var output = Data()
+    var sentLogin = false
+    var sentMarkerCommand = false
+    let requireMarkerFromCurrentBoot = initialCursor != nil
+    while Date() < deadline {
+        if let status = manager.status(id: id), status.state == .failed {
+            throw MachineManagerError.persistence(status.lastError ?? "actual raw ARM helper failed before serial marker")
+        }
+        do {
+            let batch = try manager.serialConsole(id: id, cursor: cursor)
+            if requireMarkerFromCurrentBoot && batch.snapshotRequired {
+                output.removeAll(keepingCapacity: true)
+                sentLogin = false
+                sentMarkerCommand = false
+            }
+            output.append(batch.bytes)
+            cursor = batch.cursor
+            let text = String(data: output, encoding: .utf8) ?? "<non-utf8 serial output>"
+            if !sentLogin && (text.contains("localhost login:") || text.contains("login:")) {
+                try manager.writeSerialConsole(id: id, data: Data("root\n".utf8))
+                sentLogin = true
+            }
+            if sentLogin && !sentMarkerCommand && (text.contains("localhost:~#") || text.contains("# ")) {
+                let command = "cat /root/dory-cold-boot-sentinel && printf 'DORY_%s\n' COLD_REOPEN_VERIFIED\n"
+                try manager.writeSerialConsole(id: id, data: Data(command.utf8))
+                sentMarkerCommand = true
+                output.removeAll(keepingCapacity: true)
+                continue
+            }
+            if text.contains(marker) && (!requireMarkerFromCurrentBoot || sentMarkerCommand) {
+                return ActualRawARMSerialReceipt(text: text, cursor: cursor)
+            }
+        } catch {
+            if Date() >= deadline { throw error }
+        }
+        Thread.sleep(forTimeInterval: 0.25)
+    }
+    let text = String(data: output, encoding: .utf8) ?? "<non-utf8 serial output>"
+    throw MachineManagerError.persistence("actual raw ARM serial marker \(marker) not observed; serial tail: \(text.suffix(2048))")
 }
 
 private final class ProductionCallCounter: @unchecked Sendable {
@@ -3608,11 +3942,16 @@ final class ProductionTrustFixture: @unchecked Sendable {
         helperLifetimeSeconds: UInt = 30,
         authenticatedRuntime: Bool = false,
         snapshotQuiesceFailure: Bool = false,
+        actualRawHelperExecutablePath: String? = nil,
+        actualRawHelperGVProxyPath: String? = nil,
+        actualARMVirtFirmwareBundlePath: String? = nil,
+        fixtureRootOverride: URL? = nil,
+        requiresReadyHandoffOverride: Bool? = nil,
         agentConnector: @escaping MachineManager.AgentConnector = {
             try LocalAgentControl.connect(socketPath: $0)
         }
     ) throws {
-        let fixtureRoot = URL(fileURLWithPath: "/Users/Shared", isDirectory: true).appendingPathComponent(
+        let fixtureRoot = fixtureRootOverride ?? URL(fileURLWithPath: "/Users/Shared", isDirectory: true).appendingPathComponent(
             "\(authenticatedRuntime ? "dory-du" : "dory-production-trust")-\(UUID().uuidString)", isDirectory: true
         )
         let helperData: Data
@@ -3640,7 +3979,11 @@ final class ProductionTrustFixture: @unchecked Sendable {
         } else {
             helperData = Data("#!/bin/sh\nexec /bin/sleep \(helperLifetimeSeconds)\n".utf8)
         }
-        helperDigest = Self.digest(helperData)
+        if let actualRawHelperExecutablePath {
+            helperDigest = try DoryComponentCatalogVerifier.fileDigest(actualRawHelperExecutablePath)
+        } else {
+            helperDigest = Self.digest(helperData)
+        }
         hostState = ProductionHostState(host)
         // The production broker deliberately rejects symlinked ancestors and group/world-
         // writable user-owned ancestors. `/Users/Shared` is a root-owned sticky directory, which
@@ -3654,20 +3997,46 @@ final class ProductionTrustFixture: @unchecked Sendable {
         let state = URL(fileURLWithPath: drive.machinesDirectory, isDirectory: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: state.path)
         let vz = root.appendingPathComponent("dory-vmm").path
-        let raw = root.appendingPathComponent("dory-hv").path
-        for path in [vz, raw] {
-            try helperData.write(to: URL(fileURLWithPath: path))
-            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: path)
+        let raw = actualRawHelperExecutablePath ?? root.appendingPathComponent("dory-hv").path
+        try helperData.write(to: URL(fileURLWithPath: vz))
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: vz)
+        if actualRawHelperExecutablePath == nil {
+            try helperData.write(to: URL(fileURLWithPath: raw))
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: raw)
         }
-        let firmwarePath = root.appendingPathComponent("armvirt-firmware").path
-        try makeARMVirtFirmwareTestBundle(at: firmwarePath)
+        let acceleratedDesktopArguments: [String]
+        if actualRawHelperExecutablePath != nil {
+            guard let actualRawHelperGVProxyPath,
+                  FileManager.default.isExecutableFile(atPath: actualRawHelperGVProxyPath) else {
+                throw MachineManagerError.persistence("actual raw ARM helper fixture requires executable gvproxy")
+            }
+            acceleratedDesktopArguments = ["desktop", "--gvproxy", actualRawHelperGVProxyPath]
+        } else {
+            acceleratedDesktopArguments = []
+        }
+        let firmwarePath = actualARMVirtFirmwareBundlePath ?? root.appendingPathComponent("armvirt-firmware").path
+        if actualARMVirtFirmwareBundlePath == nil {
+            try makeARMVirtFirmwareTestBundle(at: firmwarePath)
+        }
+        let usesActualRawHelper = actualRawHelperExecutablePath != nil
+        let defaultStartupRestartPolicy = HvRestartPolicy(
+            maxRestarts: 4,
+            delaySeconds: 0.25,
+            maximumDelaySeconds: 2,
+            stableRunSeconds: 0
+        )
         machineConfiguration = MachineManagerConfiguration(
             vmmExecutablePath: vz,
             acceleratedDesktopExecutablePath: raw,
             armVirtFirmwareBundlePath: firmwarePath,
             stateDirectory: state.path,
             runtimeDirectory: root.appendingPathComponent("runtime").path,
-            requiresReadyHandoff: authenticatedRuntime
+            acceleratedDesktopBaseArguments: acceleratedDesktopArguments,
+            logDirectory: root.appendingPathComponent("logs").path,
+            requiresReadyHandoff: requiresReadyHandoffOverride ?? authenticatedRuntime,
+            handoffReadyTimeoutSeconds: usesActualRawHelper ? 120 : 60,
+            desktopHandoffReadyTimeoutSeconds: usesActualRawHelper ? 120 : 180,
+            startupRestartPolicy: usesActualRawHelper ? .none : defaultStartupRestartPolicy
         )
         runtimeBuildIdentifier = "sha256:\(helperDigest)"
         mediaPath = root.appendingPathComponent("qualified-linux.boot").path
