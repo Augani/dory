@@ -1251,7 +1251,14 @@ enum DoryPCMode {
             _ tier: String,
             _ diagnostics: DoryPCJITCacheStatistics
         ) -> String {
-            "jit progress tier=\(tier) "
+            let hotSites = diagnostics.negativeCacheHotSites.prefix(5).map { site in
+                let bytes = site.instructionBytes.prefix(15).map {
+                    String(format: "%02x", $0)
+                }.joined()
+                return "{rip=\(String(site.guestRIP, radix: 16)),cpl=\(site.privilegeLevel),"
+                    + "bytes=\(bytes),reason=\(site.declineReason.rawValue),hits=\(site.hitCount)}"
+            }.joined(separator: ",")
+            return "jit progress tier=\(tier) "
                 + "recent-hits=\(diagnostics.recentLookupHits) "
                 + "dictionary-hits=\(diagnostics.dictionaryLookupHits) "
                 + "misses=\(diagnostics.lookupMisses) "
@@ -1272,7 +1279,8 @@ enum DoryPCMode {
                 + "generation-mismatches=\(diagnostics.codeGenerationMismatches) "
                 + "chain-calls=\(diagnostics.chainedExecutionCalls) "
                 + "chain-requested=\(diagnostics.chainedRequestedInstructions) "
-                + "chain-retired=\(diagnostics.chainedRetiredInstructions)"
+                + "chain-retired=\(diagnostics.chainedRetiredInstructions) "
+                + "negative-top=[\(hotSites)]"
         }
 
         private func requestGuestShutdown() {
