@@ -1,0 +1,28 @@
+{
+  "baseHead": "a2f42aa9f84dbd189b719273be44d43f400f468e",
+  "kind": "native-bsr-memory-source",
+  "logs": {
+    "dory-arm64-baseline-jit-bsr-memory.log": "4febabe22ca4b09234ba5bf42c43c75bd6a60ae2c6a380e2f8dc92079d98b602",
+    "dory-jit-short-replacement-after-bsr-memory.log": "ee1bbd05b641c9804e708a0eadbd6bbd1ebef4186c40b6445d52accd4a861705"
+  },
+  "measuredHotSite": {
+    "bytes": "4c0fbd3552991f02",
+    "hitsAt1500s": 2537837,
+    "rip": "0xffffffff9e55209e",
+    "run": "pc-production-next-20260905-2330/run-20260905230107",
+    "symbol": "timekeeping_advance+0x9e",
+    "verdictBeforePatch": "nativeEmitter decline; current source only admitted register bit-scan sources"
+  },
+  "sharedMatchesIsolated": true,
+  "sharedSourceHashes": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "95c6b4ecff13f25468ab3cc802a1a498e4eb80f4f72f01e3eaaf8df6b6f5da39",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "0bb696330ae3bc273bcb17b682d9c4b5706fc2f67d250da31933c37edc040718",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "58a79afe190ab3e8982f8ff42cb5e62a45964bfb5fc01cfa069fb25920dacd29"
+  },
+  "sourceHashes": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "95c6b4ecff13f25468ab3cc802a1a498e4eb80f4f72f01e3eaaf8df6b6f5da39",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "0bb696330ae3bc273bcb17b682d9c4b5706fc2f67d250da31933c37edc040718",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "58a79afe190ab3e8982f8ff42cb5e62a45964bfb5fc01cfa069fb25920dacd29"
+  },
+  "summary": "Admit 32/64-bit BSF/BSR memory sources through restartable native memory reads; retain 16-bit fallback."
+}

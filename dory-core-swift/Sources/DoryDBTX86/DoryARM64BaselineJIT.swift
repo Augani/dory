@@ -448,16 +448,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
     into words: inout [UInt32]
   ) -> Bool {
     guard case .register(let target) = destination,
-      case .register(let origin) = source,
       target.bank == "x86.gpr", target.index < 16,
-      target.width == .i32 || target.width == .i64,
-      origin.bank == "x86.gpr", origin.index < 16, origin.width == target.width
+      target.width == .i32 || target.width == .i64
     else { return false }
 
     let is64Bit = target.width == .i64
-    words.append(is64Bit
-      ? encodeLoad64(register: 9, base: 0, byteOffset: Int(origin.index) * 8)
-      : encodeLoad32(register: 9, base: 0, byteOffset: Int(origin.index) * 8))
+    guard load(source, matching: target.width, into: 9, words: &words) else { return false }
     words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(target.index) * 8))
     if reverse {
       words.append(encodeCountLeadingZeros(is64Bit: is64Bit, source: 9, destination: 11))

@@ -729,10 +729,16 @@ public struct DoryX86IRTranslator: Sendable {
         return false
       }
     case .bitScan(_, let destination, let source):
-      guard case .register(let target) = destination,
-        case .register(let origin) = source, origin.width == target.width
-      else { return false }
-      return isJITGeneralRegister(target) && isJITGeneralRegister(origin)
+      guard case .register(let target) = destination else { return false }
+      guard isJITGeneralRegister(target) else { return false }
+      switch source {
+      case .register(let origin):
+        return origin.width == target.width && isJITGeneralRegister(origin)
+      case .memory(let address, let width):
+        return width == target.width && isJITMemoryAddress(address)
+      case .immediate:
+        return false
+      }
     case .byteSwap(let operand):
       guard case .register(let register) = operand else { return false }
       return isJITGeneralRegister(register)

@@ -3935,6 +3935,126 @@ import Testing
     #endif
   }
 
+  @Test func bitScanMemorySourcesMatchInterpreterAcrossTiers() throws {
+    #if arch(arm64)
+      struct Case {
+        let bytes: [UInt8]
+        let rip: UInt64
+        let registers: DoryX86GeneralRegisters
+        let address: UInt64
+        let byteCount: Int
+      }
+      let cases: [Case] = [
+        .init(
+          bytes: [0x4C, 0x0F, 0xBD, 0x35, 0x78, 0x00, 0x00, 0x00],
+          rip: 0x1000,
+          registers: .init(r14: 0xFACE_B00C_1234_5678),
+          address: 0x1080,
+          byteCount: 8
+        ),
+        .init(
+          bytes: [0x0F, 0xBC, 0x08],  // bsf ecx,dword ptr [rax]
+          rip: 0,
+          registers: .init(rax: 0x80, rcx: 0xABCD_EF00_1234_5678),
+          address: 0x80,
+          byteCount: 4
+        ),
+        .init(
+          bytes: [0x48, 0x0F, 0xBD, 0x00],  // bsr rax,qword ptr [rax]: address/destination alias
+          rip: 0,
+          registers: .init(rax: 0x88),
+          address: 0x88,
+          byteCount: 8
+        ),
+      ]
+      let values = [UInt64(0), 1, 2, 0x8000_0000, 0x8000_0000_0000_0000, UInt64.max]
+      let flags: DoryX86RFLAGS = [
+        .reservedOne, .carry, .parity, .auxiliaryCarry, .sign, .direction, .interruptEnable,
+        .overflow,
+      ]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          optimization: optimization
+        )
+        var addressSpaceID = UInt64(optimization == .baseline ? 0x5000 : 0x6000)
+        for testCase in cases {
+          for value in values {
+            let maskedValue = testCase.byteCount == 4 ? value & 0xFFFF_FFFF : value
+            let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x1200)
+            let translatedMemory = try DoryX86ByteArrayMemory(byteCount: 0x1200)
+            for memory in [interpretedMemory, translatedMemory] {
+              try memory.write(at: testCase.rip, bytes: testCase.bytes)
+              try memory.writeScalar(at: testCase.address, value: maskedValue, byteCount: testCase.byteCount)
+            }
+            let initial = try DoryX86ArchitecturalState(
+              registers: testCase.registers,
+              rip: testCase.rip,
+              rflags: flags
+            )
+            var interpreted = initial
+            let decoded = try DoryX86Decoder().decode(
+              testCase.bytes, at: testCase.rip, mode: .long64)
+            #expect(DoryX86Interpreter().step(
+              state: &interpreted,
+              memory: interpretedMemory,
+              mode: .long64
+            ) == .retired(decoded))
+
+            var translated = initial
+            addressSpaceID &+= 1
+            let execution = try #require(executor.execute(
+              bytes: testCase.bytes,
+              at: testCase.rip,
+              mode: .long64,
+              addressSpaceID: addressSpaceID,
+              maximumInstructions: 1,
+              state: &translated,
+              memory: translatedMemory
+            ))
+            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(execution.block.requiresMemoryCallbacks)
+            #expect(translated == interpreted)
+            #expect(try translatedMemory.read(at: 0, byteCount: 0x1200)
+              == interpretedMemory.read(at: 0, byteCount: 0x1200))
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func bitScanMemorySourceFaultLeavesArchitecturalStateRestartable() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x48, 0x0F, 0xBD, 0x00]  // bsr rax,qword ptr [rax]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x80, r14: 0x1234_5678_9ABC_DEF0),
+        rip: 0,
+        rflags: [.reservedOne, .carry, .direction, .overflow]
+      )
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x40)
+        try memory.write(at: 0, bytes: bytes)
+        var state = initial
+        let execution = try #require(DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          optimization: optimization
+        ).execute(
+          bytes: bytes,
+          at: 0,
+          mode: .long64,
+          addressSpaceID: UInt64(0x7000 + (optimization == .baseline ? 0 : 1)),
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        ))
+        #expect(execution.block.tier.rawValue == optimization.rawValue)
+        #expect(execution.block.requiresMemoryCallbacks)
+        #expect(execution.exitCode == .interpreter)
+        #expect(state == initial)
+      }
+    #endif
+  }
+
   @Test func nativeTranslationSpansMeasuredKernelReverseBitScanSlice() throws {
     let bytes: [UInt8] = [
       0x8B, 0x7E, 0x04,  // mov edi,[rsi+4]
@@ -3970,12 +4090,10 @@ import Testing
     }
   }
 
-  @Test func bitScanCoverageExcludes16BitAndMemoryForms() throws {
+  @Test func bitScanCoverageExcludes16BitFormsAndInvalidRegisters() throws {
     let excluded: [[UInt8]] = [
       [0x66, 0x0F, 0xBC, 0xC8],  // bsf cx,ax
       [0x66, 0x0F, 0xBD, 0xC8],  // bsr cx,ax
-      [0x0F, 0xBC, 0x08],  // bsf ecx,[rax]
-      [0x0F, 0xBD, 0x08],  // bsr ecx,[rax]
     ]
     for bytes in excluded {
       let block = try DoryX86IRTranslator().translate(bytes, at: 0, mode: .long64)
