@@ -1,0 +1,34 @@
+{
+  "schema": "dory.pc-late-guest-agent@1",
+  "baseCommit": "912e64783e3704109e012ed9fe86c08bdddd5e39",
+  "sourceSHA256": {
+    "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift": "5f0a8592e15dbab21576acf3306f111fd11cce668531a8542c43663c70febf03"
+  },
+  "trigger": "Frozen production x86 runner exhausted its 90-second optional-service setup window before Linux reached its guest agent.",
+  "behavior": "Keep retrying while VM runs; after 90 seconds report unavailability once and back off 5 seconds between bounded RPC attempts. Monotonic time controls delays. Stop interrupts backoff within 250 ms; existing RPC timeouts still bound in-flight calls.",
+  "validation": {
+    "testsPassed": 17,
+    "suites": [
+      "DoryPCDesktopAdapterTests",
+      "DesktopGuestReadinessBoundaryTests"
+    ],
+    "build": "dory-hv executable linked in isolated checkout with Xcode 26.6 RC",
+    "logs": [
+      {
+        "log": "pc-late-agent-build-tests.log.gz",
+        "rawSHA256": "b7c0f1eeaf6996e86db982be99e25fb492568d14d7aae8793fb3f28f8ea36d44",
+        "publishedUncompressedSHA256": "b7c0f1eeaf6996e86db982be99e25fb492568d14d7aae8793fb3f28f8ea36d44"
+      },
+      {
+        "log": "pc-late-agent-old-run.log.gz",
+        "rawSHA256": "f6e1b4dbcdc1aac53f18509f5db0ac4e4eef2599d8e8410df1dd047d2e050bbd",
+        "publishedUncompressedSHA256": "72e6a30b50c8fff2757b4729ba8e5151eb72f1149f42109ba546458706113527"
+      }
+    ]
+  },
+  "limitations": [
+    "Existing adapter/readiness tests are regression coverage, not a delayed-agent integration test.",
+    "The live VM uses the previous frozen runner; its continued boot does not validate the changed retry loop.",
+    "Installer-first service preparation and reinitialization after machine reset are not changed by this patch."
+  ]
+}

@@ -855,9 +855,10 @@ enum DoryPCMode {
             let machineState = self.machineState
             let directoryShares = configuration.shares
             guestServiceQueue.async {
-                let deadline = Date().addingTimeInterval(90)
-                var lastError: Error?
-                while !machineState.isStopping, Date() < deadline {
+                let clock = ContinuousClock()
+                let startedAt = clock.now
+                var reportedUnavailable = false
+                while !machineState.isStopping {
                     do {
                         let control = DorydKit.AgentControl(configuration: .init(
                             directSocketPath: agentSocketPath
@@ -917,17 +918,24 @@ enum DoryPCMode {
                         Self.log("requested guest services are ready")
                         return
                     } catch {
-                        lastError = error
-                        Thread.sleep(forTimeInterval: 0.25)
+                        guard !machineState.isStopping else { return }
+                        if !reportedUnavailable, clock.now - startedAt >= .seconds(90) {
+                            reportedUnavailable = true
+                            Self.log(
+                                "optional guest services are unavailable; retrying while the VM runs: \(error)"
+                            )
+                        }
+                        // Translated kernels and freshly installed tools can become ready well
+                        // after the initial boot window. Back off without abandoning integration,
+                        // and let shutdown interrupt the wait between RPC attempts.
+                        let retryAt = clock.now.advanced(
+                            by: reportedUnavailable ? .seconds(5) : .milliseconds(250)
+                        )
+                        while !machineState.isStopping, clock.now < retryAt {
+                            Thread.sleep(forTimeInterval: 0.25)
+                        }
                     }
                 }
-                guard !machineState.isStopping else { return }
-                let failure = lastError ?? VMError.bootFailure(
-                    "DoryPC guest services did not become ready"
-                )
-                Self.log(
-                    "optional guest services are unavailable: \(failure)"
-                )
             }
         }
 
