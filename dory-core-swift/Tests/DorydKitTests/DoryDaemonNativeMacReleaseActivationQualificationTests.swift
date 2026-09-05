@@ -238,14 +238,15 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
             let call: NativeMacReleaseThreadCall<DoryMachineStatus> = NativeMacReleaseThreadCall.start(name: label) {
                 try manager.start(id: machineID, operationID: operationID)
             }
-            _ = try waitForReleaseNativeMacStatus(
+            let running = try waitForReleaseNativeMacStatus(
                 manager,
                 id: machineID,
                 timeout: 240,
                 label: label,
                 failingWhenFinished: call
             ) { $0.state == .running }
-            return try call.value()
+            _ = try call.value()
+            return running
         }
 
         func resumeAndWait(
@@ -256,14 +257,15 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
             let call: NativeMacReleaseThreadCall<DoryMachineStatus> = NativeMacReleaseThreadCall.start(name: label) {
                 try manager.resume(id: machineID, operationID: operationID)
             }
-            _ = try waitForReleaseNativeMacStatus(
+            let running = try waitForReleaseNativeMacStatus(
                 manager,
                 id: machineID,
                 timeout: 240,
                 label: label,
                 failingWhenFinished: call
             ) { $0.state == .running }
-            return try call.value()
+            _ = try call.value()
+            return running
         }
 
         func suspend(
