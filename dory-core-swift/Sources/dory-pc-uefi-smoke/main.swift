@@ -414,6 +414,84 @@ private func displayDeviceDiagnostics(
   ]
 }
 
+private func interruptControllerDiagnostics(_ machine: DoryPCDirectKernelMachine) -> [String: Any] {
+  let pic = machine.legacyPIC.snapshot()
+  let pit = machine.legacyPIT.snapshot()
+  let hpet = machine.hpet.snapshot()
+  return [
+    "legacyPIC": [
+      "masterVectorOffset": pic.masterVectorOffset,
+      "slaveVectorOffset": pic.slaveVectorOffset,
+      "masterMask": pic.masterMask,
+      "slaveMask": pic.slaveMask,
+      "masterRequest": pic.masterRequest,
+      "slaveRequest": pic.slaveRequest,
+      "masterInService": pic.masterInService,
+      "slaveInService": pic.slaveInService,
+      "masterLevelTriggered": pic.masterLevelTriggered,
+      "slaveLevelTriggered": pic.slaveLevelTriggered,
+      "masterAssertedLines": pic.masterAssertedLines,
+      "slaveAssertedLines": pic.slaveAssertedLines,
+    ],
+    "legacyPIT": [
+      "mode": String(describing: pit.mode),
+      "reload": pit.reload,
+      "current": pit.current,
+      "armed": pit.armed,
+    ],
+    "localAPICs": machine.localAPICs.map(localAPICDiagnostics),
+    "ioAPIC": machine.ioAPIC.snapshot().map(ioAPICPinDiagnostics),
+    "hpet": [
+      "enabled": hpet.enabled,
+      "legacyReplacement": hpet.legacyReplacement,
+      "mainCounter": hpet.mainCounter,
+      "interruptStatus": hpet.interruptStatus,
+      "timers": hpet.timers.enumerated().map { index, timer in
+        [
+          "index": index,
+          "configuration": timer.configuration,
+          "comparator": timer.comparator,
+          "period": timer.period,
+          "armed": timer.armed,
+        ] as [String: Any]
+      },
+    ],
+  ]
+}
+
+private func localAPICDiagnostics(_ apic: DoryPCLocalAPIC) -> [String: Any] {
+  let snapshot = apic.snapshot()
+  return [
+    "apicID": snapshot.apicID,
+    "softwareEnabled": snapshot.softwareEnabled,
+    "spuriousVector": snapshot.spuriousVector,
+    "taskPriority": snapshot.taskPriority,
+    "interruptRequest": snapshot.interruptRequest.sorted(),
+    "inService": snapshot.inService.sorted(),
+    "levelTriggered": snapshot.levelTriggered.sorted(),
+    "timer": [
+      "vector": snapshot.timer.vector,
+      "masked": snapshot.timer.masked,
+      "mode": snapshot.timer.mode.rawValue,
+      "initialCount": snapshot.timer.initialCount,
+      "currentCount": snapshot.timer.currentCount,
+    ],
+  ]
+}
+
+private func ioAPICPinDiagnostics(_ pin: DoryPCIOAPICPinSnapshot) -> [String: Any] {
+  [
+    "pin": pin.pin,
+    "vector": pin.route.vector,
+    "destinationAPICID": pin.route.destinationAPICID,
+    "masked": pin.route.masked,
+    "levelTriggered": pin.route.levelTriggered,
+    "activeLow": pin.route.activeLow,
+    "asserted": pin.asserted,
+    "remoteIRR": pin.remoteIRR,
+  ]
+}
+
 private func queueIndex(memory: any DoryX86Memory, address: UInt64) -> String? {
   guard address > 2, let bytes = try? memory.read(at: address, byteCount: 2) else { return nil }
   let value = UInt16(bytes[0]) | UInt16(bytes[1]) << 8
@@ -784,6 +862,7 @@ private func run() throws {
     "displayDevice": displayDevice,
     "displayFrameCount": display.frameCount,
     "lastDisplayFrame": lastDisplayFrame,
+    "interruptControllers": interruptControllerDiagnostics(composed.machine),
     "rax": state.map { hexadecimal($0.registers.rax) } ?? "unavailable",
     "rbx": state.map { hexadecimal($0.registers.rbx) } ?? "unavailable",
     "rcx": state.map { hexadecimal($0.registers.rcx) } ?? "unavailable",

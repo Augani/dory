@@ -275,6 +275,13 @@ public struct DoryPCIOAPICRoute: Codable, Sendable, Hashable {
   }
 }
 
+public struct DoryPCIOAPICPinSnapshot: Codable, Sendable, Hashable {
+  public let pin: Int
+  public let route: DoryPCIOAPICRoute
+  public let asserted: Bool
+  public let remoteIRR: Bool
+}
+
 /// DoryPC-v1 IOAPIC routing core with edge detection and level-triggered remote-IRR behavior.
 public final class DoryPCIOAPIC: @unchecked Sendable {
   private struct PinState {
@@ -375,6 +382,19 @@ public final class DoryPCIOAPIC: @unchecked Sendable {
   public func route(for pin: Int) throws -> DoryPCIOAPICRoute {
     guard pins.indices.contains(pin) else { throw DoryPCAPICError.invalidPin(pin) }
     return lock.withLock { pins[pin].route }
+  }
+
+  public func snapshot() -> [DoryPCIOAPICPinSnapshot] {
+    lock.withLock {
+      pins.indices.map { index in
+        .init(
+          pin: index,
+          route: pins[index].route,
+          asserted: pins[index].asserted,
+          remoteIRR: pins[index].remoteIRR
+        )
+      }
+    }
   }
 
 }
