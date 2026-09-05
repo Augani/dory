@@ -143,6 +143,7 @@ final class DorydConfigurationTests: XCTestCase {
 
         let hv = try XCTUnwrap(config.hvProcess)
         XCTAssertEqual(hv.executablePath, helper)
+        XCTAssertEqual(hv.environment["HOME"], directory + "/home")
         XCTAssertEqual(hv.restartPolicy, HvRestartPolicy(maxRestarts: 5, delaySeconds: 0.1))
         XCTAssertEqual(hv.logPath, directory + "/state/dory-hv.log")
         XCTAssertEqual(hv.arguments.prefix(2), ["engine", "--engine-sock"])

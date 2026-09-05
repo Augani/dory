@@ -503,6 +503,7 @@ public struct DorydEnvironment: Sendable {
         var process = HvProcessConfiguration(
             executablePath: helper,
             arguments: arguments,
+            environment: ["HOME": home],
             logPath: string("DORYD_HV_LOG") ?? "\(stateDirectory)/dory-hv.log",
             restartPolicy: HvRestartPolicy(
                 maxRestarts: int("DORYD_HV_RESTART_LIMIT") ?? 3,
