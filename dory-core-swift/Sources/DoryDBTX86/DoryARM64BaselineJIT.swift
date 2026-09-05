@@ -1587,7 +1587,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       emitImmediate(0xFF, register: 15, into: &words)
       words.append(encodeLogical(.and, left: 9, right: 15, destination: 9))
       emitImmediate(immediate & 0xFF, register: 10, into: &words)
-      guard emitLowByteBinaryFlags(.and, writesDestination: true, into: &words) else {
+      guard emitNarrowBinaryFlags(.and, writesDestination: true, into: &words) else {
         return false
       }
       // AH/CH/DH/BH replace only bits 8...15 of the containing GPR.
@@ -1609,6 +1609,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
         writesDestination: writesDestination,
         into: &words
       )
+    }
+    if case .memory(let address, width: .i16) = destination,
+      operation == .compare, !writesDestination,
+      case .immediate(let immediate, width: .i16) = source
+    {
+      guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
+      emitMemoryRead(addressRegister: 12, width: .i16, resultRegister: 9, words: &words)
+      emitImmediate(immediate & 0xFFFF, register: 10, into: &words)
+      return emitNarrowBinaryFlags(.compare, writesDestination: false, width: .i16, into: &words)
     }
     if case .memory(let address, width: .i8) = destination,
       writesDestination,
@@ -1724,7 +1733,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       else { return false }
     }
 
-    guard emitLowByteBinaryFlags(
+    guard emitNarrowBinaryFlags(
       operation,
       writesDestination: writesDestination,
       into: &words
@@ -1749,7 +1758,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
     emitMemoryRead(addressRegister: 12, width: .i8, resultRegister: 9, words: &words)
     guard loadLowByteOperand(source, into: 10, words: &words),
-      emitLowByteBinaryFlags(
+      emitNarrowBinaryFlags(
         .and,
         writesDestination: true,
         into: &words
@@ -1769,20 +1778,23 @@ public struct DoryARM64BaselineEmitter: Sendable {
     guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
     emitMemoryRead(addressRegister: 12, width: .i8, resultRegister: 9, words: &words)
     guard loadLowByteOperand(source, into: 10, words: &words) else { return false }
-    return emitLowByteBinaryFlags(
+    return emitNarrowBinaryFlags(
       operation,
       writesDestination: false,
       into: &words
     )
   }
 
-  private func emitLowByteBinaryFlags(
+  private func emitNarrowBinaryFlags(
     _ operation: DoryIRBinaryOperation,
     writesDestination: Bool,
+    width: DoryIRIntegerWidth = .i8,
     into words: inout [UInt32]
   ) -> Bool {
+    guard width == .i8 || width == .i16 else { return false }
+    let signShift: UInt32 = width == .i8 ? 24 : 16
     // Put the x86 sign bit at the ARM32 sign position before setting NZCV. This makes C, Z, N,
-    // and V describe an exact eight-bit operation. The unshifted operands and result remain in
+    // and V describe an exact eight- or sixteen-bit operation. The unshifted operands and result remain in
     // x9, x10, and x11 so the shared x86 auxiliary-carry and parity synthesis stays exact.
     words.append(
       encodeLogical(
@@ -1790,7 +1802,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
         is64Bit: false,
         left: 31,
         right: 9,
-        shiftAmount: 24,
+        shiftAmount: signShift,
         destination: 12
       ))
     words.append(
@@ -1799,7 +1811,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
         is64Bit: false,
         left: 31,
         right: 10,
-        shiftAmount: 24,
+        shiftAmount: signShift,
         destination: 13
       ))
     switch operation {
@@ -1818,7 +1830,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
         is64Bit: false,
         left: 31,
         right: 11,
-        shiftAmount: 24,
+        shiftAmount: signShift,
         logicalRightShift: true,
         destination: 11
       ))

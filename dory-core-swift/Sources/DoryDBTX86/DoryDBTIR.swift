@@ -643,6 +643,12 @@ public struct DoryX86IRTranslator: Sendable {
       {
         return true
       }
+      if case .memory(let address, width: .i16) = destination,
+        operation == .compare, !writesDestination,
+        case .immediate(_, width: .i16) = source
+      {
+        return isJITMemoryAddress(address)
+      }
       let targetWidth: DoryIRIntegerWidth
       switch destination {
       case .register(let target) where isJITGeneralRegister(target):

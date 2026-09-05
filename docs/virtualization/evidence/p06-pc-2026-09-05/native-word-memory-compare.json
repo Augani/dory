@@ -1,0 +1,30 @@
+{
+  "scope": "Native 16-bit memory compare with immediate operand; shared narrow-width flag synthesis",
+  "baseHEAD": "17c511b3ab7bf1249cc122990ec2d65e7b039210",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "ce6250030998bc747788b377317684714a7e8077c38bfceb4546446141f1e21a",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "5a6c323bd786eebced306e0756e9d00b3e0565cdea842d06d855bb6d1e5fd502",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryJITWordMemoryCompareTests.swift": "d4e130440f0189e0317fb0d0e3afbb6f11ccadda22674c1827e60b62ade8ebc9"
+  },
+  "qualification": {
+    "result": "117 tests in 4 suites passed",
+    "coverage": [
+      "GS-relative RIP addressing and sign-extended immediate8 cases, with flag-boundary word values, baseline and optimizing tiers.",
+      "Complete architectural state equals interpreter and memory remains unchanged.",
+      "A two-byte operand crossing the mapped boundary declines to interpreter with register/flag/RIP state intact.",
+      "Existing byte AND/CMP/TEST and high-byte AND suites pass after shared flag-helper generalization."
+    ],
+    "privateLog": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/word-memory-compare.log",
+    "logSHA256": "ec82dfed15eb8882c2f8943e0530506beb4fabdeb9a6a16c14c0793cc9a8d9ad"
+  },
+  "measuredTrigger": {
+    "prefix": "6566833d",
+    "privateSnapshot": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/word-memory-compare-hot-site.log",
+    "snapshotSHA256": "4e3ef01bdf31722848b30166a10b6f269f53e35897295a65e6f075d09d01f46b"
+  },
+  "limitations": [
+    "No guest boot-completion or measured speedup claim.",
+    "Frozen e13c89b0e diagnostic runner does not contain this later optimization.",
+    "Other 16-bit arithmetic forms remain unchanged."
+  ]
+}
