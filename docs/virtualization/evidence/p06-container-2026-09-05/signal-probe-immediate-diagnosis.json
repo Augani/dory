@@ -1,0 +1,31 @@
+{
+  "scope": "Diagnosis of the private sigframe-roundtrip-amd64 probe; not FEX runtime qualification",
+  "binary": {
+    "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/disasm-178864-now/sigframe-roundtrip-amd64",
+    "sha256": "3bbcc433028535a3abf77c50ff5fd20683e823bc21279dfbc98b661a8f62933e"
+  },
+  "disassembly": {
+    "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/roundtrip-symbolic-immediate-root-disassembly.txt",
+    "sha256": "5798503a6c056cd90b97422cc3d15370bbccd0f1378ce05f07e3e704e087b70a"
+  },
+  "findings": [
+    {
+      "address": "0x2012b0",
+      "bytes": "8b142516000000",
+      "instruction": "mov edx, dword ptr [0x16]",
+      "meaning": "The success-message path reads memory at address22 instead of loading immediate length22."
+    },
+    {
+      "address": "0x201352",
+      "bytes": "8b142518000000",
+      "instruction": "mov edx, dword ptr [0x18]",
+      "meaning": "The failure-message path also dereferences a low address instead of loading immediate length24."
+    }
+  ],
+  "conclusion": "This probe can fault after its signal assertions independently of signal restoration. Its exit139 is insufficient evidence of a FEX signal-context defect.",
+  "nextAction": "Correct assembly immediate operands, verify resulting machine code, and rerun unchanged and edited context probes against identified FEX binaries.",
+  "limitations": [
+    "The inspected ELF is authoritative; a nearby original.S copy has different message length and is not asserted to be its exact source.",
+    "Does not establish that the FEX candidate is correct; SIGURG and concurrent Go workload failures remain unresolved."
+  ]
+}
