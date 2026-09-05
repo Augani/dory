@@ -222,10 +222,22 @@ public struct VmmReadyMessage: Sendable, Equatable, Codable {
 public final class VmmHandoff: @unchecked Sendable {
     public let ready: VmmReadyMessage
     public let fileDescriptors: [Int32]
+    let peerIdentity: DoryApplicationLaunchPeerIdentity?
 
     public init(ready: VmmReadyMessage, fileDescriptors: [Int32]) {
         self.ready = ready
         self.fileDescriptors = fileDescriptors
+        peerIdentity = nil
+    }
+
+    init(
+        ready: VmmReadyMessage,
+        fileDescriptors: [Int32],
+        peerIdentity: DoryApplicationLaunchPeerIdentity
+    ) {
+        self.ready = ready
+        self.fileDescriptors = fileDescriptors
+        self.peerIdentity = peerIdentity
     }
 
     /// A readiness refresh must not transfer descriptor ownership out of a handoff which may
@@ -240,6 +252,13 @@ public final class VmmHandoff: @unchecked Sendable {
                 throw VmmHandoffError.syscall("duplicate handoff descriptor", code)
             }
             copies.append(copy)
+        }
+        if let peerIdentity {
+            return VmmHandoff(
+                ready: ready,
+                fileDescriptors: copies,
+                peerIdentity: peerIdentity
+            )
         }
         return VmmHandoff(ready: ready, fileDescriptors: copies)
     }
@@ -277,7 +296,7 @@ public enum VmmHandoffError: Error, Sendable, CustomStringConvertible {
 public final class VmmHandoffServer: @unchecked Sendable {
     public typealias Handler = @Sendable (Result<VmmHandoff, Error>) -> Void
 
-    private static let receiveTimeoutSeconds: TimeInterval = 30
+    fileprivate static let receiveTimeoutSeconds: TimeInterval = 30
 
     public let path: String
     private let handler: Handler
@@ -336,7 +355,7 @@ public final class VmmHandoffServer: @unchecked Sendable {
             boundIdentity = (info.st_dev, info.st_ino)
             lock.unlock()
             queue.async { [weak self] in
-                self?.acceptOne(listenerFD: fd)
+                self?.acceptLoop(listenerFD: fd)
             }
         } catch {
             close(fd)
@@ -366,29 +385,45 @@ public final class VmmHandoffServer: @unchecked Sendable {
         }
     }
 
-    private func acceptOne(listenerFD: Int32) {
-        let accepted = accept(listenerFD, nil, nil)
-        if accepted < 0 {
-            lock.lock()
-            let wasRunning = self.listenerFD == listenerFD
-            lock.unlock()
-            if wasRunning {
-                handler(.failure(VmmHandoffError.syscall("accept", errno)))
+    private func acceptLoop(listenerFD: Int32) {
+        while isRunning(listenerFD: listenerFD) {
+            let accepted = accept(listenerFD, nil, nil)
+            if accepted < 0 {
+                if isRunning(listenerFD: listenerFD) {
+                    handler(.failure(VmmHandoffError.syscall("accept", errno)))
+                }
+                return
             }
-            return
-        }
-        defer { close(accepted) }
 
-        // Bound the receive so a peer that connects but never finishes sending can't wedge
-        // this queue (or a caller blocked on stop()) forever; recvmsg then fails with EAGAIN.
-        Self.setReceiveTimeout(fd: accepted, seconds: Self.receiveTimeoutSeconds)
-
-        do {
-            let handoff = try Self.receive(from: accepted)
-            handler(.success(handoff))
-        } catch {
-            handler(.failure(error))
+            do {
+                defer { close(accepted) }
+                // Bound the receive so a peer that connects but never finishes sending can't wedge
+                // this queue (or a caller blocked on stop()) forever; recvmsg then fails with EAGAIN.
+                Self.setReceiveTimeout(fd: accepted, seconds: Self.receiveTimeoutSeconds)
+                Self.setNoSigPipe(fd: accepted)
+                let peer = try DoryApplicationLaunchHandoffProtocol.peerIdentity(
+                    descriptor: accepted
+                )
+                let peerIdentity = DoryApplicationLaunchPeerIdentity(
+                    processIdentifier: peer.pid,
+                    auditToken: peer.auditToken
+                )
+                let handoff = try Self.receive(from: accepted, peerIdentity: peerIdentity)
+                var ack: UInt8 = 1
+                guard write(accepted, &ack, 1) == 1 else {
+                    throw VmmHandoffError.syscall("write(ack)", errno)
+                }
+                handler(.success(handoff))
+            } catch {
+                handler(.failure(error))
+            }
         }
+    }
+
+    private func isRunning(listenerFD: Int32) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return self.listenerFD == listenerFD
     }
 
     private static func setReceiveTimeout(fd: Int32, seconds: TimeInterval) {
@@ -397,12 +432,26 @@ public final class VmmHandoffServer: @unchecked Sendable {
         _ = setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
     }
 
-    private static func receive(from fd: Int32) throws -> VmmHandoff {
+
+    private static func setNoSigPipe(fd: Int32) {
+        var value: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &value, socklen_t(MemoryLayout<Int32>.size))
+    }
+
+    private static func receive(
+        from fd: Int32,
+        peerIdentity: DoryApplicationLaunchPeerIdentity
+    ) throws -> VmmHandoff {
         var data = [UInt8](repeating: 0, count: 16 * 1024)
-        var control = [UInt8](repeating: 0, count: cmsgSpace(MemoryLayout<Int32>.size * 8))
+        // XNU installs SCM_RIGHTS descriptors before truncating the returned control bytes.
+        // Receive the full kernel control bound (MCLBYTES in bsd/arm/param.h; enforced
+        // by sockargs in bsd/kern/uipc_syscalls.c), then enforce our eight-FD protocol limit.
+        // Sizing this buffer to the protocol limit can leak descriptors omitted by MSG_CTRUNC.
+        var control = [UInt8](repeating: 0, count: 2048)
         let dataCapacity = data.count
         let controlCapacity = control.count
         var controlLength = 0
+        var messageFlags: Int32 = 0
         let received: ssize_t = try data.withUnsafeMutableBytes { dataBuffer in
             try control.withUnsafeMutableBytes { controlBuffer in
                 var iov = iovec(iov_base: dataBuffer.baseAddress, iov_len: dataCapacity)
@@ -419,23 +468,40 @@ public final class VmmHandoffServer: @unchecked Sendable {
                     let count = recvmsg(fd, &message, 0)
                     guard count >= 0 else { throw VmmHandoffError.syscall("recvmsg", errno) }
                     controlLength = Int(message.msg_controllen)
+                    messageFlags = message.msg_flags
                     return count
                 }
             }
         }
-        guard received > 0 else { throw VmmHandoffError.emptyMessage }
-
-        let payload = Data(data.prefix(Int(received)))
-        let ready: VmmReadyMessage
+        let descriptors = fileDescriptors(from: Array(control.prefix(controlLength)))
         do {
-            ready = try JSONDecoder().decode(VmmReadyMessage.self, from: payload)
+            guard descriptors.count <= 8,
+                  (messageFlags & (MSG_CTRUNC | MSG_TRUNC)) == 0 else {
+                throw VmmHandoffError.invalidReadyMessage
+            }
+            guard received > 0 else { throw VmmHandoffError.emptyMessage }
+
+            let payload = Data(data.prefix(Int(received)))
+            let ready: VmmReadyMessage
+            do {
+                ready = try JSONDecoder().decode(VmmReadyMessage.self, from: payload)
+            } catch {
+                throw VmmHandoffError.invalidJSON("\(error)")
+            }
+            guard ready.hasValidOperationIdentity else {
+                throw VmmHandoffError.invalidReadyMessage
+            }
+            return VmmHandoff(
+                ready: ready,
+                fileDescriptors: descriptors,
+                peerIdentity: peerIdentity
+            )
         } catch {
-            throw VmmHandoffError.invalidJSON("\(error)")
+            for descriptor in descriptors {
+                close(descriptor)
+            }
+            throw error
         }
-        guard ready.hasValidOperationIdentity else {
-            throw VmmHandoffError.invalidReadyMessage
-        }
-        return VmmHandoff(ready: ready, fileDescriptors: fileDescriptors(from: Array(control.prefix(controlLength))))
     }
 
     fileprivate static func unixAddress(path: String) throws -> sockaddr_un {
@@ -522,6 +588,23 @@ public enum VmmHandoffClient {
         }
         guard sent == payload.count else {
             throw VmmHandoffError.syscall("sendmsg", errno)
+        }
+        shutdown(fd, SHUT_WR)
+        var timeout = timeval(tv_sec: Int(VmmHandoffServer.receiveTimeoutSeconds), tv_usec: 0)
+        _ = setsockopt(
+            fd,
+            SOL_SOCKET,
+            SO_RCVTIMEO,
+            &timeout,
+            socklen_t(MemoryLayout<timeval>.size)
+        )
+        var ack: UInt8 = 0
+        let received = read(fd, &ack, 1)
+        if received < 0 {
+            throw VmmHandoffError.syscall("read(ack)", errno)
+        }
+        guard received == 1, ack == 1 else {
+            throw VmmHandoffError.emptyMessage
         }
     }
 }

@@ -1,0 +1,33 @@
+{
+  "scope": "Readiness SCM_RIGHTS rejection cleanup; not full GPU reset qualification",
+  "result": "2 XCTest tests passed including invalid identity and oversized transfers of9 and253 descriptors",
+  "kernelSources": [
+    "https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/uipc_syscalls.c",
+    "https://github.com/apple-oss-distributions/xnu/blob/main/bsd/arm/param.h"
+  ],
+  "finding": "44-byte receive control buffer returned cmsg_len48,MSG_CTRUNC with8visible descriptor numbers while9were installed. Receive2048-byte XNU kernel control bound, then reject more than8 descriptors and close all received copies.",
+  "artifacts": {
+    "source/dory-core-swift/Sources/DorydKit/VmmHandoff.swift": "a8d38f5cbd4285c5beedb42bc1944abcb306b37f0960f4b23233fc2b709caf62",
+    "source/dory-core-swift/Tests/DorydKitTests/VmmHandoffDescriptorRejectionTests.swift": "3fcecad23ede9456dbeb8fe981fa441edad181ad59d1f240340b4d406e954f06",
+    "logs/handoff-descriptor-kernel-bound.log": "03a866b52251e9f0dc449a7ef970d6ecbbd27b6b738614abc942b0a9565ce361",
+    "logs/handoff-descriptor-truncation-diagnostic.log": "43908c055abbb769db9e1fcda5c843c83208c3db349ae23ad377c18bd73c75ea",
+    "logs/handoff-descriptor-rejection-without-cleanup.log": "3819e443556a5c64dc2c2957ca9cb6fed4d30ad378de20e90859b876189e731e"
+  },
+  "applicationHandoff": {
+    "result": "19 XCTest passed:16existing application handoff tests and3descriptor regressions",
+    "scope": "Receive full kernel ancillary bound, close all received rights before rejecting invalid marker/count, reject unsolicited rights for expectedCount0",
+    "sourceSHA256": "c16df739a1f46acf4ff560de3ae54e78f6612f8fffa227dc998573a7287b811d",
+    "testsSHA256": "9a9c1e175f39e8b70bc74e87b0d07b9bb3e67dbb15c19896cd59acd0689b8f9a",
+    "logSHA256": "23804eca39451c1b3245ca1586e4ee04bf521522f2e8e59a8d3b1bbf47b90f9e"
+  },
+  "integratedTransportValidation": {
+    "result": "27 XCTest passed, 0failures",
+    "sourceHashes": {
+      "dory-core-swift/Sources/DorydKit/VmmHandoff.swift": "a8d38f5cbd4285c5beedb42bc1944abcb306b37f0960f4b23233fc2b709caf62",
+      "dory-core-swift/Sources/DorydKit/DoryApplicationLaunchHandoff.swift": "c16df739a1f46acf4ff560de3ae54e78f6612f8fffa227dc998573a7287b811d",
+      "dory-core-swift/Tests/DorydKitTests/VmmHandoffTests.swift": "26fd6814a7075a01da343f6b6a54a03399eae0cd0ba89e23ea56bbe6f86aaee5",
+      "dory-core-swift/Tests/DorydKitTests/VmmHandoffDescriptorRejectionTests.swift": "9a9c1e175f39e8b70bc74e87b0d07b9bb3e67dbb15c19896cd59acd0689b8f9a"
+    },
+    "logSHA256": "8c488549119a61b1a4d3164fb8f768ffb533383d700f9187aab065f74a6c2f5e"
+  }
+}

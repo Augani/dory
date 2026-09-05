@@ -381,6 +381,7 @@ public enum DoryRendererGenerationHandoffError: Error, Sendable, CustomStringCon
     case peerUserMismatch(expectedUID: uid_t, actualUID: uid_t)
     case rejected(String)
     case closed(String)
+    case security(String, OSStatus)
     case syscall(String, Int32)
 
     public var description: String {
@@ -397,6 +398,8 @@ public enum DoryRendererGenerationHandoffError: Error, Sendable, CustomStringCon
             return message.isEmpty ? "renderer generation handoff rejected" : message
         case let .closed(operation):
             return "renderer generation handoff channel closed during \(operation)"
+        case let .security(operation, status):
+            return "renderer generation handoff \(operation) failed with Security status \(status)"
         case let .syscall(operation, code):
             return "renderer generation handoff \(operation): \(String(cString: strerror(code)))"
         }
@@ -550,6 +553,15 @@ final class DoryRendererGenerationHandoffServer: @unchecked Sendable {
         self.path = path
         self.token = token
         self.handler = handler
+    }
+
+    static func makeToken() throws -> String {
+        var bytes = [UInt8](repeating: 0, count: DoryApplicationLaunchHandoffProtocol.tokenByteCount)
+        let status = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        guard status == errSecSuccess else {
+            throw DoryRendererGenerationHandoffError.security("random-token generation", status)
+        }
+        return bytes.map { String(format: "%02x", $0) }.joined()
     }
 
     var isRunning: Bool { lock.withLock { listener >= 0 } }
@@ -1416,17 +1428,8 @@ enum DoryApplicationLaunchHandoffProtocol {
         deadline: TransportDeadline? = nil
     ) throws -> [Int32] {
         let deadline = deadline ?? TransportDeadline(timeout: transferTimeoutSeconds)
-        if expectedCount == 0 {
-            let marker = try readExact(
-                count: 1,
-                from: socket,
-                operation: "descriptor marker",
-                deadline: deadline
-            )
-            guard marker.first == descriptorMarker else {
-                throw DoryApplicationLaunchHandoffError.invalidManifest
-            }
-            return []
+        guard (0...maximumDescriptorCount).contains(expectedCount) else {
+            throw DoryApplicationLaunchHandoffError.invalidManifest
         }
         while true {
             try waitUntilReady(
@@ -1438,7 +1441,7 @@ enum DoryApplicationLaunchHandoffProtocol {
             var marker: UInt8 = 0
             var control = [UInt8](
                 repeating: 0,
-                count: cmsgSpace(maximumDescriptorCount * MemoryLayout<Int32>.size)
+                count: 2048  // Full XNU control bound; avoid losing installed rights to truncation.
             )
             var controlLength = 0
             var messageFlags: Int32 = 0
@@ -1465,21 +1468,23 @@ enum DoryApplicationLaunchHandoffProtocol {
                 }
                 return (Int64(received), received < 0 ? errno : 0)
             }
+            var descriptors = fileDescriptors(from: Array(control.prefix(controlLength)))
+            defer { for descriptor in descriptors { Darwin.close(descriptor) } }
             switch outcome {
             case .value(1):
                 guard marker == descriptorMarker,
                       messageFlags & MSG_CTRUNC == 0 else {
                     throw DoryApplicationLaunchHandoffError.invalidManifest
                 }
-                let descriptors = fileDescriptors(from: Array(control.prefix(controlLength)))
                 guard descriptors.count == expectedCount else {
-                    for descriptor in descriptors { Darwin.close(descriptor) }
                     throw DoryApplicationLaunchHandoffError.descriptorCountMismatch(
                         expected: expectedCount,
                         actual: descriptors.count
                     )
                 }
-                return descriptors
+                let receivedDescriptors = descriptors
+                descriptors = []
+                return receivedDescriptors
             case .value(0):
                 throw DoryApplicationLaunchHandoffError.closed("descriptor transfer")
             case .value:

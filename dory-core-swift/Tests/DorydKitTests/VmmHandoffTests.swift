@@ -229,6 +229,50 @@ final class VmmHandoffTests: XCTestCase {
         XCTAssertEqual(try resultBox.get().ready.machineID, "replacement")
     }
 
+
+    func testServerAcceptsReadinessRenewalAfterInitialMessage() throws {
+        let base = "/tmp/dory-vmm-handoff-renew-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
+        try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: base) }
+
+        let received = DispatchSemaphore(value: 0)
+        let resultBox = LockedHandoffResults()
+        let server = VmmHandoffServer(path: base + "/handoff.sock") { result in
+            resultBox.append(result)
+            received.signal()
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let operationID = "01234567-89ab-4cde-8f01-23456789abcd"
+        try VmmHandoffClient.send(
+            path: server.path,
+            ready: VmmReadyMessage(machineID: "dev", operationID: operationID),
+            fileDescriptors: []
+        )
+        XCTAssertEqual(received.wait(timeout: .now() + 2), .success)
+
+        try VmmHandoffClient.send(
+            path: server.path,
+            ready: VmmReadyMessage(
+                machineID: "dev",
+                operationID: operationID,
+                guestBooted: true,
+                desktopVisible: true
+            ),
+            fileDescriptors: []
+        )
+        XCTAssertEqual(received.wait(timeout: .now() + 2), .success)
+
+        let handoffs = try resultBox.get(count: 2)
+        XCTAssertEqual(handoffs[0].ready.machineID, "dev")
+        XCTAssertFalse(handoffs[0].ready.desktopVisible)
+        XCTAssertEqual(handoffs[1].ready.machineID, "dev")
+        XCTAssertTrue(handoffs[1].ready.desktopVisible)
+        XCTAssertNotNil(handoffs[0].peerIdentity)
+        XCTAssertNotNil(handoffs[1].peerIdentity)
+    }
+
     func testReceiverRejectsReadinessWithoutOperationIdentity() throws {
         let base = "/tmp/dory-vmm-handoff-operation-\(getpid())-\(UInt32.random(in: 0..<UInt32.max))"
         try FileManager.default.createDirectory(atPath: base, withIntermediateDirectories: true)
@@ -243,11 +287,13 @@ final class VmmHandoffTests: XCTestCase {
         try server.start()
         defer { server.stop() }
 
-        try VmmHandoffClient.send(
+        XCTAssertThrowsError(try VmmHandoffClient.send(
             path: server.path,
             ready: VmmReadyMessage(machineID: "dev"),
             fileDescriptors: []
-        )
+        )) { error in
+            XCTAssertEqual("\(error)", "empty VMM handoff message")
+        }
         XCTAssertEqual(received.wait(timeout: .now() + 2), .success)
         XCTAssertThrowsError(try resultBox.get()) { error in
             XCTAssertEqual("\(error)", "invalid VMM readiness message")
@@ -278,6 +324,31 @@ private final class LockedHandoffResult: @unchecked Sendable {
             return handoff
         case let .failure(error):
             throw error
+        }
+    }
+}
+
+
+private final class LockedHandoffResults: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [Result<VmmHandoff, Error>] = []
+
+    func append(_ result: Result<VmmHandoff, Error>) {
+        lock.lock()
+        stored.append(result)
+        lock.unlock()
+    }
+
+    func get(count: Int) throws -> [VmmHandoff] {
+        lock.lock()
+        let snapshot = stored
+        lock.unlock()
+        XCTAssertEqual(snapshot.count, count)
+        return try snapshot.map { result in
+            switch result {
+            case let .success(handoff): return handoff
+            case let .failure(error): throw error
+            }
         }
     }
 }
