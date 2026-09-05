@@ -1,0 +1,28 @@
+{
+  "kind": "pc-gpu-partial-scanout-publication",
+  "commit": "3ab5ab045",
+  "scope": "Accepted scanout leases remain readable and owned by the display when a later scanout is rejected. Rejected and unpublished updates are retired.",
+  "sourceSHA256": {
+    "Packages/ContainerizationEngine/Sources/DoryHV/DoryPCVirGLRendererAuthority.swift": "258c5f07e1ee621c4b800276b8fadfeac440ab578c5f26aa4ce9bf52948816c3",
+    "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryRendererWorkerBrokerTests.swift": "b26471349f09047a47eed6a23baa9100b0b4000d69cbe80a3f8a8a4eb3b5e631"
+  },
+  "limits": [
+    "Focused broker and authority validation; no physical GPU display or whole-guest qualification claimed."
+  ],
+  "runs": [
+    {
+      "phase": "red",
+      "result": "1 test, 2 cases; rejected-batch case fails with wrong released token and unreadable accepted lease",
+      "log": "scanout-partial-rejection-red.log.gz",
+      "originalSHA256": "a38c492716810aa1cf107cd3f95cf73f813f1aa88add263dafcab751742905ff",
+      "publishedGzipSHA256": "a1ccb54c8ae6544a107cedd0f67d8d567377eba6dae6880199a78210ec243ab3"
+    },
+    {
+      "phase": "green",
+      "result": "60 tests in 3 suites pass; exit status 0",
+      "log": "scanout-partial-rejection-green.log.gz",
+      "originalSHA256": "5bb2018893d37a7597d34b2c14dbe79c4e68bf6255c462f410ad3614a08ce436",
+      "publishedGzipSHA256": "552ef93853b066a66cc3c5525c0f5ce8bd2e93835e34aae48a53b2e166a26951"
+    }
+  ]
+}
