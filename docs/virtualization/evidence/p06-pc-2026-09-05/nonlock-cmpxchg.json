@@ -1,0 +1,28 @@
+{
+  "createdAt": "2026-09-05T20:11:00Z",
+  "isolatedSource": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/source",
+  "isolatedSourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "a98123ba033ca81b8d3336c53681d0763fbc9558890c5d2f35be4844b3af57fd",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "e941099b8ea494ea5a963cab28713ca36441cbc60a4f96f5d0598a1186cb0274"
+  },
+  "kind": "nonlock-memory-cmpxchg-native-admission",
+  "limits": [
+    "Uses the existing native atomic gate even for unlocked CMPXCHG; this is stronger than architectural unlocked ordering and is not SMP/TSO qualification.",
+    "No product guest result is claimed by this receipt."
+  ],
+  "scope": "Allow long-mode CPL0 memory CMPXCHG without LOCK prefix to use the existing native compare-exchange callback path; tests cover DS-prefixed Linux-patched lock form, success/mismatch accumulator semantics, RAX-as-address aliasing, source/address aliasing, and restartable memory fault fallback on baseline and optimizing tiers.",
+  "sharedSourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "a98123ba033ca81b8d3336c53681d0763fbc9558890c5d2f35be4844b3af57fd",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "e941099b8ea494ea5a963cab28713ca36441cbc60a4f96f5d0598a1186cb0274"
+  },
+  "sourceHashReconciliation": "Final test file was copied from shared into the isolated source before rerun; isolated and shared hashes match for both changed files.",
+  "test": {
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path dory-core-swift --scratch-path $ROOT/.build --filter DoryARM64BaselineJITTests",
+    "log": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/baselinejit-final-sharedsource.log",
+    "logSHA256": "e44eb47c67cccf35e3ee1b5f4775f824b271ef04dc644ce37d77c785aada8e84",
+    "result": "100 tests in 1 suite passed after 0.797 seconds",
+    "publishedLog": "nonlock-cmpxchg-final.log.gz",
+    "publishedGzipSHA256": "fadcb97801b656dc6c736fab16b06f74ca22fd5779f8e8a9abce811eef0d4f95"
+  },
+  "commit": "704cd52c3"
+}
