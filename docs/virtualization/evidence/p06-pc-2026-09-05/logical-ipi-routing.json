@@ -1,0 +1,29 @@
+{
+  "commit": "8cda11cfb",
+  "scope": "xAPIC LDR/DFR guest register readback and ICR flat/cluster logical destination matching, physical/logical broadcasts, and destination-mode-independent shorthand routing.",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryMachinePC/DoryPCAPIC.swift": "83311fac40cc23242cd069b642344d800061878474f18abf9119f3415f790437",
+    "dory-core-swift/Sources/DoryMachinePC/DoryPCPhysicalMemory.swift": "ec2ce013e3effeaa753c70a1d218c773e3bcc6d49f6e07d52ad61022d35f9d38",
+    "dory-core-swift/Sources/DoryMachinePC/DoryPCMultiprocessor.swift": "4972ae262130c36f63e30ffc3f05fa12672656a0d73decf0fedcb80ace18a99b",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCMultiprocessorTests.swift": "5e6fab09d559618043e15a69e62b770a9e3cd7787e122f5a0bc477509ecad766"
+  },
+  "verification": "Prior implementation produced 29 issues in the logical-register and shorthand cases. Updated implementation passes 46 tests in 6 timer/interrupt suites, including physical and logical broadcast checks.",
+  "logs": [
+    {
+      "file": "apic-logical-icr-red-0905.log.gz",
+      "sha256": "408fce98fc750f8398cbf0946051cdd7640e351968f6d3899818e36b337740d3",
+      "originalSHA256": "c08a6752afdb5eca4da4ec5dfba7553e6a3791a2c90739991d2628cb79aae2cc"
+    },
+    {
+      "file": "apic-logical-icr-green-0905.log.gz",
+      "sha256": "1d85abfd6811820b184f752a7b4b8723c3ac355e8b8f7266d1f17f7c1dafcdb2",
+      "originalSHA256": "df7cec35da38b9686ee968291d9005057f767aad529bbf7427c70c5701e43058"
+    }
+  ],
+  "publication": "Public logs replace machine-local home paths with ${HOME}; originals retained privately.",
+  "remaining": [
+    "IOAPIC logical destination and delivery-mode implementation",
+    "Lowest-priority arbitration and full interrupt qualification",
+    "General Linux boot, parallel SMP and physical x86 reference qualification"
+  ]
+}
