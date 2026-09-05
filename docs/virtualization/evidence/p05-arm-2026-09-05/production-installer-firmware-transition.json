@@ -1,0 +1,47 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "sourceCommit": "6a0f3d8ce",
+  "scope": "Production manager/planner installer lifecycle with authenticated substituted helper; no physical guest execution",
+  "fix": "Checkpoint and restore Dory UEFI variable stores by resolved backend/platform, including ARMVirt-v1; preserve AVF NVRAM behavior and PC compatibility",
+  "checks": [
+    "ARMVirt installer ejection preserves real variable-store snapshot and publishes virtual-disk boot",
+    "Fresh manager activation starts from persisted installed-disk plan",
+    "PC-v1 store rejected for ARMVirt plan",
+    "Post-checkpoint payload and generation disturbance restored exactly across recovery"
+  ],
+  "validation": {
+    "newFinalizationTests": 2,
+    "recoveryParameterizedCases": 10,
+    "existingServiceLifecycleCases": 2,
+    "existingPCXCTestCases": 1,
+    "failures": 0,
+    "rootIndependentRecoveryRepeat": true
+  },
+  "artifacts": [
+    {
+      "path": "/tmp/dory-arm-efi-install-finalization-0905.log",
+      "sha256": "fd914754ad252ca797f409e123170ca2b1543dbde396d02bd2503b5127f31a22"
+    },
+    {
+      "path": "/tmp/dory-arm-efi-installer-recovery-0905.log",
+      "sha256": "6a31e161b21b9fee1367a157ae226a3ce516adb8b1b9e0ef85b1ccfabc9ae45e"
+    },
+    {
+      "path": "/tmp/dory-root-arm-efi-installer-recovery-0905.log",
+      "sha256": "1f66d6cc6ca20bb06a4880392e7ab91f32a304b94c88aa229a4aea72b04df8ac"
+    },
+    {
+      "path": "/tmp/dory-arm-efi-service-lifecycle-0905.log",
+      "sha256": "27628af15920f86c01cad920026da2507786a792787df9b4ca5ddd3d3a1f8a05"
+    },
+    {
+      "path": "/tmp/dory-pc-installer-variable-store-regression-0905.log",
+      "sha256": "bcaa4dea91d701b10a0207ad244a52c4b6499bb131daafe31f044456d647eecf"
+    }
+  ],
+  "remaining": [
+    "Actual signed rawHV helper installation/ejection/cold reopening qualification",
+    "Legacy rawHV ARM journal lacking a firmware checkpoint requires explicit recovery; no variable store is synthesized"
+  ]
+}
