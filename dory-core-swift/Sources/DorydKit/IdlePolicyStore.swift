@@ -428,29 +428,7 @@ public final class IdlePolicyStore: @unchecked Sendable {
         }
     }
 
-    private static func plistDictionary(_ object: Any) -> NSDictionary? {
-        guard let dictionary = object as? [String: Any] else { return nil }
-        return plistValue(dictionary) as? NSDictionary
-    }
 
-    private static func plistValue(_ value: Any) -> Any {
-        if value is NSNull {
-            return ""
-        }
-        if let dictionary = value as? [String: Any] {
-            return dictionary.mapValues(plistValue) as NSDictionary
-        }
-        if let array = value as? [Any] {
-            return array.map(plistValue) as NSArray
-        }
-        if let string = value as? String {
-            return string
-        }
-        if let number = value as? NSNumber {
-            return number
-        }
-        return "\(value)"
-    }
 }
 
 private extension String {
