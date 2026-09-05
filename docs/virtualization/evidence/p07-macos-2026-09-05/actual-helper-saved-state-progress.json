@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "scope": "Actual dory-vmm helper with private harness supplying managed launch/control authority; not complete production MachineManager lifecycle",
+  "observed": {
+    "run_pid": 56249,
+    "authenticated_running_handoff": true,
+    "settle_seconds_before_save": 120,
+    "save_response_ok": true,
+    "save_helper_exit": 0,
+    "saved_state_bytes": 1509953536,
+    "resume_pid": 56770,
+    "resume_exit": 2,
+    "resume_error": "VZErrorDomain Code12: failed to restore with permission denied"
+  },
+  "permissions": {
+    "saved_state": "0600, owned by current user",
+    "parent_directories": "0700, owned by current user"
+  },
+  "log_sha256": {
+    "harness": "e3e0b46d9fd1a0cc386180bf2b2f7910451ed84d0c87fd4484d33558ffffe778",
+    "restore_error": "3eec7e18592acae2653678198f274ce80053dee66b71dd3496ce291ae2fdf9a8"
+  },
+  "conclusion": "Real Apple state creation and clean helper termination pass. Restore fails even after delayed save; no production delay or relaxed permission workaround is justified.",
+  "remaining": [
+    "Identify restore denial by comparing actual helper and working qualifier configuration/file authority.",
+    "Verify successful real restore and subsequent save.",
+    "Compose successful helper lifecycle with production MachineManager authority."
+  ]
+}
