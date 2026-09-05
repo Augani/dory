@@ -20,6 +20,44 @@ final class DoryVZMacAdapterTests: XCTestCase {
         }
     }
 
+    func testFailedSuspendProjectsObservedRuntimeState() {
+        XCTAssertEqual(
+            DoryVZMacAdapter.stateAfterFailedSuspend(runtimeState: .paused),
+            .paused
+        )
+        XCTAssertEqual(
+            DoryVZMacAdapter.stateAfterFailedSuspend(runtimeState: .running),
+            .running
+        )
+        XCTAssertEqual(
+            DoryVZMacAdapter.stateAfterFailedSuspend(runtimeState: .stopped),
+            .stopped
+        )
+        XCTAssertEqual(
+            DoryVZMacAdapter.stateAfterFailedSuspend(runtimeState: .other),
+            .failed
+        )
+    }
+
+    func testFailedRestoreReportsAlreadyRunningRuntimeState() {
+        XCTAssertEqual(
+            DoryVZMacAdapter.stateAfterFailedRestore(runtimeState: .running),
+            .running
+        )
+        XCTAssertEqual(
+            DoryVZMacAdapter.stateAfterFailedRestore(runtimeState: .paused),
+            .paused
+        )
+        XCTAssertEqual(
+            DoryVZMacAdapter.stateAfterFailedRestore(runtimeState: .stopped),
+            .suspended
+        )
+        XCTAssertEqual(
+            DoryVZMacAdapter.stateAfterFailedRestore(runtimeState: .other),
+            .failed
+        )
+    }
+
     func testConfigurationStandardizesAllLocalArtifactPaths() {
         let configuration = DoryVZMacAdapterConfiguration(
             machineBundleURL: URL(fileURLWithPath: "/tmp/machines/../mac.doryvm"),

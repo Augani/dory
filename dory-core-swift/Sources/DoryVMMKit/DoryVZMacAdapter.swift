@@ -165,7 +165,10 @@ public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelega
             try await runtime.restoreSuspendedState(from: managedStateURL)
             endTransition(.running)
         } catch {
-            endTransition(.suspended, failure: error)
+            endTransition(
+                Self.stateAfterFailedRestore(runtimeState: Self.managedState(for: runtime.virtualMachine.state)),
+                failure: error
+            )
             throw error
         }
     }
@@ -198,7 +201,10 @@ public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelega
             try await runtime.suspend(to: managedStateURL)
             endTransition(.suspended)
         } catch {
-            endTransition(.running, failure: error)
+            endTransition(
+                Self.stateAfterFailedSuspend(runtimeState: Self.managedState(for: runtime.virtualMachine.state)),
+                failure: error
+            )
             throw error
         }
     }
@@ -254,6 +260,28 @@ public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelega
         onObservation?(observation)
     }
 
+    nonisolated static func stateAfterFailedSuspend(
+        runtimeState: DoryVZMacManagedRuntimeState
+    ) -> DoryVZMacAdapterState {
+        switch runtimeState {
+        case .running: .running
+        case .paused: .paused
+        case .stopped: .stopped
+        case .other: .failed
+        }
+    }
+
+    nonisolated static func stateAfterFailedRestore(
+        runtimeState: DoryVZMacManagedRuntimeState
+    ) -> DoryVZMacAdapterState {
+        switch runtimeState {
+        case .running: .running
+        case .paused: .paused
+        case .stopped: .suspended
+        case .other: .failed
+        }
+    }
+
     nonisolated static func initialState(
         for state: DoryVZMacMachineInstallationState
     ) -> DoryVZMacAdapterState {
@@ -265,6 +293,17 @@ public final class DoryVZMacAdapter: NSObject, @MainActor VZVirtualMachineDelega
         case .suspended: .suspended
         case .restoring: .restoring
         case .installFailed: .installFailed
+        }
+    }
+
+    private nonisolated static func managedState(
+        for state: VZVirtualMachine.State
+    ) -> DoryVZMacManagedRuntimeState {
+        switch state {
+        case .running: .running
+        case .paused: .paused
+        case .stopped: .stopped
+        default: .other
         }
     }
 }
