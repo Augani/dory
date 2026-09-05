@@ -266,6 +266,7 @@ import Testing
     try physical.writeScalar(at: 0x2008, value: 0x83, byteCount: 8)
     try physical.writeScalar(at: 0x3000, value: 0xA7, byteCount: 8)
     try physical.writeScalar(at: 0x5008, value: 0x00AF_9A00_0000_FFFF, byteCount: 8)
+    try physical.writeScalar(at: 0x5010, value: 0x00CF_9300_0000_FFFF, byteCount: 8)
     try physical.writeScalar(at: 0x6100, value: 0x0000_8E00_0008_8000, byteCount: 8)
     try physical.writeScalar(at: 0x6108, value: 0, byteCount: 8)
     // The positive control must translate the high stack to this valid frame.
