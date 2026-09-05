@@ -1,0 +1,53 @@
+'DISPLAY' environment variable not set... skipping surface info
+error: XDG_RUNTIME_DIR is invalid or not set in the environment.
+==========
+VULKANINFO
+==========
+
+Vulkan Instance Version: 1.3.239
+
+
+Instance Extensions: count = 23
+-------------------------------
+VK_EXT_acquire_drm_display             : extension revision 1
+VK_EXT_acquire_xlib_display            : extension revision 1
+VK_EXT_debug_report                    : extension revision 10
+VK_EXT_debug_utils                     : extension revision 2
+VK_EXT_direct_mode_display             : extension revision 1
+VK_EXT_display_surface_counter         : extension revision 1
+VK_EXT_headless_surface                : extension revision 1
+VK_EXT_surface_maintenance1            : extension revision 1
+VK_EXT_swapchain_colorspace            : extension revision 5
+VK_KHR_device_group_creation           : extension revision 1
+VK_KHR_display                         : extension revision 23
+VK_KHR_external_fence_capabilities     : extension revision 1
+VK_KHR_external_memory_capabilities    : extension revision 1
+VK_KHR_external_semaphore_capabilities : extension revision 1
+VK_KHR_get_display_properties2         : extension revision 1
+VK_KHR_get_physical_device_properties2 : extension revision 2
+VK_KHR_get_surface_capabilities2       : extension revision 1
+VK_KHR_portability_enumeration         : extension revision 1
+VK_KHR_surface                         : extension revision 25
+VK_KHR_surface_protected_capabilities  : extension revision 1
+VK_KHR_wayland_surface                 : extension revision 6
+VK_KHR_xcb_surface                     : extension revision 6
+VK_KHR_xlib_surface                    : extension revision 6
+
+Instance Layers:
+----------------
+
+Devices:
+========
+GPU0:
+	apiVersion         = 1.3.334
+	driverVersion      = 25.99.99
+	vendorID           = 0x106b
+	deviceID           = 0x1b000208
+	deviceType         = PHYSICAL_DEVICE_TYPE_INTEGRATED_GPU
+	deviceName         = Virtio-GPU Venus (Apple M2 Pro)
+	driverID           = DRIVER_ID_MESA_VENUS
+	driverName         = venus
+	driverInfo         = Mesa 26.0.0-devel (git-79bc850d88)
+	conformanceVersion = 1.4.0.0
+	deviceUUID         = d321cf03-23ea-7426-27a5-5e1d70ab88bb
+	driverUUID         = bb4d4d7f-1f16-8819-cbe1-729763ec261d

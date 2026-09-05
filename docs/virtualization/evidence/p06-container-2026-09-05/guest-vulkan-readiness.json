@@ -1,0 +1,50 @@
+{
+  "schema": "dory.container-gpu-guest-readiness@1",
+  "artifacts": {
+    "daemon": {
+      "sha256": "dee22e02ed7391753af898580c7544b29ebb1e4bab12c0cfb4728e9fa3ca297a",
+      "bytes": 39604128
+    },
+    "runner": {
+      "sha256": "45f7420ad4dad45c5c961b43a4f02e06ec85b3b95969d4faa07685049dcb35a5",
+      "bytes": 51944496
+    },
+    "worker": {
+      "sha256": "11fbe022726681150dc76c00dc1bc9eef0c2364d76e8fb25fdf5d94360e62045",
+      "bytes": 10634288
+    },
+    "kernel": {
+      "sha256": "fb8a381992afec20f3522bc6242868548829f82c209b261e0efd57e01498494f",
+      "bytes": 63764992
+    },
+    "initfs": {
+      "sha256": "613d220a751c2d077e3a07b7bebf02f2a3be28cff0e93ed3ab98c66ba3b57642",
+      "bytes": 1073741824
+    }
+  },
+  "logs": {
+    "gpu-venus-probe.log": {
+      "sha256": "5feabb10a5c1ecd7007259686d38c7d3f2eb6e7c31a8f4d40d499843dea966d7",
+      "bytes": 496
+    },
+    "gpu-vulkaninfo.log": {
+      "sha256": "01a3ade34d82bfd6f1b88056da1da2771297e5dc3c36e7fd72dc65c4c42ca9f6",
+      "bytes": 2262
+    }
+  },
+  "observedDevice": "Virtio-GPU Venus (Apple M2 Pro)",
+  "observedDriver": "venus",
+  "observedChecks": [
+    "device-create",
+    "queue-submit2",
+    "fence-signal",
+    "import-signaled-fd",
+    "export-sync-fd"
+  ],
+  "scope": "Real isolated GPU engine guest boot through signed daemon and renderer worker. Guest Vulkan device and submission smoke only.",
+  "limitations": [
+    "No container compute-output validation in this receipt.",
+    "No sustained workload, worker crash recovery or concurrent-container qualification.",
+    "WSI surface was not requested; no display workload is proven."
+  ]
+}
