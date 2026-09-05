@@ -1,0 +1,51 @@
+{
+  "scope": "PC APIC timer control and IOAPIC remote-IRR MMIO regressions",
+  "commits": [
+    "df1d6a1d1",
+    "97e741115"
+  ],
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryMachinePC/DoryPCAPIC.swift": "670158d7144a9129c47c35b1281c971f3caebbc7cd30eb113f03332a85221c75",
+    "dory-core-swift/Sources/DoryMachinePC/DoryPCPhysicalMemory.swift": "adfe9c082004f318f63ae9e6a7b712479c5c663b6c5df57c900146a1141f1416",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPhysicalMemoryTests.swift": "c99e2d0976bda6546f1fcdbc7192ca811f530c848154b6fa62a847f8fbe0ad30",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCIOAPICMaskTests.swift": "ba01dcc3689dc974e86ccf2a51e4320c197dfc094c3f1126699e83d65b132196"
+  },
+  "execution": "Focused Swift tests on an isolated existing source checkout; listed modified source/test files byte-match committed files. This was not a complete HEAD build or physical VM qualification.",
+  "results": {
+    "timerBefore": "2 tests / 3 parameter cases failed with 13 assertions",
+    "timerAfter": "40 tests in 5 suites passed",
+    "remoteIRRBefore": "1 test failed with 2 assertions",
+    "combinedAfter": "41 tests in 5 suites passed"
+  },
+  "logs": [
+    {
+      "file": "apic-lvt-red-0905.log.gz",
+      "sha256": "ae59379b7035709c6b6cac17ea36a6aee39537bbc1e361efbb9f8760e414ec4a",
+      "uncompressedSHA256": "6cd25093c95436fab8eb6bb3ea3b631613b6c372aea1251b1ea5919f1858cdac"
+    },
+    {
+      "file": "apic-lvt-green-0905.log.gz",
+      "sha256": "b84cf286f1977406f5f7686780aae3bc12839ab50603a95aa460ea2b04af40b6",
+      "uncompressedSHA256": "d64ea3d1f4bb1404df5bda7d565ef41c87466a94cc5feec1bfe5b13d87e270b5"
+    },
+    {
+      "file": "ioapic-remote-irr-red-0905.log.gz",
+      "sha256": "f0b0537bf49fc1070c22b44c79347ef3833246ae3e48149e84ac0e0708d372cb",
+      "uncompressedSHA256": "208214b9476c4dc76885c7130b137a9476328cbcce871c91a573da193633f3ea"
+    },
+    {
+      "file": "ioapic-remote-irr-green-0905.log.gz",
+      "sha256": "d31bdf36ddbb7f89064b7672a9b46e953ffcb9a3105f7a9675d5ab53583dcd89",
+      "uncompressedSHA256": "b4fdb371f7dec2a166e28c43ea8a6eac62201a285d930fd4aad087ce9a600ccf"
+    }
+  ],
+  "remaining": [
+    "Ordinary UEFI Linux boot and usable performance",
+    "Logical destination and remaining interrupt-controller semantics",
+    "Physical x86 reference validation"
+  ],
+  "references": [
+    "https://www.intel.com/content/dam/www/public/us/en/documents/manuals/64-ia-32-architectures-software-developer-vol-3a-part-1-manual.pdf",
+    "https://cs.nyu.edu/~mwalfish/classes/ut/s10-cs372h/ref/ia32/ioapic.pdf"
+  ]
+}
