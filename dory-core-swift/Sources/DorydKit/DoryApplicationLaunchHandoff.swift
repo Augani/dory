@@ -1,6 +1,7 @@
 import Darwin
 import Foundation
 import Security
+import DoryRendererWorkerWireContracts
 
 /// LaunchServices deliberately does not inherit daemon-owned file descriptors. This one-shot,
 /// peer-bound channel transfers those already-admitted objects only after doryd has authenticated
@@ -372,6 +373,455 @@ struct DoryApplicationLaunchPeerIdentity {
     let processIdentifier: pid_t
     let auditToken: audit_token_t
 }
+
+public enum DoryRendererGenerationHandoffError: Error, Sendable, CustomStringConvertible, Equatable {
+    case invalidRequest
+    case invalidResponse
+    case descriptorCountMismatch(expected: Int, actual: Int)
+    case peerUserMismatch(expectedUID: uid_t, actualUID: uid_t)
+    case rejected(String)
+    case closed(String)
+    case syscall(String, Int32)
+
+    public var description: String {
+        switch self {
+        case .invalidRequest:
+            return "invalid renderer generation handoff request"
+        case .invalidResponse:
+            return "invalid renderer generation handoff response"
+        case let .descriptorCountMismatch(expected, actual):
+            return "renderer generation descriptor count mismatch (expected \(expected), received \(actual))"
+        case let .peerUserMismatch(expectedUID, actualUID):
+            return "renderer generation peer user mismatch (expected \(expectedUID), received \(actualUID))"
+        case let .rejected(message):
+            return message.isEmpty ? "renderer generation handoff rejected" : message
+        case let .closed(operation):
+            return "renderer generation handoff channel closed during \(operation)"
+        case let .syscall(operation, code):
+            return "renderer generation handoff \(operation): \(String(cString: strerror(code)))"
+        }
+    }
+}
+
+public struct DoryRendererGenerationHandoffRequest: Codable, Sendable, Equatable {
+    public static let currentSchemaVersion: UInt16 = 1
+    public static let tokenByteCount = 64
+
+    public var schemaVersion: UInt16
+    public var token: String
+    public var machineID: String
+    public var operationID: String
+    public var resolvedPlanSHA256: String
+    public var planRevision: UInt64
+    public var previousRendererGeneration: UInt64
+    public var requestedRendererGeneration: UInt64
+
+    public init(
+        schemaVersion: UInt16 = Self.currentSchemaVersion,
+        token: String,
+        machineID: String,
+        operationID: String,
+        resolvedPlanSHA256: String,
+        planRevision: UInt64,
+        previousRendererGeneration: UInt64,
+        requestedRendererGeneration: UInt64
+    ) {
+        self.schemaVersion = schemaVersion
+        self.token = token
+        self.machineID = machineID
+        self.operationID = operationID
+        self.resolvedPlanSHA256 = resolvedPlanSHA256.lowercased()
+        self.planRevision = planRevision
+        self.previousRendererGeneration = previousRendererGeneration
+        self.requestedRendererGeneration = requestedRendererGeneration
+    }
+
+    public var isValid: Bool {
+        schemaVersion == Self.currentSchemaVersion
+            && token.utf8.count == Self.tokenByteCount
+            && token.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+            && !machineID.isEmpty
+            && DoryOperationIdentity.parseCanonical(operationID) != nil
+            && isLowercaseSHA256(resolvedPlanSHA256)
+            && planRevision > 0
+            && previousRendererGeneration > 0
+            && requestedRendererGeneration == previousRendererGeneration &+ 1
+            && requestedRendererGeneration > previousRendererGeneration
+    }
+}
+
+public struct DoryRendererGenerationHandoffResponse: Codable, Sendable, Equatable {
+    public static let currentSchemaVersion: UInt16 = 1
+
+    public var schemaVersion: UInt16
+    public var ok: Bool
+    public var message: String
+    public var rendererGeneration: UInt64?
+    public var bootstrapByteCount: UInt64?
+    public var bootstrapSHA256: String?
+    public var descriptorCount: Int
+
+    public init(
+        schemaVersion: UInt16 = Self.currentSchemaVersion,
+        ok: Bool,
+        message: String = "",
+        rendererGeneration: UInt64? = nil,
+        bootstrapByteCount: UInt64? = nil,
+        bootstrapSHA256: String? = nil,
+        descriptorCount: Int = 0
+    ) {
+        self.schemaVersion = schemaVersion
+        self.ok = ok
+        self.message = message
+        self.rendererGeneration = rendererGeneration
+        self.bootstrapByteCount = bootstrapByteCount
+        self.bootstrapSHA256 = bootstrapSHA256?.lowercased()
+        self.descriptorCount = descriptorCount
+    }
+
+    public var isValid: Bool {
+        guard schemaVersion == Self.currentSchemaVersion,
+              descriptorCount == 0 || descriptorCount == 1 else { return false }
+        if ok {
+            return descriptorCount == 1
+                && rendererGeneration.map { $0 > 1 } == true
+                && bootstrapByteCount == UInt64(DoryRendererWorkerBootstrapCodec.fixedByteCount)
+                && bootstrapSHA256.map(isLowercaseSHA256) == true
+                && message.isEmpty
+        }
+        return descriptorCount == 0
+            && rendererGeneration == nil
+            && bootstrapByteCount == nil
+            && bootstrapSHA256 == nil
+    }
+}
+
+public final class DoryRendererGenerationHandoff: @unchecked Sendable {
+    public let response: DoryRendererGenerationHandoffResponse
+
+    private let lock = NSLock()
+    private var ownedBootstrapDescriptor: Int32?
+
+    public init(response: DoryRendererGenerationHandoffResponse, bootstrapDescriptor: Int32?) {
+        self.response = response
+        ownedBootstrapDescriptor = bootstrapDescriptor
+    }
+
+    public func takeBootstrapDescriptor() -> Int32? {
+        lock.withLock {
+            let descriptor = ownedBootstrapDescriptor
+            ownedBootstrapDescriptor = nil
+            return descriptor
+        }
+    }
+
+    public func close() {
+        if let descriptor = takeBootstrapDescriptor(), descriptor >= 0 {
+            Darwin.close(descriptor)
+        }
+    }
+
+    deinit { close() }
+}
+
+struct DoryRendererGenerationHandoffPeerIdentity {
+    let processIdentifier: pid_t
+    let auditToken: audit_token_t
+}
+
+final class DoryRendererGenerationHandoffServer: @unchecked Sendable {
+    typealias Handler = @Sendable (
+        DoryRendererGenerationHandoffRequest,
+        DoryRendererGenerationHandoffPeerIdentity
+    ) throws -> DoryRendererGenerationHandoff
+
+    let path: String
+    let token: String
+
+    private let handler: Handler
+    private let lifecycleLock = NSLock()
+    private let lock = NSLock()
+    private var listener: Int32 = -1
+    private var queue: DispatchQueue?
+    private var boundIdentity: (device: dev_t, inode: ino_t)?
+    private var listenerGeneration: UInt64 = 0
+
+    init(path: String, token: String, handler: @escaping Handler) {
+        self.path = path
+        self.token = token
+        self.handler = handler
+    }
+
+    var isRunning: Bool { lock.withLock { listener >= 0 } }
+
+    func start() throws {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        let shouldStart = lock.withLock { listener < 0 }
+        guard shouldStart else { return }
+        try FileManager.default.createDirectory(
+            atPath: (path as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true
+        )
+        unlink(path)
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard fd >= 0 else { throw DoryRendererGenerationHandoffError.syscall("socket", errno) }
+        do {
+            try DoryApplicationLaunchHandoffProtocol.configureTransportDescriptor(fd)
+            var address = try DoryApplicationLaunchHandoffProtocol.unixAddress(path: path)
+            let result = withUnsafePointer(to: &address) { pointer in
+                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            guard result == 0 else {
+                throw DoryRendererGenerationHandoffError.syscall("bind", errno)
+            }
+            guard chmod(path, 0o600) == 0 else {
+                throw DoryRendererGenerationHandoffError.syscall("chmod", errno)
+            }
+            guard listen(fd, 8) == 0 else {
+                throw DoryRendererGenerationHandoffError.syscall("listen", errno)
+            }
+            var info = stat()
+            guard lstat(path, &info) == 0 else {
+                throw DoryRendererGenerationHandoffError.syscall("lstat", errno)
+            }
+            let queue = DispatchQueue(label: "dev.dory.doryd.renderer-generation.\(fd)")
+            let generation = lock.withLock { () -> UInt64 in
+                listenerGeneration &+= 1
+                listener = fd
+                self.queue = queue
+                boundIdentity = (info.st_dev, info.st_ino)
+                return listenerGeneration
+            }
+            queue.async { [weak self] in self?.acceptLoop(listener: fd, generation: generation) }
+        } catch {
+            Darwin.close(fd)
+            unlink(path)
+            throw error
+        }
+    }
+
+    func stop() {
+        lifecycleLock.lock()
+        defer { lifecycleLock.unlock() }
+        let state = lock.withLock { () -> (Int32, (device: dev_t, inode: ino_t)?) in
+            let state = (listener, boundIdentity)
+            listener = -1
+            queue = nil
+            boundIdentity = nil
+            listenerGeneration &+= 1
+            return state
+        }
+        if state.0 >= 0 { Darwin.close(state.0) }
+        if let identity = state.1 {
+            var info = stat()
+            if lstat(path, &info) == 0,
+               info.st_dev == identity.device,
+               info.st_ino == identity.inode
+            {
+                unlink(path)
+            }
+        }
+    }
+
+    private func acceptLoop(listener expectedListener: Int32, generation expectedGeneration: UInt64) {
+        while isCurrentListener(expectedListener, generation: expectedGeneration) {
+            let accepted = accept(expectedListener, nil, nil)
+            if accepted < 0 {
+                if errno == EBADF || errno == EINVAL { return }
+                continue
+            }
+            guard isCurrentListener(expectedListener, generation: expectedGeneration) else {
+                Darwin.close(accepted)
+                return
+            }
+            handle(accepted)
+            Darwin.close(accepted)
+        }
+    }
+
+    private func isCurrentListener(_ expectedListener: Int32, generation expectedGeneration: UInt64) -> Bool {
+        lock.withLock {
+            listener == expectedListener && listenerGeneration == expectedGeneration
+        }
+    }
+
+    private func handle(_ connection: Int32) {
+        let deadline = DoryApplicationLaunchHandoffProtocol.TransportDeadline(
+            timeout: DoryApplicationLaunchHandoffProtocol.transferTimeoutSeconds
+        )
+        DoryApplicationLaunchHandoffProtocol.setTimeouts(
+            descriptor: connection,
+            seconds: DoryApplicationLaunchHandoffProtocol.transferTimeoutSeconds
+        )
+        var descriptors: [Int32] = []
+        var ownedDescriptors: [Int32] = []
+        defer { ownedDescriptors.forEach { Darwin.close($0) } }
+        var response: DoryRendererGenerationHandoffResponse
+        do {
+            let peer = try DoryApplicationLaunchHandoffProtocol.peerIdentity(
+                descriptor: connection
+            )
+            let expectedUID = geteuid()
+            guard peer.uid == expectedUID else {
+                throw DoryRendererGenerationHandoffError.peerUserMismatch(
+                    expectedUID: expectedUID,
+                    actualUID: peer.uid
+                )
+            }
+            let requestData = try DoryApplicationLaunchHandoffProtocol.readFrame(
+                from: connection,
+                maximumBytes: 4096,
+                deadline: deadline
+            )
+            let request = try JSONDecoder().decode(
+                DoryRendererGenerationHandoffRequest.self,
+                from: requestData
+            )
+            guard request.isValid,
+                  DoryApplicationLaunchHandoffProtocol.constantTimeEqual(
+                    Data(request.token.utf8),
+                    Data(token.utf8)
+                  ) else {
+                throw DoryRendererGenerationHandoffError.invalidRequest
+            }
+            let handoff = try handler(
+                request,
+                DoryRendererGenerationHandoffPeerIdentity(
+                    processIdentifier: peer.pid,
+                    auditToken: peer.auditToken
+                )
+            )
+            response = handoff.response
+            guard response.isValid else { throw DoryRendererGenerationHandoffError.invalidResponse }
+            if response.ok, response.rendererGeneration != request.requestedRendererGeneration {
+                throw DoryRendererGenerationHandoffError.invalidResponse
+            }
+            ownedDescriptors = handoff.takeBootstrapDescriptor().map { [$0] } ?? []
+            descriptors = ownedDescriptors
+            guard descriptors.count == response.descriptorCount else {
+                throw DoryRendererGenerationHandoffError.descriptorCountMismatch(
+                    expected: response.descriptorCount,
+                    actual: descriptors.count
+                )
+            }
+        } catch let error as DoryRendererGenerationHandoffError {
+            response = DoryRendererGenerationHandoffResponse(ok: false, message: error.description)
+            descriptors = []
+        } catch {
+            response = DoryRendererGenerationHandoffResponse(ok: false, message: "renderer generation handoff failed")
+            descriptors = []
+        }
+        do {
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.sortedKeys]
+            try DoryApplicationLaunchHandoffProtocol.writeFrame(
+                try encoder.encode(response),
+                to: connection,
+                deadline: deadline
+            )
+            try DoryApplicationLaunchHandoffProtocol.sendDescriptors(
+                descriptors,
+                to: connection,
+                deadline: deadline
+            )
+        } catch {
+            return
+        }
+    }
+
+    deinit { stop() }
+}
+
+public enum DoryRendererGenerationHandoffClient {
+    public static func request(
+        path: String,
+        request: DoryRendererGenerationHandoffRequest
+    ) throws -> DoryRendererGenerationHandoff {
+        try Self.request(path: path, request: request) { daemonPID, _ in
+            try DorySecurityDynamicCodeValidator.validate(
+                pid: daemonPID,
+                requirementText: DorydXPCSecurity.productionDaemonRequirement
+            )
+        }
+    }
+
+    static func request(
+        path: String,
+        request: DoryRendererGenerationHandoffRequest,
+        authenticateDaemon: (pid_t, audit_token_t) throws -> Void
+    ) throws -> DoryRendererGenerationHandoff {
+        guard request.isValid else { throw DoryRendererGenerationHandoffError.invalidRequest }
+        let deadline = DoryApplicationLaunchHandoffProtocol.TransportDeadline(
+            timeout: DoryApplicationLaunchHandoffProtocol.transferTimeoutSeconds
+        )
+        let fd = try DoryApplicationLaunchHandoffProtocol.connect(path: path, deadline: deadline)
+        defer { Darwin.close(fd) }
+        DoryApplicationLaunchHandoffProtocol.setTimeouts(
+            descriptor: fd,
+            seconds: DoryApplicationLaunchHandoffProtocol.transferTimeoutSeconds
+        )
+        let daemonPeer = try DoryApplicationLaunchHandoffProtocol.peerIdentity(descriptor: fd)
+        guard daemonPeer.uid == geteuid() else {
+            throw DoryRendererGenerationHandoffError.peerUserMismatch(
+                expectedUID: geteuid(),
+                actualUID: daemonPeer.uid
+            )
+        }
+        try authenticateDaemon(daemonPeer.pid, daemonPeer.auditToken)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        try DoryApplicationLaunchHandoffProtocol.writeFrame(
+            try encoder.encode(request),
+            to: fd,
+            deadline: deadline
+        )
+        let responseData = try DoryApplicationLaunchHandoffProtocol.readFrame(
+            from: fd,
+            maximumBytes: 4096,
+            deadline: deadline
+        )
+        let response = try JSONDecoder().decode(
+            DoryRendererGenerationHandoffResponse.self,
+            from: responseData
+        )
+        guard response.isValid else { throw DoryRendererGenerationHandoffError.invalidResponse }
+        let descriptors = try DoryApplicationLaunchHandoffProtocol.receiveDescriptors(
+            from: fd,
+            expectedCount: response.descriptorCount,
+            deadline: deadline
+        )
+        guard descriptors.count == response.descriptorCount else {
+            for descriptor in descriptors { Darwin.close(descriptor) }
+            throw DoryRendererGenerationHandoffError.descriptorCountMismatch(
+                expected: response.descriptorCount,
+                actual: descriptors.count
+            )
+        }
+        if response.ok {
+            guard descriptors.count == 1,
+                  response.rendererGeneration == request.requestedRendererGeneration else {
+                for descriptor in descriptors { Darwin.close(descriptor) }
+                throw DoryRendererGenerationHandoffError.invalidResponse
+            }
+            return DoryRendererGenerationHandoff(
+                response: response,
+                bootstrapDescriptor: descriptors[0]
+            )
+        }
+        for descriptor in descriptors { Darwin.close(descriptor) }
+        throw DoryRendererGenerationHandoffError.rejected(response.message)
+    }
+}
+
+private func isLowercaseSHA256(_ value: String) -> Bool {
+    value.utf8.count == 64 && value.utf8.allSatisfy {
+        (48...57).contains($0) || (97...102).contains($0)
+    }
+}
+
 
 private struct DoryApplicationLaunchDescriptorManifest: Codable, Equatable {
     static let currentSchemaVersion: UInt16 = 1

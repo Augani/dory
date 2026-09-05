@@ -1,0 +1,23 @@
+{
+  "scope": "Renderer-generation descriptor handoff transport. Not yet connected to MachineManager provisioning or PCMode reset replacement.",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DorydKit/DoryApplicationLaunchHandoff.swift": "6598553eaa4548046e5739c09cacd78b4844fdba24c85f814694239453865750",
+    "dory-core-swift/Tests/DorydKitTests/DoryApplicationLaunchHandoffTests.swift": "b69642083ba69adfe1d1d971b765e82694cf6f3b8b9c062116fbb55ac9233519"
+  },
+  "validation": "Clean private-worktree DoryApplicationLaunchHandoffTests: 20 XCTest tests, zero failures.",
+  "log": "${HOME}/.dory/qualification/renderer-reset-20260905/application-launch-handoff-private-worktree3.log",
+  "logSHA256": "26964591bb49dbde08901e1350416fecac07491cc0cb2c267f3e5706f2333d77",
+  "reviewedBehavior": [
+    "Existing bounded Unix framing and SCM_RIGHTS transfer",
+    "Client same-UID and existing daemon code-signing requirement",
+    "Server same-UID/token validation; handler receives peer PID/audit token for owner authorization",
+    "Exact requested N-to-N+1 and returned generation checks",
+    "Explicit fd ownership transfer and cleanup on descriptor-count mismatch",
+    "Idempotent close and serialized listener start/stop lifecycle"
+  ],
+  "remaining": [
+    "Machine-specific peer/operation/plan authorization in provisioning handler",
+    "Fresh bootstrap creation, worker preparation and generation-qualified display/authority installation",
+    "Physical accelerated reset recovery"
+  ]
+}

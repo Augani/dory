@@ -1,5 +1,6 @@
 @testable import DorydKit
 import Darwin
+import CryptoKit
 import DoryRendererWorkerWireContracts
 import Foundation
 import XCTest
@@ -244,6 +245,210 @@ final class DoryApplicationLaunchHandoffTests: XCTestCase {
                 .invalidInvocation
             )
         }
+    }
+
+    func testRendererGenerationHandoffTransfersFreshBootstrapDescriptor() throws {
+        let directory = try makeTemporaryDirectory(prefix: "dory-renderer-generation-handoff")
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let socketPath = directory + "/renderer.sock"
+        let token = String(repeating: "a", count: DoryRendererGenerationHandoffRequest.tokenByteCount)
+        let payload = Data(repeating: 0x5a, count: DoryRendererWorkerBootstrapCodec.fixedByteCount)
+        let payloadPath = directory + "/bootstrap"
+        try payload.write(to: URL(fileURLWithPath: payloadPath))
+        let descriptor = open(payloadPath, O_RDONLY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { Darwin.close(descriptor) }
+        let transferredDescriptor = fcntl(descriptor, F_DUPFD_CLOEXEC, 3)
+        XCTAssertGreaterThanOrEqual(transferredDescriptor, 0)
+        let sha = SHA256Digest.hex(payload)
+        let operationID = UUID()
+        let observed = LockedRendererGenerationPeer()
+        let server = DoryRendererGenerationHandoffServer(path: socketPath, token: token) { request, peer in
+            observed.set(pid: peer.processIdentifier, generation: request.requestedRendererGeneration)
+            return DoryRendererGenerationHandoff(
+                response: DoryRendererGenerationHandoffResponse(
+                    ok: true,
+                    rendererGeneration: request.requestedRendererGeneration,
+                    bootstrapByteCount: UInt64(payload.count),
+                    bootstrapSHA256: sha,
+                    descriptorCount: 1
+                ),
+                bootstrapDescriptor: transferredDescriptor
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+
+        let handoff = try DoryRendererGenerationHandoffClient.request(
+            path: socketPath,
+            request: DoryRendererGenerationHandoffRequest(
+                token: token,
+                machineID: "pc-fixture",
+                operationID: DoryOperationIdentity.canonical(operationID),
+                resolvedPlanSHA256: String(repeating: "b", count: 64),
+                planRevision: 9,
+                previousRendererGeneration: 9,
+                requestedRendererGeneration: 10
+            ),
+            authenticateDaemon: { daemonPID, _ in XCTAssertEqual(daemonPID, getpid()) }
+        )
+        XCTAssertEqual(handoff.response.rendererGeneration, 10)
+        XCTAssertEqual(handoff.response.bootstrapSHA256, sha)
+        let receivedDescriptor = try XCTUnwrap(handoff.takeBootstrapDescriptor())
+        XCTAssertEqual(try readExact(descriptor: receivedDescriptor, count: payload.count), payload)
+        handoff.close()
+        XCTAssertEqual(try readExact(descriptor: receivedDescriptor, count: payload.count), payload)
+        let receivedNumber = receivedDescriptor
+        Darwin.close(receivedDescriptor)
+        let reusePath = directory + "/reuse"
+        try Data("reuse-target".utf8).write(to: URL(fileURLWithPath: reusePath))
+        let reusedDescriptor = open(reusePath, O_RDONLY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(reusedDescriptor, 0)
+        defer { Darwin.close(reusedDescriptor) }
+        if reusedDescriptor == receivedNumber {
+            handoff.close()
+            XCTAssertEqual(try readAll(descriptor: reusedDescriptor), Data("reuse-target".utf8))
+        }
+        XCTAssertEqual(observed.snapshot()?.pid, getpid())
+        XCTAssertEqual(observed.snapshot()?.generation, 10)
+    }
+
+    func testRendererGenerationHandoffRejectsStaleGenerationWithoutDescriptor() throws {
+        let directory = try makeTemporaryDirectory(prefix: "dory-renderer-generation-stale")
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let socketPath = directory + "/renderer.sock"
+        let token = String(repeating: "c", count: DoryRendererGenerationHandoffRequest.tokenByteCount)
+        let handlerCalled = LockedBool()
+        let server = DoryRendererGenerationHandoffServer(path: socketPath, token: token) { _, _ in
+            handlerCalled.set(true)
+            return DoryRendererGenerationHandoff(
+                response: DoryRendererGenerationHandoffResponse(ok: false, message: "unexpected"),
+                bootstrapDescriptor: nil
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+
+        XCTAssertThrowsError(try DoryRendererGenerationHandoffClient.request(
+            path: socketPath,
+            request: DoryRendererGenerationHandoffRequest(
+                token: token,
+                machineID: "pc-fixture",
+                operationID: DoryOperationIdentity.canonical(UUID()),
+                resolvedPlanSHA256: String(repeating: "d", count: 64),
+                planRevision: 9,
+                previousRendererGeneration: 9,
+                requestedRendererGeneration: 9
+            ),
+            authenticateDaemon: { _, _ in XCTFail("daemon authentication should not run for an invalid request") }
+        )) { error in
+            XCTAssertEqual(
+                error as? DoryRendererGenerationHandoffError,
+                .invalidRequest
+            )
+        }
+        XCTAssertFalse(handlerCalled.value)
+    }
+
+
+    func testRendererGenerationHandoffRejectsMismatchedResponseGenerationAndClosesDescriptor() throws {
+        let directory = try makeTemporaryDirectory(prefix: "dory-renderer-generation-mismatch")
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let socketPath = directory + "/renderer.sock"
+        let token = String(repeating: "e", count: DoryRendererGenerationHandoffRequest.tokenByteCount)
+        let payload = Data(repeating: 0x6d, count: DoryRendererWorkerBootstrapCodec.fixedByteCount)
+        let payloadPath = directory + "/bootstrap"
+        try payload.write(to: URL(fileURLWithPath: payloadPath))
+        let descriptor = open(payloadPath, O_RDONLY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { Darwin.close(descriptor) }
+        let transferredDescriptor = fcntl(descriptor, F_DUPFD_CLOEXEC, 3)
+        XCTAssertGreaterThanOrEqual(transferredDescriptor, 0)
+        let server = DoryRendererGenerationHandoffServer(path: socketPath, token: token) { request, _ in
+            DoryRendererGenerationHandoff(
+                response: DoryRendererGenerationHandoffResponse(
+                    ok: true,
+                    rendererGeneration: request.requestedRendererGeneration + 1,
+                    bootstrapByteCount: UInt64(payload.count),
+                    bootstrapSHA256: SHA256Digest.hex(payload),
+                    descriptorCount: 1
+                ),
+                bootstrapDescriptor: transferredDescriptor
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+
+        XCTAssertThrowsError(try DoryRendererGenerationHandoffClient.request(
+            path: socketPath,
+            request: DoryRendererGenerationHandoffRequest(
+                token: token,
+                machineID: "pc-fixture",
+                operationID: DoryOperationIdentity.canonical(UUID()),
+                resolvedPlanSHA256: String(repeating: "f", count: 64),
+                planRevision: 9,
+                previousRendererGeneration: 9,
+                requestedRendererGeneration: 10
+            ),
+            authenticateDaemon: { daemonPID, _ in XCTAssertEqual(daemonPID, getpid()) }
+        )) { error in
+            XCTAssertEqual(
+                (error as? DoryRendererGenerationHandoffError)?.description,
+                DoryRendererGenerationHandoffError.invalidResponse.description
+            )
+        }
+
+        XCTAssertTrue(waitForDescriptorClose(transferredDescriptor))
+        XCTAssertEqual(try readExact(descriptor: descriptor, count: payload.count), payload)
+    }
+
+
+    func testRendererGenerationHandoffClosesConsumedDescriptorAfterCountMismatch() throws {
+        let directory = try makeTemporaryDirectory(prefix: "dory-renderer-generation-count-mismatch")
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let socketPath = directory + "/renderer.sock"
+        let token = String(repeating: "1", count: DoryRendererGenerationHandoffRequest.tokenByteCount)
+        let payload = Data(repeating: 0x71, count: DoryRendererWorkerBootstrapCodec.fixedByteCount)
+        let payloadPath = directory + "/bootstrap"
+        try payload.write(to: URL(fileURLWithPath: payloadPath))
+        let descriptor = open(payloadPath, O_RDONLY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(descriptor, 0)
+        defer { Darwin.close(descriptor) }
+        let transferredDescriptor = fcntl(descriptor, F_DUPFD_CLOEXEC, 3)
+        XCTAssertGreaterThanOrEqual(transferredDescriptor, 0)
+        let server = DoryRendererGenerationHandoffServer(path: socketPath, token: token) { _, _ in
+            DoryRendererGenerationHandoff(
+                response: DoryRendererGenerationHandoffResponse(ok: false, message: "rejected-with-fd"),
+                bootstrapDescriptor: transferredDescriptor
+            )
+        }
+        try server.start()
+        defer { server.stop() }
+
+        XCTAssertThrowsError(try DoryRendererGenerationHandoffClient.request(
+            path: socketPath,
+            request: DoryRendererGenerationHandoffRequest(
+                token: token,
+                machineID: "pc-fixture",
+                operationID: DoryOperationIdentity.canonical(UUID()),
+                resolvedPlanSHA256: String(repeating: "2", count: 64),
+                planRevision: 9,
+                previousRendererGeneration: 9,
+                requestedRendererGeneration: 10
+            ),
+            authenticateDaemon: { daemonPID, _ in XCTAssertEqual(daemonPID, getpid()) }
+        )) { error in
+            XCTAssertEqual(
+                (error as? DoryRendererGenerationHandoffError)?.description,
+                DoryRendererGenerationHandoffError.descriptorCountMismatch(
+                    expected: 0,
+                    actual: 1
+                ).description
+            )
+        }
+
+        XCTAssertTrue(waitForDescriptorClose(transferredDescriptor))
+        XCTAssertEqual(try readExact(descriptor: descriptor, count: payload.count), payload)
     }
 
     func testOnlyNestedDesktopHelpersUseApplicationLaunchIdentity() {
@@ -534,6 +739,69 @@ private final class FixtureApplicationTerminationController:
         lock.unlock()
         return true
     }
+}
+
+private final class LockedBool: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored = false
+
+    var value: Bool { lock.withLock { stored } }
+
+    func set(_ value: Bool) {
+        lock.withLock { stored = value }
+    }
+}
+
+private final class LockedRendererGenerationPeer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: (pid: pid_t, generation: UInt64)?
+
+    func set(pid: pid_t, generation: UInt64) {
+        lock.withLock { value = (pid, generation) }
+    }
+
+    func snapshot() -> (pid: pid_t, generation: UInt64)? {
+        lock.withLock { value }
+    }
+}
+
+private enum SHA256Digest {
+    static func hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
+
+private func waitForDescriptorClose(_ descriptor: Int32, timeout: TimeInterval = 2) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    repeat {
+        errno = 0
+        if fcntl(descriptor, F_GETFD) < 0, errno == EBADF {
+            return true
+        }
+        usleep(10_000)
+    } while Date() < deadline
+    return false
+}
+
+private func readExact(descriptor: Int32, count: Int) throws -> Data {
+    var bytes = [UInt8](repeating: 0, count: count)
+    var offset = 0
+    while offset < count {
+        let readCount = bytes.withUnsafeMutableBytes {
+            pread(descriptor, $0.baseAddress!.advanced(by: offset), count - offset, off_t(offset))
+        }
+        if readCount > 0 {
+            offset += readCount
+        } else if readCount < 0, errno == EINTR {
+            continue
+        } else if readCount < 0 {
+            throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+        } else {
+            throw POSIXError(.EIO)
+        }
+    }
+    return Data(bytes)
 }
 
 private func readAll(descriptor: Int32) throws -> Data {
