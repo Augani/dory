@@ -48,6 +48,46 @@ public struct DoryPCVirtioPCIRegisterAccess: Sendable, Hashable {
   }
 }
 
+public struct DoryPCVirtioPCIDeferredCompletion: Sendable {
+  private final class Claim: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+      lock.withLock {
+        guard !claimed else { return false }
+        claimed = true
+        return true
+      }
+    }
+  }
+
+  private let claim: Claim
+  private let publishResponse: @Sendable ([UInt8]) -> Bool
+  private let failDeviceGeneration: @Sendable () -> Bool
+
+  public init(
+    publishResponse: @escaping @Sendable ([UInt8]) -> Bool,
+    failDeviceGeneration: @escaping @Sendable () -> Bool
+  ) {
+    claim = Claim()
+    self.publishResponse = publishResponse
+    self.failDeviceGeneration = failDeviceGeneration
+  }
+
+  @discardableResult
+  public func publish(_ response: [UInt8]) -> Bool {
+    guard claim.claim() else { return false }
+    return publishResponse(response)
+  }
+
+  @discardableResult
+  public func failDevice() -> Bool {
+    guard claim.claim() else { return false }
+    return failDeviceGeneration()
+  }
+}
+
 public struct DoryPCVirtioPCIRegisterDiagnostics: Sendable, Hashable {
   public let readCount: UInt64
   public let writeCount: UInt64
@@ -102,7 +142,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       UInt16,
       DoryVirtioDescriptorChain,
       any DoryVirtioGuestMemory,
-      @escaping @Sendable ([UInt8]) -> Bool
+      DoryPCVirtioPCIDeferredCompletion
     ) throws -> Void)?
   private var queueCanProcess: @Sendable (UInt16) -> Bool = { _ in true }
   private let processingLocks: [NSRecursiveLock]
@@ -178,7 +218,7 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
         UInt16,
         DoryVirtioDescriptorChain,
         any DoryVirtioGuestMemory,
-        @escaping @Sendable ([UInt8]) -> Bool
+        DoryPCVirtioPCIDeferredCompletion
       ) throws -> Void
   ) {
     lock.withLock {
@@ -386,18 +426,29 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
           if notify { _ = signalQueueInterrupt(queue: index) }
         } else if let processor = processing.3 {
           let generation = try queueGeneration(at: index)
-          try processor(index, chain, memory) { [weak self, weak queue] response in
-            guard let self, let queue else { return false }
-            return self.completeDeferred(
-              queue: index,
-              generation: generation,
-              chain: chain,
-              response: response,
-              memory: memory,
-              splitQueue: queue,
-              eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
-            )
-          }
+          let completion = DoryPCVirtioPCIDeferredCompletion(
+            publishResponse: { [weak self, weak queue] response in
+              guard let self, let queue else { return false }
+              return self.completeDeferred(
+                queue: index,
+                generation: generation,
+                chain: chain,
+                response: response,
+                memory: memory,
+                splitQueue: queue,
+                eventIndexNegotiated: snapshot.negotiatedFeatures.contains(.eventIndex)
+              )
+            },
+            failDeviceGeneration: { [weak self, weak queue] in
+              guard let self, let queue else { return false }
+              return self.failDeferred(
+                queue: index,
+                generation: generation,
+                splitQueue: queue
+              )
+            }
+          )
+          try processor(index, chain, memory, completion)
         }
       }
     } catch {
@@ -450,6 +501,10 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       let wasReady = deviceState.snapshot().status.contains(.driverOK)
       deviceState.writeStatus(status)
       if status.isEmpty {
+        for processingLock in processingLocks { processingLock.lock() }
+        defer {
+          for processingLock in processingLocks.reversed() { processingLock.unlock() }
+        }
         lock.withLock {
           configurationMSIXVector = .max
           isrStatus = 0
@@ -590,8 +645,12 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
       }
       guard current.enabled, current.generation == generation,
         deviceState.snapshot().status.contains(.driverOK),
-        current.queue === splitQueue,
-        UInt64(response.count) <= chain.writableByteCount else { return false }
+        current.queue === splitQueue else { return false }
+      guard UInt64(response.count) <= chain.writableByteCount else {
+        deviceState.markDeviceNeedsReset()
+        signalConfigurationChange()
+        return false
+      }
       var responseOffset = 0
       for descriptor in chain.descriptors where descriptor.deviceWillWrite
         && responseOffset < response.count
@@ -612,6 +671,34 @@ public final class DoryPCVirtioPCITransport: @unchecked Sendable {
         eventIndexNegotiated: eventIndexNegotiated
       )
       if notify { _ = signalQueueInterrupt(queue: index) }
+      return true
+    } catch {
+      deviceState.markDeviceNeedsReset()
+      signalConfigurationChange()
+      return false
+    }
+  }
+
+  private func failDeferred(
+    queue index: UInt16,
+    generation: UInt64,
+    splitQueue: DoryVirtioSplitQueue
+  ) -> Bool {
+    let processingLock = processingLocks[Int(index)]
+    processingLock.lock()
+    defer { processingLock.unlock() }
+    do {
+      let current = try lock.withLock { () -> QueueRegisters in
+        guard queues.indices.contains(Int(index)) else {
+          throw DoryPCVirtioPCIError.invalidQueue(index)
+        }
+        return queues[Int(index)]
+      }
+      guard current.enabled, current.generation == generation,
+        deviceState.snapshot().status.contains(.driverOK),
+        current.queue === splitQueue else { return false }
+      deviceState.markDeviceNeedsReset()
+      signalConfigurationChange()
       return true
     } catch {
       deviceState.markDeviceNeedsReset()
@@ -906,8 +993,14 @@ public final class DoryPCVirtioGPUPCIDevice: DoryPCPCIFunction, DoryPCPCIMSICont
   }
 
   public func connectGuestMemory(_ memory: any DoryVirtioGuestMemory) {
-    transport.connectQueueProcessor(memory: memory) { [gpuDevice] queue, chain, memory in
-      try gpuDevice.process(queue: queue, chain: chain, memory: memory)
+    transport.connectDeferredQueueProcessor(memory: memory) { [gpuDevice] queue, chain, memory, completion in
+      try gpuDevice.processDeferred(
+        queue: queue,
+        chain: chain,
+        memory: memory,
+        completion: { response in completion.publish(response) },
+        terminalFailure: { completion.failDevice() }
+      )
     }
   }
 

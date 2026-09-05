@@ -116,6 +116,16 @@ public protocol DoryVirtioGPUAccelerationAuthority: AnyObject, Sendable {
   func attachResource(contextID: UInt32, resourceID: UInt32) throws
   func detachResource(contextID: UInt32, resourceID: UInt32) throws
   func submit3D(contextID: UInt32, command: [UInt8]) throws
+  func submit3D(
+    contextID: UInt32,
+    command: [UInt8],
+    fence: DoryVirtioGPUFenceRequest,
+    completion: @escaping @Sendable (DoryVirtioGPUFenceCompletion) -> Void
+  ) throws
+  func createFence(
+    _ fence: DoryVirtioGPUFenceRequest,
+    completion: @escaping @Sendable (DoryVirtioGPUFenceCompletion) -> Void
+  ) throws
   func createResource3D(_ resource: DoryVirtioGPUResource3D) throws
   func attachBacking(
     resourceID: UInt32,
@@ -242,10 +252,27 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
   }
 
   private struct Header {
+    static let fenceFlag: UInt32 = 1
+    static let infoRingIndexFlag: UInt32 = 2
+
     let flags: UInt32
     let fenceID: UInt64
     let contextID: UInt32
     let ringIndex: UInt8
+
+    var hasFence: Bool { flags & Self.fenceFlag != 0 }
+    var hasInfoRingIndex: Bool { flags & Self.infoRingIndexFlag != 0 }
+  }
+
+  private enum FenceHeaderAdmission {
+    case none
+    case invalid
+    case admitted(DoryVirtioGPUFenceRequest)
+  }
+
+  private enum DeferredExecutionResult {
+    case immediate([UInt8])
+    case deferred
   }
 
   private struct Resource {
@@ -448,6 +475,71 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
     }
   }
 
+  public func processDeferred(
+    queue: UInt16,
+    chain: DoryVirtioDescriptorChain,
+    memory: any DoryVirtioGuestMemory,
+    completion: @escaping @Sendable ([UInt8]) -> Bool,
+    terminalFailure: @escaping @Sendable () -> Bool = { false }
+  ) throws {
+    guard queue == Self.controlQueue || queue == Self.cursorQueue else {
+      throw DoryVirtioGPUError.malformedRequest
+    }
+    let readable = chain.descriptors.filter { !$0.deviceWillWrite }
+    let writable = chain.descriptors.filter(\.deviceWillWrite)
+    guard !readable.isEmpty, !writable.isEmpty,
+      chain.descriptors.drop(while: { !$0.deviceWillWrite }).allSatisfy(\.deviceWillWrite)
+    else { throw DoryVirtioGPUError.invalidDescriptorDirection }
+    let request = try gather(readable, memory: memory)
+    guard request.count >= 24 else { throw DoryVirtioGPUError.malformedRequest }
+    let header = Header(
+      flags: read32(request, 4),
+      fenceID: read64(request, 8),
+      contextID: read32(request, 16),
+      ringIndex: request[20]
+    )
+    let requestType = read32(request, 0)
+    let command = Command(rawValue: requestType)
+    let cursorCommand = command == .updateCursor || command == .moveCursor
+    let publish: @Sendable ([UInt8]) -> Bool = { [weak self] responseBytes in
+      guard let self else { return false }
+      let published = completion(responseBytes)
+      self.recordCommand(
+        queue: queue,
+        requestType: requestType,
+        requestByteCount: request.count,
+        response: published ? responseBytes : nil
+      )
+      return published
+    }
+    do {
+      let result: DeferredExecutionResult
+      if (queue == Self.cursorQueue) != cursorCommand {
+        result = .immediate(response(.errorInvalidParameter, header: header))
+      } else {
+        result = try executeDeferred(
+          command,
+          request: request,
+          header: header,
+          memory: memory,
+          completion: publish,
+          terminalFailure: terminalFailure
+        )
+      }
+      if case .immediate(let responseBytes) = result {
+        _ = publish(responseBytes)
+      }
+    } catch {
+      recordCommand(
+        queue: queue,
+        requestType: requestType,
+        requestByteCount: request.count,
+        response: nil
+      )
+      throw error
+    }
+  }
+
   private func recordCommand(
     queue: UInt16,
     requestType: UInt32,
@@ -477,6 +569,128 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
       if recentCommands.count > Self.maximumDiagnosticCommands {
         recentCommands.removeFirst(recentCommands.count - Self.maximumDiagnosticCommands)
       }
+    }
+  }
+
+  private func executeDeferred(
+    _ command: Command?,
+    request: [UInt8],
+    header: Header,
+    memory: any DoryVirtioGuestMemory,
+    completion: @escaping @Sendable ([UInt8]) -> Bool,
+    terminalFailure: @escaping @Sendable () -> Bool
+  ) throws -> DeferredExecutionResult {
+    let fenceAdmission = admitFence(header)
+    if case .invalid = fenceAdmission {
+      return .immediate(response(.errorInvalidParameter, header: header))
+    }
+    guard case .admitted(let fence) = fenceAdmission else {
+      return .immediate(try execute(command, request: request, header: header, memory: memory))
+    }
+    if command == .submit3D {
+      guard request.count >= 32, header.contextID != 0,
+        let accelerationAuthority,
+        lock.withLock({ rendererContexts.contains(header.contextID) })
+      else { return .immediate(response(.errorInvalidParameter, header: header)) }
+      let byteCount = Int(read32(request, 24))
+      guard byteCount > 0, byteCount.isMultiple(of: 4), request.count == 32 + byteCount else {
+        return .immediate(response(.errorInvalidParameter, header: header))
+      }
+      let success = response(.okNoData, header: header)
+      let failure = response(.errorInvalidParameter, header: header)
+      do {
+        try accelerationAuthority.submit3D(
+          contextID: header.contextID,
+          command: Array(request[32...]),
+          fence: fence
+        ) { disposition in
+          switch disposition {
+          case .signaled:
+            _ = completion(success)
+          case .rejected:
+            _ = completion(failure)
+          case .outcomeUnknown:
+            _ = terminalFailure()
+          }
+        }
+      } catch {
+        return .immediate(failure)
+      }
+      return .deferred
+    }
+    let usesRenderer = commandUsesAcceleratedRenderer(command, request: request)
+    let responseBytes = try execute(command, request: request, header: header, memory: memory)
+    guard usesRenderer, successful(responseBytes), let accelerationAuthority else {
+      return .immediate(responseBytes)
+    }
+    let failure = response(.errorInvalidParameter, header: header)
+    do {
+      try accelerationAuthority.createFence(fence) { disposition in
+        switch disposition {
+        case .signaled:
+          _ = completion(responseBytes)
+        case .rejected:
+          _ = completion(failure)
+        case .outcomeUnknown:
+          _ = terminalFailure()
+        }
+      }
+    } catch {
+      _ = terminalFailure()
+      return .deferred
+    }
+    return .deferred
+  }
+
+  private func admitFence(_ header: Header) -> FenceHeaderAdmission {
+    guard header.flags & ~(Header.fenceFlag | Header.infoRingIndexFlag) == 0 else {
+      return .invalid
+    }
+    let hasFence = header.hasFence
+    let hasInfoRing = header.hasInfoRingIndex
+    if hasInfoRing, UInt32(header.ringIndex) > 63 { return .invalid }
+    if !hasFence {
+      return header.fenceID == 0 && (hasInfoRing || header.ringIndex == 0) ? .none : .invalid
+    }
+    if hasInfoRing {
+      guard header.contextID != 0 else { return .invalid }
+      return .admitted(.init(
+        contextID: header.contextID,
+        ringIndex: UInt32(header.ringIndex),
+        fenceID: header.fenceID,
+        contextFence: true
+      ))
+    }
+    guard header.ringIndex == 0 else { return .invalid }
+    return .admitted(.init(
+      contextID: 0,
+      ringIndex: 0,
+      fenceID: header.fenceID,
+      contextFence: false
+    ))
+  }
+
+
+  private func successful(_ responseBytes: [UInt8]) -> Bool {
+    responseBytes.count >= 4 && read32(responseBytes, 0) & 0xFF00 == 0x1100
+  }
+
+  private func commandUsesAcceleratedRenderer(_ command: Command?, request: [UInt8]) -> Bool {
+    guard let command else { return false }
+    switch command {
+    case .contextCreate, .contextDestroy, .contextAttachResource, .contextDetachResource,
+      .resourceCreate3D, .transferToHost3D, .transferFromHost3D, .submit3D:
+      return true
+    case .resourceAttachBacking, .resourceDetachBacking, .resourceUnref:
+      guard request.count >= 28 else { return false }
+      let resourceID = read32(request, 24)
+      return lock.withLock { rendererResources[resourceID] != nil }
+    case .resourceFlush:
+      guard request.count >= 44 else { return false }
+      let resourceID = read32(request, 40)
+      return lock.withLock { rendererResources[resourceID] != nil }
+    default:
+      return false
     }
   }
 
@@ -1034,8 +1248,9 @@ public final class DoryVirtioGPUDevice: @unchecked Sendable {
   }
 
   private func response(_ type: Response, header: Header) -> [UInt8] {
-    var flags = header.flags & 1
-    if header.flags & 1 == 0 { flags = 0 }
+    let flags = header.hasFence
+      ? header.flags & (Header.fenceFlag | Header.infoRingIndexFlag)
+      : 0
     return littleEndian(type.rawValue) + littleEndian(flags) + littleEndian(header.fenceID)
       + littleEndian(header.contextID) + [header.ringIndex, 0, 0, 0]
   }

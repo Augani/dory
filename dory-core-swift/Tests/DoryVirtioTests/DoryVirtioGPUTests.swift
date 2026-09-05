@@ -212,6 +212,85 @@ import Testing
       ])
   }
 
+
+  @Test func fencedAcceleratedSubmitCompletesOnlyAfterFenceSignal() throws {
+    let authority = try GPUAccelerationAuthority(
+      features: [.gpuVirgl, .gpuContextInit],
+      capsets: [.init(id: 2, maximumVersion: 2, data: [1])]
+    )
+    let device = try makeDevice(authority: authority)
+    let memory = GPUGuestMemory(byteCount: 0x20_000)
+    let contextID: UInt32 = 17
+
+    var contextName = [UInt8](repeating: 0, count: 64)
+    contextName.replaceSubrange(0..<4, with: Array("mesa".utf8))
+    let createContext =
+      header(0x0200, contextID: contextID) + littleEndian(UInt32(4))
+      + littleEndian(UInt32(2)) + contextName
+    #expect(read32(try command(device, bytes: createContext, memory: memory), 0) == 0x1100)
+
+    let submit =
+      header(0x0207, flags: 3, fence: 0, contextID: contextID, ringIndex: 2)
+      + littleEndian(UInt32(4)) + littleEndian(UInt32(0))
+      + [0xAA, 0xBB, 0xCC, 0xDD]
+    let responses = GPUResponseRecorder()
+    try deferredCommand(device, bytes: submit, memory: memory) { response in
+      responses.append(response)
+      return true
+    }
+
+    #expect(responses.values.isEmpty)
+    #expect(authority.operations == ["context-create:17:2:mesa", "submit-fenced:17:4:17:2:0:true"])
+    authority.completeFence(at: 0, with: .signaled)
+    let response = try #require(responses.values.first)
+    #expect(read32(response, 0) == 0x1100)
+    #expect(read32(response, 4) == 3)
+    #expect(read64(response, 8) == 0)
+    #expect(read32(response, 16) == contextID)
+    #expect(response[20] == 2)
+  }
+
+  @Test func fencedAcceleratedSubmitOutcomeUnknownRequestsTerminalFailure() throws {
+    let authority = try GPUAccelerationAuthority(
+      features: [.gpuVirgl, .gpuContextInit],
+      capsets: [.init(id: 2, maximumVersion: 2, data: [1])]
+    )
+    let device = try makeDevice(authority: authority)
+    let memory = GPUGuestMemory(byteCount: 0x20_000)
+    let contextID: UInt32 = 17
+
+    var contextName = [UInt8](repeating: 0, count: 64)
+    contextName.replaceSubrange(0..<4, with: Array("mesa".utf8))
+    let createContext =
+      header(0x0200, contextID: contextID) + littleEndian(UInt32(4))
+      + littleEndian(UInt32(2)) + contextName
+    #expect(read32(try command(device, bytes: createContext, memory: memory), 0) == 0x1100)
+
+    let submit =
+      header(0x0207, flags: 1, fence: 5, contextID: contextID)
+      + littleEndian(UInt32(4)) + littleEndian(UInt32(0))
+      + [0xAA, 0xBB, 0xCC, 0xDD]
+    let responses = GPUResponseRecorder()
+    let failures = GPUFailureRecorder()
+    try deferredCommand(
+      device,
+      bytes: submit,
+      memory: memory,
+      completion: { response in
+        responses.append(response)
+        return true
+      },
+      terminalFailure: {
+        failures.record()
+        return true
+      }
+    )
+
+    authority.completeFence(at: 0, with: .outcomeUnknown)
+    #expect(responses.values.isEmpty)
+    #expect(failures.count == 1)
+  }
+
   @Test func createsBacksTransfersBindsAndFlushesA2DResource() throws {
     let sink = GPUDisplaySink()
     let device = try makeDevice(sink: sink)
@@ -327,19 +406,65 @@ import Testing
     return try memory.read(at: 0x4000, byteCount: Int(written))
   }
 
+  private func deferredCommand(
+    _ device: DoryVirtioGPUDevice,
+    bytes: [UInt8],
+    responseBytes: Int = 24,
+    memory: GPUGuestMemory,
+    completion: @escaping @Sendable ([UInt8]) -> Bool,
+    terminalFailure: @escaping @Sendable () -> Bool = { false }
+  ) throws {
+    memory.put(bytes, at: 0x1000)
+    let chain = DoryVirtioDescriptorChain(
+      headIndex: 0,
+      descriptors: [
+        .init(address: 0x1000, length: UInt32(bytes.count), flags: 0, next: 1),
+        .init(address: 0x4000, length: UInt32(responseBytes), flags: 2, next: 0),
+      ],
+      readableByteCount: UInt64(bytes.count),
+      writableByteCount: UInt64(responseBytes)
+    )
+    try device.processDeferred(
+      queue: 0,
+      chain: chain,
+      memory: memory,
+      completion: completion,
+      terminalFailure: terminalFailure
+    )
+  }
+
   private func header(
     _ command: UInt32,
     flags: UInt32 = 0,
     fence: UInt64 = 0,
-    contextID: UInt32 = 0
+    contextID: UInt32 = 0,
+    ringIndex: UInt8 = 0
   ) -> [UInt8] {
     littleEndian(command) + littleEndian(flags) + littleEndian(fence)
-      + littleEndian(contextID) + [0, 0, 0, 0]
+      + littleEndian(contextID) + [ringIndex, 0, 0, 0]
   }
 
   private func rect(x: UInt32, y: UInt32, width: UInt32, height: UInt32) -> [UInt8] {
     littleEndian(x) + littleEndian(y) + littleEndian(width) + littleEndian(height)
   }
+}
+
+private final class GPUResponseRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage: [[UInt8]] = []
+
+  var values: [[UInt8]] { lock.withLock { storage } }
+
+  func append(_ response: [UInt8]) { lock.withLock { storage.append(response) } }
+}
+
+private final class GPUFailureRecorder: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage = 0
+
+  var count: Int { lock.withLock { storage } }
+
+  func record() { lock.withLock { storage += 1 } }
 }
 
 private final class GPUAccelerationAuthority: DoryVirtioGPUAccelerationAuthority,
@@ -372,8 +497,36 @@ private final class GPUAccelerationAuthority: DoryVirtioGPUAccelerationAuthority
     record("resource-detach:\(contextID):\(resourceID)")
   }
 
+  private var fenceCompletions: [@Sendable (DoryVirtioGPUFenceCompletion) -> Void] = []
+
   func submit3D(contextID: UInt32, command: [UInt8]) {
     record("submit:\(contextID):\(command.count)")
+  }
+
+  func submit3D(
+    contextID: UInt32,
+    command: [UInt8],
+    fence: DoryVirtioGPUFenceRequest,
+    completion: @escaping @Sendable (DoryVirtioGPUFenceCompletion) -> Void
+  ) {
+    lock.withLock { fenceCompletions.append(completion) }
+    record(
+      "submit-fenced:\(contextID):\(command.count):\(fence.contextID):"
+        + "\(fence.ringIndex):\(fence.fenceID):\(fence.contextFence)"
+    )
+  }
+
+  func createFence(
+    _ fence: DoryVirtioGPUFenceRequest,
+    completion: @escaping @Sendable (DoryVirtioGPUFenceCompletion) -> Void
+  ) {
+    lock.withLock { fenceCompletions.append(completion) }
+    record("fence:\(fence.contextID):\(fence.ringIndex):\(fence.fenceID):\(fence.contextFence)")
+  }
+
+  func completeFence(at index: Int, with result: DoryVirtioGPUFenceCompletion) {
+    let completion = lock.withLock { fenceCompletions.remove(at: index) }
+    completion(result)
   }
 
   func createResource3D(_ resource: DoryVirtioGPUResource3D) {

@@ -102,11 +102,23 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
 
     private let lane: DoryRendererWorkerVirtioCommandLane
     private let scanoutSink: (@Sendable (DoryPCVirGLScanoutUpdate) -> Bool)?
+    private struct PendingFenceKey: Hashable {
+        let deviceGeneration: UInt64
+        let hostFenceID: UInt64
+    }
+
+    private struct PendingFence {
+        let guest: DoryVirtioGPUFenceRequest
+        let completion: @Sendable (DoryVirtioGPUFenceCompletion) -> Void
+    }
+
     private let lock = NSLock()
     private let commandTimeout: TimeInterval
     private var deviceGeneration: UInt64
     private var active = true
     private var admittedCommand = false
+    private var nextHostFenceID: UInt64 = 1
+    private var pendingFences: [PendingFenceKey: PendingFence] = [:]
     private var resourceGenerations: [UInt32: UInt64] = [:]
     private var backings: [UInt32: DoryPCVirGLBackingAuthority] = [:]
 
@@ -133,6 +145,19 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
         self.deviceGeneration = deviceGeneration
         self.commandTimeout = commandTimeout
         self.scanoutSink = scanoutSink
+        lane.installCallbacks(
+            fence: { [weak self] generation, contextID, ringIndex, hostFenceID in
+                self?.completeFence(
+                    deviceGeneration: generation,
+                    contextID: contextID,
+                    ringIndex: ringIndex,
+                    hostFenceID: hostFenceID
+                )
+            },
+            runtimeFailure: { [weak self] generation, _ in
+                self?.cancelPendingFences(deviceGeneration: generation)
+            }
+        )
     }
 
     public func reset() {
@@ -152,7 +177,10 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
             backings.removeAll(keepingCapacity: false)
             return source
         }
-        if let generationToRevoke { lane.revoke(deviceGeneration: generationToRevoke) }
+        if let generationToRevoke {
+            cancelPendingFences(deviceGeneration: generationToRevoke)
+            lane.revoke(deviceGeneration: generationToRevoke)
+        }
     }
 
     public func createContext(id: UInt32, capsetID: UInt32, name: String) throws {
@@ -289,6 +317,94 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
                 deviceGeneration: generation,
                 completion: completion
             )
+        }
+    }
+
+    public func submit3D(
+        contextID: UInt32,
+        command: [UInt8],
+        fence: DoryVirtioGPUFenceRequest,
+        completion: @escaping @Sendable (DoryVirtioGPUFenceCompletion) -> Void
+    ) throws {
+        let generation = try admit()
+        let regions = try DoryRendererWorkerSharedRegionSet.immutableSubmit3D(
+            bytes: command,
+            maximumByteCount: DoryRendererWorkerLimits.production.maximumCommandBytes
+        )
+        let hostFenceID = try reserveHostFence(
+            deviceGeneration: generation,
+            guest: fence,
+            completion: completion
+        )
+        do {
+            try lane.submit3DThenCreateFence(
+                contextID: contextID,
+                regions: regions,
+                ringIndex: fence.contextFence ? fence.ringIndex : 0,
+                fenceID: hostFenceID,
+                contextFence: fence.contextFence,
+                deviceGeneration: generation
+            ) { [weak self] disposition in
+                switch disposition {
+                case .fenceArmed:
+                    return
+                case .provenRejected:
+                    self?.finishFence(
+                        deviceGeneration: generation,
+                        hostFenceID: hostFenceID,
+                        result: .rejected
+                    )
+                case .outcomeUnknown:
+                    self?.finishFence(
+                        deviceGeneration: generation,
+                        hostFenceID: hostFenceID,
+                        result: .outcomeUnknown
+                    )
+                }
+            }
+        } catch {
+            removeFence(deviceGeneration: generation, hostFenceID: hostFenceID)
+            throw error
+        }
+    }
+
+    public func createFence(
+        _ fence: DoryVirtioGPUFenceRequest,
+        completion: @escaping @Sendable (DoryVirtioGPUFenceCompletion) -> Void
+    ) throws {
+        let generation = try admit()
+        let hostFenceID = try reserveHostFence(
+            deviceGeneration: generation,
+            guest: fence,
+            completion: completion
+        )
+        do {
+            let fenceCompletion: DoryRendererWorkerVirtioCommandLane.Completion = { [weak self] result in
+                guard case .failure = result else { return }
+                self?.finishFence(
+                    deviceGeneration: generation,
+                    hostFenceID: hostFenceID,
+                    result: .outcomeUnknown
+                )
+            }
+            if fence.contextFence {
+                try lane.createContextFence(
+                    contextID: fence.contextID,
+                    ringIndex: fence.ringIndex,
+                    fenceID: hostFenceID,
+                    deviceGeneration: generation,
+                    completion: fenceCompletion
+                )
+            } else {
+                try lane.createGlobalFence(
+                    fenceID: hostFenceID,
+                    deviceGeneration: generation,
+                    completion: fenceCompletion
+                )
+            }
+        } catch {
+            removeFence(deviceGeneration: generation, hostFenceID: hostFenceID)
+            throw error
         }
     }
 
@@ -437,6 +553,106 @@ public final class DoryPCVirGLRendererAuthority: DoryVirtioGPUAccelerationAuthor
             throw DoryPCVirGLRendererAuthorityError.unknownResource(resourceID)
         }
         return generation
+    }
+
+    private func reserveHostFence(
+        deviceGeneration: UInt64,
+        guest: DoryVirtioGPUFenceRequest,
+        completion: @escaping @Sendable (DoryVirtioGPUFenceCompletion) -> Void
+    ) throws -> UInt64 {
+        try lock.withLock {
+            guard active, self.deviceGeneration == deviceGeneration else {
+                throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+            }
+            for _ in 0..<UInt32.max {
+                let candidate = nextHostFenceID
+                nextHostFenceID &+= 1
+                if nextHostFenceID == 0 { nextHostFenceID = 1 }
+                let key = PendingFenceKey(
+                    deviceGeneration: deviceGeneration,
+                    hostFenceID: candidate
+                )
+                guard pendingFences[key] == nil else { continue }
+                pendingFences[key] = PendingFence(
+                    guest: guest,
+                    completion: completion
+                )
+                return candidate
+            }
+            throw DoryPCVirGLRendererAuthorityError.rendererUnavailable
+        }
+    }
+
+    private func completeFence(
+        deviceGeneration: UInt64,
+        contextID: UInt32,
+        ringIndex: UInt32,
+        hostFenceID: UInt64
+    ) {
+        let key = PendingFenceKey(
+            deviceGeneration: deviceGeneration,
+            hostFenceID: hostFenceID
+        )
+        let completed = lock.withLock { () -> [PendingFence] in
+            guard let target = pendingFences[key] else { return [] }
+            let matchesCallbackTimeline = target.guest.contextFence
+                ? target.guest.contextID == contextID && target.guest.ringIndex == ringIndex
+                : contextID == 0 && ringIndex == 0
+            guard matchesCallbackTimeline else { return [] }
+            let completedKeys: [PendingFenceKey]
+            if target.guest.contextFence {
+                completedKeys = pendingFences.compactMap { candidateKey, pending -> PendingFenceKey? in
+                    guard candidateKey.deviceGeneration == deviceGeneration,
+                          sameGuestTimeline(pending.guest, target.guest),
+                          pending.guest.fenceID <= target.guest.fenceID else { return nil }
+                    return candidateKey
+                }
+            } else {
+                completedKeys = [key]
+            }
+            return completedKeys.compactMap { pendingFences.removeValue(forKey: $0) }
+        }
+        for pending in completed { pending.completion(.signaled) }
+    }
+
+    private func sameGuestTimeline(
+        _ lhs: DoryVirtioGPUFenceRequest,
+        _ rhs: DoryVirtioGPUFenceRequest
+    ) -> Bool {
+        guard lhs.contextFence == rhs.contextFence else { return false }
+        return lhs.contextFence
+            ? lhs.contextID == rhs.contextID && lhs.ringIndex == rhs.ringIndex
+            : true
+    }
+
+    private func removeFence(deviceGeneration: UInt64, hostFenceID: UInt64) {
+        let key = PendingFenceKey(
+            deviceGeneration: deviceGeneration,
+            hostFenceID: hostFenceID
+        )
+        _ = lock.withLock { pendingFences.removeValue(forKey: key) }
+    }
+
+    private func finishFence(
+        deviceGeneration: UInt64,
+        hostFenceID: UInt64,
+        result: DoryVirtioGPUFenceCompletion
+    ) {
+        let key = PendingFenceKey(
+            deviceGeneration: deviceGeneration,
+            hostFenceID: hostFenceID
+        )
+        let pending = lock.withLock { pendingFences.removeValue(forKey: key) }
+        pending?.completion(result)
+    }
+
+    private func cancelPendingFences(deviceGeneration: UInt64) {
+        let cancelled = lock.withLock { () -> [PendingFence] in
+            let matches = pendingFences.filter { $0.key.deviceGeneration == deviceGeneration }
+            for key in matches.keys { pendingFences.removeValue(forKey: key) }
+            return Array(matches.values)
+        }
+        for pending in cancelled { pending.completion(.outcomeUnknown) }
     }
 
     private func wait<T: Sendable>(

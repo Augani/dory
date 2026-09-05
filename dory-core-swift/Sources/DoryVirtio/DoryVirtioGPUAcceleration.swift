@@ -101,6 +101,27 @@ public struct DoryVirtioGPUTransfer3D: Sendable, Hashable {
   }
 }
 
+
+public struct DoryVirtioGPUFenceRequest: Sendable, Hashable {
+  public let contextID: UInt32
+  public let ringIndex: UInt32
+  public let fenceID: UInt64
+  public let contextFence: Bool
+
+  public init(contextID: UInt32, ringIndex: UInt32, fenceID: UInt64, contextFence: Bool) {
+    self.contextID = contextID
+    self.ringIndex = ringIndex
+    self.fenceID = fenceID
+    self.contextFence = contextFence
+  }
+}
+
+public enum DoryVirtioGPUFenceCompletion: Sendable, Equatable {
+  case signaled
+  case rejected
+  case outcomeUnknown
+}
+
 public struct DoryVirtioGPUAcceleratedScanoutFlush: Sendable, Hashable {
   public let scanoutID: UInt32
   public let resourceID: UInt32
@@ -157,6 +178,22 @@ extension DoryVirtioGPUAccelerationAuthority {
   }
 
   public func submit3D(contextID: UInt32, command: [UInt8]) throws {
+    throw DoryVirtioGPUAccelerationError.unsupportedOperation
+  }
+
+  public func submit3D(
+    contextID: UInt32,
+    command: [UInt8],
+    fence: DoryVirtioGPUFenceRequest,
+    completion: @escaping @Sendable (DoryVirtioGPUFenceCompletion) -> Void
+  ) throws {
+    throw DoryVirtioGPUAccelerationError.unsupportedOperation
+  }
+
+  public func createFence(
+    _ fence: DoryVirtioGPUFenceRequest,
+    completion: @escaping @Sendable (DoryVirtioGPUFenceCompletion) -> Void
+  ) throws {
     throw DoryVirtioGPUAccelerationError.unsupportedOperation
   }
 

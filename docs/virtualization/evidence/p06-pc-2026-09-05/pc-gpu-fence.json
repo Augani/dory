@@ -1,0 +1,41 @@
+{
+  "schema": "dory.pc-gpu-fence-review@1",
+  "baseCommit": "1da994e718323178d380ea0eb8cf205d8203a745",
+  "sourceSHA256": {
+    "Packages/ContainerizationEngine/Sources/DoryHV/DoryPCVirGLRendererAuthority.swift": "bf255bd6493425dcb3f0b464267cf96c5a0983cb476c6b61369624d1961e22ed",
+    "Packages/ContainerizationEngine/Sources/DoryHV/DoryPCVirtioFSPCI.swift": "6b0ab92cd99587b23bbe6ad606e66ec2098e97301bcc9b08d2a9549a93c04527",
+    "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryRendererWorkerBrokerTests.swift": "e44b931ce5793c9e83fe74810e7ac3dfb43d6c70f31e5d25794788f666356a88",
+    "dory-core-swift/Sources/DoryMachinePC/DoryPCVirtioPCI.swift": "0ffc1c9117df90f71a8d370dc9494b762eb1c87b956483d01702b04cd02fc241",
+    "dory-core-swift/Sources/DoryVirtio/DoryVirtioGPU.swift": "6feef40bae71baecedbe0939fc632132d2ecbaf366b2c1e11b2634d96e95d8d5",
+    "dory-core-swift/Sources/DoryVirtio/DoryVirtioGPUAcceleration.swift": "e76c0b54e6bd045fe560b921a50fa9f0ccecd1de55bb22c237b7a29aa2e428c0",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCVirtioGPUPCITests.swift": "0df9cd4f32c4031d3a21aece603e4f884f525c91a02306a3c16de66608547b7a",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCVirtioPCITests.swift": "6285008728adb9dc9c4497d06170f4fafc37b0dd1b2b10130b1724ab9a0a5562",
+    "dory-core-swift/Tests/DoryVirtioTests/DoryVirtioGPUTests.swift": "a97e0b8cf7b7b890d45c2eea870b0b957a91c987883c940ba0232b2686498a73"
+  },
+  "scope": [
+    "PC accelerated fenced commands defer used-ring publication until renderer fence signal.",
+    "Opaque global guest fence IDs map to distinct host IDs; context/ring timelines retire sequence numbers per VirtIO semantics.",
+    "Single-use deferred completion across value copies; uncertain active outcomes and undersized response buffers mark device needs-reset.",
+    "Reset serializes against in-flight response publication; stale callbacks cannot publish into a reset generation."
+  ],
+  "validation": [
+    {
+      "log": "pc-gpu-fence-core.log.gz",
+      "testsPassed": 27,
+      "rawSHA256": "f4c8cb574cba1f4be7257d504472c2d113d7f7dc3230d00f7b271455454cd69d",
+      "publishedUncompressedSHA256": "f4c8cb574cba1f4be7257d504472c2d113d7f7dc3230d00f7b271455454cd69d"
+    },
+    {
+      "log": "pc-gpu-fence-renderer-fs.log.gz",
+      "testsPassed": 67,
+      "rawSHA256": "cfd57c6dd3abbf5b3eb7565614b6f73d1cf19d0d6058d502361006a5b33f8f2a",
+      "publishedUncompressedSHA256": "cfd57c6dd3abbf5b3eb7565614b6f73d1cf19d0d6058d502361006a5b33f8f2a"
+    }
+  ],
+  "normalization": "Home-directory prefix replaced with <HOME>.",
+  "limitations": [
+    "No physical accelerated guest run in this batch.",
+    "Renderer recovery after an admitted device reset remains a separate end-to-end qualification requirement.",
+    "Sequential terminal-outcome tests do not establish a general concurrent workload soak."
+  ]
+}

@@ -136,7 +136,7 @@ public final class DoryPCVirtioFSPCIDevice: DoryPCPCIFunction,
         queue: UInt16,
         chain: DoryVirtioDescriptorChain,
         memory: any DoryVirtioGuestMemory,
-        completion: @escaping @Sendable ([UInt8]) -> Bool
+        completion: DoryPCVirtioPCIDeferredCompletion
     ) throws {
         guard Int(queue) <= requestQueueCount else {
             throw DoryPCVirtioPCIError.invalidQueue(queue)
@@ -158,7 +158,7 @@ public final class DoryPCVirtioFSPCIDevice: DoryPCPCIFunction,
         )
         switch decision {
         case .reject(let rejected):
-            _ = completion(rejected.response)
+            _ = completion.publish(rejected.response)
         case .execute(let admitted):
             let accepted = stateLock.withLock { () -> Bool in
                 guard !terminal, activeRequestCount < maximumInFlightRequests else { return false }
@@ -167,7 +167,7 @@ public final class DoryPCVirtioFSPCIDevice: DoryPCPCIFunction,
                 return true
             }
             guard accepted else {
-                _ = completion(Self.errorResponse(unique: admitted.header.unique, errno: EAGAIN))
+                _ = completion.publish(Self.errorResponse(unique: admitted.header.unique, errno: EAGAIN))
                 return
             }
             Task { [weak self] in
@@ -180,7 +180,7 @@ public final class DoryPCVirtioFSPCIDevice: DoryPCPCIFunction,
     private func execute(
         _ request: VirtioFSAdmittedRequest,
         queue: UInt16,
-        completion: @escaping @Sendable ([UInt8]) -> Bool
+        completion: DoryPCVirtioPCIDeferredCompletion
     ) async {
         defer {
             stateLock.withLock { activeRequestCount -= 1 }
@@ -192,7 +192,7 @@ public final class DoryPCVirtioFSPCIDevice: DoryPCPCIFunction,
         )
         guard !overflow else {
             fail("virtio-fs worker operation deadline overflow")
-            _ = completion(Self.errorResponse(unique: request.header.unique, errno: EIO))
+            _ = completion.publish(Self.errorResponse(unique: request.header.unique, errno: EIO))
             return
         }
         do {
@@ -208,7 +208,7 @@ public final class DoryPCVirtioFSPCIDevice: DoryPCPCIFunction,
                 for: request
             )
             let mayPublish = stateLock.withLock { !terminal }
-            let published = mayPublish && completion(normalized.bytes)
+            let published = mayPublish && completion.publish(normalized.bytes)
             if published && normalized.representsWorkerResponse {
                 try await broker.commitPublication(execution.publication)
                 if request.opcode == .destroy,
@@ -219,7 +219,7 @@ public final class DoryPCVirtioFSPCIDevice: DoryPCPCIFunction,
                 try await broker.discardPublication(execution.publication)
             }
         } catch {
-            _ = completion(Self.errorResponse(unique: request.header.unique, errno: EIO))
+            _ = completion.publish(Self.errorResponse(unique: request.header.unique, errno: EIO))
             fail("filesystem worker request failed: \(error)")
         }
     }

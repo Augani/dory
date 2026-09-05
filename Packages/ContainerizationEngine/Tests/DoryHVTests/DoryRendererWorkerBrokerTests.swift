@@ -1011,6 +1011,117 @@ import Testing
         #expect(lane.capset(id: 4, version: 1) == nil)
     }
 
+    @Test func doryPCVirGLAuthorityMapsOpaqueGuestFenceToPrivateHostFence() async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: 11
+        )
+        let completions = DoryPCVirGLFenceCompletionRecorder()
+
+        try authority.submit3D(
+            contextID: 7,
+            command: [1, 2, 3, 4],
+            fence: .init(contextID: 7, ringIndex: 2, fenceID: 0, contextFence: true),
+            completion: { completions.append($0) }
+        )
+        #expect(await rendererEventually { fixture.channel.sendCount == 1 })
+        #expect(try fixture.channel.command(
+            at: 0,
+            limits: fixture.bootstrap.limits
+        ).operation == .submit3D)
+        fixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(payload: Data(), descriptors: []))
+        )
+        try #require(await rendererEventually { fixture.channel.sendCount == 2 })
+        let fenceCommand = try fixture.channel.command(
+            at: 1,
+            limits: fixture.bootstrap.limits
+        )
+        #expect(fenceCommand.operation == .createFence)
+        #expect(fenceCommand.contextID == 7)
+        let payload = try DoryRendererFencePayload.decode(fenceCommand.payload)
+        #expect(payload.flags == DoryRendererFencePayload.contextTimeline)
+        #expect(payload.ringIndex == 2)
+        #expect(payload.fenceID == 1)
+        #expect(payload.fenceID != 0)
+        let (completionDescriptor, signalDescriptor) = try makeUnsignaledFenceDescriptor()
+        fixture.channel.complete(
+            at: 1,
+            with: .success(DoryRendererWorkerChannelReply(
+                payload: fenceCommand.payload,
+                descriptors: [completionDescriptor]
+            ))
+        )
+        try #require(await rendererEventually { lane.snapshot().armedFences == 1 })
+        #expect(completions.values.isEmpty)
+        close(signalDescriptor)
+        try #require(await rendererEventually { completions.values == [.signaled] })
+    }
+
+    @Test func doryPCVirGLGlobalFenceSignalDoesNotRetireLowerLaterGuestIDs() async throws {
+        let fixture = try rendererBrokerFixture(limits: rendererLimits(maximumInFlight: 4))
+        let lane = try DoryRendererWorkerVirtioCommandLane(
+            broker: fixture.broker,
+            deviceGeneration: 11
+        )
+        let authority = try DoryPCVirGLRendererAuthority(
+            lane: lane,
+            deviceGeneration: 11
+        )
+        let completions = DoryPCVirGLFenceCompletionRecorder()
+
+        try authority.createFence(
+            .init(contextID: 0, ringIndex: 0, fenceID: 42, contextFence: false),
+            completion: { completions.append($0) }
+        )
+        try #require(await rendererEventually { fixture.channel.sendCount == 1 })
+        let firstFence = try fixture.channel.command(at: 0, limits: fixture.bootstrap.limits)
+        let firstPayload = try DoryRendererFencePayload.decode(firstFence.payload)
+        #expect(firstFence.operation == .createFence)
+        #expect(firstFence.contextID == 0)
+        #expect(firstPayload.fenceID == 1)
+        let (firstCompletion, firstSignal) = try makeUnsignaledFenceDescriptor()
+        fixture.channel.complete(
+            at: 0,
+            with: .success(DoryRendererWorkerChannelReply(
+                payload: firstFence.payload,
+                descriptors: [firstCompletion]
+            ))
+        )
+        try #require(await rendererEventually { lane.snapshot().armedFences == 1 })
+
+        try authority.createFence(
+            .init(contextID: 0, ringIndex: 0, fenceID: 1, contextFence: false),
+            completion: { completions.append($0) }
+        )
+        try #require(await rendererEventually { fixture.channel.sendCount == 2 })
+        let secondFence = try fixture.channel.command(at: 1, limits: fixture.bootstrap.limits)
+        let secondPayload = try DoryRendererFencePayload.decode(secondFence.payload)
+        #expect(secondFence.operation == .createFence)
+        #expect(secondFence.contextID == 0)
+        #expect(secondPayload.fenceID == 2)
+        let (secondCompletion, secondSignal) = try makeUnsignaledFenceDescriptor()
+        fixture.channel.complete(
+            at: 1,
+            with: .success(DoryRendererWorkerChannelReply(
+                payload: secondFence.payload,
+                descriptors: [secondCompletion]
+            ))
+        )
+        try #require(await rendererEventually { lane.snapshot().armedFences == 2 })
+        close(firstSignal)
+        try #require(await rendererEventually { completions.values == [.signaled] })
+        #expect(lane.snapshot().armedFences == 1)
+        close(secondSignal)
+        try #require(await rendererEventually { completions.values == [.signaled, .signaled] })
+    }
+
     @Test func resourceFollowupCommandsCarryExactAuthenticatedWorkerGeneration() async throws {
         let fixture = try rendererBrokerFixture()
         let lane = try DoryRendererWorkerVirtioCommandLane(
@@ -4970,6 +5081,17 @@ private struct RendererLaneFenceEvent: Equatable {
     let contextID: UInt32
     let ringIndex: UInt32
     let fenceID: UInt64
+}
+
+private final class DoryPCVirGLFenceCompletionRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [DoryVirtioGPUFenceCompletion] = []
+
+    var values: [DoryVirtioGPUFenceCompletion] { lock.withLock { storage } }
+
+    func append(_ completion: DoryVirtioGPUFenceCompletion) {
+        lock.withLock { storage.append(completion) }
+    }
 }
 
 private final class RendererLaneRecorder: @unchecked Sendable {

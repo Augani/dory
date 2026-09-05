@@ -255,7 +255,7 @@ import Testing
 
     try write16(machine, bar + 0x100, 0)
     let first = try #require(completions.removeFirst())
-    #expect(first([9, 8, 7]))
+    #expect(first.publish([9, 8, 7]))
     #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 0])
     #expect(try read16(machine, 0x3002) == 1)
 
@@ -264,8 +264,163 @@ import Testing
     try write16(machine, bar + 0x100, 0)
     let stale = try #require(completions.removeFirst())
     try write8(machine, bar + 0x14, 0)
-    #expect(!stale([6, 6, 6, 6]))
+    #expect(!stale.publish([6, 6, 6, 6]))
     #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 0])
+  }
+
+  @Test func deferredCompletionPublishesAtMostOneTerminalOutcome() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    let completions = DeferredCompletionRecorder()
+    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+      _, _, _, completion in
+      completions.append(completion)
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try configureSingleDescriptorQueue(machine, bar: bar)
+
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    let completion = try #require(completions.removeFirst())
+    let copiedCompletion = completion
+    #expect(completion.publish([9, 8, 7]))
+    #expect(!copiedCompletion.publish([6, 6, 6, 6]))
+    #expect(!copiedCompletion.failDevice())
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 0])
+    #expect(try read16(machine, 0x3002) == 1)
+    #expect(!function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+  }
+
+  @Test func failureConsumesDeferredCompletion() throws {
+    let function = try makeFunction()
+    let machine = try DoryPCDirectKernelMachine(
+      memoryBytes: 2 * 1024 * 1024,
+      pciFunctions: [function]
+    )
+    let completions = DeferredCompletionRecorder()
+    function.transport.connectDeferredQueueProcessor(memory: machine.physicalMemory) {
+      _, _, _, completion in
+      completions.append(completion)
+    }
+    try function.writeConfiguration(offset: 4, bytes: [2, 0])
+    let bar: UInt64 = 0xD000_0000
+    try configureSingleDescriptorQueue(machine, bar: bar)
+
+    try publishDeferredDescriptor(machine, bar: bar, availableIndex: 1)
+    let completion = try #require(completions.removeFirst())
+    #expect(completion.failDevice())
+    #expect(!completion.publish([9, 8, 7]))
+    #expect(try machine.physicalMemory.read(at: 0x5000, byteCount: 4) == [0, 0, 0, 0])
+    #expect(try read16(machine, 0x3002) == 0)
+    #expect(function.transport.deviceState.snapshot().status.contains(.deviceNeedsReset))
+  }
+
+  @Test func resetWaitsForInFlightDeferredPublication() throws {
+    let function = try makeFunction()
+    let memory = BlockingVirtioGuestMemory(byteCount: 0x20_000, blockedWriteAddress: 0x5000)
+    let completions = DeferredCompletionRecorder()
+    function.transport.connectDeferredQueueProcessor(memory: memory) {
+      _, chain, memory, completion in
+      let request = try memory.read(at: chain.descriptors[0].address, byteCount: 4)
+      #expect(request == [1, 2, 3, 4])
+      completions.append(completion)
+    }
+
+    try function.transport.writeBAR(offset: 0x08, bytes: littleEndian(UInt32(1)))
+    try function.transport.writeBAR(offset: 0x0C, bytes: littleEndian(UInt32(1)))
+    try function.transport.writeBAR(offset: 0x14, bytes: [0x0F])
+    try function.transport.writeBAR(offset: 0x16, bytes: littleEndian(UInt16(0)))
+    try function.transport.writeBAR(offset: 0x18, bytes: littleEndian(UInt16(8)))
+    try function.transport.writeBAR(offset: 0x20, bytes: littleEndian(UInt64(0x1000)))
+    try function.transport.writeBAR(offset: 0x28, bytes: littleEndian(UInt64(0x2000)))
+    try function.transport.writeBAR(offset: 0x30, bytes: littleEndian(UInt64(0x3000)))
+    try function.transport.writeBAR(offset: 0x1C, bytes: littleEndian(UInt16(1)))
+
+    try memory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x4000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(1)) + littleEndian(UInt16(1))
+        + littleEndian(UInt64(0x5000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(2)) + littleEndian(UInt16(0))
+    )
+    try memory.write(at: 0x4000, bytes: [1, 2, 3, 4])
+    try memory.write(at: 0x5000, bytes: [0, 0, 0, 0])
+    try memory.write(at: 0x2000, bytes: [0, 0, 1, 0, 0, 0])
+    memory.armBlockedWrite()
+
+    try function.transport.writeBAR(offset: 0x100, bytes: littleEndian(UInt16(0)))
+    let completion = try #require(completions.removeFirst())
+
+    let completionResult = LockedValue<Bool?>(nil)
+    let completionDone = DispatchSemaphore(value: 0)
+    let completionThread = Thread {
+      completionResult.value = completion.publish([9, 8, 7])
+      completionDone.signal()
+    }
+    completionThread.start()
+    #expect(memory.waitForBlockedWrite(timeout: 1))
+
+    let resetResult = LockedValue<Result<Void, Error>?>(nil)
+    let resetDone = DispatchSemaphore(value: 0)
+    let resetThread = Thread {
+      do {
+        try function.transport.writeBAR(offset: 0x14, bytes: [0])
+        resetResult.value = .success(())
+      } catch {
+        resetResult.value = .failure(error)
+      }
+      resetDone.signal()
+    }
+    resetThread.start()
+
+    #expect(resetDone.wait(timeout: .now() + 0.2) == .timedOut)
+    memory.releaseBlockedWrite()
+    #expect(completionDone.wait(timeout: .now() + 1) == .success)
+    #expect(resetDone.wait(timeout: .now() + 1) == .success)
+    #expect(completionResult.value == true)
+    if case .failure(let error) = resetResult.value { throw error }
+    #expect(try memory.read(at: 0x5000, byteCount: 4) == [9, 8, 7, 0])
+    #expect(!(try function.transport.queueSnapshot(at: 0).enabled))
+  }
+
+  private func configureSingleDescriptorQueue(
+    _ machine: DoryPCDirectKernelMachine,
+    bar: UInt64
+  ) throws {
+    try write32(machine, bar + 0x08, 1)
+    try write32(machine, bar + 0x0C, 1)
+    try write8(machine, bar + 0x14, 0x0F)
+    try write16(machine, bar + 0x16, 0)
+    try write16(machine, bar + 0x18, 8)
+    try write64(machine, bar + 0x20, 0x1000)
+    try write64(machine, bar + 0x28, 0x2000)
+    try write64(machine, bar + 0x30, 0x3000)
+    try write16(machine, bar + 0x1C, 1)
+  }
+
+  private func publishDeferredDescriptor(
+    _ machine: DoryPCDirectKernelMachine,
+    bar: UInt64,
+    availableIndex: UInt16
+  ) throws {
+    try machine.physicalMemory.write(
+      at: 0x1000,
+      bytes: littleEndian(UInt64(0x4000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(1)) + littleEndian(UInt16(1))
+        + littleEndian(UInt64(0x5000)) + littleEndian(UInt32(4))
+        + littleEndian(UInt16(2)) + littleEndian(UInt16(0))
+    )
+    try machine.physicalMemory.write(at: 0x4000, bytes: [1, 2, 3, 4])
+    try machine.physicalMemory.write(at: 0x5000, bytes: [0, 0, 0, 0])
+    try machine.physicalMemory.write(
+      at: 0x2004 + UInt64((availableIndex - 1) % 8) * 2,
+      bytes: littleEndian(UInt16(0))
+    )
+    try machine.physicalMemory.write(at: 0x2002, bytes: littleEndian(availableIndex))
+    try write16(machine, bar + 0x100, 0)
   }
 
   private func makeFunction() throws -> DoryPCVirtioPCIFunction {
@@ -339,11 +494,12 @@ private final class LockedQueueNotifications: @unchecked Sendable {
 }
 
 private final class DeferredCompletionRecorder: @unchecked Sendable {
-  typealias Completion = @Sendable ([UInt8]) -> Bool
   private let lock = NSLock()
-  private var storage: [Completion] = []
-  func append(_ completion: @escaping Completion) { lock.withLock { storage.append(completion) } }
-  func removeFirst() -> Completion? {
+  private var storage: [DoryPCVirtioPCIDeferredCompletion] = []
+  func append(_ completion: DoryPCVirtioPCIDeferredCompletion) {
+    lock.withLock { storage.append(completion) }
+  }
+  func removeFirst() -> DoryPCVirtioPCIDeferredCompletion? {
     lock.withLock { storage.isEmpty ? nil : storage.removeFirst() }
   }
 }
@@ -354,4 +510,74 @@ private func uint32(_ bytes: [UInt8]) -> UInt32 {
 
 private func littleEndian<T: FixedWidthInteger>(_ value: T) -> [UInt8] {
   (0..<MemoryLayout<T>.size).map { UInt8(truncatingIfNeeded: value >> T($0 * 8)) }
+}
+
+private final class LockedValue<Value>: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storage: Value
+
+  init(_ value: Value) { storage = value }
+
+  var value: Value {
+    get { lock.withLock { storage } }
+    set { lock.withLock { storage = newValue } }
+  }
+}
+
+private final class BlockingVirtioGuestMemory: DoryVirtioGuestMemory, @unchecked Sendable {
+  private let lock = NSLock()
+  private var bytes: [UInt8]
+  private let blockedWriteAddress: UInt64
+  private let blockedWriteStarted = DispatchSemaphore(value: 0)
+  private let blockedWriteRelease = DispatchSemaphore(value: 0)
+  private var shouldBlockWrite = false
+
+  init(byteCount: Int, blockedWriteAddress: UInt64) {
+    bytes = [UInt8](repeating: 0, count: byteCount)
+    self.blockedWriteAddress = blockedWriteAddress
+  }
+
+  func read(at address: UInt64, byteCount: Int) throws -> [UInt8] {
+    try validate(at: address, byteCount: byteCount, deviceWillWrite: false)
+    return lock.withLock {
+      let offset = Int(address)
+      return Array(bytes[offset..<(offset + byteCount)])
+    }
+  }
+
+  func validate(at address: UInt64, byteCount: Int, deviceWillWrite: Bool) throws {
+    let (_, overflow) = address.addingReportingOverflow(UInt64(byteCount))
+    guard byteCount >= 0, !overflow, address + UInt64(byteCount) <= UInt64(bytes.count) else {
+      throw DoryVirtioQueueError.guestAddressOverflow(address: address, offset: UInt64(byteCount))
+    }
+  }
+
+  func write(at address: UInt64, bytes newBytes: [UInt8]) throws {
+    try validate(at: address, byteCount: newBytes.count, deviceWillWrite: true)
+    let shouldBlock = lock.withLock { () -> Bool in
+      guard address == blockedWriteAddress, shouldBlockWrite else { return false }
+      shouldBlockWrite = false
+      return true
+    }
+    if shouldBlock {
+      blockedWriteStarted.signal()
+      blockedWriteRelease.wait()
+    }
+    lock.withLock {
+      let offset = Int(address)
+      bytes.replaceSubrange(offset..<(offset + newBytes.count), with: newBytes)
+    }
+  }
+
+  func synchronize() {}
+
+  func armBlockedWrite() {
+    lock.withLock { shouldBlockWrite = true }
+  }
+
+  func waitForBlockedWrite(timeout: TimeInterval) -> Bool {
+    blockedWriteStarted.wait(timeout: .now() + timeout) == .success
+  }
+
+  func releaseBlockedWrite() { blockedWriteRelease.signal() }
 }
