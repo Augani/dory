@@ -1,0 +1,38 @@
+{
+  "schema": "dory.container-standard-gpu-shader@1",
+  "request": "docker create --gpus all",
+  "explicitDeviceArgumentUsed": false,
+  "translatedDevices": [
+    {
+      "PathOnHost": "/dev/dri/renderD128",
+      "PathInContainer": "/dev/dri/renderD128",
+      "CgroupPermissions": "rw"
+    }
+  ],
+  "remainingDeviceRequests": null,
+  "state": {
+    "Status": "exited",
+    "Running": false,
+    "Paused": false,
+    "Restarting": false,
+    "OOMKilled": false,
+    "Dead": false,
+    "Pid": 0,
+    "ExitCode": 0,
+    "Error": "",
+    "StartedAt": "2026-09-05T03:21:14.270400792Z",
+    "FinishedAt": "2026-09-05T03:21:14.692196167Z"
+  },
+  "probeEvidence": "container-shader-compute.json",
+  "output": "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass",
+  "checkedOutputs": 65536,
+  "mismatches": 0,
+  "daemonSHA256": "c9d8add23b69fb62c545beefaec52ce3d9550fd0c78c60771d37d812f85cb542",
+  "ffiArchiveSHA256": "6e9d3163a9a060283e00125782db048f9d35043162a9d97dac0da52e29709177",
+  "initfsSHA256": "a627fb1892d6d45b5bd890f5daee5ab19feda625694bb0cf5a6095c9951d20b8",
+  "kernelSHA256": "fb8a381992afec20f3522bc6242868548829f82c209b261e0efd57e01498494f",
+  "limitations": [
+    "One shader workload through standard GPU device request; no sustained performance qualification.",
+    "Worker crash recovery, application Settings flow and amd64 workloads remain unqualified."
+  ]
+}
