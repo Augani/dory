@@ -1,0 +1,20 @@
+{
+  "schema": "dory.container-renderer-fail-stop@1",
+  "runtimeReference": "container-standard-gpu-shader.json",
+  "faultInjection": "SIGKILL of only the renderer worker in a disposable isolated engine",
+  "automaticRestartLimit": 0,
+  "observedLogLines": [
+    "dory-hv: engine GPU acceleration attached with authenticated renderer worker generation 1",
+    "dory-gpu: renderer worker generation 2 failed; retained 0 uncertain fenced chains: broker(DoryHV.DoryRendererWorkerBrokerError.notActive(DoryHV.DoryRendererWorkerBrokerState.interrupted))",
+    "dory-hv: guest stop reason: guest crash: engine renderer worker failed closed: generation 2 failed: broker(DoryHV.DoryRendererWorkerBrokerError.notActive(DoryHV.DoryRendererWorkerBrokerState.interrupted))",
+    "dory-hv: engine stopped: guest crash: engine renderer worker failed closed: generation 2 failed: broker(DoryHV.DoryRendererWorkerBrokerError.notActive(DoryHV.DoryRendererWorkerBrokerState.interrupted))"
+  ],
+  "originalEngineLogSHA256": "62c387cd4618be686afe763cfd78d21fa2d5df64b208ca273ba939f975815cf2",
+  "engineAndWorkerProcessesAbsentAfterward": true,
+  "observedUncertainFencedChains": 0,
+  "result": "Engine stopped after terminal renderer failure.",
+  "limitations": [
+    "Idle worker termination: no outstanding GPU command or uncertain fence was present.",
+    "Automatic restart was disabled; this proves fail-stop behavior, not recovery or retained-data correctness."
+  ]
+}
