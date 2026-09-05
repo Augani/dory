@@ -422,16 +422,16 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     systemControlPort = DoryPCSystemControlPortB(pit: legacyPIT)
     serial = DoryPCUART16550()
     serial.connectInterruptSink { [legacyPIC, ioAPIC] asserted in
-      if asserted { try? legacyPIC.raise(irq: 4) }
+      try? legacyPIC.setAsserted(asserted, irq: 4)
       try? ioAPIC.setAsserted(asserted, pin: 4)
     }
     rtc = DoryPCRTC146818(initialDate: initialRTCDate)
     rtc.connectInterruptSink { [legacyPIC, ioAPIC] asserted in
-      if asserted { try? legacyPIC.raise(irq: 8) }
+      try? legacyPIC.setAsserted(asserted, irq: 8)
       try? ioAPIC.setAsserted(asserted, pin: 8)
     }
     hpet = DoryPCHPET { [legacyPIC, ioAPIC] _, route, asserted in
-      if asserted, case .legacyIRQ(let irq) = route { try? legacyPIC.raise(irq: irq) }
+      if case .legacyIRQ(let irq) = route { try? legacyPIC.setAsserted(asserted, irq: irq) }
       try? ioAPIC.setAsserted(asserted, pin: Self.ioAPICPin(forHPETRoute: route))
     }
     pciExpress = DoryPCPCIExpressECAM()
@@ -470,6 +470,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     pciBARWindow.seal()
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: false))
     try ioBus.attach(DoryPCPIC8259Port(pair: legacyPIC, slave: true))
+    try ioBus.attach(DoryPCELCRPort(pic: legacyPIC))
     try ioBus.attach(legacyPIT)
     try ioBus.attach(systemControlPort)
     try ioBus.attach(rtc)

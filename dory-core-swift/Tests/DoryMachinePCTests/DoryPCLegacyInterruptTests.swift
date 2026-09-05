@@ -64,6 +64,109 @@ import Testing
     #expect(!pair.canAccept(irq: 8, interruptsEnabled: true))
   }
 
+  @Test func elcrReportsEdgeDefaultAndPreservesOnlyLevelCapableIRQs() throws {
+    let pair = DoryPCPIC8259Pair()
+    let elcr = DoryPCELCRPort(pic: pair)
+
+    #expect(try elcr.read(portOffset: 0, width: .word) == 0)
+    try elcr.write(portOffset: 0, value: 0xFFFF, width: .word)
+    #expect(try elcr.read(portOffset: 0, width: .word) == 0xDEF8)
+    #expect(try elcr.read(portOffset: 0, width: .byte) == 0xF8)
+    #expect(try elcr.read(portOffset: 1, width: .byte) == 0xDE)
+    #expect(pair.snapshot().masterLevelTriggered == 0xF8)
+    #expect(pair.snapshot().slaveLevelTriggered == 0xDE)
+
+    try elcr.write(portOffset: 1, value: 0x02, width: .byte)
+    #expect(try elcr.read(portOffset: 0, width: .word) == 0x02F8)
+    try elcr.write(portOffset: 0, value: 0xFF07, width: .byte)
+    #expect(try elcr.read(portOffset: 0, width: .word) == 0x0200)
+  }
+
+  @Test func elcrLevelIRQRequeuesUntilTheLineIsDeasserted() throws {
+    let pair = DoryPCPIC8259Pair()
+    let master = DoryPCPIC8259Port(pair: pair, slave: false)
+    let slave = DoryPCPIC8259Port(pair: pair, slave: true)
+    let elcr = DoryPCELCRPort(pic: pair)
+    try initialize(master, offset: 0x20, cascade: 4)
+    try initialize(slave, offset: 0x28, cascade: 2)
+    try elcr.write(portOffset: 0, value: 0x0200, width: .word)
+
+    try pair.setAsserted(true, irq: 9)
+    #expect(pair.acknowledge(interruptsEnabled: true) == 0x29)
+    try slave.write(portOffset: 0, value: 0x20, width: .byte)
+    try master.write(portOffset: 0, value: 0x20, width: .byte)
+    #expect(pair.acknowledge(interruptsEnabled: true) == 0x29)
+
+    try pair.setAsserted(false, irq: 9)
+    try slave.write(portOffset: 0, value: 0x20, width: .byte)
+    try master.write(portOffset: 0, value: 0x20, width: .byte)
+    #expect(pair.acknowledge(interruptsEnabled: true) == nil)
+    #expect(pair.snapshot().slaveAssertedLines == 0)
+  }
+
+  @Test func edgeIRQRequiresANewRisingEdgeAfterAcknowledgement() throws {
+    let pair = DoryPCPIC8259Pair()
+    let master = DoryPCPIC8259Port(pair: pair, slave: false)
+    try initialize(master, offset: 0x20, cascade: 4)
+
+    try pair.setAsserted(true, irq: 4)
+    #expect(pair.acknowledge(interruptsEnabled: true) == 0x24)
+    try master.write(portOffset: 0, value: 0x20, width: .byte)
+    try pair.setAsserted(true, irq: 4)
+    #expect(pair.acknowledge(interruptsEnabled: true) == nil)
+
+    try pair.setAsserted(false, irq: 4)
+    try pair.setAsserted(true, irq: 4)
+    #expect(pair.acknowledge(interruptsEnabled: true) == 0x24)
+  }
+
+  @Test func elcrModeChangeObservesAnAlreadyAssertedLine() throws {
+    let pair = DoryPCPIC8259Pair()
+    let master = DoryPCPIC8259Port(pair: pair, slave: false)
+    let slave = DoryPCPIC8259Port(pair: pair, slave: true)
+    let elcr = DoryPCELCRPort(pic: pair)
+    try initialize(master, offset: 0x20, cascade: 4)
+    try initialize(slave, offset: 0x28, cascade: 2)
+
+    try pair.setAsserted(true, irq: 9)
+    #expect(pair.acknowledge(interruptsEnabled: true) == 0x29)
+    try slave.write(portOffset: 0, value: 0x20, width: .byte)
+    try master.write(portOffset: 0, value: 0x20, width: .byte)
+    #expect(pair.acknowledge(interruptsEnabled: true) == nil)
+
+    try elcr.write(portOffset: 0, value: 0x0200, width: .word)
+    #expect(pair.acknowledge(interruptsEnabled: true) == 0x29)
+  }
+
+  @Test func picInitializationAndMasksPreserveAssertedLevelLines() throws {
+    let pair = DoryPCPIC8259Pair()
+    let master = DoryPCPIC8259Port(pair: pair, slave: false)
+    let slave = DoryPCPIC8259Port(pair: pair, slave: true)
+    let elcr = DoryPCELCRPort(pic: pair)
+    try elcr.write(portOffset: 0, value: 0x0200, width: .word)
+    try pair.setAsserted(true, irq: 9)
+
+    try initialize(master, offset: 0x20, cascade: 4)
+    try initialize(slave, offset: 0x28, cascade: 2)
+    #expect(pair.acknowledge(interruptsEnabled: true) == 0x29)
+    try slave.write(portOffset: 0, value: 0x20, width: .byte)
+    try master.write(portOffset: 0, value: 0x20, width: .byte)
+
+    try slave.write(portOffset: 1, value: 0x02, width: .byte)
+    #expect(pair.acknowledge(interruptsEnabled: true) == nil)
+    try slave.write(portOffset: 1, value: 0, width: .byte)
+    #expect(pair.acknowledge(interruptsEnabled: true) == 0x29)
+  }
+
+  @Test func machineClaimsELCRPortsInsteadOfReturningOpenBus() throws {
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+
+    #expect(try machine.ioBus.read(port: 0x4D0, width: .word) == 0)
+    try machine.ioBus.write(port: 0x4D0, value: 0x0200, width: .word)
+    #expect(try machine.ioBus.read(port: 0x4D0, width: .word) == 0x0200)
+    #expect(machine.legacyPIC.snapshot().slaveLevelTriggered == 0x02)
+  }
+
   @Test func pitOneShotDisarmsAtTerminalCount() throws {
     let counter = LockedCounter()
     let pit = DoryPCPIT8254 { counter.increment() }

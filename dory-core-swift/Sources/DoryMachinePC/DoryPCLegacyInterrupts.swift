@@ -16,6 +16,10 @@ public struct DoryPCPIC8259Snapshot: Sendable, Hashable {
   public let slaveRequest: UInt8
   public let masterInService: UInt8
   public let slaveInService: UInt8
+  public let masterLevelTriggered: UInt8
+  public let slaveLevelTriggered: UInt8
+  public let masterAssertedLines: UInt8
+  public let slaveAssertedLines: UInt8
 }
 
 /// Cascaded PC/AT 8259 pair. The command/data port frontends are split from this shared core so
@@ -28,6 +32,8 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
     var mask: UInt8 = 0xFF
     var request: UInt8 = 0
     var inService: UInt8 = 0
+    var levelTriggered: UInt8 = 0
+    var assertedLines: UInt8 = 0
     var initializationStep: UInt8 = 0
     var requiresICW4 = false
     var readInService = false
@@ -51,12 +57,31 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
   public func raise(irq: UInt8) throws {
     guard irq < 16 else { throw DoryPCLegacyInterruptError.invalidIRQ(irq) }
     lock.withLock {
+      requestLocked(irq: irq)
+      publishPendingRequestLocked()
+    }
+  }
+
+  public func setAsserted(_ asserted: Bool, irq: UInt8) throws {
+    guard irq < 16 else { throw DoryPCLegacyInterruptError.invalidIRQ(irq) }
+    lock.withLock {
       if irq < 8 {
-        master.request |= UInt8(1) << irq
+        setAssertedLocked(asserted: asserted, irq: irq, chip: &master)
       } else {
-        slave.request |= UInt8(1) << (irq - 8)
+        setAssertedLocked(asserted: asserted, irq: irq - 8, chip: &slave)
         updateCascadeLocked()
       }
+      publishPendingRequestLocked()
+    }
+  }
+
+  public func configureLevelTriggeredIRQs(_ mask: UInt16) {
+    lock.withLock {
+      master.levelTriggered = UInt8(truncatingIfNeeded: mask)
+      slave.levelTriggered = UInt8(truncatingIfNeeded: mask >> 8)
+      reconcileLevelRequestsLocked(chip: &master)
+      reconcileLevelRequestsLocked(chip: &slave)
+      updateCascadeLocked()
       publishPendingRequestLocked()
     }
   }
@@ -108,7 +133,11 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
         masterRequest: master.request,
         slaveRequest: slave.request,
         masterInService: master.inService,
-        slaveInService: slave.inService
+        slaveInService: slave.inService,
+        masterLevelTriggered: master.levelTriggered,
+        slaveLevelTriggered: slave.levelTriggered,
+        masterAssertedLines: master.assertedLines,
+        slaveAssertedLines: slave.assertedLines
       )
     }
   }
@@ -139,6 +168,7 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
         chip.mask = 0
         chip.request = 0
         chip.inService = 0
+        reconcileLevelRequestsLocked(chip: &chip)
       }
       if controller == .slave { updateCascadeLocked() }
       return
@@ -152,7 +182,13 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
     let requestedIRQ = value & 7
     withChip(controller) { chip in
       let irq = specific ? requestedIRQ : lowestSetBit(chip.inService)
-      if let irq { chip.inService &= ~(UInt8(1) << irq) }
+      if let irq {
+        let bit = UInt8(1) << irq
+        chip.inService &= ~bit
+        if chip.levelTriggered & bit != 0, chip.assertedLines & bit != 0 {
+          chip.request |= bit
+        }
+      }
     }
     if controller == .slave { updateCascadeLocked() }
   }
@@ -199,6 +235,38 @@ public final class DoryPCPIC8259Pair: @unchecked Sendable {
     }
   }
 
+  private func requestLocked(irq: UInt8) {
+    if irq < 8 {
+      master.request |= UInt8(1) << irq
+    } else {
+      slave.request |= UInt8(1) << (irq - 8)
+      updateCascadeLocked()
+    }
+  }
+
+  private func setAssertedLocked(asserted: Bool, irq: UInt8, chip: inout Chip) {
+    let bit = UInt8(1) << irq
+    let wasAsserted = chip.assertedLines & bit != 0
+    if asserted {
+      chip.assertedLines |= bit
+    } else {
+      chip.assertedLines &= ~bit
+    }
+    guard chip.levelTriggered & bit != 0 else {
+      if asserted && !wasAsserted { chip.request |= bit }
+      return
+    }
+    if asserted {
+      chip.request |= bit
+    } else {
+      chip.request &= ~bit
+    }
+  }
+
+  private func reconcileLevelRequestsLocked(chip: inout Chip) {
+    chip.request = (chip.request & ~chip.levelTriggered) | (chip.assertedLines & chip.levelTriggered)
+  }
+
   private func publishPendingRequestLocked() {
     dory_atomic_u8_store_release(hasPendingRequest, master.request == 0 ? 0 : 1)
   }
@@ -236,6 +304,69 @@ public final class DoryPCPIC8259Port: DoryPCPortIODevice, @unchecked Sendable {
       throw DoryPCLegacyInterruptError.unsupportedPortWidth(width)
     }
     pair.write(UInt8(truncatingIfNeeded: value), controller: controller, data: portOffset == 1)
+  }
+}
+
+/// Edge/level control register for the cascaded ISA PICs at the PC/AT-compatible ports 0x4d0
+/// and 0x4d1. Without this device Linux reads the board's open-bus value and concludes that every
+/// legacy IRQ is level-triggered, which pollutes interrupt routing before APIC handoff.
+public final class DoryPCELCRPort: DoryPCPortIODevice, @unchecked Sendable {
+  public let basePort: UInt16 = 0x4D0
+  public let portCount: UInt16 = 2
+
+  private static let writableMask: UInt16 = 0xDEF8
+
+  private let lock = NSLock()
+  private let pic: DoryPCPIC8259Pair
+  private var value: UInt16 = 0
+
+  public init(pic: DoryPCPIC8259Pair) {
+    self.pic = pic
+  }
+
+  public func read(portOffset: UInt16, width: DoryX86OperandWidth) throws -> UInt32 {
+    try validate(portOffset: portOffset, width: width)
+    let current = lock.withLock { value }
+    switch width {
+    case .byte:
+      return UInt32(byte(at: portOffset, in: current))
+    case .word:
+      return UInt32(current)
+    case .doubleword, .quadword:
+      preconditionFailure("DoryPCELCRPort.validate should reject unsupported widths")
+    }
+  }
+
+  public func write(
+    portOffset: UInt16,
+    value newValue: UInt32,
+    width: DoryX86OperandWidth
+  ) throws {
+    try validate(portOffset: portOffset, width: width)
+    lock.withLock {
+      switch width {
+      case .byte:
+        let mask = UInt16(0xFF) << UInt16(portOffset * 8)
+        let merged = (value & ~mask) | (UInt16(UInt8(truncatingIfNeeded: newValue)) << (portOffset * 8))
+        value = merged & Self.writableMask
+      case .word:
+        value = UInt16(truncatingIfNeeded: newValue) & Self.writableMask
+      case .doubleword, .quadword:
+        preconditionFailure("DoryPCELCRPort.validate should reject unsupported widths")
+      }
+      pic.configureLevelTriggeredIRQs(value)
+    }
+  }
+
+  private func validate(portOffset: UInt16, width: DoryX86OperandWidth) throws {
+    let end = UInt32(portOffset) + UInt32(width.byteCount)
+    guard (width == .byte || width == .word), end <= UInt32(portCount) else {
+      throw DoryPCLegacyInterruptError.unsupportedPortWidth(width)
+    }
+  }
+
+  private func byte(at offset: UInt16, in value: UInt16) -> UInt8 {
+    UInt8(truncatingIfNeeded: value >> UInt16(offset * 8))
   }
 }
 
