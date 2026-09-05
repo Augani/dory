@@ -1,5 +1,6 @@
 import CryptoKit
 import DoryCore
+import DoryFirmware
 @testable import DorydKit
 import DoryOperations
 import DoryRendererWorkerWireContracts
@@ -1200,6 +1201,148 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         try #require(result.value.ok, Comment(rawValue: result.value.message))
     }
 
+    private func recordARMVirtInstallerVariableStore(
+        in directory: String,
+        markerData: Data = Data([0x05, 0x12])
+    ) throws -> DoryUEFIVariableStoreSnapshot {
+        let variableStore = try DoryUEFIVariableStoreFile(directory: directory + "/uefi-variables")
+        let loadedVariables = try variableStore.load()
+        #expect(loadedVariables.source == .primary)
+        #expect(loadedVariables.snapshot.platform == .armVirtV1)
+        let markerVariable = try DoryUEFIVariable(
+            key: try DoryUEFIVariableKey(
+                vendor: try #require(UUID(uuidString: "F7E3F650-33DF-4B20-8F27-8533D7D02A15")),
+                name: "DoryInstallerBootMarker"
+            ),
+            attributes: [.nonVolatile, .bootServiceAccess, .runtimeAccess],
+            data: markerData
+        )
+        let installerVariables = try loadedVariables.snapshot.setting(markerVariable)
+        try variableStore.commit(
+            installerVariables,
+            expectedGeneration: loadedVariables.snapshot.generation
+        )
+        return installerVariables
+    }
+
+    private func installerFirmwareCheckpoint(
+        journal: DoryOperationJournalStore,
+        operationID: UUID
+    ) throws -> DoryMachineInstallerFirmwareCheckpoint {
+        let lease = try journal.acquire(operationID)
+        let prefix = "installer.checkpoint.firmware."
+        let event = try #require(try lease.events().first { $0.stepID.hasPrefix(prefix) })
+        let data = try lease.readManifest(digest: String(event.stepID.dropFirst(prefix.count)))
+        return try JSONDecoder().decode(DoryMachineInstallerFirmwareCheckpoint.self, from: data)
+    }
+
+    @Test("ARM EFI installer ejection cold-starts from durable installed disk authority")
+    func armEFIInstallerEjectionColdStartsAfterFreshActivation() throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try authenticatedProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { Issue.record("Expected production activation"); return }
+            defer { context.machineManager.stopAll() }
+            let id = "arm-efi-cold-start"
+            let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
+                                       productionPlanningController: context.planningController)
+            try createPortableEFIFixture(id: id, fixture: fixture, service: service)
+            defer { try? context.machineManager.delete(id: id) }
+            let initial = try startAuthenticatedProductionMachine(context.machineManager, id: id)
+            let directory = fixture.machineConfiguration.stateDirectory + "/" + id
+            let initialPlan = try #require(initial.runtimeIdentity.resolvedPlan)
+            #expect(initialPlan.backend == .doryHypervisor)
+            #expect(initialPlan.bootMedia.media.kind == .installerISO)
+            #expect(initialPlan.firmware?.platform == .armVirtV1)
+            let variableStore = try DoryUEFIVariableStoreFile(directory: directory + "/uefi-variables")
+            let installerVariables = try recordARMVirtInstallerVariableStore(in: directory)
+
+            let operationID = UUID()
+            let ejected = try context.machineManager.transitionInstallerMedia(
+                id: id, attached: false, operationID: operationID,
+                productionPlanningController: context.planningController
+            )
+            #expect(ejected.state == .running)
+            #expect(!ejected.installerMediaAttached)
+            let ejectedPlan = try context.planning.plans.read(id: id)
+            #expect(ejectedPlan.backend == .doryHypervisor)
+            #expect(ejectedPlan.bootMedia.media.kind == .virtualDisk)
+            #expect(ejectedPlan.firmware?.platform == .armVirtV1)
+            #expect(ejected.runtimeIdentity.resolvedPlan == ejectedPlan)
+            #expect(try variableStore.load().snapshot == installerVariables)
+            let stored = try JSONDecoder().decode(
+                DoryMachineConfiguration.self,
+                from: Data(contentsOf: URL(fileURLWithPath: directory + "/machine.json"))
+            )
+            #expect(stored.installerISOPath == nil)
+            let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
+            #expect(try journal.read(operationID).state.status == .completed)
+            let checkpoint = try installerFirmwareCheckpoint(journal: journal, operationID: operationID)
+            let checkpointVariables = try #require(checkpoint.pcVariableStore)
+            #expect(try DoryUEFIVariableStoreFile.decodeColdSnapshot(checkpointVariables) == installerVariables)
+
+            _ = try context.machineManager.stop(id: id)
+            let reactivation = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            )
+            guard case let .activated(recovered) = reactivation else {
+                Issue.record("Expected production reactivation, got \(reactivation)")
+                return
+            }
+            defer { recovered.machineManager.stopAll() }
+            defer { try? recovered.machineManager.delete(id: id) }
+            let cold = try startAuthenticatedProductionMachine(recovered.machineManager, id: id)
+            #expect(cold.state == .running)
+            #expect(!cold.installerMediaAttached)
+            let coldPlan = try recovered.planning.plans.read(id: id)
+            #expect(coldPlan.backend == .doryHypervisor)
+            #expect(coldPlan.bootMedia.media.kind == .virtualDisk)
+            #expect(coldPlan.firmware?.platform == .armVirtV1)
+            #expect(cold.runtimeIdentity.resolvedPlan == coldPlan)
+            #expect(try DoryUEFIVariableStoreFile(directory: directory + "/uefi-variables")
+                .load().snapshot == installerVariables)
+        }
+    }
+
+    @Test("ARM EFI installer ejection rejects mismatched Dory UEFI variable-store platform")
+    func armEFIInstallerEjectionRejectsMismatchedVariableStorePlatform() throws {
+        try withProductionIntegrationTestStack {
+            let fixture = try authenticatedProductionTrustFixture()
+            defer { fixture.cleanup() }
+            guard case let .activated(context) = fixture.factory.activate(
+                store: fixture.store, machineConfiguration: fixture.machineConfiguration,
+                appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
+            ) else { Issue.record("Expected production activation"); return }
+            defer { context.machineManager.stopAll() }
+            let id = "arm-efi-wrong-store"
+            let service = DorydService(socketPath: "/unused", machineManager: context.machineManager,
+                                       productionPlanningController: context.planningController)
+            try createPortableEFIFixture(id: id, fixture: fixture, service: service)
+            defer { try? context.machineManager.delete(id: id) }
+            let started = try startAuthenticatedProductionMachine(context.machineManager, id: id)
+            let plan = try #require(started.runtimeIdentity.resolvedPlan)
+            #expect(plan.backend == .doryHypervisor)
+            #expect(plan.firmware?.platform == .armVirtV1)
+            let directory = fixture.machineConfiguration.stateDirectory + "/" + id
+            _ = try DoryUEFIVariableStoreFile(directory: directory + "/uefi-variables")
+                .replaceFromColdSnapshot(try DoryUEFIVariableStoreSnapshot(platform: .pcV1))
+
+            #expect(throws: (any Error).self) {
+                try context.machineManager.transitionInstallerMedia(
+                    id: id, attached: false, operationID: UUID(),
+                    productionPlanningController: context.planningController
+                )
+            }
+            let status = try #require(context.machineManager.status(id: id))
+            #expect(status.installerMediaAttached)
+            #expect(status.runtimeIdentity.resolvedPlan == plan)
+        }
+    }
+
     @Test("installer publication recovers the same operation after confirmed stop", arguments: [
         MachineLifecycleFaultPoint.stopAfterProcessStop, .installerAfterFirmwareCheckpoint,
         .configurationUpdateAfterMetadata, .configurationUpdateAfterWorkspace, .installerAfterPlanning,
@@ -1219,11 +1362,8 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             try createPortableEFIFixture(id: id, fixture: fixture, service: service)
             _ = try startAuthenticatedProductionMachine(context.machineManager, id: id)
             if paused { _ = try context.machineManager.pause(id: id) }
-            for (name, bytes) in [("NVRAM.installer", "original-installer-state"), ("MachineIdentifier", "stable-machine-id")] {
-                let path = fixture.machineConfiguration.stateDirectory + "/" + id + "/" + name
-                try Data(bytes.utf8).write(to: URL(fileURLWithPath: path))
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
-            }
+            let machineDirectory = fixture.machineConfiguration.stateDirectory + "/" + id
+            let installerVariables = try recordARMVirtInstallerVariableStore(in: machineDirectory)
             let journal = try DoryOperationJournalStore(home: fixture.machineConfiguration.lifecycleJournalHome)
             let before = try journal.list().count
             let operationID = UUID()
@@ -1237,6 +1377,13 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             }
             try #require(observed.wasObserved, "Missing fault \(point), paused=\(paused)")
             #expect(try journal.read(operationID).state.status != .completed)
+            if point == .installerAfterFirmwareCheckpoint {
+                let disturbedVariables = try recordARMVirtInstallerVariableStore(
+                    in: machineDirectory,
+                    markerData: Data([0x05, 0x13])
+                )
+                #expect(disturbedVariables != installerVariables)
+            }
             let activation = fixture.factory.activate(
                 store: fixture.store, machineConfiguration: fixture.machineConfiguration,
                 appVersion: fixture.appVersion, publicKey: fixture.publicKey, expectedArchitecture: "arm64"
@@ -1250,6 +1397,13 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
             #expect(recovered.machineManager.status(id: id)?.state == (committed ? .running : .stopped))
             #expect(recovered.machineManager.status(id: id)?.installerMediaAttached == !committed)
             #expect(try journal.list().count == before + 1)
+            if point == .installerAfterFirmwareCheckpoint {
+                let checkpoint = try installerFirmwareCheckpoint(journal: journal, operationID: operationID)
+                let checkpointVariables = try #require(checkpoint.pcVariableStore)
+                #expect(try DoryUEFIVariableStoreFile.decodeColdSnapshot(checkpointVariables) == installerVariables)
+                #expect(try DoryUEFIVariableStoreFile(directory: machineDirectory + "/uefi-variables")
+                    .load().snapshot == installerVariables)
+            }
             if committed {
                 #expect(recovered.machineManager.status(id: id)?.failure == nil)
                 let plan = try recovered.planning.plans.read(id: id)

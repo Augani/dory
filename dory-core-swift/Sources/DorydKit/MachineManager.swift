@@ -8544,21 +8544,30 @@ public final class MachineManager: @unchecked Sendable {
             }
             return data
         }
-        let pcStore: Data?
-        if try effectiveGuestArchitecture(for: machine) == .x86_64 {
-            let store = try DoryUEFIVariableStoreFile(directory: machineDoryPCFirmwareVariableDirectoryPath(id: machine.id))
+        let doryUEFIStore: Data?
+        if let platform = try doryUEFIVariableStorePlatform(
+            for: machine,
+            runtimeIdentity: try currentRuntimeIdentity(id: machine.id)
+        ) {
+            let store = try DoryUEFIVariableStoreFile(
+                directory: machineDoryPCFirmwareVariableDirectoryPath(id: machine.id)
+            )
             let loaded = try store.load()
-            guard loaded.source == .primary else {
-                throw MachineManagerError.persistence("installer firmware needs recovery before checkpointing")
+            guard loaded.source == .primary,
+                  loaded.snapshot.platform == platform else {
+                throw MachineManagerError.persistence(
+                    "Dory UEFI firmware needs explicit recovery before checkpointing"
+                )
             }
-            pcStore = try DoryUEFIVariableStoreFile.encodeColdSnapshot(loaded.snapshot)
-        } else { pcStore = nil }
+            doryUEFIStore = try DoryUEFIVariableStoreFile
+                .encodeColdSnapshot(loaded.snapshot)
+        } else { doryUEFIStore = nil }
         try advanceLifecycle(context, through: .staging)
         try publishInstallerCheckpoint(DoryMachineInstallerFirmwareCheckpoint(
             operationID: context.operation.operationID, machineID: machine.id,
             installedNVRAM: try readOptional(machineFirmwareNVRAMPath(id: machine.id)),
             installerNVRAM: try readOptional(machineInstallerFirmwareNVRAMPath(id: machine.id)),
-            pcVariableStore: pcStore
+            pcVariableStore: doryUEFIStore
         ), context: context, name: "firmware")
 #if DEBUG
         try injectLifecycleFault(.installerAfterFirmwareCheckpoint)
@@ -8573,12 +8582,19 @@ public final class MachineManager: @unchecked Sendable {
         }
         let checkpoint = try JSONDecoder().decode(DoryMachineInstallerFirmwareCheckpoint.self, from: data)
         let id = update.machineID
+        let expectedDoryUEFIPlatform = try doryUEFIVariableStorePlatform(
+            for: update.sourceConfiguration,
+            runtimeIdentity: update.sourceRuntimeIdentity
+        )
         guard checkpoint.schemaVersion == 1, checkpoint.machineID == id, checkpoint.operationID == update.operationID,
               let entry = lock.withLock({ machines[id] }), entry.process == nil, entry.state == .stopped,
-              (checkpoint.pcVariableStore != nil) == (try effectiveGuestArchitecture(for: update.sourceConfiguration) == .x86_64) else {
+              (checkpoint.pcVariableStore != nil) == (expectedDoryUEFIPlatform != nil) else {
             throw MachineManagerError.persistence("installer firmware rollback authority differs")
         }
-        let pcSnapshot = try checkpoint.pcVariableStore.map(DoryUEFIVariableStoreFile.decodeColdSnapshot)
+        let doryUEFISnapshot = try checkpoint.pcVariableStore.map(DoryUEFIVariableStoreFile.decodeColdSnapshot)
+        guard doryUEFISnapshot?.platform == expectedDoryUEFIPlatform else {
+            throw MachineManagerError.persistence("installer firmware rollback UEFI platform differs")
+        }
         for (path, bytes) in [
             (machineFirmwareNVRAMPath(id: id), checkpoint.installedNVRAM),
             (machineInstallerFirmwareNVRAMPath(id: id), checkpoint.installerNVRAM),
@@ -8597,7 +8613,7 @@ public final class MachineManager: @unchecked Sendable {
                 throw MachineManagerError.persistence("installer firmware rollback removal failed")
             }
         }
-        if let snapshot = pcSnapshot {
+        if let snapshot = doryUEFISnapshot {
             _ = try DoryUEFIVariableStoreFile(directory: machineDoryPCFirmwareVariableDirectoryPath(id: id))
                 .replaceFromColdSnapshot(snapshot)
         }
@@ -17416,6 +17432,27 @@ public final class MachineManager: @unchecked Sendable {
         "\(machineStateDirectory(id: id))/uefi-variables"
     }
 
+    private func doryUEFIVariableStorePlatform(
+        for machine: DoryMachineConfiguration,
+        runtimeIdentity: DoryMachineRuntimeIdentity
+    ) throws -> DoryFirmwarePlatform? {
+        guard machine.bootMode == .efi else { return nil }
+        if let plan = runtimeIdentity.resolvedPlan,
+           plan.backend == .doryHypervisor {
+            guard plan.bootMedia.media.kind == .installerISO
+                    || plan.bootMedia.media.kind == .virtualDisk else {
+                return nil
+            }
+            guard let platform = plan.firmware?.platform else {
+                throw MachineManagerError.persistence(
+                    "resolved Dory UEFI launch is missing firmware authority"
+                )
+            }
+            return platform
+        }
+        return try effectiveGuestArchitecture(for: machine) == .x86_64 ? .pcV1 : nil
+    }
+
     private func machineFirmwarePromotionMarkerPath(id: String) -> String {
         "\(machineStateDirectory(id: id))/\(Self.installerFirmwarePromotionMarkerName)"
     }
@@ -17433,29 +17470,32 @@ public final class MachineManager: @unchecked Sendable {
               updated.installerISOPath == nil else {
             return false
         }
-        if try effectiveGuestArchitecture(for: current) == .x86_64 {
+        if let platform = try doryUEFIVariableStorePlatform(
+            for: current,
+            runtimeIdentity: try currentRuntimeIdentity(id: current.id)
+        ) {
             do {
                 let store = try DoryUEFIVariableStoreFile(
                     directory: machineDoryPCFirmwareVariableDirectoryPath(id: current.id)
                 )
                 let load = try store.load()
-                guard load.source == .primary, load.snapshot.platform == .pcV1 else {
+                guard load.source == .primary, load.snapshot.platform == platform else {
                     throw MachineManagerError.persistence(
-                        "DoryPC UEFI variable state requires explicit recovery before installer ejection"
+                        "Dory UEFI variable state requires explicit recovery before installer ejection"
                     )
                 }
             } catch let error as MachineManagerError {
                 throw error
             } catch {
                 throw MachineManagerError.persistence(
-                    "the DoryPC installer has not produced valid persistent UEFI state; "
+                    "the Dory UEFI installer has not produced valid persistent UEFI state; "
                         + "keep the ISO attached and complete an installer boot before ejecting it: \(error)"
                 )
             }
-            // DoryPC uses one descriptor-backed variable store across removable-media and
-            // disk-first boots. Its launch-plan reconciliation replaces only Dory-owned fallback
-            // entries and preserves installer-created Boot#### variables, so no file promotion is
-            // necessary or correct.
+            // Dory UEFI launches use one descriptor-backed variable store across
+            // removable-media and disk-first boots. Launch-plan reconciliation replaces only
+            // Dory-owned fallback entries and preserves installer-created Boot#### variables,
+            // so no file promotion is necessary or correct.
             return false
         }
         let installedNVRAM = machineFirmwareNVRAMPath(id: current.id)

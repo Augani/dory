@@ -149,12 +149,14 @@ struct DoryMachineInstallerTransitionIntent: Codable, Sendable, Equatable {
 }
 
 /// Captured only after the source helper is confirmed stopped. An operation event binds the
-/// manifest digest before any promotion/reset, so interrupted rollback cannot guess old NVRAM.
+/// manifest digest before any promotion/reset, so interrupted rollback cannot guess old firmware.
 struct DoryMachineInstallerFirmwareCheckpoint: Codable, Sendable, Equatable {
     var schemaVersion: UInt16 = 1
     var operationID: UUID
     var machineID: String
     var installedNVRAM: Data?
     var installerNVRAM: Data?
+    /// Legacy key name retained for journal compatibility; contains the descriptor-backed
+    /// Dory UEFI variable store for PC-v1 or ARMVirt-v1 raw-Hypervisor launches.
     var pcVariableStore: Data?
 }
