@@ -32,4 +32,5 @@
   gEdkiiSerialPortLibVendorGuid
 
 [Protocols]
+  gEfiLoadedImageProtocolGuid
   gEfiPciIoProtocolGuid

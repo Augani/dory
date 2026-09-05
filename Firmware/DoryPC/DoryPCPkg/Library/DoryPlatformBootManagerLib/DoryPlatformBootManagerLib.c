@@ -12,6 +12,7 @@
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiBootManagerLib.h>
 #include <Library/UefiLib.h>
+#include <Protocol/LoadedImage.h>
 #include <Protocol/PciIo.h>
 
 #define DP_NODE_LEN(Type)  { (UINT8)sizeof (Type), (UINT8)(sizeof (Type) >> 8) }
@@ -23,6 +24,168 @@
 
 STATIC CONST CHAR8  mDoryBootMarker[] = "DORY-PC-UEFI-BOOT\r\n";
 STATIC CONST CHAR8  mDoryConsoleMissingMarker[] = "DORY-PC-UEFI-CONSOLE-MISSING\r\n";
+
+STATIC
+VOID
+DorySerialWriteString (
+  IN CONST CHAR8  *String
+  )
+{
+  UINTN  Index;
+
+  for (Index = 0; String[Index] != '\0'; Index++) {
+    IoWrite8 (DORY_PC_SERIAL_PORT, String[Index]);
+  }
+}
+
+STATIC
+VOID
+DorySerialWriteHex64 (
+  IN UINT64  Value
+  )
+{
+  INTN   Shift;
+  UINT8  Nibble;
+
+  DorySerialWriteString ("0x");
+  for (Shift = 60; Shift >= 0; Shift -= 4) {
+    Nibble = (UINT8)((Value >> Shift) & 0x0F);
+    IoWrite8 (DORY_PC_SERIAL_PORT, (UINT8)(Nibble < 10 ? '0' + Nibble : 'a' + (Nibble - 10)));
+  }
+}
+
+STATIC
+VOID
+DoryDescribeRuntimePointer (
+  IN CONST CHAR8  *Name,
+  IN UINTN        Address
+  )
+{
+  EFI_HANDLE                 *Handles;
+  EFI_LOADED_IMAGE_PROTOCOL  *LoadedImage;
+  EFI_MEMORY_DESCRIPTOR  *Descriptor;
+  EFI_MEMORY_DESCRIPTOR  *Map;
+  EFI_STATUS             Status;
+  UINTN                  DescriptorSize;
+  UINTN                  HandleCount;
+  UINTN                  Index;
+  UINTN                  MapKey;
+  UINTN                  MapSize;
+  UINT32                 DescriptorVersion;
+  BOOLEAN                Found;
+
+  DorySerialWriteString ("DORY-PC-UEFI-RUNTIME ");
+  DorySerialWriteString (Name);
+  DorySerialWriteString ("=");
+  DorySerialWriteHex64 ((UINT64)Address);
+
+  Map            = NULL;
+  MapSize        = 0;
+  DescriptorSize = 0;
+  Status = gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescriptorSize, &DescriptorVersion);
+  if (Status == EFI_BUFFER_TOO_SMALL) {
+    MapSize += DescriptorSize * 2;
+    Status = gBS->AllocatePool (EfiBootServicesData, MapSize, (VOID **)&Map);
+    if (!EFI_ERROR (Status)) {
+      Status = gBS->GetMemoryMap (&MapSize, Map, &MapKey, &DescriptorSize, &DescriptorVersion);
+    }
+  }
+
+  if (!EFI_ERROR (Status)) {
+    Found = FALSE;
+    for (Index = 0; Index < MapSize; Index += DescriptorSize) {
+      Descriptor = (EFI_MEMORY_DESCRIPTOR *)((UINT8 *)Map + Index);
+      if ((Address >= Descriptor->PhysicalStart) &&
+          (Address < Descriptor->PhysicalStart + EFI_PAGES_TO_SIZE (Descriptor->NumberOfPages)))
+      {
+        DorySerialWriteString (" memType=");
+        DorySerialWriteHex64 (Descriptor->Type);
+        DorySerialWriteString (" phys=");
+        DorySerialWriteHex64 (Descriptor->PhysicalStart);
+        DorySerialWriteString (" virt=");
+        DorySerialWriteHex64 (Descriptor->VirtualStart);
+        DorySerialWriteString (" pages=");
+        DorySerialWriteHex64 (Descriptor->NumberOfPages);
+        DorySerialWriteString (" attr=");
+        DorySerialWriteHex64 (Descriptor->Attribute);
+        Found = TRUE;
+        break;
+      }
+    }
+
+    if (!Found) {
+      DorySerialWriteString (" mem=missing");
+    }
+  } else {
+    DorySerialWriteString (" memStatus=");
+    DorySerialWriteHex64 (Status);
+  }
+
+  if (Map != NULL) {
+    gBS->FreePool (Map);
+  }
+
+  Handles = NULL;
+  Status = gBS->LocateHandleBuffer (
+                  ByProtocol,
+                  &gEfiLoadedImageProtocolGuid,
+                  NULL,
+                  &HandleCount,
+                  &Handles
+                  );
+  if (!EFI_ERROR (Status)) {
+    Found = FALSE;
+    for (Index = 0; Index < HandleCount; Index++) {
+      Status = gBS->HandleProtocol (
+                      Handles[Index],
+                      &gEfiLoadedImageProtocolGuid,
+                      (VOID **)&LoadedImage
+                      );
+      if (EFI_ERROR (Status)) {
+        continue;
+      }
+
+      if ((Address >= (UINTN)LoadedImage->ImageBase) &&
+          (Address < (UINTN)LoadedImage->ImageBase + LoadedImage->ImageSize))
+      {
+        DorySerialWriteString (" imageBase=");
+        DorySerialWriteHex64 ((UINT64)(UINTN)LoadedImage->ImageBase);
+        DorySerialWriteString (" imageSize=");
+        DorySerialWriteHex64 (LoadedImage->ImageSize);
+        DorySerialWriteString (" codeType=");
+        DorySerialWriteHex64 (LoadedImage->ImageCodeType);
+        DorySerialWriteString (" dataType=");
+        DorySerialWriteHex64 (LoadedImage->ImageDataType);
+        Found = TRUE;
+        break;
+      }
+    }
+
+    if (!Found) {
+      DorySerialWriteString (" image=missing");
+    }
+
+    gBS->FreePool (Handles);
+  } else {
+    DorySerialWriteString (" imageStatus=");
+    DorySerialWriteHex64 (Status);
+  }
+
+  DorySerialWriteString ("\r\n");
+}
+
+STATIC
+VOID
+DoryReportRuntimePointers (
+  VOID
+  )
+{
+  DoryDescribeRuntimePointer ("GetVariable", (UINTN)(VOID *)gST->RuntimeServices->GetVariable);
+  DoryDescribeRuntimePointer ("SetVariable", (UINTN)(VOID *)gST->RuntimeServices->SetVariable);
+  DoryDescribeRuntimePointer ("GetNextVariableName", (UINTN)(VOID *)gST->RuntimeServices->GetNextVariableName);
+  DoryDescribeRuntimePointer ("QueryVariableInfo", (UINTN)(VOID *)gST->RuntimeServices->QueryVariableInfo);
+  DoryDescribeRuntimePointer ("ResetSystem", (UINTN)(VOID *)gST->RuntimeServices->ResetSystem);
+}
 
 STATIC
 BOOLEAN
@@ -47,7 +210,6 @@ DoryRunBootProbe (
   )
 {
   CONST CHAR8  *Marker;
-  UINTN  Index;
 
   // External EFI applications are permitted to call ConOut unconditionally. Keep the raw UART
   // marker for host-side qualification, but only publish success after the console splitter has
@@ -57,9 +219,8 @@ DoryRunBootProbe (
     Marker = mDoryConsoleMissingMarker;
   }
 
-  for (Index = 0; Marker[Index] != '\0'; Index++) {
-    IoWrite8 (DORY_PC_SERIAL_PORT, Marker[Index]);
-  }
+  DoryReportRuntimePointers ();
+  DorySerialWriteString (Marker);
 
   IoWrite16 (
     DORY_PC_PM1_CONTROL_PORT,
