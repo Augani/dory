@@ -1,0 +1,73 @@
+{
+  "bundlePath": "$HOME/.dory/qualification/dory-production-planning-composition-1C845D99-77B2-47B3-AC36-E700D276B391/manager-state/native-mac-manager-saved-state/Machine.dorymac",
+  "fixtureRoot": "$HOME/.dory/qualification/dory-production-planning-composition-1C845D99-77B2-47B3-AC36-E700D276B391",
+  "helperExecutablePath": "/tmp/dory-managed-vzmac-app-0905.EzHzb3/DoryVMM.app/Contents/MacOS/dory-vmm",
+  "helperSHA256": "dc9296343ca01f300337b4b527ecf2b164a4287825e6daa15d75b489c417e176",
+  "hostPID": 2718,
+  "machineDirectory": "$HOME/.dory/qualification/dory-production-planning-composition-1C845D99-77B2-47B3-AC36-E700D276B391/manager-state/native-mac-manager-saved-state",
+  "machineID": "native-mac-manager-saved-state",
+  "manifestHardwareModelSHA256": "976e66740c64041cf9f127588f93eabf7efb9e7d3cbaee9582bcded88ba5e8d3",
+  "manifestInstallationState": "suspended",
+  "manifestMachineIdentifierSHA256": "304a1502fe0202274a25ce8ac9909cc9d688e974f6a620dbecd6089b9e43f1b9",
+  "recordedAtUnix": 1788603411.9632301,
+  "savedStateBytes": 90181632,
+  "savedStatePath": "$HOME/.dory/qualification/dory-production-planning-composition-1C845D99-77B2-47B3-AC36-E700D276B391/manager-state/native-mac-manager-saved-state/saved-state-v1/state.bin",
+  "schema": "dory.managed-native-mac-saved-state-qualification@1",
+  "scope": "private signed-host MachineManager qualification; not release daemon qualification",
+  "statuses": {
+    "close": {
+      "activeOperationID": null,
+      "controlSocketPath": null,
+      "handoffSocketPath": null,
+      "lastError": null,
+      "pid": null,
+      "runtimePlanRevision": 3,
+      "savedStatePresent": true,
+      "state": "suspended"
+    },
+    "restore": {
+      "activeOperationID": null,
+      "controlSocketPath": "/tmp/dory-vzmac-fixture-2718-EC68102B/manager-runtime/4e219c292f8ba311fc71f98b/c.sock",
+      "handoffSocketPath": null,
+      "lastError": null,
+      "pid": 3953,
+      "runtimePlanRevision": 2,
+      "savedStatePresent": false,
+      "state": "running"
+    },
+    "start": {
+      "activeOperationID": null,
+      "controlSocketPath": "/tmp/dory-vzmac-fixture-2718-EC68102B/manager-runtime/4e219c292f8ba311fc71f98b/c.sock",
+      "handoffSocketPath": null,
+      "lastError": null,
+      "pid": 3094,
+      "runtimePlanRevision": 1,
+      "savedStatePresent": false,
+      "state": "running"
+    },
+    "suspend": {
+      "activeOperationID": null,
+      "controlSocketPath": null,
+      "handoffSocketPath": null,
+      "lastError": null,
+      "pid": null,
+      "runtimePlanRevision": 2,
+      "savedStatePresent": true,
+      "state": "suspended"
+    }
+  },
+  "validation": {
+    "testLog": "$HOME/.dory/qualification/dory-managed-vzmac-machine-0905-101153/xctest.log",
+    "testLogSHA256": "9367680aa6e1b00bdaf926ce552f2c591c191f10fee19967bf450c04328aee2a",
+    "result": "1 XCTest, 0 failures, 297.019 seconds, exit 0",
+    "savedStateSHA256": "1f73db66f5f7ca79e7f603121a85ca4c28abf174242d3095b6be5c8e026088e1",
+    "sourceSHA256": "8ede21f19405fcf5fa9b644d2ad8a3087e264c09c425b943b482182dfc4575fd",
+    "originalReceiptSHA256": "8d88f0b65cb96dd5f9c7f94b3e9a6b92309809a815b2d3a81ab669322856e379",
+    "rootReview": "Verified source, test log, helper and saved-state digests; all recorded host/helper PIDs absent after run."
+  },
+  "remaining": [
+    "Release-daemon composition qualification",
+    "Guest workload after restore",
+    "Guest shutdown after restore; this run closes with suspend"
+  ]
+}
