@@ -315,16 +315,25 @@ public final class DoryPCIOAPIC: @unchecked Sendable {
   public func seal() { lock.withLock { isSealed = true } }
 
   public func configure(pin: Int, route: DoryPCIOAPICRoute) throws {
-    guard pins.indices.contains(pin) else { throw DoryPCAPICError.invalidPin(pin) }
-    // A masked redirection entry cannot deliver an interrupt. Software may clear its vector
-    // while masking the pin, then assign a deliverable vector before enabling the route.
     guard route.masked || route.vector >= 0x10 else {
       throw DoryPCAPICError.invalidVector(route.vector)
     }
+    try storeRedirectionEntry(pin: pin, route: route)
+  }
+
+  func configureMMIORedirectionEntry(pin: Int, route: DoryPCIOAPICRoute) throws {
+    // Guest MMIO writes store the architectural redirection entry even when the vector field is in
+    // the reserved 0...15 range; such an entry is not deliverable until software programs a valid
+    // vector. Dory does not yet expose local-APIC ESR illegal-vector reporting.
+    try storeRedirectionEntry(pin: pin, route: route)
+  }
+
+  private func storeRedirectionEntry(pin: Int, route: DoryPCIOAPICRoute) throws {
+    guard pins.indices.contains(pin) else { throw DoryPCAPICError.invalidPin(pin) }
     let delivery: (DoryPCLocalAPIC, UInt8)? = lock.withLock {
       pins[pin].route = route
-      guard route.levelTriggered, !route.masked, pins[pin].asserted, !pins[pin].remoteIRR,
-        let target = localAPICs[route.destinationAPICID]
+      guard route.levelTriggered, route.vector >= 0x10, !route.masked, pins[pin].asserted,
+        !pins[pin].remoteIRR, let target = localAPICs[route.destinationAPICID]
       else { return nil }
       pins[pin].remoteIRR = true
       return (target, route.vector)
@@ -342,7 +351,9 @@ public final class DoryPCIOAPIC: @unchecked Sendable {
       let previous = pins[pin].asserted
       pins[pin].asserted = asserted
       let route = pins[pin].route
-      guard !route.masked, let target = localAPICs[route.destinationAPICID] else { return nil }
+      guard route.vector >= 0x10, !route.masked,
+        let target = localAPICs[route.destinationAPICID]
+      else { return nil }
       if route.levelTriggered {
         guard asserted, !pins[pin].remoteIRR else { return nil }
         pins[pin].remoteIRR = true

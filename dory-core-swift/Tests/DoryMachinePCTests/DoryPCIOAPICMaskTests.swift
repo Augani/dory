@@ -53,6 +53,39 @@ import Testing
     #expect(local.acknowledge(interruptsEnabled: true) == 0x40)
   }
 
+  @Test func guestMMIOStoresReservedUnmaskedVectorWithoutInjecting() throws {
+    let ram = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
+    let local = DoryPCLocalAPIC(apicID: 0)
+    try local.configureSpuriousVector(0xFF, softwareEnabled: true)
+    let io = DoryPCIOAPIC()
+    try io.attach(local)
+    io.seal()
+    let mmio = DoryPCIOAPICMMIO(ioAPIC: io)
+    try bus.attach(mmio)
+    bus.seal()
+
+    // Linux can transiently store an unmasked zero-vector redirection entry while switching to
+    // symmetric I/O mode. Cover the actual instruction shape from that path:
+    // mov dword ptr [rax+0x10],esi.
+    try bus.writeScalar(at: mmio.baseAddress, value: 0x14, byteCount: 4)
+    try ram.write(at: 0, bytes: [0x89, 0x70, 0x10])
+    var state = try DoryX86ArchitecturalState(
+      registers: .init(rax: mmio.baseAddress, rsi: 0),
+      rip: 0
+    )
+    let decoded = try DoryX86Decoder().decode([0x89, 0x70, 0x10], at: 0, mode: .long64)
+    #expect(
+      DoryX86Interpreter().step(state: &state, memory: bus, mode: .long64) == .retired(decoded)
+    )
+    #expect(try bus.readScalar(at: mmio.baseAddress + 0x10, byteCount: 4) == 0)
+    try io.setAsserted(true, pin: 2)
+    #expect(local.acknowledge(interruptsEnabled: true) == nil)
+
+    try bus.writeScalar(at: mmio.baseAddress + 0x10, value: 0x31 | (1 << 15), byteCount: 4)
+    #expect(local.acknowledge(interruptsEnabled: true) == 0x31)
+  }
+
   @Test func guestMaskAndClearInstructionRetiresAndWindowReadsBackZeroVector() throws {
     let ram = try DoryX86ByteArrayMemory(byteCount: 0x1000)
     let bus = try DoryPCPhysicalMemoryBus(ram: ram)
@@ -69,7 +102,9 @@ import Testing
       var state = try DoryX86ArchitecturalState(
         registers: .init(rax: mmio.baseAddress, r8: 0x1_0000), rip: 0)
       let decoded = try DoryX86Decoder().decode(bytes, at: 0, mode: .long64)
-      #expect(DoryX86Interpreter().step(state: &state, memory: bus, mode: .long64) == .retired(decoded))
+      #expect(
+        DoryX86Interpreter().step(state: &state, memory: bus, mode: .long64) == .retired(decoded)
+      )
       #expect(state.rip == UInt64(bytes.count))
       #expect(try bus.readScalar(at: mmio.baseAddress + 0x10, byteCount: 4) == 0x1_0000)
       // The following destination write must also accept the still-masked zero vector.

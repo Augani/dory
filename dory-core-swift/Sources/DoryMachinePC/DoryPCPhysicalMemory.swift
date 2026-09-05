@@ -880,7 +880,7 @@ public final class DoryPCIOAPICMMIO: DoryPCMMIODevice, @unchecked Sendable {
       } else {
         route.destinationAPICID = value >> 24
       }
-      try ioAPIC.configure(pin: pin, route: route)
+      try ioAPIC.configureMMIORedirectionEntry(pin: pin, route: route)
     default:
       break
     }
