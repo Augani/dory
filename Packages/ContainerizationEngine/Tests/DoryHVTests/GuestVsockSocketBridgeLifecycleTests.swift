@@ -153,6 +153,36 @@ import Testing
         #expect(!socketExists(fixture.path))
     }
 
+    @Test func abandonedPreBootProbeReleasesAdmissionWithoutBreakingHalfClose() throws {
+        let fixture = try socketFixture(prefix: "dory-vsock-abandoned")
+        defer { try? FileManager.default.removeItem(atPath: fixture.directory) }
+        let bridge = GuestVsockSocketBridge(
+            socketPath: fixture.path, guestPort: 1_024, service: .agentSocket
+        )
+        let limits = try VirtioVsockServiceAdmissionLimits(
+            maximumSessionsTotal: 1, defaultMaximumSessionsPerService: 1
+        )
+        let device = VirtioVsock(guestCID: 11, serviceAdmissionLimits: limits)
+        try bridge.attach(to: device)
+        defer { bridge.stop(timeout: 2) }
+
+        let client = try connectUnixSocket(fixture.path)
+        var clientOpen = true
+        defer { if clientOpen { close(client) } }
+        #expect(waitUntil { bridge.activeSessionCount == 1 })
+        #expect(shutdown(client, SHUT_WR) == 0)
+        // The unbooted guest has sent no response. A send-only shutdown must retain its reader.
+        #expect(!waitUntil(timeout: 0.6) { bridge.activeSessionCount == 0 })
+        close(client)
+        clientOpen = false
+        #expect(waitUntil { bridge.activeSessionCount == 0 })
+
+        let successor = try connectUnixSocket(fixture.path)
+        defer { close(successor) }
+        #expect(waitUntil { bridge.activeSessionCount == 1 })
+        #expect(bridge.serviceAdmissionSnapshot?.serviceCapacityRejections[.agentSocket] == nil)
+    }
+
     private func socketFixture(prefix: String) throws -> (directory: String, path: String) {
         let directory = "/tmp/\(prefix)-\(getpid())-\(UUID().uuidString)"
         try FileManager.default.createDirectory(

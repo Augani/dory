@@ -481,7 +481,16 @@ enum VsockUnixRelay {
                     shutdown(fd, SHUT_WR)
                     return
                 }
-                _ = connection.waitForReadable(timeoutNanoseconds: nil)
+                // EOF alone is a Unix half-close: Docker may still be waiting for its response.
+                // A zero-byte send detects a fully disconnected response reader without adding
+                // protocol bytes. Bound the wait so abandoned pre-boot probes release admission.
+                if send(fd, nil, 0, MSG_DONTWAIT | MSG_NOSIGNAL) < 0,
+                   errno == EPIPE || errno == ENOTCONN {
+                    connection.close()
+                    shutdown(fd, SHUT_RDWR)
+                    return
+                }
+                _ = connection.waitForReadable(timeoutNanoseconds: 250_000_000)
                 continue
             }
             var offset = 0

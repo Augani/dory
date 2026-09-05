@@ -1,0 +1,18 @@
+{
+  "scope": "Unix-to-vsock relay admission recovery; production PC boot rerun pending",
+  "trigger": "Repeated readiness probes before guest response exhausted agentSocket service capacity in production-app-0905.r7dHFq. The same run ended separately with filesystem worker channel invalidation.",
+  "behavior": "Detect an unavailable response reader using a zero-byte nonblocking send during bounded guest-read waits; close the vsock flow and wake both relay pumps. Keep send-only half-closed clients alive for the guest response.",
+  "hostExperiment": {
+    "DarwinPoll": "Both SHUT_WR and full close yielded POLLIN|POLLHUP; unsuitable to distinguish them.",
+    "DarwinZeroByteSend": "SHUT_WR returned 0; full close returned EPIPE."
+  },
+  "validation": {
+    "bridgeLifecycle": "18 tests in 3 suites passed; exit 0",
+    "forwarding": "16 tests passed, including half-close request/response forwarding; exit 0",
+    "logs": {
+      "/private/tmp/dory-root-vsock-abandoned-probe-tests-0905.log": "752748d66eb6e81674bffff2209511bebf0b263c51b4d6f91cf970b4aaf1b64e",
+      "/private/tmp/dory-root-vsock-halfclose-response-tests-0905.log": "dde870e9c0eae4db66f5d67c818467aaa0402bad329a369dfa1111123f9b08f4"
+    }
+  },
+  "remaining": "Run the signed production PC composition with this change and verify repeated readiness probes recover without capacity rejection; diagnose filesystem-worker failure separately."
+}
