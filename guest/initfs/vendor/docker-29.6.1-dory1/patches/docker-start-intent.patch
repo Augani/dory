@@ -1,0 +1,635 @@
+diff --git a/daemon/container/container.go b/daemon/container/container.go
+index a9a9400..7cc7973 100644
+--- a/daemon/container/container.go
++++ b/daemon/container/container.go
+@@ -66,6 +66,14 @@ type ExitStatus struct {
+ 	ExitedAt time.Time
+ }
+ 
++// StartIntent records that Docker durably intended to start a task before it
++// handed control to containerd. It lets daemon restore distinguish a never-started
++// container from one whose task may have executed before Docker checkpointed the
++// running state.
++type StartIntent struct {
++	StartedAt time.Time
++}
++
+ // Container holds the structure defining a container object.
+ type Container struct {
+ 	StreamConfig *stream.Config
+@@ -86,6 +94,7 @@ type Container struct {
+ 	Config          *containertypes.Config
+ 	ImageID         image.ID `json:"Image"`
+ 	ImageManifest   *ocispec.Descriptor
++	StartIntent     *StartIntent `json:"StartIntent,omitempty"`
+ 	NetworkSettings *network.Settings
+ 	LogPath         string
+ 	Name            string
+@@ -237,6 +246,27 @@ func (container *Container) CheckpointTo(ctx context.Context, store *ViewDB) err
+ 	return store.Save(deepCopy)
+ }
+ 
++// SetStartIntent records that Docker is about to start a containerd task before
++// the task can execute. Callers must hold the container lock and checkpoint this
++// value before calling Task.Start.
++func (container *Container) SetStartIntent(startedAt time.Time) {
++	container.StartIntent = &StartIntent{StartedAt: startedAt.UTC()}
++}
++
++// ClearStartIntent removes the durable start-intent marker after Docker has
++// checkpointed either the running state or an ordinary failed-start state.
++// Callers must hold the container lock.
++func (container *Container) ClearStartIntent() {
++	container.StartIntent = nil
++}
++
++// HasStartIntent reports whether Docker checkpointed an in-progress start before
++// the running-state checkpoint reached disk. Callers must hold the container lock
++// when container state may be shared.
++func (container *Container) HasStartIntent() bool {
++	return container.StartIntent != nil
++}
++
+ // readHostConfig reads the host configuration from disk for the container.
+ func (container *Container) readHostConfig() error {
+ 	container.HostConfig = &containertypes.HostConfig{}
+diff --git a/daemon/container/start_intent_test.go b/daemon/container/start_intent_test.go
+new file mode 100644
+index 0000000..14b10ed
+--- /dev/null
++++ b/daemon/container/start_intent_test.go
+@@ -0,0 +1,67 @@
++package container
++
++import (
++	"context"
++	"encoding/json"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	containertypes "github.com/moby/moby/api/types/container"
++	"gotest.tools/v3/assert"
++	is "gotest.tools/v3/assert/cmp"
++)
++
++func TestStartIntentCheckpointsAndLoadsFromDisk(t *testing.T) {
++	db, err := NewViewDB()
++	assert.NilError(t, err)
++
++	root := t.TempDir()
++	ctr := newContainer(t, root)
++	ctr.Config = &containertypes.Config{}
++	ctr.HostConfig = &containertypes.HostConfig{}
++	startedAt := time.Date(2026, 9, 5, 4, 33, 3, 800539944, time.UTC)
++
++	ctr.Lock()
++	ctr.SetStartIntent(startedAt)
++	assert.NilError(t, ctr.CheckpointTo(context.Background(), db))
++	ctr.Unlock()
++
++	data, err := os.ReadFile(filepath.Join(ctr.Root, configFileName))
++	assert.NilError(t, err)
++	var raw struct {
++		StartIntent *StartIntent
++	}
++	assert.NilError(t, json.Unmarshal(data, &raw))
++	assert.Assert(t, raw.StartIntent != nil)
++	assert.Assert(t, raw.StartIntent.StartedAt.Equal(startedAt))
++
++	loaded := NewBaseContainer(ctr.ID, ctr.Root)
++	assert.NilError(t, loaded.FromDisk())
++	assert.Assert(t, loaded.StartIntent != nil)
++	assert.Assert(t, loaded.StartIntent.StartedAt.Equal(startedAt))
++}
++
++func TestClearStartIntentRemovesCheckpointField(t *testing.T) {
++	db, err := NewViewDB()
++	assert.NilError(t, err)
++
++	root := t.TempDir()
++	ctr := newContainer(t, root)
++	ctr.Config = &containertypes.Config{}
++	ctr.HostConfig = &containertypes.HostConfig{}
++
++	ctr.Lock()
++	ctr.SetStartIntent(time.Now())
++	ctr.ClearStartIntent()
++	assert.NilError(t, ctr.CheckpointTo(context.Background(), db))
++	ctr.Unlock()
++
++	data, err := os.ReadFile(filepath.Join(ctr.Root, configFileName))
++	assert.NilError(t, err)
++	var raw map[string]any
++	assert.NilError(t, json.Unmarshal(data, &raw))
++	_, present := raw["StartIntent"]
++	assert.Check(t, is.Equal(false, present))
++}
+diff --git a/daemon/daemon.go b/daemon/daemon.go
+index 5accd82..60a23a3 100644
+--- a/daemon/daemon.go
++++ b/daemon/daemon.go
+@@ -433,11 +433,13 @@ func (daemon *Daemon) restore(ctx context.Context, cfg *configStore, containers
+ 
+ 			alive := false
+ 			status := containerd.Unknown
++			statusKnown := false
+ 			if tsk, ok := c.State.Task(); ok {
+ 				s, err := tsk.Status(context.Background())
+ 				if err != nil {
+ 					logger(c).WithError(err).Error("failed to get task status")
+ 				} else {
++					statusKnown = true
+ 					status = s.Status
+ 					alive = status != containerd.Stopped
+ 					if !alive {
+@@ -461,6 +463,11 @@ func (daemon *Daemon) restore(ctx context.Context, cfg *configStore, containers
+ 			}
+ 			// If the containerd task for the container was not found, docker's view of the
+ 			// container state will be updated accordingly via SetStopped further down.
++			if _, hasTask := c.State.Task(); !hasTask && !statusKnown {
++				statusKnown = true
++				status = containerd.Stopped
++			}
++			daemon.reconcileStartIntentAfterRestore(context.TODO(), c, statusKnown, status, es)
+ 
+ 			if c.State.IsRunning() || c.State.IsPaused() {
+ 				logger(c).Debug("syncing container on disk state with real state")
+diff --git a/daemon/start.go b/daemon/start.go
+index c979e0b..e529fde 100644
+--- a/daemon/start.go
++++ b/daemon/start.go
+@@ -105,14 +105,7 @@ func (daemon *Daemon) containerStart(ctx context.Context, daemonCfg *configStore
+ 	// setup has been cleaned up properly
+ 	defer func() {
+ 		if retErr != nil {
+-			container.State.SetError(retErr)
+-			// if no one else has set it, make sure we don't leave it at zero
+-			if container.State.ExitCode == 0 {
+-				container.State.SetExitCode(exitUnknown)
+-			}
+-			if err := container.CheckpointTo(context.WithoutCancel(ctx), daemon.containersReplica); err != nil {
+-				log.G(ctx).Errorf("%s: failed saving state on start failure: %v", container.ID, err)
+-			}
++			daemon.checkpointContainerStartFailure(ctx, container, retErr)
+ 			container.Reset()
+ 
+ 			daemon.Cleanup(context.WithoutCancel(ctx), container)
+@@ -243,21 +236,11 @@ func (daemon *Daemon) containerStart(ctx context.Context, daemonCfg *configStore
+ 		return err
+ 	}
+ 
+-	if err := tsk.Start(context.WithoutCancel(ctx)); err != nil { // passing a cancelable ctx caused integration tests to be stuck in the cleanup phase
+-		return setExitCodeFromError(container.State.SetExitCode, err)
++	if err := daemon.startContainerTaskWithIntent(ctx, container, tsk, startupTime); err != nil {
++		return err
+ 	}
+ 
+-	container.HasBeenManuallyRestarted = false
+-	container.State.SetRunning(ctr, tsk, startupTime)
+-	container.HasBeenStartedBefore = true
+-	daemon.setStateCounter(container)
+-
+-	daemon.initHealthMonitor(container)
+-
+-	if err := container.CheckpointTo(context.WithoutCancel(ctx), daemon.containersReplica); err != nil {
+-		log.G(ctx).WithError(err).WithField("container", container.ID).
+-			Errorf("failed to store container")
+-	}
++	daemon.checkpointContainerRunning(ctx, container, ctr, tsk, startupTime)
+ 
+ 	daemon.LogContainerEvent(container, events.ActionStart)
+ 	metrics.ContainerActions.WithValues("start").UpdateSince(start)
+diff --git a/daemon/start_intent.go b/daemon/start_intent.go
+new file mode 100644
+index 0000000..6469742
+--- /dev/null
++++ b/daemon/start_intent.go
+@@ -0,0 +1,156 @@
++package daemon
++
++import (
++	"context"
++	"time"
++
++	containerd "github.com/containerd/containerd/v2/client"
++	"github.com/containerd/log"
++	"github.com/moby/moby/v2/daemon/container"
++	libcontainerdtypes "github.com/moby/moby/v2/daemon/internal/libcontainerd/types"
++	"github.com/pkg/errors"
++)
++
++const startIntentInterruptedExitCode = 255
++
++type startIntentRestoreAction int
++
++const (
++	startIntentRestoreNoop startIntentRestoreAction = iota
++	startIntentRestoreRunning
++	startIntentRestoreInterrupted
++	startIntentRestoreCleared
++)
++
++var errStartIntentInterrupted = errors.New("container start was interrupted before Docker checkpointed running state")
++
++func (daemon *Daemon) startContainerTaskWithIntent(ctx context.Context, ctr *container.Container, tsk libcontainerdtypes.Task, startupTime time.Time) error {
++	ctr.SetStartIntent(startupTime)
++	if err := ctr.CheckpointTo(context.WithoutCancel(ctx), daemon.containersReplica); err != nil {
++		ctr.ClearStartIntent()
++		return errors.Wrap(err, "failed to checkpoint container start intent")
++	}
++	if err := tsk.Start(context.WithoutCancel(ctx)); err != nil {
++		return setExitCodeFromError(ctr.State.SetExitCode, err)
++	}
++	return nil
++}
++
++func (daemon *Daemon) checkpointContainerStartFailure(ctx context.Context, ctr *container.Container, startErr error) {
++	ctr.ClearStartIntent()
++	ctr.State.SetError(startErr)
++	// if no one else has set it, make sure we don't leave it at zero
++	if ctr.State.ExitCode == 0 {
++		ctr.State.SetExitCode(exitUnknown)
++	}
++	if err := ctr.CheckpointTo(context.WithoutCancel(ctx), daemon.containersReplica); err != nil {
++		log.G(ctx).Errorf("%s: failed saving state on start failure: %v", ctr.ID, err)
++	}
++}
++
++func (daemon *Daemon) checkpointContainerRunning(ctx context.Context, ctr *container.Container, c8dCtr libcontainerdtypes.Container, tsk libcontainerdtypes.Task, startupTime time.Time) {
++	ctr.HasBeenManuallyRestarted = false
++	ctr.ClearStartIntent()
++	ctr.State.SetRunning(c8dCtr, tsk, startupTime)
++	ctr.HasBeenStartedBefore = true
++	daemon.setStateCounter(ctr)
++
++	daemon.initHealthMonitor(ctr)
++
++	if err := ctr.CheckpointTo(context.WithoutCancel(ctx), daemon.containersReplica); err != nil {
++		log.G(ctx).WithError(err).WithField("container", ctr.ID).Errorf("failed to store container")
++	}
++}
++
++// startIntentTaskIsRunning reports whether containerd says the task reached an
++// executing state. Created and Unknown are deliberately excluded so Docker does
++// not promote an unstarted or indeterminate task to running while reconciling a
++// pre-running-checkpoint start intent.
++func startIntentTaskIsRunning(status containerd.ProcessStatus) bool {
++	switch status {
++	case containerd.Running, containerd.Paused, containerd.Pausing:
++		return true
++	default:
++		return false
++	}
++}
++
++// reconcileStartIntentStateAfterRestore resolves a durable pre-start intent that
++// was checkpointed before Task.Start, but whose later running-state checkpoint
++// was not durably committed before daemon restore.
++func reconcileStartIntentStateAfterRestore(ctr *container.Container, taskStatusKnown bool, taskStatus containerd.ProcessStatus, exitStatus *containerd.ExitStatus) startIntentRestoreAction {
++	if !ctr.HasStartIntent() {
++		return startIntentRestoreNoop
++	}
++	if ctr.State.Running || ctr.State.Paused {
++		ctr.ClearStartIntent()
++		return startIntentRestoreCleared
++	}
++	if !taskStatusKnown {
++		return startIntentRestoreNoop
++	}
++
++	if startIntentTaskIsRunning(taskStatus) {
++		c8dCtr, hasContainer := ctr.State.C8dContainer()
++		tsk, hasTask := ctr.State.Task()
++		if hasContainer && hasTask {
++			startedAt := ctr.StartIntent.StartedAt
++			ctr.State.SetRunningExternal(c8dCtr, tsk)
++			if taskStatus == containerd.Paused || taskStatus == containerd.Pausing {
++				ctr.State.Paused = true
++			}
++			if !startedAt.IsZero() {
++				ctr.State.StartedAt = startedAt.UTC()
++			}
++			ctr.HasBeenStartedBefore = true
++			ctr.ClearStartIntent()
++			return startIntentRestoreRunning
++		}
++		return startIntentRestoreNoop
++	}
++	if taskStatus == containerd.Created {
++		ctr.ClearStartIntent()
++		return startIntentRestoreCleared
++	}
++	if taskStatus != containerd.Stopped {
++		return startIntentRestoreNoop
++	}
++
++	startedAt := ctr.StartIntent.StartedAt
++	interruptedExit := container.ExitStatus{ExitCode: startIntentInterruptedExitCode}
++	if exitStatus != nil {
++		interruptedExit.ExitCode = int(exitStatus.ExitCode())
++		interruptedExit.ExitedAt = exitStatus.ExitTime()
++	}
++	ctr.State.SetStopped(&interruptedExit)
++	if !startedAt.IsZero() {
++		ctr.State.StartedAt = startedAt.UTC()
++	}
++	ctr.State.SetError(errStartIntentInterrupted)
++	ctr.HasBeenStartedBefore = true
++	ctr.ClearStartIntent()
++	return startIntentRestoreInterrupted
++}
++
++func (daemon *Daemon) reconcileStartIntentAfterRestore(ctx context.Context, ctr *container.Container, taskStatusKnown bool, taskStatus containerd.ProcessStatus, exitStatus *containerd.ExitStatus) {
++	ctr.Lock()
++	action := reconcileStartIntentStateAfterRestore(ctr, taskStatusKnown, taskStatus, exitStatus)
++	switch action {
++	case startIntentRestoreRunning:
++		daemon.setStateCounter(ctr)
++		daemon.initHealthMonitor(ctr)
++	case startIntentRestoreInterrupted:
++		daemon.setStateCounter(ctr)
++		daemon.Cleanup(ctx, ctr)
++	case startIntentRestoreCleared:
++		// The ordinary restore path already owns the running/paused state. Only remove
++		// the stale intent marker so the next checkpoint cannot resurrect it.
++	case startIntentRestoreNoop:
++		ctr.Unlock()
++		return
++	}
++	if err := ctr.CheckpointTo(ctx, daemon.containersReplica); err != nil {
++		log.G(ctx).WithError(err).WithField("container", ctr.ID).Error("failed to checkpoint restored start intent")
++	}
++	ctr.Unlock()
++}
+diff --git a/daemon/start_intent_test.go b/daemon/start_intent_test.go
+new file mode 100644
+index 0000000..6f20c91
+--- /dev/null
++++ b/daemon/start_intent_test.go
+@@ -0,0 +1,264 @@
++package daemon
++
++import (
++	"context"
++	"errors"
++	"os"
++	"path/filepath"
++	"strings"
++	"testing"
++	"time"
++
++	containerd "github.com/containerd/containerd/v2/client"
++	containertypes "github.com/moby/moby/api/types/container"
++	"github.com/moby/moby/v2/daemon/container"
++	libcontainerdtypes "github.com/moby/moby/v2/daemon/internal/libcontainerd/types"
++	"gotest.tools/v3/assert"
++	is "gotest.tools/v3/assert/cmp"
++)
++
++type startIntentMockTask struct {
++	libcontainerdtypes.Task
++	pid    uint32
++	starts int
++	err    error
++}
++
++func (t *startIntentMockTask) Pid() uint32 { return t.pid }
++
++func (t *startIntentMockTask) Start(context.Context) error {
++	t.starts++
++	return t.err
++}
++
++type startIntentMockContainer struct {
++	libcontainerdtypes.Container
++}
++
++func (i *fakeImageService) GetLayerMountID(string) (string, error) {
++	return "", errors.New("layer mount not found")
++}
++
++func newStartIntentDaemon(t *testing.T) (*Daemon, *container.Container) {
++	t.Helper()
++	store := container.NewMemoryStore()
++	replica, err := container.NewViewDB()
++	assert.NilError(t, err)
++	d := &Daemon{containers: store, containersReplica: replica}
++
++	root := t.TempDir()
++	ctr := container.NewBaseContainer("dory-start-intent-container", root)
++	ctr.Config = &containertypes.Config{}
++	ctr.HostConfig = &containertypes.HostConfig{}
++	store.Add(ctr.ID, ctr)
++	return d, ctr
++}
++
++func reloadStartIntentContainer(t *testing.T, ctr *container.Container) *container.Container {
++	t.Helper()
++	loaded := container.NewBaseContainer(ctr.ID, ctr.Root)
++	assert.NilError(t, loaded.FromDisk())
++	return loaded
++}
++
++func TestStartIntentCheckpointFailureDoesNotStartTask(t *testing.T) {
++	d, _ := newStartIntentDaemon(t)
++	ctr := container.NewBaseContainer("dory-start-intent-checkpoint-fails", filepath.Join(t.TempDir(), "missing", "root"))
++	ctr.Config = &containertypes.Config{}
++	ctr.HostConfig = &containertypes.HostConfig{}
++	tsk := &startIntentMockTask{pid: 733}
++
++	ctr.Lock()
++	err := d.startContainerTaskWithIntent(context.Background(), ctr, tsk, time.Now())
++	ctr.Unlock()
++
++	assert.Check(t, err != nil)
++	assert.Equal(t, tsk.starts, 0)
++	assert.Assert(t, !ctr.HasStartIntent())
++}
++
++func TestTaskStartFailureCleanupClearsIntentOnDisk(t *testing.T) {
++	d, ctr := newStartIntentDaemon(t)
++	tsk := &startIntentMockTask{pid: 733, err: errors.New("synthetic task start failure")}
++
++	ctr.Lock()
++	err := d.startContainerTaskWithIntent(context.Background(), ctr, tsk, time.Now())
++	assert.Check(t, err != nil)
++	assert.Equal(t, tsk.starts, 1)
++	d.checkpointContainerStartFailure(context.Background(), ctr, err)
++	ctr.Unlock()
++
++	loaded := reloadStartIntentContainer(t, ctr)
++	assert.Assert(t, !loaded.HasStartIntent())
++	assert.Check(t, is.Contains(loaded.State.ErrorMsg, "synthetic task start failure"))
++	assert.Check(t, loaded.State.ExitCode != 0)
++}
++
++func TestSuccessfulStartCheckpointClearsIntentOnDisk(t *testing.T) {
++	d, ctr := newStartIntentDaemon(t)
++	startedAt := time.Date(2026, 9, 5, 4, 33, 3, 0, time.UTC)
++	tsk := &startIntentMockTask{pid: 733}
++
++	ctr.Lock()
++	assert.NilError(t, d.startContainerTaskWithIntent(context.Background(), ctr, tsk, startedAt))
++	assert.Assert(t, ctr.HasStartIntent())
++	d.checkpointContainerRunning(context.Background(), ctr, &startIntentMockContainer{}, tsk, startedAt)
++	ctr.Unlock()
++
++	loaded := reloadStartIntentContainer(t, ctr)
++	assert.Assert(t, !loaded.HasStartIntent())
++	assert.Equal(t, loaded.State.State(), containertypes.StateRunning)
++	assert.Equal(t, loaded.State.Pid, 733)
++	assert.Assert(t, loaded.State.StartedAt.Equal(startedAt))
++}
++
++func TestReconcileStartIntentWithNoTaskMarksExitedWithoutDeletingContainer(t *testing.T) {
++	_, ctr := newStartIntentDaemon(t)
++	d := setupFakeDaemon(t, ctr)
++	replica, err := container.NewViewDB()
++	assert.NilError(t, err)
++	d.containersReplica = replica
++	startedAt := time.Date(2026, 9, 5, 4, 33, 3, 0, time.UTC)
++
++	ctr.Lock()
++	ctr.SetStartIntent(startedAt)
++	assert.NilError(t, ctr.CheckpointTo(context.Background(), d.containersReplica))
++	ctr.Unlock()
++	d.reconcileStartIntentAfterRestore(context.Background(), ctr, true, containerd.Stopped, nil)
++
++	loaded := reloadStartIntentContainer(t, ctr)
++	assert.Equal(t, loaded.State.State(), containertypes.StateExited)
++	assert.Assert(t, strings.HasPrefix(loaded.State.String(), "Exited (255)"))
++	assert.Assert(t, !loaded.State.IsRunning())
++	assert.Equal(t, loaded.State.ExitCode, startIntentInterruptedExitCode)
++	assert.Assert(t, loaded.State.StartedAt.Equal(startedAt))
++	assert.Check(t, is.Contains(loaded.State.ErrorMsg, errStartIntentInterrupted.Error()))
++	assert.Assert(t, !loaded.HasStartIntent())
++	assert.Check(t, loaded.HasBeenStartedBefore)
++	assert.Check(t, is.Equal(false, loaded.State.Dead))
++	assert.Check(t, is.Equal(false, loaded.State.Removed))
++	_, err = os.Stat(ctr.Root)
++	assert.NilError(t, err)
++}
++
++func TestReconcileStartIntentWithLiveTaskRestoresRunningAndClearsIntent(t *testing.T) {
++	_, ctr := newStartIntentDaemon(t)
++	startedAt := time.Date(2026, 9, 5, 4, 33, 3, 0, time.UTC)
++
++	ctr.Lock()
++	ctr.SetStartIntent(startedAt)
++	ctr.State.SetRunningExternal(&startIntentMockContainer{}, &startIntentMockTask{pid: 733})
++	ctr.State.Running = false
++	action := reconcileStartIntentStateAfterRestore(ctr, true, containerd.Running, nil)
++	ctr.Unlock()
++
++	assert.Equal(t, action, startIntentRestoreRunning)
++	assert.Assert(t, ctr.State.IsRunning())
++	assert.Equal(t, ctr.State.Pid, 733)
++	assert.Assert(t, ctr.State.StartedAt.Equal(startedAt))
++	assert.Assert(t, !ctr.HasStartIntent())
++	assert.Check(t, ctr.HasBeenStartedBefore)
++}
++
++func TestReconcileStartIntentAlreadyRunningClearsIntentOnDisk(t *testing.T) {
++	_, ctr := newStartIntentDaemon(t)
++	d := setupFakeDaemon(t, ctr)
++	replica, err := container.NewViewDB()
++	assert.NilError(t, err)
++	d.containersReplica = replica
++	startedAt := time.Date(2026, 9, 5, 4, 33, 3, 0, time.UTC)
++
++	ctr.Lock()
++	ctr.SetStartIntent(startedAt)
++	ctr.State.SetRunning(nil, &startIntentMockTask{pid: 733}, startedAt)
++	assert.NilError(t, ctr.CheckpointTo(context.Background(), d.containersReplica))
++	ctr.Unlock()
++	d.reconcileStartIntentAfterRestore(context.Background(), ctr, true, containerd.Running, nil)
++
++	loaded := reloadStartIntentContainer(t, ctr)
++	assert.Assert(t, !loaded.HasStartIntent())
++	assert.Equal(t, loaded.State.State(), containertypes.StateRunning)
++}
++
++func TestReconcileStartIntentIndeterminateStatusRetainsIntentOnDisk(t *testing.T) {
++	statuses := []struct {
++		name   string
++		known  bool
++		status containerd.ProcessStatus
++	}{
++		{name: "lookup-failure", known: false, status: containerd.Unknown},
++		{name: "unknown", known: true, status: containerd.Unknown},
++		{name: "empty", known: true, status: ""},
++		{name: "future", known: true, status: "future-status"},
++	}
++
++	for _, tc := range statuses {
++		t.Run(tc.name, func(t *testing.T) {
++			_, ctr := newStartIntentDaemon(t)
++			d := setupFakeDaemon(t, ctr)
++			replica, err := container.NewViewDB()
++			assert.NilError(t, err)
++			d.containersReplica = replica
++			startedAt := time.Date(2026, 9, 5, 4, 33, 3, 0, time.UTC)
++
++			ctr.Lock()
++			ctr.SetStartIntent(startedAt)
++			assert.NilError(t, ctr.CheckpointTo(context.Background(), d.containersReplica))
++			ctr.Unlock()
++			d.reconcileStartIntentAfterRestore(context.Background(), ctr, tc.known, tc.status, nil)
++
++			loaded := reloadStartIntentContainer(t, ctr)
++			assert.Assert(t, loaded.HasStartIntent())
++			assert.Assert(t, loaded.StartIntent.StartedAt.Equal(startedAt))
++			assert.Equal(t, loaded.State.State(), containertypes.StateCreated)
++		})
++	}
++}
++
++func TestReconcileStartIntentCreatedTaskDoesNotPromoteRunning(t *testing.T) {
++	_, ctr := newStartIntentDaemon(t)
++	ctr.Lock()
++	ctr.SetStartIntent(time.Now())
++	ctr.State.SetRunningExternal(&startIntentMockContainer{}, &startIntentMockTask{pid: 733})
++	ctr.State.Running = false
++	action := reconcileStartIntentStateAfterRestore(ctr, true, containerd.Created, nil)
++	ctr.Unlock()
++
++	assert.Equal(t, action, startIntentRestoreCleared)
++	assert.Assert(t, !ctr.HasStartIntent())
++	assert.Assert(t, !ctr.State.IsRunning())
++	assert.Equal(t, ctr.State.State(), containertypes.StateCreated)
++}
++
++func TestReconcileStartIntentStoppedTaskPreservesKnownExitStatus(t *testing.T) {
++	_, ctr := newStartIntentDaemon(t)
++	exitedAt := time.Date(2026, 9, 5, 4, 40, 0, 0, time.UTC)
++	ctr.Lock()
++	ctr.SetStartIntent(time.Date(2026, 9, 5, 4, 33, 3, 0, time.UTC))
++	exitStatus := containerd.NewExitStatus(42, exitedAt, nil)
++	action := reconcileStartIntentStateAfterRestore(ctr, true, containerd.Stopped, exitStatus)
++	ctr.Unlock()
++
++	assert.Equal(t, action, startIntentRestoreInterrupted)
++	assert.Equal(t, ctr.State.ExitCode, 42)
++	assert.Assert(t, ctr.State.FinishedAt.Equal(exitedAt))
++	assert.Equal(t, ctr.State.State(), containertypes.StateExited)
++}
++
++func TestReconcileStartIntentPausedTaskRestoresPausedState(t *testing.T) {
++	_, ctr := newStartIntentDaemon(t)
++	startedAt := time.Date(2026, 9, 5, 4, 33, 3, 0, time.UTC)
++
++	ctr.Lock()
++	ctr.SetStartIntent(startedAt)
++	ctr.State.SetRunningExternal(&startIntentMockContainer{}, &startIntentMockTask{pid: 733})
++	ctr.State.Running = false
++	action := reconcileStartIntentStateAfterRestore(ctr, true, containerd.Paused, nil)
++	ctr.Unlock()
++
++	assert.Equal(t, action, startIntentRestoreRunning)
++	assert.Assert(t, ctr.State.IsRunning())
++	assert.Assert(t, ctr.State.IsPaused())
++	assert.Equal(t, ctr.State.State(), containertypes.StatePaused)
++	assert.Assert(t, !ctr.HasStartIntent())
++}
