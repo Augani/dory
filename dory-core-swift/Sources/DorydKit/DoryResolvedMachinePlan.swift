@@ -1624,18 +1624,40 @@ public struct DoryResolvedMachinePlan: Codable, Sendable, Equatable, Hashable {
     /// authorization provide the bounded launch authority; any catalog/runtime qualification must
     /// use the stricter host-qualified shape above.
     var usesPreparedNativeMacOSBaseline: Bool {
-        guest == DoryGuestPlatform(family: .macOS, architecture: .arm64)
-            && backend == .appleVirtualizationFramework
-            && graphics == .hostAcceleratedDisplay
-            && supportTier == .experimental
-            && bootMedia.media.source == .userProvided
-            && bootMedia.media.kind == .macOSRestoreImage
-            && bootMedia.inspectionEvidence != nil
-            && bootMedia.inspectionEvidence?.catalogManifestEvidence == nil
-            && qualificationEvidence.graphics == nil
-            && qualificationEvidence.runtime == nil
-            && hostQualification == nil
-            && experimentalAuthorization != nil
+        guard guest == DoryGuestPlatform(family: .macOS, architecture: .arm64),
+              backend == .appleVirtualizationFramework,
+              graphics == .hostAcceleratedDisplay,
+              supportTier == .experimental,
+              bootMedia.media.source == .userProvided,
+              qualificationEvidence.graphics == nil,
+              qualificationEvidence.runtime == nil,
+              hostQualification == nil,
+              experimentalAuthorization != nil else {
+            return false
+        }
+        if bootMedia.media.kind == .macOSRestoreImage {
+            return bootMedia.inspectionEvidence != nil
+                && bootMedia.inspectionEvidence?.catalogManifestEvidence == nil
+                && bootMedia.mutableProvenanceEvidence == nil
+        }
+        if bootMedia.media.kind == .virtualDisk {
+            return bootMedia.inspectionEvidence == nil
+                && bootMedia.media.mutableProvenance != nil
+                && bootMedia.mutableProvenanceEvidence != nil
+                && launchArtifacts.contains { artifact in
+                    artifact.resolverReference == bootMedia.resolverReference
+                        && artifact.media == bootMedia.media
+                        && artifact.mutableProvenanceEvidence
+                            == bootMedia.mutableProvenanceEvidence
+                        && artifact.usages.contains {
+                            $0.kind == .boot && $0.identifier == "system" && !$0.readOnly
+                        }
+                        && artifact.usages.contains {
+                            $0.kind == .storage && $0.identifier == "system" && !$0.readOnly
+                        }
+                }
+        }
+        return false
     }
 
     private func validateSupportAuthorization(

@@ -561,10 +561,11 @@ public final class VirtualizationFrameworkLinuxMachineBackend: MachineBackend, @
                           machine.guestArchitecture == .arm64,
                           machine.bootMode == .macOSRestore,
                           machine.displayMode == .desktop,
-                          capability.request.bootMedia.kind == .macOSRestoreImage,
+                          capability.request.bootMedia.kind == .macOSRestoreImage
+                            || capability.request.bootMedia.kind == .virtualDisk,
                           machine.macOSRestoreImagePath?.isEmpty == false,
                           machine.macOSMachineBundlePath?.isEmpty == false else {
-                        return "A native macOS plan requires an ARM64 VZMac restore image and prepared machine bundle."
+                        return "A native macOS plan requires an ARM64 VZMac restore image or installed bundle disk and prepared machine bundle."
                     }
                     guard capability.request.devices.display != nil else {
                         return "A native macOS plan requires its one supported guest display."

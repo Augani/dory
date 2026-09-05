@@ -5318,7 +5318,7 @@ public final class MachineManager: @unchecked Sendable {
             try preSpawnTestHook?(id)
 #endif
             if let restoreStatePath = snapshot.pendingRestoreStatePath {
-                guard restoreStatePath == savedStateStore.statePath(machineID: id),
+                guard isManagedSavedStatePath(restoreStatePath, machineID: id),
                       let expectedStatus = snapshot.savedStateStatus,
                       let authoritativeData = Self.readPrivateMetadata(
                           path: machineConfigPath(id: id)
@@ -15405,6 +15405,12 @@ public final class MachineManager: @unchecked Sendable {
         ])
     }
 
+    private func isManagedSavedStatePath(_ path: String, machineID: String) -> Bool {
+        URL(fileURLWithPath: path).standardizedFileURL.path
+            == URL(fileURLWithPath: savedStateStore.statePath(machineID: machineID))
+                .standardizedFileURL.path
+    }
+
     private func processArguments(
         for machine: DoryMachineConfiguration,
         operationID: UUID,
@@ -15464,7 +15470,8 @@ public final class MachineManager: @unchecked Sendable {
                 }
                 operation = "run"
             case .suspended:
-                guard restoreStatePath == savedStateStore.statePath(machineID: machine.id) else {
+                guard let restoreStatePath,
+                      isManagedSavedStatePath(restoreStatePath, machineID: machine.id) else {
                     throw MachineManagerError.persistence(
                         "suspended native macOS requires its exact saved-state receipt"
                     )
@@ -15617,7 +15624,7 @@ public final class MachineManager: @unchecked Sendable {
         }
         if let restoreStatePath {
             guard !acceleratedDesktop,
-                  restoreStatePath == savedStateStore.statePath(machineID: machine.id) else {
+                  isManagedSavedStatePath(restoreStatePath, machineID: machine.id) else {
                 throw MachineManagerError.persistence(
                     "saved state cannot be restored by the selected backend or path"
                 )
@@ -18307,7 +18314,6 @@ public final class MachineManager: @unchecked Sendable {
             guard machine.guestFamily == .macOS,
                   machine.guestArchitecture == .arm64,
                   machine.macOSRestoreImagePath == restorePath,
-                  Self.isPrivateRegularFile(path: restorePath),
                   machine.macOSMachineBundlePath == bundlePath,
                   Self.isPrivateDirectory(path: bundlePath) else {
                 throw MachineManagerError.persistence(
@@ -18317,8 +18323,14 @@ public final class MachineManager: @unchecked Sendable {
             let bundle = try DoryVZMacMachineBundle.load(
                 from: URL(fileURLWithPath: bundlePath, isDirectory: true)
             )
+            try Self.validateManagedNativeMacOSRestoreImage(
+                path: restorePath,
+                installationState: bundle.manifest.installationState
+            )
+            let memoryBytes = machine.memoryMB.multipliedReportingOverflow(by: 1_048_576)
             guard bundle.manifest.resources.cpuCount == machine.cpuCount,
-                  bundle.manifest.resources.memoryBytes == machine.memoryMB * 1_048_576,
+                  !memoryBytes.overflow,
+                  bundle.manifest.resources.memoryBytes == memoryBytes.partialValue,
                   bundle.manifest.resources.diskBytes == machine.diskSizeBytes else {
                 throw MachineManagerError.persistence(
                     "native macOS managed resources differ from workspace intent"
@@ -18343,6 +18355,38 @@ public final class MachineManager: @unchecked Sendable {
                   Self.isPrivateRegularFile(path: expectedInstallerISOPath) else {
                 throw MachineManagerError.persistence("machine installer ISO failed managed-storage validation")
             }
+        }
+    }
+
+
+    private static func validateManagedNativeMacOSRestoreImage(
+        path: String,
+        installationState: DoryVZMacMachineInstallationState
+    ) throws {
+        var info = stat()
+        let exists: Bool
+        if lstat(path, &info) == 0 {
+            exists = true
+        } else if errno == ENOENT {
+            exists = false
+        } else {
+            throw MachineManagerError.persistence(
+                "native macOS restore image failed managed-storage validation"
+            )
+        }
+        if nativeMacOSInstallationRequiresRestoreMedia(installationState)
+            || installationState == .installing {
+            guard exists, isPrivateRegularFile(info: info) else {
+                throw MachineManagerError.persistence(
+                    "native macOS restore image failed managed-storage validation"
+                )
+            }
+            return
+        }
+        if exists, !isPrivateRegularFile(info: info) {
+            throw MachineManagerError.persistence(
+                "native macOS restore image failed managed-storage validation"
+            )
         }
     }
 
@@ -18798,18 +18842,8 @@ public final class MachineManager: @unchecked Sendable {
                 throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
             }
             let record = try workspaceRepository.readPersistedRecord(id: machine.id)
-            let definition = record.definition
             guard record.legacyConfigurationSHA256 == nil,
-                  record.legacyMigrationFactsSHA256 == nil,
-                  definition.identity.id == machine.id,
-                  definition.guest == DoryGuestPlatform(family: .macOS, architecture: .arm64),
-                  definition.boot.devices.count == 1,
-                  let restore = definition.boot.devices.first,
-                  restore.kind == .macOSRestoreImage,
-                  definition.storage.count == 1,
-                  let system = definition.storage.first,
-                  system.role == .system,
-                  definition.validate().isEmpty else {
+                  record.legacyMigrationFactsSHA256 == nil else {
                 throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
             }
             let bundle = try DoryVZMacMachineBundle.load(
@@ -18818,24 +18852,78 @@ public final class MachineManager: @unchecked Sendable {
             guard bundle.diskURL.path.hasPrefix(bundlePath + "/") else {
                 throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
             }
+            let restoreReference = Self.nativeMacOSRestoreReference(
+                machineID: machine.id,
+                manifest: bundle.manifest
+            )
+            let systemReference = Self.nativeMacOSSystemDiskReference(
+                machineID: machine.id,
+                manifest: bundle.manifest
+            )
+            var definition = record.definition
+            let desiredBoot = try Self.nativeMacOSBootConfiguration(
+                installationState: bundle.manifest.installationState,
+                restoreReference: restoreReference,
+                systemReference: systemReference
+            )
+            try Self.validateNativeMacOSWorkspaceAuthority(
+                definition: definition,
+                machineID: machine.id,
+                restoreReference: restoreReference,
+                systemReference: systemReference,
+                resources: bundle.manifest.resources
+            )
+            let reconcileState: DoryWorkspaceLegacyProjectionReconcileState
+            if definition.boot != desiredBoot {
+                guard allowReconciliation else {
+                    throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
+                }
+                guard definition.lifecycle.revision < UInt64.max else {
+                    throw DoryWorkspaceRepositoryError.staleLegacyProjection(machine.id)
+                }
+                definition.boot = desiredBoot
+                definition.lifecycle = DoryVMLifecycleMetadata(
+                    revision: record.definition.lifecycle.revision + 1,
+                    createdAtUnixMilliseconds:
+                        record.definition.lifecycle.createdAtUnixMilliseconds,
+                    updatedAtUnixMilliseconds: max(
+                        Int64(Date().timeIntervalSince1970 * 1_000),
+                        record.definition.lifecycle.createdAtUnixMilliseconds
+                    )
+                )
+                try Self.validateNativeMacOSWorkspaceAuthority(
+                    definition: definition,
+                    machineID: machine.id,
+                    restoreReference: restoreReference,
+                    systemReference: systemReference,
+                    resources: bundle.manifest.resources
+                )
+                try workspaceRepository.replace(
+                    definition,
+                    expectedRevision: record.definition.lifecycle.revision
+                )
+                reconcileState = .published
+            } else {
+                reconcileState = .unchanged
+            }
             return MachineWorkspaceAuthority(
                 definition: definition,
                 artifactBindings: [
                     DoryMachineConfigurationArtifactBinding(
                         role: .installerISO,
-                        reference: restore.artifact,
+                        reference: restoreReference,
                         path: restorePath
                     ),
                     DoryMachineConfigurationArtifactBinding(
                         role: .systemDisk,
-                        reference: system.artifact,
+                        reference: systemReference,
                         path: bundle.diskURL.path
                     ),
                 ],
                 migrationFactsData: try Self.canonicalDefinitionData(definition),
                 runtimeMachine: machine,
                 isNative: true,
-                reconcileState: .unchanged
+                reconcileState: reconcileState
             )
         }
         let facts = try workspaceMigrationFacts(for: machine)
@@ -19039,17 +19127,13 @@ public final class MachineManager: @unchecked Sendable {
             from: URL(fileURLWithPath: bundlePath, isDirectory: true)
         )
         let resources = bundle.manifest.resources
-        let restoreReference = Self.stableManagedArtifactReference(
-            namespace: "macos-restore",
+        let restoreReference = Self.nativeMacOSRestoreReference(
             machineID: machine.id,
-            role: "restore-image",
-            digest: bundle.manifest.restoreImageSHA256
+            manifest: bundle.manifest
         )
-        let systemReference = Self.stableManagedArtifactReference(
-            namespace: "macos-machine",
+        let systemReference = Self.nativeMacOSSystemDiskReference(
             machineID: machine.id,
-            role: "system-disk",
-            digest: bundle.manifest.machineIdentifierSHA256
+            manifest: bundle.manifest
         )
         let guest = DoryGuestPlatform(family: .macOS, architecture: .arm64)
         let platform = try DoryVirtualizationPlatformResolver.resolve(
@@ -19068,17 +19152,10 @@ public final class MachineManager: @unchecked Sendable {
             identity: DoryVirtualMachineIdentity(id: machine.id, name: machine.id),
             guest: guest,
             workload: .desktop,
-            boot: DoryVMBootConfiguration(
-                phase: .install,
-                devices: [DoryVMBootMediaReference(
-                    id: "restore",
-                    role: .installer,
-                    kind: .macOSRestoreImage,
-                    source: .userProvided,
-                    artifact: restoreReference,
-                    removable: true
-                )],
-                order: ["restore"]
+            boot: try Self.nativeMacOSBootConfiguration(
+                installationState: bundle.manifest.installationState,
+                restoreReference: restoreReference,
+                systemReference: systemReference
             ),
             platform: platform,
             translationConsent: .notRequired,
@@ -19127,6 +19204,126 @@ public final class MachineManager: @unchecked Sendable {
             )
         }
         return definition
+    }
+
+    private static func nativeMacOSRestoreReference(
+        machineID: String,
+        manifest: DoryVZMacMachineManifest
+    ) -> DoryVMResolverReference {
+        stableManagedArtifactReference(
+            namespace: "macos-restore",
+            machineID: machineID,
+            role: "restore-image",
+            digest: manifest.restoreImageSHA256
+        )
+    }
+
+    private static func nativeMacOSSystemDiskReference(
+        machineID: String,
+        manifest: DoryVZMacMachineManifest
+    ) -> DoryVMResolverReference {
+        stableManagedArtifactReference(
+            namespace: "macos-machine",
+            machineID: machineID,
+            role: "system-disk",
+            digest: manifest.machineIdentifierSHA256
+        )
+    }
+
+    private static func nativeMacOSBootConfiguration(
+        installationState: DoryVZMacMachineInstallationState,
+        restoreReference: DoryVMResolverReference,
+        systemReference: DoryVMResolverReference
+    ) throws -> DoryVMBootConfiguration {
+        if nativeMacOSInstallationRequiresRestoreMedia(installationState) {
+            return DoryVMBootConfiguration(
+                phase: .install,
+                devices: [DoryVMBootMediaReference(
+                    id: "restore",
+                    role: .installer,
+                    kind: .macOSRestoreImage,
+                    source: .userProvided,
+                    artifact: restoreReference,
+                    removable: true
+                )],
+                order: ["restore"]
+            )
+        }
+        if nativeMacOSInstallationCanBootFromSystemDisk(installationState) {
+            return DoryVMBootConfiguration(
+                phase: .normal,
+                devices: [DoryVMBootMediaReference(
+                    id: "system",
+                    role: .system,
+                    kind: .virtualDisk,
+                    source: .userProvided,
+                    artifact: systemReference,
+                    removable: false
+                )],
+                order: ["system"]
+            )
+        }
+        throw MachineManagerError.persistence(
+            "native macOS has an interrupted \(installationState.rawValue) operation that requires recovery"
+        )
+    }
+
+    private static func nativeMacOSInstallationRequiresRestoreMedia(
+        _ state: DoryVZMacMachineInstallationState
+    ) -> Bool {
+        state == .prepared || state == .installFailed
+    }
+
+    private static func nativeMacOSInstallationCanBootFromSystemDisk(
+        _ state: DoryVZMacMachineInstallationState
+    ) -> Bool {
+        state == .stopped || state == .suspended
+    }
+
+    private static func validateNativeMacOSWorkspaceAuthority(
+        definition: DoryVirtualMachineDefinition,
+        machineID: String,
+        restoreReference: DoryVMResolverReference,
+        systemReference: DoryVMResolverReference,
+        resources: DoryVZMacResourcePlan
+    ) throws {
+        guard definition.identity.id == machineID,
+              definition.guest == DoryGuestPlatform(family: .macOS, architecture: .arm64),
+              definition.storage.count == 1,
+              let system = definition.storage.first,
+              system.id == "system",
+              system.role == .system,
+              system.artifact == systemReference,
+              system.source == .userProvided,
+              !system.readOnly,
+              system.capacityBytes == resources.diskBytes,
+              definition.resources.virtualCPUCount == UInt64(resources.cpuCount),
+              definition.resources.memoryBytes == resources.memoryBytes,
+              definition.resources.diskBytes == resources.diskBytes,
+              definition.validate().isEmpty else {
+            throw DoryWorkspaceRepositoryError.staleLegacyProjection(machineID)
+        }
+        let restoreBoot = definition.boot.phase == .install
+            && definition.boot.order == ["restore"]
+            && definition.boot.devices.count == 1
+            && definition.boot.devices[0].id == "restore"
+            && definition.boot.devices[0].role == .installer
+            && definition.boot.devices[0].kind == .macOSRestoreImage
+            && definition.boot.devices[0].source == .userProvided
+            && definition.boot.devices[0].artifact == restoreReference
+            && definition.boot.devices[0].removable
+        let diskBoot = definition.boot.phase == .normal
+            && definition.boot.order == ["system"]
+            && definition.boot.devices.count == 1
+            && definition.boot.devices[0].id == "system"
+            && definition.boot.devices[0].role == .system
+            && definition.boot.devices[0].kind == .virtualDisk
+            && definition.boot.devices[0].source == .userProvided
+            && definition.boot.devices[0].artifact == systemReference
+            && !definition.boot.devices[0].removable
+        guard restoreBoot || diskBoot else {
+            throw DoryWorkspaceRepositoryError.staleLegacyProjection(machineID)
+        }
     }
 
     private static func stableManagedArtifactReference(
@@ -20832,11 +21029,14 @@ public final class MachineManager: @unchecked Sendable {
                       machine.guestArchitecture == .arm64,
                       machine.macOSRestoreImagePath == restorePath,
                       machine.macOSMachineBundlePath == bundlePath,
-                      isPrivateRegularFile(path: restorePath),
                       isPrivateDirectory(path: bundlePath),
                       let bundle = try? DoryVZMacMachineBundle.load(
                         from: URL(fileURLWithPath: bundlePath, isDirectory: true)
                       ),
+                      (try? validateManagedNativeMacOSRestoreImage(
+                        path: restorePath,
+                        installationState: bundle.manifest.installationState
+                      )) != nil,
                       bundle.manifest.resources.cpuCount == machine.cpuCount,
                       !memoryBytes.overflow,
                       bundle.manifest.resources.memoryBytes == memoryBytes.partialValue,

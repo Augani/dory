@@ -716,6 +716,16 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             guard artifact.mutableProvenance != nil else {
                 throw DoryDaemonProductionTrustInventoryError.mediaInvalid
             }
+            if request.guest == DoryGuestPlatform(family: .macOS, architecture: .arm64) {
+                do {
+                    try validatePreparedNativeMacOSInstalledDisk(
+                        artifact: artifact,
+                        launchArtifacts: launchArtifacts
+                    )
+                } catch {
+                    throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+                }
+            }
             inspection = nil
         case .macOSRestoreImage:
             do {
@@ -936,6 +946,16 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             guard artifact.mutableProvenance != nil else {
                 throw DoryDaemonProductionTrustInventoryError.mediaInvalid
             }
+            if plan.guest == DoryGuestPlatform(family: .macOS, architecture: .arm64) {
+                do {
+                    try validatePreparedNativeMacOSInstalledDisk(
+                        artifact: artifact,
+                        launchArtifacts: launchArtifacts
+                    )
+                } catch {
+                    throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+                }
+            }
             inspection = nil
         case .macOSRestoreImage:
             do {
@@ -1063,7 +1083,7 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
             && request.acceptableGraphics.contains(.software)
         let isPreparedNativeMacOS = request.guest
             == DoryGuestPlatform(family: .macOS, architecture: .arm64)
-            && media.kind == .macOSRestoreImage
+            && (media.kind == .macOSRestoreImage || media.kind == .virtualDisk)
             && request.acceptableGraphics.contains(.hostAcceleratedDisplay)
         guard isPortableLinux || isPreparedNativeMacOS else { return nil }
         if isPortableLinux {
@@ -1102,6 +1122,57 @@ final class DoryProductionDaemonVirtualMachineTrustInventory:
         _ plan: DoryResolvedMachinePlan
     ) -> Bool {
         plan.usesPreparedNativeMacOSBaseline
+    }
+
+    private func validatePreparedNativeMacOSInstalledDisk(
+        artifact: DoryVerifiedVirtualMachineArtifact,
+        launchArtifacts: [DoryResolvedMachineLaunchArtifact]
+    ) throws {
+        guard artifact.media.kind == .virtualDisk,
+              artifact.media.source == .userProvided,
+              artifact.media.mutableProvenance != nil,
+              artifact.mutableProvenance != nil else {
+            throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+        }
+        guard launchArtifacts.contains(where: { resolved in
+            resolved.resolverReference == artifact.reference
+                && resolved.media == artifact.media
+                && resolved.mutableProvenanceEvidence
+                    == artifact.mutableProvenance?.persistedAuditEvidence
+                && resolved.usages.contains {
+                    $0.kind == .boot && $0.identifier == "system" && !$0.readOnly
+                }
+                && resolved.usages.contains {
+                    $0.kind == .storage && $0.identifier == "system" && !$0.readOnly
+                }
+        }) else {
+            throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+        }
+        let diskURL = URL(fileURLWithPath: artifact.path).standardizedFileURL
+        guard diskURL.lastPathComponent == DoryVZMacMachineBundle.diskName else {
+            throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+        }
+        let bundle = try DoryVZMacMachineBundle.load(
+            from: diskURL.deletingLastPathComponent()
+        )
+        guard bundle.diskURL.standardizedFileURL == diskURL,
+              bundle.manifest.installationState == .stopped
+                || bundle.manifest.installationState == .suspended,
+              bundle.manifest.restoreImageBytes > 0 else {
+            throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+        }
+        let result = try DoryQualifiedBootMediaInspector
+            .inspectPreparedNativeMacOSRestoreImage(
+                artifactSHA256: bundle.manifest.restoreImageSHA256,
+                byteCount: bundle.manifest.restoreImageBytes,
+                buildIdentifier: bundle.manifest.restoreImageBuild
+            )
+        guard result.media.kind == .macOSRestoreImage,
+              result.media.source == .userProvided,
+              result.media.artifactSHA256?.lowercased()
+                == bundle.manifest.restoreImageSHA256.lowercased() else {
+            throw DoryDaemonProductionTrustInventoryError.mediaInvalid
+        }
     }
 
     private func preparedNativeMacOSRestoreInspection(

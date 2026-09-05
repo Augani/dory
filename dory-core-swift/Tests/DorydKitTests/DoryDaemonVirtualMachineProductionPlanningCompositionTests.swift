@@ -317,6 +317,7 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
         let preparedBundle = try DoryVZMacMachineBundle.load(
             from: URL(fileURLWithPath: bundlePath, isDirectory: true)
         )
+        let installedBundle = try preparedBundle.updatingInstallationState(.stopped)
         let seededMachine = DoryMachineConfiguration(
             id: machineID,
             guestFamily: .macOS,
@@ -326,9 +327,9 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             bootMode: .macOSRestore,
             macOSRestoreImagePath: restorePath,
             macOSMachineBundlePath: bundlePath,
-            diskSizeBytes: preparedBundle.manifest.resources.diskBytes,
-            memoryMB: preparedBundle.manifest.resources.memoryBytes / 1_048_576,
-            cpuCount: preparedBundle.manifest.resources.cpuCount,
+            diskSizeBytes: installedBundle.manifest.resources.diskBytes,
+            memoryMB: installedBundle.manifest.resources.memoryBytes / 1_048_576,
+            cpuCount: installedBundle.manifest.resources.cpuCount,
             displayMode: .desktop
         )
         let machineEncoder = JSONEncoder()
@@ -350,13 +351,13 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             namespace: "macos-restore",
             machineID: machineID,
             role: "restore-image",
-            digest: preparedBundle.manifest.restoreImageSHA256
+            digest: installedBundle.manifest.restoreImageSHA256
         )
         let diskReference = NativeMacCompositionMaterial.artifactReference(
             namespace: "macos-machine",
             machineID: machineID,
             role: "system-disk",
-            digest: preparedBundle.manifest.machineIdentifierSHA256
+            digest: installedBundle.manifest.machineIdentifierSHA256
         )
         do {
             _ = try artifactAuthority.publishImmutable(
@@ -364,7 +365,7 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
                 path: restorePath,
                 kind: .macOSRestoreImage,
                 source: .userProvided,
-                expectedSHA256: preparedBundle.manifest.restoreImageSHA256
+                expectedSHA256: installedBundle.manifest.restoreImageSHA256
             )
         } catch {
             throw MachineManagerError.persistence(
@@ -386,9 +387,9 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             id: machineID,
             restoreReference: restoreReference,
             diskReference: diskReference,
-            cpuCount: UInt64(preparedBundle.manifest.resources.cpuCount),
-            memoryBytes: preparedBundle.manifest.resources.memoryBytes,
-            diskBytes: preparedBundle.manifest.resources.diskBytes,
+            cpuCount: UInt64(installedBundle.manifest.resources.cpuCount),
+            memoryBytes: installedBundle.manifest.resources.memoryBytes,
+            diskBytes: installedBundle.manifest.resources.diskBytes,
             audio: DoryVMAudioConfiguration(inputEnabled: true, outputEnabled: true),
             integrations: [.clipboard, .dynamicDisplay, .gracefulShutdown],
             createdAtUnixMilliseconds: NativeMacCompositionMaterial.workspaceCreationTimestamp(
@@ -414,6 +415,74 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             macOSRestoreHandoffReadyTimeoutSeconds: 150,
             startupRestartPolicy: .none
         )
+        let invalidMachineID = "native-mac-invalid-installed"
+        let invalidMachineDirectory = managerState + "/" + invalidMachineID
+        let invalidRestorePath = invalidMachineDirectory + "/Restore.ipsw"
+        let invalidBundlePath = invalidMachineDirectory + "/Machine.dorymac"
+        try FileManager.default.createDirectory(
+            atPath: invalidMachineDirectory,
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        try cloneOrCopyPhysicalFixtureItem(source: ipswPath, destination: invalidRestorePath)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: invalidRestorePath)
+        try cloneOrCopyPhysicalFixtureItem(source: preparedBundlePath, destination: invalidBundlePath)
+        let invalidBundle = try DoryVZMacMachineBundle.load(
+            from: URL(fileURLWithPath: invalidBundlePath, isDirectory: true)
+        ).updatingInstallationState(.stopped)
+        let invalidRestoreReference = NativeMacCompositionMaterial.artifactReference(
+            namespace: "macos-restore",
+            machineID: invalidMachineID,
+            role: "restore-image",
+            digest: invalidBundle.manifest.restoreImageSHA256
+        )
+        let invalidDiskReference = NativeMacCompositionMaterial.artifactReference(
+            namespace: "macos-machine",
+            machineID: invalidMachineID,
+            role: "system-disk",
+            digest: invalidBundle.manifest.machineIdentifierSHA256
+        )
+        let invalidMachine = DoryMachineConfiguration(
+            id: invalidMachineID,
+            guestFamily: .macOS,
+            guestArchitecture: .arm64,
+            kernelPath: "",
+            rootfsPath: "",
+            bootMode: .macOSRestore,
+            macOSRestoreImagePath: invalidRestorePath,
+            macOSMachineBundlePath: invalidBundlePath,
+            diskSizeBytes: invalidBundle.manifest.resources.diskBytes,
+            memoryMB: invalidBundle.manifest.resources.memoryBytes / 1_048_576,
+            cpuCount: invalidBundle.manifest.resources.cpuCount,
+            displayMode: .desktop
+        )
+        try machineEncoder.encode(invalidMachine).write(
+            to: URL(fileURLWithPath: invalidMachineDirectory + "/machine.json"),
+            options: .atomic
+        )
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: invalidMachineDirectory + "/machine.json"
+        )
+        var invalidDefinition = try NativeMacCompositionMaterial.definition(
+            id: invalidMachineID,
+            restoreReference: invalidRestoreReference,
+            diskReference: invalidDiskReference,
+            cpuCount: UInt64(invalidBundle.manifest.resources.cpuCount),
+            memoryBytes: invalidBundle.manifest.resources.memoryBytes,
+            diskBytes: invalidBundle.manifest.resources.diskBytes,
+            audio: DoryVMAudioConfiguration(inputEnabled: false, outputEnabled: false),
+            integrations: [],
+            createdAtUnixMilliseconds: NativeMacCompositionMaterial.workspaceCreationTimestamp(
+                machineDirectory: invalidMachineDirectory
+            )
+        )
+        invalidDefinition.storage[0].artifact = DoryVMResolverReference(
+            namespace: "macos-machine",
+            identifier: "wrong-system-disk"
+        )
+        try managerWorkspaces.create(invalidDefinition)
+
         let manager = MachineManager(
             diagnosticConfiguration: managerConfiguration,
             launchPolicy: .perWorkspaceAuthority,
@@ -464,6 +533,36 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             resourceAdmissionLedger: fixture.ledger
         )
 
+        var rejectedInvalidWorkspaceAuthority = false
+        do {
+            let fence = try manager.acquirePlanningMutationFence(
+                operationID: UUID(uuidString: "22222222-3333-4444-8555-666666666666")!,
+                machine: invalidMachine,
+                definition: invalidDefinition,
+                canonicalDefinitionData: DoryDaemonVirtualMachinePlanningCoordinator
+                    .canonicalDefinitionData(invalidDefinition)
+            )
+            fence.releaseForRecovery()
+        } catch let error as DoryWorkspaceRepositoryError {
+            guard case .staleLegacyProjection = error else { throw error }
+            rejectedInvalidWorkspaceAuthority = true
+        } catch let error as MachineManagerError {
+            if case .persistence = error {
+                // MachineManager wraps stale native workspace authority in persistence failures.
+                rejectedInvalidWorkspaceAuthority = true
+            } else {
+                throw error
+            }
+        }
+        try requireNativeMacManager(
+            rejectedInvalidWorkspaceAuthority,
+            "invalid native Mac workspace authority should be rejected before reconciliation"
+        )
+        try requireNativeMacManager(
+            try managerWorkspaces.read(id: invalidMachineID) == invalidDefinition,
+            "invalid native Mac workspace authority must not be rewritten before rejection"
+        )
+
         helper.controller.bundlePath = bundlePath
 
         try? FileManager.default.removeItem(atPath: helper.exitMarkerPath)
@@ -490,6 +589,7 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
                 controlSocketPath,
                 manager: manager,
                 id: machineID,
+                reconnectStoreRoot: managerState,
                 call: startCall,
                 label: "start control socket"
             )
@@ -506,21 +606,32 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             _ = try? startCall.value()
             throw error
         }
-        let startedStatus = try startCall.value()
+        _ = try startCall.value()
+        let startedStatus = try waitForNativeManagerStatus(
+            manager,
+            id: machineID,
+            timeout: 60,
+            label: "start running",
+            failingWhenFinished: startCall
+        ) {
+            $0.state == .running
+        }
         try requireNativeMacManager(
             startedStatus.state == .running,
             "fake-helper start should publish running status; \(nativeManagerStatusDetail(startedStatus))"
         )
-        _ = try waitForNativeManagerStatus(
-            manager,
-            id: machineID,
-            timeout: 60,
-            label: "start running"
-        ) {
-            $0.state == .running
-        }
         let initialIdentity = try #require(manager.runtimeIdentity(id: machineID))
         let initialPlan = try fixture.plans.read(id: machineID)
+        try requireNativeMacInstalledDiskPlan(
+            initialPlan,
+            diskReference: diskReference,
+            message: "installed native Mac start should plan the managed system disk as boot media"
+        )
+        try requireNativeMacInstalledWorkspaceBoot(
+            try managerWorkspaces.read(id: machineID),
+            diskReference: diskReference,
+            message: "installed native Mac start should persist normal disk boot before activation"
+        )
         try NativeMacCompositionMaterial.writeGuestDiskByte(
             at: bundlePath + "/" + DoryVZMacMachineBundle.diskName,
             byte: 0x7a
@@ -533,9 +644,17 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             )
         }.value()
         try requireNativeMacManager(suspended.state == .suspended, "suspend should publish suspended status")
-        #expect(helper.controller.saveCount == 1)
+        try requireNativeMacManager(
+            helper.controller.saveCount == 1,
+            "suspend should invoke exactly one native save operation"
+        )
         let refreshedIdentity = try #require(manager.runtimeIdentity(id: machineID))
         let refreshedPlan = try fixture.plans.read(id: machineID)
+        try requireNativeMacInstalledDiskPlan(
+            refreshedPlan,
+            diskReference: diskReference,
+            message: "saved-state replan should retain installed native Mac disk boot authority"
+        )
         try requireNativeMacManager(
             refreshedPlan.planRevision == initialPlan.planRevision + 1,
             "suspend should refresh native Mac plan revision"
@@ -598,6 +717,7 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
                 controlSocketPath,
                 manager: manager,
                 id: machineID,
+                reconnectStoreRoot: managerState,
                 call: restoreCall,
                 label: "resume control socket"
             )
@@ -614,7 +734,16 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             _ = try? restoreCall.value()
             throw error
         }
-        let restoredStatus = try restoreCall.value()
+        _ = try restoreCall.value()
+        let restoredStatus = try waitForNativeManagerStatus(
+            manager,
+            id: machineID,
+            timeout: 60,
+            label: "resume running",
+            failingWhenFinished: restoreCall
+        ) {
+            $0.state == .running
+        }
         try requireNativeMacManager(restoredStatus.state == .running, "resume should publish running status")
         try requireNativeMacManager(restoredStatus.savedState == nil, "resume should consume daemon saved state")
         try requireNativeMacManager(
@@ -622,16 +751,135 @@ struct DoryDaemonVirtualMachineProductionPlanningCompositionTests {
             "resume should retain refreshed runtime identity"
         )
 
-        _ = try NativeMacPhysicalFixtureThreadCall.start(name: "dory-native-mac-stop") {
+        let stoppedStatus = try NativeMacPhysicalFixtureThreadCall.start(name: "dory-native-mac-stop") {
             try manager.stop(id: machineID)
         }.value()
+        try requireNativeMacManager(stoppedStatus.state == .stopped, "stop should publish stopped status")
+        try requireNativeMacManager(stoppedStatus.savedState == nil, "cold stop should leave no saved-state metadata")
+        try FileManager.default.removeItem(atPath: restorePath)
+        let reopenedManager = MachineManager(
+            diagnosticConfiguration: managerConfiguration,
+            launchPolicy: .perWorkspaceAuthority,
+            vzLifecycleController: helper.controller
+        )
+        let reopenedLaunchOperations = reopenedManager.resolvedLaunchCompatibilityOperations(
+            for: .appleVirtualizationFramework
+        )
+        let reopenedLaunchRegistry = try BackendRegistry(backends: [
+            VirtualizationFrameworkLinuxMachineBackend(
+                executablePath: helperExecutablePath,
+                operations: reopenedLaunchOperations,
+                executableIsAvailable: { _ in true }
+            ),
+        ])
+        let reopenedCoordinator = DoryDaemonVirtualMachinePlanningTransactionCoordinator(
+            stateDirectory: fixture.root,
+            registry: reopenedLaunchRegistry,
+            trust: trust,
+            mutationAuthority: reopenedManager,
+            workspaces: managerWorkspaces,
+            plans: fixture.plans,
+            ledger: fixture.ledger,
+            capabilityPlanner: DoryAppleSiliconDaemonVirtualMachineCapabilityPlanner(),
+            now: { 1_700_000_000_200 }
+        )
+        let reopenedController = DoryDaemonVirtualMachineProductionPlanningController(
+            artifactAuthority: artifactAuthority,
+            coordinator: reopenedCoordinator,
+            workspaces: managerWorkspaces,
+            plans: fixture.plans
+        )
+        let reopenedEvidence = DoryDaemonVirtualMachineStartEvidenceCollector(
+            registry: reopenedLaunchRegistry,
+            inventory: trust
+        )
+        let reopenedResolver = DoryDaemonVirtualMachineLaunchPlanResolver(
+            registry: reopenedLaunchRegistry,
+            plans: fixture.plans,
+            evidenceCollector: reopenedEvidence
+        )
+        try reopenedManager.installResolvedLaunchInfrastructure(
+            registry: reopenedLaunchRegistry,
+            resolver: reopenedResolver,
+            plans: fixture.plans,
+            expectedPlanRevision: { id in try? fixture.plans.read(id: id).planRevision },
+            productionPlanningController: reopenedController,
+            resourceAdmissionLedger: fixture.ledger
+        )
+        try requireNativeMacManager(
+            reopenedManager.status(id: machineID)?.state == .stopped,
+            "installed native Mac should reload after installer media removal"
+        )
+        try? FileManager.default.removeItem(atPath: helper.exitMarkerPath)
+        let coldStartCall = NativeMacPhysicalFixtureThreadCall.start(name: "dory-native-mac-cold-start") {
+            try reopenedManager.start(
+                id: machineID,
+                operationID: UUID(uuidString: "66666666-7777-4888-8999-aaaaaaaaaaaa")!
+            )
+        }
+        do {
+            let starting = try waitForNativeManagerStatus(
+                reopenedManager,
+                id: machineID,
+                timeout: 300,
+                label: "cold start handoff",
+                failingWhenFinished: coldStartCall
+            ) {
+                $0.state == .starting && $0.handoffSocketPath != nil
+            }
+            let controlSocketPath = nativeHelperControlSocketPath(
+                handoffSocketPath: try #require(starting.handoffSocketPath)
+            )
+            try waitForNativeHelperControlSocket(
+                controlSocketPath,
+                manager: reopenedManager,
+                id: machineID,
+                reconnectStoreRoot: managerState,
+                call: coldStartCall,
+                label: "cold start control socket"
+            )
+            try sendVmmHandoff(
+                path: try #require(starting.handoffSocketPath),
+                ready: VmmReadyMessage(
+                    machineID: machineID,
+                    operationID: starting.activeOperationID,
+                    controlSocketPath: controlSocketPath
+                ),
+                fileDescriptors: []
+            )
+        } catch {
+            _ = try? coldStartCall.value()
+            throw error
+        }
+        _ = try coldStartCall.value()
+        let coldStartedStatus = try waitForNativeManagerStatus(
+            reopenedManager,
+            id: machineID,
+            timeout: 60,
+            label: "cold start running",
+            failingWhenFinished: coldStartCall
+        ) {
+            $0.state == .running
+        }
+        try requireNativeMacManager(
+            coldStartedStatus.state == .running,
+            "installed native Mac should cold-start without retained restore image"
+        )
+        try requireNativeMacInstalledDiskPlan(
+            try fixture.plans.read(id: machineID),
+            diskReference: diskReference,
+            message: "cold-start after installer removal should retain installed disk boot authority"
+        )
+        _ = try NativeMacPhysicalFixtureThreadCall.start(name: "dory-native-mac-cold-stop") {
+            try reopenedManager.stop(id: machineID)
+        }.value()
         try NativeMacPhysicalFixtureThreadCall.start(name: "dory-native-mac-delete") {
-            try manager.delete(id: machineID)
+            try reopenedManager.delete(id: machineID)
         }.value()
         removeHelperRoot = true
     }
 
-private func cloneOrCopyPhysicalFixtureItem(source: String, destination: String) throws {
+    private func cloneOrCopyPhysicalFixtureItem(source: String, destination: String) throws {
         if clonefile(source, destination, 0) == 0 { return }
         let cloneErrno = errno
         if cloneErrno != ENOTSUP && cloneErrno != EXDEV && cloneErrno != EISDIR {
@@ -1313,7 +1561,14 @@ private final class NativeMacManagerHelperController:
     var saveCount: Int { lock.withLock { saves } }
 
     func pause(socketPath: String) throws {}
-    func resume(socketPath: String) throws {}
+
+    func resume(socketPath: String) throws {
+        if let bundlePath {
+            _ = try DoryVZMacMachineBundle.load(
+                from: URL(fileURLWithPath: bundlePath, isDirectory: true)
+            ).updatingInstallationState(.stopped)
+        }
+    }
 
     func saveMachineState(socketPath: String, statePath: String) throws {
         let descriptor = open(statePath, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0o600)
@@ -1361,15 +1616,24 @@ private struct NativeMacManagerHelper {
         #!/bin/sh
         log='\(root)/fake-vzmac-arguments.log'
         printf '%s\n' "$@" >> "$log"
+        operation=
+        machine_path=
+        if [ "$1" = "vzmac" ]; then
+          operation="$2"
+        fi
         control_sock=
         reconnect_fd=
         while [ "$#" -gt 0 ]; do
           case "$1" in
+            --machine) shift; machine_path="$1" ;;
             --control-sock) shift; control_sock="$1" ;;
             --runtime-reconnect-fd) shift; reconnect_fd="$1" ;;
           esac
           shift || exit 2
         done
+        if [ "$operation" = "resume" ] && [ -n "$machine_path" ]; then
+          /usr/bin/python3 -c 'import json, os, sys; manifest=os.path.join(sys.argv[1], "machine.json"); data=json.load(open(manifest, "r", encoding="utf-8")); data["installationState"]="stopped"; temporary=manifest+".tmp"; fh=open(temporary, "w", encoding="utf-8"); json.dump(data, fh, indent=2, sort_keys=True); fh.write("\\n"); fh.close(); os.replace(temporary, manifest)' "$machine_path"
+        fi
         if [ -z "$control_sock" ] || [ -z "$reconnect_fd" ]; then
           echo 'missing control socket or reconnect fd' >> "$log"
           exit 2
@@ -1424,12 +1688,8 @@ private func waitForNativeManagerStatus<T>(
                 throw nativeManagerTerminalFailure(label: label, status: status)
             }
         }
-        if let result = call?.resultIfFinished() {
+        if let result = call?.resultIfFinished(), case .failure = result {
             _ = try result.get()
-            if let status = manager.status(id: id) {
-                throw CompositionTestError.unexpectedStatus(status.state.rawValue)
-            }
-            throw nativeManagerTimeout(label: label, status: manager.status(id: id))
         }
         Thread.sleep(forTimeInterval: 0.01)
     }
@@ -1500,14 +1760,14 @@ private final class CompositionArtifactAuthorityTrust:
             definitionRevision: request.resolvedPlan.definitionRevision,
             guest: request.resolvedPlan.guest,
             bootMedia: DoryVMBootMediaReference(
-                id: "restore",
-                role: .installer,
+                id: request.resolvedPlan.bootMedia.media.kind == .virtualDisk ? "system" : "restore",
+                role: request.resolvedPlan.bootMedia.media.kind == .virtualDisk ? .system : .installer,
                 kind: request.resolvedPlan.bootMedia.media.kind,
                 source: request.resolvedPlan.bootMedia.media.source,
                 artifact: request.resolvedPlan.bootMedia.resolverReference
                     ?? restoreReference
                     ?? DoryVMResolverReference(namespace: "invalid", identifier: "invalid"),
-                removable: true
+                removable: request.resolvedPlan.bootMedia.media.kind != .virtualDisk
             ),
             launchArtifacts: request.resolvedPlan.launchArtifacts.map { artifact in
                 DoryDaemonVirtualMachineLaunchArtifactRequirement(
@@ -1523,24 +1783,7 @@ private final class CompositionArtifactAuthorityTrust:
                 memoryBytes: request.resolvedPlan.resourceAdmission?.admittedMemoryBytes ?? 8 * 1_024 * 1_024 * 1_024,
                 diskBytes: request.resolvedPlan.resourceAdmission?.admittedStorageBytes ?? NativeMacCompositionMaterial.diskBytes
             ),
-            devices: DoryVirtualMachineDeviceCapabilityRequest(
-                networkInterface: DoryVirtualMachineNetworkInterfaceCapabilityRequest.stable(
-                    machineID: request.resolvedPlan.machineID
-                ),
-                display: DoryVirtualMachineDisplayCapabilityRequest(
-                    widthPixels: 1024,
-                    heightPixels: 768
-                ),
-                audioInput: false,
-                audioOutput: false,
-                keyboard: true,
-                pointer: true,
-                clipboard: false,
-                clipboardPolicy: .disabled,
-                clockSynchronization: false,
-                dynamicDisplay: false,
-                gracefulShutdown: false
-            ),
+            devices: request.resolvedPlan.devices,
             acceptableGraphics: [request.resolvedPlan.graphics],
             virtualHardwareABIVersion: request.resolvedPlan.virtualHardwareABIVersion
         )
@@ -1579,30 +1822,40 @@ private final class CompositionArtifactAuthorityTrust:
                 mutableProvenanceEvidence: artifact.mutableProvenance?.persistedAuditEvidence
             )
         }
-        let restore = try artifactAuthority.resolve(
-            reference: restoreReference ?? request.bootMedia.artifact,
-            kind: .macOSRestoreImage,
-            source: .userProvided
+        let bootArtifact = try artifactAuthority.resolve(
+            reference: request.bootMedia.artifact,
+            kind: request.bootMedia.kind,
+            source: request.bootMedia.source
         )
-        let restoreBytes = try FileManager.default.attributesOfItem(
-            atPath: restore.path
-        )[.size] as? NSNumber
-        let preparedRestore = try DoryQualifiedBootMediaInspector
-            .inspectPreparedNativeMacOSRestoreImage(
-                artifactSHA256: try #require(restore.media.artifactSHA256),
-                byteCount: try #require(restoreBytes).uint64Value,
-                buildIdentifier: restoreImageBuild
+        let resolvedMedia: DoryDaemonVirtualMachineResolvedMedia
+        if request.bootMedia.kind == .macOSRestoreImage {
+            let restoreBytes = try FileManager.default.attributesOfItem(
+                atPath: bootArtifact.path
+            )[.size] as? NSNumber
+            let preparedRestore = try DoryQualifiedBootMediaInspector
+                .inspectPreparedNativeMacOSRestoreImage(
+                    artifactSHA256: try #require(bootArtifact.media.artifactSHA256),
+                    byteCount: try #require(restoreBytes).uint64Value,
+                    buildIdentifier: restoreImageBuild
+                )
+            guard preparedRestore.media == bootArtifact.media else {
+                throw CompositionTestError.invalidAuthority
+            }
+            resolvedMedia = DoryDaemonVirtualMachineResolvedMedia(
+                reference: bootArtifact.reference,
+                media: bootArtifact.media,
+                bootInspection: preparedRestore.inspection
             )
-        guard preparedRestore.media == restore.media else {
-            throw CompositionTestError.invalidAuthority
+        } else {
+            resolvedMedia = DoryDaemonVirtualMachineResolvedMedia(
+                reference: bootArtifact.reference,
+                media: bootArtifact.media,
+                mutableProvenance: bootArtifact.mutableProvenance
+            )
         }
         return DoryDaemonVirtualMachineTrustedInventorySnapshot(
             hostFacts: compositionHostFacts(nativeMacOSAvailable: true),
-            media: DoryDaemonVirtualMachineResolvedMedia(
-                reference: restore.reference,
-                media: restore.media,
-                bootInspection: preparedRestore.inspection
-            ),
+            media: resolvedMedia,
             launchArtifacts: launchArtifacts,
             backendRuntimes: [DoryDaemonVirtualMachineBackendRuntimeInventory(
                 backend: .appleVirtualizationFramework,
@@ -1810,18 +2063,79 @@ private func requireNativeMacManager(
 }
 
 
+private func requireNativeMacInstalledWorkspaceBoot(
+    _ definition: DoryVirtualMachineDefinition,
+    diskReference: DoryVMResolverReference,
+    message: String
+) throws {
+    guard definition.boot.phase == .normal,
+          definition.boot.order == ["system"],
+          definition.boot.devices.count == 1,
+          let boot = definition.boot.devices.first,
+          boot.id == "system",
+          boot.role == .system,
+          boot.kind == .virtualDisk,
+          boot.source == .userProvided,
+          boot.artifact == diskReference,
+          !boot.removable else {
+        throw MachineManagerError.persistence("managed native Mac qualification failed: \(message)")
+    }
+}
+
+private func requireNativeMacInstalledDiskPlan(
+    _ plan: DoryResolvedMachinePlan,
+    diskReference: DoryVMResolverReference,
+    message: String
+) throws {
+    let diskArtifacts = plan.launchArtifacts.filter { artifact in
+        artifact.resolverReference == diskReference
+    }
+    guard plan.bootMedia.resolverReference == diskReference,
+          plan.bootMedia.media.kind == .virtualDisk,
+          plan.bootMedia.media.source == .userProvided,
+          plan.bootMedia.mutableProvenanceEvidence != nil,
+          diskArtifacts.count == 1,
+          let artifact = diskArtifacts.first,
+          artifact.media == plan.bootMedia.media,
+          artifact.mutableProvenanceEvidence == plan.bootMedia.mutableProvenanceEvidence,
+          artifact.usages.contains(where: {
+            $0.kind == .boot && $0.identifier == "system" && !$0.readOnly
+          }),
+          artifact.usages.contains(where: {
+            $0.kind == .storage && $0.identifier == "system" && !$0.readOnly
+          }) else {
+        throw MachineManagerError.persistence("managed native Mac qualification failed: \(message)")
+    }
+}
+
+
 private func waitForNativeHelperControlSocket<T>(
     _ path: String,
     manager: MachineManager,
     id: String,
+    reconnectStoreRoot: String,
     call: NativeMacPhysicalFixtureThreadCall<T>,
     label: String,
     timeout: TimeInterval = 150
 ) throws {
     let deadline = Date().addingTimeInterval(timeout)
+    var lastError: Error?
     while Date() < deadline {
         var info = stat()
-        if lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFSOCK { return }
+        if lstat(path, &info) == 0, (info.st_mode & S_IFMT) == S_IFSOCK {
+            do {
+                let identity = try DoryRuntimeReconnectRecordStore(root: reconnectStoreRoot)
+                    .read(machineID: id)
+                    .launchIdentity
+                _ = try VmmControlClient.authenticateRuntime(
+                    socketPath: path,
+                    launchIdentity: identity
+                )
+                return
+            } catch {
+                lastError = error
+            }
+        }
         if let status = manager.status(id: id), status.state == .failed {
             throw nativeManagerTerminalFailure(label: label, status: status)
         }
@@ -1830,7 +2144,10 @@ private func waitForNativeHelperControlSocket<T>(
         }
         Thread.sleep(forTimeInterval: 0.01)
     }
-    throw nativeManagerTimeout(label: label, status: manager.status(id: id))
+    let status = manager.status(id: id)
+    throw NSError(domain: "NativeMacManagerFixture", code: 3, userInfo: [
+        NSLocalizedDescriptionKey: "timeout \(label): \(nativeManagerStatusDetail(status)); last control error=\(String(describing: lastError))",
+    ])
 }
 
 private enum CompositionTestError: Error { case notReady, invalidAuthority, unexpectedStatus(String) }

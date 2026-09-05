@@ -5,6 +5,7 @@ import DoryFirmware
 import DoryOperations
 import DoryRendererWorkerWireContracts
 import DoryVMContracts
+import DoryVZMacCore
 import Foundation
 import Testing
 import XCTest
@@ -2033,6 +2034,200 @@ struct DoryDaemonVirtualMachineProductionTrustTests {
         #expect(snapshot.backendRuntimes.count == 2)
         #expect(snapshot.runtimeQualifications.count == 2)
         #expect(snapshot.backendRuntime(for: .doryHypervisor) != nil)
+    }
+
+    @Test(
+        "production trust admits installed native Mac bundle disk through portable runtime",
+        .enabled(if: ProcessInfo.processInfo.environment["DORY_NATIVE_MAC_PREPARED_BUNDLE"] != nil)
+    )
+    func planningPreparationAdmitsInstalledNativeMacBundleDisk() throws {
+        let sourceBundlePath = try #require(
+            ProcessInfo.processInfo.environment["DORY_NATIVE_MAC_PREPARED_BUNDLE"]
+        )
+        let fixture = try ProductionTrustFixture()
+        defer { fixture.cleanup() }
+        guard case let .ready(context) = fixture.resolve(),
+              let preparer = context.inventory
+                as? any DoryDaemonVirtualMachinePlanningTrustPreparing else {
+            Issue.record("Expected production planning trust preparer")
+            return
+        }
+
+        let machineID = "installed-native-mac"
+        let bundlePath = fixture.root.appendingPathComponent(
+            "installed-native-mac.dorymac",
+            isDirectory: true
+        ).path
+        try cloneOrCopyProductionTrustFixtureItem(
+            source: sourceBundlePath,
+            destination: bundlePath
+        )
+        let bundle = try DoryVZMacMachineBundle.load(
+            from: URL(fileURLWithPath: bundlePath, isDirectory: true)
+        ).updatingInstallationState(.stopped)
+        let diskReference = nativeMacProductionTrustReference(
+            namespace: "macos-machine",
+            machineID: machineID,
+            role: "system-disk",
+            digest: bundle.manifest.machineIdentifierSHA256
+        )
+        let artifactAuthority = DoryVirtualMachineArtifactAuthority(
+            root: fixture.machineConfiguration.stateDirectory + "/.artifact-authority"
+        )
+        let diskArtifact = try artifactAuthority.publishMutable(
+            reference: diskReference,
+            path: bundle.diskURL.path,
+            source: .userProvided
+        )
+        let resources = DoryVMResourceRequest(
+            virtualCPUCount: UInt64(bundle.manifest.resources.cpuCount),
+            memoryBytes: bundle.manifest.resources.memoryBytes,
+            diskBytes: bundle.manifest.resources.diskBytes
+        )
+        let definitionSHA256 = SHA256.hash(data: Data("installed-native-mac-definition".utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        let ledger = DoryVirtualMachineResourceAdmissionLedger(
+            root: fixture.machineConfiguration.stateDirectory + "/.resource-admissions"
+        )
+        let lease = try ledger.reserveStarting(
+            binding: DoryVirtualMachineResourceAdmissionPlanBinding(
+                machineID: machineID,
+                definitionRevision: 1,
+                definitionSHA256: definitionSHA256,
+                plannedPlanRevision: 1
+            ),
+            hostFacts: fixture.host.resources,
+            workload: .desktop,
+            resources: resources
+        )
+        let devices = DoryVirtualMachineDeviceCapabilityRequest(
+            networkInterface: .stable(machineID: machineID),
+            display: DoryVirtualMachineDisplayCapabilityRequest(
+                widthPixels: 1_024,
+                heightPixels: 768
+            ),
+            audioInput: true,
+            audioOutput: true,
+            keyboard: true,
+            pointer: true,
+            clipboard: true,
+            clipboardPolicy: .legacyDesktop(.bidirectional),
+            clockSynchronization: false,
+            dynamicDisplay: true,
+            gracefulShutdown: true
+        )
+        let launchRequirement = DoryDaemonVirtualMachineLaunchArtifactRequirement(
+            reference: diskReference,
+            kind: .virtualDisk,
+            source: .userProvided,
+            mutable: true,
+            usages: [
+                DoryResolvedMachineLaunchArtifactUsage(
+                    kind: .boot, identifier: "system", readOnly: false
+                ),
+                DoryResolvedMachineLaunchArtifactUsage(
+                    kind: .storage, identifier: "system", readOnly: false
+                ),
+            ]
+        )
+        let request = DoryDaemonVirtualMachineInventoryRequest(
+            machineID: machineID,
+            definitionRevision: 1,
+            guest: DoryGuestPlatform(family: .macOS, architecture: .arm64),
+            bootMedia: DoryVMBootMediaReference(
+                id: "system",
+                role: .system,
+                kind: .virtualDisk,
+                source: .userProvided,
+                artifact: diskReference,
+                removable: false
+            ),
+            launchArtifacts: [launchRequirement],
+            resources: resources,
+            devices: devices,
+            acceptableGraphics: [.hostAcceleratedDisplay],
+            virtualHardwareABIVersion: 1
+        )
+        _ = try bundle.updatingInstallationState(.prepared)
+        #expect(throws: DoryDaemonProductionTrustInventoryError.self) {
+            _ = try preparer.preparePlanningTrust(for: request)
+        }
+        _ = try bundle.updatingInstallationState(.stopped)
+        let preparation = try preparer.preparePlanningTrust(for: request)
+        let snapshot = preparation.snapshot(lease.evidence)
+
+        #expect(snapshot.media.reference == diskReference)
+        #expect(snapshot.media.media.kind == .virtualDisk)
+        #expect(snapshot.media.mutableProvenance != nil)
+        #expect(snapshot.launchArtifacts.count == 1)
+        #expect(snapshot.launchArtifacts[0].mutableProvenanceEvidence
+            == diskArtifact.mutableProvenance?.persistedAuditEvidence)
+        let plannerRequest = DoryVirtualMachineBackendPlanRequest(
+            guest: request.guest,
+            bootMedia: snapshot.media.media,
+            acceptableGraphics: [.hostAcceleratedDisplay],
+            devices: devices,
+            backendPreferences: [.appleVirtualizationFramework],
+            backendPreferencePolicy: .required,
+            allowsExperimentalBackends: true
+        )
+        let plannerResult = DoryAppleSiliconDaemonVirtualMachineCapabilityPlanner().plan(
+            plannerRequest,
+            inventory: snapshot
+        )
+        let selected = try #require(plannerResult.selectedDescriptor)
+        let runtime = try #require(snapshot.backendRuntime(for: selected))
+        let experimentalAuthorization = DoryResolvedExperimentalSupportAuthorization(
+            authorizationIdentity: "installed-native-mac-production-trust",
+            definitionRevision: 1,
+            backend: .appleVirtualizationFramework,
+            authorizedAtUnixMilliseconds: 1_700_000_000_100
+        )
+        #expect(selected.request.backend == .appleVirtualizationFramework)
+        #expect(selected.request.bootMedia.kind == .virtualDisk)
+        #expect(selected.mutableBootMediaProvenanceEvidence
+            == diskArtifact.mutableProvenance?.persistedAuditEvidence)
+        #expect(selected.runtimeQualificationEvidence == nil)
+        #expect(selected.availability.isUsable)
+        #expect(selected.availability.supportTier == .experimental)
+
+        let plan = try DoryResolvedMachinePlan(
+            machineID: machineID,
+            definitionRevision: 1,
+            definitionSHA256: definitionSHA256,
+            planRevision: 1,
+            createdAtUnixMilliseconds: 1_700_000_000_000,
+            updatedAtUnixMilliseconds: 1_700_000_000_000,
+            backendDescriptor: VirtualizationFrameworkLinuxMachineBackend.backendDescriptor,
+            backendRuntimeBuildIdentifier: runtime.runtimeBuildIdentifier,
+            resolverReference: diskReference,
+            launchArtifacts: snapshot.launchArtifacts,
+            components: runtime.components,
+            resourceAdmission: lease.evidence,
+            hostQualification: nil,
+            experimentalAuthorization: experimentalAuthorization,
+            resources: resources,
+            firmware: runtime.firmware,
+            persistence: snapshot.persistence,
+            plannerRequest: plannerRequest,
+            plannerResult: plannerResult
+        )
+        #expect(plan.usesPreparedNativeMacOSBaseline)
+        _ = try ledger.bind(
+            leaseID: lease.leaseID,
+            to: plan,
+            expectedLeaseRevision: lease.leaseRevision
+        )
+        let startSnapshot = try context.inventory.startInventory(
+            for: DoryDaemonVirtualMachineStartInventoryRequest(resolvedPlan: plan)
+        )
+        #expect(startSnapshot.media.reference == diskReference)
+        #expect(startSnapshot.media.media.kind == .virtualDisk)
+        #expect(startSnapshot.media.mutableProvenance
+            == diskArtifact.mutableProvenance)
+        #expect(startSnapshot.launchArtifacts == plan.launchArtifacts)
+        #expect(startSnapshot.exactStartRuntimeQualification == nil)
     }
 
     @Test("production trust admits only the structural ARM64 DoryARMVirt software baseline")
@@ -4639,6 +4834,29 @@ final class ProductionTrustFixture: @unchecked Sendable {
     private static func digest(_ data: Data) -> String {
         SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
+}
+
+
+private func cloneOrCopyProductionTrustFixtureItem(source: String, destination: String) throws {
+    if clonefile(source, destination, 0) == 0 { return }
+    let cloneErrno = errno
+    if cloneErrno != ENOTSUP && cloneErrno != EXDEV && cloneErrno != EISDIR {
+        throw POSIXError(POSIXErrorCode(rawValue: cloneErrno) ?? .EIO)
+    }
+    try FileManager.default.copyItem(atPath: source, toPath: destination)
+}
+
+private func nativeMacProductionTrustReference(
+    namespace: String,
+    machineID: String,
+    role: String,
+    digest: String
+) -> DoryVMResolverReference {
+    let material = Data("\(machineID)\0\(role)\0\(digest)".utf8)
+    let identifier = SHA256.hash(data: material).map {
+        String(format: "%02x", $0)
+    }.joined()
+    return DoryVMResolverReference(namespace: namespace, identifier: identifier)
 }
 
 private func productionTrustDesktopDevices()

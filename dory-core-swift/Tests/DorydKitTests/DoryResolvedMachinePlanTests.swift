@@ -122,6 +122,19 @@ struct DoryResolvedMachinePlanTests {
         #expect(try JSONDecoder().decode(DoryResolvedMachinePlan.self, from: encoded) == plan)
     }
 
+    @Test("installed native Mac baseline requires one mutable disk used for boot and storage")
+    func installedNativeMacBaselineRequiresExactMutableSystemDisk() throws {
+        let plan = installedNativeMacPlan()
+        #expect(plan.validate().isEmpty)
+        #expect(plan.usesPreparedNativeMacOSBaseline)
+
+        var missingBootUsage = plan
+        missingBootUsage.launchArtifacts[0].usages.removeAll { $0.kind == .boot }
+        #expect(!missingBootUsage.usesPreparedNativeMacOSBaseline)
+        #expect(!missingBootUsage.validate().isEmpty)
+
+    }
+
     @Test("Linux plans never admit QEMU/HVF as a runnable runtime")
     func linuxQEMUIsNotRunnable() {
         var plan = mutableARMVirtPlan()
@@ -1513,6 +1526,109 @@ private func mutableARMVirtPlan() -> DoryResolvedMachinePlan {
         resourceAdmission: resourceAdmission(),
         firmware: try! resolvedFirmwareTestArtifacts().manifest,
         persistence: resolvedPersistenceTestBinding()
+    )
+}
+
+private func installedNativeMacPlan() -> DoryResolvedMachinePlan {
+    let reference = DoryVMResolverReference(
+        namespace: "macos-machine",
+        identifier: "native-mac-system-disk"
+    )
+    let provenance = DoryMutableBootMediaProvenanceReference(
+        repositoryIdentity: "fixture-artifact-authority",
+        mediaIdentity: "native-mac-system-disk",
+        revision: 3
+    )
+    let evidence = DoryMutableBootMediaProvenanceAuditEvidence(
+        receiptIdentity: "native-mac-disk-receipt-3",
+        provenance: provenance,
+        receiptSHA256: digest("3"),
+        resolverID: "fixture-artifact-authority",
+        resolverVersion: 1
+    )
+    let media = DoryBootMedia(
+        kind: .virtualDisk,
+        source: .userProvided,
+        mutableProvenance: provenance
+    )
+    let devices = DoryVirtualMachineDeviceCapabilityRequest(
+        networkInterface: .stable(machineID: "native-mac"),
+        display: DoryVirtualMachineDisplayCapabilityRequest(
+            widthPixels: 1_280,
+            heightPixels: 800
+        ),
+        audioInput: false,
+        audioOutput: false,
+        keyboard: true,
+        pointer: true,
+        clipboard: false,
+        clipboardPolicy: .disabled,
+        dynamicDisplay: true,
+        gracefulShutdown: true
+    )
+    return DoryResolvedMachinePlan(
+        machineID: "native-mac",
+        definitionRevision: 2,
+        definitionSHA256: digest("a"),
+        planRevision: 4,
+        createdAtUnixMilliseconds: 1_700_000_000_000,
+        updatedAtUnixMilliseconds: 1_700_000_000_100,
+        guest: DoryGuestPlatform(family: .macOS, architecture: .arm64),
+        backend: .appleVirtualizationFramework,
+        backendImplementationIdentifier: "dory.vz-machine.v2",
+        backendRuntimeBuildIdentifier: "vz-runtime-1",
+        virtualHardwareABIVersion: 1,
+        bootMedia: DoryResolvedMachineBootMedia(
+            resolverReference: reference,
+            media: media,
+            mutableProvenanceEvidence: evidence
+        ),
+        launchArtifacts: [DoryResolvedMachineLaunchArtifact(
+            resolverReference: reference,
+            media: media,
+            authorityRevision: 3,
+            usages: [
+                DoryResolvedMachineLaunchArtifactUsage(
+                    kind: .boot,
+                    identifier: "system",
+                    readOnly: false
+                ),
+                DoryResolvedMachineLaunchArtifactUsage(
+                    kind: .storage,
+                    identifier: "system",
+                    readOnly: false
+                ),
+            ],
+            mutableProvenanceEvidence: evidence
+        )],
+        components: [DoryResolvedBackendComponentEvidence(
+            componentIdentifier: "dory-vmm",
+            buildIdentifier: "vz-runtime-1",
+            artifactSHA256: digest("b")
+        )],
+        devices: devices,
+        graphics: .hostAcceleratedDisplay,
+        supportTier: .experimental,
+        selectionEvidence: {
+            var evidence = primarySelectionEvidence(
+                guest: DoryGuestPlatform(family: .macOS, architecture: .arm64),
+                media: media,
+                backend: .appleVirtualizationFramework,
+                graphics: .hostAcceleratedDisplay,
+                devices: devices
+            )
+            evidence.plannerRequest.allowsExperimentalBackends = true
+            return evidence
+        }(),
+        qualificationEvidence: DoryResolvedMachineQualificationEvidence(),
+        resourceAdmission: resourceAdmission(),
+        experimentalAuthorization: DoryResolvedExperimentalSupportAuthorization(
+            authorizationIdentity: "explicit-native-macos-create",
+            definitionRevision: 2,
+            backend: .appleVirtualizationFramework,
+            authorizedAtUnixMilliseconds: 1_700_000_000_100
+        ),
+        persistence: resolvedPersistenceTestBinding(machineID: "native-mac")
     )
 }
 

@@ -303,7 +303,17 @@ public final class DoryDaemonVirtualMachineProductionPlanningController:
                     guard let installerISOPath = machine.installerISOPath else { return nil }
                     paths.insert(installerISOPath)
                 case .virtualDisk:
-                    paths.insert(machine.rootfsPath)
+                    if machine.guestFamily == .macOS {
+                        guard machine.bootMode == .macOSRestore,
+                              let bundlePath = machine.macOSMachineBundlePath else {
+                            return nil
+                        }
+                        paths.insert(
+                            bundlePath + "/" + DoryVZMacMachineBundle.diskName
+                        )
+                    } else {
+                        paths.insert(machine.rootfsPath)
+                    }
                 case .macOSRestoreImage:
                     guard machine.guestFamily == .macOS,
                           machine.bootMode == .macOSRestore,

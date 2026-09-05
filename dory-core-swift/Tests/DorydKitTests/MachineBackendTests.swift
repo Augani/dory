@@ -164,6 +164,25 @@ final class MachineBackendTests: XCTestCase {
         XCTAssertEqual(result.plan?.capability.request.bootMedia.kind, .macOSRestoreImage)
     }
 
+    func testRegistryPlansNativeMacInstalledBundleDisk() throws {
+        let registry = try BackendRegistry(backends: [
+            availableVZBackend(operations: recordingOperations().operations),
+        ])
+        let machine = nativeMacRestoreMachine()
+        let result = registry.plan(MachineBackendPlanRequest(
+            machine: machine,
+            capabilityPlan: capabilityPlan(
+                backend: .appleVirtualizationFramework,
+                media: .virtualDisk,
+                family: .macOS
+            )
+        ))
+
+        XCTAssertTrue(result.isSuccess)
+        XCTAssertEqual(result.plan?.capability.request.guest.family, .macOS)
+        XCTAssertEqual(result.plan?.capability.request.bootMedia.kind, .virtualDisk)
+    }
+
     func testNativeMacPlanRejectsLinuxOrMissingDisplayContract() {
         let backend = availableVZBackend(operations: recordingOperations().operations)
         let machine = nativeMacRestoreMachine()
