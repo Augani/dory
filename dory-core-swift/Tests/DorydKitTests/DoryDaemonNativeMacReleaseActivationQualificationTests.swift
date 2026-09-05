@@ -183,12 +183,6 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
         )
         try Self.writePrivateJSON(machine, to: machineDirectory + "/machine.json")
 
-        let restoreReference = stableNativeMacReference(
-            namespace: "macos-restore",
-            machineID: machineID,
-            role: "restore-image",
-            digest: bundle.manifest.restoreImageSHA256
-        )
         let diskReference = stableNativeMacReference(
             namespace: "macos-machine",
             machineID: machineID,
@@ -197,12 +191,16 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
         )
         let definition = try nativeMacDefinition(
             id: machineID,
-            restoreReference: restoreReference,
             diskReference: diskReference,
             bundle: bundle,
             createdAtUnixMilliseconds: workspaceCreationTimestamp(machineDirectory: machineDirectory)
         )
         try DoryWorkspaceRepository(root: configuration.stateDirectory).create(definition)
+        try FileManager.default.removeItem(atPath: restorePath)
+        try requireReleaseNativeMac(
+            !FileManager.default.fileExists(atPath: restorePath),
+            "release activation fixture should prove installed native Mac boot without retained IPSW"
+        )
 
         func activateContext() throws -> DoryDaemonVirtualMachineProductionActivationContext {
             guard case let .activated(context) = factory.activate(
@@ -232,40 +230,6 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
         var closedSavedStateBytes: UInt64?
         var activationPlanRevision: UInt64 = 0
 
-        let request = DoryDaemonVirtualMachinePlanningTransactionRequest(
-            operationID: UUID(uuidString: "77777777-8888-4999-8aaa-bbbbbbbbbbbb")!,
-            planning: DoryDaemonVirtualMachinePlanningRequest(
-                definition: definition,
-                canonicalDefinitionData: DoryDaemonVirtualMachinePlanningCoordinator.canonicalDefinitionData(definition),
-                machine: machine,
-                publication: .create,
-                experimentalAuthorization: DoryResolvedExperimentalSupportAuthorization(
-                    authorizationIdentity: "release-activation-native-macos",
-                    definitionRevision: definition.lifecycle.revision,
-                    backend: .appleVirtualizationFramework,
-                    authorizedAtUnixMilliseconds: 1_700_000_000_050
-                )
-            ),
-            workspacePublication: .retainExistingExact
-        )
-        let publications = [
-            DoryDaemonVirtualMachinePlanningArtifactPublication(
-                reference: restoreReference,
-                path: restorePath,
-                kind: .macOSRestoreImage,
-                source: .userProvided,
-                mutability: .immutable,
-                expectedAuthorityRevision: nil
-            ),
-            DoryDaemonVirtualMachinePlanningArtifactPublication(
-                reference: diskReference,
-                path: bundle.diskURL.path,
-                kind: .virtualDisk,
-                source: .userProvided,
-                mutability: .mutable,
-                expectedAuthorityRevision: nil
-            ),
-        ]
         func startAndWait(
             _ manager: MachineManager,
             operationID: UUID,
@@ -330,25 +294,26 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
             let context = try activateContext()
             cleanupManager = context.machineManager
             interruptedManager = context.machineManager
-            let planning = try context.planningController.resolveReserveAndPublish(
-                request,
-                artifacts: publications
-            )
-            try requireReleaseNativeMac(
-                planning.planning.resolvedPlan.usesPreparedNativeMacOSBaseline,
-                "release activation should admit the prepared native macOS baseline"
-            )
-            try requireReleaseNativeMac(
-                planning.planning.resolvedPlan.backend == DoryVirtualizationBackendIdentity.appleVirtualizationFramework,
-                "release activation should select the VZ Mac backend"
-            )
-            activationPlanRevision = planning.planning.resolvedPlan.planRevision
-
+            let startOperationID = UUID(uuidString: "88888888-9999-4aaa-8bbb-cccccccccccc")!
             running = try startAndWait(
                 context.machineManager,
-                operationID: UUID(uuidString: "88888888-9999-4aaa-8bbb-cccccccccccc")!,
+                operationID: startOperationID,
                 label: "release start running"
             )
+            let activatedPlan = try requireReleaseNativeMacPlan(
+                running.runtimeIdentity.resolvedPlan,
+                "release start should install a resolved runtime plan"
+            )
+            try requireReleaseNativeMac(
+                activatedPlan.usesPreparedNativeMacOSBaseline,
+                "release start should admit the prepared native macOS baseline"
+            )
+            try requireReleaseNativeMac(
+                activatedPlan.backend == DoryVirtualizationBackendIdentity.appleVirtualizationFramework,
+                "release start should select the VZ Mac backend"
+            )
+            activationPlanRevision = activatedPlan.planRevision
+
             firstSuspend = try suspend(
                 context.machineManager,
                 operationID: UUID(uuidString: "99999999-aaaa-4bbb-8ccc-dddddddddddd")!,
@@ -737,7 +702,6 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
 
     private static func nativeMacDefinition(
         id: String,
-        restoreReference: DoryVMResolverReference,
         diskReference: DoryVMResolverReference,
         bundle: DoryVZMacMachineBundle,
         createdAtUnixMilliseconds: Int64
@@ -745,22 +709,27 @@ final class DoryDaemonNativeMacReleaseActivationQualificationTests: XCTestCase {
         let guest = DoryGuestPlatform(family: .macOS, architecture: .arm64)
         let graphics = DoryVMGraphicsPolicy(acceptableLevels: [.hostAcceleratedDisplay])
         let displays = [DoryVMDisplayConfiguration()]
+        try requireReleaseNativeMac(
+            bundle.manifest.installationState == .stopped,
+            "native Mac release fixture definition requires a stopped installed bundle"
+        )
+        let boot = DoryVMBootConfiguration(
+            phase: .normal,
+            devices: [DoryVMBootMediaReference(
+                id: "system",
+                role: .system,
+                kind: .virtualDisk,
+                source: .userProvided,
+                artifact: diskReference,
+                removable: false
+            )],
+            order: ["system"]
+        )
         let definition = DoryVirtualMachineDefinition(
             identity: DoryVirtualMachineIdentity(id: id, name: id),
             guest: guest,
             workload: .desktop,
-            boot: DoryVMBootConfiguration(
-                phase: .install,
-                devices: [DoryVMBootMediaReference(
-                    id: "restore",
-                    role: .installer,
-                    kind: .macOSRestoreImage,
-                    source: .userProvided,
-                    artifact: restoreReference,
-                    removable: true
-                )],
-                order: ["restore"]
-            ),
+            boot: boot,
             platform: .arm64MacOSV1,
             translationConsent: .notRequired,
             graphics: graphics,
@@ -1274,6 +1243,14 @@ private func requireReleaseNativeMacStatus(
     return status
 }
 
+private func requireReleaseNativeMacPlan(
+    _ plan: DoryResolvedMachinePlan?,
+    _ message: String
+) throws -> DoryResolvedMachinePlan {
+    guard let plan else { throw MachineManagerError.persistence(message) }
+    return plan
+}
+
 private func releaseNativeMacTestSigningKeyPath(evidenceRoot: String) -> String {
     URL(fileURLWithPath: evidenceRoot, isDirectory: true)
         .appendingPathComponent("test-signing-key.raw", isDirectory: false)
@@ -1570,6 +1547,9 @@ private func writeReleaseManagedNativeMacEvidence(
     let savedStateWrapperPresentAfterColdStop = FileManager.default.fileExists(
         atPath: machineDirectory + "/saved-state-v1"
     )
+    let restoreImagePresentAtReceipt = FileManager.default.fileExists(
+        atPath: machineDirectory + "/Restore.ipsw"
+    )
     let bundle = try DoryVZMacMachineBundle.load(
         from: URL(fileURLWithPath: bundlePath, isDirectory: true)
     )
@@ -1594,6 +1574,7 @@ private func writeReleaseManagedNativeMacEvidence(
         "savedStatePath": savedStatePath,
         "closedSavedStateBytes": closedSavedStateBytes as Any,
         "savedStateWrapperPresentAfterColdStop": savedStateWrapperPresentAfterColdStop,
+        "restoreImagePresentAtReceipt": restoreImagePresentAtReceipt,
         "partialPayloadRemovedBeforeRecovery": partialPayloadRemovedBeforeRecovery,
         "statuses": [
             "start": releaseNativeMacEvidenceStatus(startStatus),
@@ -1730,15 +1711,28 @@ private func releaseNativeMacJSONValue<T: Encodable>(_ value: T) throws -> Any {
     return try JSONSerialization.jsonObject(with: data)
 }
 
-private func releaseNativeMacSourceHashes() throws -> [String: String] {
+private func releaseNativeMacSourceHashes(
+    testFilePath: String = #filePath
+) throws -> [String: String] {
     let paths = [
         "dory-core-swift/Sources/DorydKit/MachineManager.swift",
         "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift",
         "dory-core-swift/Tests/DorydKitTests/DoryDaemonNativeMacReleaseActivationQualificationTests.swift",
     ]
+    let repositoryRoot = URL(fileURLWithPath: testFilePath, isDirectory: false)
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
+        .deletingLastPathComponent()
     var hashes: [String: String] = [:]
     for path in paths {
-        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        let url = repositoryRoot.appendingPathComponent(path, isDirectory: false)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw MachineManagerError.persistence(
+                "release source hash path is unavailable: \(path)"
+            )
+        }
+        let data = try Data(contentsOf: url)
         hashes[path] = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
     return hashes
