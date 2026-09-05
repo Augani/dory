@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "date": "2026-09-05",
+  "scope": "Source patch and focused Linux ARM64 execution; not packaged Docker or renderer-crash qualification",
+  "source_commit": "8ec5ab355a34b2a0e2b3238d67bdefe77fefa982",
+  "dory_commit": "8a7e84787",
+  "patch_sha256": "0cd760859b4b95ad5f424fa5ea60bb2d48511a5154124adacdf715291ea7d85e",
+  "root_test_log_sha256": "7cddd3c353e97d4a0796f8302a4a463f89892b2177913c28023540b9f8566d1f",
+  "root_test_exit_code": 0,
+  "focused_top_level_tests": 12,
+  "indeterminate_status_subcases": [
+    "lookup failure",
+    "unknown",
+    "empty",
+    "future"
+  ],
+  "verified": [
+    "Checkpoint failure prevents task Start execution.",
+    "Ordinary failed start and successful running state clear intent on disk.",
+    "Interrupted no-task restore reloads as Exited255 rather than Created.",
+    "Known task exit code/time and paused task state are preserved.",
+    "Indeterminate task status retains the durable intent."
+  ],
+  "remaining": [
+    "Produce and verify pinned patched Docker binaries for ARM64 and amd64.",
+    "Integrate verified binaries into initfs and fingerprint.",
+    "Repeat actual renderer failure campaign with patched Docker."
+  ]
+}
