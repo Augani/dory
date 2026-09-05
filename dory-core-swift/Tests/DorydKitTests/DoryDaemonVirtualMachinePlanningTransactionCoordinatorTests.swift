@@ -23,6 +23,36 @@ struct DoryDaemonVirtualMachinePlanningTransactionCoordinatorTests {
         #expect(interrupted.mutationAuthority.recoveryReleaseCount == 1)
     }
 
+    @Test("coordinator does not retain lifecycle mutation authority")
+    func coordinatorDoesNotRetainMutationAuthority() throws {
+        let fixture = try TransactionFixture()
+        var coordinator: DoryDaemonVirtualMachinePlanningTransactionCoordinator!
+        weak var releasedAuthority: TransactionMutationAuthority?
+        do {
+            let authority = TransactionMutationAuthority()
+            releasedAuthority = authority
+            coordinator = DoryDaemonVirtualMachinePlanningTransactionCoordinator(
+                stateDirectory: fixture.root,
+                registry: fixture.registry,
+                trust: fixture.trust,
+                mutationAuthority: authority,
+                workspaces: fixture.workspaces,
+                plans: fixture.plans,
+                ledger: fixture.ledger,
+                capabilityPlanner: TransactionPlanner(capability: fixture.capability),
+                now: { 1_700_000_000_100 }
+            )
+        }
+
+        #expect(releasedAuthority == nil)
+        do {
+            _ = try coordinator.resolveReserveAndPublish(fixture.request())
+            Issue.record("coordinator unexpectedly planned without live mutation authority")
+        } catch let failure as DoryDaemonVirtualMachinePlanningTransactionFailure {
+            #expect(failure.code == .mutationAuthorityRejected)
+        }
+    }
+
     @Test("reserve bind publish is exact and restart-idempotent")
     func successAndIdempotence() throws {
         let fixture = try TransactionFixture()

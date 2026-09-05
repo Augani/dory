@@ -323,7 +323,7 @@ public final class DoryDaemonVirtualMachinePlanningMutationFence: @unchecked Sen
     deinit { releaseForRecovery() }
 }
 
-public protocol DoryDaemonVirtualMachinePlanningMutationAuthorizing: Sendable {
+public protocol DoryDaemonVirtualMachinePlanningMutationAuthorizing: AnyObject, Sendable {
     func acquirePlanningMutationFence(
         operationID: UUID,
         machine: DoryMachineConfiguration,
@@ -545,7 +545,9 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
     private let stateDirectory: String
     private let registry: BackendRegistry
     private let trust: any DoryDaemonVirtualMachinePlanningTrustPreparing
-    private let mutationAuthority: any DoryDaemonVirtualMachinePlanningMutationAuthorizing
+    /// The activation owner retains the lifecycle authority. The coordinator consults it without
+    /// extending the owning MachineManager lifetime across daemon restart/recovery boundaries.
+    private weak var mutationAuthority: (any DoryDaemonVirtualMachinePlanningMutationAuthorizing)?
     private let workspaces: any DoryWorkspaceDefinitionStoring
     private let plans: any DoryPlanningTransactionResolvedPlanStoring
     private let ledger: DoryVirtualMachineResourceAdmissionLedger
@@ -655,6 +657,12 @@ public final class DoryDaemonVirtualMachinePlanningTransactionCoordinator:
     ) throws -> DoryDaemonVirtualMachinePlanningTransactionResult {
         let request = validated.request
         let canonicalDefinition = validated.planning.request.canonicalDefinitionData
+        guard let mutationAuthority else {
+            throw failure(
+                .mutationAuthorityRejected,
+                "Authoritative machine state is no longer available for planning mutation."
+            )
+        }
         let mutationFence: DoryDaemonVirtualMachinePlanningMutationFence
         do {
             mutationFence = try mutationAuthority.acquirePlanningMutationFence(
