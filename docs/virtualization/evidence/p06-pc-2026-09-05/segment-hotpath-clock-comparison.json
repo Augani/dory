@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-05",
+  "scope": "Matched bounded clock comparison after native flags and segment addressing; diagnostic only",
+  "matchedInputs": {
+    "runnerSHA256": "8c1d5fbc952075033ef1527319a9be457cbbfaff5ef245ec80d32fa7cb68da64",
+    "firmwareCodeSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
+    "installerMediaSHA256": "b2e0573369e3ad58dfbed94d29d3f63581e391d8eea535389209b70186c326ef",
+    "variableStoreTemplateSHA256": "80dbb9d55cd8975e7ca59e1abf2b750ff7498cd02976dcd66f29bce47909a032",
+    "memoryBytes": 1073741824,
+    "processorCount": 1,
+    "cpuProfileIdentifier": "dory.x86_64.compat-v1",
+    "cpuIdentity": "legacyDoryV1",
+    "virtualTSCFrequencyHz": 1000000000,
+    "initialRTCUnixSeconds": 0,
+    "maximumInstructions": 1500000000,
+    "bootProbe": false,
+    "exceptionPolicy": "deliver",
+    "executionTier": "baselineJIT"
+  },
+  "initialSystemDiskSHA256": "d851c88763032f2b6169c2427f88c2d971b9ca93b8ec2e3800939bf0c6c063b9",
+  "diskPreparation": "Source disk hash rechecked unchanged from host run input ledger before APFS clone; independent fresh variable stores.",
+  "runs": {
+    "hostMonotonic": {
+      "path": "/private/tmp/dory-pc-gs-hotpath-postlea-compatible-hostclock-0905.151217/host-monotonic/result.json",
+      "sha256": "5e5b571d70802785a6a43f3108ead90257c27c72a7180c11b6016b2d2ed497b6",
+      "clockSource": "host-monotonic",
+      "completedInstructions": 1500000000,
+      "instructionPointer": "0xffffffff9ad522b6",
+      "baselineJITInstructions": 1484282980,
+      "interpreterInstructions": 15717020,
+      "stop": "instructionBudget(1500000000)",
+      "userspaceReached": false
+    },
+    "deterministic": {
+      "path": "/private/tmp/dory-root-gs-deterministic-20260905-152751/result.json",
+      "sha256": "e8c452ca4e82d6e390c0828c8265e75a068f6355545cc4f06d82da8ac74e8e1f",
+      "clockSource": "deterministic",
+      "completedInstructions": 1500000000,
+      "instructionPointer": "0xffffffffb1fcd92e",
+      "baselineJITInstructions": 1481007892,
+      "interpreterInstructions": 18992108,
+      "stop": "instructionBudget(1500000000)",
+      "userspaceReached": false
+    }
+  },
+  "observations": [
+    "Host-monotonic serial reached random: crng init done; terminal RIP mapped by core review to timekeeping_advance.",
+    "Deterministic serial reached PCI/USB initialization, efivars and clocksource switch to tsc-early.",
+    "Both exhausted the same 1.5 billion instruction budget without userspace."
+  ],
+  "interpretation": "Different boot progress under matched clock policies supports investigating clock/interrupt scheduling pressure alongside native coverage. It does not isolate a timer defect or justify changing production clock semantics.",
+  "limitations": [
+    "Single run per clock policy; no statistical performance claim.",
+    "No accelerated graphics or installed-distro qualification.",
+    "No RDTSC candidate code in either frozen binary."
+  ]
+}
