@@ -823,6 +823,9 @@ private func run() throws {
       ] as [String: Any]
     } ?? NSNull()
   let payload: [String: Any] = [
+    "cpuProfileIdentifier": composed.machine.interpreter.profile.identifier,
+    "cpuIdentity": composed.machine.interpreter.profile.identity.rawValue,
+    "virtualTSCFrequencyHz": composed.machine.interpreter.profile.virtualTSCFrequencyHz,
     "cr0": state.map { hexadecimal($0.control.cr0) } ?? "unavailable",
     "cr3": state.map { hexadecimal($0.control.cr3) } ?? "unavailable",
     "cr4": state.map { hexadecimal($0.control.cr4) } ?? "unavailable",
