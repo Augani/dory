@@ -6895,7 +6895,9 @@ public struct DoryX86Interpreter: Sendable {
       index, instruction: instruction, state: state, memory: memory)
     let bitIndex: Int64
     if case .immediate = index {
-      bitIndex = Int64(rawIndex)
+      // Immediate offsets select a bit within the operand; only register offsets
+      // may extend the memory bit string before or after the addressed word.
+      bitIndex = Int64(rawIndex & UInt64(width.rawValue - 1))
     } else {
       bitIndex = signExtendedInt64(rawIndex, width: width)
     }
