@@ -46,6 +46,53 @@ final class VmmHandoffDescriptorRejectionTests: XCTestCase {
         }
     }
 
+    func testReadinessWaitsForCompleteStreamMessage() throws {
+        let root = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".dory/qfd-\(UUID().uuidString.prefix(8))")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let ready = VmmReadyMessage(machineID: "dev", operationID: UUID().uuidString.lowercased())
+        let accepted = expectation(description: "complete fragmented message accepted")
+        let server = VmmHandoffServer(path: root.appendingPathComponent("s").path) { result in
+            switch result {
+            case let .success(handoff): XCTAssertEqual(handoff.ready, ready)
+            case let .failure(error): XCTFail("fragmented readiness rejected: \(error)")
+            }
+            accepted.fulfill()
+        }
+        try server.start()
+        defer { server.stop() }
+        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        let pathBytes = Array(server.path.utf8) + [0]
+        XCTAssertLessThanOrEqual(pathBytes.count, MemoryLayout.size(ofValue: address.sun_path))
+        withUnsafeMutableBytes(of: &address.sun_path) { target in
+            target.copyBytes(from: pathBytes)
+        }
+        let connected = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        XCTAssertEqual(connected, 0)
+        let payload = try JSONEncoder().encode(ready)
+        XCTAssertEqual(payload.prefix(1).withUnsafeBytes { send(fd, $0.baseAddress, $0.count, MSG_NOSIGNAL) }, 1)
+        // The incomplete prefix must neither be rejected nor acknowledged before EOF.
+        var pending = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+        XCTAssertEqual(poll(&pending, 1, 50), 0)
+        let remainder = payload.dropFirst()
+        XCTAssertEqual(remainder.withUnsafeBytes { send(fd, $0.baseAddress, $0.count, MSG_NOSIGNAL) }, remainder.count)
+        XCTAssertEqual(shutdown(fd, SHUT_WR), 0)
+        wait(for: [accepted], timeout: 5)
+        var acknowledgment: UInt8 = 0
+        XCTAssertEqual(read(fd, &acknowledgment, 1), 1)
+        XCTAssertEqual(acknowledgment, 1)
+    }
+
     private func assertRejectionClosesDescriptors(operationID: String, count: Int) throws {
         let root = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".dory/qfd-\(UUID().uuidString.prefix(8))")

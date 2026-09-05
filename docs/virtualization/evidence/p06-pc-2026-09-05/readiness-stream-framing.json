@@ -1,0 +1,9 @@
+{
+  "result": "28 XCTest passed,0failures",
+  "change": "Accumulate readiness stream through sender half-close with16KiB payload/eight-rights limits and a bounded total receive deadline. Fragmented JSON does not publish/reject its first prefix.",
+  "sourceHashes": {
+    "dory-core-swift/Sources/DorydKit/VmmHandoff.swift": "ed1ad6bb34a6ecf2463ce9fdbfdd2e85afe6b54e2a4c84eaacf938a74fb20bcc",
+    "dory-core-swift/Tests/DorydKitTests/VmmHandoffDescriptorRejectionTests.swift": "03f52c6f3b399918dbf9e699a442d4d41e1ce61acad30dce4d8019026f5ea716"
+  },
+  "logSHA256": "458fe752a5cc694343a90672bb04f0292ed33b1a69e018f20d5e57ff43cf6b4d"
+}

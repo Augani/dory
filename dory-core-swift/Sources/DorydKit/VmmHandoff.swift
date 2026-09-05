@@ -442,46 +442,59 @@ public final class VmmHandoffServer: @unchecked Sendable {
         from fd: Int32,
         peerIdentity: DoryApplicationLaunchPeerIdentity
     ) throws -> VmmHandoff {
-        var data = [UInt8](repeating: 0, count: 16 * 1024)
-        // XNU installs SCM_RIGHTS descriptors before truncating the returned control bytes.
-        // Receive the full kernel control bound (MCLBYTES in bsd/arm/param.h; enforced
-        // by sockargs in bsd/kern/uipc_syscalls.c), then enforce our eight-FD protocol limit.
-        // Sizing this buffer to the protocol limit can leak descriptors omitted by MSG_CTRUNC.
-        var control = [UInt8](repeating: 0, count: 2048)
-        let dataCapacity = data.count
-        let controlCapacity = control.count
-        var controlLength = 0
-        var messageFlags: Int32 = 0
-        let received: ssize_t = try data.withUnsafeMutableBytes { dataBuffer in
-            try control.withUnsafeMutableBytes { controlBuffer in
-                var iov = iovec(iov_base: dataBuffer.baseAddress, iov_len: dataCapacity)
-                return try withUnsafeMutablePointer(to: &iov) { iovPointer in
-                    var message = msghdr(
-                        msg_name: nil,
-                        msg_namelen: 0,
-                        msg_iov: iovPointer,
-                        msg_iovlen: 1,
-                        msg_control: controlBuffer.baseAddress,
-                        msg_controllen: socklen_t(controlCapacity),
-                        msg_flags: 0
-                    )
-                    let count = recvmsg(fd, &message, 0)
-                    guard count >= 0 else { throw VmmHandoffError.syscall("recvmsg", errno) }
-                    controlLength = Int(message.msg_controllen)
-                    messageFlags = message.msg_flags
-                    return count
-                }
-            }
-        }
-        let descriptors = fileDescriptors(from: Array(control.prefix(controlLength)))
+        var payload = Data()
+        var descriptors: [Int32] = []
+        let deadline = DispatchTime.now().uptimeNanoseconds
+            + UInt64(receiveTimeoutSeconds * 1_000_000_000)
         do {
-            guard descriptors.count <= 8,
-                  (messageFlags & (MSG_CTRUNC | MSG_TRUNC)) == 0 else {
-                throw VmmHandoffError.invalidReadyMessage
+            // The sender half-closes after its JSON and rights. A stream read can return any
+            // prefix, so collect through EOF before decoding or acknowledging the message.
+            while true {
+                let now = DispatchTime.now().uptimeNanoseconds
+                guard now < deadline else { throw VmmHandoffError.syscall("recvmsg", ETIMEDOUT) }
+                Self.setReceiveTimeout(
+                    fd: fd,
+                    seconds: max(1, (Double(deadline - now) / 1_000_000_000).rounded(.up))
+                )
+                var data = [UInt8](repeating: 0, count: 16 * 1024)
+                // XNU installs rights before truncating ancillary output. Receive its complete
+                // MCLBYTES control bound, then apply the cumulative eight-descriptor limit.
+                var control = [UInt8](repeating: 0, count: 2048)
+                var controlLength = 0
+                var messageFlags: Int32 = 0
+                let received = data.withUnsafeMutableBytes { dataBuffer in
+                    control.withUnsafeMutableBytes { controlBuffer in
+                        var iov = iovec(iov_base: dataBuffer.baseAddress, iov_len: dataBuffer.count)
+                        return withUnsafeMutablePointer(to: &iov) { iovPointer in
+                            var message = msghdr(
+                                msg_name: nil, msg_namelen: 0,
+                                msg_iov: iovPointer, msg_iovlen: 1,
+                                msg_control: controlBuffer.baseAddress,
+                                msg_controllen: socklen_t(controlBuffer.count), msg_flags: 0
+                            )
+                            let count = recvmsg(fd, &message, 0)
+                            if count >= 0 {
+                                controlLength = Int(message.msg_controllen)
+                                messageFlags = message.msg_flags
+                            }
+                            return count
+                        }
+                    }
+                }
+                if received < 0 {
+                    if errno == EINTR { continue }
+                    throw VmmHandoffError.syscall("recvmsg", errno)
+                }
+                descriptors += fileDescriptors(from: Array(control.prefix(controlLength)))
+                guard descriptors.count <= 8,
+                      (messageFlags & (MSG_CTRUNC | MSG_TRUNC)) == 0,
+                      payload.count + Int(received) <= 16 * 1024 else {
+                    throw VmmHandoffError.invalidReadyMessage
+                }
+                if received == 0 { break }
+                payload.append(contentsOf: data.prefix(Int(received)))
             }
-            guard received > 0 else { throw VmmHandoffError.emptyMessage }
-
-            let payload = Data(data.prefix(Int(received)))
+            guard !payload.isEmpty else { throw VmmHandoffError.emptyMessage }
             let ready: VmmReadyMessage
             do {
                 ready = try JSONDecoder().decode(VmmReadyMessage.self, from: payload)
