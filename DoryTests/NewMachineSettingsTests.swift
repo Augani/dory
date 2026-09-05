@@ -115,11 +115,11 @@ struct NewMachineSettingsTests {
             DoryVMPortForward(id: "web", hostPort: 8_080, guestPort: 80),
         ])
         #expect(s.virtualMachineSettings?.audioConfiguration == DoryVMAudioConfiguration(
-            inputEnabled: true,
+            inputEnabled: false,
             outputEnabled: true
         ))
         #expect(s.virtualMachineSettings?.cameraConfiguration
-            == DoryVMCameraConfiguration(enabled: true))
+            == DoryVMCameraConfiguration(enabled: false))
         #expect(s.virtualMachineSettings?.intelApplicationTranslationEnabled == nil)
         #expect(s.ports.isEmpty)
     }
@@ -186,13 +186,13 @@ struct NewMachineSettingsTests {
             cpus: 4,
             memoryGB: 4,
             mounts: [],
-            audioInputEnabled: false,
-            audioOutputEnabled: true
+            audioInputEnabled: true,
+            audioOutputEnabled: false
         )
 
         #expect(settings.virtualMachineSettings?.audioConfiguration == DoryVMAudioConfiguration(
-            inputEnabled: false,
-            outputEnabled: true
+            inputEnabled: true,
+            outputEnabled: false
         ))
     }
 
@@ -201,11 +201,11 @@ struct NewMachineSettingsTests {
             cpus: 4,
             memoryGB: 4,
             mounts: [],
-            cameraEnabled: false
+            cameraEnabled: true
         )
 
         #expect(settings.virtualMachineSettings?.cameraConfiguration
-            == DoryVMCameraConfiguration(enabled: false))
+            == DoryVMCameraConfiguration(enabled: true))
     }
 
     @Test func desktopGPUChoiceIsExplicitAndNeverSilentlyFallsBack() {

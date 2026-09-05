@@ -23,9 +23,9 @@ struct NewMachineSheet: View {
     @State private var diskSizeGB = 64
     @State private var networkMode = DoryVMNetworkMode.sharedNAT
     @State private var portForwardRows: [MachinePortForwardDraft] = []
-    @State private var audioInputEnabled = true
+    @State private var audioInputEnabled = false
     @State private var audioOutputEnabled = true
-    @State private var cameraEnabled = true
+    @State private var cameraEnabled = false
     @State private var gpuAccelerationEnabled = true
     @State private var hostDisplays: [HostDisplayChoice] = []
     @State private var dedicatedHostDisplayUUID: String?
@@ -1197,9 +1197,9 @@ struct NewMachineSheet: View {
         guestUID: uid_t = getuid(),
         networkMode: DoryVMNetworkMode = .sharedNAT,
         portForwards: [DoryVMPortForward] = [],
-        audioInputEnabled: Bool = true,
+        audioInputEnabled: Bool = false,
         audioOutputEnabled: Bool = true,
-        cameraEnabled: Bool = true,
+        cameraEnabled: Bool = false,
         gpuAccelerationEnabled: Bool = true
     ) -> MachineSettings {
         let typedSettings: DorydMachineTypedSettings
