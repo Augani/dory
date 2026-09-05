@@ -977,6 +977,7 @@ enum DoryPCMode {
                         if let diagnostics = composed.machine.optimizingJITDiagnostics {
                             Self.log(Self.jitProgress("optimizing", diagnostics))
                         }
+                        Self.log(Self.machineExecutionProgress(composed))
                         Self.log(Self.blockDeviceProgress(composed))
                         nextProgressLogNanoseconds = now &+ progressLogIntervalNanoseconds
                     }
@@ -1222,6 +1223,66 @@ enum DoryPCMode {
 
         private nonisolated static func log(_ message: String) {
             FileHandle.standardError.write(Data("dory-hv DoryPC: \(message)\n".utf8))
+        }
+
+        private nonisolated static func machineExecutionProgress(
+            _ composed: DoryPCUEFIMachine
+        ) -> String {
+            let machine = composed.machine
+            let processors = machine.processorExecutionSnapshots.map { snapshot in
+                guard let state = snapshot.state else {
+                    return "cpu\(snapshot.index){lifecycle=\(snapshot.lifecycle.rawValue),halted=\(snapshot.isHalted),state=nil}"
+                }
+                let mode = snapshot.executionMode?.rawValue ?? "unknown"
+                let cpl = snapshot.privilegeLevel.map(String.init) ?? "unknown"
+                return "cpu\(snapshot.index){lifecycle=\(snapshot.lifecycle.rawValue),halted=\(snapshot.isHalted),"
+                    + "mode=\(mode),cpl=\(cpl),rip=0x\(hex(state.rip)),cs=0x\(hex(UInt64(state.cs.selector))),"
+                    + "rflags=0x\(hex(state.rflags.rawValue)),cr0=0x\(hex(state.control.cr0)),"
+                    + "cr3=0x\(hex(state.control.cr3)),cr4=0x\(hex(state.control.cr4)),"
+                    + "efer=0x\(hex(state.control.efer)),cr8=0x\(hex(state.control.cr8))}"
+            }.joined(separator: " ")
+            let localAPICs = machine.localAPICs.map { apic in
+                let snapshot = apic.snapshot()
+                let timer = snapshot.timer
+                return "lapic\(snapshot.apicID){enabled=\(snapshot.softwareEnabled),"
+                    + "tpr=0x\(hex(UInt64(snapshot.taskPriority))),irr=[\(hexSet(snapshot.interruptRequest))],"
+                    + "isr=[\(hexSet(snapshot.inService))],level=[\(hexSet(snapshot.levelTriggered))],"
+                    + "timer={masked=\(timer.masked),mode=\(timer.mode.rawValue),vector=0x\(hex(UInt64(timer.vector))),"
+                    + "initial=\(timer.initialCount),current=\(timer.currentCount)}}"
+            }.joined(separator: " ")
+            let pic = machine.legacyPIC.snapshot()
+            let pit = machine.legacyPIT.snapshot()
+            let hpet = machine.hpet.snapshot()
+            let hpetTimers = hpet.timers.enumerated().prefix(3).map { index, timer in
+                "t\(index){cfg=0x\(hex(timer.configuration)),cmp=\(timer.comparator),period=\(timer.period),armed=\(timer.armed)}"
+            }.joined(separator: ",")
+            let ioAPIC = machine.ioAPIC.snapshot()
+            let activeIOPins = ioAPIC.filter { pin in
+                !pin.route.masked || pin.asserted || pin.remoteIRR
+            }.prefix(8).map { pin in
+                "pin\(pin.pin){vec=0x\(hex(UInt64(pin.route.vector))),dest=\(pin.route.destinationAPICID),"
+                    + "masked=\(pin.route.masked),level=\(pin.route.levelTriggered),"
+                    + "asserted=\(pin.asserted),remoteIRR=\(pin.remoteIRR)}"
+            }.joined(separator: ",")
+            return "machine progress \(processors) \(localAPICs) "
+                + "pic{mvec=0x\(hex(UInt64(pic.masterVectorOffset))),svec=0x\(hex(UInt64(pic.slaveVectorOffset))),"
+                + "mmask=0x\(hex(UInt64(pic.masterMask))),smask=0x\(hex(UInt64(pic.slaveMask))),"
+                + "mirr=0x\(hex(UInt64(pic.masterRequest))),sirr=0x\(hex(UInt64(pic.slaveRequest))),"
+                + "misr=0x\(hex(UInt64(pic.masterInService))),sisr=0x\(hex(UInt64(pic.slaveInService))),"
+                + "mlvl=0x\(hex(UInt64(pic.masterLevelTriggered))),slvl=0x\(hex(UInt64(pic.slaveLevelTriggered))),"
+                + "massert=0x\(hex(UInt64(pic.masterAssertedLines))),sassert=0x\(hex(UInt64(pic.slaveAssertedLines)))} "
+                + "pit{armed=\(pit.armed),mode=\(pit.mode.rawValue),reload=\(pit.reload),current=\(pit.current)} "
+                + "hpet{enabled=\(hpet.enabled),legacy=\(hpet.legacyReplacement),main=\(hpet.mainCounter),"
+                + "status=0x\(hex(hpet.interruptStatus)),timers=[\(hpetTimers)]} "
+                + "ioapic{active=[\(activeIOPins)]}"
+        }
+
+        private nonisolated static func hex(_ value: UInt64) -> String {
+            String(value, radix: 16)
+        }
+
+        private nonisolated static func hexSet(_ values: Set<UInt8>) -> String {
+            values.sorted().map { hex(UInt64($0)) }.joined(separator: ",")
         }
 
         private nonisolated static func blockDeviceProgress(

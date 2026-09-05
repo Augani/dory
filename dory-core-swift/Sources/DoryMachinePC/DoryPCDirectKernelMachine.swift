@@ -164,17 +164,23 @@ public struct DoryPCProcessorExecutionSnapshot: Sendable, Hashable {
   public let lifecycle: DoryPCProcessorLifecycle
   public let isHalted: Bool
   public let state: DoryX86ArchitecturalState?
+  public let executionMode: DoryX86ExecutionMode?
+  public let privilegeLevel: UInt8?
 
   public init(
     index: Int,
     lifecycle: DoryPCProcessorLifecycle,
     isHalted: Bool,
-    state: DoryX86ArchitecturalState?
+    state: DoryX86ArchitecturalState?,
+    executionMode: DoryX86ExecutionMode? = nil,
+    privilegeLevel: UInt8? = nil
   ) {
     self.index = index
     self.lifecycle = lifecycle
     self.isHalted = isHalted
     self.state = state
+    self.executionMode = executionMode
+    self.privilegeLevel = privilegeLevel
   }
 }
 
@@ -688,11 +694,18 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   public var processorExecutionSnapshots: [DoryPCProcessorExecutionSnapshot] {
     lock.withLock {
       loadedStates.indices.map { index in
-        .init(
+        let state = loadedStates[index]?.value
+        let mode = state.map { executionMode($0) }
+        let privilegeLevel = state.flatMap { state in
+          mode.map { currentPrivilegeLevel(state, mode: $0) }
+        }
+        return .init(
           index: index,
           lifecycle: processorLifecycles[index],
           isHalted: haltedProcessors[index],
-          state: loadedStates[index]?.value
+          state: state,
+          executionMode: mode,
+          privilegeLevel: privilegeLevel
         )
       }
     }
@@ -1325,6 +1338,19 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       return .long64
     }
     return state.cs.attributes & 0x4000 == 0 ? .protected16 : .protected32
+  }
+
+  private func currentPrivilegeLevel(
+    _ state: DoryX86ArchitecturalState,
+    mode: DoryX86ExecutionMode
+  ) -> UInt8 {
+    if mode == .real16 { return 0 }
+    if mode != .long64, state.control.efer & (1 << 10) == 0,
+      state.rflags.contains(.virtual8086)
+    {
+      return 3
+    }
+    return UInt8(state.cs.selector & 3)
   }
 }
 
