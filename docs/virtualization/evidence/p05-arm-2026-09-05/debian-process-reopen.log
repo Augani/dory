@@ -1,0 +1,33 @@
+UEFI firmware (version  built at 08:13:56 on Aug 12 2026)
+[2J[004D[=3h[2J[009DPress ESCAPE for boot options ....error: no suitable video mode found.
+[0m[30m[40m[2J[001;001H[0m[37m[40m[002;025HGNU GRUB  version 2.12-9+deb13u2
+
+[0m[36m[44m[001C/----------------------------------------------------------------------------\[005;002H|[076C|[006;002H|[076C|[007;002H|[076C|[008;002H|[076C|[009;002H|[076C|[010;002H|[076C|[011;002H|[076C|[012;002H|[076C|[013;002H|[076C|[014;002H|[076C|[015;002H|[076C|[016;002H|[076C|[017;002H\----------------------------------------------------------------------------/[018;002H[019;002H[0m[37m[40m     Use the ^ and v keys to select which entry is highlighted.          
+      Press enter to boot the selected OS, `e' to edit the commands       
+      before booting or `c' for a command-line. ESC to return previous    
+      menu.                                                               [005;080H 
+[1m[37m[44m[005;003H*Debian GNU/Linux                                                           [0m[36m[44m[001D[0m[37m[40m[0m[36m[44m[006;003H Advanced options for Debian GNU/Linux                                      [001D[0m[37m[40m[0m[36m[44m[007;003H UEFI Firmware Settings                                                     [001D[0m[37m[40m[0m[36m[44m[008;003H                                                                            [001D[0m[37m[40m[0m[36m[44m[009;003H                                                                            [001D[0m[37m[40m[0m[36m[44m[010;003H                                                                            [001D[0m[37m[40m[0m[36m[44m[011;003H                                                                            [001D[0m[37m[40m[0m[36m[44m[012;003H                                                                            [001D[0m[37m[40m[0m[36m[44m[013;003H                                                                            [001D[0m[37m[40m[0m[36m[44m[014;003H                                                                            [001D[0m[37m[40m[0m[36m[44m[015;003H                                                                            [001D[0m[37m[40m[0m[36m[44m[016;003H                                                                            [001D[0m[37m[40m[002C 
+[005;078H[023;001H   The highlighted entry will be executed automatically in 5s.                 [005;078H[023;001H   The highlighted entry will be executed automatically in 4s.                 [005;078H[023;001H   The highlighted entry will be executed automatically in 3s.                 [005;078H[023;001H   The highlighted entry will be executed automatically in 2s.                 [005;078H[023;001H   The highlighted entry will be executed automatically in 1s.                 [005;078H[023;001H   The highlighted entry will be executed automatically in 0s.                 [005;078H[0m[30m[40m[2J[001;001H[0m[37m[40m[0m[30m[40m[2J[004D[0m[37m[40m  Booting `Debian GNU/Linux'
+
+Loading Linux 6.12.107+deb13-arm64 ...
+Loading initial ramdisk ...
+dory-hv: sysreg trap (write) op0=2 op1=0 crn=1 crm=3 op2=4, RAZ/WI
+dory-hv: sysreg trap (write) op0=2 op1=0 crn=1 crm=0 op2=4, RAZ/WI
+/dev/vda3: recovering journal
+/dev/vda3: clean, 40331/430784 files, 384303/1722112 blocks
+[!p]104[?7h[!p]104[?7h[6n[32766;32766H[6n[!p]104[?7h[6n[32766;32766H[6n
+Debian GNU/Linux 13 dory-debian ttyAMA0
+
+dory-debian login: root
+Password: 
+Linux dory-debian 6.12.107+deb13-arm64 #1 SMP Debian 6.12.107-1 (2026-08-29) aarch64
+
+The programs included with the Debian GNU/Linux system are free software;
+the exact distribution terms for each program are described in the
+individual files in /usr/share/doc/*/copyright.
+
+Debian GNU/Linux comes with ABSOLUTELY NO WARRANTY, to the extent
+permitted by applicable law.
+[?2004hroot@dory-debian:~# test "$(cat /root/dory-cold-boot-sentinel)" = debian-process-reopen && test -d /sys/firmware/efi && printf 'DORY_%s\n' DEBIAN_COLD_REOPEN_VERIFIED
+[?2004lDORY_DEBIAN_COLD_REOPEN_VERIFIED
+[?2004hroot@dory-debian:~# dory-hv: guest stop reason: guest requested power off

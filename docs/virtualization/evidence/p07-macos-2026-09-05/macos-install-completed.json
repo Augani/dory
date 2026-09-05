@@ -1,0 +1,10 @@
+{
+  "machineIdentifierSHA256" : "e6ba755bd4166fe6f5470b2cc5832c8cb8d7b4a89c87c610c4cf15397b523812",
+  "operationID" : "3742C6B8-0EF8-45F1-AE7C-2A8EE3679EE2",
+  "phase" : "completed",
+  "progress" : 1,
+  "restoreImageSHA256" : "885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95",
+  "schema" : "dory.vzmac-install-operation@1",
+  "startedAt" : "2026-09-05T01:43:15Z",
+  "updatedAt" : "2026-09-05T01:47:31Z"
+}

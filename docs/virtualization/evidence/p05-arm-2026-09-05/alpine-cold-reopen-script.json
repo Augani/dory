@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "qualificationTarget": {
+    "guestFamily": "alpine",
+    "guestVersion": "3.24.1",
+    "guestBuild": "3.24.1",
+    "guestArchitecture": "arm64"
+  },
+  "steps": [
+    {
+      "waitFor": "localhost login:",
+      "send": "root\n"
+    },
+    {
+      "waitFor": "localhost:~#",
+      "send": "test \"$(cat /root/dory-cold-boot-sentinel)\" = reopened-host-process && printf 'DORY_%s\\n' COLD_REOPEN_VERIFIED\n"
+    }
+  ]
+}

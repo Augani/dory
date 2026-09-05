@@ -1,0 +1,36 @@
+{
+  "configurationValid" : true,
+  "inspectedAt" : "2026-09-05T01:54:37Z",
+  "installJournal" : {
+    "machineIdentifierSHA256" : "e6ba755bd4166fe6f5470b2cc5832c8cb8d7b4a89c87c610c4cf15397b523812",
+    "operationID" : "3742C6B8-0EF8-45F1-AE7C-2A8EE3679EE2",
+    "phase" : "completed",
+    "progress" : 1,
+    "restoreImageSHA256" : "885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95",
+    "schema" : "dory.vzmac-install-operation@1",
+    "startedAt" : "2026-09-05T01:43:15Z",
+    "updatedAt" : "2026-09-05T01:47:31Z"
+  },
+  "manifest" : {
+    "createdAt" : "2026-09-05T01:42:24Z",
+    "hardwareModelSHA256" : "976e66740c64041cf9f127588f93eabf7efb9e7d3cbaee9582bcded88ba5e8d3",
+    "installationState" : "suspended",
+    "macAddress" : "7a:64:3a:3c:70:b3",
+    "machineIdentifierSHA256" : "e6ba755bd4166fe6f5470b2cc5832c8cb8d7b4a89c87c610c4cf15397b523812",
+    "origin" : "created",
+    "resources" : {
+      "cpuCount" : 2,
+      "diskBytes" : 85899345920,
+      "memoryBytes" : 4294967296
+    },
+    "restoreImageBuild" : "25G83",
+    "restoreImageBytes" : 19772231540,
+    "restoreImageSHA256" : "885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95",
+    "restoreImageSourceURL" : "file:///tmp/dory-arm-smp-0905.LAhbHr/UniversalMac_26.6.2_25G83_Restore.ipsw",
+    "restoreImageVersion" : "26.6.2",
+    "schema" : "dory.vzmac-machine@3"
+  },
+  "saveRestoreSupported" : true,
+  "schema" : "dory.vzmac-machine-status@1",
+  "suspendedStatePresent" : true
+}

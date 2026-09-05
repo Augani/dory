@@ -1,0 +1,84 @@
+UEFI firmware (version  built at 08:13:56 on Aug 12 2026)
+[2J[004D[=3h[2J[009DPress ESCAPE for boot options ....error:
+/home/buildozer/aports/main/grub/src/grub-2.14/grub-core/lib/arg.c:grub_arg_par
+se:403:the argument `--unit=ttyAMA0' requires an integer.
+error:
+/home/buildozer/aports/main/grub/src/grub-2.14/grub-core/commands/terminal.c:ha
+ndle_command:138:terminal `serial' isn't found.
+error:
+/home/buildozer/aports/main/grub/src/grub-2.14/grub-core/commands/terminal.c:ha
+ndle_command:138:terminal `serial' isn't found.
+[0m[30m[40m[2J[001;001H[0m[37m[40m[002;030HGNU GRUB  version 2.14
+
+[001C/----------------------------------------------------------------------------\[005;002H|[076C|[006;002H|[076C|[007;002H|[076C|[008;002H|[076C|[009;002H|[076C|[010;002H|[076C|[011;002H|[076C|[012;002H|[076C|[013;002H|[076C|[014;002H|[076C|[015;002H|[076C|[016;002H|[076C|[017;002H|[076C|[018;002H\----------------------------------------------------------------------------/[019;002H[020;002H     Use the ^ and v keys to select which entry is highlighted.          
+      Press enter to boot the selected OS, `e' to edit the commands       
+      before booting or `c' for a command-line.                           [005;080H 
+[0m[30m[47m[005;003H*Alpine Linux v3.24, with Linux lts                                         [0m[37m[40m[001D[006;003H UEFI Firmware Settings                                                     [001D[007;003H                                                                            [001D[008;003H                                                                            [001D[009;003H                                                                            [001D[010;003H                                                                            [001D[011;003H                                                                            [001D[012;003H                                                                            [001D[013;003H                                                                            [001D[014;003H                                                                            [001D[015;003H                                                                            [001D[016;003H                                                                            [001D[017;003H                                                                            [001D[002C 
+[005;078H[023;001H   The highlighted entry will be executed automatically in 1s.                 [005;078H[023;001H   The highlighted entry will be executed automatically in 0s.                 [005;078H[0m[30m[40m[2J[001;001H[0m[37m[40m  Booting `Alpine Linux v3.24, with Linux lts'
+
+Loading Linux lts ...
+Loading initial ramdisk ...
+dory-hv: sysreg trap (write) op0=2 op1=0 crn=1 crm=3 op2=4, RAZ/WI
+dory-hv: sysreg trap (write) op0=2 op1=0 crn=1 crm=0 op2=4, RAZ/WI
+
+   OpenRC 0.63.2 is starting up Linux 6.18.48-0-lts (aarch64)
+
+ * /proc is already mounted
+ * Mounting /run ... [ ok ]
+ * /run/openrc: creating directory
+ * /run/lock: creating directory
+ * /run/lock: correcting owner
+ * Caching service dependencies ... [ ok ]
+ * Remounting devtmpfs on /dev ... [ ok ]
+ * Mounting /dev/mqueue ... [ ok ]
+ * Mounting security filesystem ... [ ok ]
+ * Mounting debug filesystem ... [ ok ]
+ * Mounting trace filesystem ... [ ok ]
+ * Mounting persistent storage (pstore) filesystem ... [ ok ]
+ * Mounting efivarfs filesystem ... [ ok ]
+ * Mounting bpf filesystem ... [ ok ]
+ * Starting busybox mdev ... [ ok ]
+ * Scanning hardware for mdev ... [ ok ]
+ * Loading hardware drivers ... [ ok ]
+ * Loading modules ... [ ok ]
+ * Setting system clock using the hardware clock [UTC] ... [ ok ]
+ * Checking local filesystems  .../dev/vda2: clean, 7223/245280 files, 102462/980480 blocks
+fsck.fat 4.2 (2021-01-31)
+There are differences between boot sector and its backup.
+This is mostly harmless. Differences: (offset:original/backup)
+  65:01/00
+  Not automatically fixing this.
+Dirty bit is set. Fs was not properly unmounted and some data may be corrupt.
+ Automatically removing dirty bit.
+
+*** Filesystem was changed ***
+Writing changes.
+/dev/vda1: 5 files, 84/67448 clusters
+ * Filesystems repaired
+ [ !! ]
+ * Remounting root filesystem read/write ... [ ok ]
+ * Remounting filesystems ... [ ok ]
+ * Mounting local filesystems ... [ ok ]
+ * Configuring kernel parameters ... [ ok ]
+ * Creating user login records ... [ ok ]
+ * Setting hostname to localhost from /etc/hostname ... [ ok ]
+ * Starting busybox syslog ... [ ok ]
+
+Welcome to Alpine Linux 3.24
+Kernel 6.18.48-0-lts on aarch64 (/dev/ttyAMA0)
+
+localhost login: root
+Welcome to Alpine!
+
+The Alpine Wiki contains a large amount of how-to guides and general
+information about administrating Alpine systems.
+See <https://wiki.alpinelinux.org/>.
+
+You can setup the system with the command: setup-alpine
+
+You may change this message by editing /etc/motd.
+
+localhost:~# [6ntest "$(cat /root/dory-cold-boot-sentinel)" = reopened-host-process
+ && printf 'DORY_%s\n' COLD_REOPEN_VERIFIED
+DORY_COLD_REOPEN_VERIFIED
+localhost:~# [6ndory-hv: guest stop reason: guest requested power off

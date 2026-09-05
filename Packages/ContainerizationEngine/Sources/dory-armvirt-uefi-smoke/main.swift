@@ -26,6 +26,8 @@ import UniformTypeIdentifiers
     var gvproxy: String?
     var compatibilityMatrix: String?
     var qualificationGate: String?
+    var restoreColdSnapshot: String?
+    var exportColdSnapshot: String?
     var systemDiskBytes: UInt64 = 64 << 20
     var memoryBytes: UInt64 = DoryARMVirtV1ABI.minimumMemoryBytes
     var timeoutSeconds: UInt64 = 15
@@ -735,6 +737,16 @@ import UniformTypeIdentifiers
           fail("--qualification-gate requires an identifier")
         }
         options.qualificationGate = value
+      case "--restore-cold-snapshot":
+        guard let value = iterator.next(), !value.isEmpty else {
+          fail("--restore-cold-snapshot requires a bundle path")
+        }
+        options.restoreColdSnapshot = value
+      case "--export-cold-snapshot":
+        guard let value = iterator.next(), !value.isEmpty else {
+          fail("--export-cold-snapshot requires a new destination path")
+        }
+        options.exportColdSnapshot = value
       case "--system-disk-bytes":
         guard let value = iterator.next().flatMap(UInt64.init),
           ((UInt64(64) << 20)...(UInt64(64) << 30)).contains(value),
@@ -1412,6 +1424,12 @@ import UniformTypeIdentifiers
   }
 
   do {
+    // Matrix installer gates require a fresh disk. A reopened snapshot is a separate run.
+    if options.restoreColdSnapshot != nil,
+      options.compatibilityMatrix != nil || options.qualificationGate != nil
+    {
+      fail("a restored cold snapshot cannot claim a fresh-install matrix gate")
+    }
     let qualification = try admitQualificationGate(options: &options)
     let qualificationStartedAt = timestamp(Date())
     let qualificationStarted = DispatchTime.now().uptimeNanoseconds
@@ -1436,9 +1454,20 @@ import UniformTypeIdentifiers
     var variableStore = try DoryUEFIVariableStoreFile(
       directory: temporaryRoot.appendingPathComponent("variables", isDirectory: true).path
     )
-    try variableStore.initialize(template)
     var systemDiskPath = temporaryRoot.appendingPathComponent("system.raw").path
-    try createSystemDisk(at: systemDiskPath, byteCount: options.systemDiskBytes)
+    if let snapshot = options.restoreColdSnapshot {
+      let restored = try DoryARMVirtColdSnapshotStore.restore(
+        bundleDirectory: snapshot,
+        expectedFirmware: artifacts.manifest,
+        destinationDirectory: temporaryRoot.appendingPathComponent("reopened").path
+      )
+      systemDiskPath = restored.systemDiskPath
+      variableStore = restored.variableStore
+      options.systemDiskBytes = restored.manifest.systemDiskByteCount
+    } else {
+      try variableStore.initialize(template)
+      try createSystemDisk(at: systemDiskPath, byteCount: options.systemDiskBytes)
+    }
     let systemDevice = try DoryARMVirtUEFIBootDevice(
       logicalID: "system",
       kind: .systemDisk,
@@ -1597,6 +1626,16 @@ import UniformTypeIdentifiers
       else {
         fail("observed lifecycle receipt does not match the qualification gate")
       }
+    }
+    if let destination = options.exportColdSnapshot {
+      // runBoot has stopped and joined its runner before returning. Reuse the verified
+      // disk/NVRAM store so another host process can reopen the exact stopped artifacts.
+      _ = try DoryARMVirtColdSnapshotStore.capture(
+        firmware: artifacts.manifest,
+        systemDiskPath: systemDiskPath,
+        variableStore: variableStore,
+        destinationDirectory: destination
+      )
     }
     let generation = try variableStore.load().snapshot.generation
     let qualificationDurationNanoseconds =

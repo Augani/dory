@@ -207,6 +207,15 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
+        let menu = NSMenu()
+        let applicationItem = NSMenuItem()
+        let applicationMenu = NSMenu()
+        applicationMenu.addItem(withTitle: "Quit Dory Mac Qualification",
+                                action: #selector(NSApplication.terminate(_:)),
+                                keyEquivalent: "q")
+        applicationItem.submenu = applicationMenu
+        menu.addItem(applicationItem)
+        NSApp.mainMenu = menu
         Task { @MainActor in
             do {
                 try await execute()
@@ -409,7 +418,13 @@ private final class QualificationAppDelegate: NSObject, NSApplicationDelegate,
         }
     }
 
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        NSApp.terminate(nil)
+        return false
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard !awaitingTermination else { return .terminateCancel }
         guard let runtime, runtime.virtualMachine.state == .running else { return .terminateNow }
         let suspendOnExit: Bool
         switch command {

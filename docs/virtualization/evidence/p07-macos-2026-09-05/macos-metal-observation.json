@@ -1,0 +1,19 @@
+{
+  "schema": "dory.macos-metal-observation@1",
+  "captureMethod": "Guest Terminal output observed through CUA screenshot; selected fields transcribed, not a raw machine receipt.",
+  "guestResultPath": "~/Desktop/dory-metal-result.json",
+  "probeSourceSHA256": "0fb2788ba195a530c95b5c299c559415d047b23904051aeac4a826f3db0cc324",
+  "probeBinarySHA256": "36518b6ae12acb8c45c18824f721a771633afe4a5c30fca8af8fccc7ed20271d",
+  "observedGuestResult": {
+    "deviceName": "Apple Paravirtual device",
+    "commandStatus": "completed",
+    "result": "pass",
+    "verifiedElementCount": 1048576,
+    "logicalCPUCount": 4,
+    "physicalMemoryBytes": 8589934592,
+    "operatingSystemVersion": "Version 26.6.2 (Build 25G83)"
+  },
+  "userResponsivenessFeedback": "Noticeably faster after increasing from 2 CPUs / 4 GiB to 4 CPUs / 8 GiB",
+  "scope": "Development macOS Metal compute smoke; Linux and container GPU qualification remain open.",
+  "sourceNote": "Build/run documentation comments added after compiling the observed binary; executable probe logic is unchanged."
+}

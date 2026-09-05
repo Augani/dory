@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "qualificationTarget": {
+    "guestFamily": "alpine",
+    "guestVersion": "3.24.1",
+    "guestBuild": "3.24.1",
+    "guestArchitecture": "arm64"
+  },
+  "steps": [
+    {
+      "waitFor": "localhost login:",
+      "send": "root\n"
+    },
+    {
+      "waitFor": "localhost:~#",
+      "send": "ip link set eth0 up && udhcpc -i eth0 -n -q && printf 'https://dl-cdn.alpinelinux.org/alpine/v3.24/main\\n' > /etc/apk/repositories && apk add --no-cache dosfstools e2fsprogs grub-efi sfdisk && ERASE_DISKS=/dev/vda setup-disk -m sys -s 0 /dev/vda\n"
+    },
+    {
+      "waitFor": "Installation is complete",
+      "send": "reboot\n",
+      "installerMediaAfterSend": "detached"
+    },
+    {
+      "waitFor": "localhost login:",
+      "send": "root\n"
+    },
+    {
+      "waitFor": "localhost:~#",
+      "send": "printf 'reopened-host-process\\n' > /root/dory-cold-boot-sentinel && sync && printf 'DORY_%s\\n' COLD_EXPORT_READY\n"
+    }
+  ]
+}

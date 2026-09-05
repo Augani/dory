@@ -1,0 +1,15 @@
+{
+  "commandStatus" : "completed",
+  "deviceName" : "Apple M2 Pro",
+  "gpuEndTime" : 137897.75596941667,
+  "gpuStartTime" : 137897.75591025001,
+  "hasUnifiedMemory" : true,
+  "logicalCPUCount" : 12,
+  "operatingSystemVersion" : "Version 27.0 (Build 26A5425a)",
+  "physicalMemoryBytes" : 17179869184,
+  "registryID" : "4294968651",
+  "result" : "pass",
+  "schema" : "dory.macos-metal-compute-smoke@1",
+  "submitAndWaitSeconds" : 0.0058491249801591039,
+  "verifiedElementCount" : 1048576
+}

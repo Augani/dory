@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "qualificationTarget": {
+    "guestFamily": "debian",
+    "guestVersion": "13.6.0",
+    "guestBuild": "13.6.0",
+    "guestArchitecture": "arm64"
+  },
+  "steps": [
+    {
+      "waitFor": "dory-debian login:",
+      "send": "root\r"
+    },
+    {
+      "waitFor": "Password:",
+      "send": "doryqualify\r"
+    },
+    {
+      "waitFor": "root@dory-debian:~#",
+      "send": "test \"$(cat /root/dory-cold-boot-sentinel)\" = debian-process-reopen && test -d /sys/firmware/efi && printf 'DORY_%s\\n' DEBIAN_COLD_REOPEN_VERIFIED\r"
+    }
+  ]
+}

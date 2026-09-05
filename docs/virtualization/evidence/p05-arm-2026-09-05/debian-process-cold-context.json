@@ -1,0 +1,26 @@
+{
+  "schema": "dory.arm-development-process-cold-boot@1",
+  "runnerSHA256": "d477599906afd7b7bad7c98ee1a1f4fbd28543aa246ae8d9b14a2642c8d50a82",
+  "firstProcessExitCode": 0,
+  "secondProcessExitCode": 0,
+  "firstProcessBootAttempts": 3,
+  "secondProcessBootAttempts": 1,
+  "secondProcessInstallerMediaAttached": false,
+  "sentinelPath": "/root/dory-cold-boot-sentinel",
+  "sentinelValue": "debian-process-reopen",
+  "sourceCommit": "ecdcc5842",
+  "limitations": [
+    "Development ad-hoc signed serial runner, one vCPU.",
+    "Exercises existing cold-snapshot capture/restore after host-process exit, not daemon install finalization or reopening a daemon-managed machine.",
+    "No graphics, GPU compute, live RAM restore, or release qualification."
+  ],
+  "evidenceSHA256": {
+    "debian-process-export.json": "42f0a7e557d0fa74d66d41a0ce6babd7f9e795a447bb6e564d7e0838e020e1e4",
+    "debian-process-export.log": "dae92027485368be623f5ffd6868bbcd2cee4264246f9b8b8a44f39cd982e4f3",
+    "debian-process-reopen.json": "d8d32d5df3db788160ecb8936a3ccac16030f01db25f160b9b6656455084dd5c",
+    "debian-process-reopen.log": "b573cfeb853e49480bd07b7be83183e7150fd36611df2fcdffa089a29a569896",
+    "debian-cold-export-script.json": "47179742c30d376d38edfc239d870e5e99edd2cb7dd3eeb27f8e887dd31fed45",
+    "debian-cold-reopen-script.json": "5a474d46f323af6c3944e5dbc9a432804025164c0661f165cc834aaa1fa22285",
+    "debian-process-cold-manifest.json": "04ae440d579836633fea2787d14f82824477bdd9c3922b1463998bdbb5055f0b"
+  }
+}

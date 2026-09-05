@@ -1,0 +1,24 @@
+{
+  "schema": "dory.native-macos-development-install@1",
+  "host": "Apple Silicon",
+  "restoreImageSHA256": "885503b7f4b06609e9a512f2befd40f59730640a3f1233e3892d60affdd51c95",
+  "restoreImageByteCount": 19772231540,
+  "runnerSHA256": "f8e62212f964db997a299186f472e23860a8501ab6527b718f2b0e68525f9a8a",
+  "prepareExitCode": 0,
+  "installJournalPhase": "completed",
+  "installedManifestState": "stopped",
+  "limitations": [
+    "Ad-hoc development qualifier and private VM; not daemon lifecycle or release qualification.",
+    "Metal result was observed in guest Terminal; raw guest JSON remains on the guest Desktop and is not copied into this evidence directory.",
+    "A single compute smoke does not qualify sustained graphics performance, recovery, updates, or the product lifecycle."
+  ],
+  "observations": [
+    "Booted to animated macOS welcome screen.",
+    "Pointer click advanced to Language screen.",
+    "Down arrow changed language selection from English (UK) to English.",
+    "User completed setup and reached the macOS desktop.",
+    "Normal qualifier window close saved Apple VM state; a new qualifier process restored it and displayed the desktop.",
+    "After clean guest shutdown, resources increased from 2 CPUs / 4 GiB to 4 CPUs / 8 GiB. User reported noticeably faster responsiveness.",
+    "Guest Metal probe completed on Apple Paravirtual device and verified all 1048576 output values."
+  ]
+}

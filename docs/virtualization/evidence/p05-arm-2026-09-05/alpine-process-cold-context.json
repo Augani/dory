@@ -1,0 +1,26 @@
+{
+  "schema": "dory.arm-development-process-cold-boot@1",
+  "runnerSHA256": "d477599906afd7b7bad7c98ee1a1f4fbd28543aa246ae8d9b14a2642c8d50a82",
+  "firstProcessExitCode": 0,
+  "secondProcessExitCode": 0,
+  "firstProcessBootAttempts": 2,
+  "secondProcessBootAttempts": 1,
+  "secondProcessInstallerMediaAttached": false,
+  "sentinelPath": "/root/dory-cold-boot-sentinel",
+  "sentinelValue": "reopened-host-process",
+  "sourceCommit": "ecdcc5842",
+  "limitations": [
+    "Development ad-hoc signed serial runner, one vCPU.",
+    "Exercises existing cold-snapshot capture/restore after host-process exit, not daemon install finalization or reopening a daemon-managed machine.",
+    "No graphics, GPU compute, live RAM restore, or release qualification."
+  ],
+  "evidenceSHA256": {
+    "alpine-process-export.json": "6b6e8c242068bdb3ade3daac6bb98a125ca203be80dc6c85d15e497023793420",
+    "alpine-process-export.log": "4f8ec3e32384ad0e0b2a2875c58c04f95718edfda96d4b8d628eb6c774f0d5b8",
+    "alpine-process-reopen.json": "86b268ea43474cb10808be0dd37b89c96607c63ab7a1a98b06d154d08113b175",
+    "alpine-process-reopen.log": "ad48fb6e090af078d0ad1f609376b7b6c1a42661d987d3359bd59196104099e4",
+    "alpine-cold-export-script.json": "0274d227b715e5a5b39a7980170dcaceae4eaf70b0e3d661b452c854933a510f",
+    "alpine-cold-reopen-script.json": "6155ec24699a716e8f6102a23abf19eb445f939c4b5decdc4f98552bb20a5d7c",
+    "alpine-process-cold-manifest.json": "f50feb68bde86e5c8f17d2e091f52d99c9994e2eff60daf224c6c97fe16df161"
+  }
+}

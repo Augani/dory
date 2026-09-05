@@ -190,6 +190,18 @@ and performs a fourth UEFI boot. Run it with
 steps, both host actions, the pre-snapshot sentinel present, and the
 post-snapshot sentinel absent.
 
+To check a cold boot across host-process exit, add
+`--export-cold-snapshot /absolute/path/to/new-bundle` to a successful installer
+run. After that process exits, invoke the runner again with the same firmware,
+`--restore-cold-snapshot /absolute/path/to/new-bundle`, a login/verification
+console script, and its expected guest output. Omit installer media to prove
+that the installed disk boots independently. Export uses the existing verified
+stopped disk/NVRAM snapshot store; restore verifies and copies the bundle into
+fresh temporary storage before booting. Existing export destinations are
+rejected. A restore run cannot select a fresh-install compatibility-matrix gate.
+Retain both process receipts and the exported manifest as evidence; neither
+receipt alone proves the pair or production daemon lifecycle behavior.
+
 `alpine-3.24-device-baseline.json` installs from the same immutable media and
 proves that the installed stock kernel discovers the UEFI environment, system
 block device, DoryARMVirt-v1 entropy slot, platform RTC, and network interface.

@@ -1,0 +1,12 @@
+{
+  "configurationSHA256" : "c2a0604de611f227075125e822434283bbe418ff7cc663421dde2cafc325bd1f",
+  "createdAt" : "2026-09-05T01:54:00Z",
+  "hardwareModelSHA256" : "976e66740c64041cf9f127588f93eabf7efb9e7d3cbaee9582bcded88ba5e8d3",
+  "hostBuildVersion" : "26A5425a",
+  "hostIdentifierSHA256" : "ca6c987c01ced2a8b4540a88dcd2a6563787f11330e417a8fe6f1ceb49f90f69",
+  "hostOperatingSystemVersion" : "27.0.0",
+  "machineIdentifierSHA256" : "e6ba755bd4166fe6f5470b2cc5832c8cb8d7b4a89c87c610c4cf15397b523812",
+  "schema" : "dory.vzmac-saved-state@2",
+  "stateBytes" : 1476399104,
+  "stateSHA256" : "6f4275ab3050a87de7f73113a5ea75f1bdeaecb611c37158e5871d7294ba9937"
+}
