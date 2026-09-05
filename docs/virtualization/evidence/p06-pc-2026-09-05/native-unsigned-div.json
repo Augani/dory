@@ -1,0 +1,45 @@
+{
+  "createdAt": "2026-09-05T20:19:00Z",
+  "fallbacks": [
+    "divisor zero exits to interpreter before state mutation for precise #DE",
+    "nonzero high dividend exits to interpreter before state mutation, including both valid wide dividends and quotient-overflow cases",
+    "memory-source and user-CPL forms remain interpreter fallback"
+  ],
+  "isolatedSourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "82f8994b394dd66099bbe2c7862e8234df98d1609fe2857a14a1ac3ce6c662bd",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "aac50bdf5bd4609d22639acfaff95195668ae49aa1869b33226170612b089303",
+    "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift": "5a411bdfcc1abb20a1e04fa9e2bac4f4838cbfe5f8d2b7b15f9b4e13eeabac18",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "2c8e374050d740241113a4023bc383b9a920cec0948870ff29c828cf6ef7e607"
+  },
+  "kind": "unsigned-accumulator-divide-native-fastpath",
+  "limits": [
+    "No full 128/64 or 64/32 native division; wide dividends fall back.",
+    "No product guest rerun yet includes this patch.",
+    "No signed binary/performance claim from this source-only test receipt."
+  ],
+  "motivation": "Live production-compatible run showed 48f7f1 and f7f1 unsigned DIV register forms as the top negative-cache sites while the guest remained in kernel timer/scheduler work.",
+  "scope": "Lower long-mode CPL0 register-source unsigned accumulator DIV for i32/i64 only when the high dividend half is zero. Store quotient to RAX/EAX and remainder to RDX/EDX with existing interpreter width semantics; preserve flags unchanged.",
+  "sharedSourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "82f8994b394dd66099bbe2c7862e8234df98d1609fe2857a14a1ac3ce6c662bd",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "aac50bdf5bd4609d22639acfaff95195668ae49aa1869b33226170612b089303",
+    "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift": "5a411bdfcc1abb20a1e04fa9e2bac4f4838cbfe5f8d2b7b15f9b4e13eeabac18",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "2c8e374050d740241113a4023bc383b9a920cec0948870ff29c828cf6ef7e607"
+  },
+  "tests": [
+    {
+      "log": "${HOME}/.dory/qualification/unsigned-div-20260905-201845/focused.log",
+      "result": "3 selected tests passed after 0.004 seconds",
+      "sha256": "ba4faca6ea47f4e1bfe73dde47df5f07738da90f48198cba7142efbe2c53a8c8",
+      "publishedLog": "unsigned-div-focused.log.gz",
+      "publishedGzipSHA256": "e570474f9f8870f48db8f3d7c2ee8c522dc7e1b8b537eac119eb2a981700657b"
+    },
+    {
+      "log": "${HOME}/.dory/qualification/unsigned-div-20260905-201845/baselinejit.log",
+      "result": "102 DoryARM64BaselineJITTests passed after 0.837 seconds",
+      "sha256": "29bb05b862055df9f3558552bd6404ac8fc66c603637e789ce8bdd03cd104d3a",
+      "publishedLog": "unsigned-div-baselinejit.log.gz",
+      "publishedGzipSHA256": "32f79ab3bcf68c536b29d321a314cad299525ba2bdcb58f7b0a167c812f4863f"
+    }
+  ],
+  "commit": "07b54444a"
+}
