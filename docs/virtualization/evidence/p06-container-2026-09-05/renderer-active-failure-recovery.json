@@ -1,0 +1,69 @@
+{
+  "date": "2026-09-05",
+  "endpoint": {
+    "data_disk_uuid_before_after": "5dbe9ca3-75f4-4f27-957f-2abe9bb81133",
+    "docker_socket": "/private/tmp/dory-inflight-recovery.28048/h/.dory/dory.sock",
+    "doryd_pid": 28053,
+    "initial_engine_pid": 28060,
+    "initial_renderer_bootstrap_sha256": "61f7df22ca9dd3fbdd61c2f7ab270d14a2c3daaf25342df49469d17c2bd7e6f5",
+    "initial_renderer_worker_pid": 28062,
+    "restarted_engine_pid": 29657,
+    "restarted_renderer_bootstrap_sha256": "95baa1b5651866f1e87175ee67eb6ed9da6b23ccf24a625dadb3884d3d7ca123",
+    "restarted_renderer_worker_pid": 29662,
+    "root": "/private/tmp/dory-inflight-recovery.28048"
+  },
+  "independent_review": {
+    "active_container_terminal_state": "exited 255",
+    "disposable_processes_absent_after_cleanup": true,
+    "engine_reported_uncertain_fenced_chains": 0,
+    "log_sha256": {
+      "active_after_kill": "cd9d6a550bef61c2a7125c1bd8b8391cc5d715e76504286c75c3422b41c897ad",
+      "active_before_kill": "3a05d462ec3a90daafdad146a7bc1e7100e706e5f8b19f603e05694f426be704",
+      "export_import": "95afd12b6dd605a03aa5d7d1560afd9eefd5f2d3db0bb252c4cb5c91a327a1ac",
+      "final_active_container_state": "dbed7abd63fc4ebc459e0445b652d47eead06d10c4f8f1ab78bff4537bc7bbc3",
+      "kill_observe": "b9b3b2cadd857d57a01f8b70864ca6355ae0c0f5b3898a1f87d887a0b6ca89cf",
+      "post_restart_compute": "caccd63b221920337b03e02256d0098fee849cc4fd8e8d45b8c1c318a4c4f93f",
+      "post_restart_hostconfig": "3d2cb6f2fd3d01cf11c0a3e96d8c637ff17b3fa2f5c46e318007b613b848e201",
+      "post_restart_validation": "5221ed950325ef5a751bc5c751a3acbf537f0d20f90e5fca87770d10db3879ce"
+    },
+    "post_restart_compute_passed": true
+  },
+  "limitations": "The workload had completed thousands of dispatches before SIGKILL and the container terminated without hanging. This proves active GPU workload failure/recovery behavior, but it does not prove the signal landed while a specific submitted fence was outstanding rather than between loop iterations.",
+  "logs": {
+    "active_after_kill": "/private/tmp/dory-inflight-recovery.28048/inflight-proof.1788581761/logs/active-after-kill.log",
+    "active_before_kill": "/private/tmp/dory-inflight-recovery.28048/inflight-proof.1788581761/logs/active-before-kill-final.log",
+    "export_import": "/private/tmp/dory-inflight-recovery.28048/inflight-proof.1788581761/logs/export-import.log",
+    "final_active_container_state": "/private/tmp/dory-inflight-recovery.28048/inflight-proof.1788581761/logs/final-active-container-state.log",
+    "kill_observe": "/private/tmp/dory-inflight-recovery.28048/inflight-proof.1788581761/logs/kill-observe.1788581839.log",
+    "post_restart_compute": "/private/tmp/dory-inflight-recovery.28048/inflight-proof.1788581761/logs/post-restart-compute.log",
+    "post_restart_hostconfig": "/private/tmp/dory-inflight-recovery.28048/inflight-proof.1788581761/logs/post-restart-hostconfig.log",
+    "post_restart_validation": "/private/tmp/dory-inflight-recovery.28048/inflight-proof.1788581761/logs/post-restart-validation.1788581905.log"
+  },
+  "preserved_endpoints": {
+    "installed_daemon_pid": 1676,
+    "note": "Only the disposable endpoint renderer worker PID 28062 was killed.",
+    "ordinary_build_endpoint_engine_pid": 65840,
+    "shared_gpu_endpoint_renderer_worker_pid": 84935
+  },
+  "recovery_validation": {
+    "docker_api_after_restart": "docker=29.6.1 os=linux arch=arm64",
+    "post_restart_compute_stdout": "driver=venus device=Virtio-GPU Venus (Apple M2 Pro) gpu-command=vkCmdDispatch elements=65536 mismatches=0 result=pass",
+    "post_restart_container": "dory-inflight-postcompute-1788581905",
+    "post_restart_exit": 0,
+    "post_restart_hostconfig": "null [{\"PathOnHost\":\"/dev/dri/renderD128\",\"PathInContainer\":\"/dev/dri/renderD128\",\"CgroupPermissions\":\"rw\"}] exit=0",
+    "sentinel_expected": "sentinel-1788581761",
+    "sentinel_observed": "sentinel-1788581761",
+    "sentinel_volume": "dory-inflight-sentinel-1788581761"
+  },
+  "scope": "renderer worker SIGKILL during an active repeated Vulkan dispatch container on a fresh disposable GPU endpoint, followed by daemon-managed graph restart and standard --gpus all no-env compute validation",
+  "workload": {
+    "active_container": "dory-inflight-active-18600",
+    "active_container_final_state": "exited 255",
+    "image": "dory/gpu-workload:inflight-1788581761",
+    "killed_pid": 28062,
+    "killed_process": "fresh endpoint renderer worker only",
+    "parallel_workers": 8,
+    "post_kill_result": "Docker API dropped during graph restart; active container became exited 255; no hang observed.",
+    "pre_kill_dispatch_markers": 3788
+  }
+}
