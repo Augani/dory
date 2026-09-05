@@ -1,0 +1,21 @@
+{
+  "schema": "dory.native-rdtsc-review@1",
+  "sourceCommit": "380a88e5c",
+  "scope": "Native long-mode CPL0 RDTSC with dispatch boundaries before and after reads; unsupported profiles, RDTSCP and user-mode execution retain interpreter handling.",
+  "validation": {
+    "command": "swift test --package-path dory-core-swift --scratch-path /tmp/dory-core-swift-pc-gpu-xcode --filter 'DoryARM64BaselineJITTests|DoryARM64SegmentBaseTests|DoryX86HypervisorBoundaryTests/hiddenTimestampInstructionsFaultBeforePrivilegeChecks'",
+    "result": "100 tests in 3 suites passed",
+    "log": "native-rdtsc-tests.log.gz",
+    "uncompressedSHA256": "52e256c6900ede2687d6ab7acd4e8a9889fd2f5ce2dc060c2a3ec4ace9290a5b"
+  },
+  "guestRun": {
+    "status": "raw evidence unavailable after temporary directory disappeared",
+    "reportedResult": "Agent reported 1.5 billion instructions without a userspace marker; not promoted as retained guest qualification evidence.",
+    "path": "/private/var/tmp/dory-pc-rdtsc-compatible-hostclock-0905.9s04we",
+    "requiresRepeat": true
+  },
+  "limitations": [
+    "Focused correctness tests do not establish production boot or elapsed performance.",
+    "All release and x86 guest GPU gates remain open."
+  ]
+}
