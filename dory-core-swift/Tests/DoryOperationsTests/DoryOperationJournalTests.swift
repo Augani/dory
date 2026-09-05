@@ -446,6 +446,7 @@ final class DoryOperationJournalTests: XCTestCase {
         XCTAssertEqual(try recovered.events().last?.stepID, "quiesce.begin")
     }
 
+    #if DEBUG
     func testStatePublishedBeforeAuditAppendRecoversAfterLeaseOwnerExits() throws {
         let home = try temporaryHome(named: "state-before-audit")
         defer { try? FileManager.default.removeItem(at: home) }
@@ -473,6 +474,8 @@ final class DoryOperationJournalTests: XCTestCase {
         XCTAssertEqual(try recovered.events().map(\.revision), [0, 1])
         XCTAssertEqual(try recovered.events().last?.stepID, "quiesce.persisted")
     }
+
+    #endif
 
     func testDriveMirrorIsAReadOnlySummaryOfTheAuthoritativeJournal() throws {
         let home = try temporaryHome(named: "mirror")
