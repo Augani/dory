@@ -1,0 +1,94 @@
+{
+  "causeEvidence": [
+    {
+      "crashReport": "${HOME}/Library/Logs/DiagnosticReports/swiftpm-testing-helper-2026-09-05-200904.ips",
+      "finding": "SIGBUS, Thread stack size exceeded; stack reached DoryX86GeneralRegister.allCases / DoryX86Decoder / DoryPCDirectKernelMachine.run on a 544 KiB Swift Testing worker stack.",
+      "test": "DoryPCInterruptShadowTests.movSSShadowAlsoDefersAControllerRequestForOneInstruction"
+    },
+    {
+      "crashReport": "${HOME}/Library/Logs/DiagnosticReports/swiftpm-testing-helper-2026-09-05-201145.ips",
+      "finding": "SIGBUS, Thread stack size exceeded; stack reached decodeLegacy0FSystemOpcode / DoryPCDirectKernelMachine.run.",
+      "test": "DoryPCJITMetadataFaultTests.revokingCachedCodeReturnsArchitecturalFaultAndNeverReplaysCompletedStores"
+    },
+    {
+      "crashReport": "${HOME}/Library/Logs/DiagnosticReports/swiftpm-testing-helper-2026-09-05-201325.ips",
+      "finding": "SIGBUS, Thread stack size exceeded; stack reached Cursor.readUnsigned / decoder / DoryPCDirectKernelMachine.run.",
+      "test": "DoryPCPagingFeatureTests.selectedProfileControlsMachineFetchDiagnosticsAndBothNativeTiers"
+    }
+  ],
+  "commit": "7035d0e5925100ed77e41639ff79a6cf9d08b338",
+  "date": "2026-09-05",
+  "decoderFrameInvestigation": {
+    "decision": "Decoder extraction reduced individual Debug frames but original unwrapped repros still crashed on the 544 KiB Swift Testing stack at later runtime/allocation sites. The extraction is preserved as private evidence and is not part of the committed fix.",
+    "originalDecodeLegacy0FSystemOpcodeDebugFrameBytes": 7440,
+    "originalFrameEvidence": "Earlier otool prologue reserved 0x1d10 bytes and called ___chkstk_darwin.",
+    "postExtractionPrivateMeasurements": {
+      "Cursor.readUnsigned": "0x120 / 288 bytes",
+      "decodeLegacy0FAEOpcode": "0x680 / 1664 bytes",
+      "decodeLegacy0FGroup7SystemOpcode": "0xa90 / 2704 bytes",
+      "decodeLegacy0FSegmentSystemOpcode": "0x2f0 / 752 bytes",
+      "decodeLegacy0FSystemOpcode": "0xd70 / 3440 bytes"
+    }
+  },
+  "kind": "dev.dory.pc-direct-kernel-stack-qualification",
+  "logs": {
+    "decoder_reduction_private_patch_not_promoted": "${HOME}/.dory/qualification/dory-machinepc-stack-source-20260905/decoder-source-reduction-private.patch",
+    "initial_broad_signal10": "${HOME}/.dory/qualification/dory-machinepc-broad-signal10-20260905",
+    "source_only_decoder_register_map_failed": "${HOME}/.dory/qualification/dory-machinepc-stack-source-20260905/shared-original-unwrapped-three-repros-after-source-split-register-map.log",
+    "source_only_decoder_register_readunsigned_failed": "${HOME}/.dory/qualification/dory-machinepc-stack-source-20260905/shared-original-unwrapped-three-repros-after-source-split-register-map-readunsigned.log",
+    "source_only_decoder_split_failed": "${HOME}/.dory/qualification/dory-machinepc-stack-source-20260905/shared-original-unwrapped-three-repros-after-source-split.log",
+    "thread_only_broad_255_head_decoder": "${HOME}/.dory/qualification/dory-machinepc-stack-source-20260905/thread-only-head-decoder-broad-dorymachinepc-ffi-pair.log",
+    "thread_only_dory_hv_debug_build": "${HOME}/.dory/qualification/dory-machinepc-stack-source-20260905/thread-only-dory-hv-debug-build.log",
+    "thread_only_dory_hv_release_build": "${HOME}/.dory/qualification/dory-machinepc-stack-source-20260905/thread-only-dory-hv-release-build.log"
+  },
+  "notes": [
+    "The isolated thread-only worktree initially lacked ignored local FFI/generated artifacts; DoryFFI.xcframework and generated dory_ffi.swift were copied as a matched pair from the shared checkout before validation.",
+    "No physical Mac lifecycle was run or modified for this lane.",
+    "Shared checkout may contain unrelated dirty DBTX86/statistics work after commit; receipt hashes are from commit 7035d0e59."
+  ],
+  "sourceHashesAtCommit": {
+    "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift": "24a868d87cb38f74e7d5aa7870f3b648c9156e5b2a16d7e0d01d1cc3a077a90c",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineRunSupport.swift": "58b48e342995d36e448c1e643874f5a32f9a68db04dac6d64e517e88c18df7c3",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCDirectKernelMachineTests.swift": "4a80c762ca4fbfd70c5c022c30f0ea8acb6f83156e20611f8056c0b964a3c99e",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCExceptionEscalationTests.swift": "f0c7a2c19b3ff90145055d80db43ad09d34be2c7376f832a5ea3ce3eadee4c72",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCIntegerFeaturePolicyTests.swift": "e29184877421645b22a618cfc4c20a79080926ccb50bb28b13c6b0b9e6a27d61",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCInterruptShadowTests.swift": "aa84eb4cae11cf0fa622e4e6ab6ab758a9d77efad83aafa0bf683e271a73f04b",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCJITMetadataFaultTests.swift": "93906c908f6d00270dc5aec1434808df0f13a99ed14892511e446ade5ade5f6f",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCLinuxBootTests.swift": "0114cd0ee448e9267fe5ec00430bccd9923508627efcbf5a2b10ed4210135a5f",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCNMIBlockingTests.swift": "7c65f4b28e0a0698630ecfdd0c1a2b690c30db54f0c359ee6eb7662cdbfd46e5",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPAEExecutionBoundaryTests.swift": "fb383ae00fa6073d82be61205292ac07bcd07b47b2a3a94cd19a39f69f773a1c",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPMTimerCoherenceTests.swift": "e6c07cffc3568676c698c1f7b3502fb69de6858eb0b3100cded407257bf0e3c5",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPagingFeatureTests.swift": "3dc4d241b4cb3f755cc5e46e617b09bde747518c5fe2a1464f409d093da51230",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCPowerControllerTests.swift": "7187dc1d41b606ca4121d4779640ae2443ab12070635f9c6f4d08415584c9155",
+    "dory-core-swift/Tests/DoryMachinePCTests/DoryPCUEFIMachineTests.swift": "a28c96d35e5985ca72854a6a7db0a9791f456804f4fc819249c16b522fe584a5"
+  },
+  "summary": "Broad DoryMachinePCTests helper SIGBUS was stack exhaustion on small Swift Testing worker stacks while running Debug x86 direct-kernel machine paths. Product PC execution now uses the same explicit 2 MiB RawHV machine-owner thread stack contract as ARM RawHV, and the affected direct-kernel tests run Machine.run on a matching 2 MiB dedicated thread.",
+  "validatedFix": {
+    "production": "dory-hv DoryPCMode runs execute() on an explicit Thread with RawHVSchedulingPolicy.machineOwnerThreadStackSize = 2 MiB and RawHVSchedulingPolicy.machineOwnerThreadQualityOfService.",
+    "tests": "DoryPCDirectKernelMachineRunSupport runs direct Machine.run calls on a matching 2 MiB dedicated thread."
+  },
+  "validation": [
+    {
+      "count": "255 tests / 46 suites",
+      "log": "${HOME}/.dory/qualification/dory-machinepc-stack-source-20260905/thread-only-head-decoder-broad-dorymachinepc-ffi-pair.log",
+      "name": "thread-only broad DoryMachinePCTests with HEAD decoder",
+      "result": "pass"
+    },
+    {
+      "log": "${HOME}/.dory/qualification/dory-machinepc-stack-source-20260905/thread-only-dory-hv-debug-build.log",
+      "name": "thread-only dory-hv Debug product build",
+      "result": "pass"
+    },
+    {
+      "log": "${HOME}/.dory/qualification/dory-machinepc-stack-source-20260905/thread-only-dory-hv-release-build.log",
+      "name": "thread-only dory-hv Release product build",
+      "result": "pass"
+    }
+  ],
+  "originalReceiptSHA256": "d2c99a43ccc42ee3db0d8bb91095584acbfb4e8095184b0e471f047f8b1bbf46",
+  "logHashes": {
+    "${HOME}/.dory/qualification/dory-machinepc-stack-source-20260905/thread-only-head-decoder-broad-dorymachinepc-ffi-pair.log": "0ef6d8f0d30f2f43606171d527516d1ec8af4cd87d1ca5042f9e5ce234914987",
+    "${HOME}/.dory/qualification/dory-machinepc-stack-source-20260905/thread-only-dory-hv-debug-build.log": "4c65a8dc331679a538afaa1551ef15c94da7f47a4a8bd139dbe8c1edc6774579",
+    "${HOME}/.dory/qualification/dory-machinepc-stack-source-20260905/thread-only-dory-hv-release-build.log": "dbacdc86106add6d88ada53fde03f314a9a9e180ba9e9ca0333c2c98ff42a46b"
+  }
+}
