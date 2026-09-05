@@ -67,6 +67,8 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
 public struct DoryARM64BaselineEmitter: Sendable {
   private static let ripOffset = 16 * 8
   private static let rflagsOffset = 17 * 8
+  private static let fsBaseOffset = 18 * 8
+  private static let gsBaseOffset = 19 * 8
   private static let rspOffset = 4 * 8
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
@@ -82,9 +84,13 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   public func compile(
     _ block: DoryIRBasicBlock,
-    tier: DoryARM64CompilationTier = .baseline
+    tier: DoryARM64CompilationTier = .baseline,
+    executionMode: DoryX86ExecutionMode? = nil
   ) -> DoryARM64CompiledBlock {
     precondition(tier != .interpreterFallback)
+    if containsFSOrGSMemoryAddress(block) {
+      guard executionMode == .long64 else { return fallback(block) }
+    }
     var words: [UInt32] = []
     let memoryCallbackCount =
       block.statements.reduce(0) { $0 + self.memoryCallbackCount($1) }
@@ -140,6 +146,36 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .conditional(_, let taken, let notTaken):
       !DoryX86ArchitecturalState.isCanonical(taken) || !DoryX86ArchitecturalState.isCanonical(notTaken)
     default: false
+    }
+  }
+
+  private func containsFSOrGSMemoryAddress(_ block: DoryIRBasicBlock) -> Bool {
+    func isFSOrGS(_ operand: DoryIROperand) -> Bool {
+      guard case .memory(let address, _) = operand else { return false }
+      return address.segment == "fs" || address.segment == "gs"
+    }
+    return block.statements.contains { statement in
+      switch statement {
+      case .copy(let destination, let source):
+        return isFSOrGS(destination) || isFSOrGS(source)
+      case .binary(_, let destination, let source, _):
+        return isFSOrGS(destination) || isFSOrGS(source)
+      case .unary(_, let operand), .shift(_, let operand, _), .byteSwap(let operand),
+        .stackPush(let operand), .stackPop(let operand):
+        return isFSOrGS(operand)
+      case .conditionalMove(_, let destination, let source):
+        return isFSOrGS(destination) || isFSOrGS(source)
+      case .setCondition(_, let destination):
+        return isFSOrGS(destination)
+      case .bitScan(_, let destination, let source), .extendMove(let destination, let source, _):
+        return isFSOrGS(destination) || isFSOrGS(source)
+      case .signedMultiply(let destination, let lhs, let rhs):
+        return isFSOrGS(destination) || isFSOrGS(lhs) || isFSOrGS(rhs)
+      case .effectiveAddress:
+        return false
+      case .stackPushFlags, .clearInterruptFlag, .helper:
+        return false
+      }
     }
   }
 
@@ -458,11 +494,16 @@ public struct DoryARM64BaselineEmitter: Sendable {
     where width == .i8 || width == .i16 || width == .i32 || width == .i64:
       guard emitMemoryAddress(address, into: 9, words: &words) else { return false }
       if width == .i8 || width == .i16 {
-        guard case .register(let register) = source,
-          register.bank == "x86.gpr", register.index < 16, register.width == width
-        else { return false }
-        words.append(
-          encodeLoad64(register: 10, base: 0, byteOffset: Int(register.index) * 8))
+        switch source {
+        case .register(let register)
+        where register.bank == "x86.gpr" && register.index < 16 && register.width == width:
+          words.append(
+            encodeLoad64(register: 10, base: 0, byteOffset: Int(register.index) * 8))
+        case .immediate(let value, let immediateWidth) where immediateWidth == width:
+          emitImmediate(value & (width == .i8 ? 0xFF : 0xFFFF), register: 10, into: &words)
+        default:
+          return false
+        }
         emitImmediate(width == .i8 ? 0xFF : 0xFFFF, register: 11, into: &words)
         words.append(encodeLogical(.and, left: 10, right: 11, destination: 10))
       } else {
@@ -1331,7 +1372,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       target.bank == "x86.gpr",
       target.index < 16,
       target.width == .i32 || target.width == .i64,
-      emitMemoryAddress(address, into: 9, words: &words)
+      emitMemoryAddress(address, into: 9, includeSegmentBase: false, words: &words)
     else { return false }
     let addressIs64Bit = address.addressWidth == .i64
     if target.width == .i32, addressIs64Bit {
@@ -1344,9 +1385,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private func emitMemoryAddress(
     _ address: DoryIRMemoryAddress,
     into resultRegister: UInt32,
+    includeSegmentBase: Bool = true,
     words: inout [UInt32]
   ) -> Bool {
-    guard address.segment == nil,
+    guard address.segment == nil || address.segment == "fs" || address.segment == "gs",
       address.addressWidth == .i32 || address.addressWidth == .i64,
       address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8
     else { return false }
@@ -1389,6 +1431,17 @@ public struct DoryARM64BaselineEmitter: Sendable {
           left: resultRegister,
           right: 10,
           leftShift: UInt32(address.scale.trailingZeroBitCount),
+          destination: resultRegister
+        ))
+    }
+    if includeSegmentBase, let segment = address.segment {
+      let offset = segment == "fs" ? Self.fsBaseOffset : Self.gsBaseOffset
+      words.append(encodeLoad64(register: 10, base: 0, byteOffset: offset))
+      words.append(
+        encodeAdd(
+          is64Bit: true,
+          left: resultRegister,
+          right: 10,
           destination: resultRegister
         ))
     }
@@ -2154,7 +2207,7 @@ private let doryJITMemoryWrite: dory_jit_memory_write_function = {
 }
 
 public final class DoryJITExecutableRegion: @unchecked Sendable {
-  public static let contextWordCount = 18
+  public static let contextWordCount = 20
 
   private let lock = NSLock()
   private let region: OpaquePointer
@@ -3351,7 +3404,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     }
     let compiled = emitter.compile(
       block,
-      tier: optimization == .optimizing ? .optimizing : .baseline
+      tier: optimization == .optimizing ? .optimizing : .baseline,
+      executionMode: mode
     )
     if compiled.tier == .interpreterFallback {
       let declineReason = Self.compilationDeclineReason(for: block)
@@ -3700,6 +3754,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[15] = state.registers.r15
     context[16] = state.rip
     context[17] = state.rflags.rawValue
+    context[18] = state.fs.base
+    context[19] = state.gs.base
   }
 
   private static func apply(

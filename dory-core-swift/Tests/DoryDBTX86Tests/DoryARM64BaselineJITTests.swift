@@ -797,6 +797,71 @@ import Testing
     #endif
   }
 
+
+  @Test func immediateByteAndWordStoresToMemoryExecuteNatively() throws {
+    #if arch(arm64)
+      struct StoreCase {
+        let bytes: [UInt8]
+        let expectedBytes: [UInt8]
+      }
+      let cases = [
+        StoreCase(bytes: [0xC6, 0x07, 0x00], expectedBytes: [0x00]),
+        StoreCase(bytes: [0x66, 0xC7, 0x07, 0x34, 0x12], expectedBytes: [0x34, 0x12]),
+      ]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        for testCase in cases {
+          let executor = try DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024,
+            optimization: optimization
+          )
+          let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+          let translatedMemory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+          try interpretedMemory.write(at: 0, bytes: testCase.bytes)
+          try translatedMemory.write(at: 0, bytes: testCase.bytes)
+          try interpretedMemory.write(at: 0x80, bytes: [0xAA, 0xBB])
+          try translatedMemory.write(at: 0x80, bytes: [0xAA, 0xBB])
+
+          var interpreted = try DoryX86ArchitecturalState(
+            registers: .init(rdi: 0x80),
+            rip: 0,
+            rflags: [.reservedOne, .carry, .overflow]
+          )
+          _ = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: interpretedMemory,
+            mode: .long64
+          )
+
+          var translated = try DoryX86ArchitecturalState(
+            registers: .init(rdi: 0x80),
+            rip: 0,
+            rflags: [.reservedOne, .carry, .overflow]
+          )
+          let execution = try #require(
+            executor.execute(
+              bytes: testCase.bytes,
+              at: translated.rip,
+              mode: .long64,
+              addressSpaceID: 0,
+              maximumInstructions: 1,
+              state: &translated,
+              memory: translatedMemory
+            )
+          )
+
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(execution.block.requiresMemoryCallbacks)
+          #expect(translated == interpreted)
+          let translatedStoredBytes = try translatedMemory.read(at: 0x80, byteCount: 2)
+          let interpretedStoredBytes = try interpretedMemory.read(at: 0x80, byteCount: 2)
+          #expect(translatedStoredBytes == interpretedStoredBytes)
+          #expect(try translatedMemory.read(at: 0x80, byteCount: testCase.expectedBytes.count)
+            == testCase.expectedBytes)
+        }
+      }
+    #endif
+  }
+
   @Test func registerPushAndPopMatchInterpreterAcrossTiers() throws {
     #if arch(arm64)
       struct StackCase {

@@ -611,7 +611,6 @@ public struct DoryX86IRTranslator: Sendable {
       }
     case .effectiveAddress(let destination, let address):
       guard case .register(let target) = destination, isJITGeneralRegister(target),
-        address.segment == nil,
         address.addressWidth == .i32 || address.addressWidth == .i64,
         address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8
       else { return false }
@@ -635,7 +634,8 @@ public struct DoryX86IRTranslator: Sendable {
   }
 
   private func isJITMemoryAddress(_ address: DoryIRMemoryAddress) -> Bool {
-    address.segment == nil && (address.addressWidth == .i32 || address.addressWidth == .i64)
+    (address.segment == nil || address.segment == "fs" || address.segment == "gs")
+      && (address.addressWidth == .i32 || address.addressWidth == .i64)
       && (address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8)
       && [address.base, address.index].compactMap { $0 }.allSatisfy {
         isJITGeneralRegister($0) && $0.width == address.addressWidth

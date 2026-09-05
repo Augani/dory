@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-05",
+  "baseCommit": "0c9876425343b9a3675808f769a49dbe7d79508e",
+  "scope": "Native long-mode FS/GS memory addressing and byte/word immediate stores",
+  "sources": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "17702b2fe9c9b4805afa3fa12427704147c3e9a7df56e59fd80547dda7c4a25c",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "48e480a8c81109640affa3e4e605b2f3a9a664805b8c3e3769e0c9621567c550",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "dd5b67e0ccc53d11051f2723c0b0ababcff595b0fbe13f71688124f18569e14d",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64SegmentBaseTests.swift": "36e0acaf11646bcd6d51bd4daa61caf2ee2d9e8925a3d4e11f40157c2f594da8"
+  },
+  "verification": {
+    "focusedTests": {
+      "log": "/private/tmp/dory-gs-hotpath-focused-tests-0905f.log",
+      "sha256": "c04f10c422bb7b9a64302ac7875e2a0fbc89314992bbcd2fd1211ca13e09d42c",
+      "tests": 9,
+      "suites": 2,
+      "result": "passed"
+    },
+    "standaloneHarness": {
+      "source": "/private/tmp/dory-gs-hotpath-harness-0905.swift",
+      "sourceSHA256": "5b03d767a3255943b1837bfd97f02a3375176e67466022e9da58f5f933de06db",
+      "log": "/private/tmp/dory-gs-hotpath-harness-run-0905h.log",
+      "logSHA256": "e4031a7eb8f04387e6f83c72c55305c1e5617a023774228155ae26df2521d1b9",
+      "result": "passed; coordinator independently reran executable"
+    },
+    "coverage": [
+      "FS/GS loads stores and read-modify-write address selection",
+      "32-bit offset wraps before segment-base addition",
+      "LEA ignores segment base",
+      "DS/SS remain ignored in long mode",
+      "protected-mode segmented memory declines native execution",
+      "faulting segmented access preserves architectural state before interpreter fault",
+      "byte/word immediate stores preserve adjacent memory and flags"
+    ]
+  },
+  "guest": {
+    "result": "/private/tmp/dory-pc-gs-hotpath-postlea-compatible-hostclock-0905.151217/host-monotonic/result.json",
+    "sha256": "5e5b571d70802785a6a43f3108ead90257c27c72a7180c11b6016b2d2ed497b6",
+    "runnerSHA256": "8c1d5fbc952075033ef1527319a9be457cbbfaff5ef245ec80d32fa7cb68da64",
+    "cpuProfileIdentifier": "dory.x86_64.compat-v1",
+    "cpuIdentity": "legacyDoryV1",
+    "completedInstructions": 1500000000,
+    "baselineJITInstructions": 1484282980,
+    "interpreterInstructions": 15717020,
+    "instructionPointer": "0xffffffff9ad522b6",
+    "stop": "instructionBudget(1500000000)",
+    "userspaceReached": false
+  },
+  "limits": [
+    "Guest run completed its instruction budget during kernel initialization; no usable boot or matched performance claim.",
+    "The stopped pre-LEA run150701 is excluded.",
+    "Earlier standalone fault harness expected nil from the wrong executor API; final harness and focused tests exercise the machine-used chained API.",
+    "LOCK/CMPXCHG atomic execution remains interpreter-owned.",
+    "Physical x86 reference and release qualification remain open."
+  ]
+}
