@@ -1,0 +1,21 @@
+{
+  "observedAtUTC": "2026-09-05T21:42:51.987015+00:00",
+  "sourceHead": "ea690ea133287e1b5e4b261aa57ee4d857cd0790",
+  "sourceStatus": [],
+  "runnerSHA256": "15dfcb9dd0236384361e5cbbdedb837705fcfdc403ee57f9c5af25a8f96a78b0",
+  "runRoot": "${HOME}/.dory/qualification/pc-production-combined-20260905-212658/run-20260905213513",
+  "processSnapshot": "84261 06:23  99.0 ${HOME}/.dory/qualification/pc-production-combined-20260905-212658/DerivedData/Build/Products/Release/DoryHVRunner.app/Contents/MacOS/dory-hv",
+  "serialOriginalSHA256": "8083b4f9d1bc8e6dfdde13f1d2ca9d5968a5f62b35375abb5a7385158e94118f",
+  "serialPublishedSHA256": "8083b4f9d1bc8e6dfdde13f1d2ca9d5968a5f62b35375abb5a7385158e94118f",
+  "serialArtifact": "combined-jit-post-cpu0-serial.log.gz",
+  "observed": [
+    "Linux reached CPU0 at42.470469 guest seconds, PCI ACPI routing at82.360262, HPET initialization at84.517959 and tsc-early clocksource at84.558204.",
+    "Guest reported hrtimer interrupt took2684956ns at87.270932."
+  ],
+  "scope": "Signed full-system x86_64 production runner with recovered firmware/ESP and one vCPU/1GiB; graphics none, networking disconnected. Engineering progression beyond prior CPU0 stall, not stock installer or release qualification.",
+  "notProven": [
+    "Userspace completion",
+    "Controlled performance improvement",
+    "Graphics/network qualification"
+  ]
+}
