@@ -30,6 +30,8 @@ struct DoryControlPlaneArchitectureTests {
                 return try #require(reference.first as? String)
             })
         }
+        #expect(try #require(graph["DoryVMContracts"]).isEmpty, "VM contracts must remain a leaf target")
+
         func reachableDependencies(_ name: String) throws -> Set<String> {
             var pending = Array(try #require(graph[name]))
             var visited: Set<String> = []
