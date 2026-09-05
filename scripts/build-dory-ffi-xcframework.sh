@@ -11,6 +11,7 @@ GEN="$SWIFT/Sources/DoryCore/generated"
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 STAMP="$ART/.dory-ffi-input.sha256"
+OUTPUT_STAMP="$ART/.dory-ffi-output.sha256"
 
 usage() {
   echo "usage: build-dory-ffi-xcframework.sh [--if-needed]" >&2
@@ -30,7 +31,8 @@ input_fingerprint() {
     cd "$ROOT"
     {
       printf 'rustc=%s\n' "$(rustc --version)"
-      shasum -a 256 dory-core/Cargo.toml dory-core/Cargo.lock
+      shasum -a 256 dory-core/Cargo.toml dory-core/Cargo.lock \
+        scripts/build-dory-ffi-xcframework.sh
       find dory-core/proto dory-core/pb dory-core/dataplane dory-core/remote \
            dory-core/ffi dory-core/sync \
         -type f \( -name '*.rs' -o -name '*.proto' -o -name 'Cargo.toml' -o -name 'build.rs' \) \
@@ -41,12 +43,28 @@ input_fingerprint() {
   )
 }
 
+output_fingerprint() {
+  (
+    cd "$SWIFT"
+    shasum -a 256 \
+      artifacts/DoryFFI.xcframework/Info.plist \
+      artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a \
+      artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h \
+      artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap \
+      Sources/DoryCore/generated/dory_ffi.swift \
+      | shasum -a 256 | awk '{print $1}'
+  )
+}
+
 INPUT_FINGERPRINT="$(input_fingerprint)"
 if [ "$mode" = "if-needed" ] \
    && [ -f "$ART/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a" ] \
    && [ -f "$ART/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h" ] \
    && [ -f "$GEN/dory_ffi.swift" ] \
-   && [ "$(cat "$STAMP" 2>/dev/null || true)" = "$INPUT_FINGERPRINT" ]; then
+   && [ "$(cat "$STAMP" 2>/dev/null || true)" = "$INPUT_FINGERPRINT" ] \
+   && [ -f "$OUTPUT_STAMP" ] \
+   && OUTPUT_FINGERPRINT="$(output_fingerprint 2>/dev/null)" \
+   && [ "$(cat "$OUTPUT_STAMP")" = "$OUTPUT_FINGERPRINT" ]; then
   echo "DoryFFI.xcframework is current ($INPUT_FINGERPRINT)"
   exit 0
 fi
@@ -110,6 +128,8 @@ cp "$WORK/gen/dory_ffi.swift" "$GEN/dory_ffi.swift"
 perl -0pi -e 's/private var initializationResult: InitializationResult = \{/private let initializationResult: InitializationResult = \{/' \
   "$GEN/dory_ffi.swift"
 
+# Publish the cache receipts only after both the framework and Swift bindings are installed.
+output_fingerprint > "$OUTPUT_STAMP"
 printf '%s\n' "$INPUT_FINGERPRINT" > "$STAMP"
 
 echo "done: $ART/DoryFFI.xcframework"
