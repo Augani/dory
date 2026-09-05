@@ -2121,7 +2121,7 @@ import Testing
         .reservedOne,
         [
           .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .sign, .overflow,
-          .trap, .interruptEnable, .direction, .identification,
+          .interruptEnable, .direction, .identification,
         ],
       ]
       let arithmeticFlags: DoryX86RFLAGS = [
@@ -2281,8 +2281,9 @@ import Testing
         ([.zero], []),
         ([], [.zero]),
       ]
+      // TF is handled by the interpreter at the machine boundary, outside native execution.
       let preservedFlags: DoryX86RFLAGS = [
-        .reservedOne, .trap, .interruptEnable, .direction, .identification,
+        .reservedOne, .interruptEnable, .direction, .identification,
       ]
 
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
