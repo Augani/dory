@@ -88,66 +88,37 @@ checkpointed Docker state is Running or Paused but still carries a stale start i
 only clears that marker; the surrounding upstream restore flow still owns any later reconciliation
 for status lookup errors, live-restore shutdown, restart policy, and AutoRemove behavior.
 
-## Proposed pinned static producer
+## Pinned static producer
 
-The producer should live in this vendor directory after review, following the existing
-`guest/initfs/vendor/fex-2607-dory1` convention: a small `rebuild.sh`, a pinned builder definition,
-a package/input inventory, and checked receipts. It should build a complete Docker static tuple, not
-only `dockerd`, so the initfs does not mix a patched daemon with unrelated containerd/runc/helper
-binaries.
-
-Concrete source and input contract:
-
-- clone `https://github.com/moby/moby` at tag object
-  `5259f1f37f10f37594a18eab40604e3e91622fe9` and commit
-  `8ec5ab355a34b2a0e2b3238d67bdefe77fefa982`;
-- apply `patches/docker-start-intent.patch` and reject any extra source diff;
-- use Moby's Dockerfile `all` target, which exports `dockerd`, `docker-proxy`, `containerd`,
-  `containerd-shim-runc-v2`, `ctr`, `runc`, `docker-init`, rootless helpers, and container utility
-  helpers from scratch;
-- override and record the upstream Dockerfile defaults instead of inheriting floating values:
-  `GO_VERSION=1.25.9` to match `go.mod`, `BASE_DEBIAN_DISTRO=bookworm`, `XX_VERSION=1.9.0`,
-  `CONTAINERD_VERSION=v2.2.5`, `RUNC_VERSION=v1.3.6`, `TINI_VERSION=v0.19.0`,
-  `ROOTLESSKIT_VERSION=v3.0.1`, `CRUN_VERSION=1.21`, and
-  `CONTAINERUTILITY_VERSION=aa1ba87e99b68e0113bd27ec26c60b88f9d4ccd9`;
-- pin the builder base images by digest, including `golang:1.25.9-bookworm`,
-  `tonistiigi/xx:1.9.0`, `busybox`, and any source-fetch helper images used by BuildKit;
-- use a Debian snapshot timestamp and package inventory for build packages installed by Moby's
-  Dockerfile stages, then export that inventory beside the binaries;
-- set `SOURCE_DATE_EPOCH` from the Moby source commit timestamp and pass
-  `DOCKER_GITCOMMIT=8ec5ab355a34b2a0e2b3238d67bdefe77fefa982` plus a Dory-local version suffix so
-  `dockerd --version` identifies the patched tuple without pretending to be the upstream tarball.
-
-Review command shape:
+The reviewed producer for this patch lives in this directory:
 
 ```sh
 ./guest/initfs/vendor/docker-29.6.1-dory1/rebuild.sh arm64
 ./guest/initfs/vendor/docker-29.6.1-dory1/rebuild.sh amd64
 ```
 
-Each invocation should run Docker BuildKit against an isolated build context and output a tarball
-with the same top-level `docker/` layout as Docker's static download tarballs, because
-`guest/initfs/build.sh` already installs that shape. The tarball must contain at least:
+The producer records a pre-build input fingerprint for this Dockerfile, rebuild script, patch, PINS, and pinned build constants using root-relative path labels. It refuses to write final candidate files if that fingerprint changes before the final per-file same-filesystem renames. It clones Moby at the exact tag object and commit listed above, applies
+`patches/docker-start-intent.patch`, and builds only the patched `dockerd` through Moby's
+`hack/make.sh binary-daemon` static build path. It then fetches the already pinned upstream Docker
+static tarball from `guest/initfs/PINS`, verifies its SHA-256, replaces only `docker/dockerd`, and
+checks that every other upstream static executable remains byte-for-byte unchanged. This preserves
+Docker CLI, containerd, runc, docker-init, docker-proxy, ctr, and shim binaries from the upstream
+29.6.1 tuple unless a later reviewed change proves one of those binaries also has to change.
 
-- `docker/dockerd`
-- `docker/docker-proxy`
-- `docker/containerd`
-- `docker/containerd-shim-runc-v2`
-- `docker/ctr`
-- `docker/runc`
-- `docker/docker-init`
+The builder is pinned by digest and records its inputs in a receipt beside each generated tarball:
 
-Required producer verification before replacing `guest/initfs/PINS`:
+- `golang:1.25.9-bookworm@sha256:298734aec230b5f3e8cee450ce6d7eccc39f1797ba548ee90d57e9803030c6c3`
+- `tonistiigi/xx:1.9.0@sha256:c64defb9ed5a91eacb37f96ccc3d4cd72521c4bd18d5442905b95e2226b0e707`
+- `debian:12-slim@sha256:88200866dfff7ea7f5cbcb6ec7c8a701889efe6fe859fe64d6990e4b07ea4171` for the Linux `dockerd --version` verification container
+- Debian package snapshot `20260713T000000Z` for the build packages installed in the builder
+- `SOURCE_DATE_EPOCH=1782422754`, derived from the pinned Moby commit timestamp
+- `VERSION=29.6.1-dory1` and
+  `DOCKER_GITCOMMIT=8ec5ab355a34b2a0e2b3238d67bdefe77fefa982-dory-start-intent`
 
-1. unpack each produced tarball and verify every required executable exists, is executable, and
-   reports the expected architecture;
-2. run `file` or `xx-verify --static` equivalents to reject dynamically linked outputs;
-3. run `dockerd --version`, `containerd --version`, `runc --version`, `docker-init --version`, and
-   `docker-proxy --version` inside the matching Linux architecture;
-4. run the focused start-intent test binaries under Linux for both supported architectures;
-5. build an initfs from the candidate tarball and rerun the Dory Docker lifecycle checks, including
-   interrupted start-intent recovery, before updating `docker_arm64` and `docker_amd64` in
-   `guest/initfs/PINS`.
-
-This producer design is intentionally not wired into `guest/initfs/build.sh` or `guest/initfs/PINS`
-yet. The current repository change is only the reviewed source patch and provenance/design record.
+Each generated tarball uses the same top-level `docker/` layout consumed by
+`guest/initfs/build.sh`. The producer verifies required executables, rejects any non-dockerd byte
+change in the upstream tuple, runs `file` on the patched daemon, and executes `dockerd --version`
+inside the matching Linux architecture before writing a receipt, and checks Docker's recorded container exit state for that verification container. If runtime verification is explicitly
+skipped, the receipt records `runtimeVerification.status=skipped`; such an artifact is not eligible
+for production `PINS` replacement until a later run records `passed`. Replacing `guest/initfs/PINS` is a
+separate reviewed step after both architecture artifacts and initfs boot validation are complete.

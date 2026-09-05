@@ -113,6 +113,47 @@ fetch_pin() {
   printf '%s\n' "$path"
 }
 
+docker_static_tarball() {
+  local arch="$1" key="$2" upper path_var sha_var candidate expected actual receipt current_producer_input
+  upper="$(printf '%s' "$arch" | tr '[:lower:]' '[:upper:]')"
+  path_var="DORY_INITFS_DOCKER_TARBALL_${upper}"
+  sha_var="DORY_INITFS_DOCKER_TARBALL_${upper}_SHA256"
+  candidate="${!path_var:-}"
+  if [ -z "$candidate" ]; then
+    fetch_pin "$key"
+    return 0
+  fi
+  expected="${!sha_var:-}"
+  [ -n "$expected" ] || { echo "$path_var requires $sha_var" >&2; exit 64; }
+  [ -f "$candidate" ] || { echo "$path_var does not name a file: $candidate" >&2; exit 64; }
+  actual="$(sha256_file "$candidate")"
+  [ "$actual" = "$expected" ] || { echo "$path_var sha256 mismatch: expected $expected got $actual" >&2; exit 1; }
+  receipt="${candidate%.tgz}.receipt.json"
+  [ -f "$receipt" ] || { echo "Docker override is missing producer receipt: $receipt" >&2; exit 64; }
+  current_producer_input="$("$INITFS_DIR/vendor/docker-29.6.1-dory1/rebuild.sh" input-sha256 "$arch")"
+  python3 - "$receipt" "$arch" "$actual" "$current_producer_input" <<'PY'
+import json
+import pathlib
+import sys
+receipt = pathlib.Path(sys.argv[1])
+arch = sys.argv[2]
+actual = sys.argv[3]
+current_producer_input = sys.argv[4]
+record = json.loads(receipt.read_text(encoding='utf-8'))
+if record.get('arch') != arch:
+    raise SystemExit(f'Docker override receipt arch mismatch: expected {arch}, got {record.get("arch")}')
+if record.get('candidateStaticTarball', {}).get('sha256') != actual:
+    raise SystemExit('Docker override receipt does not match tarball sha256')
+receipt_input = record.get('producer', {}).get('inputSha256')
+if receipt_input != current_producer_input:
+    raise SystemExit(f'Docker override producer input mismatch: receipt {receipt_input}, current {current_producer_input}')
+verification = record.get('runtimeVerification', {})
+if verification.get('status') != 'passed':
+    raise SystemExit(f'Docker override runtime verification is not passed: {verification!r}')
+PY
+  printf '%s\n' "$candidate"
+}
+
 normalize_arch() {
   case "${1:-}" in
     arm64|aarch64) printf '%s\n' arm64 ;;
@@ -533,7 +574,7 @@ build_arch() {
   alpine_key="alpine_$arch"
   docker_key="docker_$arch"
   alpine_tar="$(fetch_pin "$alpine_key")"
-  docker_tar="$(fetch_pin "$docker_key")"
+  docker_tar="$(docker_static_tarball "$arch" "$docker_key")"
   rootfs="$(mktemp -d)"
   ACTIVE_ROOTFS="$rootfs"
   mke2fs="$(find_mke2fs)" || { echo "mke2fs not found; install e2fsprogs or Android platform-tools" >&2; exit 1; }

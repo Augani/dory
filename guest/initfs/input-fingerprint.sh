@@ -24,6 +24,11 @@ INPUTS=(
   guest/initfs/build.sh
   guest/initfs/init
   guest/initfs/PINS
+  guest/initfs/vendor/docker-29.6.1-dory1/Dockerfile
+  guest/initfs/vendor/docker-29.6.1-dory1/LICENSE.Moby
+  guest/initfs/vendor/docker-29.6.1-dory1/README.md
+  guest/initfs/vendor/docker-29.6.1-dory1/patches/docker-start-intent.patch
+  guest/initfs/vendor/docker-29.6.1-dory1/rebuild.sh
   Config/DoryRendererProductionTuple.json
   guest/desktop/install-graphics-pack.sh
   guest/mesa/PINS
@@ -65,6 +70,12 @@ for optional in \
   [ ! -f "$optional" ] || INPUTS+=("$optional")
 done
 
+
+upper="$(printf '%s' "$ARCH" | tr '[:lower:]' '[:upper:]')"
+docker_override_var="DORY_INITFS_DOCKER_TARBALL_${upper}"
+docker_override_sha_var="DORY_INITFS_DOCKER_TARBALL_${upper}_SHA256"
+docker_override_path="${!docker_override_var:-}"
+docker_override_sha="${!docker_override_sha_var:-}"
 if [ "$ARCH" = arm64 ]; then
   INPUTS+=(
     guest/initfs/vendor/fex-2607-dory1/Dockerfile
@@ -114,6 +125,39 @@ fi
   rustc -Vv
   cargo -V
   printf 'linker_sha256=%s\n' "$(shasum -a 256 "$LINKER" | awk '{print $1}')"
+  if [ -n "$docker_override_path" ]; then
+    docker_override_receipt="${docker_override_path%.tgz}.receipt.json"
+    [ -n "$docker_override_sha" ] || { echo "$docker_override_var requires $docker_override_sha_var" >&2; exit 64; }
+    [ -f "$docker_override_path" ] || { echo "$docker_override_var does not name a file: $docker_override_path" >&2; exit 64; }
+    [ -f "$docker_override_receipt" ] || { echo "Docker override is missing producer receipt: $docker_override_receipt" >&2; exit 64; }
+    actual_override_sha="$(shasum -a 256 "$docker_override_path" | awk '{print $1}')"
+    [ "$actual_override_sha" = "$docker_override_sha" ] || { echo "$docker_override_var sha256 mismatch: expected $docker_override_sha got $actual_override_sha" >&2; exit 1; }
+    current_producer_input="$("$ROOT/guest/initfs/vendor/docker-29.6.1-dory1/rebuild.sh" input-sha256 "$ARCH")"
+    python3 - "$docker_override_receipt" "$ARCH" "$actual_override_sha" "$current_producer_input" <<'PY'
+import json
+import pathlib
+import sys
+
+receipt = pathlib.Path(sys.argv[1])
+arch = sys.argv[2]
+actual = sys.argv[3]
+current_input = sys.argv[4]
+record = json.loads(receipt.read_text(encoding="utf-8"))
+if record.get("arch") != arch:
+    raise SystemExit(f"Docker override receipt arch mismatch: expected {arch}, got {record.get('arch')}")
+if record.get("candidateStaticTarball", {}).get("sha256") != actual:
+    raise SystemExit("Docker override receipt does not match tarball sha256")
+receipt_input = record.get("producer", {}).get("inputSha256")
+if receipt_input != current_input:
+    raise SystemExit(f"Docker override producer input mismatch: receipt {receipt_input}, current {current_input}")
+verification = record.get("runtimeVerification", {})
+if verification.get("status") != "passed":
+    raise SystemExit(f"Docker override runtime verification is not passed: {verification!r}")
+PY
+    printf 'docker_override_sha256=%s\n' "$actual_override_sha"
+    printf 'docker_override_producer_input_sha256=%s\n' "$current_producer_input"
+    printf 'docker_override_runtime_verification=passed\n'
+  fi
   for input in "${INPUTS[@]}"; do
     printf 'input=%s\n' "$input"
     shasum -a 256 "$input"
