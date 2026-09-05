@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-05",
+  "scope": "Fresh signed-host MachineManager recovery of actual interrupted native Mac cold stop; not production-factory activation or physical restore qualification",
+  "sources": {
+    "dory-core-swift/Sources/DorydKit/MachineManager.swift": "f6dd934e4533f01c0098ef1efda41c5c226517c38310278b52ef0c4e3915171e",
+    "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift": "719e299d9663abd1798dc4773d9ee3879c58f5ab064daa2c3aadabd6a703aa4e",
+    "dory-core-swift/Tests/DorydKitTests/DoryDaemonNativeMacReleaseActivationQualificationTests.swift": "fe26194a520a9fbffd5d45631404321e55b687b9d4589c0e2db8cd826d688994"
+  },
+  "testedSourceSHA256": {
+    "dory-core-swift/Sources/DorydKit/MachineManager.swift": "f6dd934e4533f01c0098ef1efda41c5c226517c38310278b52ef0c4e3915171e",
+    "dory-core-swift/Tests/DorydKitTests/DoryDaemonNativeMacReleaseActivationQualificationTests.swift": "557bc2ea4f0d3c1dd954c101d786168f14df6c957beb94d5178f7eef03d8d43f",
+    "dory-core-swift/Tests/DorydKitTests/DoryDaemonVirtualMachineProductionTrustTests.swift": "f322a0ece0c1267c27fb9aac2b0becaa2bbedb3300e58f67a46ca4d994f425dd"
+  },
+  "artifacts": {
+    "xctest.log": {
+      "path": "$HOME/.dory/qualification/dory-release-native-mac-recovery-only-20260905153221/xctest.log",
+      "sha256": "cef83c7b55b2330abd3270dda275b8780aa27a6f0c88b3b3804a2bec0ae5c6df"
+    },
+    "evidence/before-ledger.json": {
+      "path": "$HOME/.dory/qualification/dory-release-native-mac-recovery-only-20260905153221/evidence/before-ledger.json",
+      "sha256": "47443a98b1e2e14aca8ae0baf6214cbaddbddf80a0833a39362fbbd943a79360"
+    },
+    "evidence/after-ledger.json": {
+      "path": "$HOME/.dory/qualification/dory-release-native-mac-recovery-only-20260905153221/evidence/after-ledger.json",
+      "sha256": "db764037433780efe5a73679d032597173cfb1d4d3004682cab7e08d22dc4352"
+    },
+    "evidence/recovery-only-receipt.json": {
+      "path": "$HOME/.dory/qualification/dory-release-native-mac-recovery-only-20260905153221/evidence/recovery-only-receipt.json",
+      "sha256": "c5965af725a2748bc6227c8393abf32ede72810da1a20448ed2ed584625e0d07"
+    },
+    "evidence/recovery-only-scope-correction.json": {
+      "path": "$HOME/.dory/qualification/dory-release-native-mac-recovery-only-20260905153221/evidence/recovery-only-scope-correction.json",
+      "sha256": "1a3703903037ba0b0a6a17f7265c12597f7d5ad6be943d121d5288193e96e939"
+    }
+  },
+  "result": {
+    "tests": 1,
+    "failures": 0,
+    "durationSeconds": 0.203,
+    "before": "Native bundle stopped; saved-state manifest present; payload absent; stop journal running/publishing.",
+    "after": "Machine stopped; saved-state wrapper removed; stop journal completed at revision 7."
+  },
+  "finalHarnessValidation": {
+    "log": "/private/tmp/dory-release-native-mac-default-tests-0905am.log",
+    "sha256": "ba0657ffcc1ac6f8b4124fd897e334416f7c97d127bd6bb807513dc205ef108d",
+    "result": "Compile passed; physical test skipped without opt-in.",
+    "changesAfterPhysicalProof": "Added interrupted-state preconditions to prevent vacuous reruns, corrected scope text, removed unused recovery setup plumbing. Production MachineManager hash unchanged."
+  },
+  "limits": [
+    "Original private fixture catalog signing key was not persisted; no production-factory recovery claim. Trust floor was not bypassed.",
+    "Full physical lifecycle last failed during restore with locked-console VZ permission denial; no release qualification.",
+    "The consumed original fixture was not rerun as though it were still interrupted.",
+    "Historical receipt scope correction is retained alongside original bytes."
+  ]
+}

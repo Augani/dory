@@ -2344,6 +2344,19 @@ func makeStoppedProductionTrustFixture() throws -> ProductionTrustFixture {
     try ProductionTrustFixture()
 }
 
+func makeActualVMMProductionTrustFixture(
+    actualVMMExecutablePath: String,
+    gvproxyPath: String,
+    fixtureRoot: URL? = nil
+) throws -> ProductionTrustFixture {
+    try ProductionTrustFixture(
+        actualRawHelperExecutablePath: actualVMMExecutablePath,
+        actualRawHelperGVProxyPath: gvproxyPath,
+        fixtureRootOverride: fixtureRoot,
+        requiresReadyHandoffOverride: true
+    )
+}
+
 /// Source-preserving mutations require the same authenticated ready generation as production.
 /// The signed helper supplies control-plane receipts; it does not qualify a physical guest.
 private func authenticatedProductionTrustFixture() throws -> ProductionTrustFixture {

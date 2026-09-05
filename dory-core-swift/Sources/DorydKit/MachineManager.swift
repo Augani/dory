@@ -7422,6 +7422,82 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    private func discardSavedStateForColdStop(
+        machineID: String,
+        machine: DoryMachineConfiguration,
+        markRecoveryRequired: @escaping () -> Void,
+        afterDurableColdStopTransition: @escaping () throws -> Void
+    ) throws {
+        try Self.discardSavedStateForColdStop(
+            machineID: machineID,
+            machine: machine,
+            stateDirectory: configuration.stateDirectory,
+            savedStateStore: savedStateStore,
+            markRecoveryRequired: markRecoveryRequired,
+            afterDurableColdStopTransition: afterDurableColdStopTransition
+        )
+    }
+
+    private static func discardSavedStateForColdStop(
+        machineID: String,
+        machine: DoryMachineConfiguration,
+        stateDirectory: String,
+        savedStateStore: DoryMachineSavedStateStore,
+        markRecoveryRequired: (() -> Void)? = nil,
+        afterDurableColdStopTransition: (() throws -> Void)? = nil
+    ) throws {
+        let committed = try transitionNativeMacBundleForColdStopIfNeeded(
+            machineID: machineID,
+            machine: machine,
+            stateDirectory: stateDirectory,
+            markRecoveryRequired: markRecoveryRequired
+        )
+        if committed {
+            try afterDurableColdStopTransition?()
+        }
+        try savedStateStore.remove(machineID: machineID)
+    }
+
+    private static func transitionNativeMacBundleForColdStopIfNeeded(
+        machineID: String,
+        machine: DoryMachineConfiguration,
+        stateDirectory: String,
+        markRecoveryRequired: (() -> Void)? = nil
+    ) throws -> Bool {
+        guard machine.guestFamily == .macOS,
+              machine.bootMode == .macOSRestore else { return false }
+        guard machine.id == machineID else {
+            throw MachineManagerError.persistence(
+                "native macOS suspended stop machine authority does not match lifecycle"
+            )
+        }
+        let expectedBundlePath = stateDirectory + "/" + machineID + "/Machine.dorymac"
+        guard let bundlePath = machine.macOSMachineBundlePath,
+              bundlePath == expectedBundlePath else {
+            throw MachineManagerError.persistence(
+                "native macOS suspended stop requires managed bundle authority"
+            )
+        }
+        let bundle = try DoryVZMacMachineBundle.load(
+            from: URL(fileURLWithPath: bundlePath, isDirectory: true)
+        )
+        switch bundle.manifest.installationState {
+        case .suspended:
+            markRecoveryRequired?()
+            let stoppedBundle = try bundle.updatingInstallationState(.stopped)
+            try syncFileAndParentDirectory(path: stoppedBundle.manifestURL.path)
+            return true
+        case .stopped:
+            markRecoveryRequired?()
+            try syncFileAndParentDirectory(path: bundle.manifestURL.path)
+            return true
+        case .prepared, .installing, .installFailed, .suspending, .restoring:
+            throw MachineManagerError.persistence(
+                "native macOS suspended stop found bundle in \(bundle.manifest.installationState.rawValue) state"
+            )
+        }
+    }
+
     private func stopImplementation(
         id: String,
         journalLifecycle: Bool,
@@ -7453,14 +7529,41 @@ public final class MachineManager: @unchecked Sendable {
             ?? requestedOperationID
             ?? entry.activeOperationID
         var stopCommitted = false
+        var suspendedColdStopCommitted = false
         var resumedPausedBackend = false
         do {
             if let lifecycle { try advanceLifecycle(lifecycle) }
             // Stopping a suspended VM means discarding its same-host execution state and
-            // returning to a cold-stopped machine. Retire that authority before publishing the
-            // stopped state so a failed removal leaves the machine truthfully suspended.
+            // returning to a cold-stopped machine. Once the native bundle is marked stopped,
+            // the existing stop journal owns roll-forward if saved-state wrapper removal is
+            // interrupted or fails after partial deletion.
             if wasSuspended {
-                try savedStateStore.remove(machineID: id)
+                try discardSavedStateForColdStop(
+                    machineID: id,
+                    machine: machine,
+                    markRecoveryRequired: { [self] in
+                        suspendedColdStopCommitted = true
+                        self.lock.lock()
+                        if var current = self.machines[id], current.configuration == machine {
+                            current.state = .recovering
+                            current.savedStateStatus = nil
+                            self.setFailure(
+                                on: &current,
+                                code: .lifecycleRecoveryRequired,
+                                message: "native macOS cold stop discard is pending recovery",
+                                causes: [.journal],
+                                recoveryDisposition: .repair
+                            )
+                            self.machines[id] = current
+                        }
+                        self.lock.unlock()
+                    },
+                    afterDurableColdStopTransition: { [self] in
+#if DEBUG
+                        try self.injectLifecycleFault(.nativeMacColdStopAfterBundleStopped)
+#endif
+                    }
+                )
             }
             if entry.state == .paused, let operationID {
                 if let socketPath = entry.handoff?.ready.controlSocketPath,
@@ -7589,6 +7692,23 @@ public final class MachineManager: @unchecked Sendable {
                         code: .resourceAdmissionRejected,
                         message: "machine stopped but resource settlement requires recovery: \(error)",
                         causes: [.resourceAdmission],
+                        recoveryDisposition: .repair
+                    )
+                    machines[id] = current
+                }
+                lock.unlock()
+                throw error
+            }
+            if suspendedColdStopCommitted {
+                lock.lock()
+                if var current = machines[id] {
+                    current.state = .recovering
+                    current.savedStateStatus = nil
+                    setFailure(
+                        on: &current,
+                        code: .lifecycleRecoveryRequired,
+                        message: "native macOS cold stop discard requires daemon recovery: \(error)",
+                        causes: [.journal],
                         recoveryDisposition: .repair
                     )
                     machines[id] = current
@@ -20616,6 +20736,18 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
+    private static func syncFileAndParentDirectory(path: String) throws {
+        let descriptor = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW)
+        guard descriptor >= 0 else {
+            throw MachineManagerError.persistence("could not open metadata file for sync")
+        }
+        defer { close(descriptor) }
+        guard fsync(descriptor) == 0 else {
+            throw MachineManagerError.persistence("could not sync metadata file")
+        }
+        try syncDirectory(path: URL(fileURLWithPath: path).deletingLastPathComponent().path)
+    }
+
     private static func writeDurablePrivateData(_ data: Data, toPath path: String) throws {
         let descriptor = open(
             path,
@@ -22583,12 +22715,9 @@ public final class MachineManager: @unchecked Sendable {
                         configuration: configuration
                     ) {
                         if operation.source.state == .suspended {
-                            try DoryMachineSavedStateStore(
-                                root: configuration.stateDirectory
-                            ).remove(machineID: id)
+                            try discardRecoveredSavedStateForColdStop(machineID: id, configuration: configuration)
                         }
                         try completeRecoveredLifecycle(lease)
-                        diagnostics[id] = "interrupted stop completed during daemon recovery"
                     } else {
                         try failRecoveredLifecycle(lease, rolledBack: false)
                         diagnostics[id] = "interrupted stop authority changed; recovery failed closed"
@@ -22786,6 +22915,27 @@ public final class MachineManager: @unchecked Sendable {
         case .competitorImport, .driveBackup, .driveRestore, .driveRelocation, .driveUpgrade:
             false
         }
+    }
+
+    private static func discardRecoveredSavedStateForColdStop(
+        machineID: String,
+        configuration: MachineManagerConfiguration
+    ) throws {
+        let machinePath = "\(configuration.stateDirectory)/\(machineID)/machine.json"
+        guard let data = readPrivateMetadata(path: machinePath),
+              let machine = try? JSONDecoder().decode(DoryMachineConfiguration.self, from: data) else {
+            throw MachineManagerError.persistence(
+                "interrupted native macOS stop has no machine authority"
+            )
+        }
+        try discardSavedStateForColdStop(
+            machineID: machineID,
+            machine: machine,
+            stateDirectory: configuration.stateDirectory,
+            savedStateStore: DoryMachineSavedStateStore(root: configuration.stateDirectory),
+            markRecoveryRequired: nil,
+            afterDurableColdStopTransition: nil
+        )
     }
 
     private static func recoveredSavedState(
@@ -24122,6 +24272,7 @@ enum MachineLifecycleFaultPoint: Sendable, Equatable {
     case restartBeforeStop
     case configurationUpdateBeforeStop
     case stopAfterCancellationRequest
+    case nativeMacColdStopAfterBundleStopped
     case configurationUpdateAfterMetadata
     case configurationUpdateAfterWorkspace
     case installerAfterFirmwareCheckpoint
