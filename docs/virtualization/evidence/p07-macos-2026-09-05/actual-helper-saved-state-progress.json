@@ -26,5 +26,17 @@
     "Identify restore denial by comparing actual helper and working qualifier configuration/file authority.",
     "Verify successful real restore and subsequent save.",
     "Compose successful helper lifecycle with production MachineManager authority."
-  ]
+  ],
+  "restore_failure_diagnosis": {
+    "timestamp": "2026-09-05 05:14:29.333",
+    "virtualization_service_pid": 59473,
+    "operation": "SecKeyCreateDecryptedDataWithParameters",
+    "error_domain": "NSOSStatusErrorDomain",
+    "error_code": -25308,
+    "aks_error": -536870174,
+    "detail": "Unable to compute shared secret",
+    "log_sha256": "d2df3c9c82fcfd09c15fed8cec46f7b30673cf7e82b235c7673a34a4754c876b",
+    "scope": "The delayed no-rename diagnostic also fails. Service log identifies key decryption failure; filesystem mode or filename is not established as cause.",
+    "next": "Compare signed helper identity, security context and saved-state key access with working qualifier; preserve keychain and file protections."
+  }
 }
