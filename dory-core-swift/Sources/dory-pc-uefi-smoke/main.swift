@@ -236,7 +236,14 @@ private func loadArtifacts(from bundle: URL) throws -> DoryVerifiedFirmwareArtif
 private func hexadecimal(_ value: UInt64) -> String { String(format: "0x%016llx", value) }
 
 private func hexadecimalBytes(_ bytes: [UInt8]) -> String {
-  bytes.map { String(format: "%02x", $0) }.joined()
+  let digits: [UInt8] = Array("0123456789abcdef".utf8)
+  var encoded = [UInt8]()
+  encoded.reserveCapacity(bytes.count * 2)
+  for byte in bytes {
+    encoded.append(digits[Int(byte >> 4)])
+    encoded.append(digits[Int(byte & 0x0F)])
+  }
+  return String(decoding: encoded, as: UTF8.self)
 }
 
 private func sha256<T: Encodable>(of value: T) throws -> String {

@@ -1,0 +1,25 @@
+{
+  "scope": "Diagnostic trace formatting only; not product VM performance",
+  "motivation": "Live diagnostic sample at PID45699:32 of61 main-thread samples in runWithProgress\u2192hexadecimalBytes, including per-byte Foundation formatting.",
+  "sample": "/private/tmp/dory-root-clock-diagnostic-sample-0905.txt",
+  "validation": "Optimized Swift harness compares old/new formatting for lengths0,1,15,16,256,4096 including every byte value; five interleaved rounds of20000 15-byte conversions. Exact output parity passed.",
+  "benchmarkLog": "/private/tmp/dory-root-hex-format-0905.log",
+  "benchmarkLogSHA256": "ff0e8d2c539aa1f9183c94e3744b3a7221c7c20d87cad671df91537cd2862f4f",
+  "observedNanoseconds": {
+    "reference": [
+      263915250,
+      260506792,
+      261600750,
+      262272250,
+      261909541
+    ],
+    "candidate": [
+      3232000,
+      3237542,
+      3268125,
+      3341792,
+      3328250
+    ]
+  },
+  "remaining": "Tracing still perturbs guest timing; use untraced product runs for qualification."
+}
