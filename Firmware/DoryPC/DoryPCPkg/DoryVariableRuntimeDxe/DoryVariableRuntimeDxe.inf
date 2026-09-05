@@ -25,6 +25,7 @@
   UefiRuntimeLib
 
 [Protocols]
+  gEfiCpuArchProtocolGuid            ## CONSUMES
   gEfiVariableArchProtocolGuid       ## PRODUCES
   gEfiVariableWriteArchProtocolGuid  ## PRODUCES
 
@@ -36,4 +37,4 @@
   gDoryPCTokenSpaceGuid.PcdVariableBridgeSize
 
 [Depex]
-  TRUE
+  gEfiCpuArchProtocolGuid

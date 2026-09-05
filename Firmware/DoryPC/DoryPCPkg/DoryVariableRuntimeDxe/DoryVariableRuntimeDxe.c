@@ -734,13 +734,23 @@ ConfigureRuntimeMemory (
     if (EFI_ERROR (Status)) {
       return Status;
     }
+
+    Status = gDS->GetMemorySpaceDescriptor (Base, &Descriptor);
+    if (EFI_ERROR (Status)) {
+      return Status;
+    }
   }
 
-  return gDS->SetMemorySpaceAttributes (
-                Base,
-                Size,
-                EFI_MEMORY_UC | EFI_MEMORY_RUNTIME
-                );
+  if (Descriptor.GcdMemoryType != EfiGcdMemoryTypeMemoryMappedIo) {
+    return EFI_UNSUPPORTED;
+  }
+
+  Status = gDS->SetMemorySpaceAttributes (
+                  Base,
+                  Size,
+                  Descriptor.Attributes | EFI_MEMORY_RUNTIME
+                  );
+  return Status;
 }
 
 EFI_STATUS

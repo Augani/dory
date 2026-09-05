@@ -1,0 +1,25 @@
+{
+  "date": "2026-09-05",
+  "scope": "Clean DoryPC firmware variable runtime driver initialization; firmware-only probe",
+  "cause": "APRIORI bypassed CPU protocol dependency; requesting UC cache attributes fails on this virtual CPU without MTRRs. Entry returned before installing runtime variable services.",
+  "fix": [
+    "Dispatch after CPU architectural protocol",
+    "Preserve existing GCD memory attributes and add EFI_MEMORY_RUNTIME",
+    "Require bridge descriptor to be MMIO after registration"
+  ],
+  "firmwareBundle": "/private/tmp/dory-pc-firmware-variable-production-fix-20260905085913",
+  "firmwareSHA256": "6ab76a5737145ad56948018c140a350e08f9076e0b902ad81b8c389bc3a3c4ed",
+  "probe": {
+    "path": "/private/tmp/dory-pc-variable-production-fix-probe-20260905090152/probe.json",
+    "sha256": "f1b37328a8fe966e88273fa85646e9757fce5a5499d448c3f83de0d3104c212c",
+    "completedInstructions": 55310527,
+    "serialMarkerMatched": true,
+    "serialDroppedBytes": 0,
+    "serialOutput": "\u001b[2J\u001b[004D\u001b[=3h\u001b[2J\u001b[009D\u001b[2J\u001b[004D\u001b[8;056;240t\u001b[2J\u001b[016D\u001b[2J\u001b[004D\u001b[=3h\u001b[2J\u001b[009D\u001b[2J\u001b[004D\u001b[8;042;160t\u001b[2J\u001b[016DDORY-PC-UEFI-RUNTIME GetVariable=0x000000003f7eb072 memType=0x0000000000000005 phys=0x000000003f7e6000 virt=0x0000000000000000 pages=0x0000000000000007 attr=0x800000000000000f imageBase=0x000000003f7ea000 imageSize=0x0000000000003000 codeType=0x0000000000000005 dataType=0x0000000000000006\r\nDORY-PC-UEFI-RUNTIME SetVariable=0x000000003f7eb4ec memType=0x0000000000000005 phys=0x000000003f7e6000 virt=0x0000000000000000 pages=0x0000000000000007 attr=0x800000000000000f imageBase=0x000000003f7ea000 imageSize=0x0000000000003000 codeType=0x0000000000000005 dataType=0x0000000000000006\r\nDORY-PC-UEFI-RUNTIME GetNextVariableName=0x000000003f7eb165 memType=0x0000000000000005 phys=0x000000003f7e6000 virt=0x0000000000000000 pages=0x0000000000000007 attr=0x800000000000000f imageBase=0x000000003f7ea000 imageSize=0x0000000000003000 codeType=0x0000000000000005 dataType=0x0000000000000006\r\nDORY-PC-UEFI-RUNTIME QueryVariableInfo=0x000000003f7eb707 memType=0x0000000000000005 phys=0x000000003f7e6000 virt=0x0000000000000000 pages=0x0000000000000007 attr=0x800000000000000f imageBase=0x000000003f7ea000 imageSize=0x0000000000003000 codeType=0x0000000000000005 dataType=0x0000000000000006\r\nDORY-PC-UEFI-RUNTIME ResetSystem=0x000000003f894124 memType=0x0000000000000005 phys=0x000000003f893000 virt=0x0000000000000000 pages=0x0000000000000004 attr=0x800000000000000f imageBase=0x000000003f893000 imageSize=0x0000000000004000 codeType=0x0000000000000005 dataType=0x0000000000000006\r\nDORY-PC-UEFI-BOOT\r\n"
+  },
+  "review": "Coordinator independently inspected source diff and probe JSON/hash. Transient entry instrumentation removed. Clean firmware build and probe exited zero.",
+  "limits": [
+    "Does not yet qualify Linux EFI virtual-address transition or runtime variable calls after ExitBootServices",
+    "Does not qualify installed Linux desktop or GPU"
+  ]
+}
