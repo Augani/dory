@@ -93,7 +93,7 @@ public enum DorydXPCSecurity {
         }
         return SecCodeCheckValidity(
             code,
-            SecCSFlags(rawValue: kSecCSCheckAllArchitectures),
+            SecCSFlags(),
             requirement
         ) == errSecSuccess
     }

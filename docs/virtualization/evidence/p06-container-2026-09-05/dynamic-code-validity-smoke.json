@@ -1,0 +1,34 @@
+{
+  "schema": "dory.dynamic-code-validity-smoke@1",
+  "source": "dory-core-swift/Sources/DorydKit/DorydXPCSecurity.swift",
+  "sourceSHA256": "47a16a0fd7feb1560ffdd2f7a432dbee924559a936d199266a7a5531c67de412",
+  "method": "Compile the actual production Swift source with a private executable that prints currentProcessSatisfiesProductionDaemonRequirement; sign and launch each variant.",
+  "results": [
+    {
+      "signature": "Developer ID, production team, identifier doryd",
+      "accepted": true,
+      "binarySHA256": "51bf566a6cdff94b9dd1920d72528e7250fa441d26ffdb5ea0b1d6d586f1e8ab"
+    },
+    {
+      "signature": "Same Developer ID, identifier dev.dory.wrong-identity",
+      "accepted": false,
+      "binarySHA256": "5481bc85ec50a4eec1074ea7073200c1ff9ab434125838e75a0a3eb7779a978d"
+    },
+    {
+      "signature": "Ad hoc, identifier doryd",
+      "accepted": false,
+      "binarySHA256": "b6495befab03c4ed554e20c4eb6cdefb9cb0161aa911b6b10fcf3f018b96d237"
+    }
+  ],
+  "apiRegression": {
+    "SecCodeCheckValidity_with_kSecCSCheckAllArchitectures": -67070,
+    "error": "invalid or inappropriate API flag(s) specified",
+    "SecCodeCheckValidity_with_kSecCSDefaultFlags": 0
+  },
+  "signedCarrierProbe": {
+    "method": "Developer ID hardened-runtime executable with __TEXT,__info_plist; live validity followed by SecCodeCopySigningInformation kSecCodeInfoPList",
+    "result": "signed-carrier=pass",
+    "binarySHA256": "c1c6f6631e83a8b88e5970f144a1c4c195656d2918e375dde7f471ef2539fdd7"
+  },
+  "scope": "Live code-signature API regression and signed carrier feasibility only. Production renderer carrier migration and GPU guest compute remain unverified."
+}
