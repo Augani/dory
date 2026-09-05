@@ -11,6 +11,23 @@ import Testing
       initialBARAddress: 0xD000_1000,
       source: source
     )
+    // Walk the advertised PCI chain as a modern guest does before accepting this RNG.
+    var capability = Int(try entropy.readConfiguration(offset: 0x34, byteCount: 1)[0])
+    var visited = Set<Int>()
+    var virtioTypes: [UInt8] = []
+    while capability != 0 {
+      try #require(visited.insert(capability).inserted)
+      let header = try entropy.readConfiguration(offset: capability, byteCount: 4)
+      if header[0] == 0x09 {
+        let regionLength = read32(
+          try entropy.readConfiguration(offset: capability + 12, byteCount: 4))
+        #expect(regionLength > 0)
+        virtioTypes.append(header[3])
+      }
+      capability = Int(header[1])
+    }
+    #expect(virtioTypes == [1, 2, 3])
+
     let machine = try DoryPCDirectKernelMachine(
       memoryBytes: 2 * 1024 * 1024,
       pciFunctions: [entropy]

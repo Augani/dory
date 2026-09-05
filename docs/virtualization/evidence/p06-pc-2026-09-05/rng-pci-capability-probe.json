@@ -1,0 +1,25 @@
+{
+  "date": "2026-09-05",
+  "scope": "PC virtio RNG PCI probe rejection",
+  "observedFailure": [
+    "[  142.855479] virtio-pci 0000:00:09.0: virtio_pci: bad capability len 0 (>0 expected)",
+    "[  142.895329] virtio-pci 0000:00:09.0: probe with driver virtio-pci failed with error -22"
+  ],
+  "bootReceipt": {
+    "path": "/private/tmp/dory-pc-full-linux-runtime-fix-20260905090507/smoke-baseline-jit-normal-efi-3b.json",
+    "sha256": "6aeb26bf3f9be13790a4819d20c8968c298b2f4a01c96ca40c4a6bfea1103838"
+  },
+  "cause": "Common PCI capability builder advertised a device-specific region of length zero for virtio-rng, which has no such configuration. Linux rejects the region during modern PCI probe.",
+  "fix": "Omit the device-specific capability for empty configurations and terminate the preceding ISR capability link. Non-empty device configurations retain the existing capability.",
+  "specification": "https://docs.oasis-open.org/virtio/virtio/v1.3/virtio-v1.3.html",
+  "validation": {
+    "result": "11 tests in2suites passed",
+    "log": "/tmp/dory-root-pc-rng-capability-debug-tests-0905.log",
+    "coverage": "RNG test traverses full advertised PCI chain, rejects zero-length regions, then exercises real entropy transfer and MSI. Existing non-empty configuration capability and transport tests pass.",
+    "releaseBuild": "Updated release smoke runner built; release test bundle compile exposed existing unguarded DEBUG-only journal test call."
+  },
+  "limits": [
+    "Full Linux RNG probe rerun pending",
+    "No claim of cryptographic entropy quality from deterministic test source"
+  ]
+}

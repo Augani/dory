@@ -1270,15 +1270,21 @@ public final class DoryPCVirtioPCIFunction: DoryPCPCIFunction, DoryPCPCIMSIContr
     addCapability(at: 0x70, next: 0x80, type: 1, offset: 0, length: 0x40, to: &result)
     addCapability(
       at: 0x80, next: 0x94, type: 2, offset: 0x100, length: 0x100, to: &result, notify: true)
-    addCapability(at: 0x94, next: 0xA4, type: 3, offset: 0x200, length: 1, to: &result)
     addCapability(
-      at: 0xA4,
-      next: 0,
-      type: 4,
-      offset: 0x300,
-      length: UInt32(deviceConfigurationLength),
-      to: &result
-    )
+      at: 0x94, next: deviceConfigurationLength > 0 ? 0xA4 : 0,
+      type: 3, offset: 0x200, length: 1, to: &result)
+    // Devices such as virtio-rng have no device-specific configuration region.
+    // Advertising an empty region causes Linux's modern PCI probe to reject the device.
+    if deviceConfigurationLength > 0 {
+      addCapability(
+        at: 0xA4,
+        next: 0,
+        type: 4,
+        offset: 0x300,
+        length: UInt32(deviceConfigurationLength),
+        to: &result
+      )
+    }
     return result
   }
 
