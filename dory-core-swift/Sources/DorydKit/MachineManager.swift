@@ -17957,13 +17957,6 @@ public final class MachineManager: @unchecked Sendable {
         }
     }
 
-    private static func isX86GuestArchitecture(_ value: String) -> Bool {
-        switch value.lowercased() {
-        case "amd64", "x86_64": true
-        default: false
-        }
-    }
-
     private static func normalizedGuestArchitecture(_ value: String) -> String? {
         switch value.lowercased() {
         case "arm64", "aarch64": DoryGuestArchitecture.arm64.rawValue
