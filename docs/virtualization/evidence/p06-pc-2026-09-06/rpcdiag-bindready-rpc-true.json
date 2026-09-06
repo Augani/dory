@@ -1,0 +1,72 @@
+{
+  "receiptType": "pc-x86-rpcdiag-bindready-rpc-true",
+  "createdAt": "2026-09-06T13:10:00Z",
+  "sourceCommit": "051c97f25b4ae803b6e8f20963b3c6e7f418eaee",
+  "runPath": "pc-production-051c97f25-20260906/run-optimizing-tier-051c-rpcdiag-direct-bindready",
+  "runner": {
+    "app": "DerivedData-PC-051c97f25-20260906/Build/Products/Release/DoryHVRunner.app",
+    "doryHVSHA256": "3a17fa39b487021613e0da558ca757c06e508540d0ea51156c27de7008738e88",
+    "executionTier": "optimizing-jit",
+    "memoryMB": 1024,
+    "virtualCPUCount": 1
+  },
+  "envelope": {
+    "envelopeSHA256": "4c22c9ec67ef938212ea47c4eb7124197bfed616cf54f3b663f9c0511652f177",
+    "machineID": "pc-rpcdiag-94c-81a6ae8e7a34",
+    "operationID": "C60B3366-060D-473D-84CB-A67EF8A31CB7"
+  },
+  "guestArtifacts": {
+    "instrumentedAgentSHA256": "858efbe3be8a4cde88df6a5959fb8d7f34c19ecb0ffe14c98af8ec8125eaaa44",
+    "agentBuild": "dory-agent/0.0.0",
+    "agentProtoVersion": 1,
+    "systemDiskSHA256": "d3828177e8e209c7d515d8f2d67571afaa112c9d172894f7feef8ce1bce12a6d"
+  },
+  "bootEvidence": {
+    "kernelVersion": "Linux 6.12.106-dory x86_64",
+    "reachedSbinInit": true,
+    "bootScriptStart": true,
+    "serialTrueExitCode": 0,
+    "vsockDevicePresent": true,
+    "virtioVsockDeviceID": "0x0019",
+    "agentBytesMarker": true,
+    "agentExecDirect": true,
+    "agentMainStart": true,
+    "vsockRunStart": true
+  },
+  "bindReadyEvidence": {
+    "controlBindReady": true,
+    "dockerBindReady": true,
+    "shellBindReady": true,
+    "fseventsBindReady": true
+  },
+  "handshakeEvidence": {
+    "hostHelloSucceeded": true,
+    "peerBuild": "dory-agent/0.0.0",
+    "peerProtoVersion": 1,
+    "peerFrameLength": 20,
+    "handshakeDurationSeconds": 16.542
+  },
+  "rpcEvidence": {
+    "command": "/bin/true",
+    "exitCode": 0,
+    "returncode": 0,
+    "timedOut": false,
+    "rpcDurationSeconds": 218.725,
+    "stdout": "",
+    "stderr": "",
+    "calibrationToolTimeoutMs": 300000
+  },
+  "vmTermination": {
+    "action": "terminate",
+    "returncode": 0
+  },
+  "fixesApplied": {
+    "handshakeDeadlineIncrease": "HANDSHAKE_DEADLINE increased from 10s to 120s in dory-core/remote/src/agent_client.rs to accommodate translated x86 guest latency",
+    "ffiRebuild": "FFI library rebuilt from HEAD with handshake timeout fix",
+    "calibrationToolRebuild": "dory-linux-calibration rebuilt with updated FFI library",
+    "variableStoreReset": "Cleared stale generation-38 variable store to reinitialize from generation-1 template",
+    "systemDiskPermissions": "Set system-disk.img to 0600 to satisfy DoryPC block authority permission check"
+  },
+  "qualification": "preview/developer-ID evidence; not production release qualification",
+  "notes": "First successful end-to-end x86 guest-agent RPC at HEAD. The guest-agent handshake completed in 16.5s under optimizing-JIT translation. The /bin/true RPC completed in 218.7s. The 120s handshake deadline is sufficient for translated x86 guests while the previous 10s deadline was not."
+}
