@@ -1,0 +1,19 @@
+{
+  "scope": "Native 64-bit register ROR immediate lowering, reusing existing rotate emitter and flags path",
+  "motivation": "Live frozen fc82 PC boot repeatedly falls back for 49c1cb09 and 48c1c902; bounded profile excerpt retained.",
+  "validation": {
+    "filter": "kernelHashMultiplyAndRotateMatchInterpreterAcrossTiers|DoryX86ScalarShiftBoundaryTests",
+    "exitCode": 0,
+    "tests": 8,
+    "suites": 2,
+    "rotateComparisons": 144,
+    "matrix": "ROL and ROR; baseline and optimizing; four values; counts 0,1,2,9,31,63,64,65,255; complete architectural state comparison against interpreter",
+    "logSHA256": "4246c9805e2c542723beb51f5117567a6134c52fbc2fe174c279f01cb2c4e3dd"
+  },
+  "limits": [
+    "No physical VM performance claim; current live runner does not contain this change.",
+    "Only 64-bit register immediate rotates are admitted; narrow, memory, CL and carry rotates retain prior fallback.",
+    "Interpreter differential checks do not replace independent x86 hardware reference qualification."
+  ],
+  "profileSHA256": "046984a35c0091dba78d7a76872534d6ad7e2c7724a7280a44a2dd9d027da95f"
+}

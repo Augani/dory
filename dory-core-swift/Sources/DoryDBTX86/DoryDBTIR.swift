@@ -62,7 +62,7 @@ public enum DoryIRUnaryOperation: String, Codable, Sendable, Hashable {
 }
 
 public enum DoryIRShiftOperation: String, Codable, Sendable, Hashable {
-  case left, logicalRight, arithmeticRight, rotateLeft
+  case left, logicalRight, arithmeticRight, rotateLeft, rotateRight
 }
 
 public enum DoryIRShiftCount: Codable, Sendable, Hashable {
@@ -315,6 +315,7 @@ public struct DoryX86IRTranslator: Sendable {
       case .shiftRight: loweredOperation = .logicalRight
       case .arithmeticShiftRight: loweredOperation = .arithmeticRight
       case .rotateLeft: loweredOperation = .rotateLeft
+      case .rotateRight: loweredOperation = .rotateRight
       default: return fallback(instruction, reason: .interpreter)
       }
       let loweredCount: DoryIRShiftCount =
@@ -774,7 +775,7 @@ public struct DoryX86IRTranslator: Sendable {
       }
     case .shift(let operation, let destination, let count):
       guard case .register(let register) = destination else { return false }
-      if operation == .rotateLeft {
+      if operation == .rotateLeft || operation == .rotateRight {
         guard register.width == .i64, case .immediate = count else { return false }
       }
       return isJITGeneralRegister(register)

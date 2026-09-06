@@ -1204,7 +1204,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     else { return false }
     let is64Bit = target.width == .i64
     let bitCount: UInt32 = is64Bit ? 64 : 32
-    if operation == .rotateLeft {
+    if operation == .rotateLeft || operation == .rotateRight {
       guard is64Bit else { return false }
       guard case .immediate(let rawCount) = countSource else { return false }
       let count = UInt32(rawCount) & 0x3f
@@ -1212,10 +1212,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
       words.append(
         encodeRotateRightImmediate64(
           value: 9,
-          amount: bitCount - count,
+          amount: operation == .rotateLeft ? bitCount - count : count,
           destination: 11
         ))
       emitRotateFlags(
+        operation,
         bitCount: bitCount,
         count: count,
         result: 11,
@@ -1260,6 +1261,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
   }
 
   private func emitRotateFlags(
+    _ operation: DoryIRShiftOperation,
     bitCount: UInt32,
     count: UInt32,
     result: UInt32,
@@ -1271,7 +1273,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
         is64Bit: true,
         left: 31,
         right: result,
-        shiftAmount: 0,
+        shiftAmount: operation == .rotateLeft ? 0 : bitCount - 1,
         logicalRightShift: true,
         destination: 13
       ))
@@ -1288,7 +1290,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
           is64Bit: true,
           left: 31,
           right: result,
-          shiftAmount: bitCount - 1,
+          shiftAmount: operation == .rotateLeft ? bitCount - 1 : bitCount - 2,
           logicalRightShift: true,
           destination: 14
         ))
@@ -1431,8 +1433,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       words.append(encodeLogical(.and, left: 14, right: 15, destination: 14))
     case .arithmeticRight:
       emitImmediate(0, register: 14, into: &words)
-    case .rotateLeft:
-      preconditionFailure("rotate-left uses dedicated flag lowering")
+    case .rotateLeft, .rotateRight:
+      preconditionFailure("rotate uses dedicated flag lowering")
     }
     emitImmediate(~DoryX86RFLAGS.overflow.rawValue, register: 15, into: &words)
     words.append(encodeLogical(.and, left: 12, right: 15, destination: 12))
@@ -1539,8 +1541,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
           ))
       case .arithmeticRight:
         emitImmediate(0, register: 14, into: &words)
-      case .rotateLeft:
-        preconditionFailure("rotate-left uses dedicated flag lowering")
+      case .rotateLeft, .rotateRight:
+        preconditionFailure("rotate uses dedicated flag lowering")
       }
       words.append(encodeLogical(.or, left: 13, right: 14, shiftAmount: 11, destination: 13))
     }
@@ -2643,7 +2645,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       case (.logicalRight, true): 0x9AC0_2400
       case (.arithmeticRight, false): 0x1AC0_2800
       case (.arithmeticRight, true): 0x9AC0_2800
-      case (.rotateLeft, _): preconditionFailure("rotate-left count must be normalized")
+      case (.rotateLeft, _), (.rotateRight, _):
+        preconditionFailure("rotate uses immediate lowering")
       }
     return base | count << 16 | value << 5 | destination
   }

@@ -3494,38 +3494,40 @@ import Testing
           #expect(translated == interpreted)
         }
 
-        for count in [UInt8(0), 1, 2, 31, 63, 64, 65, 255] {
-          for value in rotateValues {
-            let bytes: [UInt8] = [0x48, 0xC1, 0xC2, count]  // rol rdx,imm8
-            var interpreted = try DoryX86ArchitecturalState(
-              registers: .init(rdx: value),
-              rip: 0,
-              rflags: initialFlags
-            )
-            _ = DoryX86Interpreter().step(
-              state: &interpreted,
-              memory: try DoryX86ByteArrayMemory(bytes: bytes),
-              mode: .long64
-            )
-
-            var translated = try DoryX86ArchitecturalState(
-              registers: .init(rdx: value),
-              rip: 0,
-              rflags: initialFlags
-            )
-            let execution = try #require(
-              executor.execute(
-                bytes: bytes,
-                at: 0,
-                mode: .long64,
-                addressSpaceID: 0,
-                maximumInstructions: 1,
-                state: &translated
+        for opcode: UInt8 in [0xC2, 0xCA] {
+          for count in [UInt8(0), 1, 2, 9, 31, 63, 64, 65, 255] {
+            for value in rotateValues {
+              let bytes: [UInt8] = [0x48, 0xC1, opcode, count]  // rol/ror rdx,imm8
+              var interpreted = try DoryX86ArchitecturalState(
+                registers: .init(rdx: value),
+                rip: 0,
+                rflags: initialFlags
               )
-            )
+              _ = DoryX86Interpreter().step(
+                state: &interpreted,
+                memory: try DoryX86ByteArrayMemory(bytes: bytes),
+                mode: .long64
+              )
 
-            #expect(execution.block.tier.rawValue == optimization.rawValue)
-            #expect(translated == interpreted)
+              var translated = try DoryX86ArchitecturalState(
+                registers: .init(rdx: value),
+                rip: 0,
+                rflags: initialFlags
+              )
+              let execution = try #require(
+                executor.execute(
+                  bytes: bytes,
+                  at: 0,
+                  mode: .long64,
+                  addressSpaceID: 0,
+                  maximumInstructions: 1,
+                  state: &translated
+                )
+              )
+
+              #expect(execution.block.tier.rawValue == optimization.rawValue)
+              #expect(translated == interpreted)
+            }
           }
         }
       }
