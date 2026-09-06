@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 1,
+  "baseHEAD": "db84eefa821c0516f22248293150cd7280ff3bc3",
+  "scope": "Native non-LOCK 16-bit memory ADD/SUB with immediate or register source, shared existing narrow flag synthesis and restartable memory callbacks.",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "5bb8a57c19ef748e650ee1cc0da492c1935cb79046a64d843a722415df188726",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "800fc874fc9e7bc56e8453667656eb0b30214554e8e44b625274075915a08d9c",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "32ac200df298642912e9876d68f86d849c41b63c493db5984392a6112e69b1f3"
+  },
+  "validation": {
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path dory-core-swift --filter 'wordMemoryArithmeticMatchesInterpreterAndPreservesFaultState|DoryWordRegisterCompareTests|DoryJITWordMemoryCompareTests|byteMemoryOrMatchesInterpreterAndPreservesFaultState' --jobs 2",
+    "exitCode": 0,
+    "testsPassed": 6,
+    "newInterpreterComparisons": 252,
+    "newFaultCases": 36,
+    "logSHA256": "896fc62fca198290fa2a12c4a15bc68a35fa8585147592f5457899e462dca134"
+  },
+  "measuredTrigger": {
+    "encodings": [
+      "6683447c5801",
+      "66836c745801"
+    ],
+    "retainedProfile": "native-word-memory-add-sub-profile.txt"
+  },
+  "limitations": [
+    "The current immutable VM artifact does not include this change.",
+    "No physical VM speedup or complete boot qualification claim."
+  ]
+}

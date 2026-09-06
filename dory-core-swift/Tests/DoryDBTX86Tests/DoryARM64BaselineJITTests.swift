@@ -1955,6 +1955,74 @@ import Testing
     #endif
   }
 
+  @Test func wordMemoryArithmeticMatchesInterpreterAndPreservesFaultState() throws {
+    #if arch(arm64)
+    let encodings: [[UInt8]] = [
+      [0x66, 0x83, 0x44, 0x7C, 0x58, 0x01], // measured add [rsp+rdi*2+0x58],1
+      [0x66, 0x83, 0x6C, 0x74, 0x58, 0x01], // measured sub [rsp+rsi*2+0x58],1
+      [0x66, 0x83, 0x02, 0xFF],             // add word [rdx],-1
+      [0x66, 0x83, 0x2A, 0xFF],             // sub word [rdx],-1
+      [0x66, 0x01, 0x1A],                   // add word [rdx],bx
+      [0x66, 0x44, 0x29, 0x0A],             // sub word [rdx],r9w
+    ]
+    let values: [UInt64] = [0, 1, 0xF, 0x10, 0x7FFF, 0x8000, 0xFFFF]
+    for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 64 * 1024, optimization: optimization)
+      for (index, bytes) in encodings.enumerated() {
+        for value in values {
+          for source in index < 4 ? [UInt64(0)] : values {
+            let reference = try DoryX86ByteArrayMemory(byteCount: 512)
+            let native = try DoryX86ByteArrayMemory(byteCount: 512)
+            for memory in [reference, native] {
+              try memory.write(at: 0, bytes: bytes)
+              try memory.write(at: 255, bytes: [0xAA, 0, 0, 0x55])
+              try memory.writeScalar(at: 256, value: value, byteCount: 2)
+            }
+            var interpreted = try DoryX86ArchitecturalState(
+              registers: .init(rdx: 256, rbx: 0xABCD_0000 | source,
+                rsp: 160, rsi: 4, rdi: 4, r9: 0xDCBA_0000 | source), rip: 0,
+              rflags: [.reservedOne, .carry, .overflow, .zero, .sign, .parity,
+                       .auxiliaryCarry, .interruptEnable, .direction])
+            var translated = interpreted
+            let decoded = try DoryX86Decoder().decode(bytes, at: 0, mode: .long64)
+            #expect(DoryX86Interpreter().step(state: &interpreted, memory: reference, mode: .long64)
+              == .retired(decoded))
+            let execution = try #require(executor.execute(bytes: bytes, at: 0, mode: .long64,
+              addressSpaceID: 0, maximumInstructions: 1, state: &translated, memory: native))
+            #expect(execution.exitCode == .dispatch)
+            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(translated == interpreted)
+            #expect(try native.read(at: 0, byteCount: 512) == reference.read(at: 0, byteCount: 512))
+          }
+        }
+        for failure in 0..<3 {
+          // Read decline, write rejection, and a word crossing the mapped boundary.
+          let memory = try SelectiveRestartableMemory(
+            byteCount: failure == 2 ? 257 : 512,
+            declinedAddress: failure == 0 ? 256 : .max,
+            rejectedWriteAddress: failure == 1 ? 256 : nil)
+          try memory.backing.write(at: 0, bytes: bytes)
+          try memory.backing.write(at: 255, bytes: [0xAA, 0xFF])
+          let before = try memory.backing.read(at: 0, byteCount: failure == 2 ? 257 : 512)
+          let initial = try DoryX86ArchitecturalState(
+            registers: .init(rdx: 256, rbx: 1, rsp: 160, rsi: 4, rdi: 4, r9: 1), rip: 0,
+            rflags: [.reservedOne, .carry, .overflow, .direction])
+          var state = initial
+          let execution = try #require(executor.execute(bytes: bytes, at: 0, mode: .long64,
+            addressSpaceID: 0, maximumInstructions: 1, state: &state, memory: memory))
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(execution.exitCode == .interpreter)
+          #expect(state == initial)
+          #expect(memory.restartableReads == 1)
+          #expect(memory.scalarWrites == (failure == 1 ? 1 : 0))
+          #expect(try memory.backing.read(at: 0, byteCount: before.count) == before)
+        }
+      }
+    }
+    #endif
+  }
+
   @Test func byteMemoryOrMatchesInterpreterAndPreservesFaultState() throws {
     #if arch(arm64)
     let encodings: [[UInt8]] = [

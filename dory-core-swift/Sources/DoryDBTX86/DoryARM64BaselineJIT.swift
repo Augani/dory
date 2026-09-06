@@ -1747,7 +1747,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitNarrowBinaryFlags(.compare, writesDestination: false, width: .i16, into: &words)
     }
     if case .memory(let address, width: .i16) = destination,
-      operation == .compare, !writesDestination
+      (!writesDestination && operation == .compare)
+        || (writesDestination && (operation == .add || operation == .subtract))
     {
       guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
       emitMemoryRead(addressRegister: 12, width: .i16, resultRegister: 9, words: &words)
@@ -1762,7 +1763,13 @@ public struct DoryARM64BaselineEmitter: Sendable {
       default:
         return false
       }
-      return emitNarrowBinaryFlags(.compare, writesDestination: false, width: .i16, into: &words)
+      guard emitNarrowBinaryFlags(operation, writesDestination: writesDestination,
+        width: .i16, into: &words) else { return false }
+      if writesDestination {
+        guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
+        emitMemoryWrite(addressRegister: 12, valueRegister: 11, width: .i16, words: &words)
+      }
+      return true
     }
     if case .register(let target) = destination,
       target.bank == "x86.gpr", target.index < 16, target.width == .i16,
@@ -2008,9 +2015,12 @@ public struct DoryARM64BaselineEmitter: Sendable {
         destination: 13
       ))
     switch operation {
-    case .compare:
-      guard !writesDestination else { return false }
+    case .compare, .subtract:
+      guard writesDestination == (operation == .subtract) else { return false }
       words.append(encodeAddSubtractSetFlags(add: false, is64Bit: false, 12, 13, 11))
+    case .add:
+      guard writesDestination else { return false }
+      words.append(encodeAddSubtractSetFlags(add: true, is64Bit: false, 12, 13, 11))
     case .and, .test:
       guard writesDestination == (operation == .and) else { return false }
       words.append(encodeLogical(.andSetFlags, is64Bit: false, 12, 13, 11))
@@ -2032,8 +2042,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         destination: 11
       ))
     emitX86ArithmeticFlags(
-      subtraction: operation == .compare,
-      includesAuxiliaryCarry: operation == .compare,
+      subtraction: operation == .compare || operation == .subtract,
+      includesAuxiliaryCarry: operation == .compare || operation == .subtract || operation == .add,
       resultRegister: 11,
       into: &words
     )

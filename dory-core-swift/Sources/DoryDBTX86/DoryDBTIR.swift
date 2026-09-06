@@ -705,7 +705,8 @@ public struct DoryX86IRTranslator: Sendable {
         }
       }
       if case .memory(let address, width: .i16) = destination,
-        operation == .compare, !writesDestination
+        (!writesDestination && operation == .compare)
+          || (writesDestination && (operation == .add || operation == .subtract))
       {
         guard isJITMemoryAddress(address) else { return false }
         switch source {
