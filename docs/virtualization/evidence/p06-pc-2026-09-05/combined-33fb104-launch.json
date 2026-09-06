@@ -50,5 +50,42 @@
       "sha256": "cfd3bf9cda4ff81867a1b479723b272de0dbc641c02f12f38f55b2e9b10651b3",
       "bytes": 477
     }
-  ]
+  ],
+  "userspaceFollowup": {
+    "observedAt": "2026-09-06T01:35:31.830749+00:00",
+    "processObservation": "23762 25:22  98.4 R",
+    "milestones": [
+      "Root EXT4 mounted",
+      "/sbin/init started",
+      "DORYCFG-BOOT-SCRIPT-START",
+      "DORYCFG-AGENT-EXEC",
+      "tokio runtime worker executed"
+    ],
+    "guestCommand": "/bin/uname -a",
+    "commandResult": "Handshake RPC timeout after 10s; exit1; no command output. Explicit110s outer watchdog did not fire.",
+    "guestWorkloadQualified": false,
+    "priorProbe": "Earlier client deliberately terminated after67s without output; 30s option bounds guest execution, not combined handshake/info/exec grace. No timeout implementation defect established.",
+    "evidence": [
+      {
+        "path": "${HOME}/.dory/qualification/pc-production-combined-33fb10434-20260906-004843/run-20260906010941/root-userspace-verification/serial.log",
+        "sha256": "d2ee166b22167f9f64f3b482d25936b77136b8dd3047f8189e91861db2ef3f3f",
+        "bytes": 31663
+      },
+      {
+        "path": "${HOME}/.dory/qualification/pc-production-combined-33fb10434-20260906-004843/run-20260906010941/root-userspace-verification/root-uname-bounded.json",
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "bytes": 0
+      },
+      {
+        "path": "${HOME}/.dory/qualification/pc-production-combined-33fb10434-20260906-004843/run-20260906010941/root-userspace-verification/root-uname-bounded.err",
+        "sha256": "a9d6ff81d49eb1647ed5446e89af2a0daa4654af341d26db11e7e05c0e183625",
+        "bytes": 873
+      },
+      {
+        "path": "${HOME}/.dory/qualification/pc-production-combined-33fb10434-20260906-004843/run-20260906010941/root-userspace-verification/root-uname-bounded-receipt.json",
+        "sha256": "7c76cd3a8069ea2948f2b7cbdc244c6e69f623c47f4ac83fc49d9f7c7e4e5cde",
+        "bytes": 349
+      }
+    ]
+  }
 }
