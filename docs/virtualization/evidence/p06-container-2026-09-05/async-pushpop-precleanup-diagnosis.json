@@ -6,7 +6,7 @@
     "Three baseline runs exit82; three candidate runs exit139 after emitting the same failure record.",
     "Recorded resume RIP0x201221, RSP0x7fffffffed60 and RBX0; pre-cleanup final RSP0x7fffffffed68 and RBX1."
   ],
-  "interpretation": "Consistent with an incoherent interrupted instruction boundary; verify exact ELF symbol mapping and host-PC-to-guest-state reconstruction before modifying restoration. This does not establish the exact source defect.",
+  "interpretation": "The later producer trace supersedes the initial incoherent-boundary hypothesis: host SRA has the correct post-push RBX and RSP, but IgnoreMask=0xffff makes SpillSRA retain stale frame values. Source review identifies a matching path: changed-context RestoreFrame_x64 restores InSyscallInfo, then dispatches directly without executing the abandoned syscall epilogue. A targeted correction still requires execution validation.",
   "limitations": [
     "No native x86 control run recorded here.",
     "Candidate still fails; production FEX pin remains unchanged.",
@@ -35,5 +35,26 @@
     "implication": "Failure requires the edited signal-frame path in this reproduction; unchanged host/guest continuation restoration must be preserved",
     "logSHA256": "aedebfed7778ddb15b0339a20223a0c2010d9bbc21805f5ca3b33d55fbd3f181",
     "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-self-sender-pushpop-oneshot-1788648400/run-v7-controls.log"
+  },
+  "producerTrace": {
+    "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-self-sender-pushpop-oneshot-1788648400/spillsra-producer-trace-1788652733/dory-pushpop-spillsra.bin",
+    "sha256": "2fc3bd76c1ce4bab91cb458ce0071f224239aaf0daebd6b1c86ed7b2b1d4c8ee",
+    "byteCount": 104,
+    "decodedQwords": {
+      "magic": "0x44505253504c4c31",
+      "hostPC": "0xaaab71fb2618",
+      "hostSP": "0xffffd702e790",
+      "guestRIP": "0x201221",
+      "rbxSRAIndex": "0x6",
+      "rspSRAIndex": "0x8",
+      "hostRBX": "0x1111222233334444",
+      "hostRSP": "0x7fffffffed58",
+      "frameRBX": "0x0",
+      "frameRSP": "0x7fffffffed60",
+      "stackAtHostRSP": "0x1111222233334444",
+      "stackAtFrameRSP": "0x1",
+      "ignoreMask": "0xffff"
+    },
+    "limitation": "Private instrumented reproduction; host-PC provenance and the targeted fix require validation. Diagnostic pointer reads are not production code."
   }
 }
