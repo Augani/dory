@@ -117,6 +117,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     }
     let guardsInterpreterExit = block.statements.contains {
       if case .unsignedAccumulatorDivide = $0 { return true }
+      if case .signedAccumulatorDivide = $0 { return true }
       return false
     }
     // Translated writes end a block. Also reject hand-crafted IR that would reach a new
@@ -196,7 +197,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return false
       case .signedMultiply(let destination, let lhs, let rhs):
         return isFSOrGS(destination) || isFSOrGS(lhs) || isFSOrGS(rhs)
-      case .unsignedAccumulatorMultiply(let source), .unsignedAccumulatorDivide(let source):
+      case .unsignedAccumulatorMultiply(let source), .unsignedAccumulatorDivide(let source),
+      .signedAccumulatorDivide(let source):
         return isFSOrGS(source)
       case .doubleShiftRightCL(let destination, let source),
         .doubleShiftRightImmediate(let destination, let source, _):
@@ -305,7 +307,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .unsignedAccumulatorMultiply(let source):
       return emitUnsignedAccumulatorMultiply(source: source, into: &words)
     case .unsignedAccumulatorDivide(let source):
-      return emitUnsignedAccumulatorDivide(source: source, into: &words)
+      return emitAccumulatorDivide(source: source, signed: false, into: &words)
+    case .signedAccumulatorDivide(let source):
+      return emitAccumulatorDivide(source: source, signed: true, into: &words)
     case .doubleShiftRightCL(let destination, let source):
       return emitDoubleShiftRight(destination: destination, source: source, into: &words)
     case .doubleShiftRightImmediate(let destination, let source, let count):
@@ -773,7 +777,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       if case .memory = lhs { return 1 }
       if case .memory = rhs { return 1 }
       return 0
-    case .unsignedAccumulatorMultiply(let source), .unsignedAccumulatorDivide(let source):
+    case .unsignedAccumulatorMultiply(let source), .unsignedAccumulatorDivide(let source),
+      .signedAccumulatorDivide(let source):
       if case .memory = source { return 1 }
       return 0
     case .doubleShiftRightCL(let destination, let source),
@@ -958,8 +963,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
     return true
   }
 
-  private func emitUnsignedAccumulatorDivide(
+  private func emitAccumulatorDivide(
     source: DoryIROperand,
+    signed: Bool,
     into words: inout [UInt32]
   ) -> Bool {
     guard case .register(let sourceRegister) = source,
@@ -981,15 +987,36 @@ public struct DoryARM64BaselineEmitter: Sendable {
         ? encodeLoad64(register: 11, base: 0, byteOffset: 16)
         : encodeLoad32(register: 11, base: 0, byteOffset: 16)
     )
-    words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 11, 31, 31))
-    emitInterpreterUnless(condition: .equal, usesMemory: false, into: &words)
-
     words.append(
       is64Bit
         ? encodeLoad64(register: 9, base: 0, byteOffset: 0)
         : encodeLoad32(register: 9, base: 0, byteOffset: 0)
     )
-    words.append(encodeUnsignedDivide(is64Bit: is64Bit, dividend: 9, divisor: 10, quotient: 12))
+    if signed {
+      // Native SDIV takes one signed word. Other RDX:RAX values still need the
+      // interpreter's double-width division, before any architectural write.
+      emitImmediate(is64Bit ? 63 : 31, register: 12, into: &words)
+      words.append(encodeVariableShift(.arithmeticRight, is64Bit: is64Bit,
+        value: 9, count: 12, destination: 12))
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 11, 12, 31))
+      emitInterpreterUnless(condition: .equal, usesMemory: false, into: &words)
+
+      // ARM wraps MIN / -1; x86 must raise #DE with the original state intact.
+      emitImmediate(is64Bit ? 0x8000_0000_0000_0000 : 0x8000_0000, register: 12, into: &words)
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 9, 12, 31))
+      let nonMinimum = words.count
+      words.append(0)
+      emitImmediate(.max, register: 12, into: &words)
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 10, 12, 31))
+      emitInterpreterUnless(condition: .notEqual, usesMemory: false, into: &words)
+      words[nonMinimum] = encodeConditionalBranch(
+        condition: .notEqual, wordOffset: words.count - nonMinimum)
+    } else {
+      words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 11, 31, 31))
+      emitInterpreterUnless(condition: .equal, usesMemory: false, into: &words)
+    }
+    words.append(encodeAccumulatorDivide(signed: signed, is64Bit: is64Bit,
+      dividend: 9, divisor: 10, quotient: 12))
     words.append(
       encodeMultiplySubtract(
         is64Bit: is64Bit,
@@ -2702,13 +2729,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
     0x9BC0_7C00 | right << 16 | left << 5 | destination
   }
 
-  private func encodeUnsignedDivide(
+  private func encodeAccumulatorDivide(
+    signed: Bool,
     is64Bit: Bool,
     dividend: UInt32,
     divisor: UInt32,
     quotient: UInt32
   ) -> UInt32 {
-    (is64Bit ? 0x9AC0_0800 : 0x1AC0_0800) | divisor << 16 | dividend << 5 | quotient
+    (is64Bit ? 0x9AC0_0800 : 0x1AC0_0800) | (signed ? 0x400 : 0)
+      | divisor << 16 | dividend << 5 | quotient
   }
 
   private func encodeMultiplySubtract(
@@ -4373,7 +4402,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     if key.privilegeLevel != 0,
       block.statements.contains(where: {
         switch $0 {
-        case .unsignedAccumulatorMultiply, .unsignedAccumulatorDivide, .doubleShiftRightCL,
+        case .unsignedAccumulatorMultiply, .unsignedAccumulatorDivide, .signedAccumulatorDivide, .doubleShiftRightCL,
           .doubleShiftRightImmediate, .bitTestMemoryImmediate:
           return true
         default:

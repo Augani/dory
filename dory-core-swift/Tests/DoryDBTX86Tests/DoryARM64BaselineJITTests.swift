@@ -3765,13 +3765,13 @@ import Testing
     #endif
   }
 
-  @Test func unsignedAccumulatorDivideMatchesInterpreterForZeroHighDividend() throws {
+  @Test func accumulatorDivideMatchesInterpreterForNativeDividend() throws {
     #if arch(arm64)
       struct Case {
         let bytes: [UInt8]
         let registers: DoryX86GeneralRegisters
       }
-      let cases = [
+      var cases = [
         Case(
           bytes: [0x48, 0xF7, 0xF1],
           registers: .init(rax: 100, rcx: 7, rdx: 0)
@@ -3796,6 +3796,33 @@ import Testing
             rdx: 0xCCCC_DDDD_0000_0000
           )
         ),
+      ]
+      for is64Bit in [false, true] {
+        let minimum = is64Bit ? Int64.min : Int64(Int32.min)
+        let maximum = is64Bit ? Int64.max : Int64(Int32.max)
+        for dividend: Int64 in [0, 1, -1, 7, -7, 100, -100, minimum, maximum] {
+          for divisor: Int64 in [1, -1, 7, -7, minimum, maximum] {
+            if dividend == minimum && divisor == -1 { continue }
+            let upper: UInt64 = is64Bit ? 0 : 0xAABB_CCDD_0000_0000
+            let mask: UInt64 = is64Bit ? .max : 0xFFFF_FFFF
+            cases.append(Case(
+              bytes: is64Bit ? [0x48, 0xF7, 0xF9] : [0xF7, 0xF9],
+              registers: .init(
+                rax: upper | (UInt64(bitPattern: dividend) & mask),
+                rcx: upper | (UInt64(bitPattern: divisor) & mask),
+                rdx: upper | (dividend < 0 ? mask : 0)
+              )
+            ))
+          }
+        }
+      }
+      cases += [
+        Case(bytes: [0x49, 0xF7, 0xF9], // measured IDIV R9 kernel shape
+          registers: .init(rax: UInt64(bitPattern: -100), rdx: .max, r9: 7)),
+        Case(bytes: [0x48, 0xF7, 0xF8], // divisor aliases low dividend
+          registers: .init(rax: UInt64(bitPattern: -100), rdx: .max)),
+        Case(bytes: [0x48, 0xF7, 0xFA], // divisor aliases high dividend
+          registers: .init(rax: UInt64(bitPattern: -100), rdx: .max)),
       ]
       let initialFlags = DoryX86RFLAGS(
         rawValue: DoryX86RFLAGS.reservedOne.rawValue
@@ -3836,6 +3863,7 @@ import Testing
             state: &translated
           ))
           #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(execution.exitCode == .dispatch)
           #expect(translated == interpreted)
           #expect(translated.rflags == initialFlags)
         }
@@ -3843,13 +3871,19 @@ import Testing
     #endif
   }
 
-  @Test func unsignedAccumulatorDivideFallsBackBeforeUnsupportedWideDividendOrDivideError() throws {
+  @Test func accumulatorDivideFallsBackBeforeUnsupportedWideDividendOrDivideError() throws {
     #if arch(arm64)
       let cases: [([UInt8], DoryX86GeneralRegisters)] = [
         ([0x48, 0xF7, 0xF1], .init(rax: 5, rcx: 0, rdx: 0)),
         ([0x48, 0xF7, 0xF1], .init(rax: 0, rcx: 2, rdx: 1)),
         ([0x48, 0xF7, 0xF1], .init(rax: 0, rcx: 7, rdx: 7)),
         ([0xF7, 0xF1], .init(rax: 0x100, rcx: 2, rdx: 1)),
+        ([0x48, 0xF7, 0xF9], .init(rax: 5, rcx: 0, rdx: 0)),
+        ([0xF7, 0xF9], .init(rax: 5, rcx: 0, rdx: 0)),
+        ([0x48, 0xF7, 0xF9], .init(rax: 0x8000_0000_0000_0000, rcx: .max, rdx: .max)),
+        ([0xF7, 0xF9], .init(rax: 0x8000_0000, rcx: 0xFFFF_FFFF, rdx: 0xFFFF_FFFF)),
+        ([0x48, 0xF7, 0xF9], .init(rax: 0x8000_0000_0000_0000, rcx: 2, rdx: 0)),
+        ([0xF7, 0xF9], .init(rax: 0x8000_0000, rcx: 2, rdx: 0)),
       ]
       for (bytes, registers) in cases {
         for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
@@ -3887,6 +3921,7 @@ import Testing
       for bytes in [
         [UInt8]([0x48, 0xF7, 0x20]),  // mul qword ptr [rax]
         [UInt8]([0x48, 0xF7, 0x30]),  // div qword ptr [rax]
+        [UInt8]([0x48, 0xF7, 0x38]),  // idiv qword ptr [rax]
         [UInt8]([0x48, 0x0F, 0xAD, 0x10]),  // shrd qword ptr [rax],rdx,cl
         [UInt8]([0x48, 0x0F, 0xAC, 0x10, 32]),  // shrd qword ptr [rax],rdx,32
       ] {
@@ -3948,6 +3983,14 @@ import Testing
       ) == nil)
       #expect(try executor.execute(
         bytes: [0x48, 0xF7, 0xF1],
+        at: 0,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &userState
+      ) == nil)
+      #expect(try executor.execute(
+        bytes: [0x49, 0xF7, 0xF9],
         at: 0,
         mode: .long64,
         addressSpaceID: 0,

@@ -1,0 +1,28 @@
+{
+  "schema": 1,
+  "date": "2026-09-06",
+  "scope": "Native 32/64-bit register IDIV for sign-extended double-width dividends, reusing DIV interpreter-exit checkpoints.",
+  "observed_instruction": "49f7f9: IDIV R9",
+  "observed_runner_sha256": "658b301325b9bcd4b0d1fc2a621a851f24a7f9136076b32e89113f135be9f0fb",
+  "test_command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path dory-core-swift --jobs 2 --filter 'DoryARM64BaselineJITTests/(accumulatorDivide|nativeSchedClockArithmetic)'",
+  "result": "3 tests passed",
+  "retired_state_comparisons": 226,
+  "unchanged_fallback_comparisons": 20,
+  "coverage": [
+    "Both JIT tiers; signed32/64 min/max, both signs, zero dividends, positive/negative remainders",
+    "Divisor aliases RAX or RDX and measured R9 operand",
+    "32-bit upper containing bits cleared; flags preserved consistently with interpreter",
+    "Zero divisor, MIN/-1 overflow and wider dividend fall back before state mutation",
+    "Existing unsigned division cases retained; memory forms and user-mode remain interpreter-only"
+  ],
+  "limitations": [
+    "No rebuilt VM binary or end-to-end performance result yet.",
+    "Full-width division still executes through interpreter; this native path handles sign-extended dividends only."
+  ],
+  "evidence": {
+    "log": "native-signed-register-divide.log.gz",
+    "uncompressed_log_sha256": "1ddd7062d6e6e022b0fb743f3d804632772d81a775cc73ac5447fbde3abe0038",
+    "profile": "native-signed-register-divide-profile.txt",
+    "profile_sha256": "6c35da058978253a133ae18443456bb8a22f4644f21b473c6441d12248b44010"
+  }
+}
