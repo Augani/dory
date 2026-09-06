@@ -1,0 +1,24 @@
+{
+  "receiptType": "pc-x86-track-c-blocker",
+  "createdAt": "2026-09-06T16:00:00Z",
+  "sourceCommit": "051c97f25b4ae803b6e8f20963b3c6e7f418eaee",
+  "track": "C",
+  "objective": "Repair PC hardware-3D harness with correct reconnect identity binding",
+  "previousFailure": {
+    "error": "machine state persistence failed: resolved backend start failed: Dory desktop helper application launch failed: Dory application launch channel closed during frame header",
+    "runnerSHA256": "fc82a278f5f884324c76b31a7da2adb288fe071bb6b2c552cd34baa0ae4b9f51",
+    "runnerSourceProvenance": "Built from intermediate source state (GPU commit 87d3d8139, CPU/JIT commit e86594baf). Not a clean HEAD build.",
+    "harnessCommit": "051c97f25 (added after runner was built)"
+  },
+  "rootCause": "The signed runner (fc82a278f) was built from an intermediate source state before the harness (051c97f25) was committed. The runner crashes immediately after launch before connecting to the handoff socket. The runner supports all required CLI arguments (--pc-runtime-launch-envelope, --renderer-generation-handoff-sock, --runtime-reconnect-fd) but the reconnect identity validation or launch envelope handling may be incompatible with the current MachineManager code.",
+  "repairPlan": [
+    "1. Rebuild runner from HEAD with renderer support (pcprofile-authentic Xcode build profile)",
+    "2. Verify the rebuilt runner starts and connects to the handoff socket",
+    "3. Retry the harness with DORY_PC_GPU_REAL_HARNESS=1 using the rebuilt runner",
+    "4. Verify catalog, firmware, renderer bootstrap, kernel, Mesa, installer media, and system disk identities all match",
+    "5. Reach actual guest probe execution",
+    "6. Capture hardware-3D and readback evidence"
+  ],
+  "blocker": "Requires full Xcode build of runner with renderer support from HEAD. The pcprofile-authentic build configuration includes renderer worker XPC, ANGLE libraries, and renderer bootstrap qualification resources that are not in the standard build.",
+  "qualification": "preview/developer-ID evidence; not production release qualification"
+}
