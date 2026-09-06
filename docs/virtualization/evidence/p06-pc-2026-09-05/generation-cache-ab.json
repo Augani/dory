@@ -1,0 +1,82 @@
+{
+  "runsPerBinary": 7,
+  "iterationsPerScenario": 1000000,
+  "alternatingRunOrder": true,
+  "summary": {
+    "hot-repeated": {
+      "medianNanoseconds": {
+        "baseline": 34056250,
+        "candidate-binary": 23027500
+      },
+      "candidateChangePercent": -32.38392365571664,
+      "ranges": {
+        "baseline": [
+          33417250,
+          34579292
+        ],
+        "candidate-binary": [
+          22800416,
+          23482792
+        ]
+      }
+    },
+    "cache-collision": {
+      "medianNanoseconds": {
+        "baseline": 24242834,
+        "candidate-binary": 38939625
+      },
+      "candidateChangePercent": 60.62323819071649,
+      "ranges": {
+        "baseline": [
+          23865500,
+          24905334
+        ],
+        "candidate-binary": [
+          38367791,
+          39314792
+        ]
+      }
+    },
+    "interleaved-data-write-hot-read": {
+      "medianNanoseconds": {
+        "baseline": 65293333,
+        "candidate-binary": 59678750
+      },
+      "candidateChangePercent": -8.59901423626207,
+      "ranges": {
+        "baseline": [
+          64610167,
+          66341375
+        ],
+        "candidate-binary": [
+          58064792,
+          60330000
+        ]
+      }
+    },
+    "cached-code-write": {
+      "medianNanoseconds": {
+        "baseline": 63830333,
+        "candidate-binary": 66859792
+      },
+      "candidateChangePercent": 4.746111852494961,
+      "ranges": {
+        "baseline": [
+          63216583,
+          64630708
+        ],
+        "candidate-binary": [
+          66786459,
+          67370958
+        ]
+      }
+    }
+  },
+  "binarySHA256": {
+    "baseline": "5db7fd90bd2627121dbc6b9f70da6354dc773fa7307bc865eacb75e038bfd987",
+    "candidate-binary": "1d02c138201674218ac1119019182fbac806e7ad7f09a8c9c529098f02744c12"
+  },
+  "candidateDiffSHA256": "4211abdd6562b290fb6c58d503b8ddceca7eda2d4b1c654cb5e1985707403b37",
+  "scope": "Private Mmap microbenchmark only; concurrent FEX endpoint activity may affect timings; no VM speed claim.",
+  "decision": "Do not promote: clear collision and cached-code-write regressions; guest workload benefit unproven."
+}
