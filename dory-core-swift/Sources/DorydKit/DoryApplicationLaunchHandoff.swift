@@ -23,9 +23,9 @@ public enum DoryApplicationLaunchHandoffClient {
         }
     }
 
-    /// Internal authentication seam for transport tests. Production always uses the complete
-    /// Developer-ID team plus `doryd` signing requirement above.
-    static func receiveIfRequested(
+    /// Authentication seam for transport tests and development harnesses. Production always uses
+    /// the complete Developer-ID team plus `doryd` signing requirement above.
+    public static func receiveIfRequested(
         arguments: [String],
         authenticateDaemon: (pid_t) throws -> Void
     ) throws -> [String] {

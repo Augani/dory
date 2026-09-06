@@ -1147,6 +1147,43 @@ struct MachineManagerResolvedPlanIntegrationTests {
             guestPath: "/mnt/dory-gpu-probe",
             readOnly: true
         )
+        // The PC desktop rootfs init requires a `dorycfg` virtio-fs share containing boot.sh
+        // and the guest agent. Stage both from the built x86_64 guest agent.
+        let guestAgentSource = environment["DORY_PC_GPU_REAL_HARNESS_GUEST_AGENT"]
+            ?? workspaceRoot.appendingPathComponent("guest/out/dory-agent-amd64").path
+        let bootConfigDirectory = qualificationRoot + "/dorycfg"
+        try? FileManager.default.removeItem(atPath: bootConfigDirectory)
+        try FileManager.default.createDirectory(
+            atPath: bootConfigDirectory, withIntermediateDirectories: true
+        )
+        let bootScript = """
+        #!/bin/sh
+        export PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin
+        mount -t proc proc /proc 2>/dev/null || true
+        mount -t sysfs sys /sys 2>/dev/null || true
+        mount -t tmpfs tmpfs /run 2>/dev/null || true
+        mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+        mkdir -p /dev/pts /var/log
+        mount -t devpts devpts /dev/pts 2>/dev/null || true
+        cp /mnt/dory-config/dory-agent /run/dory-agent && chmod 0755 /run/dory-agent
+        exec /run/dory-agent >>/var/log/dory-agent.log 2>&1
+
+        """
+        try Data(bootScript.utf8).write(to: URL(fileURLWithPath: bootConfigDirectory + "/boot.sh"))
+        _ = chmod(bootConfigDirectory + "/boot.sh", 0o755)
+        if FileManager.default.fileExists(atPath: guestAgentSource) {
+            try FileManager.default.copyItem(
+                atPath: guestAgentSource,
+                toPath: bootConfigDirectory + "/dory-agent"
+            )
+            _ = chmod(bootConfigDirectory + "/dory-agent", 0o755)
+        }
+        let dorycfgShare = DoryMachineShareConfiguration(
+            tag: "dorycfg",
+            hostPath: bootConfigDirectory,
+            guestPath: "/mnt/dory-config",
+            readOnly: true
+        )
         let starter = CountingProcessStarter()
         do {
             try withHarness(
@@ -1155,7 +1192,8 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 admittedDesktopFixture: true,
                 acceleratedExecutablePath: runnerExecutable,
                 acceleratedDesktopBaseArgumentsOverride: [
-                    "desktop", "--gvproxy", "/usr/bin/true",
+                    "desktop", "--gvproxy",
+                    environment["DORY_PC_GPU_REAL_HARNESS_GVPROXY"] ?? "/usr/bin/true",
                 ],
                 guestArchitecture: .x86_64,
                 bootMode: .efi,
@@ -1167,7 +1205,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 admittedDesktopFixtureTruncateBytes: nil,
                 memoryMB: 1_024,
                 cpuCount: 1,
-                shares: [share],
+                shares: [dorycfgShare, share],
                 preserveStateDirectory: true,
                 requiresReadyHandoff: true,
                 authenticatedRuntime: false,
@@ -1177,6 +1215,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
                     DoryDesktopGraphicsPreference.environmentKey:
                         DoryDesktopGraphicsPreference.virglVenus.rawValue,
                 ],
+                desktopHandoffReadyTimeoutSeconds: TimeInterval(
+                    environment["DORY_PC_GPU_REAL_HARNESS_HANDOFF_TIMEOUT"].flatMap(Double.init) ?? 1800
+                ),
                 starter: starter
             ) { manager, starter, state in
                 let plans = MutablePlanStore()
@@ -3427,6 +3468,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         injectStateBroker: Bool = true,
         initialEnvironment: [String: String] = [:],
         typedSettings: DoryMachineTypedSettingsPatch? = nil,
+        desktopHandoffReadyTimeoutSeconds: TimeInterval = 180,
         usbController: any DoryMachineUSBControlling = UnixDoryMachineUSBController(),
         agentConnector: @escaping MachineManager.AgentConnector = { socketPath in
             try LocalAgentControl.connect(socketPath: socketPath)
@@ -3508,6 +3550,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 ],
                 passMachineArguments: passMachineArguments,
                 requiresReadyHandoff: requiresReadyHandoff,
+                desktopHandoffReadyTimeoutSeconds: desktopHandoffReadyTimeoutSeconds,
                 guestArchitecture: guestArchitecture?.rawValue
             ),
             launchPolicy: launchPolicy,
