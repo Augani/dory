@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "scope": "Native Linux and macOS control servers share listener ownership, private socket permissions, bounded stale-socket probing and inode-checked cleanup.",
+  "validation": {
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path dory-core-swift --filter 'VmmControlSocketListenerTests|VmmControlSocketIOTests' --jobs 2",
+    "exitCode": 0,
+    "testsPassed": 9,
+    "listenerCases": [
+      "Private permissions and idempotent stop",
+      "Preserves existing regular file and symlink",
+      "Preserves active listener",
+      "Old owner preserves replacement socket",
+      "Rebinds abandoned socket"
+    ],
+    "logSHA256": "0251e53bcaada770e08ee1d1038023fe73e33acb5423383f4903611b5c0675bd"
+  },
+  "implementationEvidence": "Abandoned-socket recovery initially failed because Foundation rewrote /private/tmp to /tmp for that existing socket; lexical path validation preserves exact ownership pathname.",
+  "limitations": [
+    "Real Unix socket tests; no physical VM lifecycle qualification claimed.",
+    "Full operation/generation binding and command-execution deadlines remain open.",
+    "This does not establish protection against a malicious same-user process concurrently mutating the owned parent directory."
+  ]
+}

@@ -2743,6 +2743,7 @@ private final class DoryVMMControlServer: @unchecked Sendable {
     private let queue: DispatchQueue
     private let lock = NSLock()
     private let clientSlots = DispatchSemaphore(value: 8)
+    private var socketOwner: VmmControlSocketListener?
     private var listenerFD: Int32 = -1
     private var running = false
     private var telemetrySampleSequence: UInt64 = 0
@@ -2773,49 +2774,27 @@ private final class DoryVMMControlServer: @unchecked Sendable {
     }
 
     func start() throws {
-        try FileManager.default.createDirectory(
-            atPath: (localSocketPath as NSString).deletingLastPathComponent,
-            withIntermediateDirectories: true
-        )
-        unlink(localSocketPath)
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw DoryVZMachineError.syscall("socket", errno) }
-
-        do {
-            var address = try unixAddress(path: localSocketPath)
-            let bound = withUnsafePointer(to: &address) { pointer in
-                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { raw in
-                    Darwin.bind(fd, raw, socklen_t(MemoryLayout<sockaddr_un>.size))
-                }
-            }
-            guard bound == 0 else { throw DoryVZMachineError.syscall("bind", errno) }
-            chmod(localSocketPath, 0o600)
-            guard listen(fd, 32) == 0 else { throw DoryVZMachineError.syscall("listen", errno) }
-
-            lock.lock()
-            listenerFD = fd
+        let fd = try lock.withLock { () throws -> Int32? in
+            guard listenerFD < 0 else { return nil }
+            let owner = try VmmControlSocketListener(path: localSocketPath)
+            socketOwner = owner
+            listenerFD = owner.descriptor
             running = true
-            lock.unlock()
-            queue.async { [weak self] in
-                self?.acceptLoop(listenerFD: fd)
-            }
-        } catch {
-            close(fd)
-            unlink(localSocketPath)
-            throw error
+            return owner.descriptor
         }
+        guard let fd else { return }
+        queue.async { [weak self] in self?.acceptLoop(listenerFD: fd) }
     }
 
     func stop() {
-        lock.lock()
-        let fd = listenerFD
-        listenerFD = -1
-        running = false
-        lock.unlock()
-        if fd >= 0 {
-            close(fd)
+        let owner = lock.withLock { () -> VmmControlSocketListener? in
+            let owner = socketOwner
+            socketOwner = nil
+            listenerFD = -1
+            running = false
+            return owner
         }
-        unlink(localSocketPath)
+        owner?.stop()
     }
 
     private func acceptLoop(listenerFD: Int32) {

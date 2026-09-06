@@ -929,6 +929,7 @@ private final class DoryVZMacControlServer: @unchecked Sendable {
     private let queue = DispatchQueue(label: "dev.dory.dory-vmm.vzmac-control")
     private let clientSlots = DispatchSemaphore(value: 8)
     private let lock = NSLock()
+    private var socketOwner: VmmControlSocketListener?
     private var listenerFD: Int32 = -1
     private var sampleSequence: UInt64 = 0
 
@@ -953,59 +954,25 @@ private final class DoryVZMacControlServer: @unchecked Sendable {
     }
 
     func start() throws {
-        let parent = (socketPath as NSString).deletingLastPathComponent
-        try FileManager.default.createDirectory(
-            atPath: parent,
-            withIntermediateDirectories: true,
-            attributes: [.posixPermissions: 0o700]
-        )
-        unlink(socketPath)
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw VmmControlError.syscall("socket", errno) }
-        do {
-            var noPipe: Int32 = 1
-            guard setsockopt(
-                fd,
-                SOL_SOCKET,
-                SO_NOSIGPIPE,
-                &noPipe,
-                socklen_t(MemoryLayout<Int32>.size)
-            ) == 0 else {
-                throw VmmControlError.syscall("setsockopt(SO_NOSIGPIPE)", errno)
-            }
-            var address = try Self.unixAddress(path: socketPath)
-            let result = withUnsafePointer(to: &address) { pointer in
-                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
-                    Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
-                }
-            }
-            guard result == 0 else { throw VmmControlError.syscall("bind", errno) }
-            guard chmod(socketPath, 0o600) == 0 else {
-                throw VmmControlError.syscall("chmod", errno)
-            }
-            guard listen(fd, 16) == 0 else {
-                throw VmmControlError.syscall("listen", errno)
-            }
-            lock.withLock { listenerFD = fd }
-            queue.async { [weak self] in self?.acceptLoop(listenerFD: fd) }
-        } catch {
-            close(fd)
-            unlink(socketPath)
-            throw error
+        let fd = try lock.withLock { () throws -> Int32? in
+            guard listenerFD < 0 else { return nil }
+            let owner = try VmmControlSocketListener(path: socketPath)
+            socketOwner = owner
+            listenerFD = owner.descriptor
+            return owner.descriptor
         }
+        guard let fd else { return }
+        queue.async { [weak self] in self?.acceptLoop(listenerFD: fd) }
     }
 
     func stop() {
-        let fd = lock.withLock { () -> Int32 in
-            let current = listenerFD
+        let owner = lock.withLock { () -> VmmControlSocketListener? in
+            let owner = socketOwner
+            socketOwner = nil
             listenerFD = -1
-            return current
+            return owner
         }
-        if fd >= 0 {
-            shutdown(fd, SHUT_RDWR)
-            close(fd)
-        }
-        unlink(socketPath)
+        owner?.stop()
     }
 
     func nextTelemetrySnapshot() -> DoryDeviceTelemetrySnapshot {
@@ -1075,21 +1042,6 @@ private final class DoryVZMacControlServer: @unchecked Sendable {
                 "dory-vmm VZMac control response failed: \(error)\n".utf8
             ))
         }
-    }
-
-    private static func unixAddress(path: String) throws -> sockaddr_un {
-        let bytes = Array(path.utf8)
-        guard !bytes.isEmpty,
-              bytes.count < MemoryLayout.size(ofValue: sockaddr_un().sun_path) else {
-            throw VmmControlError.pathTooLong(path)
-        }
-        var address = sockaddr_un()
-        address.sun_family = sa_family_t(AF_UNIX)
-        withUnsafeMutableBytes(of: &address.sun_path) { destination in
-            destination.initializeMemory(as: UInt8.self, repeating: 0)
-            destination.copyBytes(from: bytes)
-        }
-        return address
     }
 
     deinit { stop() }
