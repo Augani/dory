@@ -83,6 +83,140 @@ import Testing
         #expect(response.destinationCID == 3)
     }
 
+    @Test func hostInitiatedConnectionStreamsReadWriteAcrossPCIQueues() throws {
+        let device = try DoryPCVirtioVsockPCIDevice(
+            address: .init(bus: 0, device: 10, function: 0),
+            initialBARAddress: 0xD000_E000
+        )
+        let machine = try DoryPCDirectKernelMachine(
+            memoryBytes: 2 * 1024 * 1024,
+            pciFunctions: [device]
+        )
+
+        try device.writeConfiguration(offset: 4, bytes: [2, 0])
+        try write32(machine, 0xD000_E008, 1)
+        try write32(machine, 0xD000_E00C, 1)
+        try write8(machine, 0xD000_E014, 0x0F)
+        try configureQueue(
+            0,
+            descriptor: 0x1000,
+            available: 0x2000,
+            used: 0x3000,
+            machine: machine
+        )
+        try configureQueue(
+            1,
+            descriptor: 0x5000,
+            available: 0x6000,
+            used: 0x7000,
+            machine: machine
+        )
+
+        // Host opens the stream. The REQUEST must cross queue 0 into guest-writable memory.
+        let connection = try device.vsock.connectIfCapacity(port: 1_024)
+        try writeDescriptor(
+            machine,
+            at: 0x1000,
+            address: 0x4000,
+            length: 256,
+            flags: 2,
+            next: 0
+        )
+        try machine.physicalMemory.write(at: 0x2000, bytes: [0, 0, 1, 0, 0, 0])
+        try write16(machine, 0xD000_E100, 0)
+
+        let request = try VirtioVsockHeader(decoding: machine.physicalMemory.read(
+            at: 0x4000,
+            byteCount: VirtioVsockHeader.byteCount
+        ))
+        #expect(request.operation == .request)
+        #expect(request.sourceCID == 2)
+        #expect(request.destinationCID == 3)
+        #expect(request.destinationPort == 1_024)
+        let hostPort = request.sourcePort
+
+        // The guest completes the connection with a RESPONSE over queue 1.
+        let response = VirtioVsockHeader(
+            sourceCID: 3,
+            destinationCID: 2,
+            sourcePort: 1_024,
+            destinationPort: hostPort,
+            length: 0,
+            operation: .response,
+            bufferAllocation: 65_536,
+            forwardCount: 0
+        ).encoded()
+        try writeDescriptor(
+            machine,
+            at: 0x5000,
+            address: 0x8000,
+            length: UInt32(response.count),
+            flags: 0,
+            next: 0
+        )
+        try machine.physicalMemory.write(at: 0x8000, bytes: response)
+        try machine.physicalMemory.write(at: 0x6000, bytes: [0, 0, 1, 0, 0, 0])
+        try write16(machine, 0xD000_E104, 1)
+        #expect(read16(try machine.physicalMemory.read(at: 0x7002, byteCount: 2)) == 1)
+
+        // Host → guest data: writes must appear in the next queue-0 chain.
+        try connection.write(Array("hello".utf8))
+        try writeDescriptor(
+            machine,
+            at: 0x1010,
+            address: 0x4100,
+            length: 256,
+            flags: 2,
+            next: 0
+        )
+        try machine.physicalMemory.write(at: 0x2000, bytes: [0, 0, 2, 0, 0, 0, 1, 0])
+        try write16(machine, 0xD000_E100, 0)
+
+        let outboundHeader = try VirtioVsockHeader(decoding: machine.physicalMemory.read(
+            at: 0x4100,
+            byteCount: VirtioVsockHeader.byteCount
+        ))
+        #expect(outboundHeader.operation == .readWrite)
+        #expect(outboundHeader.sourceCID == 2)
+        #expect(outboundHeader.destinationCID == 3)
+        #expect(outboundHeader.length == 5)
+        let outboundPayload = try machine.physicalMemory.read(
+            at: 0x4100 + UInt64(VirtioVsockHeader.byteCount),
+            byteCount: 5
+        )
+        #expect(String(decoding: outboundPayload, as: UTF8.self) == "hello")
+
+        // Guest → host data: an RW packet on queue 1 must reach the host connection read.
+        let greeting = Array("world".utf8)
+        let inbound = VirtioVsockHeader(
+            sourceCID: 3,
+            destinationCID: 2,
+            sourcePort: 1_024,
+            destinationPort: hostPort,
+            length: UInt32(greeting.count),
+            operation: .readWrite,
+            bufferAllocation: 65_536,
+            forwardCount: 0
+        ).encoded() + greeting
+        try writeDescriptor(
+            machine,
+            at: 0x5010,
+            address: 0x8200,
+            length: UInt32(inbound.count),
+            flags: 0,
+            next: 0
+        )
+        try machine.physicalMemory.write(at: 0x8200, bytes: inbound)
+        try machine.physicalMemory.write(at: 0x6000, bytes: [0, 0, 2, 0, 0, 0, 1, 0])
+        try write16(machine, 0xD000_E104, 1)
+
+        var buffer = [UInt8](repeating: 0, count: 64)
+        let readCount = try buffer.withUnsafeMutableBytes {
+            try connection.read(into: $0)
+        }
+        #expect(String(decoding: buffer.prefix(readCount), as: UTF8.self) == "world")
+    }
+
     @Test func replacementTransportPreservesListenersButRevokesConnections() throws {
         let vsock = VirtioVsock(guestCID: 3)
         let listener = try vsock.registerListener(port: 1_024) { _ in }
