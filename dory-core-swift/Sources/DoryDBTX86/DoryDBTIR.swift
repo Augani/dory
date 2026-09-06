@@ -718,7 +718,7 @@ public struct DoryX86IRTranslator: Sendable {
       }
       if case .register(let target) = destination,
         target.bank == "x86.gpr", target.index < 16, target.width == .i16,
-        operation == .or, writesDestination,
+        (operation == .or || operation == .and), writesDestination,
         case .memory(let address, width: .i16) = source
       {
         return isJITMemoryAddress(address)

@@ -1717,7 +1717,7 @@ import Testing
     #endif
   }
 
-  @Test func wordMemorySourceOrMatchesInterpreterAcrossTiers() throws {
+  @Test func wordMemorySourceLogicalMatchesInterpreterAcrossTiers() throws {
     #if arch(arm64)
       struct Case {
         let bytes: [UInt8]
@@ -1759,6 +1759,30 @@ import Testing
           address: 0x1BA0,
           memoryWord: 0x0000,
           comment: "measured shape with zero result for ZF/parity"
+        ),
+        .init(
+          bytes: [0x66, 0x41, 0x23, 0x44, 0x24, 0x7A],
+          rip: 0x40,
+          registers: .init(rax: 0xAABB_CCDD_EEFF_F0F0, r12: 0x100),
+          address: 0x17A,
+          memoryWord: 0x0F0F,
+          comment: "measured and ax,word ptr [r12+0x7a], zero result"
+        ),
+        .init(
+          bytes: [0x66, 0x23, 0x00],
+          rip: 0,
+          registers: .init(rax: 0x0120),
+          address: 0x0120,
+          memoryWord: 0x00F0,
+          comment: "AND destination also supplies effective address"
+        ),
+        .init(
+          bytes: [0x66, 0x41, 0x23, 0x44, 0x24, 0x7A],
+          rip: 0x40,
+          registers: .init(rax: 0xAABB_CCDD_EEFF_8001, r12: 0x100),
+          address: 0x17A,
+          memoryWord: 0xFFFF,
+          comment: "AND preserves high containing bits and sets word sign flag"
         ),
       ]
       let initialFlags: [DoryX86RFLAGS] = [
@@ -1844,9 +1868,10 @@ import Testing
     #endif
   }
 
-  @Test func wordMemorySourceOrFaultLeavesArchitecturalStateRestartable() throws {
+  @Test(arguments: [UInt8(0x0B), UInt8(0x23)])
+  func wordMemorySourceLogicalFaultLeavesArchitecturalStateRestartable(opcode: UInt8) throws {
     #if arch(arm64)
-      let bytes: [UInt8] = [0x66, 0x0B, 0x00]  // or ax,word ptr [rax]
+      let bytes: [UInt8] = [0x66, opcode, 0x00]  // OR/AND AX,word ptr [RAX]
       for (index, optimization) in [DoryARM64JITOptimization.baseline, .optimizing].enumerated() {
         let memory = try DoryX86ByteArrayMemory(byteCount: 0x40)
         try memory.write(at: 0, bytes: bytes)

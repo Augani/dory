@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "baseHEAD": "04f6c0b7d195db228b93305596be07301f4ef1f4",
+  "scope": "Native word AND register,memory using the existing word OR implementation and narrow flag synthesis.",
+  "measuredTrigger": {
+    "bytes": "66412344247a",
+    "negativeCacheHits": 33011,
+    "run": "20260906024417-optimizing-tier-fc82-command"
+  },
+  "validation": {
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path dory-core-swift --filter 'wordMemorySourceLogical|DoryJITHighByteAndTests|wordMemoryArithmeticMatchesInterpreterAndPreservesFaultState' --jobs 2",
+    "exitCode": 0,
+    "testsPassed": 5,
+    "newNormalComparisons": 12,
+    "newFaultCases": 2,
+    "logSHA256": "916bb587a6594543e98b4514808bdb3a2893831677e873076f684ac74068f42e"
+  },
+  "limitations": [
+    "Current immutable physical VM does not contain this change.",
+    "Interpreter equivalence does not establish a VM speedup."
+  ]
+}
