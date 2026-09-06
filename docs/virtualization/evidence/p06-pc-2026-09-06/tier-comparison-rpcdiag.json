@@ -1,0 +1,82 @@
+{
+  "receiptType": "pc-x86-tier-comparison-rpcdiag",
+  "createdAt": "2026-09-06T15:30:00Z",
+  "sourceCommit": "051c97f25b4ae803b6e8f20963b3c6e7f418eaee",
+  "runner": {
+    "app": "DerivedData-PC-051c97f25-20260906/Build/Products/Release/DoryHVRunner.app",
+    "doryHVSHA256": "3a17fa39b487021613e0da558ca757c06e508540d0ea51156c27de7008738e88",
+    "memoryMB": 1024,
+    "virtualCPUCount": 1
+  },
+  "tiers": {
+    "interpreter": {
+      "runPath": "pc-production-051c97f25-20260906/run-interpreter-tier-051c-rpcdiag-direct-bindready",
+      "reachedBindReady": false,
+      "handshakeSucceeded": false,
+      "rpcSucceeded": false,
+      "instructionCount": 4444750000,
+      "elapsedSeconds": 7200,
+      "bootStage": "GRUB (serial still showing 'Welcome to GRUB!')",
+      "failureReason": "Interpreter is ~7.7x slower than optimizing-JIT. After 2 hours, the guest had not progressed past GRUB. Full boot would require an estimated 8+ hours.",
+      "notes": "Interpreter is not viable for full x86 guest boot. Useful only for unit tests and conformance."
+    },
+    "baseline-jit": {
+      "runPath": "pc-production-051c97f25-20260906/run-baseline-tier-051c-rpcdiag-direct-bindready",
+      "reachedBindReady": true,
+      "handshakeSucceeded": true,
+      "handshakeDurationSeconds": 57.568,
+      "peerBuild": "dory-agent/0.0.0",
+      "peerProtoVersion": 1,
+      "peerFrameLength": 20,
+      "rpcSucceeded": false,
+      "rpcTimeoutSeconds": 340.048,
+      "instructionCount": 17605497519,
+      "interpreterInstructions": 46002481,
+      "bootToBindReadySeconds": 3361,
+      "failureReason": "RPC /bin/true timed out after 340s subprocess timeout (300s RPC client timeout + 30s grace). The baseline-JIT is ~3.5x slower than optimizing-JIT for handshake (57.6s vs 16.5s). The RPC would require an estimated 765s, far exceeding the 300s timeout.",
+      "vmTermination": {
+        "action": "terminate",
+        "returncode": 0
+      },
+      "notes": "Baseline-JIT can boot and reach agent bind-ready, and can complete the agent handshake, but is too slow to service RPC exec requests within the 300s timeout."
+    },
+    "optimizing-jit": {
+      "runPath": "pc-production-051c97f25-20260906/run-optimizing-tier-051c-rpcdiag-direct-bindready",
+      "reachedBindReady": true,
+      "handshakeSucceeded": true,
+      "handshakeDurationSeconds": 16.542,
+      "peerBuild": "dory-agent/0.0.0",
+      "peerProtoVersion": 1,
+      "peerFrameLength": 20,
+      "rpcSucceeded": true,
+      "rpcExitCode": 0,
+      "rpcReturnCode": 0,
+      "rpcDurationSeconds": 218.725,
+      "instructionCount": 16975335279,
+      "bootToBindReadySeconds": 3901,
+      "vmTermination": {
+        "action": "terminate",
+        "returncode": 0
+      },
+      "notes": "Only tier that completes the full end-to-end path: boot, bind-ready, handshake, and /bin/true RPC."
+    }
+  },
+  "comparison": {
+    "handshakeSpeedup": {
+      "optimizing_vs_baseline": "3.5x (16.5s vs 57.6s)",
+      "optimizing_vs_interpreter": "N/A (interpreter did not reach handshake)"
+    },
+    "bootProgress": {
+      "optimizing_jit": "Reached bind-ready in ~65 min",
+      "baseline_jit": "Reached bind-ready in ~56 min (3361s observer elapsed including probe retries)",
+      "interpreter": "Still at GRUB after 120 min"
+    },
+    "rpcViability": {
+      "optimizing_jit": "RPC completes in 218.7s (within 300s timeout)",
+      "baseline_jit": "RPC would require ~765s (exceeds 300s timeout)",
+      "interpreter": "RPC not attempted (guest did not reach bind-ready)"
+    }
+  },
+  "qualification": "preview/developer-ID evidence; not production release qualification",
+  "conclusion": "Only the optimizing-JIT tier completes the full x86 guest-agent RPC path within practical timeouts. The baseline-JIT tier boots and handshakes but cannot service RPCs within 300s. The interpreter tier cannot boot a full Linux guest in practical time. The optimizing-JIT tier is the minimum viable execution tier for DoryPC x86 guest-agent workloads."
+}
