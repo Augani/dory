@@ -1,0 +1,31 @@
+{
+  "receiptType": "pc-x86-clock-stall-rescope",
+  "createdAt": "2026-09-06T15:45:00Z",
+  "sourceCommit": "051c97f25b4ae803b6e8f20963b3c6e7f418eaee",
+  "track": "A",
+  "objective": "Re-scope clock stall: verify host-monotonic production clock at HEAD before changing clock emulation",
+  "evidence": {
+    "productionCampaign": {
+      "configuration": "UEFI + host-monotonic clock (DoryPCClockSource.hostMonotonic) + optimizing-JIT",
+      "result": "Guest booted successfully with normal interrupt delivery throughout",
+      "maskableInterrupts": 3861573,
+      "interruptVectors": "0xec:2869671, 0x40:271380, 0x30:29573, 0x20:7763, 0x21:1040",
+      "reachedBindReady": true,
+      "handshakeSucceeded": true,
+      "rpcSucceeded": true,
+      "rpcExitCode": 0,
+      "receiptRef": "rpcdiag-bindready-rpc-true.json"
+    },
+    "unitTests": {
+      "DoryPCDirectKernelMachineTests": "29/29 passed, including productionClockAdvancesTSCAndDevicesFromHostMonotonicTime",
+      "DoryPCPMTimerCoherenceTests": "7/7 passed, including hostClockPreservesSubTickTimeAndCoherentCalibrationThroughPMTimerWrap and hostResumeDropsSuspendedTimeWithoutDiscardingPMOscillatorFraction"
+    },
+    "previousInvestigation": {
+      "finding": "Early interrupt counts paused during a long boot region, but later interrupts resumed substantially. Guest progressed through PCI, filesystem mount, init, and userspace.",
+      "conclusion": "The apparent timer stall was not continuously reproducible."
+    }
+  },
+  "conclusion": "The clock stall is not a blocking issue at HEAD. The production configuration (UEFI + host-monotonic clock) delivers interrupts normally and completes full boot + RPC. All clock unit tests pass. No clock emulation change is needed.",
+  "noChangeRequired": true,
+  "qualification": "preview/developer-ID evidence; not production release qualification"
+}
