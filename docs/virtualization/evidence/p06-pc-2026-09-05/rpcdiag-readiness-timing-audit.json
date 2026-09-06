@@ -1,0 +1,21 @@
+{
+  "scope": "Audit of fc82 rpcdiag readiness trigger; not a persistent transport-failure verdict",
+  "evidence": {
+    "dorycfg/boot.sh": "644ad50b3e08c4e4a032b64e06393b87877f36a89f3393637a71690c581c4666",
+    "launch-rpcdiag-pc.py": "f04e1acbd4c8fafdfa2ab58256701c9cd7f53dda4c97f44a21a5c80b37795d56",
+    "rpcdiag-terminal-receipt.json": "e8353eada29462ad4fe70e99732bc5b6b73e58d9e2028bb95c8934f4280631c9"
+  },
+  "observed": [
+    "Serial true returned0 and uname identified x86_64 Linux.",
+    "Boot script prints AGENT-EXEC before exec /run/dory-agent and before FIFO output redirection completes.",
+    "Launcher starts probes on that marker; raw hello began at1470.407 host seconds and saw EOF after0.222s.",
+    "Launcher waits30seconds after its one probe sequence and then leaves its observation loop; global diagnostic limit1500s.",
+    "No in-agent bind-ready or successful handshake evidence was retained."
+  ],
+  "conclusion": "Early handshake failure is established; listener readiness at probe time and a persistent transport defect are not established.",
+  "nextAcceptance": [
+    "Emit a bounded bind-ready marker after guest control VsockListener::bind succeeds.",
+    "Retry bounded startup handshake on the same live VM until readiness, actual process exit, or a separately recorded startup deadline.",
+    "Run the command and GPU probes only after agent readiness; retain external guest logs."
+  ]
+}
