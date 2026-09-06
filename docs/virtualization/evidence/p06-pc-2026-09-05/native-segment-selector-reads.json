@@ -15,5 +15,12 @@
   ],
   "limitations": [
     "No end-to-end throughput improvement established; live source153717014 runner predates this change."
-  ]
+  ],
+  "independentIsolatedValidation": {
+    "result": "150 tests in 5 suites passed; includes differential isolation coverage.",
+    "log": "${HOME}/.dory/qualification/nonlock-cmpxchg-20260905-195444/logs/selector-root-final-validation.log",
+    "logSHA256": "77e45200d73fae0fdd8ab8e1b185408164838d00877968067dc73c61696c2172",
+    "sourceHashesMatchCommittedBatch": true,
+    "priorAttempt": "Two issues came from the isolated copy retaining an obsolete nil-result expectation; final copy asserts interpreter exit and unchanged state, matching committed test."
+  }
 }
