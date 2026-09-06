@@ -319,9 +319,14 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       let totalBytes = elementCount * pattern.count
       pattern.withUnsafeBufferPointer { buffer in
         let dest = pointer.advanced(by: offset)
-        for i in 0..<elementCount {
-          dest.advanced(by: i * pattern.count).copyMemory(
-            from: buffer.baseAddress!, byteCount: pattern.count)
+        dest.copyMemory(from: buffer.baseAddress!, byteCount: pattern.count)
+        var filled = pattern.count
+        // Replicate the initialized prefix. Each copy is disjoint and ends on
+        // an element boundary, including the final partial doubling.
+        while filled < totalBytes {
+          let count = min(filled, totalBytes - filled)
+          dest.advanced(by: filled).copyMemory(from: dest, byteCount: count)
+          filled += count
         }
       }
       markCodePagesWritten(offset: offset, byteCount: totalBytes)

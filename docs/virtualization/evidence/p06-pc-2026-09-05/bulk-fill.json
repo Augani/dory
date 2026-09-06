@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "date": "2026-09-06",
+  "change": "Mmap repeated-pattern fill seeds one element and doubles a disjoint initialized prefix instead of copying every element separately. RAM bounds, locking and code-page invalidation remain unchanged.",
+  "verification": {
+    "result": "17 tests passed",
+    "coverage": "60 added byte comparisons across two RAM backends, widths 1/2/3/4/8, counts 1/3/8/511/512/513, unaligned destinations and guard bytes; existing whole-element clipping, code-page invalidation, REP canonical boundaries and interruptible progress tests pass."
+  },
+  "benchmark": {
+    "command": "swiftc -O bulk-fill-benchmark.swift -o /tmp/dory-fill-benchmark && /tmp/dory-fill-benchmark",
+    "scope": "Isolated old and new loop implementations, 20000 repetitions per case. Excludes translation, locks, generation bookkeeping and VM execution.",
+    "qword_512_elements_ns": {
+      "old": 21997375,
+      "new": 1361958
+    }
+  },
+  "artifacts": {
+    "bulk-fill-benchmark.swift": {
+      "uncompressed_sha256": "8ff1c961bc4976f8dace49a41315d8f30336e711d00bb5f414b7f3d25c6c66a4"
+    },
+    "bulk-fill-benchmark.log.gz": {
+      "uncompressed_sha256": "d04a3aba4ecdd39344cfd102e61b896c2fb31f2c8f21351c12236d7771851b72"
+    },
+    "bulk-fill-tests.log.gz": {
+      "uncompressed_sha256": "ec3832a498a3a2e21c9308f876f1f732875bc1a6b7ddd1c4b960a2f7e7d3dd44"
+    }
+  },
+  "limits": [
+    "No end-to-end VM speedup demonstrated.",
+    "Current immutable 94c runner does not include this source change."
+  ]
+}

@@ -146,6 +146,20 @@ import Testing
           at: 0x2FFE, pattern: [1, 2], maximumElementCount: .max) == 1)
       #expect(try memory.read(at: 0x2FFE, byteCount: 3) == [1, 2, 0])
     }
+    for width in [1, 2, 3, 4, 8] {
+      let pattern = (0..<width).map { UInt8($0 + 1) }
+      for count in [1, 3, 8, 511, 512, 513] {
+        let byteCount = width * count
+        for memory in try backends(byteCount: byteCount + 2) {
+          try memory.write(at: 0x1000, bytes: Array(repeating: 0xCC, count: byteCount + 2))
+          #expect(
+            try memory.fillRepeating(
+              at: 0x1001, pattern: pattern, maximumElementCount: count) == count)
+          let expected: [UInt8] = [0xCC] + (0..<count).flatMap { _ in pattern } + [0xCC]
+          #expect(try memory.read(at: 0x1000, byteCount: byteCount + 2) == expected)
+        }
+      }
+    }
   }
 
   @Test func largeVirtualReservationTracksOnlyWrittenCodePages() throws {
