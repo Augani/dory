@@ -104,6 +104,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case doubleShiftRightCL(destination: DoryIROperand, source: DoryIROperand)
   case doubleShiftRightImmediate(destination: DoryIROperand, source: DoryIROperand, count: UInt8)
   case compareExchange(destination: DoryIROperand, source: DoryIROperand)
+  case exchangeRegisters(lhs: DoryIRRegister, rhs: DoryIRRegister)
   case signedMultiply(destination: DoryIROperand, lhs: DoryIROperand, rhs: DoryIROperand)
   case extendMove(destination: DoryIROperand, source: DoryIROperand, signed: Bool)
   case effectiveAddress(destination: DoryIROperand, address: DoryIRMemoryAddress)
@@ -429,10 +430,34 @@ public struct DoryX86IRTranslator: Sendable {
       )
     case .setInterruptsEnabled(false) where mode == .long64:
       return ([.clearInterruptFlag], nil)
+    case .exchange(let lhs, let rhs) where mode == .long64:
+      let lhsOperand = operand(lhs, instructionRelativeBase: instruction.nextInstructionAddress)
+      let rhsOperand = operand(rhs, instructionRelativeBase: instruction.nextInstructionAddress)
+      guard case .register(let lhsRegister) = lhsOperand,
+        case .register(let rhsRegister) = rhsOperand,
+        lhsRegister.bank == "x86.gpr", rhsRegister.bank == "x86.gpr",
+        lhsRegister.index < 16, rhsRegister.index < 16,
+        lhsRegister.width == .i64, rhsRegister.width == .i64
+      else { return fallback(instruction, reason: .interpreter) }
+      return ([.exchangeRegisters(lhs: lhsRegister, rhs: rhsRegister)], nil)
     case .setDirection(let enabled) where mode == .long64:
       return ([.setDirectionFlag(enabled: enabled)], nil)
     case .readTimestampCounter(false) where mode == .long64:
       return ([.readTimestampCounter], .next(instruction.nextInstructionAddress))
+    case .signExtendAccumulator(let width, false) where mode == .long64:
+      guard irWidth(width) == .i64 else {
+        return fallback(instruction, reason: .interpreter)
+      }
+      return (
+        [
+          .extendMove(
+            destination: .register(.init(bank: "x86.gpr", index: 0, width: .i64)),
+            source: .register(.init(bank: "x86.gpr", index: 0, width: .i32)),
+            signed: true
+          )
+        ],
+        nil
+      )
     case .signExtendAccumulator(let width, true) where mode == .long64:
       let irWidth = irWidth(width)
       guard irWidth == .i32 || irWidth == .i64 else {
@@ -716,10 +741,11 @@ public struct DoryX86IRTranslator: Sendable {
         guard case .register = destination else { return false }
         return width == targetWidth && isJITMemoryAddress(address)
       }
-    case .unary(_, let operand):
+    case .unary(let operation, let operand):
       switch operand {
       case .register(let register):
         return isJITGeneralRegister(register)
+          || (operation == .bitwiseNot && isJITLowByteRegister(register))
       case .memory(let address, let width):
         return (width == .i32 || width == .i64) && isJITMemoryAddress(address)
       case .immediate:
@@ -846,6 +872,9 @@ public struct DoryX86IRTranslator: Sendable {
       return [address.base, address.index].compactMap { $0 }.allSatisfy {
         isJITGeneralRegister($0) && $0.width == address.addressWidth
       }
+    case .exchangeRegisters(let lhs, let rhs):
+      return isJITGeneralRegister(lhs) && lhs.width == .i64
+        && isJITGeneralRegister(rhs) && rhs.width == .i64
     case .compareExchange(let destination, let source):
       guard case .memory(let address, let width) = destination,
         (width == .i32 || width == .i64) && isJITMemoryAddress(address),
@@ -939,6 +968,8 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(source) ? .read : .none
     case .compareExchange:
       return .write
+    case .exchangeRegisters:
+      return .none
     case .readSegment(_, let destination):
       return isMemory(destination) ? .write : .none
     case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,

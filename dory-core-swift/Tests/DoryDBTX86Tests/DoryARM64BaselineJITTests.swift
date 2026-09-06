@@ -4826,6 +4826,192 @@ import Testing
     }
   }
 
+  @Test func measuredRegisterOnlyFirmwareSitesMatchInterpreterAcrossTiers() throws {
+    #if arch(arm64)
+      struct Case {
+        let bytes: [UInt8]
+        let registers: DoryX86GeneralRegisters
+        let comment: String
+        let check: (DoryX86ArchitecturalState) -> Void
+      }
+      let cases: [Case] = [
+        .init(
+          bytes: [0x48, 0x87, 0xCA],
+          registers: .init(rcx: 0x1111_2222_3333_4444, rdx: 0xAAAA_BBBB_CCCC_DDDD),
+          comment: "measured xchg rdx,rcx firmware hot site",
+          check: { state in
+            #expect(state.registers.rcx == 0xAAAA_BBBB_CCCC_DDDD)
+            #expect(state.registers.rdx == 0x1111_2222_3333_4444)
+          }
+        ),
+        .init(
+          bytes: [0x49, 0x90],
+          registers: .init(rax: 0x0102_0304_0506_0708, r8: 0x8877_6655_4433_2211),
+          comment: "xchg rax,r8 short opcode with REX.B",
+          check: { state in
+            #expect(state.registers.rax == 0x8877_6655_4433_2211)
+            #expect(state.registers.r8 == 0x0102_0304_0506_0708)
+          }
+        ),
+        .init(
+          bytes: [0x48, 0x87, 0xC0],
+          registers: .init(rax: 0xCAFE_BABE_DEAD_BEEF),
+          comment: "same-register xchg leaves state unchanged",
+          check: { state in
+            #expect(state.registers.rax == 0xCAFE_BABE_DEAD_BEEF)
+          }
+        ),
+        .init(
+          bytes: [0x48, 0x94],
+          registers: .init(rax: 0x0102_0304_0506_0708, rsp: 0x8000),
+          comment: "xchg rax,rsp updates RSP without stack memory access",
+          check: { state in
+            #expect(state.registers.rax == 0x8000)
+            #expect(state.registers.rsp == 0x0102_0304_0506_0708)
+          }
+        ),
+        .init(
+          bytes: [0x48, 0x98],
+          registers: .init(rax: 0x7777_7777_8000_0001, rdx: 0x1122_3344_5566_7788),
+          comment: "measured cdqe firmware hot site sign-extends EAX into RAX",
+          check: { state in
+            #expect(state.registers.rax == 0xFFFF_FFFF_8000_0001)
+            #expect(state.registers.rdx == 0x1122_3344_5566_7788)
+          }
+        ),
+        .init(
+          bytes: [0x48, 0x98],
+          registers: .init(rax: 0xFFFF_FFFF_7FFF_FFFE),
+          comment: "cdqe clears high half when EAX sign bit is clear",
+          check: { state in
+            #expect(state.registers.rax == 0x0000_0000_7FFF_FFFE)
+          }
+        ),
+        .init(
+          bytes: [0xF6, 0xD2],
+          registers: .init(rdx: 0x1122_3344_5566_7780),
+          comment: "measured not dl firmware hot site",
+          check: { state in
+            #expect(state.registers.rdx == 0x1122_3344_5566_777F)
+          }
+        ),
+        .init(
+          bytes: [0x41, 0xF6, 0xD0],
+          registers: .init(r8: 0xAABB_CCDD_EEFF_000F),
+          comment: "not r8b preserves upper bits",
+          check: { state in
+            #expect(state.registers.r8 == 0xAABB_CCDD_EEFF_00F0)
+          }
+        ),
+      ]
+      let initialFlags: [DoryX86RFLAGS] = [
+        .reservedOne,
+        [
+          .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .sign, .overflow,
+          .interruptEnable, .direction, .identification,
+        ],
+      ]
+
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        for (caseIndex, testCase) in cases.enumerated() {
+          for (flagIndex, flags) in initialFlags.enumerated() {
+            var interpreted = try DoryX86ArchitecturalState(
+              registers: testCase.registers,
+              rip: 0,
+              rflags: flags
+            )
+            let decoded = try DoryX86Decoder().decode(testCase.bytes, at: 0, mode: .long64)
+            #expect(DoryX86Interpreter().step(
+              state: &interpreted,
+              memory: try DoryX86ByteArrayMemory(bytes: testCase.bytes),
+              mode: .long64
+            ) == .retired(decoded))
+
+            var translated = try DoryX86ArchitecturalState(
+              registers: testCase.registers,
+              rip: 0,
+              rflags: flags
+            )
+            let execution = try #require(
+              DoryARM64BaselineExecutor(
+                maximumCodeBytes: 16 * 1024,
+                optimization: optimization
+              ).execute(
+                bytes: testCase.bytes,
+                at: translated.rip,
+                mode: .long64,
+                addressSpaceID: UInt64(0x2C00 + caseIndex * 4 + flagIndex),
+                maximumInstructions: 1,
+                state: &translated
+              )
+            )
+
+            #expect(execution.block.tier.rawValue == optimization.rawValue)
+            #expect(execution.exitCode == .dispatch)
+            #expect(!execution.block.requiresMemoryCallbacks)
+            #expect(translated == interpreted)
+            #expect(translated.rflags == flags)
+            testCase.check(translated)
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func registerExchangeInvalidatesOptimizedConstantsForBothOutputs() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [
+        0x48, 0xB9, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11,  // mov rcx,0x1111...
+        0x48, 0xBA, 0xDD, 0xDD, 0xCC, 0xCC, 0xBB, 0xBB, 0xAA, 0xAA,  // mov rdx,0xaaaabbbbccccdddd
+        0x48, 0x87, 0xCA,  // xchg rdx,rcx
+        0x48, 0x89, 0xC8,  // mov rax,rcx
+        0x48, 0x89, 0xD3,  // mov rbx,rdx
+      ]
+      var interpreted = try DoryX86ArchitecturalState(rip: 0)
+      let interpretedMemory = try DoryX86ByteArrayMemory(bytes: bytes)
+      for _ in 0..<5 {
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: interpretedMemory,
+          mode: .long64
+        ) else { Issue.record("interpreter did not retire xchg optimizer regression flow"); return }
+      }
+
+      var translated = try DoryX86ArchitecturalState(rip: 0)
+      let execution = try #require(DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        optimization: .optimizing
+      ).execute(
+        bytes: bytes,
+        at: 0,
+        mode: .long64,
+        addressSpaceID: 0x2D80,
+        maximumInstructions: 5,
+        state: &translated
+      ))
+
+      #expect(execution.block.tier == .optimizing)
+      #expect(execution.exitCode == .dispatch)
+      #expect(translated == interpreted)
+      #expect(translated.registers.rax == 0xAAAA_BBBB_CCCC_DDDD)
+      #expect(translated.registers.rbx == 0x1111_1111_1111_1111)
+    #endif
+  }
+
+  @Test func measuredRegisterOnlyFirmwareSitesKeepUnsupportedFormsBounded() throws {
+    let unsupported: [[UInt8]] = [
+      [0x48, 0x87, 0x08],  // xchg qword ptr [rax],rcx is implicitly locked memory exchange
+      [0x87, 0xCA],  // 32-bit register exchange remains interpreter until explicitly qualified
+      [0x98],  // cwde is distinct from measured REX.W cdqe
+      [0xF6, 0x10],  // not byte ptr [rax] is a memory write
+      [0xF6, 0xD4],  // not ah is a legacy high-byte write
+    ]
+    for (index, bytes) in unsupported.enumerated() {
+      let block = try DoryX86IRTranslator().translate(bytes, at: UInt64(0x2D00 + index), mode: .long64)
+      #expect(DoryARM64BaselineEmitter().compile(block).tier == .interpreterFallback)
+    }
+  }
+
   @Test func signExtendAccumulatorHighMatchesInterpreterAcrossTiers() throws {
     #if arch(arm64)
       struct SignExtendCase {

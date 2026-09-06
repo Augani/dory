@@ -1,0 +1,31 @@
+{
+  "head": "cc69253068babcd93a1aa086953af6cb3a7ecb25",
+  "hotspots": [
+    "4887ca / xchg rdx,rcx",
+    "4898 / cdqe",
+    "f6d2 / not dl"
+  ],
+  "log": "${HOME}/.dory/qualification/native-register-firmware-sites-20260906-0128/register-firmware-sites-baselinejit.log",
+  "log_sha256": "0d07a0bd7df40bb5046b40861052599270cef76e4a84825c34898eca676ecc9b",
+  "source_sha256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "57b899950a79ab7171af88edb6370659f3f5dec0c23f5a41e7d77361a75558d0",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "a3713799bf0af4eab180384af4d8451dfb65cde6f94ce96ba6ec54a7f7f71af7",
+    "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift": "f6c0363eeee71d3238d47b5b2241671c68c14ad0061234d1128c8e423c9b40f5",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "bf9c2c807d72c7202772970c71b41d472f49afdc31df63d60494788018d62d1a"
+  },
+  "status": [
+    " M Packages/ContainerizationEngine/Sources/dory-hv/RendererBootstrapQualificationCommand.swift",
+    " M dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift",
+    " M dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift",
+    " M dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift",
+    " M dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift",
+    " M patches/fex-restore-complete-signal-context.patch",
+    " M scripts/xcode-package-renderer-production.sh"
+  ],
+  "task": "native-register-firmware-sites",
+  "test_command": "DEVELOPER_DIR=${DEVELOPER_DIR} swift test --package-path dory-core-swift --filter 'DoryARM64BaselineJITTests' --jobs 1",
+  "schemaVersion": 1,
+  "result": "125 tests in 1 suite passed",
+  "coordinatorReview": "Verified exact source and log hashes. Reviewed register exchange loads before writes, self/RSP/extended aliases, both optimizer outputs invalidated, CDQE sign extension, low-byte NOT preservation, unchanged flags and explicit rejection of memory/high-byte forms.",
+  "qualification": "Focused native instruction regression coverage. No physical guest speedup claimed; comparison runner remains frozen at 33fb10434."
+}

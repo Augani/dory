@@ -192,6 +192,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return false
       case .bitScan(_, let destination, let source), .extendMove(let destination, let source, _):
         return isFSOrGS(destination) || isFSOrGS(source)
+      case .exchangeRegisters:
+        return false
       case .signedMultiply(let destination, let lhs, let rhs):
         return isFSOrGS(destination) || isFSOrGS(lhs) || isFSOrGS(rhs)
       case .unsignedAccumulatorMultiply(let source), .unsignedAccumulatorDivide(let source):
@@ -296,6 +298,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitSetDirectionFlag(enabled: enabled, into: &words)
     case .readTimestampCounter:
       return emitReadTimestampCounter(into: &words)
+    case .exchangeRegisters(let lhs, let rhs):
+      return emitExchangeRegisters(lhs: lhs, rhs: rhs, into: &words)
     case .signExtendAccumulatorHigh(let width):
       return emitSignExtendAccumulatorHigh(width: width, into: &words)
     case .unsignedAccumulatorMultiply(let source):
@@ -754,7 +758,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return 0
     case .bitTestMemoryImmediate(let operation, _, _):
       return operation == .test ? 1 : 2
-    case .conditionalMove, .setCondition, .bitTestRegister:
+    case .conditionalMove, .setCondition, .bitTestRegister, .exchangeRegisters:
       return 0
     case .bitScan(_, let destination, let source):
       if case .memory = destination { return 1 }
@@ -1853,6 +1857,21 @@ public struct DoryARM64BaselineEmitter: Sendable {
     return true
   }
 
+  private func emitExchangeRegisters(
+    lhs: DoryIRRegister,
+    rhs: DoryIRRegister,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard lhs.bank == "x86.gpr", rhs.bank == "x86.gpr",
+      lhs.index < 16, rhs.index < 16, lhs.width == .i64, rhs.width == .i64
+    else { return false }
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(lhs.index) * 8))
+    words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(rhs.index) * 8))
+    words.append(encodeStore64(register: 10, base: 0, byteOffset: Int(lhs.index) * 8))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(rhs.index) * 8))
+    return true
+  }
+
   private func emitLowByteBinary(
     _ operation: DoryIRBinaryOperation,
     destination: DoryIRRegister,
@@ -2021,6 +2040,18 @@ public struct DoryARM64BaselineEmitter: Sendable {
     }
   }
 
+  private func emitLowByteBitwiseNot(_ target: DoryIRRegister, into words: inout [UInt32]) -> Bool {
+    guard loadLowByteRegister(target, into: 9, words: &words) else { return false }
+    emitImmediate(0xFF, register: 10, into: &words)
+    words.append(encodeLogical(.xor, left: 9, right: 10, destination: 11))
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+    emitImmediate(~UInt64(0xFF), register: 10, into: &words)
+    words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
+    words.append(encodeLogical(.or, left: 9, right: 11, destination: 9))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+    return true
+  }
+
   private func emitARMCarryFromX86(inverted: Bool, into words: inout [UInt32]) {
     words.append(encodeLoad64(register: 12, base: 0, byteOffset: Self.rflagsOffset))
     emitImmediate(1, register: 15, into: &words)
@@ -2034,6 +2065,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
     operand: DoryIROperand,
     into words: inout [UInt32]
   ) -> Bool {
+    if case .register(let target) = operand, isLowByteRegister(target), operation == .bitwiseNot {
+      return emitLowByteBitwiseNot(target, into: &words)
+    }
     let width: DoryIRIntegerWidth
     switch operand {
     case .register(let target)
