@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "date": "2026-09-06",
+  "observed_instruction": "5c: POP RSP",
+  "observed_runner_sha256": "3f0285e109dc044634470b55008f89a19a581f3d216db4b95a932c2d6a9e364f",
+  "change": "Admit 64-bit POP RSP through existing stack read/guard path and write loaded value directly as final RSP; other POP registers keep old RSP+8. Existing optimizer invalidates pre-pop stack constants.",
+  "verification": {
+    "result": "3 tests pass",
+    "normal_stack_comparisons": 16,
+    "pop_rsp_comparisons": 8,
+    "fault_state_comparisons": 14,
+    "coverage": [
+      "Both JIT tiers",
+      "Final popped values zero, canonical address, noncanonical value and UInt64.max",
+      "Unmapped, partially unmapped and noncanonical old-stack reads preserve architectural state",
+      "Optimizer invalidation checked for POP RAX and POP RSP; unsupported memory/word forms retained"
+    ]
+  },
+  "log": "native-pop-rsp.log.gz",
+  "uncompressed_log_sha256": "bd153212d213ecc0cb12144663b5b523831e585e5a629bdef8e7beb4e6fe356e",
+  "profile": "native-pop-rsp-profile.txt",
+  "profile_sha256": "9bf596942c83c090c88a800ee893543d4accbe7f539cd29dca390ddf87d191cb",
+  "limits": [
+    "Current immutable VM runner does not include this source change.",
+    "No end-to-end performance improvement claimed."
+  ]
+}

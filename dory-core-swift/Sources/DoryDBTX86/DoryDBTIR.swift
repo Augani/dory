@@ -845,8 +845,7 @@ public struct DoryX86IRTranslator: Sendable {
       return true
     case .stackPop(let destination):
       guard case .register(let register) = destination,
-        register.width == .i64,
-        register.index != 4
+        register.width == .i64
       else { return false }
       return isJITGeneralRegister(register)
     case .signedMultiply(let destination, let lhs, let rhs):

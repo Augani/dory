@@ -454,17 +454,21 @@ public struct DoryARM64BaselineEmitter: Sendable {
     into words: inout [UInt32]
   ) -> Bool {
     guard case .register(let register) = destination,
-      register.bank == "x86.gpr", register.index < 16, register.index != 4,
+      register.bank == "x86.gpr", register.index < 16,
       register.width == .i64
     else { return false }
 
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
     emitCanonicalStackSpanGuard(addressRegister: 9, into: &words)
     emitMemoryRead(addressRegister: 9, width: .i64, resultRegister: 10, words: &words)
-    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
-    emitImmediate(8, register: 11, into: &words)
-    words.append(encodeAdd(is64Bit: true, left: 9, right: 11, destination: 9))
-    words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.rspOffset))
+    // POP RSP replaces the incremented pointer with the loaded value. Only other
+    // destinations retain the old stack pointer plus eight.
+    if register.index != 4 {
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rspOffset))
+      emitImmediate(8, register: 11, into: &words)
+      words.append(encodeAdd(is64Bit: true, left: 9, right: 11, destination: 9))
+      words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.rspOffset))
+    }
     words.append(encodeStore64(register: 10, base: 0, byteOffset: Int(register.index) * 8))
     return true
   }
