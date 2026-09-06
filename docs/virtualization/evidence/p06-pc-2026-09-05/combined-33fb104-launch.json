@@ -87,5 +87,32 @@
         "bytes": 349
       }
     ]
+  },
+  "terminalFollowup": {
+    "observedAt": "2026-09-06T02:04:34.598917+00:00",
+    "processPresent": false,
+    "exitCause": "Not established; no exit status available in preserved run logs.",
+    "guestWorkloadQualified": false,
+    "lastExecutionCounters": {
+      "baselineRetired": 13823466538,
+      "interpreterRetired": 58533462,
+      "maskableInterrupts": 3009838,
+      "recentCacheHits": 1303862856,
+      "dictionaryCacheHits": 3734718529,
+      "generationChecks": 5181522089
+    },
+    "lastSerialObservation": "Linux timekeeping watchdog skipped clock-skew check after a long read-back delay; no successful guest command recorded.",
+    "evidence": [
+      {
+        "path": "${HOME}/.dory/qualification/pc-production-combined-33fb10434-20260906-004843/run-20260906010941/root-terminal-observation/stderr.log",
+        "sha256": "1bcc6af388cfdbe9a2750364b01cfe78c12550dd16b40d02f66b347c67348c5a",
+        "bytes": 309124
+      },
+      {
+        "path": "${HOME}/.dory/qualification/pc-production-combined-33fb10434-20260906-004843/run-20260906010941/root-terminal-observation/serial.log",
+        "sha256": "a6ea93b456a4aea23cb7e5aabab699ecac0bd759e0f75c093fc8956277f5a39d",
+        "bytes": 31855
+      }
+    ]
   }
 }
