@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "recordedAt": "2026-09-06T01:11:12.838917+00:00",
+  "status": "private-candidate-partial-correction-not-promotable",
+  "finding": "Unchanged signal return restored host context and CPUState but did not restore the interrupted InSyscallInfo mask. The handler rt_sigreturn mask could leak into the interrupted continuation.",
+  "correction": "Capture the interrupted InSyscallInfo in StoreThreadState and restore it unconditionally in RestoreThreadState. Candidate includes earlier signal-context changes; this is not an isolated upstream patch qualification.",
+  "candidateFEXSHA256AgentReported": "e234074f168263b569ad03ee111172b0778911bb5a1fcafce17ca6f93d911978",
+  "verifiedByCoordinator": "Retained source diff and result files read and hashed; coordinator has not independently rerun these probes.",
+  "results": {
+    "editedPushPop": {
+      "passed": 220,
+      "total": 220,
+      "traceMaskZeroRecords": 220
+    },
+    "noSignalControl": {
+      "passed": 50,
+      "total": 50
+    },
+    "observeUneditedControl": {
+      "passed": 50,
+      "total": 50
+    },
+    "changedRIPExit": 0,
+    "signalFrameRoundTrip": 139,
+    "changedRIPReturnSameRSP": 139,
+    "changedRIPAndRSPReturn": 139
+  },
+  "remaining": [
+    "Diagnose changed RIP/RSP return failures against exact probe disassembly and continuation state",
+    "Validate default Go async-preemption workloads and dockerd",
+    "Clean producer validation before production FEX or initfs promotion",
+    "Combined FEX and GPU guest page-size configuration remains open"
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-restore-insyscallinfo-candidate-1788656300/source.diff",
+      "sha256": "5e6124cbe0a5c969416e77a99daca3a4631149f91f5979edde19d039c6776ebe",
+      "bytes": 8575
+    },
+    {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-restore-insyscallinfo-candidate-1788656300/repeat-v6-220-d.txt",
+      "sha256": "2698419ecd41433d2dc668f399b942d045ac4c8529e2c9490229d2ce5e49130b",
+      "bytes": 49
+    },
+    {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-restore-insyscallinfo-candidate-1788656300/repeat-v6-220-d-trace-summary.txt",
+      "sha256": "64213602c3547581783ed6fd418ebe2ecef5d2b3d089c9e19ad03aacb5085360",
+      "bytes": 672
+    },
+    {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-restore-insyscallinfo-candidate-1788656300/repeat-v7-controls-50-d.txt",
+      "sha256": "7a697775d0affcfb20530da35d8d36ef96de509f8bf8b3fac24571cb032ec4ad",
+      "bytes": 25
+    },
+    {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-restore-insyscallinfo-candidate-1788656300/corrected-signal-probes-d.txt",
+      "sha256": "eb858f41e353c395b01071e789c1867a1fd2500b603ba22c1a2ac37659a31a1c",
+      "bytes": 1137
+    }
+  ]
+}
