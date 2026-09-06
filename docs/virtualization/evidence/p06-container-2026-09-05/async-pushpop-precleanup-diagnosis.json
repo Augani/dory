@@ -6,7 +6,7 @@
     "Three baseline runs exit82; three candidate runs exit139 after emitting the same failure record.",
     "Recorded resume RIP0x201221, RSP0x7fffffffed60 and RBX0; pre-cleanup final RSP0x7fffffffed68 and RBX1."
   ],
-  "interpretation": "The later producer trace supersedes the initial incoherent-boundary hypothesis: host SRA has the correct post-push RBX and RSP, but IgnoreMask=0xffff makes SpillSRA retain stale frame values. Source review identifies a matching path: changed-context RestoreFrame_x64 restores InSyscallInfo, then dispatches directly without executing the abandoned syscall epilogue. A targeted correction still requires execution validation.",
+  "interpretation": "The later producer trace supersedes the initial incoherent-boundary hypothesis: host SRA has the correct post-push RBX and RSP, but IgnoreMask=0xffff makes SpillSRA retain stale frame values. Source review identifies a matching path: changed-context RestoreFrame_x64 restores InSyscallInfo, then dispatches directly without executing the abandoned syscall epilogue. A targeted correction still requires execution validation. The subsequent direct-clear experiment still fails the edited probe, so this source path is not a sufficient explanation or fix.",
   "limitations": [
     "No native x86 control run recorded here.",
     "Candidate still fails; production FEX pin remains unchanged.",
@@ -56,5 +56,22 @@
       "ignoreMask": "0xffff"
     },
     "limitation": "Private instrumented reproduction; host-PC provenance and the targeted fix require validation. Diagnostic pointer reads are not production code."
+  },
+  "directClearExperiment": {
+    "result": "Edited v6 still fails (exit139,56-byte failure record); all six unchanged/no-signal controls pass. Clearing InSyscallInfo on this direct-dispatch branch is insufficient.",
+    "candidateSHA256": "bfb881facde92a6306033082e32c1c471c0f168caa6ff81891408524f079b668",
+    "runLog": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-insyscallinfo-direct-dispatch-1788654603/run-v6-v7.txt",
+    "runLogSHA256": "b61e985998907b74af8409ffdbcdaaba773827f5404e8454dd103930d93a17af",
+    "failureRecordSHA256": "02ab0287fbb1eb96bd01d48df42d34685edeceeb44fdc230008433ec6ddbb14a",
+    "failureQwords": [
+      "0x52",
+      "0x7fffffffed68",
+      "0x1",
+      "0x7fffffffed60",
+      "0x201221",
+      "0x7fffffffed60",
+      "0x0"
+    ],
+    "nextStep": "Compare earlier passing pending-syscall candidate with explicit binary/server provenance before changing the producer or production pin."
   }
 }
