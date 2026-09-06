@@ -925,6 +925,440 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
+    @Test("private signed PC hardware-3D launch harness uses MachineManager fd9 authority")
+    func privateSignedPCHardware3DLaunchHarness() throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["DORY_PC_GPU_REAL_HARNESS"] == "1" else { return }
+
+        let qualificationRoot = environment["DORY_PC_GPU_REAL_HARNESS_ROOT"]
+            ?? NSHomeDirectory() + "/.dory/qualification/renderer-reset-signed-runner-20260906/pc-gpu-launch-prep-20260906023500"
+        let runnerApp = environment["DORY_PC_GPU_REAL_HARNESS_RUNNER_APP"]
+            ?? NSHomeDirectory() + "/.dory/qualification/renderer-reset-signed-runner-20260906/DerivedData-DoryHVRunner-pcprofile-authentic-20260906022000/Build/Products/Release/DoryHVRunner.app"
+        let runnerExecutable = runnerApp + "/Contents/MacOS/dory-hv"
+        let firmwareBundle = environment["DORY_PC_GPU_REAL_HARNESS_PC_FIRMWARE"]
+            ?? NSHomeDirectory() + "/.dory/qualification/pc-firmware-recovery-20260905.qxX6ib/dory-pc-firmware-current"
+        let installerESP = environment["DORY_PC_GPU_REAL_HARNESS_INSTALLER_ESP"]
+            ?? NSHomeDirectory() + "/.dory/qualification/pc-firmware-recovery-20260905.qxX6ib/esp-current/installer-esp-current.img"
+        let workingDirectory = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+        let workspaceRoot = FileManager.default.fileExists(
+            atPath: workingDirectory.appendingPathComponent("guest/out/initfs-amd64.ext4").path
+        )
+            ? workingDirectory
+            : workingDirectory.deletingLastPathComponent()
+        let systemDisk = environment["DORY_PC_GPU_REAL_HARNESS_SYSTEM_DISK"]
+            ?? workspaceRoot.appendingPathComponent("guest/out/initfs-amd64.ext4").path
+        let calibrationTool = environment["DORY_PC_GPU_REAL_HARNESS_CALIBRATION"]
+            ?? workspaceRoot.appendingPathComponent("dory-core-swift/.build/debug/dory-linux-calibration").path
+        let probeDirectory = environment["DORY_PC_GPU_REAL_HARNESS_PROBE_DIR"]
+            ?? qualificationRoot
+        let pcKernel = environment["DORY_PC_GPU_REAL_HARNESS_PC_KERNEL"]
+            ?? workspaceRoot.appendingPathComponent("guest/out/vmlinux-x86-pc-virgl2").path
+        let pcMesa = environment["DORY_PC_GPU_REAL_HARNESS_PC_MESA"]
+            ?? workspaceRoot.appendingPathComponent("guest/out/dory-mesa-virgl2-x86_64.tar.zst").path
+        let probeGuestPath = environment["DORY_PC_GPU_REAL_HARNESS_PROBE_GUEST_PATH"]
+            ?? "/mnt/dory-gpu-probe/dory-pc-virgl2-clear-readback-probe"
+        let receiptPath = environment["DORY_PC_GPU_REAL_HARNESS_RECEIPT"]
+            ?? qualificationRoot + "/private-real-machine-manager-pc-hardware3d-launch.json"
+        let waitSeconds = TimeInterval(environment["DORY_PC_GPU_REAL_HARNESS_WAIT_SECONDS"].flatMap(Double.init) ?? 1_800)
+
+        try requireRegularFile(runnerExecutable, label: "signed fc82 runner executable")
+        try requireRegularFile(systemDisk, label: "PC system disk")
+        try requireRegularFile(installerESP, label: "PC installer ESP")
+        let installerMedia = environment["DORY_PC_GPU_REAL_HARNESS_INSTALLER_MEDIA"]
+            ?? qualificationRoot + "/installer-esp-current-mbr-efisys.img"
+        let installerMediaMetadata = try makeMBRWrappedEFIMedia(
+            exactESPPath: installerESP,
+            outputPath: installerMedia
+        )
+        try requireRegularFile(installerMedia, label: "PC installer MBR EFI media")
+        let installerMediaIdentity = try DoryInstallerISOInspector.portableEFIMediaIdentity(
+            atPath: installerMedia
+        )
+        #expect(installerMediaIdentity.architecture == .x86_64)
+        try requireRegularFile(calibrationTool, label: "dory-linux-calibration")
+        try requireRegularFile(pcKernel, label: "PC VirGL2 kernel")
+        try requireRegularFile(pcMesa, label: "PC VirGL2 Mesa runtime")
+        try requireDirectory(firmwareBundle, label: "PC firmware bundle")
+        try requireDirectory(probeDirectory, label: "GPU probe share")
+
+        let catalogDraftDirectory = environment["DORY_PC_GPU_REAL_HARNESS_CATALOG_DRAFT_DIR"]
+            ?? qualificationRoot + "/pc-virgl2-schema2-catalog-draft-fc82"
+        let catalogDraftData = try Data(contentsOf: URL(fileURLWithPath: catalogDraftDirectory + "/catalog.json"))
+        let catalogDraft = try JSONDecoder().decode(DoryComponentCatalog.self, from: catalogDraftData)
+        let catalogTestKey = Curve25519.Signing.PrivateKey()
+        let catalogTestPublicKey = catalogTestKey.publicKey.rawRepresentation.base64EncodedString()
+        let catalogTestKeyID = SHA256.hash(data: catalogTestKey.publicKey.rawRepresentation).map {
+            String(format: "%02x", $0)
+        }.joined()
+        let draftQualification = try #require(catalogDraft.virtualMachineQualification)
+        let testRootQualification = DoryComponentVirtualMachineQualificationAsset(
+            component: draftQualification.component,
+            path: draftQualification.path,
+            manifestIdentity: draftQualification.manifestIdentity,
+            manifestFormatVersion: draftQualification.manifestFormatVersion,
+            signingKeyID: catalogTestKeyID
+        )
+        let testCatalogComponents = catalogDraft.components.map { component in
+            guard component.id == .linuxMachines else { return component }
+            let downloadBytes = component.assets.reduce(UInt64(0)) { $0 + $1.downloadBytes }
+            let installedBytes = component.assets.reduce(UInt64(0)) { $0 + $1.installedBytes }
+            return DoryComponentRelease(
+                id: component.id,
+                version: component.version,
+                displayName: component.displayName,
+                summary: component.summary,
+                dependencies: component.dependencies,
+                downloadBytes: downloadBytes,
+                installedBytes: installedBytes,
+                assets: component.assets,
+                architectures: component.architectures,
+                hostRequirements: component.hostRequirements,
+                provides: component.provides,
+                requires: component.requires,
+                provenance: component.provenance,
+                qualification: component.qualification
+            )
+        }
+        let testCatalog = DoryComponentCatalog(
+            schemaVersion: catalogDraft.schemaVersion,
+            releaseVersion: catalogDraft.releaseVersion,
+            generatedAt: catalogDraft.generatedAt,
+            minimumAppVersion: catalogDraft.minimumAppVersion,
+            architecture: catalogDraft.architecture,
+            components: testCatalogComponents,
+            virtualMachineQualification: testRootQualification
+        )
+        let catalogEncoder = JSONEncoder()
+        catalogEncoder.outputFormatting = [.sortedKeys]
+        let catalogData = try catalogEncoder.encode(testCatalog)
+        let catalogTestSignature = try catalogTestKey.signature(for: catalogData).base64EncodedString()
+        let verifiedTestCatalog = try DoryComponentCatalogVerifier.verify(
+            catalogData: catalogData,
+            signatureBase64: catalogTestSignature,
+            publicKeyBase64: catalogTestPublicKey,
+            expectedArchitecture: DoryComponentDefaults.architecture,
+            appVersion: "999.0.0"
+        )
+        try verifyPrivatePCGPUCatalogInputs(
+            catalog: verifiedTestCatalog,
+            catalogDirectory: catalogDraftDirectory,
+            runnerSHA256: nil,
+            kernelSHA256: try fileSHA256(path: pcKernel),
+            mesaSHA256: try fileSHA256(path: pcMesa),
+            installerESPSHA256: try fileSHA256(path: installerESP),
+            systemDiskSHA256: try fileSHA256(path: systemDisk),
+            testSigningKeyID: catalogTestKeyID
+        )
+
+        let runnerBundle = try #require(
+            Bundle(url: URL(fileURLWithPath: runnerApp, isDirectory: true)),
+            "signed runner bundle could not be loaded"
+        )
+        let runnerSHA256 = try fileSHA256(path: runnerExecutable)
+        try verifyPrivatePCGPUCatalogInputs(
+            catalog: verifiedTestCatalog,
+            catalogDirectory: catalogDraftDirectory,
+            runnerSHA256: runnerSHA256,
+            kernelSHA256: try fileSHA256(path: pcKernel),
+            mesaSHA256: try fileSHA256(path: pcMesa),
+            installerESPSHA256: try fileSHA256(path: installerESP),
+            systemDiskSHA256: try fileSHA256(path: systemDisk),
+            testSigningKeyID: catalogTestKeyID
+        )
+        let runtimeBuildIdentifier = "sha256:\(runnerSHA256)"
+        let rendererAdmissionCandidate = try DoryDaemonRendererProductionAuthority.verifyIfPresent(
+            runnerExecutablePath: runnerExecutable,
+            runtimeBuildIdentifier: runtimeBuildIdentifier
+        )
+        let rendererAdmission = try #require(
+            rendererAdmissionCandidate,
+            "signed runner did not expose renderer acceleration admission"
+        )
+        let runnerCDHash = try #require(rendererAdmission.runnerCodeDirectoryHash)
+        let workerCDHash = try #require(rendererAdmission.rendererWorkerCodeDirectoryHash)
+        let rendererReleaseIdentity = DoryRendererReleaseIdentityV1(
+            runnerCodeDirectoryHash: runnerCDHash,
+            rendererWorkerCodeDirectoryHash: workerCDHash,
+            tupleDefinitionSHA256: try DoryRendererArtifactDigest(
+                lowercaseSHA256: DoryRendererSourceTuple.productionDefinitionSHA256,
+                field: "rendererTupleDefinition"
+            )
+        )
+        let pcQualification = try DoryVerifiedRendererBootstrapQualification
+            .loadRuntimeCandidate(
+                producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1,
+                from: runnerBundle
+            )
+        #expect(pcQualification.productionAccelerationIsQualified)
+        let pcFirmwareManifest = try JSONDecoder().decode(
+            DoryFirmwareArtifactManifest.self,
+            from: Data(contentsOf: URL(fileURLWithPath: firmwareBundle + "/manifest.json"))
+        )
+
+        let stateRoot = NSHomeDirectory() + "/.dory/qtest-pc-gpu-" + UUID().uuidString.prefix(8)
+        var receipt: [String: Any] = [
+            "kind": "dev.dory.private-pc-gpu-real-machine-manager-harness",
+            "schemaVersion": 1,
+            "releaseQualified": false,
+            "qualificationMode": "private-test-root-machine-manager-real-start",
+            "productionCatalogGate": "open",
+            "runnerExecutable": runnerExecutable,
+            "runnerExecutableSHA256": runnerSHA256,
+            "rendererWorkerCodeDirectoryHash": workerCDHash.lowercaseHexadecimal,
+            "runnerCodeDirectoryHash": runnerCDHash.lowercaseHexadecimal,
+            "pcRendererQualificationSHA256": pcQualification.receiptSHA256.lowercaseSHA256,
+            "pcRendererGuestKernelSHA256": pcQualification.managedGuestKernelSHA256.lowercaseSHA256,
+            "pcRendererGuestMesaSHA256": pcQualification.guestMesaSHA256.lowercaseSHA256,
+            "pcSystemDisk": systemDisk,
+            "pcSystemDiskSHA256": try fileSHA256(path: systemDisk),
+            "pcInstallerESP": installerESP,
+            "pcInstallerESPSHA256": try fileSHA256(path: installerESP),
+            "pcInstallerMedia": installerMedia,
+            "pcInstallerMediaSHA256": try fileSHA256(path: installerMedia),
+            "pcInstallerMediaIdentitySHA256": installerMediaIdentity.sha256,
+            "pcInstallerMediaArchitecture": installerMediaIdentity.architecture.rawValue,
+            "pcInstallerMediaWrapper": installerMediaMetadata,
+            "pcKernel": pcKernel,
+            "pcKernelSHA256": try fileSHA256(path: pcKernel),
+            "pcMesa": pcMesa,
+            "pcMesaSHA256": try fileSHA256(path: pcMesa),
+            "pcFirmwareBundle": firmwareBundle,
+            "probeDirectory": probeDirectory,
+            "probeGuestPath": probeGuestPath,
+            "stateRoot": stateRoot,
+            "testCatalogDraftDirectory": catalogDraftDirectory,
+            "draftCatalogSHA256": DoryComponentCatalogVerifier.digest(catalogDraftData),
+            "testCatalogSHA256": DoryComponentCatalogVerifier.digest(catalogData),
+            "testCatalogSignatureSHA256": SHA256.hash(data: Data(catalogTestSignature.utf8)).map {
+                String(format: "%02x", $0)
+            }.joined(),
+            "testCatalogPublicKeySHA256": catalogTestKeyID,
+            "testCatalogReleaseVersion": verifiedTestCatalog.releaseVersion,
+            "testCatalogArchitecture": verifiedTestCatalog.architecture,
+            "testCatalogByteTotalsRepairedInMemory": true,
+            "networkQualification": "excluded",
+            "gvproxyArgument": "/usr/bin/true",
+            "gvproxyScope": "private GPU render/readback probe only; this receipt does not qualify guest networking",
+        ]
+
+        let share = DoryMachineShareConfiguration(
+            tag: "probe",
+            hostPath: probeDirectory,
+            guestPath: "/mnt/dory-gpu-probe",
+            readOnly: true
+        )
+        let starter = CountingProcessStarter()
+        do {
+            try withHarness(
+                "private-real-pc-gpu",
+                stateDirectoryOverride: stateRoot,
+                admittedDesktopFixture: true,
+                acceleratedExecutablePath: runnerExecutable,
+                acceleratedDesktopBaseArgumentsOverride: [
+                    "desktop", "--gvproxy", "/usr/bin/true",
+                ],
+                guestArchitecture: .x86_64,
+                bootMode: .efi,
+                includeInstallerFixture: true,
+                pcFirmwareBundlePathOverride: firmwareBundle,
+                rootfsFixturePathOverride: systemDisk,
+                installerFixturePathOverride: installerMedia,
+                managedInstallerMediaPathOverride: nil,
+                admittedDesktopFixtureTruncateBytes: nil,
+                memoryMB: 1_024,
+                cpuCount: 1,
+                shares: [share],
+                preserveStateDirectory: true,
+                requiresReadyHandoff: true,
+                authenticatedRuntime: false,
+                initialEnvironment: [
+                    DoryDesktopVMMPreference.environmentKey:
+                        DoryDesktopVMMPreference.accelerated.rawValue,
+                    DoryDesktopGraphicsPreference.environmentKey:
+                        DoryDesktopGraphicsPreference.virglVenus.rawValue,
+                ],
+                starter: starter
+            ) { manager, starter, state in
+                let plans = MutablePlanStore()
+                let operations = manager.resolvedLaunchCompatibilityOperations(
+                    for: .doryHypervisor
+                )
+                let registry = try rawRegistry(
+                    operations: operations,
+                    executablePath: runnerExecutable
+                )
+                manager.installLaunchGatedChildCodeValidatorForTesting(DorySecurityLaunchGatedChildCodeValidator())
+                let testComponentDrive = try DoryDataDrive(home: state + "/test-component-home")
+                try testComponentDrive.prepare()
+                let testComponentStore = DoryComponentStore(drive: testComponentDrive)
+                try testComponentStore.prepare()
+                _ = try testComponentStore.cacheCatalog(
+                    data: catalogData,
+                    signature: catalogTestSignature,
+                    publicKey: catalogTestPublicKey,
+                    expectedArchitecture: DoryComponentDefaults.architecture,
+                    appVersion: "999.0.0"
+                )
+                receipt["testCatalogCachedUnderPrivateStore"] = true
+                manager.installRendererBootstrapQualificationLoaderForTesting { contract in
+                    #expect(contract == .doryPCX8664LinuxVirGL2PrepareFBV1)
+                    return pcQualification
+                }
+                let evidenceCollector = PrivateHardware3DStartEvidenceCollector(
+                    rendererReleaseIdentity: rendererReleaseIdentity
+                )
+                let realResolver = DoryDaemonVirtualMachineLaunchPlanResolver(
+                    registry: registry,
+                    plans: plans,
+                    evidenceCollector: evidenceCollector
+                )
+                let definition = try DoryWorkspaceRepository(root: state)
+                    .readPersistedRecord(id: "dev").definition
+                let definitionEncoder = JSONEncoder()
+                definitionEncoder.outputFormatting = [.sortedKeys]
+                let definitionData = try definitionEncoder.encode(definition)
+                let machineData = try Data(
+                    contentsOf: URL(fileURLWithPath: state + "/dev/machine.json")
+                )
+                let seededMachine = try JSONDecoder().decode(
+                    DoryMachineConfiguration.self,
+                    from: machineData
+                )
+                let seededResolution = try exactResolution(
+                    request: .init(
+                        definition: definition,
+                        canonicalDefinitionData: definitionData,
+                        machine: seededMachine,
+                        persistence: try DoryResolvedMachinePersistence(
+                            stateDirectory: state,
+                            machineID: "dev"
+                        ),
+                        expectedPlanRevision: 1
+                    ),
+                    componentSHA256: runnerSHA256,
+                    bootArtifactSHA256: try fileSHA256(path: installerMedia),
+                    rendererReleaseIdentity: rendererReleaseIdentity,
+                    pcRendererQualificationOverride: pcQualification,
+                    firmwareOverride: pcFirmwareManifest,
+                    graphics: .hardwareAccelerated3D
+                )
+                try plans.create(seededResolution.resolvedPlan)
+                receipt["seededPlanRevision"] = seededResolution.resolvedPlan.planRevision
+                receipt["seededPlanSHA256"] = seededResolution.resolvedPlanSHA256
+                receipt["startResolver"] = "DoryDaemonVirtualMachineLaunchPlanResolver over pre-seeded private test-only plan fixture"
+                try manager.installResolvedLaunchInfrastructure(
+                    registry: registry,
+                    resolver: realResolver,
+                    plans: plans,
+                    expectedPlanRevision: { id in try? plans.read(id: id).planRevision }
+                )
+
+                let startStatus = try manager.start(id: "dev")
+                receipt["activeOperationID"] = startStatus.activeOperationID
+                receipt["handoffSocketPath"] = startStatus.handoffSocketPath
+                receipt["starterCountAfterStart"] = starter.count
+                let arguments = try #require(starter.lastArguments)
+                receipt["launchedArguments"] = arguments
+                receipt["containsPCRuntimeEnvelope"] = arguments.contains("--pc-runtime-launch-envelope")
+                receipt["containsRendererGenerationHandoff"] = arguments.contains("--renderer-generation-handoff-sock")
+                if let envelopeIndex = arguments.firstIndex(of: "--pc-runtime-launch-envelope") {
+                    let valueIndex = arguments.index(after: envelopeIndex)
+                    if arguments.indices.contains(valueIndex) {
+                        let envelope = try DoryPCRuntimeLaunchEnvelope.decodeArgument(arguments[valueIndex])
+                        let resources = try envelope.validatedResources()
+                        receipt["pcEnvelopeGraphics"] = envelope.graphics.rawValue
+                        receipt["pcEnvelopeRendererBootstrapDescriptor"] = resources.rendererBootstrap?.descriptor
+                        receipt["pcEnvelopeRendererBootstrapSHA256"] = resources.rendererBootstrap?.contentSHA256
+                        receipt["pcEnvelopeRendererBootstrapByteCount"] = resources.rendererBootstrap?.byteCount
+                    }
+                }
+
+                let deadline = Date().addingTimeInterval(waitSeconds)
+                var status = manager.status(id: "dev")
+                while Date() < deadline {
+                    status = manager.status(id: "dev")
+                    if status?.state == .running { break }
+                    if status?.state == .failed { break }
+                    Thread.sleep(forTimeInterval: 1.0)
+                }
+                receipt["machineStateAfterVMMWait"] = status?.state.rawValue
+                receipt["lastErrorAfterVMMWait"] = status?.lastError
+                receipt["runtimeGraphicsSelection"] = status?.runtimeGraphicsSelection.map { selection in
+                    var value: [String: Any] = [
+                        "operationID": selection.operationID,
+                        "resolvedPlanSHA256": selection.resolvedPlanSHA256,
+                        "planRevision": selection.planRevision,
+                        "accelerationLevel": selection.accelerationLevel.rawValue,
+                        "backend": selection.backend.rawValue,
+                    ]
+                    value["rendererGeneration"] = selection.rendererGeneration
+                    value["rendererWorkerReceiptSHA256"] = selection.rendererWorkerReceiptSHA256
+                    value["guestProducerFenceProofSHA256"] = selection.guestProducerFenceProofSHA256
+                    return value
+                }
+                let runtimeAgentSocket = status?.agentSocketPath
+                    ?? valueAfter("--agent-sock", in: arguments)
+                receipt["agentSocketPath"] = runtimeAgentSocket
+                if status?.state == .running, let agentSocket = runtimeAgentSocket {
+                    var readinessProbes: [[String: Any]] = []
+                    var guestReady = false
+                    while Date() < deadline {
+                        let readiness = runCalibrationProbe(
+                            calibrationTool: calibrationTool,
+                            agentSocket: agentSocket,
+                            guestProbePath: "/bin/true",
+                            timeoutSeconds: 10
+                        )
+                        readinessProbes.append(readiness)
+                        if readiness["returncode"] as? Int32 == 0 {
+                            guestReady = true
+                            break
+                        }
+                        status = manager.status(id: "dev")
+                        if status?.state == .failed { break }
+                        Thread.sleep(forTimeInterval: 5.0)
+                    }
+                    receipt["agentReadinessProbeCount"] = readinessProbes.count
+                    receipt["agentReadinessProbes"] = Array(readinessProbes.suffix(10))
+                    receipt["guestAgentReady"] = guestReady
+                    status = manager.status(id: "dev")
+                    receipt["machineStateAfterAgentWait"] = status?.state.rawValue
+                    receipt["lastErrorAfterAgentWait"] = status?.lastError
+                    if guestReady {
+                        let probe = runCalibrationProbe(
+                            calibrationTool: calibrationTool,
+                            agentSocket: agentSocket,
+                            guestProbePath: probeGuestPath,
+                            timeoutSeconds: 90
+                        )
+                        receipt["clearReadbackProbe"] = probe
+                        if probe["returncode"] as? Int32 == 0 {
+                            receipt["privateGPUClearReadbackPassed"] = true
+                        }
+                    }
+                }
+                if let console = try? manager.serialConsole(id: "dev", limit: 65_536) {
+                    receipt["serialConsoleTail"] = String(data: console.bytes, encoding: .utf8) ?? ""
+                }
+                _ = try manager.stop(id: "dev")
+            }
+        } catch {
+            receipt["harnessError"] = String(describing: error)
+            receipt["starterCount"] = starter.count
+            if let lastArguments = starter.lastArguments {
+                receipt["failedLaunchArguments"] = lastArguments
+                receipt["failedLaunchContainsPCRuntimeEnvelope"] =
+                    lastArguments.contains("--pc-runtime-launch-envelope")
+                receipt["failedLaunchContainsRendererGenerationHandoff"] =
+                    lastArguments.contains("--renderer-generation-handoff-sock")
+            }
+            try? writeReceipt(receipt, to: receiptPath)
+            throw error
+        }
+        receipt["starterCount"] = starter.count
+        try writeReceipt(receipt, to: receiptPath)
+    }
+
     @Test("resolved RawHV readiness rejects a missing live graphics selection")
     func resolvedARMVirtReadinessRequiresGraphicsSelection() throws {
         try withHarness(
@@ -2971,11 +3405,21 @@ struct MachineManagerResolvedPlanIntegrationTests {
         admittedDesktopFixture: Bool = false,
         launchPolicy: DoryMachineLaunchPolicy = .requireResolvedPlan,
         acceleratedExecutablePath: String? = "/bin/sh",
+        acceleratedDesktopBaseArgumentsOverride: [String]? = nil,
         passMachineArguments: Bool = true,
         guestArchitecture: DoryGuestArchitecture? = nil,
         bootMode: DoryMachineBootMode = .linuxKernel,
         includeInstallerFixture: Bool = false,
         includePCFirmwareFixture: Bool = false,
+        pcFirmwareBundlePathOverride: String? = nil,
+        rootfsFixturePathOverride: String? = nil,
+        installerFixturePathOverride: String? = nil,
+        managedInstallerMediaPathOverride: String? = nil,
+        admittedDesktopFixtureTruncateBytes: UInt64? = 32 * 1_073_741_824,
+        memoryMB: UInt64? = nil,
+        cpuCount: Int? = nil,
+        shares: [DoryMachineShareConfiguration] = [],
+        preserveStateDirectory: Bool = false,
         requiresReadyHandoff: Bool = false,
         useShortStatePath: Bool = false,
         authenticatedRuntime: Bool = false,
@@ -3043,9 +3487,14 @@ struct MachineManagerResolvedPlanIntegrationTests {
         } else {
             runtimeCommand = "exec /bin/sleep 30"
         }
-        let pcFirmwareBundlePath = includePCFirmwareFixture ? state + "/pc-firmware" : nil
-        if let pcFirmwareBundlePath {
-            try makePCFirmwareTestBundle(at: pcFirmwareBundlePath)
+        let pcFirmwareBundlePath: String?
+        if let pcFirmwareBundlePathOverride {
+            pcFirmwareBundlePath = pcFirmwareBundlePathOverride
+        } else {
+            pcFirmwareBundlePath = includePCFirmwareFixture ? state + "/pc-firmware" : nil
+            if let pcFirmwareBundlePath {
+                try makePCFirmwareTestBundle(at: pcFirmwareBundlePath)
+            }
         }
         let manager = MachineManager(
             diagnosticConfiguration: MachineManagerConfiguration(
@@ -3054,7 +3503,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 pcFirmwareBundlePath: pcFirmwareBundlePath,
                 stateDirectory: state,
                 baseArguments: ["-c", runtimeCommand, "dory-test-runtime"],
-                acceleratedDesktopBaseArguments: [
+                acceleratedDesktopBaseArguments: acceleratedDesktopBaseArgumentsOverride ?? [
                     "-c", runtimeCommand, "dory-test-runtime",
                 ],
                 passMachineArguments: passMachineArguments,
@@ -3072,7 +3521,8 @@ struct MachineManagerResolvedPlanIntegrationTests {
         defer {
             // The daemon-death parent owns this directory and needs failure evidence if its
             // child exits before reaching the requested crash boundary.
-            if ProcessInfo.processInfo.environment["DORY_RECONNECT_DAEMON_ROOT"] != state {
+            if !preserveStateDirectory,
+               ProcessInfo.processInfo.environment["DORY_RECONNECT_DAEMON_ROOT"] != state {
                 _ = try? manager.stop(id: "dev")
                 _ = try? manager.delete(id: "dev")
                 _ = try? FileManager.default.removeItem(atPath: state)
@@ -3081,20 +3531,31 @@ struct MachineManagerResolvedPlanIntegrationTests {
         let rootfsPath: String
         if admittedDesktopFixture {
             rootfsPath = state + "/fixture-rootfs.ext4"
-            try Data(contentsOf: URL(fileURLWithPath: doryTestRootfsPath)).write(to: URL(fileURLWithPath: rootfsPath))
-            let disk = try FileHandle(forWritingTo: URL(fileURLWithPath: rootfsPath))
-            try disk.truncate(atOffset: 32 * 1_073_741_824)
-            try disk.close()
+            let sourceRootfsPath = rootfsFixturePathOverride ?? doryTestRootfsPath
+            try Data(contentsOf: URL(fileURLWithPath: sourceRootfsPath)).write(
+                to: URL(fileURLWithPath: rootfsPath)
+            )
+            if let admittedDesktopFixtureTruncateBytes {
+                let disk = try FileHandle(forWritingTo: URL(fileURLWithPath: rootfsPath))
+                try disk.truncate(atOffset: admittedDesktopFixtureTruncateBytes)
+                try disk.close()
+            }
         } else {
-            rootfsPath = doryTestRootfsPath
+            rootfsPath = rootfsFixturePathOverride ?? doryTestRootfsPath
         }
         let installerPath: String?
         if includeInstallerFixture {
             let path = state + "/fixture-installer.iso"
-            var installerBytes = Data(repeating: 0, count: 512)
-            let marker = Array("EFI/BOOT/BOOTX64.EFI".utf8)
-            installerBytes.replaceSubrange(0..<marker.count, with: marker)
-            try installerBytes.write(to: URL(fileURLWithPath: path))
+            if let installerFixturePathOverride {
+                try Data(contentsOf: URL(fileURLWithPath: installerFixturePathOverride)).write(
+                    to: URL(fileURLWithPath: path)
+                )
+            } else {
+                var installerBytes = Data(repeating: 0, count: 512)
+                let marker = Array("EFI/BOOT/BOOTX64.EFI".utf8)
+                installerBytes.replaceSubrange(0..<marker.count, with: marker)
+                try installerBytes.write(to: URL(fileURLWithPath: path))
+            }
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o600],
                 ofItemAtPath: path
@@ -3112,13 +3573,24 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 bootMode: bootMode,
                 installerISOPath: installerPath,
                 diskSizeBytes: nil,
-                memoryMB: admittedDesktopFixture ? 4_096 : 2_048,
-                cpuCount: 2,
+                memoryMB: memoryMB ?? (admittedDesktopFixture ? 4_096 : 2_048),
+                cpuCount: cpuCount ?? 2,
                 displayMode: .desktop,
+                shares: shares,
                 environment: initialEnvironment
             ),
             typedSettings: typedSettings
         )
+        if let managedInstallerMediaPathOverride {
+            let managedInstaller = state + "/dev/installer.iso"
+            try Data(contentsOf: URL(fileURLWithPath: managedInstallerMediaPathOverride))
+                .write(to: URL(fileURLWithPath: managedInstaller))
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: managedInstaller
+            )
+            _ = try manager.transitionInstallerMedia(id: "dev", attached: true)
+        }
         try body(manager, starter, state)
     }
 
@@ -3210,6 +3682,8 @@ struct MachineManagerResolvedPlanIntegrationTests {
         admissionEvidence: DoryResolvedMachineResourceAdmissionEvidence? = nil,
         preSpawnRevalidation: @escaping @Sendable () throws -> Void = {},
         rendererReleaseIdentity: DoryRendererReleaseIdentityV1? = nil,
+        pcRendererQualificationOverride: DoryVerifiedRendererBootstrapQualification? = nil,
+        firmwareOverride: DoryFirmwareArtifactManifest? = nil,
         graphics: DoryGraphicsAccelerationLevel = .hostAcceleratedDisplay
     ) throws -> DoryDaemonVirtualMachineLaunchPlanResolution {
         let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(
@@ -3254,7 +3728,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             ? "sha256:\(launcherSHA256)"
             : "raw-runtime-1"
         let pcRendererQualification = graphics == .hardwareAccelerated3D
-            ? try pcVirGL2RendererQualificationFixture()
+            ? try pcRendererQualificationOverride ?? pcVirGL2RendererQualificationFixture()
             : nil
         let rendererAdmissionComponents: [DoryResolvedBackendComponentEvidence]
         if let pcRendererQualification {
@@ -3397,7 +3871,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             ),
             resources: selectedResources,
             firmware: pcUEFIInstaller
-                ? try resolvedFirmwareTestArtifacts(platform: .pcV1).manifest
+                ? try firmwareOverride ?? resolvedFirmwareTestArtifacts(platform: .pcV1).manifest
                 : nil,
             persistence: request.persistence
         )
@@ -3557,6 +4031,179 @@ struct MachineManagerResolvedPlanIntegrationTests {
             .map { String(format: "%02x", $0) }.joined()
     }
 
+    private func requireRegularFile(_ path: String, label: String) throws {
+        var info = stat()
+        guard lstat(path, &info) == 0,
+              info.st_mode & S_IFMT == S_IFREG,
+              info.st_size > 0 else {
+            throw MachineManagerError.persistence("missing or invalid \(label): \(path)")
+        }
+    }
+
+    private func requireDirectory(_ path: String, label: String) throws {
+        var info = stat()
+        guard lstat(path, &info) == 0,
+              info.st_mode & S_IFMT == S_IFDIR else {
+            throw MachineManagerError.persistence("missing or invalid \(label): \(path)")
+        }
+    }
+
+    private func makeMBRWrappedEFIMedia(
+        exactESPPath: String,
+        outputPath: String,
+        partitionStartLBA: UInt32 = 2_048
+    ) throws -> [String: Any] {
+        let espURL = URL(fileURLWithPath: exactESPPath)
+        let outputURL = URL(fileURLWithPath: outputPath)
+        try FileManager.default.createDirectory(
+            at: outputURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let esp = try Data(contentsOf: espURL)
+        guard !esp.isEmpty else {
+            throw MachineManagerError.persistence("PC installer ESP is empty: \(exactESPPath)")
+        }
+        let sectorBytes = 512
+        let partitionSectors = UInt32((esp.count + sectorBytes - 1) / sectorBytes)
+        let partitionOffset = Int(partitionStartLBA) * sectorBytes
+        let totalBytes = partitionOffset + Int(partitionSectors) * sectorBytes
+        var image = Data(repeating: 0, count: totalBytes)
+        image.replaceSubrange(partitionOffset..<(partitionOffset + esp.count), with: esp)
+        let compatibilityMarker = Data("EFI/BOOT/BOOTX64.EFI".utf8)
+        image.replaceSubrange(512..<(512 + compatibilityMarker.count), with: compatibilityMarker)
+        image[446 + 4] = 0xEF
+        writeLittleEndianUInt32(partitionStartLBA, into: &image, at: 446 + 8)
+        writeLittleEndianUInt32(partitionSectors, into: &image, at: 446 + 12)
+        image[510] = 0x55
+        image[511] = 0xAA
+        try image.write(to: outputURL, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: outputPath
+        )
+        return [
+            "format": "mbr-efi-system-partition-wrapper",
+            "partitionType": "0xEF",
+            "partitionStartLBA": Int(partitionStartLBA),
+            "compatibilityMarker": "EFI/BOOT/BOOTX64.EFI",
+            "compatibilityMarkerOffsetBytes": 512,
+            "partitionOffsetBytes": partitionOffset,
+            "partitionSectors": Int(partitionSectors),
+            "embeddedESP": exactESPPath,
+            "embeddedESPSHA256": try fileSHA256(path: exactESPPath),
+            "wrappedMediaSHA256": try fileSHA256(path: outputPath),
+        ]
+    }
+
+    private func writeLittleEndianUInt32(_ value: UInt32, into data: inout Data, at offset: Int) {
+        data[offset] = UInt8(value & 0xff)
+        data[offset + 1] = UInt8((value >> 8) & 0xff)
+        data[offset + 2] = UInt8((value >> 16) & 0xff)
+        data[offset + 3] = UInt8((value >> 24) & 0xff)
+    }
+
+    private func writeReceipt(_ receipt: [String: Any], to path: String) throws {
+        let url = URL(fileURLWithPath: path)
+        try FileManager.default.createDirectory(
+            at: url.deletingLastPathComponent(),
+            withIntermediateDirectories: true,
+            attributes: [.posixPermissions: 0o700]
+        )
+        let sanitized = try sanitizeJSON(receipt)
+        let data = try JSONSerialization.data(
+            withJSONObject: sanitized,
+            options: [.sortedKeys, .prettyPrinted]
+        )
+        var output = data
+        output.append(0x0a)
+        try output.write(to: url, options: .atomic)
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o600],
+            ofItemAtPath: path
+        )
+    }
+
+    private func sanitizeJSON(_ value: Any) throws -> Any {
+        switch value {
+        case let dictionary as [String: Any]:
+            var result: [String: Any] = [:]
+            for (key, value) in dictionary {
+                result[key] = try sanitizeJSON(value)
+            }
+            return result
+        case let array as [Any]:
+            return try array.map { try sanitizeJSON($0) }
+        case let value as String:
+            return value
+        case let value as Bool:
+            return value
+        case let value as Int:
+            return value
+        case let value as Int32:
+            return Int(value)
+        case let value as UInt64:
+            return String(value)
+        case let value as Double:
+            return value
+        case Optional<Any>.none:
+            return NSNull()
+        default:
+            return String(describing: value)
+        }
+    }
+
+    private func runCalibrationProbe(
+        calibrationTool: String,
+        agentSocket: String,
+        guestProbePath: String,
+        timeoutSeconds: TimeInterval
+    ) -> [String: Any] {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: calibrationTool)
+        process.arguments = [
+            "exec",
+            "--agent-socket", agentSocket,
+            "--timeout-ms", String(Int(timeoutSeconds * 1_000)),
+            "--output-limit-bytes", "8192",
+            "--", guestProbePath,
+        ]
+        let stdout = Pipe()
+        let stderr = Pipe()
+        process.standardOutput = stdout
+        process.standardError = stderr
+        let started = Date()
+        do {
+            try process.run()
+            let deadline = Date().addingTimeInterval(timeoutSeconds + 15)
+            while process.isRunning && Date() < deadline {
+                Thread.sleep(forTimeInterval: 0.25)
+            }
+            if process.isRunning { process.terminate() }
+            process.waitUntilExit()
+            let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
+            let stderrData = stderr.fileHandleForReading.readDataToEndOfFile()
+            return [
+                "command": [
+                    calibrationTool, "exec", "--agent-socket", agentSocket,
+                    "--timeout-ms", String(Int(timeoutSeconds * 1_000)),
+                    "--output-limit-bytes", "8192", "--", guestProbePath,
+                ],
+                "returncode": process.terminationStatus,
+                "terminatedByTimeout": Date() >= deadline && process.terminationStatus != 0,
+                "elapsedSeconds": Date().timeIntervalSince(started),
+                "stdout": String(data: stdoutData.prefix(8192), encoding: .utf8) ?? "",
+                "stderr": String(data: stderrData.prefix(8192), encoding: .utf8) ?? "",
+            ]
+        } catch {
+            return [
+                "command": [calibrationTool, "exec", "--agent-socket", agentSocket, "--", guestProbePath],
+                "launchError": String(describing: error),
+                "elapsedSeconds": Date().timeIntervalSince(started),
+            ]
+        }
+    }
+
     private func writeExecutable(_ contents: String, path: String) throws {
         try Data(contents.utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
         try FileManager.default.setAttributes(
@@ -3641,6 +4288,65 @@ struct MachineManagerResolvedPlanIntegrationTests {
             )
     }
 
+    private func verifyPrivatePCGPUCatalogInputs(
+        catalog: DoryComponentCatalog,
+        catalogDirectory: String,
+        runnerSHA256: String?,
+        kernelSHA256: String,
+        mesaSHA256: String,
+        installerESPSHA256: String,
+        systemDiskSHA256: String,
+        testSigningKeyID: String
+    ) throws {
+        let qualification = try #require(catalog.virtualMachineQualification)
+        #expect(qualification.signingKeyID == testSigningKeyID)
+        #expect(catalog.architecture == DoryComponentDefaults.architecture)
+        let linuxMachines = try #require(catalog.component(.linuxMachines))
+        #expect(linuxMachines.qualification?.contains("dory-linux-x86_64-pc-virgl2-fc82-hardware3d") == true)
+        let manifestAsset = try #require(linuxMachines.assets.first {
+            $0.path == qualification.path && $0.role == .qualificationEvidence
+        })
+        let manifestPath = catalogDirectory + "/" + qualification.path
+        #expect(manifestAsset.sha256 == (try fileSHA256(path: manifestPath)))
+        let manifestData = try Data(contentsOf: URL(fileURLWithPath: manifestPath))
+        let manifestJSON = try #require(
+            try JSONSerialization.jsonObject(with: manifestData) as? [String: Any]
+        )
+        #expect(manifestJSON["kind"] as? String == "dev.dory.virtual-machine-qualification-manifest")
+        #expect((manifestJSON["signingKeyID"] as? String)?.isEmpty == false)
+        let records = try #require(manifestJSON["records"] as? [[String: Any]])
+        let record = try #require(records.first { record in
+            (record["backend"] as? String) == "dory-hypervisor"
+                && (record["graphics"] as? String) == "hardware-accelerated-3d"
+                && ((record["guest"] as? [String: Any])?["architecture"] as? String) == "x86_64"
+        })
+        if let runnerSHA256 {
+            #expect(record["backendRuntimeBuildIdentifier"] as? String == "sha256:\(runnerSHA256)")
+        }
+        #expect(record["rendererGuestKernelSHA256"] as? String == kernelSHA256)
+        #expect(record["rendererGuestMesaSHA256"] as? String == mesaSHA256)
+        #expect(record["immutableArtifactSHA256"] as? String == installerESPSHA256)
+        let performance = try #require(record["performanceQualification"] as? [String: Any])
+        let performanceReceipt = try #require(performance["verificationReceiptPath"] as? String)
+        let performanceReceiptSHA256 = try #require(performance["verificationReceiptSHA256"] as? String)
+        let performanceReceiptPath = catalogDirectory + "/" + performanceReceipt
+        #expect(try fileSHA256(path: performanceReceiptPath) == performanceReceiptSHA256)
+        let performanceData = try Data(contentsOf: URL(fileURLWithPath: performanceReceiptPath))
+        let performanceJSON = try #require(
+            try JSONSerialization.jsonObject(with: performanceData) as? [String: Any]
+        )
+        let supportCell = try #require(performanceJSON["supportCell"] as? [String: Any])
+        #expect(supportCell["installerSHA256"] as? String == installerESPSHA256)
+        #expect(supportCell["installedSystemIdentitySHA256"] as? String == systemDiskSHA256)
+    }
+
+    private func valueAfter(_ option: String, in arguments: [String]) -> String? {
+        guard let index = arguments.firstIndex(of: option) else { return nil }
+        let valueIndex = arguments.index(after: index)
+        guard arguments.indices.contains(valueIndex) else { return nil }
+        return arguments[valueIndex]
+    }
+
     private func rendererDigest(_ character: Character) throws -> DoryRendererArtifactDigest {
         try DoryRendererArtifactDigest(lowercaseSHA256: digest(character))
     }
@@ -3668,6 +4374,79 @@ private final class AcceptingLaunchGatedChildCodeValidator:
     ) throws {
         #expect(pid > 0)
         lock.withLock { storedIdentities.append(expectedIdentity) }
+    }
+}
+
+private final class SeedingRealLaunchResolver:
+    DoryDaemonVirtualMachineLaunchPlanResolving,
+    @unchecked Sendable
+{
+    typealias Seed = @Sendable (
+        DoryDaemonVirtualMachineLaunchPlanRequest
+    ) throws -> DoryDaemonVirtualMachineLaunchPlanResolution
+
+    private let lock = NSLock()
+    private var seeded = false
+    private let plans: MutablePlanStore
+    private let realResolver: DoryDaemonVirtualMachineLaunchPlanResolver
+    private let seed: Seed
+
+    init(
+        plans: MutablePlanStore,
+        realResolver: DoryDaemonVirtualMachineLaunchPlanResolver,
+        seed: @escaping Seed
+    ) {
+        self.plans = plans
+        self.realResolver = realResolver
+        self.seed = seed
+    }
+
+    func resolve(
+        _ request: DoryDaemonVirtualMachineLaunchPlanRequest
+    ) throws -> DoryDaemonVirtualMachineLaunchPlanResolution {
+        let shouldSeed = lock.withLock {
+            if seeded { return false }
+            seeded = true
+            return true
+        }
+        if shouldSeed {
+            let seededResolution = try seed(request)
+            try plans.create(seededResolution.resolvedPlan)
+        }
+        return try realResolver.resolve(request)
+    }
+}
+
+private struct PrivateHardware3DStartEvidenceCollector:
+    DoryDaemonVirtualMachineStartEvidenceCollecting
+{
+    let rendererReleaseIdentity: DoryRendererReleaseIdentityV1
+
+    func collectFreshEvidence(
+        for plan: DoryResolvedMachinePlan,
+        purpose: DoryDaemonVirtualMachineLaunchValidationPurpose
+    ) throws -> DoryDaemonVirtualMachineStartEvidenceCollection {
+        let exactRequest = plan.exactCapabilityRequest
+        let capability = DoryVirtualMachineCapabilityDescriptor(
+            evaluatorVersion: DoryVirtualMachineCapabilityDescriptor.appleSiliconEvaluatorVersion,
+            request: exactRequest,
+            availability: DoryCapabilityAvailability(
+                supportTier: plan.supportTier,
+                state: .available
+            ),
+            resolvedDevices: plan.devices,
+            graphicsQualificationEvidence: plan.qualificationEvidence.graphics,
+            bootMediaInspectionEvidence: plan.bootMedia.inspectionEvidence,
+            mutableBootMediaProvenanceEvidence: plan.bootMedia.mutableProvenanceEvidence,
+            runtimeQualificationEvidence: plan.qualificationEvidence.runtime
+        )
+        return DoryDaemonVirtualMachineStartEvidenceCollection(
+            capability: capability,
+            runtimeEvidence: DoryResolvedMachineRuntimeEvidence(plan: plan),
+            preSpawnAuthorization: .resolvingLaunchAuthority(purpose: purpose) {
+                .rendererReleaseIdentity(rendererReleaseIdentity)
+            }
+        )
     }
 }
 
