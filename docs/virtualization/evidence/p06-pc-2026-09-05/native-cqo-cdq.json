@@ -1,0 +1,29 @@
+{
+  "acceptanceLog": "${HOME}/.dory/qualification/native-cqo-cdq-baseline-jit-20260906.log",
+  "acceptanceLogSHA256": "ad48fc103b607f69744d0e6b517b7553d19f4991cd112c2c966ad5a74cfc9713",
+  "acceptanceResult": "121 tests in 2 suites passed",
+  "baseHead": "88e785fc24e936b6de3a1e15946a257f5a364e80",
+  "focusedLog": "${HOME}/.dory/qualification/native-cqo-cdq-focused-20260906b.log",
+  "focusedLogSHA256": "0b28f2cca26a87809e8c0b91ff9351149ae7beeb2e76aa317ef635cee0310c1c",
+  "measuredHotForm": "48 99 (CQO) from current production run negative cache",
+  "name": "native-cqo-cdq-sign-extend-accumulator-high",
+  "notes": [
+    "Tests cover CDQ and CQO sign boundaries, EAX sign-bit versus full RAX sign disagreement, unchanged flags, no memory callbacks, optimizer RDX invalidation, and unsupported i16 fallback.",
+    "No production performance claim; live run predates this patch."
+  ],
+  "patch": "${HOME}/.dory/qualification/native-cqo-cdq-20260906/native-cqo-cdq.patch",
+  "patchSHA256": "ab6a00a39a914cf4585997cc424afcacf8806582f6e790dfe3713cf9c4bb5b3f",
+  "scope": [
+    "translate long-mode CDQ/CQO into signExtendAccumulatorHigh IR",
+    "native ARM64 baseline/optimizing emitter for i32/i64 accumulator high-half sign extension",
+    "optimizer invalidates RDX after CDQ/CQO",
+    "word/invalid-width forms remain interpreter fallback"
+  ],
+  "sourceHashes": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "a8fd22ec827a6305fbbd0393b6f9545e6c9776c78059de1581685c63c37f25db",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "3a6702481132ca100972774b7533b430bc7c405b016465a39f6afa65cece547d",
+    "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift": "d15021b5dd14438895980d8567d6c637bb4367139c3bdff7e70d091a9afa5099",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "034f1768e5b67c41ddafd49378e66e3bfe4947707134d0c1d09ea77e3ae27593"
+  },
+  "timestamp": "2026-09-06T00:23:43Z"
+}

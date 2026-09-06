@@ -97,6 +97,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case memoryFence(DoryX86MemoryFence)
   case setDirectionFlag(enabled: Bool)
   case readTimestampCounter
+  case signExtendAccumulatorHigh(width: DoryIRIntegerWidth)
   case unsignedAccumulatorMultiply(source: DoryIROperand)
   case unsignedAccumulatorDivide(source: DoryIROperand)
   case doubleShiftRightCL(destination: DoryIROperand, source: DoryIROperand)
@@ -431,6 +432,12 @@ public struct DoryX86IRTranslator: Sendable {
       return ([.setDirectionFlag(enabled: enabled)], nil)
     case .readTimestampCounter(false) where mode == .long64:
       return ([.readTimestampCounter], .next(instruction.nextInstructionAddress))
+    case .signExtendAccumulator(let width, true) where mode == .long64:
+      let irWidth = irWidth(width)
+      guard irWidth == .i32 || irWidth == .i64 else {
+        return fallback(instruction, reason: .interpreter)
+      }
+      return ([.signExtendAccumulatorHigh(width: irWidth)], nil)
     case .accumulatorArithmetic(.unsignedMultiply, let source) where mode == .long64:
       return (
         [
@@ -825,6 +832,8 @@ public struct DoryX86IRTranslator: Sendable {
         register.width == width && isJITGeneralRegister(register)
       else { return false }
       return true
+    case .signExtendAccumulatorHigh(let width):
+      return width == .i32 || width == .i64
     case .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .memoryFence:
       return true
     case .helper:
@@ -900,7 +909,8 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(source) ? .read : .none
     case .compareExchange:
       return .write
-    case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .memoryFence, .helper:
+    case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
+      .signExtendAccumulatorHigh, .memoryFence, .helper:
       return .none
     }
   }

@@ -196,7 +196,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination) || isFSOrGS(source)
       case .effectiveAddress:
         return false
-      case .stackPushFlags, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .memoryFence, .helper:
+      case .stackPushFlags, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
+        .signExtendAccumulatorHigh, .memoryFence, .helper:
         return false
       }
     }
@@ -284,6 +285,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitSetDirectionFlag(enabled: enabled, into: &words)
     case .readTimestampCounter:
       return emitReadTimestampCounter(into: &words)
+    case .signExtendAccumulatorHigh(let width):
+      return emitSignExtendAccumulatorHigh(width: width, into: &words)
     case .unsignedAccumulatorMultiply(let source):
       return emitUnsignedAccumulatorMultiply(source: source, into: &words)
     case .unsignedAccumulatorDivide(let source):
@@ -728,7 +731,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return 0
     case .compareExchange, .memoryFence:
       return 1
-    case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .helper:
+    case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
+      .signExtendAccumulatorHigh, .helper:
       return 0
     }
   }
@@ -862,6 +866,37 @@ public struct DoryARM64BaselineEmitter: Sendable {
     emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 15, into: &words)
     words.append(encodeLogical(.or, left: 14, right: 15, destination: 14))
     words.append(encodeStore64(register: 14, base: 0, byteOffset: Self.rflagsOffset))
+    return true
+  }
+
+  private func emitSignExtendAccumulatorHigh(
+    width: DoryIRIntegerWidth,
+    into words: inout [UInt32]
+  ) -> Bool {
+    let count: UInt64
+    let is64Bit: Bool
+    switch width {
+    case .i32:
+      words.append(encodeLoad32(register: 9, base: 0, byteOffset: 0))
+      count = 31
+      is64Bit = false
+    case .i64:
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: 0))
+      count = 63
+      is64Bit = true
+    default:
+      return false
+    }
+    emitImmediate(count, register: 10, into: &words)
+    words.append(
+      encodeVariableShift(
+        .arithmeticRight,
+        is64Bit: is64Bit,
+        value: 9,
+        count: 10,
+        destination: 9
+      ))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: 2 * 8))
     return true
   }
 

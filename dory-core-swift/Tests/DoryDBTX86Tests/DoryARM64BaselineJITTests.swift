@@ -4666,6 +4666,140 @@ import Testing
     }
   }
 
+  @Test func signExtendAccumulatorHighMatchesInterpreterAcrossTiers() throws {
+    #if arch(arm64)
+      struct SignExtendCase {
+        let bytes: [UInt8]
+        let raxValues: [UInt64]
+      }
+      let cases = [
+        SignExtendCase(
+          bytes: [0x99],  // cdq
+          raxValues: [
+            0, 1, 0x7fff_ffff, 0x8000_0000, 0xffff_ffff,
+            0x8000_0000_0000_0000, 0xffff_ffff_8000_0000,
+          ]
+        ),
+        SignExtendCase(
+          bytes: [0x48, 0x99],  // cqo: measured post-init hot site
+          raxValues: [0, 1, 0x7fff_ffff_ffff_ffff, 0x8000_0000_0000_0000, UInt64.max]
+        ),
+      ]
+      let initialFlags: [DoryX86RFLAGS] = [
+        .reservedOne,
+        [.reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .sign, .overflow, .direction],
+      ]
+      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+        for (caseIndex, testCase) in cases.enumerated() {
+          for (valueIndex, rax) in testCase.raxValues.enumerated() {
+            for (flagIndex, flags) in initialFlags.enumerated() {
+              let registers = DoryX86GeneralRegisters(
+                rax: rax,
+                rdx: 0x1122_3344_5566_7788
+              )
+              var interpreted = try DoryX86ArchitecturalState(
+                registers: registers,
+                rip: 0,
+                rflags: flags
+              )
+              let decoded = try DoryX86Decoder().decode(testCase.bytes, at: 0, mode: .long64)
+              #expect(DoryX86Interpreter().step(
+                state: &interpreted,
+                memory: try DoryX86ByteArrayMemory(bytes: testCase.bytes),
+                mode: .long64
+              ) == .retired(decoded))
+
+              var translated = try DoryX86ArchitecturalState(
+                registers: registers,
+                rip: 0,
+                rflags: flags
+              )
+              let execution = try #require(
+                DoryARM64BaselineExecutor(
+                  maximumCodeBytes: 16 * 1024,
+                  optimization: optimization
+                ).execute(
+                  bytes: testCase.bytes,
+                  at: translated.rip,
+                  mode: .long64,
+                  addressSpaceID: UInt64(0x3400 + caseIndex * 0x100 + valueIndex * 4 + flagIndex),
+                  maximumInstructions: 1,
+                  state: &translated
+                )
+              )
+
+              #expect(execution.block.tier.rawValue == optimization.rawValue)
+              #expect(!execution.block.requiresMemoryCallbacks)
+              #expect(translated == interpreted)
+            }
+          }
+        }
+      }
+
+      let wordForm = try DoryX86IRTranslator().translate([0x66, 0x99], at: 0, mode: .long64)
+      #expect(DoryARM64BaselineEmitter().compile(wordForm).tier == .interpreterFallback)
+
+      let invalidWidth = DoryIRBasicBlock(
+        guestStart: 0,
+        guestByteCount: 1,
+        guestInstructionCount: 1,
+        statements: [.signExtendAccumulatorHigh(width: .i16)],
+        terminator: .exit(.interpreter, resumeAt: 0)
+      )
+      #expect(DoryARM64BaselineEmitter().compile(invalidWidth).tier == .interpreterFallback)
+
+      let optimizerFixtures: [([UInt8], UInt64)] = [
+        (
+          [
+            0xBA, 0x88, 0x77, 0x66, 0x55,  // mov edx,0x55667788
+            0xB8, 0x00, 0x00, 0x00, 0x80,  // mov eax,0x80000000
+            0x99,  // cdq
+            0x48, 0x89, 0xD0,  // mov rax,rdx
+          ],
+          0x0000_0000_ffff_ffff
+        ),
+        (
+          [
+            0x48, 0xBA, 0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,  // mov rdx,0x1122...
+            0x48, 0xB8, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x80,  // mov rax,Int64.min
+            0x48, 0x99,  // cqo
+            0x48, 0x89, 0xD0,  // mov rax,rdx
+          ],
+          UInt64.max
+        ),
+      ]
+      for (fixtureIndex, fixture) in optimizerFixtures.enumerated() {
+        var interpreted = try DoryX86ArchitecturalState(rip: 0)
+        var translated = interpreted
+        let memory = try DoryX86ByteArrayMemory(bytes: fixture.0)
+        for _ in 0..<4 {
+          guard case .retired = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: memory,
+            mode: .long64
+          ) else {
+            Issue.record("interpreter failed optimized CDQ/CQO invalidation fixture")
+            return
+          }
+        }
+        let execution = try #require(
+          DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024, optimization: .optimizing).execute(
+            bytes: fixture.0,
+            at: translated.rip,
+            mode: .long64,
+            addressSpaceID: UInt64(0x3500 + fixtureIndex),
+            maximumInstructions: 4,
+            state: &translated
+          )
+        )
+        #expect(execution.block.tier == .optimizing)
+        #expect(execution.block.guestInstructionCount == 4)
+        #expect(translated == interpreted)
+        #expect(translated.registers.rax == fixture.1)
+      }
+    #endif
+  }
+
   @Test func signedMultiplyRegisterAndMemorySourcesMatchInterpreterAcrossTiers() throws {
     #if arch(arm64)
       struct MultiplyCase {
