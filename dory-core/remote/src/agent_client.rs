@@ -30,7 +30,7 @@ use crate::error::RemoteError;
 // otherwise hang `call` (and any FFI `block_on` above it) forever. Every RPC therefore carries a
 // deadline sized to its slowest legitimate completion.
 const CONTROL_DEADLINE: Duration = Duration::from_secs(30);
-const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(10);
+const HANDSHAKE_DEADLINE: Duration = Duration::from_secs(120);
 const SYNC_MANIFEST_DEADLINE: Duration = Duration::from_secs(10 * 60);
 const SYNC_IO_DEADLINE: Duration = Duration::from_secs(2 * 60);
 const EXEC_GRACE: Duration = Duration::from_secs(30);
