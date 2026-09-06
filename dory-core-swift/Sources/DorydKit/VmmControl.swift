@@ -374,24 +374,16 @@ public enum VmmControlClient {
         guard fd >= 0 else { throw VmmControlError.syscall("socket", errno) }
         defer { close(fd) }
 
-        // Bound write/read so a wedged dory-vmm can't block the reconcile thread forever.
-        try setSocketTimeouts(fd: fd, seconds: timeoutSeconds)
-
+        // One monotonic budget covers connect, request publication and the complete response.
+        let deadline = try VmmControlSocketIO.deadline(after: timeoutSeconds)
         var address = try unixAddress(path: socketPath)
-        let connected = withUnsafePointer(to: &address) { pointer in
-            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { raw in
-                connect(fd, raw, socklen_t(MemoryLayout<sockaddr_un>.size))
-            }
-        }
-        guard connected == 0 else {
-            throw VmmControlError.syscall("connect", errno)
-        }
-
+        try VmmControlSocketIO.connect(fd, address: &address, deadline: deadline)
         let payload = try JSONEncoder().encode(request)
-        try writeAll(payload, to: fd)
-        shutdown(fd, SHUT_WR)
-
-        let responseData = try readAll(from: fd)
+        try VmmControlSocketIO.writeData(payload, to: fd, deadline: deadline)
+        guard shutdown(fd, SHUT_WR) == 0 else {
+            throw VmmControlError.syscall("shutdown", errno)
+        }
+        let responseData = try VmmControlSocketIO.readData(from: fd, deadline: deadline)
         guard !responseData.isEmpty else {
             throw VmmControlError.emptyResponse
         }
@@ -400,18 +392,6 @@ public enum VmmControlClient {
         } catch {
             throw VmmControlError.invalidJSON("\(error)")
         }
-    }
-}
-
-private func setSocketTimeouts(fd: Int32, seconds: TimeInterval) throws {
-    let whole = max(0, Int(seconds))
-    var timeout = timeval(tv_sec: whole, tv_usec: 0)
-    let length = socklen_t(MemoryLayout<timeval>.size)
-    guard setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, length) == 0 else {
-        throw VmmControlError.syscall("setsockopt(SO_SNDTIMEO)", errno)
-    }
-    guard setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, length) == 0 else {
-        throw VmmControlError.syscall("setsockopt(SO_RCVTIMEO)", errno)
     }
 }
 
@@ -430,42 +410,6 @@ private func unixAddress(path: String) throws -> sockaddr_un {
         }
     }
     return address
-}
-
-private func writeAll(_ data: Data, to fd: Int32) throws {
-    try data.withUnsafeBytes { raw in
-        guard let base = raw.baseAddress else { return }
-        var offset = 0
-        while offset < data.count {
-            let written = write(fd, base.advanced(by: offset), data.count - offset)
-            if written < 0 {
-                if errno == EINTR { continue }
-                throw VmmControlError.syscall("write", errno)
-            }
-            offset += written
-        }
-    }
-}
-
-private func readAll(from fd: Int32) throws -> Data {
-    var data = Data()
-    var buffer = [UInt8](repeating: 0, count: 16 * 1024)
-    while true {
-        let count = buffer.withUnsafeMutableBytes { raw in
-            read(fd, raw.baseAddress, raw.count)
-        }
-        if count == 0 {
-            return data
-        }
-        if count < 0 {
-            if errno == EINTR { continue }
-            throw VmmControlError.syscall("read", errno)
-        }
-        data.append(contentsOf: buffer.prefix(count))
-        if data.count > 1024 * 1024 {
-            throw VmmControlError.invalidJSON("response exceeded 1 MiB")
-        }
-    }
 }
 
 /// Raw-HV helper-side control endpoint. Lifecycle requests prove that the exact operation identity
@@ -578,8 +522,7 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
         defer { close(clientFD) }
         let response: VmmControlResponse
         do {
-            try setSocketTimeouts(fd: clientFD, seconds: 5)
-            let data = try readAll(from: clientFD)
+            let data = try VmmControlSocketIO.readRequestData(from: clientFD)
             let request = try JSONDecoder().decode(VmmControlRequest.self, from: data)
             if request.command == "authenticateRuntime" {
                 guard request.targetMB == nil,
@@ -603,7 +546,7 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
                     )
                 )
                 if let encoded = try? JSONEncoder().encode(response) {
-                    try? writeAll(encoded, to: clientFD)
+                    try? VmmControlSocketIO.writeResponseData(encoded, to: clientFD)
                 }
                 return
             }
@@ -625,7 +568,7 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
                 }
                 response = VmmControlResponse(ok: true, deviceTelemetry: snapshot)
                 if let encoded = try? JSONEncoder().encode(response) {
-                    try? writeAll(encoded, to: clientFD)
+                    try? VmmControlSocketIO.writeResponseData(encoded, to: clientFD)
                 }
                 return
             }
@@ -659,7 +602,7 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
             response = VmmControlResponse(ok: false, message: "\(error)")
         }
         if let encoded = try? JSONEncoder().encode(response) {
-            try? writeAll(encoded, to: clientFD)
+            try? VmmControlSocketIO.writeResponseData(encoded, to: clientFD)
         }
     }
 

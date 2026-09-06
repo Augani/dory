@@ -1,0 +1,14 @@
+{
+  "schema": 1,
+  "date": "2026-09-06",
+  "problem": "VmmControlClient truncated fractional timeout seconds to zero, disabling subsecond socket timeouts; per-read SO_RCVTIMEO also allowed trickled response bytes to extend total wait. Raw lifecycle server duplicated the same transfer loops.",
+  "change": "Client uses one monotonic deadline across nonblocking connect, request send and response read. Raw lifecycle server uses shared bounded request/response transfer functions with same-user peer checks. Removed duplicated timeout/read/write functions.",
+  "verification": "11 Swift Testing tests across IO/listener suites and4 XCTest lifecycle tests pass. A real Unix peer trickles bytes every30ms; client75ms deadline returns ETIMEDOUT within the bounded test window. Existing EOF roundtrip, oversized frame, stalled writer, inode ownership and exact lifecycle receipt checks pass.",
+  "log": "control-client-absolute-deadline.log.gz",
+  "uncompressed_log_sha256": "65d637d44d68fe56a12fccba64294d4e9bc75bbef747b424cdb244e6e377d8ed",
+  "limits": [
+    "Client timeout does not cancel an in-flight backend lifecycle action.",
+    "Full per-command launch/generation binding and backend execution deadlines remain open.",
+    "No new physical VM lifecycle campaign for this source change."
+  ]
+}

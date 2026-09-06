@@ -18,7 +18,14 @@ public enum VmmControlSocketIO {
         guard uid == geteuid() else {
             throw VmmControlError.rejected("control peer must have the helper's user identity")
         }
-        let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeoutMilliseconds) * 1_000_000
+        let data = try readData(from: fd, deadline: DispatchTime.now().uptimeNanoseconds
+            + UInt64(timeoutMilliseconds) * 1_000_000)
+        guard !data.isEmpty else { throw VmmControlError.rejected("empty control request") }
+        return data
+    }
+
+    static func readData(from fd: Int32, deadline: UInt64) throws -> Data {
+        try makeNonblocking(fd)
         var result = Data()
         var buffer = [UInt8](repeating: 0, count: 8_192)
         while true {
@@ -30,22 +37,25 @@ public enum VmmControlSocketIO {
             }
             if count == 0 { break }
             guard result.count + count <= maximumMessageBytes else {
-                throw VmmControlError.rejected("control request exceeded 1 MiB")
+                throw VmmControlError.rejected("control frame exceeded 1 MiB")
             }
             result.append(buffer, count: count)
         }
-        guard !result.isEmpty else { throw VmmControlError.rejected("empty control request") }
         return result
     }
 
     public static func writeResponseData(
         _ data: Data, to fd: Int32, timeoutMilliseconds: UInt32 = 5_000
     ) throws {
+        try writeData(data, to: fd, deadline: DispatchTime.now().uptimeNanoseconds
+            + UInt64(timeoutMilliseconds) * 1_000_000)
+    }
+
+    static func writeData(_ data: Data, to fd: Int32, deadline: UInt64) throws {
         try makeNonblocking(fd)
         guard data.count <= maximumMessageBytes else {
-            throw VmmControlError.rejected("control response exceeded 1 MiB")
+            throw VmmControlError.rejected("control frame exceeded 1 MiB")
         }
-        let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(timeoutMilliseconds) * 1_000_000
         try data.withUnsafeBytes { bytes in
             var offset = 0
             while offset < bytes.count {
@@ -60,6 +70,34 @@ public enum VmmControlSocketIO {
                 offset += count
             }
         }
+    }
+
+    static func deadline(after seconds: TimeInterval) throws -> UInt64 {
+        guard seconds.isFinite, seconds > 0,
+              seconds <= TimeInterval(UInt32.max) / 1_000 else {
+            throw VmmControlError.rejected("control timeout must be finite and positive within the supported range")
+        }
+        return DispatchTime.now().uptimeNanoseconds + UInt64((seconds * 1_000_000_000).rounded(.up))
+    }
+
+    static func connect(_ fd: Int32, address: inout sockaddr_un, deadline: UInt64) throws {
+        try makeNonblocking(fd)
+        let result = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+            }
+        }
+        if result == 0 { return }
+        guard errno == EINPROGRESS || errno == EALREADY || errno == EAGAIN else {
+            throw VmmControlError.syscall("connect", errno)
+        }
+        try wait(fd, events: Int16(POLLOUT), deadline: deadline)
+        var error: Int32 = 0
+        var length = socklen_t(MemoryLayout<Int32>.size)
+        guard getsockopt(fd, SOL_SOCKET, SO_ERROR, &error, &length) == 0 else {
+            throw VmmControlError.syscall("getsockopt(SO_ERROR)", errno)
+        }
+        guard error == 0 else { throw VmmControlError.syscall("connect", error) }
     }
 
     // These connected descriptors are owned by the control worker. Set O_NONBLOCK on the

@@ -77,6 +77,45 @@ import Testing
         }
     }
 
+    @Test func clientFractionalDeadlineBoundsTrickledResponse() throws {
+        let directory = "/tmp/dory-control-" + UUID().uuidString
+        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let listener = try VmmControlSocketListener(path: directory + "/control.sock")
+        defer { listener.stop() }
+        let finished = DispatchSemaphore(value: 0)
+        DispatchQueue.global().async {
+            defer { finished.signal() }
+            do {
+                while true {
+                    switch try listener.acceptClient() {
+                    case .retry: continue
+                    case .stopped: return
+                    case .client(let fd):
+                        defer { close(fd) }
+                        _ = try VmmControlSocketIO.readRequestData(from: fd)
+                        var byte: UInt8 = 32
+                        for _ in 0..<10 {
+                            if send(fd, &byte, 1, MSG_NOSIGNAL) != 1 { break }
+                            Thread.sleep(forTimeInterval: 0.03)
+                        }
+                        return
+                    }
+                }
+            } catch { Issue.record("test peer failed: \(error)") }
+        }
+        defer { listener.stop(); _ = finished.wait(timeout: .now() + 2) }
+        let start = DispatchTime.now().uptimeNanoseconds
+        expectTimeout {
+            _ = try VmmControlClient.send(socketPath: directory + "/control.sock",
+                request: VmmControlRequest(command: "deviceTelemetry"), timeoutSeconds: 0.075)
+        }
+        let elapsed = DispatchTime.now().uptimeNanoseconds - start
+        #expect(elapsed >= 75_000_000)
+        #expect(elapsed < 1_000_000_000)
+    }
+
     private func expectTimeout(_ operation: () throws -> Void) {
         do {
             try operation()
