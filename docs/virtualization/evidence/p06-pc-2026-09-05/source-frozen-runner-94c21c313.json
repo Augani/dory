@@ -1,0 +1,111 @@
+{
+  "source": {
+    "sourceCommit": "94c21c313bc923d8d44824177f7dcbfb49bd2b61",
+    "archiveSHA256": "09e55155c4188e71ee2f35af4407491c1e44e0570661f75597290ae8f5d61293",
+    "archiveBytes": 450017280,
+    "archiveStored": false,
+    "trackedBlobsChecked": 3481,
+    "mismatches": [],
+    "excludedDirtyPaths": [
+      "dory-core-swift/Tests/DorydKitTests/MachineManagerResolvedPlanIntegrationTests.swift"
+    ],
+    "ffiInputs": {
+      "origin": "Existing prebuilt workspace DoryFFI.xcframework; independently pinned binary input, not rebuilt from snapshot source",
+      "files": [
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/Info.plist",
+          "bytes": 788,
+          "sha256": "fbd9a59180aa56e1d354e3e4d8655869623084c9d68699f5176d6ee558a0246a"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h",
+          "bytes": 44979,
+          "sha256": "67d0d11012011bfac1198b6f32f2ec1e3b583704b0dc1c6f518bae062ea349c8"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap",
+          "bytes": 132,
+          "sha256": "6507cb8a35e3e958f50e496d5936975098291915d79aceaa89903f3b17015553"
+        },
+        {
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+          "bytes": 122310680,
+          "sha256": "6e9d3163a9a060283e00125782db048f9d35043162a9d97dac0da52e29709177"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+          "bytes": 122168,
+          "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+        }
+      ]
+    },
+    "externalInputs": {
+      "armKernel": {
+        "path": "/Applications/Dory.app/Contents/Resources/dory-hv-kernel-arm64",
+        "sha256": "e5b539373575c68c385e000a23b491ae01dca394a34508c743b0d7e2fbebd48c"
+      },
+      "pcKernel": {
+        "path": "${HOME}/Projects/Dory/guest/out/vmlinux-x86-pc-virgl2",
+        "sha256": "7b25d6c81f8c42624fad40f410baaddee3f4f9694a9239bf1e3c5cd41d72093d"
+      },
+      "pcMesa": {
+        "path": "${HOME}/Projects/Dory/guest/out/dory-mesa-virgl2-x86_64.tar.zst",
+        "sha256": "410e364a0f9a93ed9f370c4eae90c88a625416be1dffa96dd8af5952a6558450"
+      },
+      "rendererInventory": {
+        "path": "${HOME}/.dory/qualification/renderer-reset-static-tuple-20260906/run-20260906003021/virglrenderer-static/renderer-static-link-inventory.json",
+        "sha256": "d4f3e2dbef27e719c91f4557991a2255833c52e3d9371a376e50f84bc5bde21b"
+      }
+    }
+  },
+  "build": {
+    "started": "2026-09-06T04:25:28.783560+00:00",
+    "ended": "2026-09-06T04:32:48.637762+00:00",
+    "exitCode": 0,
+    "log": "${HOME}/.dory/qualification/pc-build-94c21c313-20260906.log"
+  },
+  "verification": {
+    "runnerSHA256": "3f0285e109dc044634470b55008f89a19a581f3d216db4b95a932c2d6a9e364f",
+    "checks": [
+      {
+        "argv": [
+          "/usr/bin/codesign",
+          "--verify",
+          "--strict",
+          "--deep",
+          "${HOME}/.dory/qualification/DerivedData-PC-94c21c313-20260906/Build/Products/Release/DoryHVRunner.app"
+        ],
+        "exitCode": 0
+      },
+      {
+        "argv": [
+          "python3",
+          "${HOME}/.dory/qualification/pc-source-94c21c313-20260906/scripts/package-renderer-production-bundle.py",
+          "verify",
+          "--runner-app",
+          "${HOME}/.dory/qualification/DerivedData-PC-94c21c313-20260906/Build/Products/Release/DoryHVRunner.app",
+          "--expected-team",
+          "864H636QW4",
+          "--managed-kernel",
+          "/Applications/Dory.app/Contents/Resources/dory-hv-kernel-arm64",
+          "--pc-managed-kernel",
+          "${HOME}/Projects/Dory/guest/out/vmlinux-x86-pc-virgl2",
+          "--pc-guest-mesa",
+          "${HOME}/Projects/Dory/guest/out/dory-mesa-virgl2-x86_64.tar.zst"
+        ],
+        "exitCode": 0
+      }
+    ],
+    "qualificationMode": "Developer ID signed preview; not production release qualification",
+    "physicalGPUQualified": false,
+    "physicalPerformanceQualified": false
+  },
+  "originalBuildLogSHA256": "4dbed126309f1bfb24167e078b09a22138e0b846a4d70dc24855d033b452ebd0",
+  "publicBuildLogSHA256": "87fc3fe4558bbcf9f391c93de7cb7119cd781a52344cca8778fe52f1f3dee10a",
+  "publicChecksLogSHA256": "a2103c9471b9a124b110b537d2887a44b68fd86a369556f1a19b82ae07da4c07",
+  "limits": [
+    "Prebuilt FFI and generated bindings are pinned binary inputs, not rebuilt from snapshot.",
+    "Preview Developer ID package is not production release catalog qualification.",
+    "No physical VM command/performance or GPU result yet on this artifact."
+  ]
+}
