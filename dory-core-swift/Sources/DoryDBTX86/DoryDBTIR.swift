@@ -762,16 +762,25 @@ public struct DoryX86IRTranslator: Sendable {
     case .signedMultiply(let destination, let lhs, let rhs):
       guard case .register(let target) = destination,
         target.width == .i32 || target.width == .i64,
-        case .register(let left) = lhs, left.width == target.width
+        isJITGeneralRegister(target)
       else { return false }
-      guard isJITGeneralRegister(target) && isJITGeneralRegister(left) else { return false }
+      let memoryOperandCount = (isMemory(lhs) ? 1 : 0) + (isMemory(rhs) ? 1 : 0)
+      guard memoryOperandCount <= 1 else { return false }
+      switch lhs {
+      case .register(let left):
+        guard left.width == target.width && isJITGeneralRegister(left) else { return false }
+      case .memory(let address, let width):
+        guard width == target.width && isJITMemoryAddress(address) else { return false }
+      case .immediate:
+        return false
+      }
       switch rhs {
       case .register(let right):
         return right.width == target.width && isJITGeneralRegister(right)
       case .immediate(_, let width):
         return width == target.width
-      case .memory:
-        return false
+      case .memory(let address, let width):
+        return width == target.width && isJITMemoryAddress(address)
       }
     case .unsignedAccumulatorMultiply(let source):
       guard case .register(let register) = source else { return false }

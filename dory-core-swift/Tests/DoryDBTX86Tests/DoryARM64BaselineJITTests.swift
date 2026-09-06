@@ -708,7 +708,7 @@ import Testing
       )
 
       #expect(execution.block.requiresRestartableMemoryReads)
-      #expect(execution.exitCode == DoryJITExitCode.interpreter)
+      #expect(execution.exitCode == .interpreter)
       #expect(state == initial)
       #expect(memory.scalarReads == 0)
       #expect(memory.scalarWrites == 0)
@@ -3592,7 +3592,6 @@ import Testing
 
   @Test func kernelHashArithmeticCoverageRemainsNarrowAndFailClosed() throws {
     let excluded: [[UInt8]] = [
-      [0x48, 0x0F, 0xAF, 0x10],  // imul rdx,[rax]
       [0x66, 0x6B, 0xD6, 0x03],  // imul dx,si,3
       [0xC1, 0xC0, 0x1F],  // rol eax,31
       [0x48, 0xC1, 0x00, 0x1F],  // rol qword ptr [rax],31
@@ -4589,41 +4588,185 @@ import Testing
     }
   }
 
-  @Test func signedMultiply32MatchesInterpreterLowResultAndOverflowFlags() throws {
+  @Test func signedMultiplyRegisterAndMemorySourcesMatchInterpreterAcrossTiers() throws {
     #if arch(arm64)
-      for (left, right) in [(UInt64(2), UInt64(3)), (0x7FFF_FFFF, 2), (0xFFFF_FFFF, 2)] {
-        let bytes: [UInt8] = [0x0F, 0xAF, 0xD8]  // imul ebx,eax
-        let initialFlags = DoryX86RFLAGS(
-          rawValue: DoryX86RFLAGS.reservedOne.rawValue
-            | DoryX86RFLAGS.carry.rawValue
-            | DoryX86RFLAGS.zero.rawValue
-            | DoryX86RFLAGS.overflow.rawValue
-        )
-        var interpreted = try DoryX86ArchitecturalState(
-          registers: .init(rax: right, rbx: left), rip: 0, rflags: initialFlags)
-        _ = DoryX86Interpreter().step(
-          state: &interpreted,
-          memory: try DoryX86ByteArrayMemory(bytes: bytes),
-          mode: .long64
-        )
+      struct MultiplyCase {
+        let bytes: [UInt8]
+        let registers: DoryX86GeneralRegisters
+        let memoryAddress: UInt64?
+        let memoryValue: UInt64
+        let memoryWidth: Int
+        let comment: String
+      }
 
-        var translated = try DoryX86ArchitecturalState(
-          registers: .init(rax: right, rbx: left), rip: 0, rflags: initialFlags)
-        let execution = try #require(
-          DoryARM64BaselineExecutor(maximumCodeBytes: 4096).execute(
-            bytes: bytes,
-            at: 0,
-            mode: .long64,
-            addressSpaceID: 0,
-            maximumInstructions: 1,
-            state: &translated
+      let cases = [
+        MultiplyCase(
+          bytes: [0x0F, 0xAF, 0xD8],  // imul ebx,eax
+          registers: .init(rax: 3, rbx: 2),
+          memoryAddress: nil,
+          memoryValue: 0,
+          memoryWidth: 0,
+          comment: "existing register dword form"
+        ),
+        MultiplyCase(
+          bytes: [0x0F, 0xAF, 0xD8],  // imul ebx,eax overflows signed 32-bit
+          registers: .init(rax: 2, rbx: 0x7FFF_FFFF),
+          memoryAddress: nil,
+          memoryValue: 0,
+          memoryWidth: 0,
+          comment: "existing register dword overflow"
+        ),
+        MultiplyCase(
+          bytes: [0x0F, 0xAF, 0xD8],  // imul ebx,eax with -1 * 2
+          registers: .init(rax: 2, rbx: 0xFFFF_FFFF),
+          memoryAddress: nil,
+          memoryValue: 0,
+          memoryWidth: 0,
+          comment: "existing register dword sign extension"
+        ),
+        MultiplyCase(
+          bytes: [0x48, 0x0F, 0xAF, 0x10],  // imul rdx,[rax]
+          registers: .init(rax: 0x80, rdx: 7),
+          memoryAddress: 0x80,
+          memoryValue: 6,
+          memoryWidth: 8,
+          comment: "measured two-operand memory source"
+        ),
+        MultiplyCase(
+          bytes: [0x48, 0x0F, 0xAF, 0x00],  // imul rax,[rax]
+          registers: .init(rax: 0x80),
+          memoryAddress: 0x80,
+          memoryValue: UInt64(bitPattern: Int64(-3)),
+          memoryWidth: 8,
+          comment: "destination also supplies original effective address"
+        ),
+        MultiplyCase(
+          bytes: [0x0F, 0xAF, 0x18],  // imul ebx,[rax]
+          registers: .init(rax: 0x80, rbx: 0xFFFF_FFFE),
+          memoryAddress: 0x80,
+          memoryValue: 3,
+          memoryWidth: 4,
+          comment: "memory dword source zero-extends destination in long mode"
+        ),
+        MultiplyCase(
+          bytes: [0x48, 0x0F, 0xAF, 0x10],  // imul rdx,[rax] overflows signed 64-bit
+          registers: .init(rax: 0x80, rdx: 0x8000_0000_0000_0000),
+          memoryAddress: 0x80,
+          memoryValue: UInt64.max,
+          memoryWidth: 8,
+          comment: "memory qword source signed overflow"
+        ),
+        MultiplyCase(
+          bytes: [0x48, 0x6B, 0x10, 0xFF],  // imul rdx,[rax],-1
+          registers: .init(rax: 0x80, rdx: 0x1234),
+          memoryAddress: 0x80,
+          memoryValue: 9,
+          memoryWidth: 8,
+          comment: "negative imm8 memory form"
+        ),
+        MultiplyCase(
+          bytes: [0x48, 0x69, 0x10, 0xFF, 0xFF, 0xFF, 0xFF],  // imul rdx,[rax],-1
+          registers: .init(rax: 0x80, rdx: 0x1234),
+          memoryAddress: 0x80,
+          memoryValue: 9,
+          memoryWidth: 8,
+          comment: "negative imm32 memory form"
+        ),
+        MultiplyCase(
+          bytes: [0x48, 0x69, 0x83, 0xC0, 0x00, 0x00, 0x00, 0x00, 0xCA, 0x9A, 0x3B],
+          registers: .init(rbx: 0x80),
+          memoryAddress: 0x140,
+          memoryValue: UInt64(bitPattern: Int64(-37)),
+          memoryWidth: 8,
+          comment: "exact measured immediate memory form with signed imm32"
+        ),
+      ]
+
+      let initialFlags = DoryX86RFLAGS(
+        rawValue: DoryX86RFLAGS.reservedOne.rawValue
+          | DoryX86RFLAGS.carry.rawValue
+          | DoryX86RFLAGS.zero.rawValue
+          | DoryX86RFLAGS.overflow.rawValue
+          | DoryX86RFLAGS.direction.rawValue
+      )
+      for (optimizationIndex, optimization) in [DoryARM64JITOptimization.baseline, .optimizing].enumerated() {
+        for (caseIndex, testCase) in cases.enumerated() {
+          let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+          let translatedMemory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+          for memory in [interpretedMemory, translatedMemory] {
+            try memory.write(at: 0, bytes: testCase.bytes)
+            if let address = testCase.memoryAddress {
+              try memory.write(at: address, bytes: (0..<testCase.memoryWidth).map {
+                UInt8(truncatingIfNeeded: testCase.memoryValue >> ($0 * 8))
+              })
+            }
+          }
+
+          var interpreted = try DoryX86ArchitecturalState(
+            registers: testCase.registers, rip: 0, rflags: initialFlags)
+          let decoded = try DoryX86Decoder().decode(testCase.bytes, at: 0, mode: .long64)
+          #expect(DoryX86Interpreter().step(
+            state: &interpreted, memory: interpretedMemory, mode: .long64) == .retired(decoded)
           )
-        )
 
-        #expect(execution.block.tier == .baseline)
-        #expect(translated.registers.rbx == interpreted.registers.rbx)
-        #expect(translated.rip == interpreted.rip)
-        #expect(translated.rflags == interpreted.rflags)
+          var translated = try DoryX86ArchitecturalState(
+            registers: testCase.registers, rip: 0, rflags: initialFlags)
+          let execution = try #require(
+            DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024, optimization: optimization).execute(
+              bytes: testCase.bytes,
+              at: 0,
+              mode: .long64,
+              addressSpaceID: UInt64(caseIndex) + (UInt64(optimizationIndex) << 32),
+              maximumInstructions: 1,
+              state: &translated,
+              memory: translatedMemory
+            )
+          )
+
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(execution.block.requiresMemoryCallbacks == (testCase.memoryAddress != nil))
+          #expect(!execution.block.requiresRestartableMemoryReads)
+          #expect(translated == interpreted)
+          #expect(try translatedMemory.read(at: 0, byteCount: 0x200)
+            == interpretedMemory.read(at: 0, byteCount: 0x200))
+        }
+      }
+    #endif
+  }
+
+  @Test func signedMultiplyMemorySourceReadFaultLeavesStateRestartable() throws {
+    #if arch(arm64)
+      let cases: [[UInt8]] = [
+        [0x48, 0x0F, 0xAF, 0x10],  // imul rdx,[rax]
+        [0x48, 0x69, 0x83, 0xC0, 0x00, 0x00, 0x00, 0xCA, 0x9A, 0x3B, 0x00],
+      ]
+      for (optimizationIndex, optimization) in [DoryARM64JITOptimization.baseline, .optimizing].enumerated() {
+        for (caseIndex, bytes) in cases.enumerated() {
+          let memory = try DoryX86ByteArrayMemory(byteCount: 0x40)
+          try memory.write(at: 0, bytes: bytes)
+          let initial = try DoryX86ArchitecturalState(
+            registers: .init(rax: 0x80, rdx: 0x1234, rbx: 0x80),
+            rip: 0,
+            rflags: [.reservedOne, .carry, .direction, .overflow]
+          )
+          var state = initial
+          let execution = try #require(
+            DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024, optimization: optimization).execute(
+              bytes: bytes,
+              at: 0,
+              mode: .long64,
+              addressSpaceID: UInt64(caseIndex) + (UInt64(optimizationIndex) << 32),
+              maximumInstructions: 1,
+              state: &state,
+              memory: memory
+            ))
+
+          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          #expect(execution.block.requiresMemoryCallbacks)
+          #expect(!execution.block.requiresRestartableMemoryReads)
+          #expect(execution.exitCode == .interpreter)
+          #expect(state == initial)
+        }
       }
     #endif
   }

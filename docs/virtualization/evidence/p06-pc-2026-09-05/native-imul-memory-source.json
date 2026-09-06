@@ -1,0 +1,42 @@
+{
+  "baseHead": "e4e3ecc6c209c60555bb1c6d5a42979ebf066a35",
+  "coverageNotes": [
+    "Covers existing register IMUL plus measured memory-source forms 48 0f af 10, 48 0f af 2c 02, 48 0f af 86 c8 00 00 00, and exact 48 69 83 c0 00 00 00 00 ca 9a 3b.",
+    "Covers i32 zero-extension, destination/address aliasing, Int64.min * -1 overflow, negative imm8, negative imm32, and memory-read fault rollback in baseline and optimizing tiers.",
+    "Emitter reads a RHS memory operand before loading caller-saved register operands; otherwise it loads LHS then RHS, so no architectural register/flag writes occur before a possible read fault."
+  ],
+  "createdAt": "2026-09-06T00:07:06Z",
+  "ffiGeneratedSwiftSha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab",
+  "ffiXcframeworkFileHashesPath": "${HOME}/.dory/qualification/native-imul-memory-source-20260905-000007/ffi-xcframework-file-hashes.txt",
+  "kind": "native-imul-memory-source-qualification",
+  "patch": {
+    "path": "${HOME}/.dory/qualification/native-imul-memory-source-20260905-000007/native-imul-memory-source.patch",
+    "sha256": "9a7ba380dcdb92d530ccab850f3ba5e6369fbd41324ffa8bf65477772b0c054a"
+  },
+  "qualificationRoot": "${HOME}/.dory/qualification/native-imul-memory-source-20260905-000007",
+  "sourceHashes": [
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift",
+      "sha256": "08a214df261100f9694c46f88e21e7871aeea782e7289f4cacfe45701f126660"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift",
+      "sha256": "ee72c886b39b1bea73edcbbfc971a662eba2c62c089cae2156a994ee3017515a"
+    },
+    {
+      "path": "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift",
+      "sha256": "59a4b42009d1031cec99ba29cfae521a005ac21293090469f5bf249499b024b4"
+    },
+    {
+      "path": "dory-core-swift/Sources/DoryCore/generated/dory_ffi.swift",
+      "sha256": "b9b2a02f7b578ca809098f1cec38f0726f0e44cd218b6b71d5c664c21db6c3ab"
+    }
+  ],
+  "tests": {
+    "focusedSharedLog": "${HOME}/.dory/qualification/native-imul-memory-source-20260906-focused-xcode-final.log",
+    "isolatedCommand": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path $QUAL/source/dory-core-swift --filter 'DoryARM64BaselineJITTests|DoryJITShortReplacementTests'",
+    "isolatedLog": "${HOME}/.dory/qualification/native-imul-memory-source-20260905-000007/dory-arm64-baseline-jit-imul-memory-final.log",
+    "isolatedLogSha256": "8ce1ee4b43b90af8c2735747c25cc96ec2777432504c6657aff1da735856c9de",
+    "result": "119 tests in 2 suites passed"
+  }
+}

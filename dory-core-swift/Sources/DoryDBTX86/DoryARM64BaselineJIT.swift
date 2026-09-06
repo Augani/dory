@@ -754,21 +754,46 @@ public struct DoryARM64BaselineEmitter: Sendable {
   ) -> Bool {
     guard case .register(let target) = destination,
       target.bank == "x86.gpr", target.index < 16,
-      target.width == .i32 || target.width == .i64,
-      case .register(let left) = lhs, left.width == target.width
+      target.width == .i32 || target.width == .i64
     else { return false }
+    func isMemoryOperand(_ operand: DoryIROperand) -> Bool {
+      if case .memory = operand { return true }
+      return false
+    }
+    let lhsIsMemory = isMemoryOperand(lhs)
+    let rhsIsMemory = isMemoryOperand(rhs)
+    let memoryOperandCount = (lhsIsMemory ? 1 : 0) + (rhsIsMemory ? 1 : 0)
+    guard memoryOperandCount <= 1 else { return false }
+    switch lhs {
+    case .register(let left)
+    where left.bank == "x86.gpr" && left.index < 16 && left.width == target.width:
+      break
+    case .memory(_, let width) where width == target.width:
+      break
+    default:
+      return false
+    }
     switch rhs {
     case .register(let right)
     where right.bank == "x86.gpr" && right.index < 16 && right.width == target.width:
       break
     case .immediate(_, let width) where width == target.width:
       break
+    case .memory(_, let width) where width == target.width:
+      break
     default:
       return false
     }
-    guard load(left, into: 9, words: &words),
-      load(rhs, matching: target.width, into: 10, words: &words)
-    else { return false }
+
+    if rhsIsMemory {
+      guard load(rhs, matching: target.width, into: 10, words: &words),
+        load(lhs, matching: target.width, into: 9, words: &words)
+      else { return false }
+    } else {
+      guard load(lhs, matching: target.width, into: 9, words: &words),
+        load(rhs, matching: target.width, into: 10, words: &words)
+      else { return false }
+    }
 
     let is64Bit = target.width == .i64
     if is64Bit {
