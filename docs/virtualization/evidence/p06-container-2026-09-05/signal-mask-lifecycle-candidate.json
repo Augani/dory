@@ -71,6 +71,21 @@
       "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-syscall-metadata-defer-candidate-1788657600/change-rsp-ret-trace-head.txt",
       "sha256": "236edf753044ed628cffc6ada6e2578fb0e0568df283a1b86dfa56ea0d36c46b",
       "bytes": 3459
+    },
+    {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-syscall-published-rip-candidate-1788659000/corrected-signal-probes.txt",
+      "sha256": "c1e34f6a9e2825d6ebb4a2d74bce450f90e0ed9915817f3ed470b5528064beb9",
+      "bytes": 1483
+    },
+    {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-syscall-published-rip-candidate-1788659000/repeat-v6-v7-longer.txt",
+      "sha256": "2e171116f62b01da0c761f2767aa8091eed5b2e7a1d7bd1491f642e3ff52e755",
+      "bytes": 1931
+    },
+    {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-syscall-published-rip-candidate-1788659000/decoded-restoreframe-signal-probes.txt",
+      "sha256": "ac7c6aba7b6e0f30db157cc94acc217350385d0664910b4de2a975de2052a395",
+      "bytes": 1513
     }
   ],
   "changedReturnFollowup": {
@@ -81,5 +96,17 @@
     "reference": "https://raw.githubusercontent.com/torvalds/linux/master/arch/x86/kernel/signal.c",
     "referenceScope": "handle_signal rewinds instruction pointer for qualifying syscall restart errors before setup_rt_frame; this supports investigating why completed self-kill publishes the syscall address.",
     "traceLimit": "Diagnostic tracing exceeded intended bounds; agent instructed to limit emitted records. No diagnostic instrumentation is promotable."
+  },
+  "publishedResumeCandidate": {
+    "status": "targeted-probes-pass-source-contract-incomplete",
+    "correctedSignalProbes": "changed RIP exit, changed RIP return, changed RIP/RSP return, and signal-frame roundtrip all exit0",
+    "repeatedControls": {
+      "editedPushPopPasses": 30,
+      "noSignalPasses": 10,
+      "observeUneditedPasses": 10
+    },
+    "traceObservation": "Published original RIP is now 0x201204, the instruction after kill SYSCALL, rather than0x201202.",
+    "reviewFinding": "Candidate infers SYSCALL from RCX == bookkeeping RIP +2 while InSyscallInfo is nonzero. Equality alone cannot identify actual syscall opcode or restart phase. Require explicit lowering/continuation metadata and restart/other-entry validation before promotion.",
+    "productionPromoted": false
   }
 }
