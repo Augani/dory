@@ -101,6 +101,7 @@ let package = Package(
       name: "dory-pc-tier-qualification",
       targets: ["dory-pc-tier-qualification"]
     ),
+    .executable(name: "dory-x86-generation-benchmark", targets: ["dory-x86-generation-benchmark"]),
     .executable(
       name: "dory-x86-decode-audit",
       targets: ["dory-x86-decode-audit"]
@@ -411,6 +412,7 @@ let package = Package(
     ),
     // Phase 4 conformance helper. It checks every instruction emitted in linked x86 firmware
     // modules against Dory's decoder so bring-up can close common ISA gaps in batches.
+    .executableTarget(name: "dory-x86-generation-benchmark", dependencies: ["DoryDBTX86"]),
     .executableTarget(
       name: "dory-x86-decode-audit",
       dependencies: ["DoryDBTX86"],
