@@ -1717,7 +1717,7 @@ import Testing
     #endif
   }
 
-  @Test func wordMemorySourceLogicalMatchesInterpreterAcrossTiers() throws {
+  @Test func wordRegisterLogicalMatchesInterpreterAcrossTiers() throws {
     #if arch(arm64)
       struct Case {
         let bytes: [UInt8]
@@ -1726,6 +1726,7 @@ import Testing
         let address: UInt64
         let memoryWord: UInt16
         let comment: String
+        var memorySource = true
       }
       let cases: [Case] = [
         .init(
@@ -1784,6 +1785,42 @@ import Testing
           memoryWord: 0xFFFF,
           comment: "AND preserves high containing bits and sets word sign flag"
         ),
+        .init(
+          bytes: [0x66, 0x25, 0x40, 0x01], rip: 0,
+          registers: .init(rax: 0xAABB_CCDD_EEFF_FFFF),
+          address: 0x100, memoryWord: 0x1234,
+          comment: "measured AND AX immediate", memorySource: false
+        ),
+        .init(
+          bytes: [0x66, 0x25, 0x40, 0x01], rip: 0,
+          registers: .init(rax: 0xAABB_CCDD_EEFF_FE3F),
+          address: 0x100, memoryWord: 0x1234,
+          comment: "AND zero flags", memorySource: false
+        ),
+        .init(
+          bytes: [0x66, 0x0D, 0x00, 0x80], rip: 0,
+          registers: .init(rax: 0xAABB_CCDD_EEFF_0000),
+          address: 0x100, memoryWord: 0x1234,
+          comment: "OR word sign flag", memorySource: false
+        ),
+        .init(
+          bytes: [0x66, 0x41, 0x83, 0xE0, 0xFE], rip: 0,
+          registers: .init(r8: 0xAABB_CCDD_EEFF_8001),
+          address: 0x100, memoryWord: 0x1234,
+          comment: "sign extended AND R8W", memorySource: false
+        ),
+        .init(
+          bytes: [0x66, 0x41, 0x83, 0xC8, 0x80], rip: 0,
+          registers: .init(r8: 0xAABB_CCDD_EEFF_0000),
+          address: 0x100, memoryWord: 0x1234,
+          comment: "sign extended OR R8W", memorySource: false
+        ),
+        .init(
+          bytes: [0x66, 0x81, 0xE1, 0x00, 0x00], rip: 0,
+          registers: .init(rcx: 0xAABB_CCDD_EEFF_FFFF),
+          address: 0x100, memoryWord: 0x1234,
+          comment: "AND CX clears only low word", memorySource: false
+        ),
       ]
       let initialFlags: [DoryX86RFLAGS] = [
         .reservedOne,
@@ -1838,7 +1875,7 @@ import Testing
 
             #expect(execution.block.tier.rawValue == optimization.rawValue)
             #expect(execution.exitCode == .dispatch)
-            #expect(execution.block.requiresMemoryCallbacks)
+            #expect(execution.block.requiresMemoryCallbacks == testCase.memorySource)
             #expect(translated == interpreted)
             #expect(
               try translatedMemory.read(at: 0, byteCount: 0x3000)

@@ -1777,10 +1777,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
     }
     if case .register(let target) = destination,
       target.bank == "x86.gpr", target.index < 16, target.width == .i16,
-      (operation == .or || operation == .and), writesDestination,
-      case .memory(let address, width: .i16) = source
+      (operation == .or || operation == .and), writesDestination
     {
-      return emitWordMemorySourceLogical(operation, destination: target, address: address, into: &words)
+      return emitWordRegisterLogical(operation, destination: target, source: source, into: &words)
     }
     if case .memory(let address, width: .i8) = destination,
       writesDestination,
@@ -1877,16 +1876,23 @@ public struct DoryARM64BaselineEmitter: Sendable {
     return true
   }
 
-  private func emitWordMemorySourceLogical(
+  private func emitWordRegisterLogical(
     _ operation: DoryIRBinaryOperation,
     destination: DoryIRRegister,
-    address: DoryIRMemoryAddress,
+    source: DoryIROperand,
     into words: inout [UInt32]
   ) -> Bool {
-    guard destination.bank == "x86.gpr", destination.index < 16, destination.width == .i16,
-      emitMemoryAddress(address, into: 12, words: &words)
+    guard destination.bank == "x86.gpr", destination.index < 16, destination.width == .i16
     else { return false }
-    emitMemoryRead(addressRegister: 12, width: .i16, resultRegister: 10, words: &words)
+    switch source {
+    case .memory(let address, width: .i16):
+      guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
+      emitMemoryRead(addressRegister: 12, width: .i16, resultRegister: 10, words: &words)
+    case .immediate(let value, width: .i16):
+      emitImmediate(value & 0xFFFF, register: 10, into: &words)
+    default:
+      return false
+    }
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(destination.index) * 8))
     emitImmediate(0xFFFF, register: 15, into: &words)
     words.append(encodeLogical(.and, left: 9, right: 15, destination: 9))

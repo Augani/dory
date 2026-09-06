@@ -720,10 +720,13 @@ public struct DoryX86IRTranslator: Sendable {
       }
       if case .register(let target) = destination,
         target.bank == "x86.gpr", target.index < 16, target.width == .i16,
-        (operation == .or || operation == .and), writesDestination,
-        case .memory(let address, width: .i16) = source
+        (operation == .or || operation == .and), writesDestination
       {
-        return isJITMemoryAddress(address)
+        switch source {
+        case .memory(let address, width: .i16): return isJITMemoryAddress(address)
+        case .immediate(_, width: .i16): return true
+        default: return false
+        }
       }
       let targetWidth: DoryIRIntegerWidth
       switch destination {

@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "date": "2026-09-06",
+  "scope": "Compile 16-bit register AND/OR immediate operands through the existing narrow logical emitter; preserve upper register bits and architectural flags.",
+  "observed_instruction": "66254001: AND AX, 0x0140",
+  "observed_runner_sha256": "658b301325b9bcd4b0d1fc2a621a851f24a7f9136076b32e89113f135be9f0fb",
+  "test_command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path dory-core-swift --jobs 2 --filter 'DoryARM64BaselineJITTests/word(RegisterLogical|MemorySourceLogicalFault)'",
+  "result": "2 tests passed, including parameterized memory fault regression checks",
+  "logical_comparisons": 52,
+  "new_immediate_comparisons": 24,
+  "coverage": [
+    "baseline and optimizing JIT",
+    "six immediate cases: accumulator, extended register, sign-extended imm8, zero and sign results",
+    "two initial flags patterns; complete architectural state compared against interpreter",
+    "seven retained memory-source cases and fault restartability tests"
+  ],
+  "limitations": [
+    "The currently running immutable VM binary does not include this change.",
+    "No end-to-end VM speedup or release qualification claimed."
+  ],
+  "evidence": {
+    "log": "native-word-immediate-logical.log.gz",
+    "uncompressed_log_sha256": "104ad10f02aff71d2d16ec40cc0313c0cbdd2009cf850778b0e5ce75ba21f655",
+    "profile": "native-word-immediate-logical-profile.txt",
+    "profile_sha256": "bed564bb8395f70ff367f80c2f0d5fb1eae4948e8a39b5b5ee8e5f8c810e728a"
+  }
+}
