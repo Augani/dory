@@ -3912,6 +3912,30 @@ import Testing
     #endif
   }
 
+  @Test func divisionEmitterRejectsCombinedCallerSuppliedIR() throws {
+    let translator = DoryX86IRTranslator()
+    let load = try translator.translate([0x48, 0x8B, 0x00], at: 0, mode: .long64)
+    let store = try translator.translate([0x48, 0x89, 0x00], at: 0, mode: .long64)
+    for bytes: [UInt8] in [[0x48, 0xF7, 0xF1], [0x49, 0xF7, 0xF9]] {
+      let division = try translator.translate(bytes, at: 3, mode: .long64)
+      for tier in [DoryARM64CompilationTier.baseline, .optimizing] {
+        #expect(DoryARM64BaselineEmitter().compile(division, tier: tier).tier == tier)
+        for prefix in [load, store] {
+          let combined = DoryIRBasicBlock(
+            guestStart: 0, guestByteCount: 6, guestInstructionCount: 2,
+            statements: prefix.statements + division.statements,
+            terminator: division.terminator
+          )
+          #expect(DoryARM64BaselineEmitter().compile(combined, tier: tier).tier == .interpreterFallback)
+        }
+        // Real decoding must stop before division, keeping its fallback checkpoint isolated.
+        let decoded = try translator.translate([0x48, 0x8B, 0x00] + bytes, at: 0, mode: .long64)
+        #expect(decoded.guestInstructionCount == 1)
+        #expect(decoded.guestByteCount == 3)
+      }
+    }
+  }
+
   @Test func nativeSchedClockArithmeticCoverageRemainsKernelRegisterOnly() throws {
     #if arch(arm64)
       let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)

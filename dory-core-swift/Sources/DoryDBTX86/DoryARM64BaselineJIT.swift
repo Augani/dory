@@ -99,9 +99,15 @@ public struct DoryARM64BaselineEmitter: Sendable {
     if containsFSOrGSMemoryAddress(block) {
       guard executionMode == .long64 else { return fallback(block) }
     }
-    // A synchronization callback cannot be rolled back. Accept only the isolated shape
-    // produced by the translator, including when callers supply hand-crafted IR.
-    if block.statements.contains(where: { if case .memoryFence = $0 { true } else { false } }) {
+    // Fences cannot be rolled back, and division guards return without unwinding a
+    // memory-callback prologue. Require the translator's isolated shape even for
+    // caller-supplied IR so neither can follow a memory access or architectural write.
+    if block.statements.contains(where: {
+      switch $0 {
+      case .memoryFence, .unsignedAccumulatorDivide, .signedAccumulatorDivide: true
+      default: false
+      }
+    }) {
       guard block.statements.count == 1, block.guestInstructionCount == 1,
         case .next = block.terminator
       else { return fallback(block) }

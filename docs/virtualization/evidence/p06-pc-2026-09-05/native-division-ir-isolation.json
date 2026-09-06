@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "date": "2026-09-06",
+  "problem": "Public emitter could accept caller-supplied memory statements preceding guarded DIV/IDIV, although division interpreter exits do not unwind a memory-callback prologue. Normal translator already isolates these operations.",
+  "change": "Require a single statement, single guest instruction and next terminator for DIV/IDIV, using existing isolated-fence admission check.",
+  "verification": "3 focused tests pass:8 malformed memory-prefix blocks rejected across both division forms and tiers; valid isolated blocks retained; decoder stops before division. Existing226retired-state and20fallback comparisons pass.",
+  "log": "native-division-ir-isolation.log.gz",
+  "uncompressed_log_sha256": "90836cf879cd6b000463db4a0e8a581fb785c684bafd374f8ab5a54f4596c31c",
+  "limits": "Source/emitter validation; no new physical VM or end-to-end performance qualification."
+}
