@@ -930,7 +930,6 @@ private final class DoryVZMacControlServer: @unchecked Sendable {
     private let clientSlots = DispatchSemaphore(value: 8)
     private let lock = NSLock()
     private var socketOwner: VmmControlSocketListener?
-    private var listenerFD: Int32 = -1
     private var sampleSequence: UInt64 = 0
 
     init(
@@ -954,22 +953,20 @@ private final class DoryVZMacControlServer: @unchecked Sendable {
     }
 
     func start() throws {
-        let fd = try lock.withLock { () throws -> Int32? in
-            guard listenerFD < 0 else { return nil }
+        let listener = try lock.withLock { () throws -> VmmControlSocketListener? in
+            guard socketOwner == nil else { return nil }
             let owner = try VmmControlSocketListener(path: socketPath)
             socketOwner = owner
-            listenerFD = owner.descriptor
-            return owner.descriptor
+            return owner
         }
-        guard let fd else { return }
-        queue.async { [weak self] in self?.acceptLoop(listenerFD: fd) }
+        guard let listener else { return }
+        queue.async { [weak self] in self?.acceptLoop(listener: listener) }
     }
 
     func stop() {
         let owner = lock.withLock { () -> VmmControlSocketListener? in
             let owner = socketOwner
             socketOwner = nil
-            listenerFD = -1
             return owner
         }
         owner?.stop()
@@ -1000,12 +997,21 @@ private final class DoryVZMacControlServer: @unchecked Sendable {
         )
     }
 
-    private func acceptLoop(listenerFD: Int32) {
-        while lock.withLock({ self.listenerFD == listenerFD }) {
-            let client = accept(listenerFD, nil, nil)
-            if client < 0 {
-                if errno == EINTR { continue }
-                break
+    private func acceptLoop(listener: VmmControlSocketListener) {
+        while true {
+            let client: Int32
+            do {
+                switch try listener.acceptClient() {
+                case .client(let descriptor): client = descriptor
+                case .retry: continue
+                case .stopped: return
+                }
+            } catch {
+                return
+            }
+            guard lock.withLock({ socketOwner === listener }) else {
+                close(client)
+                return
             }
             let slots = clientSlots
             guard slots.wait(timeout: .now()) == .success else {

@@ -1,0 +1,17 @@
+{
+  "scope": "Native Linux and Mac control listener lifetime across stop/restart",
+  "change": "Poll and nonblocking accept run under the listener owner lock shared with close. Accept loops retain the owner and reject clients if the server owner changed. Removed duplicate listenerFD/running state from these control servers.",
+  "validation": {
+    "filter": "VmmControlSocketListenerTests|VmmControlSocketIOTests",
+    "exitCode": 0,
+    "tests": 10,
+    "suites": 2,
+    "logSHA256": "2aaf2c88a4300b71cb09e85ec64ffe760e7f8be6eae3914cae1475eb79ac06bf",
+    "regression": "A stopped listener cannot consume the replacement listener pending connection; existing socket ownership and bounded I/O tests pass."
+  },
+  "limits": [
+    "Poll holds the listener lock for up to100ms per call.",
+    "Does not establish full operation/generation binding or command execution deadlines.",
+    "No physical lifecycle campaign performed for this change."
+  ]
+}

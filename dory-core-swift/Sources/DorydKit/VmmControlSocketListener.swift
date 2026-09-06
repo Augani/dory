@@ -3,6 +3,11 @@ import Foundation
 
 /// Owns one native control listener and removes only the socket inode it bound.
 public final class VmmControlSocketListener: @unchecked Sendable {
+    public enum AcceptResult {
+        case client(Int32)
+        case retry
+        case stopped
+    }
     public let descriptor: Int32
     private let path: String
     private let device: dev_t
@@ -29,6 +34,9 @@ public final class VmmControlSocketListener: @unchecked Sendable {
             guard fcntl(fd, F_SETFD, FD_CLOEXEC) == 0 else {
                 throw VmmControlError.syscall("fcntl(FD_CLOEXEC)", errno)
             }
+            guard fcntl(fd, F_SETFL, O_NONBLOCK) == 0 else {
+                throw VmmControlError.syscall("fcntl(O_NONBLOCK)", errno)
+            }
             let result = withUnsafePointer(to: &address) {
                 $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
                     Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
@@ -51,6 +59,24 @@ public final class VmmControlSocketListener: @unchecked Sendable {
             close(fd)
             if let bound { Self.removeIfMatching(path, device: bound.st_dev, inode: bound.st_ino) }
             throw error
+        }
+    }
+
+    /// Serialize poll/accept with close so descriptor reuse cannot cross listener lifetimes.
+    /// The short poll bounds how long stop must wait; accept itself is nonblocking.
+    public func acceptClient() throws -> AcceptResult {
+        try lock.withLock {
+            guard active else { return .stopped }
+            var readiness = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
+            let ready = poll(&readiness, 1, 100)
+            if ready == 0 || (ready < 0 && errno == EINTR) { return .retry }
+            guard ready > 0 else { throw VmmControlError.syscall("poll", errno) }
+            let client = accept(descriptor, nil, nil)
+            if client < 0 {
+                if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { return .retry }
+                throw VmmControlError.syscall("accept", errno)
+            }
+            return .client(client)
         }
     }
 

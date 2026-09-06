@@ -74,6 +74,36 @@ import Testing
         }
     }
 
+    @Test func stoppedOwnerCannotAcceptReplacementTraffic() throws {
+        try withPath { path in
+            let old = try VmmControlSocketListener(path: path)
+            old.stop()
+            let replacement = try VmmControlSocketListener(path: path)
+            defer { replacement.stop() }
+            let client = socket(AF_UNIX, SOCK_STREAM, 0)
+            guard client >= 0 else { throw VmmControlError.syscall("socket", errno) }
+            defer { close(client) }
+            var address = sockaddr_un()
+            address.sun_family = sa_family_t(AF_UNIX)
+            withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: Array(path.utf8)) }
+            let result = withUnsafePointer(to: &address) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    connect(client, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            #expect(result == 0)
+            guard case .stopped = try old.acceptClient() else {
+                Issue.record("stopped owner accepted replacement traffic")
+                return
+            }
+            guard case .client(let accepted) = try replacement.acceptClient() else {
+                Issue.record("replacement lost its pending connection")
+                return
+            }
+            close(accepted)
+        }
+    }
+
     private func attributes(_ path: String) throws -> stat {
         var info = stat()
         guard lstat(path, &info) == 0 else { throw VmmControlError.syscall("lstat", errno) }

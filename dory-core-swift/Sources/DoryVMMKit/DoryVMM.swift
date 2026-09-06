@@ -2744,8 +2744,6 @@ private final class DoryVMMControlServer: @unchecked Sendable {
     private let lock = NSLock()
     private let clientSlots = DispatchSemaphore(value: 8)
     private var socketOwner: VmmControlSocketListener?
-    private var listenerFD: Int32 = -1
-    private var running = false
     private var telemetrySampleSequence: UInt64 = 0
     private var telemetryEventSequence: UInt64 = 0
     private var telemetryEventHistory = [DoryDeviceTelemetryEvent]()
@@ -2774,34 +2772,40 @@ private final class DoryVMMControlServer: @unchecked Sendable {
     }
 
     func start() throws {
-        let fd = try lock.withLock { () throws -> Int32? in
-            guard listenerFD < 0 else { return nil }
+        let listener = try lock.withLock { () throws -> VmmControlSocketListener? in
+            guard socketOwner == nil else { return nil }
             let owner = try VmmControlSocketListener(path: localSocketPath)
             socketOwner = owner
-            listenerFD = owner.descriptor
-            running = true
-            return owner.descriptor
+            return owner
         }
-        guard let fd else { return }
-        queue.async { [weak self] in self?.acceptLoop(listenerFD: fd) }
+        guard let listener else { return }
+        queue.async { [weak self] in self?.acceptLoop(listener: listener) }
     }
 
     func stop() {
         let owner = lock.withLock { () -> VmmControlSocketListener? in
             let owner = socketOwner
             socketOwner = nil
-            listenerFD = -1
-            running = false
             return owner
         }
         owner?.stop()
     }
 
-    private func acceptLoop(listenerFD: Int32) {
-        while isRunning(listenerFD: listenerFD) {
-            let client = accept(listenerFD, nil, nil)
-            if client < 0 {
-                continue
+    private func acceptLoop(listener: VmmControlSocketListener) {
+        while true {
+            let client: Int32
+            do {
+                switch try listener.acceptClient() {
+                case .client(let descriptor): client = descriptor
+                case .retry: continue
+                case .stopped: return
+                }
+            } catch {
+                return
+            }
+            guard lock.withLock({ socketOwner === listener }) else {
+                close(client)
+                return
             }
             let slots = clientSlots
             guard slots.wait(timeout: .now()) == .success else {
@@ -3120,12 +3124,6 @@ private final class DoryVMMControlServer: @unchecked Sendable {
             return nil
         }
         return canonical
-    }
-
-    private func isRunning(listenerFD: Int32) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return running && self.listenerFD == listenerFD
     }
 
     deinit {
