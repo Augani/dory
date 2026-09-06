@@ -195,7 +195,7 @@ func usage(exitCode: Int32 = 2) -> Never {
           dorydctl [global] machine device-telemetry NAME
           dorydctl [global] machine flight-recorder NAME [--after SEQUENCE]
           dorydctl [global] machine console NAME [--generation SHA256 --after OFFSET] [--limit BYTES] [--input TEXT]
-          dorydctl [global] machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N]) [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--guest-user NAME] [--guest-uid N] [--desktop-distro ID] [--desktop-name NAME] [--desktop-version VERSION] [--desktop-environment NAME] [--clipboard off|host-to-guest|guest-to-host|bidirectional] [--runtime auto|accelerated|compatible] [--graphics auto|virgl|virgl-venus|software] [--network shared-nat|host-only|disconnected|bridged] [--forward ID:tcp|udp:HOST_PORT:GUEST_PORT:loopback|lan ...] [--audio-input on|off] [--audio-output on|off] [--intel-application-translation on|off] [--sandbox [--sandbox-expires-at UNIX_SECONDS] [--sandbox-ssh-agent denied|granted] [--sandbox-profile standard|agent-ready] [--sandbox-tool TOOL ...] [--sandbox-baseline ID]]
+          dorydctl [global] machine create NAME (--kernel PATH --rootfs PATH [--boot-mode linux-kernel|efi] [--guest-architecture arm64|x86_64] | --installer-iso PATH [--disk-size-gb N]) [--memory-mb N] [--cpus N] [--display-mode headless|desktop] [--dns-target IPv4] [--share TAG=HOST:GUEST[:ro|rw] | JSON] [--guest-user NAME] [--guest-uid N] [--desktop-distro ID] [--desktop-name NAME] [--desktop-version VERSION] [--desktop-environment NAME] [--clipboard off|host-to-guest|guest-to-host|bidirectional] [--runtime auto|accelerated|compatible] [--graphics auto|virgl|virgl-venus|software] [--network shared-nat|host-only|disconnected|bridged] [--forward ID:tcp|udp:HOST_PORT:GUEST_PORT:loopback|lan ...] [--audio-input on|off] [--audio-output on|off] [--intel-application-translation on|off] [--sandbox [--sandbox-expires-at UNIX_SECONDS] [--sandbox-ssh-agent denied|granted] [--sandbox-profile standard|agent-ready] [--sandbox-tool TOOL ...] [--sandbox-baseline ID]]
           dorydctl [global] machine update NAME [--memory-mb N] [--cpus N] [--dns-target IPv4 | --clear-dns-target] [--share TAG=HOST:GUEST[:ro|rw] | JSON ... | --clear-shares] [typed create options | --clear-guest-account | --clear-desktop-identity | --clear-clipboard | --clear-runtime | --clear-graphics | --clear-network | --clear-forwards | --clear-audio | --clear-intel-application-translation] [--attach-installer | --eject-installer]
           dorydctl [global] machine start|stop|pause|suspend|resume|restart|delete NAME
           dorydctl [global] machine usb-attach NAME BUS_ID IDENTITY_TOKEN
@@ -1336,15 +1336,45 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
         guard DoryHostArchitecture.current == .arm64 else {
             throw DorydCtlError.usage("Dory virtual machines require an Apple Silicon host")
         }
-        let name = try cursor.take("usage: dorydctl machine create NAME (--kernel PATH --rootfs PATH | --installer-iso PATH [--disk-size-gb N])")
+        let name = try cursor.take("usage: dorydctl machine create NAME (--kernel PATH --rootfs PATH [--boot-mode linux-kernel|efi] [--guest-architecture arm64|x86_64] | --installer-iso PATH [--disk-size-gb N])")
         let installerISO = try cursor.optionValue("--installer-iso")
         let kernel = try cursor.optionValue("--kernel")
         let rootfs = try cursor.optionValue("--rootfs")
         let diskSizeGB = try cursor.optionValue("--disk-size-gb").map {
             try positiveUInt64($0, option: "--disk-size-gb")
         } ?? 64
+        let requestedBootMode = try cursor.optionValue("--boot-mode")
+        let requestedGuestArchitecture = try cursor.optionValue("--guest-architecture")
         guard installerISO != nil || (kernel != nil && rootfs != nil) else {
             throw DorydCtlError.usage("provide --kernel and --rootfs, or --installer-iso")
+        }
+        guard installerISO == nil || requestedBootMode == nil else {
+            throw DorydCtlError.usage("--boot-mode is only valid with --kernel and --rootfs")
+        }
+        guard installerISO == nil || requestedGuestArchitecture == nil else {
+            throw DorydCtlError.usage("--guest-architecture is only valid with --kernel and --rootfs")
+        }
+        let bootMode: DoryMachineBootMode
+        if let requestedBootMode {
+            switch requestedBootMode {
+            case DoryMachineBootMode.linuxKernel.rawValue:
+                bootMode = .linuxKernel
+            case DoryMachineBootMode.efi.rawValue:
+                bootMode = .efi
+            default:
+                throw DorydCtlError.usage("--boot-mode must be linux-kernel or efi")
+            }
+        } else {
+            bootMode = installerISO == nil ? .linuxKernel : .efi
+        }
+        let explicitGuestArchitecture: DoryGuestArchitecture?
+        if let requestedGuestArchitecture {
+            guard let parsed = DoryGuestArchitecture(rawValue: requestedGuestArchitecture) else {
+                throw DorydCtlError.usage("--guest-architecture must be arm64 or x86_64")
+            }
+            explicitGuestArchitecture = parsed
+        } else {
+            explicitGuestArchitecture = nil
         }
         let defaultMemoryMB: UInt64 = installerISO == nil
             ? 2_048
@@ -1390,11 +1420,14 @@ func runMachine(cursor: inout ArgumentCursor, client: DorydCtlClient) throws {
             "id": name,
             "kernelPath": kernel ?? "",
             "rootfsPath": rootfs ?? "",
-            "bootMode": installerISO == nil ? DoryMachineBootMode.linuxKernel.rawValue : DoryMachineBootMode.efi.rawValue,
+            "bootMode": bootMode.rawValue,
             "memoryMB": memoryMB,
             "cpuCount": cpuCount,
             "displayMode": displayMode,
         ]
+        if let explicitGuestArchitecture {
+            config["guestArchitecture"] = explicitGuestArchitecture.rawValue
+        }
         if let stagedInstallerISOPath {
             guard diskSizeGB <= UInt64.max / (1024 * 1024 * 1024) else {
                 throw DorydCtlError.usage("--disk-size-gb is too large")

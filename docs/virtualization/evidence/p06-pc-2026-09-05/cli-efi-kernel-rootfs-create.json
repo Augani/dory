@@ -1,0 +1,38 @@
+{
+  "buildLog": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/pc-gpu-launch-prep-20260906023500/current-source-dorydctl-cli-final-build-2026090603.log",
+  "buildLogSHA256": "78d83acf8ac37914da06d1ef868c9ab249c7b400a6a37eb1ee44ce59e60e2f83",
+  "cases": {
+    "installer_rejects_boot_mode": {
+      "output": "dorydctl: --boot-mode is only valid with --kernel and --rootfs",
+      "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/pc-gpu-launch-prep-20260906023500/dorydctl-installer_rejects_boot_mode-final-2026090603.out",
+      "rc": 2,
+      "sha256": "a5f9ac439f3f8d26260687194588996b8dd0dec8fcfbc37663fa8d42f9e4700e"
+    },
+    "installer_rejects_guest_arch": {
+      "output": "dorydctl: --guest-architecture is only valid with --kernel and --rootfs",
+      "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/pc-gpu-launch-prep-20260906023500/dorydctl-installer_rejects_guest_arch-final-2026090603.out",
+      "rc": 2,
+      "sha256": "5ccd91a8bcb07e7b203a07dbe1f4935ba2137e515b52223f4fbc24cbb147bbbe"
+    },
+    "invalid_boot_mode": {
+      "output": "dorydctl: --boot-mode must be linux-kernel or efi",
+      "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/pc-gpu-launch-prep-20260906023500/dorydctl-invalid_boot_mode-final-2026090603.out",
+      "rc": 2,
+      "sha256": "0cee613ef4fee5d2c7c85b8705e134eb99585da0505fcb3aac364fb4535e4f06"
+    },
+    "invalid_guest_arch": {
+      "output": "dorydctl: --guest-architecture must be arm64 or x86_64",
+      "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/pc-gpu-launch-prep-20260906023500/dorydctl-invalid_guest_arch-final-2026090603.out",
+      "rc": 2,
+      "sha256": "2b4a561784ddd438a558a194e0dca075145dc284bd905cc67ffd744da3246a2a"
+    }
+  },
+  "dorydctlSHA256": "10a23ca887095806b563602afab61841e68cba3225f8467547840ebd0fff6bda",
+  "sourceSHA256": "979816003b62a3e6aa82fb5a61a2842b1421739a9cc3dc3b00763bd26ad78f67",
+  "toolchain": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+  "scope": "CLI forwards explicit Linux boot mode and guest ISA for kernel/rootfs creation while keeping installer ISA detection authoritative.",
+  "limitations": [
+    "Build and invalid-option parser validation; no successful EFI workspace creation or guest GPU run claimed.",
+    "Production PC/VirGL catalog/root admission remains open."
+  ]
+}
