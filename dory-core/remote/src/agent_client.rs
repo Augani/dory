@@ -65,7 +65,7 @@ impl AgentClient {
     {
         tokio::time::timeout(deadline, handshake(stream, &Hello::current(build)))
             .await
-            .map_err(|_| RemoteError::Timeout(deadline))??;
+            .map_err(|_| RemoteError::HandshakeTimeout(deadline))??;
         Ok(())
     }
 
@@ -626,7 +626,7 @@ mod tests {
             AgentClient::connect_with_deadline(&mut client_stream, "doryd-test", deadline).await;
 
         match result {
-            Err(RemoteError::Timeout(actual)) => assert_eq!(actual, deadline),
+            Err(RemoteError::HandshakeTimeout(actual)) => assert_eq!(actual, deadline),
             other => panic!("expected handshake timeout, got {other:?}"),
         }
     }

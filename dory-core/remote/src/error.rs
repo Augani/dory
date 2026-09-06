@@ -9,6 +9,8 @@ pub enum RemoteError {
     AuthFailed(String),
     #[error("agent rpc timed out after {0:?}")]
     Timeout(std::time::Duration),
+    #[error("agent protocol handshake timed out after {0:?}")]
+    HandshakeTimeout(std::time::Duration),
     #[error("handshake: {0}")]
     Handshake(#[from] HandshakeError),
     #[error("mux: {0}")]
