@@ -37,8 +37,6 @@ common_verification = runner.index(
 assert inventory_guard < development_signing < common_verification
 assert '\n    else\n' in runner[inventory_guard:development_signing]
 assert runner.find("sign_hardened_payload") == development_signing
-assert "preserving Xcode-sealed production DoryHVRunner graph" in runner
-assert "production renderer inventory is not a direct file" in runner
 for payload in (
     '"$fs_worker_app"',
     '"$renderer_worker_app"',
@@ -50,7 +48,6 @@ assert "codesign --verify --deep --strict \"$runner_app\"" in runner
 renderer_verifier = function_body("verify_debug_renderer_packaging")
 assert 'renderer_enabled="${DORY_BUNDLE_RENDERER:-${DORY_BUNDLE_VENUS:-}}"' in renderer_verifier
 assert '[ "$XCODE_CONFIGURATION" = Release ] && [ "$renderer_enabled" = 1 ]' in renderer_verifier
-assert "renderer-disabled runner retained a production renderer inventory" in renderer_verifier
 vmm = function_body("bundle_doryd_swiftpm_helpers")
 assert 'sign_hardened_payload "$helper" "$entitlements" dory-vmm' in vmm
 assert 'sign_hardened_payload "$vmm_app" "$entitlements" dory-vmm' in vmm

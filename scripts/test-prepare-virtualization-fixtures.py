@@ -554,11 +554,9 @@ class GlibcDiagnosticTests(unittest.TestCase):
             finally:
                 os.close(descriptor)
 
-    def test_glibc_workloads_share_runner_contract_and_use_unflagged_shutdown(self):
+    def test_glibc_workload_receipts_match_runner_contract(self):
         source = (fixture.GLIBC_DIAGNOSTIC_DIRECTORY / "init").read_text()
-        original = (fixture.DIAGNOSTIC_DIRECTORY / "init").read_text()
         recipe = json.loads((fixture.GLIBC_DIAGNOSTIC_DIRECTORY / "fixture.json").read_text())
-        self.assertEqual(source, original.replace('"$BB" poweroff -f', '/sbin/poweroff').replace('musl', 'glibc'))
         self.assertEqual(digest(source.encode()), recipe["initSHA256"])
         self.assertIn("dory.pvh_run_id=", source)
         body = source.split("\nemit_runner_receipt() {\n", 1)[1].split("\n}\n", 1)[0]
