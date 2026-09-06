@@ -1,0 +1,48 @@
+{
+  "schema": 1,
+  "date": "2026-09-06",
+  "runnerSHA256": "658b301325b9bcd4b0d1fc2a621a851f24a7f9136076b32e89113f135be9f0fb",
+  "sourceCommit": "53c9218fe1fe844cd21012bba7740edf1f863b05",
+  "observerElapsedSeconds": 1800.6,
+  "vmPID": 4634,
+  "rootConfirmedProcessAbsent": true,
+  "reached": [
+    "ext4 root mount",
+    "/sbin/init",
+    "serial /bin/true exit0",
+    "uname Linux x86_64",
+    "/dev/vsock and virtio vsock device0x0013",
+    "copy of instrumented agent began"
+  ],
+  "notReached": [
+    "agent copy completion",
+    "agent exec",
+    "Rust main entry",
+    "control bind-ready",
+    "RPC handshake or command"
+  ],
+  "interpretation": "Observer-limited run. VM vanished after observer exited; no explicit VM exit status or guest failure was captured. Parent/session lifetime is a hypothesis, not a proven cause. This is not transport qualification or a performance comparison.",
+  "nextAction": "Use persistent observer and detached VM session, retain actual exit status, and continue until bind/probes or an observed failure. Use next verified frozen runner containing new JIT fixes.",
+  "evidence": [
+    {
+      "path": "source53c-observer-limited-boot-rpcdiag-bindready-observer-timeout-receipt.json.gz",
+      "originalSHA256": "d7c1c3566c700fc25ae58937e6ef5bce5092429b8575138f875c8a8bbff7b128",
+      "publicUncompressedSHA256": "a3a81d9799f280d86d5d2e3116c67029c261fdd81448bbdfdba20cf65fce60a2"
+    },
+    {
+      "path": "source53c-observer-limited-boot-rpcdiag-bindready-cleanup-receipt.json.gz",
+      "originalSHA256": "a3e80d76a2ea80148f583f31f46678c0a1fc91f753a16090da9d28bc6a072e82",
+      "publicUncompressedSHA256": "46a5dcdbb79d2334cefe276ab768a075243ca10be7cb3ecd8a7992c08e14040a"
+    },
+    {
+      "path": "source53c-observer-limited-boot-serial.log.gz",
+      "originalSHA256": "6b54ed7a608085833693c6d3d8a72fb90300c6eca7abb4148f6e0aeb20e059f8",
+      "publicUncompressedSHA256": "6b54ed7a608085833693c6d3d8a72fb90300c6eca7abb4148f6e0aeb20e059f8"
+    },
+    {
+      "path": "source53c-observer-limited-boot-stderr.log.gz",
+      "originalSHA256": "5ccce04816eab67e379aa84ab936076803be12d273d21fe79dc2463ccfacb8ec",
+      "publicUncompressedSHA256": "7674ef832e5caa86c9b2735f3fd0c948df3e03a76f73d2072963eec7ab0b6c26"
+    }
+  ]
+}
