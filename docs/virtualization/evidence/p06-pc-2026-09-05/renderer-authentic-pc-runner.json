@@ -1,0 +1,79 @@
+{
+  "schemaVersion": 1,
+  "status": "signed-runner-and-live-pc-worker-verified-guest-gpu-unqualified",
+  "sourceContext": {
+    "exactFullTreeSnapshot": "unknown",
+    "reason": "Build read the shared worktree during concurrent CPU changes. GPU profile sources were stable, but no complete isolated source snapshot was captured."
+  },
+  "artifactHashes": {
+    "angleLibEGL": {
+      "bytes": 63072,
+      "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/DerivedData-DoryHVRunner-pcprofile-authentic-20260906022000/Build/Products/Release/DoryHVRunner.app/Contents/XPCServices/DoryRendererWorker.xpc/Contents/Frameworks/libEGL.dylib",
+      "sha256": "feaa179c2538746bacacfa35ce7c2d7124d15e1e2920cf1d20c8853c70999466"
+    },
+    "angleLibGLESv2": {
+      "bytes": 6229936,
+      "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/DerivedData-DoryHVRunner-pcprofile-authentic-20260906022000/Build/Products/Release/DoryHVRunner.app/Contents/XPCServices/DoryRendererWorker.xpc/Contents/Frameworks/libGLESv2.dylib",
+      "sha256": "829afc640465ca95c6d0674e8c417750ca6546a2a98e7b24296fe82db90467e0"
+    },
+    "armQualification": {
+      "bytes": 1538,
+      "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/DerivedData-DoryHVRunner-pcprofile-authentic-20260906022000/Build/Products/Release/DoryHVRunner.app/Contents/Resources/renderer-bootstrap-qualification.json",
+      "sha256": "3a6067720969b076e034fc3b48098b409571527df111f6d610338481ea6b41f2"
+    },
+    "pcQualification": {
+      "bytes": 1418,
+      "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/DerivedData-DoryHVRunner-pcprofile-authentic-20260906022000/Build/Products/Release/DoryHVRunner.app/Contents/Resources/renderer-bootstrap-qualification-pc-x86_64-virgl2.json",
+      "sha256": "5ec4cffef2a8d019b38e81182afe4ec0d8da4674155c548314fadcb6060c71e1"
+    },
+    "rendererInventory": {
+      "bytes": 19290,
+      "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/DerivedData-DoryHVRunner-pcprofile-authentic-20260906022000/Build/Products/Release/DoryHVRunner.app/Contents/Resources/renderer-production-inventory.json",
+      "sha256": "f49e97ba321686629c2e6ce5fef98e22de593f35137ec4ad9b13cd7d2a787a4c"
+    },
+    "rendererWorkerExecutable": {
+      "bytes": 10636560,
+      "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/DerivedData-DoryHVRunner-pcprofile-authentic-20260906022000/Build/Products/Release/DoryHVRunner.app/Contents/XPCServices/DoryRendererWorker.xpc/Contents/MacOS/DoryRendererWorker",
+      "sha256": "c011edc41d91f233f12dedd09f10c6a677cb860274d194fcdd348f12b7ed45e6"
+    },
+    "rendererWorkerXPC": {
+      "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/DerivedData-DoryHVRunner-pcprofile-authentic-20260906022000/Build/Products/Release/DoryHVRunner.app/Contents/XPCServices/DoryRendererWorker.xpc",
+      "type": "directory"
+    },
+    "runnerExecutable": {
+      "bytes": 52104672,
+      "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/DerivedData-DoryHVRunner-pcprofile-authentic-20260906022000/Build/Products/Release/DoryHVRunner.app/Contents/MacOS/dory-hv",
+      "sha256": "fc82a278f5f884324c76b31a7da2adb288fe071bb6b2c552cd34baa0ae4b9f51"
+    },
+    "xcodebuildLog": {
+      "bytes": 1985012,
+      "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/xcodebuild-DoryHVRunner-Release-pcprofile-authentic-20260906022000.log",
+      "sha256": "620e0d8fa8d5cea681feccc0e942d0743875f6f0138cf159cd3ad23e4ff7d7ee"
+    }
+  },
+  "rootVerification": {
+    "artifactHashChecks": [
+      "angleLibEGL",
+      "angleLibGLESv2",
+      "armQualification",
+      "pcQualification",
+      "rendererInventory",
+      "rendererWorkerExecutable",
+      "runnerExecutable",
+      "xcodebuildLog"
+    ],
+    "codesignExit": 0,
+    "bothProfilesPackageVerifierExit": 0,
+    "runnerSHA256": "fc82a278f5f884324c76b31a7da2adb288fe071bb6b2c552cd34baa0ae4b9f51",
+    "sourceLimit": "Built from shared worktree during concurrent CPU edits; exact CPU source commit not established. Same-artifact tier comparison remains possible.",
+    "physicalGPUQualified": false
+  },
+  "qualificationMode": "preview",
+  "releaseDetachedSignatureQualified": false,
+  "physicalGuestGPUQualified": false,
+  "liveWorkerEvidence": {
+    "path": "${HOME}/.dory/qualification/renderer-reset-signed-runner-20260906/authentic-pc-live-worker-20260906022000/live-worker-receipt.json",
+    "sha256": "cfc3259cb24625263ec654ae2d78e6dd882759e7a9ead510483790e21b50c7e2"
+  },
+  "next": "Use this immutable binary for within-artifact tier comparison and physical PC acceleration/reset probes; do not claim exact CPU commit provenance."
+}
