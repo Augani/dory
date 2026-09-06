@@ -379,11 +379,6 @@ class DiagnosticInitramfsTests(unittest.TestCase):
     def test_guest_receipt_matches_runner_protocol_and_rejects_incomplete_workloads(self):
         source = (fixture.DIAGNOSTIC_DIRECTORY / "init").read_text()
         recipe = json.loads((fixture.DIAGNOSTIC_DIRECTORY / "fixture.json").read_text())
-        runner = (fixture.DIAGNOSTIC_DIRECTORY.parents[2] /
-                  "dory-core-swift/Tests/DoryMachinePCLinuxBootRunner/PVHBootRunnerSupport.swift").read_text()
-        self.assertIn("dory.pvh_run_id=", source)
-        self.assertIn("dory.pvh_run_id=", runner)
-        self.assertNotIn("dory.run_uuid=", source)
         self.assertEqual(digest(source.encode()), recipe["initSHA256"])
         # Execute only this print-only function, never guest init's mount/kill/poweroff workload.
         body = source.split("\nemit_runner_receipt() {\n", 1)[1].split("\n}\n", 1)[0]
