@@ -56,6 +56,30 @@
       "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-restore-insyscallinfo-candidate-1788656300/corrected-signal-probes-d.txt",
       "sha256": "eb858f41e353c395b01071e789c1867a1fd2500b603ba22c1a2ac37659a31a1c",
       "bytes": 1137
+    },
+    {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-changed-rip-rsp-diagnosis-1788657000/change_rip_rsp_ret-amd64.disasm",
+      "sha256": "03a15631dc89f65f1db50650199f7c3467a6179a31d8086255500e8c26fd28db",
+      "bytes": 3805
+    },
+    {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-syscall-metadata-defer-candidate-1788657600/change-rsp-ret-timeboxed.txt",
+      "sha256": "f6956c22858c71c98c319cbe8cd6fdf572341f3479615a9398b857fd85521130",
+      "bytes": 371
+    },
+    {
+      "path": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-syscall-metadata-defer-candidate-1788657600/change-rsp-ret-trace-head.txt",
+      "sha256": "236edf753044ed628cffc6ada6e2578fb0e0568df283a1b86dfa56ea0d36c46b",
+      "bytes": 3459
     }
-  ]
+  ],
+  "changedReturnFollowup": {
+    "status": "diagnosis-not-fix",
+    "candidateFEXSHA256AgentRecorded": "dca9d29cf4bd3fe0e93e096e5907ab244002bbba1e2d63bf1e1a447c6411a1bd",
+    "observation": "Metadata-based syscall deferral still times out. The changed-RSP probe pushes the published signal-frame RIP and returns to it. Trace original RIP is 0x201202 (kill syscall); disassembly places after_signal at 0x201204. Returning to the published address can resend the signal.",
+    "requiredCorrection": "Distinguish completed syscall resume state from restartable syscall state when publishing the guest signal frame; preserve original host continuation separately. Validate unchanged and edited returns, syscall restart/error semantics and default Go preemption.",
+    "reference": "https://raw.githubusercontent.com/torvalds/linux/master/arch/x86/kernel/signal.c",
+    "referenceScope": "handle_signal rewinds instruction pointer for qualifying syscall restart errors before setup_rt_frame; this supports investigating why completed self-kill publishes the syscall address.",
+    "traceLimit": "Diagnostic tracing exceeded intended bounds; agent instructed to limit emitted records. No diagnostic instrumentation is promotable."
+  }
 }
