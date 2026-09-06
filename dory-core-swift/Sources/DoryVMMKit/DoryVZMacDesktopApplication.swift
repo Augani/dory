@@ -927,6 +927,7 @@ private final class DoryVZMacControlServer: @unchecked Sendable {
     private let socketPath: String
     private let handler: Handler
     private let queue = DispatchQueue(label: "dev.dory.dory-vmm.vzmac-control")
+    private let clientSlots = DispatchSemaphore(value: 8)
     private let lock = NSLock()
     private var listenerFD: Int32 = -1
     private var sampleSequence: UInt64 = 0
@@ -1039,8 +1040,15 @@ private final class DoryVZMacControlServer: @unchecked Sendable {
                 if errno == EINTR { continue }
                 break
             }
+            let slots = clientSlots
+            guard slots.wait(timeout: .now()) == .success else {
+                close(client)
+                continue
+            }
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                self?.handle(clientFD: client)
+                defer { slots.signal() }
+                guard let self else { close(client); return }
+                self.handle(clientFD: client)
             }
         }
     }
@@ -1049,7 +1057,7 @@ private final class DoryVZMacControlServer: @unchecked Sendable {
         defer { close(clientFD) }
         let response: VmmControlResponse
         do {
-            let data = try Self.readAll(from: clientFD)
+            let data = try VmmControlSocketIO.readRequestData(from: clientFD)
             let request = try JSONDecoder().decode(VmmControlRequest.self, from: data)
             let box = DoryVZMacControlResponseBox()
             Task {
@@ -1061,40 +1069,11 @@ private final class DoryVZMacControlServer: @unchecked Sendable {
             response = VmmControlResponse(ok: false, message: "\(error)")
         }
         do {
-            try Self.writeAll(try JSONEncoder().encode(response), to: clientFD)
+            try VmmControlSocketIO.writeResponseData(try JSONEncoder().encode(response), to: clientFD)
         } catch {
             FileHandle.standardError.write(Data(
                 "dory-vmm VZMac control response failed: \(error)\n".utf8
             ))
-        }
-    }
-
-    private static func readAll(from fd: Int32) throws -> Data {
-        var result = Data()
-        var buffer = [UInt8](repeating: 0, count: 8_192)
-        while true {
-            let count = read(fd, &buffer, buffer.count)
-            if count < 0, errno == EINTR { continue }
-            guard count >= 0 else { throw VmmControlError.syscall("read", errno) }
-            if count == 0 { break }
-            guard result.count + count <= 1_048_576 else {
-                throw VmmControlError.rejected("VZMac control request is too large")
-            }
-            result.append(buffer, count: count)
-        }
-        guard !result.isEmpty else { throw VmmControlError.emptyResponse }
-        return result
-    }
-
-    private static func writeAll(_ data: Data, to fd: Int32) throws {
-        try data.withUnsafeBytes { bytes in
-            var offset = 0
-            while offset < bytes.count {
-                let count = write(fd, bytes.baseAddress!.advanced(by: offset), bytes.count - offset)
-                if count < 0, errno == EINTR { continue }
-                guard count > 0 else { throw VmmControlError.syscall("write", errno) }
-                offset += count
-            }
         }
     }
 

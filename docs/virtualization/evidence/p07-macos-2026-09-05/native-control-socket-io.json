@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "scope": "Shared same-user EOF-framed control I/O used by native Linux and macOS helpers; 5-second absolute transfer deadlines, 1 MiB messages, eight concurrent accepted clients per native control server.",
+  "validation": {
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path dory-core-swift --filter VmmControlSocketIOTests --jobs 2",
+    "exitCode": 0,
+    "testsPassed": 4,
+    "cases": [
+      "EOF-delimited request/response roundtrip",
+      "Slow byte delivery cannot extend absolute request deadline",
+      "Oversized request rejection",
+      "Non-reading client cannot indefinitely hold response writer"
+    ],
+    "logSHA256": "16cd237db0c457df31a109c6a2ae5220aa8344f5c5b6165e1b72184c25b1e403"
+  },
+  "implementationEvidence": "An initial backpressure test hung in __sendto with only MSG_DONTWAIT; explicit descriptor O_NONBLOCK fixes that observed failure.",
+  "limitations": [
+    "Tests use real local socket pairs, not physical VM lifecycle campaigns.",
+    "Peer rejection from another OS user and eight-client admission have not been exercised by these tests.",
+    "Command execution deadlines, inode-safe listener cleanup and full operation/generation binding remain open."
+  ]
+}

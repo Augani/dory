@@ -2742,6 +2742,7 @@ private final class DoryVMMControlServer: @unchecked Sendable {
         @Sendable () -> ResolvedPortForwardHealthSnapshot?
     private let queue: DispatchQueue
     private let lock = NSLock()
+    private let clientSlots = DispatchSemaphore(value: 8)
     private var listenerFD: Int32 = -1
     private var running = false
     private var telemetrySampleSequence: UInt64 = 0
@@ -2823,7 +2824,13 @@ private final class DoryVMMControlServer: @unchecked Sendable {
             if client < 0 {
                 continue
             }
+            let slots = clientSlots
+            guard slots.wait(timeout: .now()) == .success else {
+                close(client)
+                continue
+            }
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                defer { slots.signal() }
                 guard let self else {
                     close(client)
                     return
@@ -3148,48 +3155,12 @@ private final class DoryVMMControlServer: @unchecked Sendable {
 }
 
 private func readRequest(from fd: Int32) throws -> VmmControlRequest {
-    var data = Data()
-    var buffer = [UInt8](repeating: 0, count: 16 * 1024)
-    while true {
-        let count = buffer.withUnsafeMutableBytes { raw in
-            read(fd, raw.baseAddress, raw.count)
-        }
-        if count == 0 {
-            break
-        }
-        if count < 0 {
-            if errno == EINTR { continue }
-            throw DoryVZMachineError.syscall("read", errno)
-        }
-        data.append(contentsOf: buffer.prefix(count))
-        if data.count > 1024 * 1024 {
-            throw VmmControlError.invalidJSON("request exceeded 1 MiB")
-        }
-    }
-    guard !data.isEmpty else {
-        throw VmmControlError.invalidJSON("empty request")
-    }
-    do {
-        return try JSONDecoder().decode(VmmControlRequest.self, from: data)
-    } catch {
-        throw VmmControlError.invalidJSON("\(error)")
-    }
+    try JSONDecoder().decode(VmmControlRequest.self,
+        from: VmmControlSocketIO.readRequestData(from: fd))
 }
 
 private func writeResponse(_ response: VmmControlResponse, to fd: Int32) throws {
-    let data = try JSONEncoder().encode(response)
-    try data.withUnsafeBytes { raw in
-        guard let base = raw.baseAddress else { return }
-        var offset = 0
-        while offset < data.count {
-            let written = send(fd, base.advanced(by: offset), data.count - offset, MSG_NOSIGNAL)
-            if written < 0 {
-                if errno == EINTR { continue }
-                throw DoryVZMachineError.syscall("write", errno)
-            }
-            offset += written
-        }
-    }
+    try VmmControlSocketIO.writeResponseData(JSONEncoder().encode(response), to: fd)
 }
 
 private final class BlockingResultBox<T>: @unchecked Sendable {
