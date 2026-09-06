@@ -1,0 +1,24 @@
+{
+  "dependencyInventorySHA256": "4820b8e6aaa3876f188ade1c6a933d011eba6a7ca48f5442e5b17c4aeaa1c7b3",
+  "dependencyPrefix": "${HOME}/.dory/qualification/renderer-reset-static-tuple-20260906/run-20260906003021/static-dependencies",
+  "developerDir": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+  "endUTC": "2026-09-06T00:48:49Z",
+  "fresh": true,
+  "jobs": 1,
+  "linkInventorySHA256": "d4f3e2dbef27e719c91f4557991a2255833c52e3d9371a376e50f84bc5bde21b",
+  "linkRoot": "${HOME}/.dory/qualification/renderer-reset-static-tuple-20260906/run-20260906003021/virglrenderer-static",
+  "log": "${HOME}/.dory/qualification/renderer-reset-static-tuple-20260906/run-20260906003021/prepare-renderer-production-host.log",
+  "logSHA256": "37ede41a96ecec68060638254721133c209d8563dce2c64ea4c691f50a65b314",
+  "repoHEAD": "6c49f9ce2392b08587c21290b553c4ca6e2ec4cb",
+  "runRoot": "${HOME}/.dory/qualification/renderer-reset-static-tuple-20260906/run-20260906003021",
+  "status": "passed",
+  "kind": "static-renderer-tuple-producer",
+  "privateReceipt": "${HOME}/.dory/qualification/renderer-reset-static-tuple-20260906/run-20260906003021/prepare-renderer-production-host-receipt.json",
+  "privateReceiptSHA256": "ebd2325a58b6cd57fb002911bc035e262f0a32c4955171db51cd424151223be0",
+  "verification": "Independent staticLinkClosure inventory verification passed against current repository definition.",
+  "scope": "Builds pinned host ARM64 ANGLE Metal, libepoxy, MoltenVK and VirGL static link inputs.",
+  "limitations": [
+    "Signed worker packaging and physical guest rendering are separate gates.",
+    "No new guest GPU or workload performance claim."
+  ]
+}
