@@ -1621,7 +1621,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     }
     if case .register(let target) = destination, isLowByteRegister(target),
       (!writesDestination && (operation == .compare || operation == .test))
-        || (writesDestination && operation == .and)
+        || (writesDestination && (operation == .and || operation == .or))
     {
       return emitLowByteBinary(
         operation,
@@ -1843,6 +1843,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .and, .test:
       guard writesDestination == (operation == .and) else { return false }
       words.append(encodeLogical(.andSetFlags, is64Bit: false, 12, 13, 11))
+    case .or:
+      guard writesDestination else { return false }
+      words.append(encodeLogical(.or, is64Bit: false, 12, 13, 11))
+      words.append(encodeLogical(.andSetFlags, is64Bit: false, 11, 11, 31))
     default:
       return false
     }

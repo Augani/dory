@@ -1,0 +1,33 @@
+{
+  "acceptanceCommand": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path $QUAL/source/dory-core-swift --filter 'DoryARM64BaselineJITTests|DoryJITShortReplacementTests'",
+  "acceptanceLog": "${HOME}/.dory/qualification/native-lowbyte-or-20260906-001210/dory-arm64-baseline-jit-lowbyte-or-final.log",
+  "acceptanceLogSHA256": "2c8c8fb403a6536d96066bed375e01f32f454e395cb0ea9d21440e6bdd8a2141",
+  "acceptanceResult": "120 tests in 2 suites passed",
+  "baseHead": "dfeb47170ba305b455987c08f08781507c1815cd",
+  "focusedSharedLog": "${HOME}/.dory/qualification/native-lowbyte-or-20260906-focused.log",
+  "focusedSharedLogSHA256": "9e61177d52f8d9adb7c5a127440bf72ea116628a9607f6d4f9fcb153ea16c7ea",
+  "isolatedSourceHashes": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "c120c55a9d92b88bbe955b656874de98ceea771d9de308db888c9b4c433293ec",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "b1f3fc50e382fa0ba6c235cc8496e743bb5d8dac8acb3402190c5d7e988c2b54",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "8e5c2cfc14d8f6fbbf1cb4b1c2a57002f00e9abf00a21960354e14c256edc736"
+  },
+  "name": "native-lowbyte-or",
+  "notes": [
+    "First isolated run exposed stale fallback expectation for 08 c1; final source removes only that obsolete exclusion while preserving memory-destination OR exclusions.",
+    "No production guest performance claim; current live production run predates this patch and remains preserved."
+  ],
+  "patch": "${HOME}/.dory/qualification/native-lowbyte-or-20260906-001210/native-lowbyte-or-final.patch",
+  "patchSHA256": "97b2d589611b53b944edf2f6290a6b9b3d606c57738a1652711930b75fd5f025",
+  "scope": [
+    "native ARM64 baseline/optimizing support for low-byte register OR with low-byte register or imm8 source",
+    "exact measured form 08 c2 (or dl, al) covered",
+    "unsupported memory-destination OR remains interpreter fallback"
+  ],
+  "sharedSourceHashes": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "c120c55a9d92b88bbe955b656874de98ceea771d9de308db888c9b4c433293ec",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "b1f3fc50e382fa0ba6c235cc8496e743bb5d8dac8acb3402190c5d7e988c2b54",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "8e5c2cfc14d8f6fbbf1cb4b1c2a57002f00e9abf00a21960354e14c256edc736"
+  },
+  "sourceHashesMatchSharedAndIsolated": true,
+  "timestamp": "2026-09-06T00:15:53Z"
+}

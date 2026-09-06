@@ -657,7 +657,7 @@ public struct DoryX86IRTranslator: Sendable {
       where isJITLowByteRegister(target)
         && (
           (!writesDestination && (operation == .compare || operation == .test))
-            || (writesDestination && operation == .and)
+            || (writesDestination && (operation == .and || operation == .or))
         ):
         targetWidth = .i8
       case .memory(let address, let width)
