@@ -95,6 +95,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case stackPop(destination: DoryIROperand)
   case clearInterruptFlag
   case memoryFence(DoryX86MemoryFence)
+  case readSegment(DoryX86SegmentRegister, destination: DoryIROperand)
   case setDirectionFlag(enabled: Bool)
   case readTimestampCounter
   case signExtendAccumulatorHigh(width: DoryIRIntegerWidth)
@@ -528,6 +529,19 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .readSegment(let segment, let destination) where mode == .long64:
+      return (
+        [
+          .readSegment(
+            segment,
+            destination: operand(
+              destination,
+              instructionRelativeBase: instruction.nextInstructionAddress
+            )
+          )
+        ],
+        nil
+      )
     case .jump(let relative) where mode == .long64 || mode == .protected32:
       return ([], .branch(nearRelativeTarget(instruction, relative: relative, mode: mode)))
     case .call(let relative) where mode == .long64:
@@ -832,6 +846,15 @@ public struct DoryX86IRTranslator: Sendable {
         register.width == width && isJITGeneralRegister(register)
       else { return false }
       return true
+    case .readSegment(_, let destination):
+      switch destination {
+      case .register(let register):
+        return register.bank == "x86.gpr" && register.index < 16 && register.width == .i16
+      case .memory(let address, let width):
+        return width == .i16 && isJITMemoryAddress(address)
+      case .immediate:
+        return false
+      }
     case .signExtendAccumulatorHigh(let width):
       return width == .i32 || width == .i64
     case .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .memoryFence:
@@ -909,6 +932,8 @@ public struct DoryX86IRTranslator: Sendable {
       return isMemory(source) ? .read : .none
     case .compareExchange:
       return .write
+    case .readSegment(_, let destination):
+      return isMemory(destination) ? .write : .none
     case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
       .signExtendAccumulatorHigh, .memoryFence, .helper:
       return .none

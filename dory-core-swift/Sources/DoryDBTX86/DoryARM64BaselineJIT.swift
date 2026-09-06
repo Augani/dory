@@ -62,14 +62,21 @@ public struct DoryARM64CompiledBlock: Codable, Sendable, Hashable {
   }
 }
 
-/// Baseline ABI: x0 points to 16 UInt64 GPR slots followed by RIP and RFLAGS. Generated code
-/// returns a DoryJITExitCode in w0. The layout is intentionally independent of Swift struct ABI.
+/// Baseline ABI: x0 points to 16 UInt64 GPR slots, RIP/RFLAGS, FS/GS bases, TSC,
+/// then the six visible segment selectors. Generated code returns a DoryJITExitCode in w0.
+/// The layout is intentionally independent of Swift struct ABI.
 public struct DoryARM64BaselineEmitter: Sendable {
   private static let ripOffset = 16 * 8
   private static let rflagsOffset = 17 * 8
   private static let fsBaseOffset = 18 * 8
   private static let gsBaseOffset = 19 * 8
   private static let tscOffset = 20 * 8
+  private static let csSelectorOffset = 21 * 8
+  private static let dsSelectorOffset = 22 * 8
+  private static let esSelectorOffset = 23 * 8
+  private static let fsSelectorOffset = 24 * 8
+  private static let gsSelectorOffset = 25 * 8
+  private static let ssSelectorOffset = 26 * 8
   private static let rspOffset = 4 * 8
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
@@ -194,6 +201,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination) || isFSOrGS(source)
       case .compareExchange(let destination, let source):
         return isFSOrGS(destination) || isFSOrGS(source)
+      case .readSegment(_, let destination):
+        return isFSOrGS(destination)
       case .effectiveAddress:
         return false
       case .stackPushFlags, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
@@ -240,6 +249,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       words.append(0xD503_3FDF)  // isb
       words.append(encodeLogical(.or, left: 31, right: 19, destination: 0))
       return true
+    case .readSegment(let segment, let destination):
+      return emitReadSegment(segment, destination: destination, into: &words)
     case .copy(let destination, let source):
       return emitCopy(destination: destination, source: source, into: &words)
     case .binary(let operation, let destination, let source, let writesDestination):
@@ -607,6 +618,46 @@ public struct DoryARM64BaselineEmitter: Sendable {
     return true
   }
 
+  private func emitReadSegment(
+    _ segment: DoryX86SegmentRegister,
+    destination: DoryIROperand,
+    into words: inout [UInt32]
+  ) -> Bool {
+    switch destination {
+    case .register(let target)
+    where target.bank == "x86.gpr" && target.index < 16 && target.width == .i16:
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+      words.append(encodeLoad64(register: 10, base: 0, byteOffset: Self.segmentSelectorOffset(segment)))
+      emitImmediate(~UInt64(0xFFFF), register: 11, into: &words)
+      words.append(encodeLogical(.and, left: 9, right: 11, destination: 9))
+      emitImmediate(0xFFFF, register: 11, into: &words)
+      words.append(encodeLogical(.and, left: 10, right: 11, destination: 10))
+      words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
+      words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+      return true
+    case .memory(let address, width: .i16):
+      guard emitMemoryAddress(address, into: 9, words: &words) else { return false }
+      words.append(encodeLoad64(register: 10, base: 0, byteOffset: Self.segmentSelectorOffset(segment)))
+      emitImmediate(0xFFFF, register: 11, into: &words)
+      words.append(encodeLogical(.and, left: 10, right: 11, destination: 10))
+      emitMemoryWrite(addressRegister: 9, valueRegister: 10, width: .i16, words: &words)
+      return true
+    default:
+      return false
+    }
+  }
+
+  private static func segmentSelectorOffset(_ segment: DoryX86SegmentRegister) -> Int {
+    switch segment {
+    case .cs: csSelectorOffset
+    case .ds: dsSelectorOffset
+    case .es: esSelectorOffset
+    case .fs: fsSelectorOffset
+    case .gs: gsSelectorOffset
+    case .ss: ssSelectorOffset
+    }
+  }
+
   private func emitCopy(
     destination: DoryIROperand,
     source: DoryIROperand,
@@ -731,6 +782,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return 0
     case .compareExchange, .memoryFence:
       return 1
+    case .readSegment(_, let destination):
+      if case .memory = destination { return 1 }
+      return 0
     case .effectiveAddress, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
       .signExtendAccumulatorHigh, .helper:
       return 0
@@ -2935,7 +2989,7 @@ private let doryJITMemoryCompareExchange: dory_jit_memory_compare_exchange_funct
 }
 
 public final class DoryJITExecutableRegion: @unchecked Sendable {
-  public static let contextWordCount = 21
+  public static let contextWordCount = 27
 
   private let lock = NSLock()
   private let region: OpaquePointer
@@ -4573,6 +4627,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[18] = state.fs.base
     context[19] = state.gs.base
     context[20] = state.tsc
+    context[21] = UInt64(state.cs.selector)
+    context[22] = UInt64(state.ds.selector)
+    context[23] = UInt64(state.es.selector)
+    context[24] = UInt64(state.fs.selector)
+    context[25] = UInt64(state.gs.selector)
+    context[26] = UInt64(state.ss.selector)
   }
 
   private static func apply(

@@ -1,0 +1,19 @@
+{
+  "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path dory-core-swift --jobs 2 --filter 'DoryARM64SegmentBaseTests|DoryX86DifferentialTests|DoryARM64BaselineJITTests|DoryJITShortReplacementTests'",
+  "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "c06bd0546462ab1784639e731c65cfcd974e8e35386c3922c1a8991d924833db",
+  "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "ecb1363653f21e04bf2de4a2da069fd016818beb313e2e76ba3797b0a7341d26",
+  "dory-core-swift/Sources/DoryDBTX86/DoryIROptimizer.swift": "8cce8c786568e07cb6a798f258fbb630ba0014f047a3fd52f1f2b26177776326",
+  "dory-core-swift/Sources/DoryDBTX86/DoryX86Differential.swift": "2f0fd6b9185f1ed175084130a92b48cedfe11da07a3cf6b9a83d4a34c6940a68",
+  "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64SegmentBaseTests.swift": "b95a049b2e02f2cbd2b5c966100da9e55b181ffd9154c07a508f107e35f3f433",
+  "result": "141 tests in 4 suites passed",
+  "testLog": "${HOME}/.dory/qualification/segment-selector-read-broader-xcode26-20260906-004541.log",
+  "testLogSHA256": "4ac67226ed0ef6f6d59fd7bc6259293863024223e709bb933e8dfd5bf3989f5c",
+  "scope": "Native long-mode segment-selector reads into r/m16, six selector context slots and differential context update. Segment writes remain interpreted.",
+  "reviewCorrections": [
+    "Form memory address before loading selector so scratch register x10 cannot corrupt the stored selector.",
+    "Keep differential execution context consistent with the expanded native context."
+  ],
+  "limitations": [
+    "No end-to-end throughput improvement established; live source153717014 runner predates this change."
+  ]
+}
