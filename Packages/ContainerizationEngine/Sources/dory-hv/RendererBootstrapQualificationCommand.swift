@@ -14,6 +14,7 @@ enum RendererBootstrapQualificationCommandError: Error, Equatable {
     case invalidInventory
     case artifactMismatch(String)
     case invalidKernelDigest
+    case invalidMesaDigest
     case invalidTimestamp(String)
     case invalidValidityWindow
     case invalidOutputPath
@@ -28,9 +29,68 @@ enum RendererBootstrapQualificationCommandError: Error, Equatable {
 /// The receipt is written outside the intermediate-signed app. Packaging later copies it into
 /// Resources and applies the final outer signature.
 enum RendererBootstrapQualificationCommand {
-    private struct Options {
+    enum Profile: String {
+        case managedLinux612106 = "managed-linux-6.12.106"
+        case doryPCX8664VirGL2 = "dory-pc-x86_64-virgl2"
+
+        var producerFenceContract: DoryRendererProducerFenceContract {
+            switch self {
+            case .managedLinux612106:
+                return .managedLinux612106PrepareFBV1
+            case .doryPCX8664VirGL2:
+                return .doryPCX8664LinuxVirGL2PrepareFBV1
+            }
+        }
+
+        var requestedCapabilities: DoryRendererRequestedCapabilities {
+            switch self {
+            case .managedLinux612106:
+                return .productionAcceleration
+            case .doryPCX8664VirGL2:
+                return .pcVirGL2Acceleration
+            }
+        }
+
+        var receiptFilename: String {
+            switch self {
+            case .managedLinux612106:
+                return DoryVerifiedRendererBootstrapQualification.receiptFilename
+            case .doryPCX8664VirGL2:
+                return DoryVerifiedRendererBootstrapQualification.pcVirGL2ReceiptFilename
+            }
+        }
+
+        func guestMesaDigest(_ supplied: String?) throws -> DoryRendererArtifactDigest {
+            switch self {
+            case .managedLinux612106:
+                if let supplied, supplied != DoryRendererSourceTuple.guestMesaRuntimeSHA256 {
+                    throw RendererBootstrapQualificationCommandError.invalidMesaDigest
+                }
+                return try DoryRendererArtifactDigest(
+                    lowercaseSHA256: DoryRendererSourceTuple.guestMesaRuntimeSHA256,
+                    field: "guestMesa"
+                )
+            case .doryPCX8664VirGL2:
+                guard let supplied else {
+                    throw RendererBootstrapQualificationCommandError.invalidMesaDigest
+                }
+                let digest = try DoryRendererArtifactDigest(
+                    lowercaseSHA256: supplied,
+                    field: "guestMesa"
+                )
+                guard digest.lowercaseSHA256 != DoryRendererSourceTuple.guestMesaRuntimeSHA256 else {
+                    throw RendererBootstrapQualificationCommandError.invalidMesaDigest
+                }
+                return digest
+            }
+        }
+    }
+
+    struct Options {
+        let profile: Profile
         let inventoryPath: String
         let managedKernelSHA256: String
+        let guestMesaSHA256: String?
         let issuedAt: Date
         let expiresAt: Date
         let outputPath: String
@@ -143,25 +203,14 @@ enum RendererBootstrapQualificationCommand {
         } catch {
             throw RendererBootstrapQualificationCommandError.invalidKernelDigest
         }
-        let guestMesa = try DoryRendererArtifactDigest(
-            lowercaseSHA256: DoryRendererSourceTuple.guestMesaRuntimeSHA256,
-            field: "guestMesa"
-        )
-        let bootstrap = try DoryRendererWorkerBootstrap(
-            workspaceID: DoryRendererWorkspaceID(
-                rawValue: UUID(uuidString: "d0470000-0000-4000-8000-000000000001")!
-            ),
-            generation: DoryRendererWorkerGeneration(rawValue: 1),
-            sourceTuple: .productionCandidate,
-            producerFenceContract: .managedLinux612106PrepareFBV1,
-            requestedCapabilities: .productionAcceleration,
-            artifacts: DoryRendererArtifactManifest(
-                candidateInventory: inventory.candidateInventory,
-                managedGuestKernel: managedKernel,
-                guestMesa: guestMesa,
-                rendererWorkerExecutable: worker.sha256,
-                rendererWorkerCodeDirectoryHash: workerCodeDirectoryHash
-            )
+        let guestMesa = try options.profile.guestMesaDigest(options.guestMesaSHA256)
+        let bootstrap = try makeBootstrap(
+            profile: options.profile,
+            candidateInventory: inventory.candidateInventory,
+            managedKernel: managedKernel,
+            guestMesa: guestMesa,
+            rendererWorkerExecutable: worker.sha256,
+            rendererWorkerCodeDirectoryHash: workerCodeDirectoryHash
         )
         let exactBootstrapBytes = DoryRendererWorkerBootstrapCodec.encode(bootstrap)
         let broker = try await DoryRendererWorkerBroker.connect(
@@ -183,9 +232,39 @@ enum RendererBootstrapQualificationCommand {
         }
     }
 
-    private static func parse(_ arguments: ArraySlice<String>) throws -> Options {
+    static func makeBootstrap(
+        profile: Profile,
+        candidateInventory: DoryRendererArtifactDigest,
+        managedKernel: DoryRendererArtifactDigest,
+        guestMesa: DoryRendererArtifactDigest,
+        rendererWorkerExecutable: DoryRendererArtifactDigest,
+        rendererWorkerCodeDirectoryHash: DoryCodeDirectoryHash
+    ) throws -> DoryRendererWorkerBootstrap {
+        try DoryRendererWorkerBootstrap(
+            workspaceID: DoryRendererWorkspaceID(
+                rawValue: UUID(uuidString: "d0470000-0000-4000-8000-000000000001")!
+            ),
+            generation: DoryRendererWorkerGeneration(rawValue: 1),
+            sourceTuple: .productionCandidate,
+            producerFenceContract: profile.producerFenceContract,
+            requestedCapabilities: profile.requestedCapabilities,
+            artifacts: DoryRendererArtifactManifest(
+                candidateInventory: candidateInventory,
+                managedGuestKernel: managedKernel,
+                guestMesa: guestMesa,
+                rendererWorkerExecutable: rendererWorkerExecutable,
+                rendererWorkerCodeDirectoryHash: rendererWorkerCodeDirectoryHash
+            )
+        )
+    }
+
+    static func parse(_ arguments: ArraySlice<String>) throws -> Options {
         var values = [String: String]()
         let allowed: Set<String> = [
+            "--inventory", "--managed-kernel-sha256", "--guest-mesa-sha256",
+            "--producer-fence-contract", "--issued-at", "--expires-at", "--output",
+        ]
+        let required: Set<String> = [
             "--inventory", "--managed-kernel-sha256", "--issued-at", "--expires-at", "--output",
         ]
         var iterator = arguments.makeIterator()
@@ -196,7 +275,8 @@ enum RendererBootstrapQualificationCommand {
             }
             values[option] = value
         }
-        guard Set(values.keys) == allowed,
+        guard required.isSubset(of: Set(values.keys)),
+              Set(values.keys).isSubset(of: allowed),
               let inventory = values["--inventory"],
               let kernel = values["--managed-kernel-sha256"],
               let issuedString = values["--issued-at"],
@@ -206,6 +286,16 @@ enum RendererBootstrapQualificationCommand {
                 "renderer-qualify requires inventory, kernel digest, issuance, expiry, and output"
             )
         }
+        let profile: Profile
+        if let rawProfile = values["--producer-fence-contract"] {
+            guard let parsed = Profile(rawValue: rawProfile) else {
+                throw RendererBootstrapQualificationCommandError.usage(rawProfile)
+            }
+            profile = parsed
+        } else {
+            profile = .managedLinux612106
+        }
+        _ = try profile.guestMesaDigest(values["--guest-mesa-sha256"])
         let issued = try timestamp(issuedString)
         let expires = try timestamp(expiresString)
         guard expires > issued,
@@ -215,13 +305,14 @@ enum RendererBootstrapQualificationCommand {
         }
         let outputURL = URL(fileURLWithPath: output)
         guard outputURL.path == output,
-              outputURL.lastPathComponent
-                == DoryVerifiedRendererBootstrapQualification.receiptFilename else {
+              outputURL.lastPathComponent == profile.receiptFilename else {
             throw RendererBootstrapQualificationCommandError.invalidOutputPath
         }
         return Options(
+            profile: profile,
             inventoryPath: inventory,
             managedKernelSHA256: kernel,
+            guestMesaSHA256: values["--guest-mesa-sha256"],
             issuedAt: issued,
             expiresAt: expires,
             outputPath: output

@@ -35,6 +35,12 @@ QUALIFICATION_RELATIVE_PATH = "Resources/renderer-bootstrap-qualification.json"
 QUALIFICATION_SIGNATURE_RELATIVE_PATH = (
     "Resources/renderer-bootstrap-qualification.json.sig"
 )
+PC_QUALIFICATION_RELATIVE_PATH = (
+    "Resources/renderer-bootstrap-qualification-pc-x86_64-virgl2.json"
+)
+PC_QUALIFICATION_SIGNATURE_RELATIVE_PATH = (
+    "Resources/renderer-bootstrap-qualification-pc-x86_64-virgl2.json.sig"
+)
 STATIC_ARCHIVES = (
     "lib/libvirglrenderer.a", "lib/libepoxy.a", "lib/libMoltenVK.a",
 )
@@ -204,6 +210,16 @@ def qualification_signature_path(contents: pathlib.Path) -> pathlib.Path:
     )
 
 
+def pc_qualification_path(contents: pathlib.Path) -> pathlib.Path:
+    return contents.joinpath(*pathlib.PurePosixPath(PC_QUALIFICATION_RELATIVE_PATH).parts)
+
+
+def pc_qualification_signature_path(contents: pathlib.Path) -> pathlib.Path:
+    return contents.joinpath(
+        *pathlib.PurePosixPath(PC_QUALIFICATION_SIGNATURE_RELATIVE_PATH).parts
+    )
+
+
 def validate_bundle_identity(bundle: pathlib.Path, *, identifier: str, executable: str,
                              package_type: str, label: str) -> pathlib.Path:
     direct_directory(bundle, label)
@@ -286,6 +302,74 @@ def sha256(path: pathlib.Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def verify_pc_guest_mesa_runtime(repo_root: pathlib.Path, artifact: pathlib.Path) -> str:
+    runtime = direct_regular_file(artifact, "PC renderer guest Mesa producer artifact")
+    if runtime.name != "dory-mesa-virgl2-x86_64.tar.zst":
+        fail("PC renderer guest Mesa must be the canonical VirGL2 x86_64 runtime artifact")
+    environment = os.environ.copy()
+    environment["DORY_MESA_OUT_DIR"] = os.fspath(runtime.parent.resolve(strict=True))
+    try:
+        subprocess.run(
+            [
+                os.fspath(repo_root / "guest/mesa/verify-pc-virgl2-build.sh"),
+                "x86_64",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=environment,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        detail = ""
+        if isinstance(error, subprocess.CalledProcessError) and error.stdout:
+            detail = f": {error.stdout.strip()}"
+        fail(f"verify PC renderer guest Mesa producer artifact failed{detail}")
+    return sha256(runtime)
+
+
+def verify_arm64_linux_kernel(path: pathlib.Path) -> None:
+    kernel = direct_regular_file(path, "managed arm64 guest kernel")
+    with kernel.open("rb") as handle:
+        header = handle.read(64)
+    if len(header) < 64 or header[56:60] != b"ARM\x64":
+        fail("managed renderer qualification kernel must be an arm64 Linux kernel Image")
+
+
+def verify_pc_linux_kernel(repo_root: pathlib.Path, artifact: pathlib.Path) -> None:
+    kernel = direct_regular_file(artifact, "PC renderer managed guest kernel")
+    if kernel.name != "vmlinux-x86-pc-virgl2":
+        fail("PC renderer managed kernel must be the canonical PC VirGL2 kernel artifact")
+    with kernel.open("rb") as handle:
+        header = handle.read(20)
+    if (
+        len(header) < 20
+        or header[:7] != b"\x7fELF\x02\x01\x01"
+        or int.from_bytes(header[18:20], "little") != 62
+    ):
+        fail("PC renderer managed kernel must be an x86_64 ELF kernel")
+    environment = os.environ.copy()
+    environment["DORY_KERNEL_OUT_DIR"] = os.fspath(kernel.parent.resolve(strict=True))
+    environment["DORY_KERNEL_PROFILE"] = "pc-virgl2"
+    try:
+        subprocess.run(
+            [
+                os.fspath(repo_root / "guest/kernel/verify-build.sh"),
+                "amd64",
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env=environment,
+        )
+    except (OSError, subprocess.CalledProcessError) as error:
+        detail = ""
+        if isinstance(error, subprocess.CalledProcessError) and error.stdout:
+            detail = f": {error.stdout.strip()}"
+        fail(f"verify PC renderer kernel producer artifact failed{detail}")
 
 
 def code_directory_hash(value: str, label: str) -> str:
@@ -789,6 +873,43 @@ def create_bundle_inventory(repo_root: pathlib.Path, contents: pathlib.Path) -> 
     return verify_bundle_inventory(repo_root, contents)
 
 
+def verify_profile_qualification_evidence(
+    repo_root: pathlib.Path,
+    contents: pathlib.Path,
+    managed_kernel: pathlib.Path,
+    *,
+    profile: str,
+    receipt_path: pathlib.Path,
+    signature_path: pathlib.Path,
+    require_release_signature: bool,
+    allow_unsealed_staging: bool,
+    guest_mesa_sha256: str | None = None,
+) -> tuple[str, str | None]:
+    verifier_arguments = [
+        sys.executable,
+        os.fspath(repo_root / "scripts/verify-renderer-bootstrap-qualification.py"),
+        "--runner-app", os.fspath(contents.parent),
+        "--managed-kernel", os.fspath(managed_kernel),
+        "--repo-root", os.fspath(repo_root),
+        "--profile", profile,
+    ]
+    if guest_mesa_sha256 is not None:
+        verifier_arguments.extend(["--guest-mesa-sha256", guest_mesa_sha256])
+    if allow_unsealed_staging:
+        verifier_arguments.append("--allow-unsealed-staging")
+    if require_release_signature:
+        verifier_arguments.append("--require-release-signature")
+    run(verifier_arguments, f"verify {profile} renderer qualification", capture=False)
+
+    receipt = direct_regular_file(receipt_path, f"{profile} renderer qualification receipt")
+    signature_digest: str | None = None
+    if os.path.lexists(signature_path):
+        signature_digest = sha256(
+            direct_regular_file(signature_path, f"{profile} renderer qualification signature")
+        )
+    return sha256(receipt), signature_digest
+
+
 def verify_qualification_evidence(
     repo_root: pathlib.Path,
     contents: pathlib.Path,
@@ -796,32 +917,44 @@ def verify_qualification_evidence(
     *,
     require_release_signature: bool,
     allow_unsealed_staging: bool,
-) -> tuple[str, str | None]:
+    pc_managed_kernel: pathlib.Path | None = None,
+    pc_guest_mesa: pathlib.Path | None = None,
+) -> tuple[str, str | None, str | None, str | None]:
     definition_path = direct_regular_file(
         repo_root / "Config/DoryRendererProductionTuple.json", "renderer tuple definition"
     )
-    runner = contents.parent
-    verifier_arguments = [
-        sys.executable,
-        os.fspath(repo_root / "scripts/verify-renderer-bootstrap-qualification.py"),
-        "--runner-app", os.fspath(runner),
-        "--managed-kernel", os.fspath(managed_kernel),
-        "--repo-root", os.fspath(repo_root),
-    ]
-    if allow_unsealed_staging:
-        verifier_arguments.append("--allow-unsealed-staging")
-    if require_release_signature:
-        verifier_arguments.append("--require-release-signature")
-    run(verifier_arguments, "verify candidate-bound renderer qualification", capture=False)
-
-    receipt_path = direct_regular_file(
-        qualification_path(contents), "renderer bootstrap qualification receipt"
+    verify_arm64_linux_kernel(managed_kernel)
+    receipt_digest, signature_digest = verify_profile_qualification_evidence(
+        repo_root,
+        contents,
+        managed_kernel,
+        profile="managed-linux-6.12.106",
+        receipt_path=qualification_path(contents),
+        signature_path=qualification_signature_path(contents),
+        require_release_signature=require_release_signature,
+        allow_unsealed_staging=allow_unsealed_staging,
     )
-    signature = qualification_signature_path(contents)
-    signature_digest: str | None = None
-    if os.path.lexists(signature):
-        signature_digest = sha256(
-            direct_regular_file(signature, "renderer qualification detached signature")
+
+    pc_paths_exist = os.path.lexists(pc_qualification_path(contents)) or os.path.lexists(
+        pc_qualification_signature_path(contents)
+    )
+    pc_receipt_digest: str | None = None
+    pc_signature_digest: str | None = None
+    if pc_managed_kernel is not None or pc_guest_mesa is not None or pc_paths_exist:
+        if pc_managed_kernel is None or pc_guest_mesa is None:
+            fail("PC renderer qualification evidence requires exact kernel and Mesa artifacts")
+        verify_pc_linux_kernel(repo_root, pc_managed_kernel)
+        pc_guest_mesa_digest = verify_pc_guest_mesa_runtime(repo_root, pc_guest_mesa)
+        pc_receipt_digest, pc_signature_digest = verify_profile_qualification_evidence(
+            repo_root,
+            contents,
+            pc_managed_kernel,
+            profile="dory-pc-x86_64-virgl2",
+            receipt_path=pc_qualification_path(contents),
+            signature_path=pc_qualification_signature_path(contents),
+            require_release_signature=require_release_signature,
+            allow_unsealed_staging=allow_unsealed_staging,
+            guest_mesa_sha256=pc_guest_mesa_digest,
         )
 
     profile = (
@@ -843,7 +976,7 @@ def verify_qualification_evidence(
             "--profile", profile, "--root", os.fspath(contents),
             "--inventory", os.fspath(evidence_inventory),
         ], "verify renderer qualification evidence inventory", capture=False)
-    return sha256(receipt_path), signature_digest
+    return receipt_digest, signature_digest, pc_receipt_digest, pc_signature_digest
 
 
 def unlink_phase_file(path: pathlib.Path, label: str) -> None:
@@ -899,6 +1032,14 @@ def prune(arguments: argparse.Namespace) -> None:
             qualification_signature_path(contents),
             "stale renderer bootstrap qualification signature",
         )
+        unlink_phase_file(
+            pc_qualification_path(contents),
+            "stale PC renderer bootstrap qualification receipt",
+        )
+        unlink_phase_file(
+            pc_qualification_signature_path(contents),
+            "stale PC renderer bootstrap qualification signature",
+        )
         icd = resources / "vulkan/icd.d/MoltenVK_icd.json"
         unlink_phase_file(icd, "stale MoltenVK ICD")
         remove_empty_directory(icd.parent, "empty Vulkan ICD directory")
@@ -939,6 +1080,14 @@ def package(arguments: argparse.Namespace, repo_root: pathlib.Path) -> None:
         qualification_signature_path(contents),
         "stale renderer bootstrap qualification signature",
     )
+    unlink_phase_file(
+        pc_qualification_path(contents),
+        "stale PC renderer bootstrap qualification receipt",
+    )
+    unlink_phase_file(
+        pc_qualification_signature_path(contents),
+        "stale PC renderer bootstrap qualification signature",
+    )
     reject_legacy_bundle_artifacts(contents)
     inventory_digest = create_bundle_inventory(repo_root, contents)
     reject_legacy_bundle_artifacts(contents)
@@ -963,12 +1112,16 @@ def seal_evidence(arguments: argparse.Namespace, repo_root: pathlib.Path) -> Non
     )
     reject_legacy_bundle_artifacts(contents)
     inventory_digest = verify_bundle_inventory(repo_root, contents)
-    receipt_digest, signature_digest = verify_qualification_evidence(
-        repo_root,
-        contents,
-        arguments.managed_kernel,
-        require_release_signature=arguments.require_release_signature,
-        allow_unsealed_staging=True,
+    receipt_digest, signature_digest, pc_receipt_digest, pc_signature_digest = (
+        verify_qualification_evidence(
+            repo_root,
+            contents,
+            arguments.managed_kernel,
+            require_release_signature=arguments.require_release_signature,
+            allow_unsealed_staging=True,
+            pc_managed_kernel=arguments.pc_managed_kernel,
+            pc_guest_mesa=arguments.pc_guest_mesa,
+        )
     )
     print(f"renderer.bundle={runner}")
     print(f"renderer.worker.cdhash={cdhash}")
@@ -978,6 +1131,12 @@ def seal_evidence(arguments: argparse.Namespace, repo_root: pathlib.Path) -> Non
         "renderer.qualification.releaseSignature.sha256="
         f"{signature_digest if signature_digest is not None else 'absent-preview'}"
     )
+    if pc_receipt_digest is not None:
+        print(f"renderer.qualification.pcVirGL2.sha256={pc_receipt_digest}")
+        print(
+            "renderer.qualification.pcVirGL2.releaseSignature.sha256="
+            f"{pc_signature_digest if pc_signature_digest is not None else 'absent-preview'}"
+        )
     print("renderer.qualification=sealed-candidate-evidence")
 
 
@@ -995,12 +1154,16 @@ def verify(arguments: argparse.Namespace, repo_root: pathlib.Path) -> None:
     )
     reject_legacy_bundle_artifacts(contents)
     inventory_digest = verify_bundle_inventory(repo_root, contents)
-    receipt_digest, signature_digest = verify_qualification_evidence(
-        repo_root,
-        contents,
-        arguments.managed_kernel,
-        require_release_signature=arguments.require_release_signature,
-        allow_unsealed_staging=False,
+    receipt_digest, signature_digest, pc_receipt_digest, pc_signature_digest = (
+        verify_qualification_evidence(
+            repo_root,
+            contents,
+            arguments.managed_kernel,
+            require_release_signature=arguments.require_release_signature,
+            allow_unsealed_staging=False,
+            pc_managed_kernel=arguments.pc_managed_kernel,
+            pc_guest_mesa=arguments.pc_guest_mesa,
+        )
     )
     verify_signature(runner, label="DoryHVRunner.app", identifier=RUNNER_IDENTIFIER,
                      expected_team=arguments.expected_team,
@@ -1048,12 +1211,16 @@ def parser() -> argparse.ArgumentParser:
     verify_command.add_argument("--allow-adhoc-test", action="store_true")
     verify_command.add_argument("--require-release-signature", action="store_true")
     verify_command.add_argument("--managed-kernel", type=pathlib.Path, required=True)
+    verify_command.add_argument("--pc-managed-kernel", type=pathlib.Path)
+    verify_command.add_argument("--pc-guest-mesa", type=pathlib.Path)
     evidence_command = commands.add_parser("seal-evidence")
     evidence_command.add_argument("--runner-app", type=pathlib.Path, required=True)
     evidence_command.add_argument("--expected-team", required=True)
     evidence_command.add_argument("--allow-adhoc-test", action="store_true")
     evidence_command.add_argument("--require-release-signature", action="store_true")
     evidence_command.add_argument("--managed-kernel", type=pathlib.Path, required=True)
+    evidence_command.add_argument("--pc-managed-kernel", type=pathlib.Path)
+    evidence_command.add_argument("--pc-guest-mesa", type=pathlib.Path)
     link_command = commands.add_parser("verify-link-stage")
     link_command.add_argument("--link-root", type=pathlib.Path, required=True)
     link_command.add_argument("--link-inventory", type=pathlib.Path, required=True)

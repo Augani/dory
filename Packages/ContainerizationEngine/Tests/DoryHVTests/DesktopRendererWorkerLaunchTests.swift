@@ -215,6 +215,57 @@ struct DesktopRendererWorkerLaunchTests {
         }
     }
 
+    @Test func qualificationCommandProfilesSelectExactRuntimeContracts() throws {
+        let arm = RendererBootstrapQualificationCommand.Profile.managedLinux612106
+        #expect(try arm.guestMesaDigest(nil).lowercaseSHA256
+            == DoryRendererSourceTuple.guestMesaRuntimeSHA256)
+
+        let pc = RendererBootstrapQualificationCommand.Profile.doryPCX8664VirGL2
+        let pcMesa = String(repeating: "9", count: 64)
+        #expect(try pc.guestMesaDigest(pcMesa).lowercaseSHA256 == pcMesa)
+        #expect(throws: RendererBootstrapQualificationCommandError.invalidMesaDigest) {
+            _ = try pc.guestMesaDigest(nil)
+        }
+        #expect(throws: RendererBootstrapQualificationCommandError.invalidMesaDigest) {
+            _ = try pc.guestMesaDigest(DoryRendererSourceTuple.guestMesaRuntimeSHA256)
+        }
+
+        let options = try RendererBootstrapQualificationCommand.parse([
+            "--producer-fence-contract", "dory-pc-x86_64-virgl2",
+            "--inventory", "/fixture/Contents/Resources/renderer-production-inventory.json",
+            "--managed-kernel-sha256", String(repeating: "1", count: 64),
+            "--guest-mesa-sha256", pcMesa,
+            "--issued-at", "2026-09-06T00:00:00Z",
+            "--expires-at", "2026-10-06T00:00:00Z",
+            "--output", "/fixture/renderer-bootstrap-qualification-pc-x86_64-virgl2.json",
+        ][...])
+        #expect(options.profile == .doryPCX8664VirGL2)
+        let bootstrap = try RendererBootstrapQualificationCommand.makeBootstrap(
+            profile: options.profile,
+            candidateInventory: try rendererDigest("2"),
+            managedKernel: try rendererDigest("3"),
+            guestMesa: try pc.guestMesaDigest(options.guestMesaSHA256),
+            rendererWorkerExecutable: try rendererDigest("4"),
+            rendererWorkerCodeDirectoryHash: try DoryCodeDirectoryHash(
+                bytes: Data(repeating: 0x55, count: DoryCodeDirectoryHash.byteCount)
+            )
+        )
+        #expect(bootstrap.producerFenceContract == .doryPCX8664LinuxVirGL2PrepareFBV1)
+        #expect(bootstrap.requestedCapabilities == .pcVirGL2Acceleration)
+        #expect(bootstrap.artifacts.guestMesa.lowercaseSHA256 == pcMesa)
+        #expect(throws: RendererBootstrapQualificationCommandError.invalidOutputPath) {
+            _ = try RendererBootstrapQualificationCommand.parse([
+                "--producer-fence-contract", "dory-pc-x86_64-virgl2",
+                "--inventory", "/fixture/Contents/Resources/renderer-production-inventory.json",
+                "--managed-kernel-sha256", String(repeating: "1", count: 64),
+                "--guest-mesa-sha256", pcMesa,
+                "--issued-at", "2026-09-06T00:00:00Z",
+                "--expires-at", "2026-10-06T00:00:00Z",
+                "--output", "/fixture/renderer-bootstrap-qualification.json",
+            ][...])
+        }
+    }
+
     @Test func liveReadinessAcceptsOnlyExactWorkerGeneration() throws {
         let accepted = DesktopRendererWorkerLiveReadinessGate(expectedWorkerGeneration: 41)
         accepted.record(workerGeneration: 41)
@@ -289,6 +340,12 @@ private final class RendererLaunchConnectorCalls: @unchecked Sendable {
     func record() {
         lock.withLock { recordedCount += 1 }
     }
+}
+
+private func rendererDigest(_ hexNibble: Character) throws -> DoryRendererArtifactDigest {
+    try DoryRendererArtifactDigest(
+        lowercaseSHA256: String(repeating: String(hexNibble), count: 64)
+    )
 }
 
 private func rendererLaunchBootstrap(

@@ -110,21 +110,117 @@ fi
 ADHOC_ARGUMENTS=()
 [ "$ALLOW_ADHOC_TEST" = 0 ] || ADHOC_ARGUMENTS+=(--allow-adhoc-test)
 
-MANAGED_KERNEL_SHA256="${DORY_RENDERER_MANAGED_KERNEL_SHA256:-}"
-MANAGED_KERNEL="${DORY_RENDERER_MANAGED_KERNEL:-}"
-[ -f "$MANAGED_KERNEL" ] && [ ! -L "$MANAGED_KERNEL" ] || {
-  echo "error: DORY_RENDERER_MANAGED_KERNEL must name the exact qualified guest-kernel artifact" >&2
-  exit 1
+require_sha256() {
+  local value="$1"
+  local label="$2"
+  [[ "$value" =~ ^[0-9a-f]{64}$ ]] \
+    && [ "$value" != 0000000000000000000000000000000000000000000000000000000000000000 ] || {
+      echo "error: $label must be a nonzero lowercase SHA-256" >&2
+      exit 1
+    }
 }
-[[ "$MANAGED_KERNEL_SHA256" =~ ^[0-9a-f]{64}$ ]] \
-  && [ "$MANAGED_KERNEL_SHA256" != 0000000000000000000000000000000000000000000000000000000000000000 ] || {
-    echo "error: DORY_RENDERER_MANAGED_KERNEL_SHA256 must bind the exact qualified guest kernel" >&2
+require_kernel() {
+  local path="$1"
+  local digest="$2"
+  local label="$3"
+  [ -f "$path" ] && [ ! -L "$path" ] || {
+    echo "error: $label must name the exact qualified guest-kernel artifact" >&2
     exit 1
   }
-[ "$(shasum -a 256 "$MANAGED_KERNEL" | awk '{ print $1 }')" = "$MANAGED_KERNEL_SHA256" ] || {
-  echo "error: managed renderer kernel bytes differ from DORY_RENDERER_MANAGED_KERNEL_SHA256" >&2
-  exit 1
+  require_sha256 "$digest" "$label digest"
+  [ "$(shasum -a 256 "$path" | awk '{ print $1 }')" = "$digest" ] || {
+    echo "error: $label bytes differ from its configured digest" >&2
+    exit 1
+  }
 }
+require_arm64_linux_kernel() {
+  local path="$1"
+  python3 - "$path" <<'PY'
+import pathlib
+import sys
+
+with pathlib.Path(sys.argv[1]).open("rb") as handle:
+    header = handle.read(64)
+if len(header) < 64 or header[56:60] != b"ARM\x64":
+    raise SystemExit(
+        "error: DORY_RENDERER_MANAGED_KERNEL must be an arm64 Linux kernel Image"
+    )
+PY
+}
+require_pc_linux_kernel() {
+  local path="$1"
+  [ "$(basename "$path")" = vmlinux-x86-pc-virgl2 ] || {
+    echo "error: DORY_RENDERER_PC_MANAGED_KERNEL must be the PC VirGL2 kernel artifact" >&2
+    exit 1
+  }
+  python3 - "$path" <<'PY'
+import pathlib
+import sys
+
+with pathlib.Path(sys.argv[1]).open("rb") as handle:
+    header = handle.read(20)
+if (
+    len(header) < 20
+    or header[:7] != b"\x7fELF\x02\x01\x01"
+    or int.from_bytes(header[18:20], "little") != 62
+):
+    raise SystemExit(
+        "error: DORY_RENDERER_PC_MANAGED_KERNEL must be an x86_64 ELF kernel"
+    )
+PY
+  DORY_KERNEL_OUT_DIR="$(cd "$(dirname "$path")" && pwd)" \
+    DORY_KERNEL_PROFILE=pc-virgl2 \
+    "$ROOT/guest/kernel/verify-build.sh" amd64 >/dev/null || {
+      echo "error: DORY_RENDERER_PC_MANAGED_KERNEL does not match the verified PC VirGL2 kernel producer stamp" >&2
+      exit 1
+    }
+}
+require_pc_mesa_runtime() {
+  local path="$1"
+  local digest="$2"
+  [ -f "$path" ] && [ ! -L "$path" ] || {
+    echo "error: DORY_RENDERER_PC_GUEST_MESA must name the exact verified x86 Mesa producer artifact" >&2
+    exit 1
+  }
+  require_sha256 "$digest" "DORY_RENDERER_PC_GUEST_MESA_SHA256"
+  [ "$(basename "$path")" = dory-mesa-virgl2-x86_64.tar.zst ] || {
+    echo "error: DORY_RENDERER_PC_GUEST_MESA must be the PC VirGL2 producer artifact" >&2
+    exit 1
+  }
+  [ "$(shasum -a 256 "$path" | awk '{ print $1 }')" = "$digest" ] || {
+    echo "error: DORY_RENDERER_PC_GUEST_MESA bytes differ from its configured digest" >&2
+    exit 1
+  }
+  DORY_MESA_OUT_DIR="$(cd "$(dirname "$path")" && pwd)" \
+    "$ROOT/guest/mesa/verify-pc-virgl2-build.sh" x86_64 >/dev/null || {
+      echo "error: DORY_RENDERER_PC_GUEST_MESA does not match the verified PC VirGL2 producer stamp" >&2
+      exit 1
+    }
+}
+
+MANAGED_KERNEL_SHA256="${DORY_RENDERER_MANAGED_KERNEL_SHA256:-}"
+MANAGED_KERNEL="${DORY_RENDERER_MANAGED_KERNEL:-}"
+require_kernel "$MANAGED_KERNEL" "$MANAGED_KERNEL_SHA256" "DORY_RENDERER_MANAGED_KERNEL"
+require_arm64_linux_kernel "$MANAGED_KERNEL"
+
+PC_MANAGED_KERNEL_SHA256="${DORY_RENDERER_PC_MANAGED_KERNEL_SHA256:-}"
+PC_MANAGED_KERNEL="${DORY_RENDERER_PC_MANAGED_KERNEL:-}"
+PC_GUEST_MESA_SHA256="${DORY_RENDERER_PC_GUEST_MESA_SHA256:-}"
+PC_GUEST_MESA="${DORY_RENDERER_PC_GUEST_MESA:-}"
+PC_QUALIFICATION_ENABLED=0
+if [ -n "$PC_MANAGED_KERNEL" ] || [ -n "$PC_MANAGED_KERNEL_SHA256" ] \
+    || [ -n "$PC_GUEST_MESA" ] || [ -n "$PC_GUEST_MESA_SHA256" ]; then
+  [ -n "$PC_MANAGED_KERNEL" ] && [ -n "$PC_MANAGED_KERNEL_SHA256" ] \
+    && [ -n "$PC_GUEST_MESA" ] && [ -n "$PC_GUEST_MESA_SHA256" ] || {
+      echo "error: PC renderer qualification requires DORY_RENDERER_PC_MANAGED_KERNEL, _SHA256, _GUEST_MESA, and _GUEST_MESA_SHA256" >&2
+      exit 1
+    }
+  require_kernel "$PC_MANAGED_KERNEL" "$PC_MANAGED_KERNEL_SHA256" \
+    "DORY_RENDERER_PC_MANAGED_KERNEL"
+  require_pc_linux_kernel "$PC_MANAGED_KERNEL"
+  require_pc_mesa_runtime "$PC_GUEST_MESA" "$PC_GUEST_MESA_SHA256"
+  PC_QUALIFICATION_ENABLED=1
+fi
 ISSUED_AT="${DORY_RENDERER_QUALIFICATION_ISSUED_AT:-}"
 EXPIRES_AT="${DORY_RENDERER_QUALIFICATION_EXPIRES_AT:-}"
 if [ -z "$ISSUED_AT" ] && [ -z "$EXPIRES_AT" ] && [ "$QUALIFICATION_MODE" = preview ]; then
@@ -164,13 +260,23 @@ if expires <= issued or expires - issued > datetime.timedelta(days=548):
 PY
 
 SIGNATURE_SOURCE="${DORY_RENDERER_QUALIFICATION_SIGNATURE:-}"
+PC_SIGNATURE_SOURCE="${DORY_RENDERER_PC_QUALIFICATION_SIGNATURE:-}"
 SIGNER="${DORY_RENDERER_QUALIFICATION_SIGNER:-}"
 if [ -n "$SIGNATURE_SOURCE" ] && [ -n "$SIGNER" ]; then
   echo "error: choose either an external qualification signature or signer, not both" >&2
   exit 1
 fi
+if [ -n "$PC_SIGNATURE_SOURCE" ] && [ -n "$SIGNER" ]; then
+  echo "error: choose either an external PC qualification signature or signer, not both" >&2
+  exit 1
+fi
 if [ "$QUALIFICATION_MODE" = release ] && [ -z "$SIGNATURE_SOURCE" ] && [ -z "$SIGNER" ]; then
   echo "error: release qualification requires an external detached-signature source" >&2
+  exit 1
+fi
+if [ "$QUALIFICATION_MODE" = release ] && [ "$PC_QUALIFICATION_ENABLED" = 1 ] \
+    && [ -z "$PC_SIGNATURE_SOURCE" ] && [ -z "$SIGNER" ]; then
+  echo "error: release PC qualification requires an external detached-signature source" >&2
   exit 1
 fi
 
@@ -213,7 +319,9 @@ mkdir -p "$QUALIFICATION_SCRATCH"
 }
 STAGED_RECEIPT="$QUALIFICATION_SCRATCH/renderer-bootstrap-qualification.json"
 STAGED_SIGNATURE="$QUALIFICATION_SCRATCH/renderer-bootstrap-qualification.json.sig"
-rm -f "$STAGED_RECEIPT" "$STAGED_SIGNATURE"
+STAGED_PC_RECEIPT="$QUALIFICATION_SCRATCH/renderer-bootstrap-qualification-pc-x86_64-virgl2.json"
+STAGED_PC_SIGNATURE="$QUALIFICATION_SCRATCH/renderer-bootstrap-qualification-pc-x86_64-virgl2.json.sig"
+rm -f "$STAGED_RECEIPT" "$STAGED_SIGNATURE" "$STAGED_PC_RECEIPT" "$STAGED_PC_SIGNATURE"
 "$RUNNER_APP/Contents/MacOS/dory-hv" renderer-qualify \
   --inventory "$RUNNER_APP/Contents/Resources/renderer-production-inventory.json" \
   --managed-kernel-sha256 "$MANAGED_KERNEL_SHA256" \
@@ -224,6 +332,20 @@ rm -f "$STAGED_RECEIPT" "$STAGED_SIGNATURE"
   echo "error: live renderer qualification did not emit a direct receipt" >&2
   exit 1
 }
+if [ "$PC_QUALIFICATION_ENABLED" = 1 ]; then
+  "$RUNNER_APP/Contents/MacOS/dory-hv" renderer-qualify \
+    --producer-fence-contract dory-pc-x86_64-virgl2 \
+    --inventory "$RUNNER_APP/Contents/Resources/renderer-production-inventory.json" \
+    --managed-kernel-sha256 "$PC_MANAGED_KERNEL_SHA256" \
+    --guest-mesa-sha256 "$PC_GUEST_MESA_SHA256" \
+    --issued-at "$ISSUED_AT" \
+    --expires-at "$EXPIRES_AT" \
+    --output "$STAGED_PC_RECEIPT"
+  [ -f "$STAGED_PC_RECEIPT" ] && [ ! -L "$STAGED_PC_RECEIPT" ] || {
+    echo "error: live PC renderer qualification did not emit a direct receipt" >&2
+    exit 1
+  }
+fi
 
 if [ -n "$SIGNER" ]; then
   [ -f "$SIGNER" ] && [ ! -L "$SIGNER" ] && [ -x "$SIGNER" ] || {
@@ -231,32 +353,63 @@ if [ -n "$SIGNER" ]; then
     exit 1
   }
   "$SIGNER" --receipt "$STAGED_RECEIPT" --output "$STAGED_SIGNATURE"
-elif [ -n "$SIGNATURE_SOURCE" ]; then
-  [ -f "$SIGNATURE_SOURCE" ] && [ ! -L "$SIGNATURE_SOURCE" ] || {
-    echo "error: detached renderer qualification signature is unavailable" >&2
-    exit 1
-  }
-  install -m0644 "$SIGNATURE_SOURCE" "$STAGED_SIGNATURE"
+  if [ "$PC_QUALIFICATION_ENABLED" = 1 ]; then
+    "$SIGNER" --receipt "$STAGED_PC_RECEIPT" --output "$STAGED_PC_SIGNATURE"
+  fi
+else
+  if [ -n "$SIGNATURE_SOURCE" ]; then
+    [ -f "$SIGNATURE_SOURCE" ] && [ ! -L "$SIGNATURE_SOURCE" ] || {
+      echo "error: detached renderer qualification signature is unavailable" >&2
+      exit 1
+    }
+    install -m0644 "$SIGNATURE_SOURCE" "$STAGED_SIGNATURE"
+  fi
+  if [ "$PC_QUALIFICATION_ENABLED" = 1 ] && [ -n "$PC_SIGNATURE_SOURCE" ]; then
+    [ -f "$PC_SIGNATURE_SOURCE" ] && [ ! -L "$PC_SIGNATURE_SOURCE" ] || {
+      echo "error: detached PC renderer qualification signature is unavailable" >&2
+      exit 1
+    }
+    install -m0644 "$PC_SIGNATURE_SOURCE" "$STAGED_PC_SIGNATURE"
+  fi
 fi
 
 RUNNER_RESOURCES="$RUNNER_APP/Contents/Resources"
 install -m0644 "$STAGED_RECEIPT" \
   "$RUNNER_RESOURCES/renderer-bootstrap-qualification.json"
+if [ "$PC_QUALIFICATION_ENABLED" = 1 ]; then
+  install -m0644 "$STAGED_PC_RECEIPT" \
+    "$RUNNER_RESOURCES/renderer-bootstrap-qualification-pc-x86_64-virgl2.json"
+else
+  rm -f "$RUNNER_RESOURCES/renderer-bootstrap-qualification-pc-x86_64-virgl2.json"
+fi
 if [ -f "$STAGED_SIGNATURE" ] && [ ! -L "$STAGED_SIGNATURE" ]; then
   install -m0644 "$STAGED_SIGNATURE" \
     "$RUNNER_RESOURCES/renderer-bootstrap-qualification.json.sig"
 else
   rm -f "$RUNNER_RESOURCES/renderer-bootstrap-qualification.json.sig"
 fi
+if [ "$PC_QUALIFICATION_ENABLED" = 1 ] \
+    && [ -f "$STAGED_PC_SIGNATURE" ] && [ ! -L "$STAGED_PC_SIGNATURE" ]; then
+  install -m0644 "$STAGED_PC_SIGNATURE" \
+    "$RUNNER_RESOURCES/renderer-bootstrap-qualification-pc-x86_64-virgl2.json.sig"
+else
+  rm -f "$RUNNER_RESOURCES/renderer-bootstrap-qualification-pc-x86_64-virgl2.json.sig"
+fi
 
 RELEASE_ARGUMENTS=()
 [ "$QUALIFICATION_MODE" = preview ] \
   || RELEASE_ARGUMENTS+=(--require-release-signature)
 RUNNER_APP_CANONICAL="$(python3 -c 'import pathlib, sys; print(pathlib.Path(sys.argv[1]).resolve(strict=True))' "$RUNNER_APP")"
+PC_EVIDENCE_ARGUMENTS=()
+if [ "$PC_QUALIFICATION_ENABLED" = 1 ]; then
+  PC_EVIDENCE_ARGUMENTS+=(--pc-managed-kernel "$PC_MANAGED_KERNEL")
+  PC_EVIDENCE_ARGUMENTS+=(--pc-guest-mesa "$PC_GUEST_MESA")
+fi
 python3 "$ROOT/scripts/package-renderer-production-bundle.py" seal-evidence \
   --runner-app "$RUNNER_APP_CANONICAL" \
   --managed-kernel "$MANAGED_KERNEL" \
   --expected-team "$EXPECTED_TEAM" \
+  "${PC_EVIDENCE_ARGUMENTS[@]+"${PC_EVIDENCE_ARGUMENTS[@]}"}" \
   "${ADHOC_ARGUMENTS[@]+"${ADHOC_ARGUMENTS[@]}"}" \
   "${RELEASE_ARGUMENTS[@]+"${RELEASE_ARGUMENTS[@]}"}"
 echo "renderer.qualification.mode=$QUALIFICATION_MODE"

@@ -1,0 +1,101 @@
+{
+  "schemaVersion": 1,
+  "status": "packaging-implemented-physical-pc-gpu-unqualified",
+  "sourceSHA256": {
+    "Packages/ContainerizationEngine/Sources/dory-hv/RendererBootstrapQualificationCommand.swift": "97293c8ff9885d25bef6efcf5e4914f76af4c7fd9ff21bff8898809fedabf296",
+    "Packages/ContainerizationEngine/Tests/DoryHVTests/DesktopRendererWorkerLaunchTests.swift": "4d9066951e68634115080f42fc1df9358914e930ee40eb6c81177560159470de",
+    "scripts/package-renderer-production-bundle.py": "5a2d0db41c8af55e4c9c1c3c3df7c41bd842ad5da2f36184f966272a4f1b0c27",
+    "scripts/verify-renderer-bootstrap-qualification.py": "6b331bc56dfc1d32ad94b75b845858b58ebb34faa17be0e8c3b0d57a00137fbc",
+    "scripts/xcode-package-renderer-production.sh": "0c2d7f0f0a8818562a3ebaf63c8c226015cbc3f0a9f9e7af62670dc8af6c91a1"
+  },
+  "rootChecks": {
+    "root-package-producer-checks.json": {
+      "cases": [
+        {
+          "case": "real-arm-kernel",
+          "accepted": true
+        },
+        {
+          "case": "real-pc-kernel-and-producer",
+          "accepted": true
+        },
+        {
+          "case": "real-pc-mesa-and-producer",
+          "accepted": true
+        },
+        {
+          "case": "pc-kernel-as-arm",
+          "accepted": false
+        },
+        {
+          "case": "arm-header-in-canonical-pc-path",
+          "accepted": false
+        },
+        {
+          "case": "valid-pc-header-without-producer-stamp",
+          "accepted": false
+        }
+      ],
+      "sourceSHA256": "5a2d0db41c8af55e4c9c1c3c3df7c41bd842ad5da2f36184f966272a4f1b0c27",
+      "scope": "Actual production kernel/Mesa producer validation; no physical GPU workload."
+    },
+    "kernel-architecture-cli-receipt.json": {
+      "sameDigestWrongArchitectureExit": 1,
+      "negativeControlWithoutArchitectureCheckExit": 0,
+      "verifierSHA256": "6b331bc56dfc1d32ad94b75b845858b58ebb34faa17be0e8c3b0d57a00137fbc",
+      "kernelSHA256": "7b25d6c81f8c42624fad40f410baaddee3f4f9694a9239bf1e3c5cd41d72093d",
+      "scope": "Real CLI in unsealed staging; signature qualification not tested."
+    },
+    "kernel-architecture-receipt.json": {
+      "cases": [
+        {
+          "case": "arm",
+          "accepted": true
+        },
+        {
+          "case": "pc",
+          "accepted": true
+        },
+        {
+          "case": "pc-as-arm",
+          "accepted": false
+        },
+        {
+          "case": "arm-as-pc",
+          "accepted": false
+        },
+        {
+          "case": "truncated",
+          "accepted": false
+        },
+        {
+          "case": "invalid-elf-class",
+          "accepted": false
+        },
+        {
+          "case": "invalid-elf-endian",
+          "accepted": false
+        }
+      ],
+      "verifierSHA256": "6b331bc56dfc1d32ad94b75b845858b58ebb34faa17be0e8c3b0d57a00137fbc",
+      "scope": "Architecture validation only; does not prove producer fence support."
+    },
+    "receipt.json": {
+      "validReceiptExit": 0,
+      "malformedReceiptExit": 1,
+      "oldVerifierAcceptsMalformed": true,
+      "verifierSHA256": "8ad164f9eb5ccdd63407d21fe59070b78d3b31c277e8ae74675d7c7329802bba"
+    }
+  },
+  "agentReportedSwiftValidation": {
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path Packages/ContainerizationEngine --filter DesktopRendererWorkerLaunchTests",
+    "testsPassed": 12,
+    "failures": 0,
+    "independentlyRerunByRoot": false
+  },
+  "limits": [
+    "Physical PC GPU workloads and reset recovery remain unqualified.",
+    "Earlier signed build used the wrong guest profile and is not qualification.",
+    "Private negative controls ran with unsealed staging, not release signature verification."
+  ]
+}

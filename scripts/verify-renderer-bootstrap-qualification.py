@@ -25,6 +25,14 @@ SOURCE_TUPLE_WIRE = 3
 DEFINITION_SHA256 = "6f537361d165cbe75b04e98ce56c6e878060119c2aca112fa88ceba936092bba"
 GUEST_MESA_SHA256 = "fa12e2bef9855dd382c3cd7f1dcd434f65302fc13471ae06367179f1ad37124c"
 PRODUCTION_FEATURE_BITS = (1 << 11) - 1
+PC_VIRGL2_FEATURE_BITS = (
+    (1 << 0) | (1 << 3) | (1 << 4) | (1 << 5) | (1 << 6)
+    | (1 << 7) | (1 << 9) | (1 << 10)
+)
+GENERIC_RECEIPT_NAME = "renderer-bootstrap-qualification.json"
+GENERIC_SIGNATURE_NAME = "renderer-bootstrap-qualification.json.sig"
+PC_VIRGL2_RECEIPT_NAME = "renderer-bootstrap-qualification-pc-x86_64-virgl2.json"
+PC_VIRGL2_SIGNATURE_NAME = "renderer-bootstrap-qualification-pc-x86_64-virgl2.json.sig"
 MAX_VALIDITY_SECONDS = 548 * 24 * 60 * 60
 RUNNER_REQUIREMENT = (
     'anchor apple generic and identifier "com.pythonxi.Dory.HVRunner" '
@@ -102,6 +110,21 @@ def canonical_json(value: Any) -> bytes:
     return json.dumps(
         value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     ).encode("utf-8") + b"\n"
+
+
+def verify_kernel_architecture(data: bytes, profile: str) -> None:
+    # This checks architecture, not producer-fence support or kernel provenance.
+    # ARM64 Linux Image headers carry the architecture magic at byte 56; the
+    # PC producer supplies an ELF64 little-endian vmlinux.
+    machine = None
+    if len(data) >= 64:
+        if data[:7] == b"\x7fELF\x02\x01\x01":
+            machine = int.from_bytes(data[18:20], "little")
+        elif data[56:60] == b"ARM\x64":
+            machine = 183
+    expected = {"managed-linux-6.12.106": 183, "dory-pc-x86_64-virgl2": 62}
+    if profile not in expected or machine != expected[profile]:
+        fail("guest kernel architecture does not match renderer qualification profile")
 
 
 def regular_file(path: pathlib.Path, maximum: int) -> bytes:
@@ -281,7 +304,48 @@ def verify(arguments: argparse.Namespace) -> None:
         verify_code_identity(runner, RUNNER_REQUIREMENT, check_nested=True)
         verify_code_identity(worker_bundle, WORKER_REQUIREMENT, check_nested=False)
     inventory_data, inventory = verify_inventory(contents)
-    receipt_path = contents / "Resources/renderer-bootstrap-qualification.json"
+    if arguments.profile == "managed-linux-6.12.106":
+        receipt_name = GENERIC_RECEIPT_NAME
+        signature_name = GENERIC_SIGNATURE_NAME
+        expected_guest_mesa = GUEST_MESA_SHA256
+        expected_scalars = {
+            "kind": KIND,
+            "schemaVersion": 1,
+            "bootstrapProtocolVersion": 3,
+            "capabilityReceiptProtocolVersion": 4,
+            "producerFenceContract": 1,
+            "sourceTuple": SOURCE_TUPLE_WIRE,
+            "tupleDefinitionSHA256": DEFINITION_SHA256,
+            "guestMesaSHA256": expected_guest_mesa,
+            "featureBits": PRODUCTION_FEATURE_BITS,
+            "candidateInventorySHA256": digest(inventory_data),
+        }
+        expected_capsets = [(2, None), (4, 0)]
+    elif arguments.profile == "dory-pc-x86_64-virgl2":
+        receipt_name = PC_VIRGL2_RECEIPT_NAME
+        signature_name = PC_VIRGL2_SIGNATURE_NAME
+        expected_guest_mesa = lowercase_sha256(
+            arguments.guest_mesa_sha256, "PC guest Mesa SHA-256"
+        )
+        if expected_guest_mesa == GUEST_MESA_SHA256:
+            fail("PC renderer qualification must bind the non-ARM guest Mesa runtime")
+        expected_scalars = {
+            "kind": KIND,
+            "schemaVersion": 1,
+            "bootstrapProtocolVersion": 3,
+            "capabilityReceiptProtocolVersion": 4,
+            "producerFenceContract": 2,
+            "sourceTuple": SOURCE_TUPLE_WIRE,
+            "tupleDefinitionSHA256": DEFINITION_SHA256,
+            "guestMesaSHA256": expected_guest_mesa,
+            "featureBits": PC_VIRGL2_FEATURE_BITS,
+            "candidateInventorySHA256": digest(inventory_data),
+        }
+        expected_capsets = [(2, None)]
+    else:
+        fail(f"unsupported renderer qualification profile: {arguments.profile}")
+
+    receipt_path = contents / "Resources" / receipt_name
     receipt_data = regular_file(receipt_path, 64 * 1024)
     try:
         receipt = json.loads(receipt_data)
@@ -291,18 +355,6 @@ def verify(arguments: argparse.Namespace) -> None:
         fail("renderer qualification receipt is not canonical JSON plus LF")
     if set(receipt) != RECEIPT_KEYS:
         fail("renderer qualification receipt field set differs")
-    expected_scalars = {
-        "kind": KIND,
-        "schemaVersion": 1,
-        "bootstrapProtocolVersion": 3,
-        "capabilityReceiptProtocolVersion": 4,
-        "producerFenceContract": 1,
-        "sourceTuple": SOURCE_TUPLE_WIRE,
-        "tupleDefinitionSHA256": DEFINITION_SHA256,
-        "guestMesaSHA256": GUEST_MESA_SHA256,
-        "featureBits": PRODUCTION_FEATURE_BITS,
-        "candidateInventorySHA256": digest(inventory_data),
-    }
     for field, expected in expected_scalars.items():
         if receipt.get(field) != expected:
             fail(f"renderer qualification differs at {field}")
@@ -311,6 +363,7 @@ def verify(arguments: argparse.Namespace) -> None:
     )
     if receipt["managedGuestKernelSHA256"] != digest(kernel_data):
         fail("renderer qualification binds a different managed guest kernel")
+    verify_kernel_architecture(kernel_data, arguments.profile)
     worker_record = inventory["components"]["rendererWorker"]["files"][0]
     if receipt["workerExecutableSHA256"] != worker_record["sha256"]:
         fail("renderer qualification binds a different worker executable")
@@ -329,15 +382,24 @@ def verify(arguments: argparse.Namespace) -> None:
     if exact_integer(receipt["revocationSequence"], "revocationSequence") < 1:
         fail("renderer qualification revocation sequence is stale")
     capsets = receipt["capsets"]
-    if not isinstance(capsets, list) or [row.get("id") for row in capsets if isinstance(row, dict)] != [2, 4]:
-        fail("renderer qualification does not contain exact VirGL2 and Venus capsets")
-    for row, expected_version in zip(capsets, [None, 0]):
+    if (
+        not isinstance(capsets, list)
+        or len(capsets) != len(expected_capsets)
+        or [row.get("id") for row in capsets if isinstance(row, dict)]
+        != [row[0] for row in expected_capsets]
+    ):
+        fail("renderer qualification does not contain the exact profile capsets")
+    for row, (expected_id, expected_version) in zip(capsets, expected_capsets):
         if not isinstance(row, dict) or set(row) != {"byteCount", "id", "maximumVersion", "sha256"}:
             fail("renderer qualification capset record is malformed")
+        if row["id"] != expected_id:
+            fail("renderer qualification capset id is invalid")
         if exact_integer(row["byteCount"], "capset byteCount") <= 0:
             fail("renderer qualification capset is empty")
         version = exact_integer(row["maximumVersion"], "capset maximumVersion")
-        if (row["id"] == 2 and version <= 0) or (row["id"] == 4 and version != expected_version):
+        if (row["id"] == 2 and version <= 0) or (
+            row["id"] != 2 and version != expected_version
+        ):
             fail("renderer qualification capset version is invalid")
         lowercase_sha256(row["sha256"], "capset sha256")
     issued = timestamp(receipt["issuedAt"], "issuedAt")
@@ -347,12 +409,13 @@ def verify(arguments: argparse.Namespace) -> None:
         fail("renderer qualification is not currently valid")
     if expires <= issued or (expires - issued).total_seconds() > MAX_VALIDITY_SECONDS:
         fail("renderer qualification validity window is invalid")
-    signature = contents / "Resources/renderer-bootstrap-qualification.json.sig"
+    signature = contents / "Resources" / signature_name
     signature_present = signature.exists() or signature.is_symlink()
     if arguments.require_release_signature:
         verify_signature(arguments.repo_root.resolve(strict=True), signature, receipt_path)
     elif signature_present:
         verify_signature(arguments.repo_root.resolve(strict=True), signature, receipt_path)
+    print(f"renderer.qualification.profile={arguments.profile}")
     print(f"renderer.qualification={receipt_path}")
     print(f"renderer.qualification.sha256={digest(receipt_data)}")
     print(
@@ -369,6 +432,12 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--runner-app", type=pathlib.Path, required=True)
     result.add_argument("--managed-kernel", type=pathlib.Path, required=True)
+    result.add_argument(
+        "--profile",
+        choices=["managed-linux-6.12.106", "dory-pc-x86_64-virgl2"],
+        default="managed-linux-6.12.106",
+    )
+    result.add_argument("--guest-mesa-sha256")
     result.add_argument(
         "--repo-root",
         type=pathlib.Path,
