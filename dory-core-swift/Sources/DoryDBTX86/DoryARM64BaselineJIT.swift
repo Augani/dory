@@ -1694,7 +1694,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
   ) -> Bool {
     if case .register(let target) = destination,
       target.bank == "x86.high8", target.index < 4, target.width == .i8,
-      ((operation == .and && writesDestination) || (operation == .test && !writesDestination)),
+      (((operation == .and || operation == .or) && writesDestination)
+        || (operation == .test && !writesDestination)),
       case .immediate(let immediate, width: .i8) = source
     {
       words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))

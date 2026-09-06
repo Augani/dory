@@ -20,15 +20,16 @@ import Testing
     #endif
   }
 
-  @Test func highByteImmediateAndAndTestPreserveSurroundingBitsAndMatchInterpreter() throws {
+  @Test func highByteImmediateLogicPreservesSurroundingBitsAndMatchesInterpreter() throws {
     #if arch(arm64)
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
         let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024, optimization: optimization)
-        for writesDestination in [false, true] {
+        for operation in [DoryIRBinaryOperation.and, .or, .test] {
+          let writesDestination = operation != .test
           for register in UInt8(0)..<4 {
             for mask: UInt8 in [0, 0x7F, 0x80, 0xFD, 0xFF] {
               let bytes: [UInt8] = writesDestination
-                ? [0x80, 0xE4 + register, mask]
+                ? [0x80, (operation == .or ? 0xCC : 0xE4) + register, mask]
                 : [0xF6, 0xC4 + register, mask]
               for value in UInt64(0)...255 {
                 let containing = 0x1234_ABCD_9876_005A | (value << 8)
@@ -61,7 +62,7 @@ import Testing
                 default: actual = native.registers.rbx
                 }
                 #expect(actual == (writesDestination
-                  ? ((containing & ~UInt64(0xFF00)) | ((value & UInt64(mask)) << 8)) : containing))
+                  ? ((containing & ~UInt64(0xFF00)) | ((operation == .or ? value | UInt64(mask) : value & UInt64(mask)) << 8)) : containing))
               }
             }
           }

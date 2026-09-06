@@ -1,0 +1,18 @@
+{
+  "scope": "Reuse existing high-byte extraction/store and narrow OR flags for immediate OR to AH/CH/DH/BH",
+  "trigger": "80ce80 (OR DH,0x80) appeared repeatedly in the current frozen fc82 PC boot fallback profile.",
+  "validation": {
+    "filter": "DoryJITHighByteAndTests",
+    "exitCode": 0,
+    "tests": 2,
+    "totalLogicalComparisons": 30720,
+    "newORComparisons": 10240,
+    "matrix": "Both JIT tiers; all four high-byte registers; 256 input values; five immediate masks; whole architectural state compared against interpreter; surrounding register bits checked explicitly. Existing constant invalidation regression retained.",
+    "logSHA256": "c1331a23518888e3e95486fefbb83780846fa46a3f8ef0852b271c130730fb20"
+  },
+  "profileSHA256": "dd9224ddceefd7942cafa618bd6ee9ce068304d3d6144650ff87483867ed1aef",
+  "limits": [
+    "No VM speedup claimed before rerunning the guest with a newly frozen binary.",
+    "Independent hardware-reference and full guest qualification remain open."
+  ]
+}

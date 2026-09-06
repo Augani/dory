@@ -685,7 +685,8 @@ public struct DoryX86IRTranslator: Sendable {
     case .binary(let operation, let destination, let source, let writesDestination):
       if case .register(let target) = destination,
         target.bank == "x86.high8", target.index < 4, target.width == .i8,
-        ((operation == .and && writesDestination) || (operation == .test && !writesDestination)),
+        (((operation == .and || operation == .or) && writesDestination)
+        || (operation == .test && !writesDestination)),
         case .immediate(_, width: .i8) = source
       {
         return true
