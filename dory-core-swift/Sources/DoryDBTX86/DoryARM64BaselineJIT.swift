@@ -1761,9 +1761,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
     }
     if case .memory(let address, width: .i8) = destination,
       writesDestination,
-      operation == .and
+      operation == .and || operation == .or
     {
-      return emitLowByteMemoryAnd(
+      return emitLowByteMemoryLogical(
+        operation,
         address: address,
         source: source,
         into: &words
@@ -1929,7 +1930,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     return true
   }
 
-  private func emitLowByteMemoryAnd(
+  private func emitLowByteMemoryLogical(
+    _ operation: DoryIRBinaryOperation,
     address: DoryIRMemoryAddress,
     source: DoryIROperand,
     into words: inout [UInt32]
@@ -1938,7 +1940,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     emitMemoryRead(addressRegister: 12, width: .i8, resultRegister: 9, words: &words)
     guard loadLowByteOperand(source, into: 10, words: &words),
       emitNarrowBinaryFlags(
-        .and,
+        operation,
         writesDestination: true,
         into: &words
       ),

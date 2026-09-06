@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "status": "native-byte-memory-or-focused-tests-passed",
+  "measuredEncoding": "3e800a08",
+  "testsPassed": 4,
+  "newNormalComparisons": 30,
+  "newFaultCases": 4,
+  "tiers": [
+    "baseline",
+    "optimizing"
+  ],
+  "coverage": [
+    "immediate and low-byte register sources",
+    "extended low-byte source",
+    "flags and full architectural-state agreement",
+    "neighboring memory bytes preserved",
+    "declined restartable read leaves state unchanged",
+    "rejected write leaves state and memory unchanged",
+    "existing memory AND behavior preserved"
+  ],
+  "logSHA256": "01fffbde9b16da717cdd9476564d7dea4eeab2d3f4e8fa8d7964ba8c2954ade2",
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "411dc20338db5c0f5d0cfc4f27e4dac4c417ba86bf5b3ce41ee9dd5939933aa1",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "898b4b8adfdc2f2d1423292836a6d0a16e4286c46f315c5592e5b6259ea0728e",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "170a72960ea69d02e2084982f5c26decdf45f929f4991d1221ef6bcbeda3af06"
+  },
+  "limits": [
+    "No whole-VM performance claim.",
+    "Locked forms and high-byte sources are not enabled by this change."
+  ]
+}

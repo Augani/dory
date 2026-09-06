@@ -731,7 +731,7 @@ public struct DoryX86IRTranslator: Sendable {
         && ((width == .i32 || width == .i64)
           || (width == .i8
             && ((!writesDestination && (operation == .compare || operation == .test))
-              || (writesDestination && operation == .and)))):
+              || (writesDestination && (operation == .and || operation == .or))))):
         targetWidth = width
       default:
         return false
