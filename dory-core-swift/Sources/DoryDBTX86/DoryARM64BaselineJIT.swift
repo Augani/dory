@@ -1734,6 +1734,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
         words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(register.index) * 8))
       case .immediate(let immediate, width: .i16):
         emitImmediate(immediate & 0xFFFF, register: 10, into: &words)
+      case .memory(let address, width: .i16):
+        guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
+        emitMemoryRead(addressRegister: 12, width: .i16, resultRegister: 10, words: &words)
       default:
         return false
       }
@@ -1744,12 +1747,21 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitNarrowBinaryFlags(.compare, writesDestination: false, width: .i16, into: &words)
     }
     if case .memory(let address, width: .i16) = destination,
-      operation == .compare, !writesDestination,
-      case .immediate(let immediate, width: .i16) = source
+      operation == .compare, !writesDestination
     {
       guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
       emitMemoryRead(addressRegister: 12, width: .i16, resultRegister: 9, words: &words)
-      emitImmediate(immediate & 0xFFFF, register: 10, into: &words)
+      switch source {
+      case .immediate(let immediate, width: .i16):
+        emitImmediate(immediate & 0xFFFF, register: 10, into: &words)
+      case .register(let register)
+        where register.bank == "x86.gpr" && register.index < 16 && register.width == .i16:
+        words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(register.index) * 8))
+        emitImmediate(0xFFFF, register: 15, into: &words)
+        words.append(encodeLogical(.and, left: 10, right: 15, destination: 10))
+      default:
+        return false
+      }
       return emitNarrowBinaryFlags(.compare, writesDestination: false, width: .i16, into: &words)
     }
     if case .register(let target) = destination,

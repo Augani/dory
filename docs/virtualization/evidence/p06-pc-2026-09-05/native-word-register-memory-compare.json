@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "change": "Native x86 word CMP between register and memory operands in both JIT tiers",
+  "validation": {
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path dory-core-swift --filter 'DoryWordRegisterCompareTests|DoryJITWordMemoryCompareTests' --jobs 2",
+    "exitCode": 0,
+    "testsPassed": 4,
+    "newNormalComparisons": 288,
+    "newReadFaultCases": 8,
+    "logSHA256": "854a912ec7c3b3f7ae629791bbe022ba5974941f999b5c11e01351870476edd5"
+  },
+  "scope": "Interpreter equivalence, unchanged memory, and restartable unmapped reads; no physical VM performance claim."
+}

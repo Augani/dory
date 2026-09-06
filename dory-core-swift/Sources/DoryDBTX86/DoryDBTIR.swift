@@ -698,15 +698,22 @@ public struct DoryX86IRTranslator: Sendable {
           return register.bank == "x86.gpr" && register.index < 16 && register.width == .i16
         case .immediate(_, width: .i16):
           return true
+        case .memory(let address, width: .i16):
+          return isJITMemoryAddress(address)
         default:
           return false
         }
       }
       if case .memory(let address, width: .i16) = destination,
-        operation == .compare, !writesDestination,
-        case .immediate(_, width: .i16) = source
+        operation == .compare, !writesDestination
       {
-        return isJITMemoryAddress(address)
+        guard isJITMemoryAddress(address) else { return false }
+        switch source {
+        case .immediate(_, width: .i16): return true
+        case .register(let register):
+          return register.bank == "x86.gpr" && register.index < 16 && register.width == .i16
+        default: return false
+        }
       }
       if case .register(let target) = destination,
         target.bank == "x86.gpr", target.index < 16, target.width == .i16,
