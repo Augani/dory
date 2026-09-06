@@ -1,0 +1,164 @@
+{
+  "schema": 1,
+  "date": "2026-09-06",
+  "scope": "Private FEX explicit syscall-resume and signal-context candidate for x86 container correctness; not promoted and not release-qualified.",
+  "base": {
+    "fex_source_head": "1cc4b93e7a71c883ec021b71359f136394dc1f3c",
+    "production_pins_changed": false,
+    "private_endpoint_socket": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/e.sock"
+  },
+  "candidate": {
+    "name": "hostaltstack-safe2-1788671500",
+    "image": "dory-fex-explicit-syscall-resume-hostaltstack-safe2:1788671500",
+    "FEX_SHA256": "e87c2ca5994ea76d69dc603ea09af7bcdcc3bc7138fdd235edcac7c99dee6f9a",
+    "FEXServer_SHA256": "7e039707cf846f1cb0eede58fd0d71a89a28425362b1f900e0c801455dbe4187",
+    "BUILD_PACKAGES_SHA256": "ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1",
+    "shared_patch_SHA256": "66abe2067bd469efdbeafdc3cd9862b86efc7000c70cf8ee8d4230f7a53c53f6",
+    "source_diff_SHA256": "66abe2067bd469efdbeafdc3cd9862b86efc7000c70cf8ee8d4230f7a53c53f6",
+    "build_context": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/fex-explicit-syscall-resume-hostaltstack-safe2-populated-source-1788671500/src"
+  },
+  "patch_summary": [
+    "x86-64 SYSCALL records explicit InlineSyscallResumeRIP metadata rather than relying on RCX==RIP+2 heuristics.",
+    "Signal backup/restore preserves InSyscallInfo, InlineSyscallResumeRIP, and PendingSyscallSignalEdit across guest handlers and nested returns.",
+    "Pending redirect uses TMP2 after PopDynamicRegs, preserving x0 syscall return values.",
+    "X64SignalFrameContext.h is a new patch-owned source file and is included as a new-file hunk in the reviewed patch.",
+    "FEX host signal altstack allocation/free uses host ::mmap/::munmap, checks MAP_FAILED, disables sigaltstack before unmap, leaves storage mapped if disabling fails, and nulls the pointer after the unmap call."
+  ],
+  "focused_gates": {
+    "log": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-explicit-syscall-resume-hostaltstack-safe2-candidate-1788671500/focused-gates.log",
+    "log_SHA256": "43b421ce24879445bb6065392ebba4ba8b0ae26dc17ca94b39ffd799ff3d729f",
+    "timeout_log": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-explicit-syscall-resume-hostaltstack-safe2-candidate-1788671500/focused-gates-timeout-5s.log",
+    "timeout_log_SHA256": "595d107219fa8e44e06d11e2314627b87b34abee4cd986036a0c736275f37f49",
+    "result": "pass on rerun with v6-exit-group bound raised to 15s; preserved first 5s timeout log",
+    "failures": [],
+    "groups": {
+      "minimal-exit60": "5/5 rc60",
+      "pushpop-v6-original": "5/5 rc0",
+      "pushpop-v6-marker": "3/3 rc0",
+      "pushpop-v6-exit-group": "3/3 rc0",
+      "pushpop-v7-nosignal": "3/3 rc0",
+      "pushpop-v7-observe-noedit": "3/3 rc0",
+      "sigframe-roundtrip-fixed": "3/3 rc0",
+      "change-rip-exit": "3/3 rc0",
+      "change-rip-ret-same-rsp": "3/3 rc0",
+      "change-rip-rsp-ret": "3/3 rc0"
+    }
+  },
+  "go_comparison": {
+    "log": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-explicit-syscall-resume-hostaltstack-safe2-candidate-1788671500/go-baseline-safe2-compare.log",
+    "log_SHA256": "6809eb6987d18ff8d375403be86d4d21004e7dfbe6dd1f200b3a87d16ecd9681",
+    "shipped": {
+      "regexpmini_default": "rc0",
+      "regexpstress_default": "rc4",
+      "regexpstress_gmp4": "rc4",
+      "regexpstress_preemptoff": "rc0",
+      "regexpmini_preemptoff": "rc0"
+    },
+    "safe2": {
+      "regexpmini_default": "rc0",
+      "regexpstress_default": "rc4",
+      "regexpstress_gmp4": "rc4",
+      "regexpstress_preemptoff": "rc0",
+      "regexpmini_preemptoff": "rc0"
+    },
+    "interpretation": "The exact safe2 artifact matches shipped baseline on this bounded Go discriminator: default async-preemption regexpstress remains failing in both, while preemptoff controls pass in both. This proves no new regression for these controls, but default Go async-preemption remains unresolved work."
+  },
+  "root_cause_evidence": {
+    "boundary_log": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-explicit-syscall-resume-tmp2fix-uninstalldiag-candidate-1788667100/uninstall-marker-runs.log",
+    "finding": "Edited v6 normal exit reached UninstallTLSState markers through sigaltstack disable and stopped before after-munmap, while minimal no-signal exit reached after-munmap and after-uninstalltls. The altstack status was not-on-stack, exit_group and no-edit controls passed, and replacing only the host altstack allocator/free path made edited normal exit pass. The failed ownership assumption was freeing the FEX host signal altstack through FEXCore::Allocator during signal-heavy thread teardown. This is a bounded experimental inference; the remaining Go failure is not explained by it."
+  },
+  "cleanup": {
+    "log": "${HOME}/.dory/qualification/endpoint-20260905-1788623910216227000/logs/fex-explicit-syscall-resume-hostaltstack-safe-candidate-1788670200/cleanup-1788670200.log",
+    "log_SHA256": "21c67c3ff670b8a85308ae7aac88e66f2ecaf82123458c2883922e1f35c33222",
+    "reclaimed_docker_accounting": "about 53 MB: Images 1.267GB -> 1.222GB plus Containers 8.38MB -> 0B",
+    "retained": [
+      "active endpoint data and socket",
+      "retained toolchain image dory-fex-2607-toolchain-retained:20260906",
+      "active build cache and dependency layers",
+      "current hostaltstack-safe2 image and extracted binaries",
+      "previous hostaltstack rollback image",
+      "source diffs, hashes, focused logs, Go comparison logs"
+    ]
+  },
+  "status": "Source patch reviewed for commit; no installation, promotion, or production pin update. Default Go async-preemption remains open.",
+  "disable_failure_handling": {
+    "source_behavior": "If sigaltstack(SS_DISABLE) fails, UninstallTLSState logs the error, leaves AltStackPtr mapped and registered, calls FEXCore::Allocator::UninstallTLSData, and returns without munmap or nulling the active registered altstack pointer.",
+    "rationale": "EPERM can mean the thread is currently executing on the altstack. A bounded leak during hard teardown is safer than unmapping storage that may still be the current host signal stack.",
+    "focused_error_path_check": "No runtime error-path trigger was added; hitting EPERM requires teardown while executing on FEX host altstack and would need an intrusive test hook. Clean-context compilation plus source review cover this bounded branch for now."
+  },
+  "retained_public_evidence": [
+    {
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/fex-safe2-build.meta.gz",
+      "original_sha256": "346c62db6da0c37b65477e83d9b170ab7e4adde3fc8fcc66b25504bdbd79a66f",
+      "public_uncompressed_sha256": "ed32900fa30c6646305b1dfbc88f59bc284182c21b1d0490a70dc756ac161867",
+      "compressed_sha256": "1d9f2e54aeb173ee9acff1193d5c116f24538e65839fe9cb943f88815eed024a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/fex-safe2-build.log.gz",
+      "original_sha256": "c65c96f6348aa2b3bb4f666c9d08ea1ca18765afebb8d584b10f54ccfee60d8c",
+      "public_uncompressed_sha256": "c65c96f6348aa2b3bb4f666c9d08ea1ca18765afebb8d584b10f54ccfee60d8c",
+      "compressed_sha256": "a998fe2361baa4943027b910ae9bda76d2cf829f715ac0500b4077268dec0727"
+    },
+    {
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/fex-safe2-build-packages.txt.gz",
+      "original_sha256": "ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1",
+      "public_uncompressed_sha256": "ad3b0e4ab4e53ac328b0209f592a6f86100f5ca2c17715f2b40ee9b130b0f0b1",
+      "compressed_sha256": "58d172b3d09c0035d60ad15395cfbede7923c2da546e0bfaae28c14c3d9c1d47"
+    },
+    {
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/fex-safe2-apply-check-stat.txt.gz",
+      "original_sha256": "7bcf02391af86ea6a33b93ca7fd90d6a7ec6e53569ad76751c07124b0cbb80b9",
+      "public_uncompressed_sha256": "7bcf02391af86ea6a33b93ca7fd90d6a7ec6e53569ad76751c07124b0cbb80b9",
+      "compressed_sha256": "94d1e2870b013dccdd182b0a0f34d1b2f1ee7f13732b7b356d6722bda1600fe1"
+    },
+    {
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/fex-safe2-focused-gates.log.gz",
+      "original_sha256": "43b421ce24879445bb6065392ebba4ba8b0ae26dc17ca94b39ffd799ff3d729f",
+      "public_uncompressed_sha256": "43b421ce24879445bb6065392ebba4ba8b0ae26dc17ca94b39ffd799ff3d729f",
+      "compressed_sha256": "05e6fd17275558b3d0120156f188c5dadb9a5c3f6aa2b353e2e3971160b77589"
+    },
+    {
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/fex-safe2-focused-gates-timeout-5s.log.gz",
+      "original_sha256": "595d107219fa8e44e06d11e2314627b87b34abee4cd986036a0c736275f37f49",
+      "public_uncompressed_sha256": "595d107219fa8e44e06d11e2314627b87b34abee4cd986036a0c736275f37f49",
+      "compressed_sha256": "10a47082ae12c35ea9176a82ccba5abeced79779616d45454893ef79c12aa306"
+    },
+    {
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/fex-safe2-go-baseline-safe2-compare.log.gz",
+      "original_sha256": "6809eb6987d18ff8d375403be86d4d21004e7dfbe6dd1f200b3a87d16ecd9681",
+      "public_uncompressed_sha256": "6809eb6987d18ff8d375403be86d4d21004e7dfbe6dd1f200b3a87d16ecd9681",
+      "compressed_sha256": "34e8b830fd2656fe01d06974dd2733886eee94115aa59e7b01d6968747ba0178"
+    },
+    {
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/fex-safe2-regexpstress-safe2-default-full.err.gz",
+      "original_sha256": "7228474ca88ae91e8f9818783fc15f1798c974d6cf6a240412b29c838f00e170",
+      "public_uncompressed_sha256": "7228474ca88ae91e8f9818783fc15f1798c974d6cf6a240412b29c838f00e170",
+      "compressed_sha256": "0aa24086128e744f62fca4acd3940d8f3ab24be37cd8f49544e367960f50f38a"
+    },
+    {
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/fex-safe2-run-focused-gates-safe2-15s.sh.gz",
+      "original_sha256": "02e4dae2fec2a6b56a422eb98eef822fd26c7c421989230f0817e333bdb442f9",
+      "public_uncompressed_sha256": "02e4dae2fec2a6b56a422eb98eef822fd26c7c421989230f0817e333bdb442f9",
+      "compressed_sha256": "e295d99ad56c359fffd9702a1308723788047c8992f27d4ff545d56efdc2ac0b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/fex-safe2-run-go-compare-safe2.sh.gz",
+      "original_sha256": "ff6d09cbb6fbc4c0d49031a7fd73d05444b60f2cf3b252dad283859b3f6d0c55",
+      "public_uncompressed_sha256": "ff6d09cbb6fbc4c0d49031a7fd73d05444b60f2cf3b252dad283859b3f6d0c55",
+      "compressed_sha256": "254fecf6eda9b40e32ec74efcddd4f7837c12d51e41bf4a616dce6ecdc04a10b"
+    },
+    {
+      "path": "docs/virtualization/evidence/p06-container-2026-09-05/fex-safe2-cleanup-safe2-1788671500.log.gz",
+      "original_sha256": "37663cfded7cd4c28357bb4c838e2e83371ddc09e5054415cd531aa30a65622a",
+      "public_uncompressed_sha256": "37663cfded7cd4c28357bb4c838e2e83371ddc09e5054415cd531aa30a65622a",
+      "compressed_sha256": "a514d8c31ffd51fc6be7a3220b2376459d2e2311b1d9b64c5bd94b661ed26dd0"
+    }
+  ],
+  "root_review": {
+    "patch_matches_clean_build_input": true,
+    "extracted_binary_hashes_verified": true,
+    "applied_source_diff_check": "pass",
+    "reverse_apply_check": "pass",
+    "qualification_limit": "Focused signal cases pass; default Go stress still fails in both shipped and candidate artifacts. Not release qualified."
+  }
+}
