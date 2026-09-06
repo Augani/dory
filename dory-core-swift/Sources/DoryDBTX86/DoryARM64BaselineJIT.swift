@@ -1729,6 +1729,13 @@ public struct DoryARM64BaselineEmitter: Sendable {
       emitImmediate(immediate & 0xFFFF, register: 10, into: &words)
       return emitNarrowBinaryFlags(.compare, writesDestination: false, width: .i16, into: &words)
     }
+    if case .register(let target) = destination,
+      target.bank == "x86.gpr", target.index < 16, target.width == .i16,
+      operation == .or, writesDestination,
+      case .memory(let address, width: .i16) = source
+    {
+      return emitWordMemorySourceOr(destination: target, address: address, into: &words)
+    }
     if case .memory(let address, width: .i8) = destination,
       writesDestination,
       operation == .and
@@ -1820,6 +1827,29 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return false
       }
     }
+    return true
+  }
+
+  private func emitWordMemorySourceOr(
+    destination: DoryIRRegister,
+    address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard destination.bank == "x86.gpr", destination.index < 16, destination.width == .i16,
+      emitMemoryAddress(address, into: 12, words: &words)
+    else { return false }
+    emitMemoryRead(addressRegister: 12, width: .i16, resultRegister: 10, words: &words)
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(destination.index) * 8))
+    emitImmediate(0xFFFF, register: 15, into: &words)
+    words.append(encodeLogical(.and, left: 9, right: 15, destination: 9))
+    guard emitNarrowBinaryFlags(.or, writesDestination: true, width: .i16, into: &words) else {
+      return false
+    }
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(destination.index) * 8))
+    emitImmediate(~UInt64(0xFFFF), register: 10, into: &words)
+    words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
+    words.append(encodeLogical(.or, left: 9, right: 11, destination: 9))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(destination.index) * 8))
     return true
   }
 

@@ -1,0 +1,23 @@
+{
+  "head": "3f05c2318d4371c0517ec3edac45c79644073ed1",
+  "hotspot": "660b8da00b0000 / or cx, word ptr [rbp+0xba0]",
+  "log": "${HOME}/.dory/qualification/native-word-memory-source-or-20260906-0118/word-memory-source-or-baselinejit-b.log",
+  "log_sha256": "ffcc138da5356c9d5662d21858fa169ad55a647a8cf07d2ae2795382ee2e449d",
+  "source_sha256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "cafe438add3e6fc6c94f88e9e27fe7789733bbc12499ae588bb6d4f08de0c17a",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "4d5a6c7624a5e75b63e07aca56356bbd3d15cda7abf666e3c2e22f348c5757d7",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift": "aabaeb93eae31154b32bf06ce1ac5ad7f6eff1b3d848b731e23d6e77ea8ecc63"
+  },
+  "status": [
+    " M dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift",
+    " M dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift",
+    " M dory-core-swift/Tests/DoryDBTX86Tests/DoryARM64BaselineJITTests.swift",
+    " M patches/fex-restore-complete-signal-context.patch"
+  ],
+  "task": "native-word-memory-source-or",
+  "test_command": "DEVELOPER_DIR=${DEVELOPER_DIR} swift test --package-path dory-core-swift --filter 'DoryARM64BaselineJITTests' --jobs 1",
+  "schemaVersion": 1,
+  "result": "122 tests in 1 suite passed",
+  "coordinatorReview": "Verified all three current source hashes and test log hash; reviewed memory read before mutation, 16-bit result merge preserving upper bits, zero-result flags, effective-address aliasing, extended register, and fault rollback. Both tiers require native dispatch on successful execution.",
+  "qualification": "Native lowering regression coverage only. Production boot comparison currently runs the preceding signed artifact; no guest performance improvement claimed."
+}

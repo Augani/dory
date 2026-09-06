@@ -670,6 +670,13 @@ public struct DoryX86IRTranslator: Sendable {
       {
         return isJITMemoryAddress(address)
       }
+      if case .register(let target) = destination,
+        target.bank == "x86.gpr", target.index < 16, target.width == .i16,
+        operation == .or, writesDestination,
+        case .memory(let address, width: .i16) = source
+      {
+        return isJITMemoryAddress(address)
+      }
       let targetWidth: DoryIRIntegerWidth
       switch destination {
       case .register(let target) where isJITGeneralRegister(target):
