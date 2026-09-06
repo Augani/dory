@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "date": "2026-09-06",
+  "problems": [
+    "Raw receipt server unconditionally unlinked its socket path before bind and dispatched unbounded clients.",
+    "Shared listener held NSLock while polling; a live XCTest sample showed stop blocked in mutex wait while accept repeatedly polled under that lock."
+  ],
+  "changes": [
+    "Raw receipt server now uses existing inode-owning listener and eight-client limit, removing duplicate bind/close/path cleanup.",
+    "Poll a duplicated CLOEXEC listener descriptor outside the lock; check active owner and accept under the same lock as close, preserving descriptor lifetime without starving stop.",
+    "Close accepted descriptor if weak server ownership disappears before dispatch."
+  ],
+  "verification": {
+    "swiftTesting": "12 tests in2suites pass",
+    "XCTest": "5 lifecycle tests pass",
+    "newChecks": [
+      "Stop while idle accept loop runs, with bounded test cleanup",
+      "Competing receipt listener cannot replace active socket",
+      "Ninth concurrent client rejected; slots reusable after admitted requests finish"
+    ]
+  },
+  "initialFailure": "Root sampled XCTest PID26425 blocked in stop and terminated only that owned test process before retrying the corrected source. Failed-run log and sample retained.",
+  "limits": [
+    "Existing in-flight control actions are not cancelled by listener stop.",
+    "Operation/generation binding and backend command-execution deadlines remain open.",
+    "No new physical guest lifecycle campaign yet."
+  ],
+  "evidence": [
+    {
+      "path": "shared-receipt-listener-and-stop-checks.log.gz",
+      "originalSHA256": "68fc8d73a298a0d4b68d2e58c39a152a420b60ba0d9627755482f0ae3f14133e",
+      "publicUncompressedSHA256": "68fc8d73a298a0d4b68d2e58c39a152a420b60ba0d9627755482f0ae3f14133e"
+    },
+    {
+      "path": "shared-receipt-listener-and-stop-blocked-stop-sample.txt.gz",
+      "originalSHA256": "bd13e7c3e34dae82a5cc2e7fff532bba1c901a8ddda0453cb6c7d71512f4ded1",
+      "publicUncompressedSHA256": "bd13e7c3e34dae82a5cc2e7fff532bba1c901a8ddda0453cb6c7d71512f4ded1"
+    },
+    {
+      "path": "shared-receipt-listener-and-stop-interrupted-checks.log.gz",
+      "originalSHA256": "484a544726f63078b94841d95c3f6b0531b55b25a98ceb089149ffb7c74cf282",
+      "publicUncompressedSHA256": "484a544726f63078b94841d95c3f6b0531b55b25a98ceb089149ffb7c74cf282"
+    }
+  ]
+}

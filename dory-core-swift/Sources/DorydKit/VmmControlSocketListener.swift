@@ -24,7 +24,7 @@ public final class VmmControlSocketListener: @unchecked Sendable {
         guard lstat(parent, &directory) == 0,
               directory.st_mode & S_IFMT == S_IFDIR,
               directory.st_uid == geteuid(), directory.st_mode & 0o022 == 0 else {
-            throw VmmControlError.rejected("control socket parent must be an directory owned by this user and not writable by other users")
+            throw VmmControlError.rejected("control socket parent must be a directory owned by this user and not writable by other users")
         }
         try Self.removeStaleSocket(path, address: &address)
         let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -62,15 +62,25 @@ public final class VmmControlSocketListener: @unchecked Sendable {
         }
     }
 
-    /// Serialize poll/accept with close so descriptor reuse cannot cross listener lifetimes.
-    /// The short poll bounds how long stop must wait; accept itself is nonblocking.
+    /// Poll a duplicate outside the ownership lock: an idle accept loop must not
+    /// starve stop(). The duplicate retains this socket across descriptor reuse;
+    /// accept and close still serialize on the original descriptor.
     public func acceptClient() throws -> AcceptResult {
-        try lock.withLock {
+        let pollingDescriptor = try lock.withLock { () throws -> Int32? in
+            guard active else { return nil }
+            let duplicate = fcntl(descriptor, F_DUPFD_CLOEXEC, 0)
+            guard duplicate >= 0 else { throw VmmControlError.syscall("fcntl(F_DUPFD_CLOEXEC)", errno) }
+            return duplicate
+        }
+        guard let pollingDescriptor else { return .stopped }
+        defer { close(pollingDescriptor) }
+        var readiness = pollfd(fd: pollingDescriptor, events: Int16(POLLIN), revents: 0)
+        let ready = poll(&readiness, 1, 100)
+        let pollError = errno
+        return try lock.withLock {
             guard active else { return .stopped }
-            var readiness = pollfd(fd: descriptor, events: Int16(POLLIN), revents: 0)
-            let ready = poll(&readiness, 1, 100)
-            if ready == 0 || (ready < 0 && errno == EINTR) { return .retry }
-            guard ready > 0 else { throw VmmControlError.syscall("poll", errno) }
+            if ready == 0 || (ready < 0 && pollError == EINTR) { return .retry }
+            guard ready > 0 else { throw VmmControlError.syscall("poll", pollError) }
             let client = accept(descriptor, nil, nil)
             if client < 0 {
                 if errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK { return .retry }

@@ -109,6 +109,9 @@ final class VmmLifecycleReceiptTests: XCTestCase {
             try? FileManager.default.removeItem(atPath: root)
         }
         try old.start()
+        XCTAssertThrowsError(try replacement.start())
+        try UnixMachineVZLifecycleController().acknowledgeLifecycle(
+            socketPath: socketPath, action: .preparePause, operationID: UUID())
         XCTAssertEqual(unlink(socketPath), 0)
         try replacement.start()
 
@@ -123,4 +126,41 @@ final class VmmLifecycleReceiptTests: XCTestCase {
             operationID: operationID
         )
     }
+    func testReceiptServerBoundsConcurrentClientsAndReleasesSlots() throws {
+        let root = "/tmp/dory-receipt-limit-" + UUID().uuidString
+        let socketPath = root + "/control.sock"
+        let entered = DispatchSemaphore(value: 0)
+        let release = DispatchSemaphore(value: 0)
+        let completed = DispatchGroup()
+        let server = VmmLifecycleReceiptServer(socketPath: socketPath, lifecycleHandler: { _ in
+            entered.signal()
+            _ = release.wait(timeout: .now() + 5)
+        })
+        try server.start()
+        defer {
+            for _ in 0..<8 { release.signal() }
+            _ = completed.wait(timeout: .now() + 6)
+            server.stop()
+            try? FileManager.default.removeItem(atPath: root)
+        }
+        for _ in 0..<8 {
+            completed.enter()
+            DispatchQueue.global().async {
+                defer { completed.leave() }
+                do {
+                    try UnixMachineVZLifecycleController().acknowledgeLifecycle(
+                        socketPath: socketPath, action: .preparePause, operationID: UUID())
+                } catch { XCTFail("admitted receipt client failed: \(error)") }
+            }
+        }
+        for _ in 0..<8 { XCTAssertEqual(entered.wait(timeout: .now() + 2), .success) }
+        XCTAssertThrowsError(try UnixMachineVZLifecycleController().acknowledgeLifecycle(
+            socketPath: socketPath, action: .preparePause, operationID: UUID()))
+        for _ in 0..<8 { release.signal() }
+        XCTAssertEqual(completed.wait(timeout: .now() + 2), .success)
+        release.signal()
+        try UnixMachineVZLifecycleController().acknowledgeLifecycle(
+            socketPath: socketPath, action: .preparePause, operationID: UUID())
+    }
+
 }

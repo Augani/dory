@@ -4,6 +4,33 @@ import Testing
 @testable import DorydKit
 
 @Suite struct VmmControlSocketListenerTests {
+    @Test func stoppingIdleAcceptLoopDoesNotWaitForRepeatedPolls() throws {
+        try withPath { path in
+            let listener = try VmmControlSocketListener(path: path)
+            let polled = DispatchSemaphore(value: 0)
+            let finished = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async {
+                defer { finished.signal() }
+                // Bounded even if stop regresses, so a failure cannot hang the suite.
+                for index in 0..<20 {
+                    guard let result = try? listener.acceptClient() else { return }
+                    if index == 0 { polled.signal() }
+                    switch result {
+                    case .stopped: return
+                    case .client(let fd): close(fd)
+                    case .retry: break
+                    }
+                }
+            }
+            #expect(polled.wait(timeout: .now() + 1) == .success)
+            let stopped = DispatchSemaphore(value: 0)
+            DispatchQueue.global().async { listener.stop(); stopped.signal() }
+            #expect(stopped.wait(timeout: .now() + 0.5) == .success)
+            #expect(finished.wait(timeout: .now() + 3) == .success)
+            listener.stop()
+        }
+    }
+
     @Test func ownedSocketHasPrivatePermissionsAndIdempotentStop() throws {
         try withPath { path in
             let listener = try VmmControlSocketListener(path: path)

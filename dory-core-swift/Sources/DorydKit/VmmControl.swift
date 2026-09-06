@@ -419,9 +419,8 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
     private let socketPath: String
     private let queue = DispatchQueue(label: "dev.dory.helper-lifecycle-receipt")
     private let lock = NSLock()
-    private var listenerFD: Int32 = -1
-    private var running = false
-    private var boundIdentity: (device: dev_t, inode: ino_t)?
+    private var socketOwner: VmmControlSocketListener?
+    private let clientSlots = DispatchSemaphore(value: 8)
     private let deviceTelemetryProvider: (@Sendable () throws -> DoryDeviceTelemetrySnapshot)?
     private let lifecycleHandler: (@Sendable (DoryLifecycleReceiptAction) throws -> Void)?
     private let reconnectIdentity: DoryRuntimeReconnectLaunchIdentity?
@@ -445,75 +444,48 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
     }
 
     public func start() throws {
-        lock.lock()
-        guard listenerFD < 0 else {
-            lock.unlock()
-            return
+        let listener = try lock.withLock { () throws -> VmmControlSocketListener? in
+            guard socketOwner == nil else { return nil }
+            let owner = try VmmControlSocketListener(path: socketPath)
+            socketOwner = owner
+            return owner
         }
-        lock.unlock()
-        try FileManager.default.createDirectory(
-            atPath: (socketPath as NSString).deletingLastPathComponent,
-            withIntermediateDirectories: true
-        )
-        unlink(socketPath)
-        let fd = socket(AF_UNIX, SOCK_STREAM, 0)
-        guard fd >= 0 else { throw VmmControlError.syscall("socket", errno) }
-        do {
-            var address = try unixAddress(path: socketPath)
-            let bound = withUnsafePointer(to: &address) { pointer in
-                pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { raw in
-                    Darwin.bind(fd, raw, socklen_t(MemoryLayout<sockaddr_un>.size))
-                }
-            }
-            guard bound == 0 else { throw VmmControlError.syscall("bind", errno) }
-            guard chmod(socketPath, 0o600) == 0 else {
-                throw VmmControlError.syscall("chmod", errno)
-            }
-            guard listen(fd, 16) == 0 else {
-                throw VmmControlError.syscall("listen", errno)
-            }
-            var info = stat()
-            guard lstat(socketPath, &info) == 0 else {
-                throw VmmControlError.syscall("lstat", errno)
-            }
-            lock.lock()
-            listenerFD = fd
-            running = true
-            boundIdentity = (info.st_dev, info.st_ino)
-            lock.unlock()
-            queue.async { [weak self] in self?.acceptLoop(listenerFD: fd) }
-        } catch {
-            close(fd)
-            unlink(socketPath)
-            throw error
-        }
+        guard let listener else { return }
+        queue.async { [weak self] in self?.acceptLoop(listener: listener) }
     }
 
     public func stop() {
-        lock.lock()
-        let fd = listenerFD
-        let identity = boundIdentity
-        listenerFD = -1
-        running = false
-        boundIdentity = nil
-        lock.unlock()
-        if fd >= 0 { close(fd) }
-        if let identity {
-            var info = stat()
-            if lstat(socketPath, &info) == 0,
-               info.st_dev == identity.device,
-               info.st_ino == identity.inode {
-                unlink(socketPath)
-            }
+        let owner = lock.withLock { () -> VmmControlSocketListener? in
+            let owner = socketOwner
+            socketOwner = nil
+            return owner
         }
+        owner?.stop()
     }
 
-    private func acceptLoop(listenerFD: Int32) {
-        while isRunning(listenerFD: listenerFD) {
-            let client = accept(listenerFD, nil, nil)
-            guard client >= 0 else { continue }
+    private func acceptLoop(listener: VmmControlSocketListener) {
+        while true {
+            let client: Int32
+            do {
+                switch try listener.acceptClient() {
+                case .client(let descriptor): client = descriptor
+                case .retry: continue
+                case .stopped: return
+                }
+            } catch { return }
+            guard lock.withLock({ socketOwner === listener }) else {
+                close(client)
+                return
+            }
+            let slots = clientSlots
+            guard slots.wait(timeout: .now()) == .success else {
+                close(client)
+                continue
+            }
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                self?.handle(clientFD: client)
+                defer { slots.signal() }
+                guard let self else { close(client); return }
+                self.handle(clientFD: client)
             }
         }
     }
@@ -604,12 +576,6 @@ public final class VmmLifecycleReceiptServer: @unchecked Sendable {
         if let encoded = try? JSONEncoder().encode(response) {
             try? VmmControlSocketIO.writeResponseData(encoded, to: clientFD)
         }
-    }
-
-    private func isRunning(listenerFD: Int32) -> Bool {
-        lock.lock()
-        defer { lock.unlock() }
-        return running && self.listenerFD == listenerFD
     }
 
     deinit { stop() }
