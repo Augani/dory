@@ -492,6 +492,28 @@ struct DoryMachineConfigurationMigrationTests {
         #expect(replaced.platform?.executionEngine == .x86ToARM64)
         #expect(replaced.translationConsent == .explicit)
         #expect(replaced.graphics == translatedInstaller.definition.graphics)
+
+        var x86Installed = x86Installer
+        x86Installed.installerISOPath = nil
+        var installed = try DoryMachineConfigurationMigrationBridge.migrate(
+            x86Installed,
+            facts: DoryMachineConfigurationMigrationFacts(
+                guestArchitecture: .x86_64,
+                systemDiskCapacityBytes: 64 * gibibyte,
+                installedEFIBoot: .firmwareDisk,
+                lifecycle: translatedInstaller.definition.lifecycle
+            )
+        )
+        #expect(installed.bootContract == .efiFirmwareDisk)
+        #expect(installed.definition.graphics == translatedInstaller.definition.graphics)
+        #expect(installed.definition.platform == translatedInstaller.definition.platform)
+        #expect(try installed.legacyConfiguration() == x86Installed)
+        installed.definition = try DoryMachineTypedSettingsPatch(
+            graphicsPreference: .set(.software)
+        ).applying(to: installed.definition, displayMode: .desktop)
+        #expect(try installed.legacyConfiguration().environment[
+            DoryDesktopGraphicsPreference.environmentKey
+        ] == DoryDesktopGraphicsPreference.software.rawValue)
         var withoutConsent = translatedInstaller.definition
         withoutConsent.translationConsent = .notRequired
         #expect(throws: (any Error).self) {

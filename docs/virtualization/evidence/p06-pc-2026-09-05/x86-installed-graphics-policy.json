@@ -1,0 +1,13 @@
+{
+  "change": "Preserve x86 hardware graphics policy after installer detachment and allow typed policy projection for installed EFI disks",
+  "before": "Regression failed: installed x86 graphics became software, and requested software projection retained old hardware preference",
+  "after": "34 migration/typed-settings tests passed; ARM EFI policy unchanged",
+  "sourceHashes": {
+    "dory-core-swift/Sources/DorydKit/DoryMachineConfigurationMigration.swift": "d92b8aed2ff60513dc65ea6742e5cca54b23c86dbc27dab40f3ed7a4e364ec78",
+    "dory-core-swift/Tests/DorydKitTests/DoryMachineConfigurationMigrationTests.swift": "03908f72ef45d784046a86fabd00e71ecf0278c61f486e0b10b966fc0c42ec5d"
+  },
+  "logs": {
+    "x86-installed-graphics-before.log": "44f6b4542e7860eee348c54293a30bbb9ec81b0e93fb96079ae706675fa7a836",
+    "x86-installed-graphics-after.log": "b25f3c75fb0aea7e3a7ea85abb4e51778a6b43eab6eaab51628c3aa6bcc46c9f"
+  }
+}

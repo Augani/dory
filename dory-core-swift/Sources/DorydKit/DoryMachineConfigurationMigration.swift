@@ -336,7 +336,8 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
     private func applyPlatform(to environment: inout [String: String]) throws {
         guard definition.platform != baselineDefinition.platform else { return }
         guard bootContract == .managedDirectKernel || bootContract == .efiInstalledDirectBoot
-                || (bootContract == .efiInstaller && definition.guest.architecture == .x86_64),
+                || ((bootContract == .efiInstaller || bootContract == .efiFirmwareDisk)
+                    && definition.guest.architecture == .x86_64),
               authoritativeLegacyConfiguration.displayMode == .desktop else {
             throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange(
                 "platform"
@@ -358,7 +359,7 @@ public struct DoryMachineConfigurationMigrationResult: Sendable, Equatable {
         guard definition.graphics != baselineDefinition.graphics else { return }
         guard bootContract == .managedDirectKernel
                 || bootContract == .efiInstalledDirectBoot
-                || (bootContract == .efiInstaller
+                || ((bootContract == .efiInstaller || bootContract == .efiFirmwareDisk)
                     && definition.guest.architecture == .x86_64),
               authoritativeLegacyConfiguration.displayMode == .desktop else {
             throw DoryMachineConfigurationMigrationError.unsupportedDefinitionChange("graphics")
@@ -727,7 +728,8 @@ public enum DoryMachineConfigurationMigrationBridge {
         )
         let acceleratedBoot = bootContract == .managedDirectKernel
             || bootContract == .efiInstalledDirectBoot
-            || (bootContract == .efiInstaller && facts.guestArchitecture == .x86_64)
+            || ((bootContract == .efiInstaller || bootContract == .efiFirmwareDisk)
+                && facts.guestArchitecture == .x86_64)
         let guest = DoryGuestPlatform(family: .linux, architecture: facts.guestArchitecture)
         let translationConsent: DoryTranslationConsent =
             facts.guestArchitecture == .x86_64 ? .explicit : .notRequired
@@ -744,8 +746,8 @@ public enum DoryMachineConfigurationMigrationBridge {
         } else if acceleratedBoot {
             graphics = typedGraphicsPolicy(graphicsPreference)
         } else {
-            // Portable ARM EFI installer media remains on the proven software baseline. The x86
-            // DoryPC installer path above is admitted only by the explicit Apple-silicon
+            // Portable ARM EFI media remains on the proven software baseline. The x86
+            // DoryPC EFI paths above is admitted only by the explicit Apple-silicon
             // qualification gate and can carry the requested renderer authority.
             graphics = DoryVMGraphicsPolicy(acceptableLevels: [.software])
         }
