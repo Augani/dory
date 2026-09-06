@@ -395,6 +395,8 @@ case "desktop":
     var shares = [DoryMachineShareConfiguration]()
     var environment = [String: String]()
     var displayPresentation: DoryMachineDisplayPresentation = .windowed
+    var rendererGenerationHandoffSocket: String?
+    var rendererGenerationHandoffToken: String?
     var iterator = arguments.dropFirst().makeIterator()
     while let argument = iterator.next() {
         switch argument {
@@ -456,6 +458,8 @@ case "desktop":
         case "--shell-sock": shellSocket = iterator.next()
         case "--console-sock": consoleSocket = iterator.next()
         case "--ssh-agent-socket": sshAgentSocket = iterator.next()
+        case "--renderer-generation-handoff-sock": rendererGenerationHandoffSocket = iterator.next()
+        case "--renderer-generation-handoff-token": rendererGenerationHandoffToken = iterator.next()
         case "--memory-mb", "--mem-mb":
             guard let value = iterator.next(), let parsed = UInt64(value), parsed > 0 else {
                 fail("desktop --memory-mb requires a positive integer")
@@ -578,6 +582,25 @@ case "desktop":
                 requiredProducerFenceContract:
                     .doryPCX8664LinuxVirGL2PrepareFBV1
             )
+            let rendererReplacementProvider: DesktopRendererWorkerReplacementProvider?
+            switch (
+                pcRuntimeLaunchEnvelope.graphics,
+                rendererGenerationHandoffSocket,
+                rendererGenerationHandoffToken
+            ) {
+            case (.hardwareAccelerated3D, let socket?, let token?):
+                rendererReplacementProvider = DesktopRendererWorkerReplacementProvider(
+                    path: socket,
+                    token: token,
+                    envelope: pcRuntimeLaunchEnvelope
+                )
+            case (.hardwareAccelerated3D, nil, nil):
+                fail("DoryPC accelerated graphics requires renderer generation handoff authority")
+            case (_, nil, nil):
+                rendererReplacementProvider = nil
+            default:
+                fail("DoryPC renderer generation handoff requires both socket and token")
+            }
             defer {
                 rendererWorkerLaunch?.teardown(
                     reason: "DoryPC renderer launch teardown"
@@ -598,7 +621,8 @@ case "desktop":
                 shares: shares,
                 displayPresentation: displayPresentation,
                 reconnectIdentity: reconnectIdentity!,
-                rendererWorkerLaunch: rendererWorkerLaunch
+                rendererWorkerLaunch: rendererWorkerLaunch,
+                rendererReplacementProvider: rendererReplacementProvider
             ))
         } catch {
             fail("DoryPC desktop failed: \(error)")

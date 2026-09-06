@@ -139,6 +139,64 @@ final class DesktopRendererWorkerLiveReadinessGate: @unchecked Sendable {
     }
 }
 
+
+final class DesktopRendererWorkerReplacementProvider: @unchecked Sendable {
+    private let path: String
+    private let token: String
+    private let envelope: DoryPCRuntimeLaunchEnvelope
+
+    init(path: String, token: String, envelope: DoryPCRuntimeLaunchEnvelope) {
+        self.path = path
+        self.token = token
+        self.envelope = envelope
+    }
+
+    func prepareReplacement(after launch: DesktopRendererWorkerLaunch) async throws -> DesktopRendererWorkerLaunch {
+        let previousGeneration = launch.workerGeneration.rawValue
+        let requestedGeneration = previousGeneration &+ 1
+        guard requestedGeneration > previousGeneration else {
+            throw DesktopRendererWorkerLaunchError.missingBootstrapAuthority
+        }
+        let handoff = try DoryRendererGenerationHandoffClient.request(
+            path: path,
+            request: DoryRendererGenerationHandoffRequest(
+                token: token,
+                machineID: envelope.machineID,
+                operationID: DoryOperationIdentity.canonical(envelope.operationID),
+                resolvedPlanSHA256: envelope.resolvedPlanSHA256,
+                planRevision: envelope.planRevision,
+                previousRendererGeneration: previousGeneration,
+                requestedRendererGeneration: requestedGeneration
+            )
+        )
+        guard let descriptor = handoff.takeBootstrapDescriptor() else {
+            throw DesktopRendererWorkerLaunchError.missingBootstrapAuthority
+        }
+        guard let byteCount = handoff.response.bootstrapByteCount,
+              let sha256 = handoff.response.bootstrapSHA256 else {
+            Darwin.close(descriptor)
+            throw DesktopRendererWorkerLaunchError.missingBootstrapAuthority
+        }
+        let authority = RuntimeLaunchEnvelope.InheritedFileDescriptorSlot(
+            name: RuntimeLaunchEnvelope.rendererBootstrapSlotName,
+            descriptor: descriptor,
+            access: .readOnly,
+            byteCount: byteCount,
+            contentSHA256: sha256
+        )
+        guard let launch = try await DesktopRendererWorkerLaunch.prepare(
+            resolvedGraphics: envelope.graphics,
+            rendererBootstrapAuthority: authority,
+            exactManagedKernelSHA256: nil,
+            requiredBootstrapDescriptor: descriptor,
+            requiredProducerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1
+        ) else {
+            throw DesktopRendererWorkerLaunchError.missingBootstrapAuthority
+        }
+        return launch
+    }
+}
+
 /// One authenticated renderer generation prepared before any machine or vCPU starts.
 ///
 /// The two SHA-256 values are durable launch-authority evidence. They do not claim that a frame

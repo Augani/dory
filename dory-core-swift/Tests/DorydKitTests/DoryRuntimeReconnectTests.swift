@@ -5,6 +5,20 @@ import DoryOperations
 import Foundation
 import XCTest
 
+struct RendererGenerationRenewalFixtureInstruction: Codable {
+    var generationHandoffPath: String
+    var generationHandoffToken: String
+    var readinessHandoffPath: String
+    var machineID: String
+    var operationID: String
+    var resolvedPlanSHA256: String
+    var planRevision: UInt64
+    var previousRendererGeneration: UInt64
+    var requestedRendererGeneration: UInt64
+    var guestProducerFenceProofSHA256: String
+    var outcomePath: String?
+}
+
 final class DoryRuntimeReconnectTests: XCTestCase {
     func testPrivateDescriptorRoundTripsAndChallengeBindsWholeGeneration() throws {
         let identity = makeIdentity()
@@ -262,6 +276,73 @@ final class DoryRuntimeReconnectTests: XCTestCase {
         )
         try server.start()
         defer { server.stop() }
+        if let renewalPath = environment["DORY_RECONNECT_TEST_RENDERER_RENEWAL_FILE"] {
+            Thread.detachNewThread {
+                var outcomePath: String?
+                func writeOutcome(_ value: String) {
+                    guard let outcomePath else { return }
+                    try? Data(value.utf8).write(to: URL(fileURLWithPath: outcomePath), options: .atomic)
+                }
+                do {
+                    let deadline = Date().addingTimeInterval(5)
+                    while !FileManager.default.fileExists(atPath: renewalPath), Date() < deadline {
+                        Thread.sleep(forTimeInterval: 0.01)
+                    }
+                    let instruction = try JSONDecoder().decode(
+                        RendererGenerationRenewalFixtureInstruction.self,
+                        from: Data(contentsOf: URL(fileURLWithPath: renewalPath))
+                    )
+                    outcomePath = instruction.outcomePath
+                    writeOutcome("instruction-loaded")
+                    let handoff = try DoryRendererGenerationHandoffClient.request(
+                        path: instruction.generationHandoffPath,
+                        request: DoryRendererGenerationHandoffRequest(
+                            token: instruction.generationHandoffToken,
+                            machineID: instruction.machineID,
+                            operationID: instruction.operationID,
+                            resolvedPlanSHA256: instruction.resolvedPlanSHA256,
+                            planRevision: instruction.planRevision,
+                            previousRendererGeneration: instruction.previousRendererGeneration,
+                            requestedRendererGeneration: instruction.requestedRendererGeneration
+                        ),
+                        authenticateDaemon: { _, _ in }
+                    )
+                    defer { handoff.close() }
+                    guard handoff.response.ok,
+                          handoff.response.rendererGeneration == instruction.requestedRendererGeneration,
+                          let rendererReceipt = handoff.response.bootstrapSHA256 else {
+                        let message = "renderer generation handoff did not return a valid fixture response"
+                        writeOutcome(message)
+                        fputs("\(message)\n", stderr)
+                        return
+                    }
+                    writeOutcome("generation-handoff-ok")
+                    try VmmHandoffClient.send(
+                        path: instruction.readinessHandoffPath,
+                        ready: VmmReadyMessage(
+                            machineID: instruction.machineID,
+                            operationID: instruction.operationID,
+                            controlSocketPath: socket,
+                            graphicsSelection: DoryRuntimeGraphicsSelection(
+                                operationID: instruction.operationID,
+                                resolvedPlanSHA256: instruction.resolvedPlanSHA256,
+                                planRevision: instruction.planRevision,
+                                accelerationLevel: .hardwareAccelerated3D,
+                                backend: .virgl,
+                                rendererGeneration: instruction.requestedRendererGeneration,
+                                rendererWorkerReceiptSHA256: rendererReceipt,
+                                guestProducerFenceProofSHA256: instruction.guestProducerFenceProofSHA256
+                            )
+                        ),
+                        fileDescriptors: []
+                    )
+                    writeOutcome("readiness-handoff-ok")
+                } catch {
+                    writeOutcome("renderer generation renewal fixture failed: \(error)")
+                    fputs("renderer generation renewal fixture failed: \(error)\n", stderr)
+                }
+            }
+        }
         _ = signal(SIGTERM, SIG_DFL)
         if let retirePath = environment["DORY_RECONNECT_TEST_RETIRE_ON_FILE"] {
             while !FileManager.default.fileExists(atPath: retirePath) {

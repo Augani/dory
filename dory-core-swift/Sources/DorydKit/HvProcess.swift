@@ -336,6 +336,7 @@ public struct HvProcessConfiguration: Sendable {
     /// from the live daemon. Legacy and test launches intentionally leave this unset.
     var rendererReleaseIdentity: DoryRendererReleaseIdentityV1?
     var containerRendererAuthority: DoryContainerRendererLaunchAuthority?
+    var rendererGenerationHandoffServer: DoryRendererGenerationHandoffServer?
 
     public init(
         executablePath: String,
@@ -359,6 +360,7 @@ public struct HvProcessConfiguration: Sendable {
         self.launchStyle = launchStyle
         rendererReleaseIdentity = nil
         containerRendererAuthority = nil
+        rendererGenerationHandoffServer = nil
     }
 }
 
@@ -571,6 +573,8 @@ public final class HvProcess: @unchecked Sendable {
     private var stopping = false
     private var hasStarted = false
     private var suspended = false
+
+    var launchArguments: [String] { configuration.arguments }
     private var restartCount = 0
     private var restartPending = false
     private var restartsEnabled = true
@@ -659,6 +663,16 @@ public final class HvProcess: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         return process?.pid
+    }
+
+    var applicationPeerIdentity: DoryApplicationLaunchPeerIdentity? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let process, let auditToken = process.applicationAuditToken else { return nil }
+        return DoryApplicationLaunchPeerIdentity(
+            processIdentifier: process.pid,
+            auditToken: auditToken
+        )
     }
 
     public var isRunning: Bool {
@@ -1526,7 +1540,7 @@ public final class HvProcess: @unchecked Sendable {
         restartsEnabled = false
         restartPending = false
         lock.unlock()
-        closeInheritedDescriptors()
+        closeInheritedDescriptors(stopRendererGenerationHandoffServer: false)
     }
 
     /// Marks the next helper exit as an expected lifecycle transition without sending a signal.
@@ -1833,7 +1847,12 @@ public final class HvProcess: @unchecked Sendable {
         }
     }
 
-    private func closeInheritedDescriptors() {
+    private func closeInheritedDescriptors(
+        stopRendererGenerationHandoffServer: Bool = true
+    ) {
+        if stopRendererGenerationHandoffServer {
+            configuration.rendererGenerationHandoffServer?.stop()
+        }
         for authority in configuration.inheritedFileDescriptors {
             authority.close()
         }

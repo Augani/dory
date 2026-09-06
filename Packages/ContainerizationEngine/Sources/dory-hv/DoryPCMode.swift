@@ -75,6 +75,7 @@ enum DoryPCMode {
         let displayPresentation: DoryMachineDisplayPresentation
         let reconnectIdentity: DoryRuntimeReconnectLaunchIdentity
         var rendererWorkerLaunch: DesktopRendererWorkerLaunch? = nil
+        var rendererReplacementProvider: DesktopRendererWorkerReplacementProvider? = nil
     }
 
     @MainActor
@@ -85,6 +86,42 @@ enum DoryPCMode {
 
     @MainActor
     private final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
+
+        private final class RendererWorkerLaunchStore: @unchecked Sendable {
+            private let lock = NSLock()
+            private var stored: DesktopRendererWorkerLaunch?
+
+            init(_ launch: DesktopRendererWorkerLaunch?) {
+                stored = launch
+            }
+
+            func current() -> DesktopRendererWorkerLaunch? { lock.withLock { stored } }
+
+            func current(matchingWorkerGeneration workerGeneration: UInt64) -> DesktopRendererWorkerLaunch? {
+                lock.withLock {
+                    guard stored?.workerGeneration.rawValue == workerGeneration else { return nil }
+                    return stored
+                }
+            }
+
+            func replace(_ launch: DesktopRendererWorkerLaunch) {
+                lock.withLock { stored = launch }
+            }
+
+            func retire(matchingWorkerGeneration workerGeneration: UInt64) -> DesktopRendererWorkerLaunch? {
+                lock.withLock {
+                    guard stored?.workerGeneration.rawValue == workerGeneration else { return nil }
+                    let launch = stored
+                    stored = nil
+                    return launch
+                }
+            }
+
+            func teardown(reason: String) {
+                lock.withLock { stored }?.teardown(reason: reason)
+            }
+        }
+
         private final class FirstFrameRelay: @unchecked Sendable {
             private let lock = NSLock()
             private var delivered = false
@@ -254,15 +291,17 @@ enum DoryPCMode {
             private var published = false
             private var presentationReady = false
             private var rendererPresentationReady: Bool
+            private var rendererPresentationGeneration: UInt64?
             private var guestServicesReady: Bool
-            private let publishOperation: @Sendable () throws -> Void
+            private let publishOperation: @Sendable (UInt64?) throws -> Void
 
             init(
                 requiresGuestServices: Bool,
                 requiresRendererPresentation: Bool = false,
-                _ publishOperation: @escaping @Sendable () throws -> Void
+                _ publishOperation: @escaping @Sendable (UInt64?) throws -> Void
             ) {
                 rendererPresentationReady = !requiresRendererPresentation
+                rendererPresentationGeneration = nil
                 guestServicesReady = !requiresGuestServices
                 self.publishOperation = publishOperation
             }
@@ -271,8 +310,22 @@ enum DoryPCMode {
                 try markReady { presentationReady = true }
             }
 
-            func markRendererPresentationReady() throws {
-                try markReady { rendererPresentationReady = true }
+            func prepareRendererPresentation(workerGeneration: UInt64) {
+                lock.withLock {
+                    published = false
+                    rendererPresentationReady = false
+                    rendererPresentationGeneration = workerGeneration
+                }
+            }
+
+            func markRendererPresentationReady(workerGeneration: UInt64) throws {
+                try markReady {
+                    if rendererPresentationGeneration == nil {
+                        rendererPresentationGeneration = workerGeneration
+                    }
+                    guard rendererPresentationGeneration == workerGeneration else { return }
+                    rendererPresentationReady = true
+                }
             }
 
             func markGuestServicesReady() throws {
@@ -280,20 +333,23 @@ enum DoryPCMode {
             }
 
             private func markReady(_ mutation: () -> Void) throws {
-                let shouldPublish = lock.withLock { () -> Bool in
+                let publicationGeneration = lock.withLock { () -> UInt64?? in
                     mutation()
-                    guard !published else { return false }
+                    guard !published else { return nil }
                     guard presentationReady, rendererPresentationReady, guestServicesReady else {
-                        return false
+                        return nil
                     }
                     published = true
-                    return true
+                    return .some(rendererPresentationGeneration)
                 }
-                guard shouldPublish else { return }
+                guard let publicationGeneration else { return }
                 do {
-                    try publishOperation()
+                    try publishOperation(publicationGeneration)
                 } catch {
-                    lock.withLock { published = false }
+                    lock.withLock {
+                        guard rendererPresentationGeneration == publicationGeneration else { return }
+                        published = false
+                    }
                     throw error
                 }
             }
@@ -321,7 +377,8 @@ enum DoryPCMode {
         private let pointerInput: DoryPCDesktopInputSink
         private let displaySink: DoryPCSoftwareDisplaySink?
         private let gpuAccelerationAuthority: DoryPCVirGLRendererAuthority?
-        private let rendererWorkerLaunch: DesktopRendererWorkerLaunch?
+        private let rendererWorkerLaunchStore: RendererWorkerLaunchStore
+        private let rendererReplacementProvider: DesktopRendererWorkerReplacementProvider?
         private let cameraBridge: DoryPCCameraBridge?
         private let audioBackend: DoryPCMacAudioBackend?
         private let usbControlHandler: DoryPCUSBControlHandler?
@@ -330,6 +387,7 @@ enum DoryPCMode {
         private let window: NSWindow?
         private let readyPublisher: ReadyPublisher
         private var executionThread: Thread?
+        private var rendererResetGeneration: UInt64 = 0
         private let signalQueue = DispatchQueue(
             label: "dev.dory.dory-hv.dorypc.signals",
             qos: .userInitiated
@@ -360,7 +418,8 @@ enum DoryPCMode {
                     "DoryPC software graphics must not receive renderer authority"
                 )
             }
-            self.rendererWorkerLaunch = rendererWorkerLaunch
+            rendererWorkerLaunchStore = RendererWorkerLaunchStore(rendererWorkerLaunch)
+            rendererReplacementProvider = configuration.rendererReplacementProvider
             let devices = envelope.devices
             guard devices.networkAttachment != .bridged else {
                 throw VMError.invalidConfiguration(
@@ -449,6 +508,7 @@ enum DoryPCMode {
 
             let mailbox = devices.displays.isEmpty ? nil : DesktopFrameMailbox(scanoutID: 0)
             self.mailbox = mailbox
+            let readyRendererWorkerLaunchStore = rendererWorkerLaunchStore
             let readyPublisher = ReadyPublisher(
                 // DoryPC-v1 boots user-supplied Linux media. The VirtIO display is part of the
                 // machine contract, but a Dory guest agent is not. Agent-backed conveniences may
@@ -456,7 +516,7 @@ enum DoryPCMode {
                 // publishing readiness or completing its first disk-boot proof.
                 requiresGuestServices: false,
                 requiresRendererPresentation: rendererWorkerLaunch != nil
-            ) {
+            ) { admittedRendererGeneration in
                 let graphics: DoryRuntimeGraphicsSelection?
                 switch envelope.graphics {
                 case .software:
@@ -466,7 +526,10 @@ enum DoryPCMode {
                         planRevision: envelope.planRevision
                     )
                 case .hardwareAccelerated3D:
-                    guard let rendererWorkerLaunch else {
+                    guard let rendererGeneration = admittedRendererGeneration,
+                          let rendererWorkerLaunch = readyRendererWorkerLaunchStore.current(
+                              matchingWorkerGeneration: rendererGeneration
+                          ) else {
                         throw VMError.invalidConfiguration(
                             "DoryPC accelerated readiness is missing renderer authority"
                         )
@@ -477,7 +540,7 @@ enum DoryPCMode {
                         planRevision: envelope.planRevision,
                         accelerationLevel: .hardwareAccelerated3D,
                         backend: .virgl,
-                        rendererGeneration: rendererWorkerLaunch.workerGeneration.rawValue,
+                        rendererGeneration: rendererGeneration,
                         rendererWorkerReceiptSHA256:
                             rendererWorkerLaunch.rendererWorkerReceiptSHA256,
                         guestProducerFenceProofSHA256:
@@ -724,38 +787,65 @@ enum DoryPCMode {
                 view.onMacShortcut = { [weak clipboard] event in
                     clipboard?.handleMacShortcut(event) ?? false
                 }
-                if let rendererWorkerLaunch {
+                if rendererWorkerLaunch != nil {
                     view.onDeviceFailure = {
                         [
                             rendererFailureRelay,
                             weak machineState,
-                            weak rendererWorkerLaunch,
+                            rendererWorkerLaunchStore,
                         ] reason in
+                        let rendererWorkerLaunch = rendererWorkerLaunchStore.current()
                         rendererWorkerLaunch?.failSynchronizedPresentation(reason)
                         rendererWorkerLaunch?.teardown(reason: reason)
                         rendererFailureRelay.report("Metal display failed closed: \(reason)")
                         machineState?.current().machine.powerController.request(.powerOff)
                     }
+                    view.onWorkerPresentationFailed = {
+                        [
+                            rendererFailureRelay,
+                            machineState,
+                            rendererWorkerLaunchStore,
+                        ] workerGeneration, reason in
+                        Task { @MainActor in
+                            Self.handleWorkerPresentationFailure(
+                                workerGeneration: workerGeneration,
+                                reason: "Metal display failed closed: \(reason)",
+                                rendererWorkerLaunchStore: rendererWorkerLaunchStore,
+                                rendererFailureRelay: rendererFailureRelay,
+                                machineState: machineState
+                            )
+                        }
+                    }
                     view.onWorkerPresentationCompleted = {
                         [
                             rendererFailureRelay,
                             readyPublisher,
-                            weak machineState,
-                            weak rendererWorkerLaunch,
+                            rendererWorkerLaunchStore,
+                            machineState,
                         ] workerGeneration in
                         do {
-                            rendererWorkerLaunch?.recordSynchronizedPresentation(
+                            guard let rendererWorkerLaunch = rendererWorkerLaunchStore
+                                .current(matchingWorkerGeneration: workerGeneration) else {
+                                return
+                            }
+                            rendererWorkerLaunch.recordSynchronizedPresentation(
                                 workerGeneration: workerGeneration
                             )
-                            try rendererWorkerLaunch?
+                            try rendererWorkerLaunch
                                 .claimSynchronizedPresentationForPublication()
-                            try readyPublisher.markRendererPresentationReady()
+                            try readyPublisher.markRendererPresentationReady(
+                                workerGeneration: workerGeneration
+                            )
                         } catch {
-                            let reason = "renderer presentation failed closed: \(error)"
-                            rendererWorkerLaunch?.failSynchronizedPresentation(reason)
-                            rendererWorkerLaunch?.teardown(reason: reason)
-                            rendererFailureRelay.report(reason)
-                            machineState?.current().machine.powerController.request(.powerOff)
+                            Task { @MainActor in
+                                Self.handleWorkerPresentationFailure(
+                                    workerGeneration: workerGeneration,
+                                    reason: "renderer presentation failed closed: \(error)",
+                                    rendererWorkerLaunchStore: rendererWorkerLaunchStore,
+                                    rendererFailureRelay: rendererFailureRelay,
+                                    machineState: machineState
+                                )
+                            }
                         }
                     }
                 }
@@ -1005,10 +1095,22 @@ enum DoryPCMode {
                         let filesystemFunctions = try filesystemRuntime?
                             .replaceAfterMachineReset() ?? []
                         if let gpuAccelerationAuthority,
-                           !gpuAccelerationAuthority.canBackReplacementMachineAfterReset {
-                            throw VMError.bootFailure(
-                                "DoryPC accelerated graphics reset revoked the renderer worker; a fresh signed renderer generation is required"
+                           !gpuAccelerationAuthority.canBackReplacementMachineAfterReset
+                        {
+                            guard let rendererReplacementProvider,
+                                  let previousRendererWorkerLaunch = rendererWorkerLaunchStore.current() else {
+                                throw VMError.bootFailure(
+                                    "DoryPC accelerated graphics reset revoked the renderer worker; a fresh signed renderer generation is required"
+                                )
+                            }
+                            scheduleRendererReplacementReset(
+                                provider: rendererReplacementProvider,
+                                previousLaunch: previousRendererWorkerLaunch,
+                                gpuAccelerationAuthority: gpuAccelerationAuthority,
+                                vsockPCI: vsockPCI,
+                                filesystemFunctions: filesystemFunctions
                             )
+                            return
                         }
                         let replacement = try configuration.authority.makeMachine(
                             displaySink: displaySink,
@@ -1018,17 +1120,7 @@ enum DoryPCMode {
                             networkBackend: networkBackend,
                             additionalPCIFunctions: [vsockPCI] + filesystemFunctions
                         )
-                        try usbControlHandler?.replaceController(replacement.xhciController)
-                        try cameraBridge?.attach(to: replacement.xhciController)
-                        if configuration.envelope.devices.networkAttachment == .disconnected {
-                            _ = replacement.networkDevice.setLinkUp(false)
-                        }
-                        keyboardInput.replaceDevice(replacement.keyboardDevice)
-                        pointerInput.replaceDevice(replacement.tabletDevice)
-                        guard machineState.replace(replacement) else {
-                            finish(nil)
-                            return
-                        }
+                        guard try installReplacementMachine(replacement) else { return }
                     case .poweredOff:
                         if let failure = filesystemFailureRelay.failure
                             ?? rendererFailureRelay.failure {
@@ -1091,6 +1183,87 @@ enum DoryPCMode {
             } catch {
                 finish(error)
             }
+        }
+
+
+        private nonisolated func scheduleRendererReplacementReset(
+            provider: DesktopRendererWorkerReplacementProvider,
+            previousLaunch: DesktopRendererWorkerLaunch,
+            gpuAccelerationAuthority: DoryPCVirGLRendererAuthority,
+            vsockPCI: DoryPCVirtioVsockPCIDevice,
+            filesystemFunctions: [any DoryPCPCIFunction]
+        ) {
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                guard rendererWorkerLaunchStore.retire(
+                    matchingWorkerGeneration: previousLaunch.workerGeneration.rawValue
+                ) != nil else {
+                    return
+                }
+                rendererResetGeneration &+= 1
+                let generation = rendererResetGeneration
+                do {
+                    let replacementLaunch = try await provider.prepareReplacement(after: previousLaunch)
+                    guard rendererResetGeneration == generation, !machineState.isStopping else {
+                        previousLaunch.teardown(reason: "stale renderer reset generation")
+                        replacementLaunch.teardown(reason: "stale renderer reset generation")
+                        return
+                    }
+                    try gpuAccelerationAuthority.installReplacementAfterReset(
+                        lane: replacementLaunch.commandLane
+                    )
+                    previousLaunch.teardown(reason: "renderer generation replaced after guest reset")
+                    rendererWorkerLaunchStore.replace(replacementLaunch)
+                    readyPublisher.prepareRendererPresentation(
+                        workerGeneration: replacementLaunch.workerGeneration.rawValue
+                    )
+                    let replacement = try configuration.authority.makeMachine(
+                        displaySink: displaySink,
+                        gpuAccelerationAuthority: gpuAccelerationAuthority,
+                        soundBackend: audioBackend ?? DoryVirtioInMemorySoundBackend(),
+                        networkBackend: networkBackend,
+                        additionalPCIFunctions: [vsockPCI] + filesystemFunctions
+                    )
+                    guard try installReplacementMachine(replacement) else { return }
+                    startExecution()
+                } catch {
+                    previousLaunch.teardown(reason: "renderer replacement failed: \(error)")
+                    finish(error)
+                }
+            }
+        }
+
+        @MainActor
+        private static func handleWorkerPresentationFailure(
+            workerGeneration: UInt64,
+            reason: String,
+            rendererWorkerLaunchStore: RendererWorkerLaunchStore,
+            rendererFailureRelay: FailureRelay,
+            machineState: MachineState
+        ) {
+            guard let rendererWorkerLaunch = rendererWorkerLaunchStore
+                .current(matchingWorkerGeneration: workerGeneration) else {
+                return
+            }
+            rendererWorkerLaunch.failSynchronizedPresentation(reason)
+            rendererWorkerLaunch.teardown(reason: reason)
+            rendererFailureRelay.report(reason)
+            machineState.current().machine.powerController.request(.powerOff)
+        }
+
+        private nonisolated func installReplacementMachine(_ replacement: DoryPCUEFIMachine) throws -> Bool {
+            try usbControlHandler?.replaceController(replacement.xhciController)
+            try cameraBridge?.attach(to: replacement.xhciController)
+            if configuration.envelope.devices.networkAttachment == .disconnected {
+                _ = replacement.networkDevice.setLinkUp(false)
+            }
+            keyboardInput.replaceDevice(replacement.keyboardDevice)
+            pointerInput.replaceDevice(replacement.tabletDevice)
+            guard machineState.replace(replacement) else {
+                finish(nil)
+                return false
+            }
+            return true
         }
 
         private nonisolated func finish(_ error: Error?) {
@@ -1164,6 +1337,7 @@ enum DoryPCMode {
             networkRuntime?.stop()
             cameraBridge?.stop()
             audioBackend?.reset()
+            rendererWorkerLaunchStore.teardown(reason: "DoryPC renderer launch teardown")
             serialInput.stop()
             _ = serialOutput.stop()
             try? serialLog.close()

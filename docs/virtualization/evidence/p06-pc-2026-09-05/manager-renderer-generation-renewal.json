@@ -1,0 +1,61 @@
+{
+  "scope": "PC hardware-3D renderer generation renewal through MachineManager with production envelope/reconnect path and DEBUG injected child code validator for unsigned SwiftPM helper fixture",
+  "sourceRoot": "${HOME}/Projects/Dory",
+  "frozenWorktree": "${HOME}/.dory/qualification/renderer-reset-20260905/frozen-reset-manager-223900",
+  "ownedFiles": {
+    "Packages/ContainerizationEngine/Sources/dory-hv/DesktopRendererWorkerLaunch.swift": "3dbdd6e442897a93adf70fc12f16b072e731ce7f28c2c2fcf5af9a9bad827a8f",
+    "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift": "b2c5c21452b1195924dbdf5203c7b9f66019a19fab70bd69d8a337aa2a4dd012",
+    "Packages/ContainerizationEngine/Sources/dory-hv/main.swift": "601ece69cfb4567ca59ed9f2cf7e8828d14561800c102def02ed09f8778a241b",
+    "dory-core-swift/Sources/DorydKit/HvProcess.swift": "aa6a34fd84b833c215b70366a628a93610249f8369a45cbf136311817e4d0919",
+    "dory-core-swift/Sources/DorydKit/MachineManager.swift": "b6ad1f281b27ecd9f2dbb4f519c011fb524c2b26dc4be9c7d239c221815691fc",
+    "dory-core-swift/Tests/DorydKitTests/DoryRuntimeReconnectTests.swift": "fa286cdaecb2aeeadac54852245bbbc10912c7e402f7504969369157bb64007c",
+    "dory-core-swift/Tests/DorydKitTests/MachineManagerResolvedPlanIntegrationTests.swift": "6920ae459ed6b2b3a90d77577aa0458d413364748f90a0666f3f2b425be2ef1d"
+  },
+  "validation": [
+    {
+      "name": "manager renderer renewal frozen33",
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer xcrun swift test --package-path $FROZEN_WORKTREE/dory-core-swift --filter MachineManagerResolvedPlanIntegrationTests/resolvedHardware3DReadinessRenewsRendererGenerationThroughManager",
+      "log": "${HOME}/.dory/qualification/renderer-reset-20260905/machine-manager-renderer-renewal-frozen33.log",
+      "sha256": "776db3cea44a3c746cad6280fbf871891d740b74bdc85f928e83a828c0f69dea",
+      "result": "PASS, 1 Swift Testing case, 1.076s test duration"
+    },
+    {
+      "name": "runtime reconnect focused",
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer xcrun swift test --package-path $FROZEN_WORKTREE/dory-core-swift --filter DoryRuntimeReconnectTests",
+      "log": "${HOME}/.dory/qualification/renderer-reset-20260905/runtime-reconnect-renewal-focused9.log",
+      "sha256": "8f9edd9f4c4a89a228f7f36aced95d76dd9b022bab49d73d67765ae6f2c363e2",
+      "result": "PASS, 8 XCTest cases, 0.190s"
+    },
+    {
+      "name": "dory-hv target build",
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer xcrun swift build --package-path Packages/ContainerizationEngine --target dory-hv",
+      "log": "${HOME}/.dory/qualification/renderer-reset-20260905/dory-hv-reset-owner-build16.log",
+      "sha256": "ac8f93522dc9ca456134007a7e86cee04c52e0aa12e6245c0515dc77233a8664",
+      "result": "PASS"
+    },
+    {
+      "name": "HvProcess lifecycle focused after generation-server lifetime split",
+      "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer xcrun swift test --package-path $FROZEN_WORKTREE/dory-core-swift --filter HvProcessTests",
+      "log": "${HOME}/.dory/qualification/renderer-reset-20260905/hvprocess-focused-after-generation-server-lifetime.log",
+      "sha256": "a41547ced7d1fdd5e44d77061d7bc32bb495902bc9663677af0d2951a29ca9c9",
+      "result": "PASS, 27 XCTest cases, 3.772s"
+    }
+  ],
+  "failureBoundariesResolved": [
+    {
+      "log": "${HOME}/.dory/qualification/renderer-reset-20260905/machine-manager-renderer-renewal-frozen29.log",
+      "failure": "inherited descriptors do not match the runtime launch envelope",
+      "cause": "PC hardware-3D launch transferred renderer bootstrap after the UEFI variable-store directory, while the immutable PC envelope declares renderer bootstrap before inherited directory descriptors. Transfer order now matches envelope order."
+    },
+    {
+      "log": "${HOME}/.dory/qualification/renderer-reset-20260905/machine-manager-renderer-renewal-frozen32.log",
+      "failure": "renderer generation renewal fixture failed: Dory application launch connect: No such file or directory",
+      "cause": "HvProcess.disableRestarts closed the renderer generation handoff server together with one-shot inherited descriptors immediately after initial readiness. It now keeps the long-lived generation server until terminal process cleanup."
+    }
+  ],
+  "limitations": [
+    "The manager integration test injects a DEBUG launch-gated child code validator because the fixture launches a SwiftPM-built helper with synthetic renderer release hashes. Production HvProcess dynamic SecCode validation remains unchanged and is not claimed by this fixture.",
+    "This is a manager/runner/reset protocol qualification. It is not a physical guest Metal workload proof.",
+    "Delayed Metal callbacks and a physical guest reset remain unqualified by these fixture/build checks."
+  ]
+}

@@ -1,6 +1,7 @@
 import CryptoKit
 import Darwin
 import DoryCore
+import DoryFirmware
 import DoryOperations
 import DoryRendererWorkerWireContracts
 import DoryVMContracts
@@ -620,7 +621,6 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 plans: plans,
                 expectedPlanRevision: { _ in 1 }
             )
-
             let starting = try manager.start(id: "dev")
             let selection = try graphicsSelection(
                 plan: plans.read(id: "dev"),
@@ -690,7 +690,6 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 plans: plans,
                 expectedPlanRevision: { _ in 1 }
             )
-
             let starting = try manager.start(id: "dev")
             let selection = try graphicsSelection(
                 plan: plans.read(id: "dev"),
@@ -725,6 +724,204 @@ struct MachineManagerResolvedPlanIntegrationTests {
             #expect(result.attempted)
             #expect(result.synced)
             #expect(clock.syncs == [1_234_500_000_000])
+        }
+    }
+
+    @Test("resolved RawHV hardware-3D readiness renews renderer generation through MachineManager")
+    func resolvedHardware3DReadinessRenewsRendererGenerationThroughManager() throws {
+        let renewalFile = "/private/tmp/dory-rg-renewal-\(UUID().uuidString).json"
+        let renewalOutcomeFile = renewalFile + ".outcome"
+        defer {
+            try? FileManager.default.removeItem(atPath: renewalFile)
+            try? FileManager.default.removeItem(atPath: renewalOutcomeFile)
+        }
+        try withHarness(
+            "resolved-renderer-renewal",
+            admittedDesktopFixture: true,
+            guestArchitecture: .x86_64,
+            bootMode: .efi,
+            includeInstallerFixture: true,
+            includePCFirmwareFixture: true,
+            requiresReadyHandoff: true,
+            useShortStatePath: true,
+            authenticatedRuntime: true,
+            authenticatedRuntimeEnvironment: [
+                "DORY_RECONNECT_TEST_RENDERER_RENEWAL_FILE": renewalFile,
+            ],
+            initialEnvironment: [
+                DoryDesktopVMMPreference.environmentKey:
+                    DoryDesktopVMMPreference.accelerated.rawValue,
+                DoryDesktopGraphicsPreference.environmentKey:
+                    DoryDesktopGraphicsPreference.virglVenus.rawValue,
+            ]
+        ) { manager, starter, state in
+            let plans = MutablePlanStore()
+            let operations = manager.resolvedLaunchCompatibilityOperations(
+                for: .doryHypervisor
+            )
+            let registry = try rawRegistry(operations: operations)
+            let rendererReleaseIdentity = try rendererReleaseIdentityFixture()
+            let launchValidator = AcceptingLaunchGatedChildCodeValidator()
+            manager.installLaunchGatedChildCodeValidatorForTesting(launchValidator)
+            let resolver = ClosureLaunchResolver { request in
+                let resolution = try exactResolution(
+                    request: request,
+                    rendererReleaseIdentity: rendererReleaseIdentity,
+                    graphics: .hardwareAccelerated3D
+                )
+                plans.set(resolution.resolvedPlan)
+                return resolution
+            }
+            try manager.installResolvedLaunchInfrastructure(
+                registry: registry,
+                resolver: resolver,
+                plans: plans,
+                expectedPlanRevision: { _ in 1 }
+            )
+            manager.installRendererBootstrapQualificationLoaderForTesting { contract in
+                #expect(contract == .doryPCX8664LinuxVirGL2PrepareFBV1)
+                return try pcVirGL2RendererQualificationFixture()
+            }
+            let firmware = try DoryARMVirtFirmwareBundle(directory: state + "/pc-firmware")
+                .loadVerified(expectedPlatform: .pcV1)
+            #expect(firmware.manifest.platform == .pcV1)
+
+            let starting = try manager.start(id: "dev")
+            let operationID = try #require(starting.activeOperationID)
+            let plan = try plans.read(id: "dev")
+            let planDigest = try planSHA256(plan)
+            let recordBeforeReady = try DoryRuntimeReconnectRecordStore(root: state)
+                .read(machineID: "dev")
+            #expect(recordBeforeReady.state == .pending)
+            #expect(recordBeforeReady.launchIdentity.operationID == operationID)
+            #expect(recordBeforeReady.launchIdentity.resolvedPlanSHA256 == planDigest)
+            #expect(recordBeforeReady.launchIdentity.planRevision == plan.planRevision)
+            let initialSelection = try graphicsSelection(
+                plan: plan,
+                operationID: operationID
+            )
+            try sendVmmHandoff(
+                path: try #require(starting.handoffSocketPath),
+                ready: VmmReadyMessage(
+                    machineID: "dev",
+                    operationID: operationID,
+                    agentBuild: "dory-agent/renderer-generation-renewal",
+                    agentProtocolVersion: DoryCore.protocolVersion(),
+                    agentCapabilities: [
+                        DoryAgentCapability(id: "renderer-generation-renewal", version: 1),
+                    ],
+                    agentSocketPath: "/run/dory-agent.sock",
+                    dockerdSocketPath: "/run/dockerd.sock",
+                    shellSocketPath: "/run/dory-shell.sock",
+                    controlSocketPath: try authenticatedControlSocket(state: state),
+                    graphicsSelection: initialSelection,
+                    guestBooted: true,
+                    toolsConnected: true,
+                    desktopVisible: true,
+                    workloadReady: true,
+                    detail: "initial hardware-3D ready"
+                ),
+                fileDescriptors: []
+            )
+            let runningDeadline = Date().addingTimeInterval(5)
+            while manager.status(id: "dev")?.state == .starting, Date() < runningDeadline {
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            let running = try #require(manager.status(id: "dev"))
+            #expect(running.state == .running)
+            #expect(running.runtimeGraphicsSelection?.rendererGeneration == 1)
+            #expect(starter.count == 1)
+            let validatedIdentities = launchValidator.identities
+            #expect(validatedIdentities == [
+                DoryLiveRunnerCodeIdentity(
+                    codeDirectoryHash: rendererReleaseIdentity.runnerCodeDirectoryHash
+                ),
+            ])
+
+            let arguments = try #require(starter.lastArguments)
+            func value(after flag: String) throws -> String {
+                let index = try #require(arguments.firstIndex(of: flag))
+                let valueIndex = arguments.index(after: index)
+                return try #require(
+                    arguments.indices.contains(valueIndex) ? arguments[valueIndex] : nil,
+                    "missing value after \(flag) in launched helper arguments"
+                )
+            }
+            let handoffPath = try value(after: "--renderer-generation-handoff-sock")
+            let handoffToken = try value(after: "--renderer-generation-handoff-token")
+            let instruction = RendererGenerationRenewalFixtureInstruction(
+                generationHandoffPath: handoffPath,
+                generationHandoffToken: handoffToken,
+                readinessHandoffPath: try #require(starting.handoffSocketPath),
+                machineID: "dev",
+                operationID: operationID,
+                resolvedPlanSHA256: planDigest,
+                planRevision: plan.planRevision,
+                previousRendererGeneration: 1,
+                requestedRendererGeneration: 2,
+                guestProducerFenceProofSHA256: digest("9"),
+                outcomePath: renewalOutcomeFile
+            )
+            try JSONEncoder().encode(instruction).write(
+                to: URL(fileURLWithPath: renewalFile),
+                options: .atomic
+            )
+
+            let renewalDeadline = Date().addingTimeInterval(5)
+            var renewedStatus: DoryMachineStatus?
+            while Date() < renewalDeadline {
+                let status = manager.status(id: "dev")
+                if status?.runtimeGraphicsSelection?.rendererGeneration == 2 {
+                    renewedStatus = status
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.01)
+            }
+            let renewalOutcome = (try? String(contentsOfFile: renewalOutcomeFile, encoding: .utf8))
+                ?? "missing renewal outcome"
+            let renewed = try #require(renewedStatus, "renewal outcome: \(renewalOutcome)")
+            #expect(renewed.state == .running)
+            #expect(renewed.runtimeGraphicsSelection?.accelerationLevel == .hardwareAccelerated3D)
+            #expect(renewed.runtimeGraphicsSelection?.backend == .virgl)
+            #expect(renewed.runtimeGraphicsSelection?.rendererGeneration == 2)
+            #expect(renewed.runtimeGraphicsSelection?.guestProducerFenceProofSHA256 == digest("9"))
+            #expect(renewed.agentBuild == "dory-agent/renderer-generation-renewal")
+            #expect(renewed.agentSocketPath == "/run/dory-agent.sock")
+            #expect(renewed.dockerdSocketPath == "/run/dockerd.sock")
+            #expect(renewed.shellSocketPath == "/run/dory-shell.sock")
+            #expect(renewed.readiness.guestBooted)
+            #expect(renewed.readiness.toolsConnected)
+            #expect(renewed.readiness.desktopVisible)
+            #expect(renewed.readiness.workloadReady)
+
+            let record = try DoryRuntimeReconnectRecordStore(root: state).read(machineID: "dev")
+            let ready = try #require(record.readiness)
+            #expect(ready.graphicsSelection == renewed.runtimeGraphicsSelection)
+            #expect(ready.agentBuild == "dory-agent/renderer-generation-renewal")
+            #expect(ready.agentSocketPath == "/run/dory-agent.sock")
+
+            try sendVmmHandoff(
+                path: try #require(starting.handoffSocketPath),
+                ready: VmmReadyMessage(
+                    machineID: "dev",
+                    operationID: operationID,
+                    controlSocketPath: renewed.controlSocketPath,
+                    graphicsSelection: DoryRuntimeGraphicsSelection(
+                        operationID: operationID,
+                        resolvedPlanSHA256: planDigest,
+                        planRevision: plan.planRevision,
+                        accelerationLevel: .hardwareAccelerated3D,
+                        backend: .virglVenus,
+                        rendererGeneration: 2,
+                        rendererWorkerReceiptSHA256: digest("a"),
+                        guestProducerFenceProofSHA256: digest("b")
+                    )
+                ),
+                fileDescriptors: []
+            )
+            Thread.sleep(forTimeInterval: 0.05)
+            #expect(manager.status(id: "dev")?.runtimeGraphicsSelection == renewed.runtimeGraphicsSelection)
+            #expect(try DoryRuntimeReconnectRecordStore(root: state).read(machineID: "dev") == record)
         }
     }
 
@@ -2775,11 +2972,17 @@ struct MachineManagerResolvedPlanIntegrationTests {
         launchPolicy: DoryMachineLaunchPolicy = .requireResolvedPlan,
         acceleratedExecutablePath: String? = "/bin/sh",
         passMachineArguments: Bool = true,
+        guestArchitecture: DoryGuestArchitecture? = nil,
+        bootMode: DoryMachineBootMode = .linuxKernel,
+        includeInstallerFixture: Bool = false,
+        includePCFirmwareFixture: Bool = false,
         requiresReadyHandoff: Bool = false,
         useShortStatePath: Bool = false,
         authenticatedRuntime: Bool = false,
+        authenticatedRuntimeEnvironment: [String: String] = [:],
         injectStateBroker: Bool = true,
         initialEnvironment: [String: String] = [:],
+        typedSettings: DoryMachineTypedSettingsPatch? = nil,
         usbController: any DoryMachineUSBControlling = UnixDoryMachineUSBController(),
         agentConnector: @escaping MachineManager.AgentConnector = { socketPath in
             try LocalAgentControl.connect(socketPath: socketPath)
@@ -2790,14 +2993,32 @@ struct MachineManagerResolvedPlanIntegrationTests {
         },
         _ body: (MachineManager, CountingProcessStarter, String) throws -> Void
     ) throws {
-        let state = stateDirectoryOverride ?? (useShortStatePath
-            ? "/private/tmp/dory-r-\(UUID().uuidString)"
-            : "/private/tmp/dory-resolved-start-\(label)-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(
-            atPath: state,
-            withIntermediateDirectories: false,
-            attributes: [.posixPermissions: 0o700]
-        )
+        let state: String
+        if let stateDirectoryOverride {
+            state = stateDirectoryOverride
+            try FileManager.default.createDirectory(
+                atPath: state,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+        } else if useShortStatePath {
+            let shortRoot = URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent(".dory", isDirectory: true)
+                .appendingPathComponent("qtest-\(UUID().uuidString.prefix(8))", isDirectory: true)
+            try FileManager.default.createDirectory(
+                at: shortRoot,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+            state = shortRoot.standardizedFileURL.path
+        } else {
+            state = "/private/tmp/dory-resolved-start-\(label)-\(UUID().uuidString)"
+            try FileManager.default.createDirectory(
+                atPath: state,
+                withIntermediateDirectories: false,
+                attributes: [.posixPermissions: 0o700]
+            )
+        }
         _ = chmod(state, mode_t(0o700))
         let stateBroker = injectStateBroker
             ? try DoryMachineStateBroker(canonicalStateRootPath: state)
@@ -2809,7 +3030,12 @@ struct MachineManagerResolvedPlanIntegrationTests {
             }
             let developerDirectory = ProcessInfo.processInfo.environment["DEVELOPER_DIR"]
                 .map { "DEVELOPER_DIR=" + shellQuote($0) + " " } ?? ""
+            let extraRuntimeEnvironment = authenticatedRuntimeEnvironment
+                .sorted { $0.key < $1.key }
+                .map { $0.key + "=" + shellQuote($0.value) + " " }
+                .joined()
             runtimeCommand = developerDirectory
+                + extraRuntimeEnvironment
                 + "DORY_RECONNECT_TEST_SOCKET=" + shellQuote(state + "/control.sock")
                 + " DORY_RECONNECT_TEST_FD=20 exec /usr/bin/xcrun xctest -XCTest "
                 + "DorydKitTests.DoryRuntimeReconnectTests/testReconnectSubprocessServer "
@@ -2817,19 +3043,26 @@ struct MachineManagerResolvedPlanIntegrationTests {
         } else {
             runtimeCommand = "exec /bin/sleep 30"
         }
+        let pcFirmwareBundlePath = includePCFirmwareFixture ? state + "/pc-firmware" : nil
+        if let pcFirmwareBundlePath {
+            try makePCFirmwareTestBundle(at: pcFirmwareBundlePath)
+        }
         let manager = MachineManager(
             diagnosticConfiguration: MachineManagerConfiguration(
                 vmmExecutablePath: "/bin/sh",
                 acceleratedDesktopExecutablePath: acceleratedExecutablePath,
+                pcFirmwareBundlePath: pcFirmwareBundlePath,
                 stateDirectory: state,
                 baseArguments: ["-c", runtimeCommand, "dory-test-runtime"],
                 acceleratedDesktopBaseArguments: [
                     "-c", runtimeCommand, "dory-test-runtime",
                 ],
                 passMachineArguments: passMachineArguments,
-                requiresReadyHandoff: requiresReadyHandoff
+                requiresReadyHandoff: requiresReadyHandoff,
+                guestArchitecture: guestArchitecture?.rawValue
             ),
             launchPolicy: launchPolicy,
+            allowsQualificationBootstrapLaunches: guestArchitecture == .x86_64,
             machineStateBroker: stateBroker,
             usbController: usbController,
             agentConnector: agentConnector,
@@ -2855,15 +3088,37 @@ struct MachineManagerResolvedPlanIntegrationTests {
         } else {
             rootfsPath = doryTestRootfsPath
         }
-        _ = try manager.stageMachineForBootstrap(DoryMachineConfiguration(
-            id: "dev",
-            kernelPath: doryTestKernelPath,
-            rootfsPath: rootfsPath,
-            memoryMB: admittedDesktopFixture ? 4_096 : 2_048,
-            cpuCount: 2,
-            displayMode: .desktop,
-            environment: initialEnvironment
-        ))
+        let installerPath: String?
+        if includeInstallerFixture {
+            let path = state + "/fixture-installer.iso"
+            var installerBytes = Data(repeating: 0, count: 512)
+            let marker = Array("EFI/BOOT/BOOTX64.EFI".utf8)
+            installerBytes.replaceSubrange(0..<marker.count, with: marker)
+            try installerBytes.write(to: URL(fileURLWithPath: path))
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: path
+            )
+            installerPath = path
+        } else {
+            installerPath = nil
+        }
+        _ = try manager.stageMachineForBootstrap(
+            DoryMachineConfiguration(
+                id: "dev",
+                guestArchitecture: guestArchitecture,
+                kernelPath: bootMode == .efi ? "" : doryTestKernelPath,
+                rootfsPath: rootfsPath,
+                bootMode: bootMode,
+                installerISOPath: installerPath,
+                diskSizeBytes: nil,
+                memoryMB: admittedDesktopFixture ? 4_096 : 2_048,
+                cpuCount: 2,
+                displayMode: .desktop,
+                environment: initialEnvironment
+            ),
+            typedSettings: typedSettings
+        )
         try body(manager, starter, state)
     }
 
@@ -2953,27 +3208,93 @@ struct MachineManagerResolvedPlanIntegrationTests {
         componentSHA256: String? = nil,
         bootArtifactSHA256: String? = nil,
         admissionEvidence: DoryResolvedMachineResourceAdmissionEvidence? = nil,
-        preSpawnRevalidation: @escaping @Sendable () throws -> Void = {}
+        preSpawnRevalidation: @escaping @Sendable () throws -> Void = {},
+        rendererReleaseIdentity: DoryRendererReleaseIdentityV1? = nil,
+        graphics: DoryGraphicsAccelerationLevel = .hostAcceleratedDisplay
     ) throws -> DoryDaemonVirtualMachineLaunchPlanResolution {
         let devices = DoryDaemonVirtualMachinePlanningCoordinator.devices(
             for: request.definition
         )
+        let selectedResources = DoryVMProductionResourceBudget.make(
+            guest: request.definition.guest,
+            graphics: DoryVMGraphicsPolicy(acceptableLevels: [graphics]),
+            displays: request.definition.displays,
+            shareCount: request.definition.shares.count,
+            virtualCPUCount: request.definition.resources.virtualCPUCount,
+            memoryBytes: request.definition.resources.memoryBytes,
+            diskBytes: request.definition.resources.diskBytes,
+            stagingBytes: request.definition.resources.stagingBytes
+        )
+        let pcUEFIInstaller = request.definition.guest.family == .linux
+            && request.definition.guest.architecture == .x86_64
+            && request.machine.bootMode == .efi
+            && request.machine.installerISOPath != nil
+        let bootReference = DoryVMResolverReference(
+            namespace: "machine",
+            identifier: pcUEFIInstaller ? "installer-media" : "dev-kernel"
+        )
         let definitionDigest = SHA256.hash(data: request.canonicalDefinitionData)
             .map { String(format: "%02x", $0) }.joined()
-        let artifact = try bootArtifactSHA256
-            ?? fileSHA256(path: request.machine.kernelPath)
+        let bootPath = pcUEFIInstaller
+            ? try #require(request.machine.installerISOPath)
+            : request.machine.kernelPath
+        let artifact = try bootArtifactSHA256 ?? fileSHA256(path: bootPath)
         let media = DoryBootMedia(
             kind: request.definition.boot.devices[0].kind,
             source: .userProvided,
             artifactSHA256: artifact
         )
-        let runtime = "raw-runtime-1"
         let launcherSHA256: String
         if let componentSHA256 {
             launcherSHA256 = componentSHA256
         } else {
             launcherSHA256 = try fileSHA256(path: "/bin/sh")
         }
+        let runtime = graphics == .hardwareAccelerated3D
+            ? "sha256:\(launcherSHA256)"
+            : "raw-runtime-1"
+        let pcRendererQualification = graphics == .hardwareAccelerated3D
+            ? try pcVirGL2RendererQualificationFixture()
+            : nil
+        let rendererAdmissionComponents: [DoryResolvedBackendComponentEvidence]
+        if let pcRendererQualification {
+            let admission = try DoryDaemonRendererAccelerationAdmission(
+                runtimeBuildIdentifier: runtime,
+                candidateInventory: pcRendererQualification.candidateInventorySHA256,
+                guestMesa: DoryRendererArtifactDigest(
+                    lowercaseSHA256: DoryRendererSourceTuple.guestMesaRuntimeSHA256,
+                    field: "guestMesa"
+                ),
+                rendererWorkerExecutable: pcRendererQualification.workerExecutableSHA256,
+                bootstrapQualification: pcRendererQualification.receiptSHA256
+            )
+            rendererAdmissionComponents = admission.qualifiedComponents.map {
+                DoryResolvedBackendComponentEvidence(
+                    componentIdentifier: $0.componentIdentifier,
+                    buildIdentifier: $0.buildIdentifier,
+                    artifactSHA256: $0.artifactSHA256
+                )
+            }
+        } else {
+            rendererAdmissionComponents = []
+        }
+        let backendComponents = (rendererAdmissionComponents + [DoryResolvedBackendComponentEvidence(
+            componentIdentifier: "dory-hv",
+            buildIdentifier: runtime,
+            artifactSHA256: launcherSHA256
+        )]).sorted { lhs, rhs in
+            lhs.componentIdentifier < rhs.componentIdentifier
+        }
+        let graphicsEvidence = DorySignedArtifactQualificationEvidence(
+            manifestIdentity: "graphics-qualification-1",
+            artifactSHA256: artifact,
+            manifestSHA256: digest("b"),
+            signingKeyID: "dory-release-1",
+            manifestFormatVersion: 1,
+            rendererGuestKernelSHA256: pcRendererQualification?.managedGuestKernelSHA256.lowercaseSHA256,
+            rendererGuestMesaSHA256: pcRendererQualification?.guestMesaSHA256.lowercaseSHA256,
+            rendererProducerFenceContract: pcRendererQualification?.producerFenceContract
+        )
         let plan = DoryResolvedMachinePlan(
             machineID: request.machine.id,
             definitionRevision: request.definition.lifecycle.revision,
@@ -2987,30 +3308,49 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 RawHVLinuxMachineBackend.backendDescriptor.implementationIdentifier,
             backendRuntimeBuildIdentifier: runtime,
             virtualHardwareABIVersion: request.definition.virtualHardwareABIVersion,
-            armVirtTopology: try DoryARMVirtV1TopologyPlanner.resolve(
-                definition: request.definition,
-                resolvedDevices: devices
-            ),
+            armVirtTopology: request.definition.guest.architecture == .x86_64
+                ? nil
+                : try DoryARMVirtV1TopologyPlanner.resolve(
+                    definition: request.definition,
+                    resolvedDevices: devices
+                ),
             bootMedia: DoryResolvedMachineBootMedia(
-                resolverReference: DoryVMResolverReference(
-                    namespace: "machine",
-                    identifier: "dev-kernel"
-                ),
-                media: media
+                resolverReference: bootReference,
+                media: media,
+                inspectionEvidence: pcUEFIInstaller
+                    ? DoryBootMediaInspectionAuditEvidence(
+                        inspectionIdentity: "fixture-installer-inspection-1",
+                        artifactSHA256: artifact,
+                        inspectionReportSHA256: digest("d"),
+                        inspectorID: "fixture-installer-inspector",
+                        inspectorVersion: 1,
+                        detectedArchitecture: .x86_64,
+                        detectedKind: .installerISO
+                    )
+                    : nil
             ),
-            launchArtifacts: resolvedBootLaunchArtifacts(
-                reference: DoryVMResolverReference(
-                    namespace: "machine", identifier: "dev-kernel"
+            launchArtifacts: pcUEFIInstaller
+                ? resolvedBootLaunchArtifacts(
+                    reference: bootReference,
+                    media: media,
+                    identifier: "installer-media"
+                ) + [
+                    resolvedMutableStorageLaunchArtifact(
+                        reference: DoryVMResolverReference(
+                            namespace: "machine",
+                            identifier: "system-disk"
+                        ),
+                        source: .userProvided,
+                        identifier: "system-disk"
+                    ),
+                ]
+                : resolvedBootLaunchArtifacts(
+                    reference: bootReference,
+                    media: media
                 ),
-                media: media
-            ),
-            components: [DoryResolvedBackendComponentEvidence(
-                componentIdentifier: "dory-hv",
-                buildIdentifier: runtime,
-                artifactSHA256: launcherSHA256
-            )],
+            components: backendComponents,
             devices: devices,
-            graphics: .hostAcceleratedDisplay,
+            graphics: graphics,
             portForwards: request.definition.portForwards,
             supportTier: .supported,
             selectionEvidence: DoryResolvedMachineBackendSelectionEvidence(
@@ -3018,7 +3358,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 plannerRequest: DoryVirtualMachineBackendPlanRequest(
                     guest: request.definition.guest,
                     bootMedia: media,
-                    acceptableGraphics: [.hostAcceleratedDisplay],
+                    acceptableGraphics: [graphics],
                     devices: devices,
                     virtualHardwareABIVersion:
                         request.definition.virtualHardwareABIVersion,
@@ -3029,17 +3369,12 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 rejectedCandidates: []
             ),
             qualificationEvidence: DoryResolvedMachineQualificationEvidence(
-                graphics: DorySignedArtifactQualificationEvidence(
-                    manifestIdentity: "graphics-qualification-1",
-                    artifactSHA256: artifact,
-                    manifestSHA256: digest("b"),
-                    signingKeyID: "dory-release-1",
-                    manifestFormatVersion: 1
-                ),
+                graphics: graphicsEvidence,
                 runtime: runtimeQualification(
                     guest: request.definition.guest,
                     media: media,
                     runtimeBuild: runtime,
+                    graphics: graphics,
                     devices: devices,
                     virtualHardwareABIVersion:
                         request.definition.virtualHardwareABIVersion
@@ -3047,7 +3382,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             ),
             resourceAdmission: admissionEvidence ?? resourceAdmission(
                 machine: request.machine,
-                diskBytes: request.definition.resources.diskBytes
+                diskBytes: selectedResources.diskBytes
             ),
             hostQualification: DoryResolvedHostQualificationEvidence(
                 qualificationIdentity: "host-qualification-1",
@@ -3060,7 +3395,10 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 qualifierIdentifier: "dory-host-qualifier",
                 qualifierVersion: 1
             ),
-            resources: request.definition.resources,
+            resources: selectedResources,
+            firmware: pcUEFIInstaller
+                ? try resolvedFirmwareTestArtifacts(platform: .pcV1).manifest
+                : nil,
             persistence: request.persistence
         )
         let validationIssues = plan.validate()
@@ -3106,10 +3444,14 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 capability: capability,
                 portForwards: request.definition.portForwards
             ),
-            preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization(
-                purpose: request.purpose,
-                revalidate: preSpawnRevalidation
-            )
+            preSpawnAuthorization: DoryDaemonVirtualMachinePreSpawnAuthorization
+                .resolvingLaunchAuthority(purpose: request.purpose) {
+                    try preSpawnRevalidation()
+                    if let rendererReleaseIdentity {
+                        return .rendererReleaseIdentity(rendererReleaseIdentity)
+                    }
+                    return .noRendererReleaseIdentityRequired
+                }
         )
     }
 
@@ -3117,6 +3459,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         guest: DoryGuestPlatform,
         media: DoryBootMedia,
         runtimeBuild: String,
+        graphics: DoryGraphicsAccelerationLevel,
         devices: DoryVirtualMachineDeviceCapabilityRequest,
         virtualHardwareABIVersion: UInt16
     ) -> DoryVirtualMachineRuntimeQualificationEvidence {
@@ -3131,7 +3474,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             backend: .doryHypervisor,
             backendRuntimeBuildID: runtimeBuild,
             virtualHardwareABIVersion: virtualHardwareABIVersion,
-            graphics: .hostAcceleratedDisplay,
+            graphics: graphics,
             devices: devices
         )
     }
@@ -3197,7 +3540,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 resolvedPlanSHA256: try planSHA256(plan),
                 planRevision: plan.planRevision,
                 accelerationLevel: .hardwareAccelerated3D,
-                backend: .virglVenus,
+                backend: .virgl,
                 rendererGeneration: 1,
                 rendererWorkerReceiptSHA256: digest("7"),
                 guestProducerFenceProofSHA256: digest("8")
@@ -3222,8 +3565,109 @@ struct MachineManagerResolvedPlanIntegrationTests {
         )
     }
 
+    private func makePCFirmwareTestBundle(at directory: String) throws {
+        try FileManager.default.createDirectory(
+            atPath: directory,
+            withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700]
+        )
+        _ = chmod(directory, mode_t(0o700))
+        let artifacts = try resolvedFirmwareTestArtifacts(platform: .pcV1)
+        let files: [(String, Data)] = [
+            (
+                DoryARMVirtFirmwareBundleLayout.manifest,
+                try JSONEncoder().encode(artifacts.manifest)
+            ),
+            (DoryARMVirtFirmwareBundleLayout.firmwareCode, artifacts.firmwareCode),
+            (
+                DoryARMVirtFirmwareBundleLayout.variableStoreTemplate,
+                artifacts.variableStoreTemplate
+            ),
+            (DoryARMVirtFirmwareBundleLayout.sbom, artifacts.sbom),
+        ]
+        for (name, data) in files {
+            let path = directory + "/" + name
+            try data.write(to: URL(fileURLWithPath: path))
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600],
+                ofItemAtPath: path
+            )
+        }
+    }
+
+    private func pcVirGL2RendererQualificationFixture() throws
+        -> DoryVerifiedRendererBootstrapQualification
+    {
+        let now = Date(timeIntervalSince1970: 1_788_048_000)
+        let bootstrap = try DoryRendererWorkerBootstrap(
+            workspaceID: DoryRendererWorkspaceID(
+                rawValue: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!
+            ),
+            generation: DoryRendererWorkerGeneration(rawValue: 7),
+            sourceTuple: .productionCandidate,
+            producerFenceContract: .doryPCX8664LinuxVirGL2PrepareFBV1,
+            requestedCapabilities: .pcVirGL2Acceleration,
+            artifacts: DoryRendererArtifactManifest(
+                candidateInventory: try rendererDigest("1"),
+                managedGuestKernel: try rendererDigest("8"),
+                guestMesa: try rendererDigest("9"),
+                rendererWorkerExecutable: try rendererDigest("2"),
+                rendererWorkerCodeDirectoryHash: try DoryCodeDirectoryHash(
+                    lowercaseHexadecimal: String(repeating: "ab", count: 20)
+                )
+            )
+        )
+        let liveReceipt = try DoryRendererCapabilityReceipt(
+            accepting: bootstrap,
+            features: .pcVirGL2Acceleration,
+            capsets: [
+                try DoryRendererCapsetAttestation(
+                    id: 2,
+                    maximumVersion: 2,
+                    data: Data("pc-virgl2-capset".utf8)
+                ),
+            ]
+        )
+        let receipt = try DoryVerifiedRendererBootstrapQualification.makeCandidateReceipt(
+            bootstrap: bootstrap,
+            liveReceipt: liveReceipt,
+            issuedAt: now.addingTimeInterval(-60),
+            expiresAt: now.addingTimeInterval(24 * 60 * 60)
+        )
+        return try DoryVerifiedRendererBootstrapQualification
+            .decodeDeveloperIDSignedCandidateForTesting(
+                receiptData: receipt,
+                now: now
+            )
+    }
+
+    private func rendererDigest(_ character: Character) throws -> DoryRendererArtifactDigest {
+        try DoryRendererArtifactDigest(lowercaseSHA256: digest(character))
+    }
+
     private func digest(_ character: Character) -> String {
         String(repeating: String(character), count: 64)
+    }
+}
+
+
+private final class AcceptingLaunchGatedChildCodeValidator:
+    DoryLaunchGatedChildCodeValidating,
+    @unchecked Sendable
+{
+    private let lock = NSLock()
+    private var storedIdentities: [DoryLiveRunnerCodeIdentity] = []
+
+    var identities: [DoryLiveRunnerCodeIdentity] {
+        lock.withLock { storedIdentities }
+    }
+
+    func validateLaunchGatedChild(
+        pid: pid_t,
+        expectedIdentity: DoryLiveRunnerCodeIdentity
+    ) throws {
+        #expect(pid > 0)
+        lock.withLock { storedIdentities.append(expectedIdentity) }
     }
 }
 
@@ -3258,6 +3702,7 @@ private final class CountingProcessStarter: @unchecked Sendable {
 
     private let lock = NSLock()
     private var starts = 0
+    private var arguments: [[String]] = []
     private let startImplementation: Start
 
     init(startImplementation: @escaping Start = { process in try process.start() }) {
@@ -3265,9 +3710,13 @@ private final class CountingProcessStarter: @unchecked Sendable {
     }
 
     var count: Int { lock.withLock { starts } }
+    var lastArguments: [String]? { lock.withLock { arguments.last } }
 
     func start(_ process: HvProcess) throws {
-        lock.withLock { starts += 1 }
+        lock.withLock {
+            starts += 1
+            arguments.append(process.launchArguments)
+        }
         try startImplementation(process)
     }
 }
