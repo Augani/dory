@@ -1025,8 +1025,9 @@ private final class DoryVZMacControlServer: @unchecked Sendable {
             devices: [DoryDeviceTelemetryDevice(
                 id: "vzmac-platform",
                 kind: .platform,
-                health: .healthy,
-                metrics: [.measured(.queueStateChanges, value: 0)]
+                health: .unavailable,
+                metrics: [.unavailable(.queueStateChanges,
+                    reason: "Virtualization.framework does not expose device queue counters")]
             )]
         )
     }
