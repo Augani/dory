@@ -1,0 +1,29 @@
+{
+  "kind": "pc-renderer-reset-lifecycle-regressions",
+  "baseCommit": "204a6505355b4fa2bf0269b52cbfd55db7e9cc24",
+  "sourceHashes": {
+    "Packages/ContainerizationEngine/Sources/dory-hv/DoryPCMode.swift": "42252e89fedee4c28a5c330a7b03806a06d9eb246ac5c53ac2168afe7a391414",
+    "Packages/ContainerizationEngine/Tests/DoryHVTests/DoryPCRendererResetLifecycleTests.swift": "9eddd570e2c7f591a13fbb09eefe84a8db9cd137a7ebe166c4f1fb42daf73fc7"
+  },
+  "validation": {
+    "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "isolatedSource": "${HOME}/.dory/qualification/renderer-reset-20260905/pcmode-reset-lifecycle-source-20260906002342",
+    "result": "5 tests passed",
+    "log": "${HOME}/.dory/qualification/renderer-reset-20260905/pcmode-reset-lifecycle-root-corrected.log",
+    "logSHA256": "ba1c92fb8eec51e8de0e6459323580aeb9878168ff73bc3d4f00be6cbc7a3477"
+  },
+  "negativeControl": {
+    "change": "Removed only catch-path generation equality guard in isolated ReadyPublisher. Restored afterwards.",
+    "result": "Regression failed with duplicate generation2 publication: [1,2,2] instead of [1,2].",
+    "log": "${HOME}/.dory/qualification/renderer-reset-20260905/pcmode-reset-lifecycle-root-negative.log",
+    "logSHA256": "733c32889c0fc356d44f5920f017398810688381f01e0c2c6d87ff9e7f572560"
+  },
+  "scope": [
+    "Production reset admission and readiness owner extracted for direct tests, without duplicate production state.",
+    "Duplicate reset admission, stale launch lookup, epoch replacement and stale publication failure covered."
+  ],
+  "limitations": [
+    "Does not execute physical Metal callback scheduling or a guest reset.",
+    "Renderer-enabled signed runner still requires static renderer tuple packaging."
+  ]
+}

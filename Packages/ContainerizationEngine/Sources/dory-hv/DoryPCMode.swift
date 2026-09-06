@@ -9,6 +9,146 @@ import DorydKit
 import DoryVMMKit
 import Foundation
 
+protocol DoryPCRendererGenerationLaunch: AnyObject, Sendable {
+    var doryPCWorkerGeneration: UInt64 { get }
+    func teardown(reason: String)
+}
+
+final class DoryPCRendererLaunchStore<Launch: DoryPCRendererGenerationLaunch>: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Launch?
+
+    init(_ launch: Launch?) {
+        stored = launch
+    }
+
+    func current() -> Launch? { lock.withLock { stored } }
+
+    func current(matchingWorkerGeneration workerGeneration: UInt64) -> Launch? {
+        lock.withLock {
+            guard stored?.doryPCWorkerGeneration == workerGeneration else { return nil }
+            return stored
+        }
+    }
+
+    func replace(_ launch: Launch) {
+        lock.withLock { stored = launch }
+    }
+
+    func retire(matchingWorkerGeneration workerGeneration: UInt64) -> Launch? {
+        lock.withLock {
+            guard stored?.doryPCWorkerGeneration == workerGeneration else { return nil }
+            let launch = stored
+            stored = nil
+            return launch
+        }
+    }
+
+    func teardown(reason: String) {
+        lock.withLock { stored }?.teardown(reason: reason)
+    }
+}
+
+struct DoryPCRendererReplacementResetTicket: Sendable {
+    let epoch: UInt64
+}
+
+@MainActor
+final class DoryPCRendererReplacementResetCoordinator<Launch: DoryPCRendererGenerationLaunch> {
+    private var resetGeneration: UInt64 = 0
+
+    func beginReset(
+        previousLaunch: Launch,
+        launchStore: DoryPCRendererLaunchStore<Launch>
+    ) -> DoryPCRendererReplacementResetTicket? {
+        guard launchStore.retire(
+            matchingWorkerGeneration: previousLaunch.doryPCWorkerGeneration
+        ) != nil else {
+            return nil
+        }
+        resetGeneration &+= 1
+        return DoryPCRendererReplacementResetTicket(epoch: resetGeneration)
+    }
+
+    func acceptsCompletion(_ ticket: DoryPCRendererReplacementResetTicket) -> Bool {
+        resetGeneration == ticket.epoch
+    }
+}
+
+final class DoryPCRendererReadyPublisher: @unchecked Sendable {
+    private let lock = NSLock()
+    private var published = false
+    private var presentationReady = false
+    private var rendererPresentationReady: Bool
+    private var rendererPresentationGeneration: UInt64?
+    private var guestServicesReady: Bool
+    private let publishOperation: @Sendable (UInt64?) throws -> Void
+
+    init(
+        requiresGuestServices: Bool,
+        requiresRendererPresentation: Bool = false,
+        _ publishOperation: @escaping @Sendable (UInt64?) throws -> Void
+    ) {
+        rendererPresentationReady = !requiresRendererPresentation
+        rendererPresentationGeneration = nil
+        guestServicesReady = !requiresGuestServices
+        self.publishOperation = publishOperation
+    }
+
+    func markPresentationReady() throws {
+        try markReady { presentationReady = true }
+    }
+
+    func prepareRendererPresentation(workerGeneration: UInt64) {
+        lock.withLock {
+            published = false
+            rendererPresentationReady = false
+            rendererPresentationGeneration = workerGeneration
+        }
+    }
+
+    func markRendererPresentationReady(workerGeneration: UInt64) throws {
+        try markReady {
+            if rendererPresentationGeneration == nil {
+                rendererPresentationGeneration = workerGeneration
+            }
+            guard rendererPresentationGeneration == workerGeneration else { return }
+            rendererPresentationReady = true
+        }
+    }
+
+    func markGuestServicesReady() throws {
+        try markReady { guestServicesReady = true }
+    }
+
+    private func markReady(_ mutation: () -> Void) throws {
+        let publicationGeneration = lock.withLock { () -> UInt64?? in
+            mutation()
+            guard !published else { return nil }
+            guard presentationReady, rendererPresentationReady, guestServicesReady else {
+                return nil
+            }
+            published = true
+            return .some(rendererPresentationGeneration)
+        }
+        guard let publicationGeneration else { return }
+        do {
+            try publishOperation(publicationGeneration)
+        } catch {
+            lock.withLock {
+                guard rendererPresentationGeneration == publicationGeneration else { return }
+                published = false
+            }
+            throw error
+        }
+    }
+}
+
+extension DesktopRendererWorkerLaunch: DoryPCRendererGenerationLaunch {
+    var doryPCWorkerGeneration: UInt64 { workerGeneration.rawValue }
+}
+
+
 enum DoryPCMode {
     /// A resolved device contract is launch authority, not a best-effort preference. Once a host
     /// device is requested, construction or attachment failure must abort the launch instead of
@@ -86,41 +226,6 @@ enum DoryPCMode {
 
     @MainActor
     private final class Controller: NSObject, NSApplicationDelegate, NSWindowDelegate {
-
-        private final class RendererWorkerLaunchStore: @unchecked Sendable {
-            private let lock = NSLock()
-            private var stored: DesktopRendererWorkerLaunch?
-
-            init(_ launch: DesktopRendererWorkerLaunch?) {
-                stored = launch
-            }
-
-            func current() -> DesktopRendererWorkerLaunch? { lock.withLock { stored } }
-
-            func current(matchingWorkerGeneration workerGeneration: UInt64) -> DesktopRendererWorkerLaunch? {
-                lock.withLock {
-                    guard stored?.workerGeneration.rawValue == workerGeneration else { return nil }
-                    return stored
-                }
-            }
-
-            func replace(_ launch: DesktopRendererWorkerLaunch) {
-                lock.withLock { stored = launch }
-            }
-
-            func retire(matchingWorkerGeneration workerGeneration: UInt64) -> DesktopRendererWorkerLaunch? {
-                lock.withLock {
-                    guard stored?.workerGeneration.rawValue == workerGeneration else { return nil }
-                    let launch = stored
-                    stored = nil
-                    return launch
-                }
-            }
-
-            func teardown(reason: String) {
-                lock.withLock { stored }?.teardown(reason: reason)
-            }
-        }
 
         private final class FirstFrameRelay: @unchecked Sendable {
             private let lock = NSLock()
@@ -286,75 +391,6 @@ enum DoryPCMode {
             var isStopping: Bool { lock.withLock { stopping } }
         }
 
-        private final class ReadyPublisher: @unchecked Sendable {
-            private let lock = NSLock()
-            private var published = false
-            private var presentationReady = false
-            private var rendererPresentationReady: Bool
-            private var rendererPresentationGeneration: UInt64?
-            private var guestServicesReady: Bool
-            private let publishOperation: @Sendable (UInt64?) throws -> Void
-
-            init(
-                requiresGuestServices: Bool,
-                requiresRendererPresentation: Bool = false,
-                _ publishOperation: @escaping @Sendable (UInt64?) throws -> Void
-            ) {
-                rendererPresentationReady = !requiresRendererPresentation
-                rendererPresentationGeneration = nil
-                guestServicesReady = !requiresGuestServices
-                self.publishOperation = publishOperation
-            }
-
-            func markPresentationReady() throws {
-                try markReady { presentationReady = true }
-            }
-
-            func prepareRendererPresentation(workerGeneration: UInt64) {
-                lock.withLock {
-                    published = false
-                    rendererPresentationReady = false
-                    rendererPresentationGeneration = workerGeneration
-                }
-            }
-
-            func markRendererPresentationReady(workerGeneration: UInt64) throws {
-                try markReady {
-                    if rendererPresentationGeneration == nil {
-                        rendererPresentationGeneration = workerGeneration
-                    }
-                    guard rendererPresentationGeneration == workerGeneration else { return }
-                    rendererPresentationReady = true
-                }
-            }
-
-            func markGuestServicesReady() throws {
-                try markReady { guestServicesReady = true }
-            }
-
-            private func markReady(_ mutation: () -> Void) throws {
-                let publicationGeneration = lock.withLock { () -> UInt64?? in
-                    mutation()
-                    guard !published else { return nil }
-                    guard presentationReady, rendererPresentationReady, guestServicesReady else {
-                        return nil
-                    }
-                    published = true
-                    return .some(rendererPresentationGeneration)
-                }
-                guard let publicationGeneration else { return }
-                do {
-                    try publishOperation(publicationGeneration)
-                } catch {
-                    lock.withLock {
-                        guard rendererPresentationGeneration == publicationGeneration else { return }
-                        published = false
-                    }
-                    throw error
-                }
-            }
-        }
-
         private let configuration: Configuration
         private let application = NSApplication.shared
         private let stateLock: EngineStateDirectoryLock
@@ -377,7 +413,7 @@ enum DoryPCMode {
         private let pointerInput: DoryPCDesktopInputSink
         private let displaySink: DoryPCSoftwareDisplaySink?
         private let gpuAccelerationAuthority: DoryPCVirGLRendererAuthority?
-        private let rendererWorkerLaunchStore: RendererWorkerLaunchStore
+        private let rendererWorkerLaunchStore: DoryPCRendererLaunchStore<DesktopRendererWorkerLaunch>
         private let rendererReplacementProvider: DesktopRendererWorkerReplacementProvider?
         private let cameraBridge: DoryPCCameraBridge?
         private let audioBackend: DoryPCMacAudioBackend?
@@ -385,9 +421,9 @@ enum DoryPCMode {
         private let usbControlServer: UsbControlServer?
         private let mailbox: DesktopFrameMailbox?
         private let window: NSWindow?
-        private let readyPublisher: ReadyPublisher
+        private let readyPublisher: DoryPCRendererReadyPublisher
         private var executionThread: Thread?
-        private var rendererResetGeneration: UInt64 = 0
+        private let rendererResetCoordinator = DoryPCRendererReplacementResetCoordinator<DesktopRendererWorkerLaunch>()
         private let signalQueue = DispatchQueue(
             label: "dev.dory.dory-hv.dorypc.signals",
             qos: .userInitiated
@@ -418,7 +454,7 @@ enum DoryPCMode {
                     "DoryPC software graphics must not receive renderer authority"
                 )
             }
-            rendererWorkerLaunchStore = RendererWorkerLaunchStore(rendererWorkerLaunch)
+            rendererWorkerLaunchStore = DoryPCRendererLaunchStore(rendererWorkerLaunch)
             rendererReplacementProvider = configuration.rendererReplacementProvider
             let devices = envelope.devices
             guard devices.networkAttachment != .bridged else {
@@ -509,7 +545,7 @@ enum DoryPCMode {
             let mailbox = devices.displays.isEmpty ? nil : DesktopFrameMailbox(scanoutID: 0)
             self.mailbox = mailbox
             let readyRendererWorkerLaunchStore = rendererWorkerLaunchStore
-            let readyPublisher = ReadyPublisher(
+            let readyPublisher = DoryPCRendererReadyPublisher(
                 // DoryPC-v1 boots user-supplied Linux media. The VirtIO display is part of the
                 // machine contract, but a Dory guest agent is not. Agent-backed conveniences may
                 // come online after boot; they cannot prevent a valid generic installation from
@@ -1195,16 +1231,16 @@ enum DoryPCMode {
         ) {
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                guard rendererWorkerLaunchStore.retire(
-                    matchingWorkerGeneration: previousLaunch.workerGeneration.rawValue
-                ) != nil else {
+                guard let ticket = rendererResetCoordinator.beginReset(
+                    previousLaunch: previousLaunch,
+                    launchStore: rendererWorkerLaunchStore
+                ) else {
                     return
                 }
-                rendererResetGeneration &+= 1
-                let generation = rendererResetGeneration
                 do {
                     let replacementLaunch = try await provider.prepareReplacement(after: previousLaunch)
-                    guard rendererResetGeneration == generation, !machineState.isStopping else {
+                    guard rendererResetCoordinator.acceptsCompletion(ticket),
+                          !machineState.isStopping else {
                         previousLaunch.teardown(reason: "stale renderer reset generation")
                         replacementLaunch.teardown(reason: "stale renderer reset generation")
                         return
@@ -1237,7 +1273,7 @@ enum DoryPCMode {
         private static func handleWorkerPresentationFailure(
             workerGeneration: UInt64,
             reason: String,
-            rendererWorkerLaunchStore: RendererWorkerLaunchStore,
+            rendererWorkerLaunchStore: DoryPCRendererLaunchStore<DesktopRendererWorkerLaunch>,
             rendererFailureRelay: FailureRelay,
             machineState: MachineState
         ) {
