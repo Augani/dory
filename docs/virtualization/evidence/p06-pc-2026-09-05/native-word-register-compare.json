@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "status": "focused-native-comparison-passed",
+  "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path dory-core-swift --filter DoryWordRegisterCompareTests --jobs 2",
+  "tests": 1,
+  "interpreterComparisons": 360,
+  "tiers": [
+    "baseline",
+    "optimizing"
+  ],
+  "measuredEncodings": [
+    "6683fa03",
+    "6639c8"
+  ],
+  "additionalCases": [
+    "sign-extended immediate",
+    "extended registers",
+    "self comparison",
+    "borrow/overflow/equality boundaries",
+    "upper-register bits preserved"
+  ],
+  "sourceSHA256": {
+    "dory-core-swift/Sources/DoryDBTX86/DoryARM64BaselineJIT.swift": "598d0923d0413e82c2f8ce0274ef9a39f4034eaa50bc3f57abb047eb2ef95672",
+    "dory-core-swift/Sources/DoryDBTX86/DoryDBTIR.swift": "fe0037e4350f6b2ee1853b7c0d9f87c29278fe0ba9967b60ce4d0542cb2bdd24",
+    "dory-core-swift/Tests/DoryDBTX86Tests/DoryWordRegisterCompareTests.swift": "159651d76afa4be6713fae705daa23090f4dbbcb8c651ce35799dfabb3bef437"
+  },
+  "logSHA256": "f662d70f4ea33957d8e462d28a8a8236bbe9ccbe373c8373dfff8f4d8f83b9d5",
+  "limits": [
+    "No whole-VM speedup measured.",
+    "Tested worktree also contains uncommitted cache changes; this commit stages only native word register compare support.",
+    "Memory-source and memory-destination register CMP forms remain outside this change."
+  ]
+}

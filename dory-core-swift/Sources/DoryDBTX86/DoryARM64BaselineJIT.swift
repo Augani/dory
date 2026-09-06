@@ -1724,6 +1724,25 @@ public struct DoryARM64BaselineEmitter: Sendable {
         into: &words
       )
     }
+    if case .register(let target) = destination,
+      target.bank == "x86.gpr", target.index < 16, target.width == .i16,
+      operation == .compare, !writesDestination
+    {
+      switch source {
+      case .register(let register)
+        where register.bank == "x86.gpr" && register.index < 16 && register.width == .i16:
+        words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(register.index) * 8))
+      case .immediate(let immediate, width: .i16):
+        emitImmediate(immediate & 0xFFFF, register: 10, into: &words)
+      default:
+        return false
+      }
+      words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+      emitImmediate(0xFFFF, register: 15, into: &words)
+      words.append(encodeLogical(.and, left: 9, right: 15, destination: 9))
+      words.append(encodeLogical(.and, left: 10, right: 15, destination: 10))
+      return emitNarrowBinaryFlags(.compare, writesDestination: false, width: .i16, into: &words)
+    }
     if case .memory(let address, width: .i16) = destination,
       operation == .compare, !writesDestination,
       case .immediate(let immediate, width: .i16) = source
