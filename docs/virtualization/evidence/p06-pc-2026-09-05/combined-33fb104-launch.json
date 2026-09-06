@@ -1,0 +1,54 @@
+{
+  "schemaVersion": 1,
+  "observedAt": "2026-09-06T01:12:33.367921+00:00",
+  "sourceHEAD": "33fb10434cac6e012412db714df1c75042d981e1",
+  "status": "firmware-executing-workload-not-qualified",
+  "processObservation": "23762 02:24  99.7  63120 R",
+  "processObservationExitStatus": 0,
+  "runnerSHA256": "01dcabebbc4737503076e0d9ea425113f82a1adcb71f763810315da794e6a692",
+  "initialSystemDiskSHA256": "d851c88763032f2b6169c2427f88c2d971b9ca93b8ec2e3800939bf0c6c063b9",
+  "firmwareSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
+  "installerESPSHA256": "b98b737b7fd14a1cf2bdd52889be6809bc0065ac567b9173d354fc7b05a887eb",
+  "runRoot": "${HOME}/.dory/qualification/pc-production-combined-33fb10434-20260906-004843/run-20260906010941",
+  "scope": {
+    "cpus": 1,
+    "memoryMiB": 1024,
+    "graphics": "none",
+    "network": "disconnected",
+    "ordinaryInstallerQualified": false,
+    "guestWorkloadQualified": false,
+    "performanceImprovementProven": false
+  },
+  "harnessFailuresCorrected": [
+    "Missing acknowledgement after readiness message: collect stream through EOF, validate operation identity and send byte 1",
+    "Reconnect descriptor requires canonical compact sorted JSON bytes",
+    "Private disk and variable store file modes must be 0600"
+  ],
+  "observations": [
+    "Acknowledged matching readiness handoff",
+    "Live CPU execution beyond firmware initialization",
+    "GRUB selected Dory PC production-compatible smoke entry"
+  ],
+  "evidence": [
+    {
+      "path": "${HOME}/.dory/qualification/pc-production-combined-33fb10434-20260906-004843/run-20260906010941/root-launch-verification/stderr.log",
+      "sha256": "19ed1b64ed2e11c439c4e6fdb3eda3fffbf86ab0ac32a8b865b018f0c36f319b",
+      "bytes": 9724
+    },
+    {
+      "path": "${HOME}/.dory/qualification/pc-production-combined-33fb10434-20260906-004843/run-20260906010941/root-launch-verification/serial.log",
+      "sha256": "69eebf922d98dcb749c0d88d60e59fc993382263803a684f1f9f1c23a1f32a86",
+      "bytes": 316
+    },
+    {
+      "path": "${HOME}/.dory/qualification/pc-production-combined-33fb10434-20260906-004843/run-20260906010941/root-launch-verification/launch-product-pc.py",
+      "sha256": "3948541087d7a4e1ed67301d6356c336cf75d49a5cc7c38bf9abd9c8b1f018a5",
+      "bytes": 6485
+    },
+    {
+      "path": "${HOME}/.dory/qualification/pc-production-combined-33fb10434-20260906-004843/run-20260906010941/root-launch-verification/handoff.json",
+      "sha256": "cfd3bf9cda4ff81867a1b479723b272de0dbc641c02f12f38f55b2e9b10651b3",
+      "bytes": 477
+    }
+  ]
+}
