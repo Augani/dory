@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "baseHEAD": "e5f7475971215a48c942102c98730c4a4374a985",
+  "scope": "Native TEST AH/CH/DH/BH,imm8 reuses existing high-byte extraction and narrow logical flags; returns without writing the register.",
+  "measuredTrigger": "f6c440 (TEST AH,0x40) recorded in optimizing CPU run 20260906022706, 20491 negative-cache hits in final retained profile.",
+  "validation": {
+    "command": "DEVELOPER_DIR=/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer swift test --package-path dory-core-swift --filter 'DoryJITHighByteAndTests|unsupportedByteOperandFormsRetainInterpreterFallback|lowByteFlagsOnlyHotInstructionsMatchInterpreterAcrossTiers' --jobs 2",
+    "exitCode": 0,
+    "testsPassed": 4,
+    "newInterpreterComparisons": 10240,
+    "logSHA256": "e83b9074aa43951b61c7902355d1fe3c42492fb8753169d015bd3be71d61e9d8"
+  },
+  "limitations": [
+    "Current signed physical runner does not include this change.",
+    "No end-to-end performance claim."
+  ]
+}

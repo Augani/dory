@@ -1692,7 +1692,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
   ) -> Bool {
     if case .register(let target) = destination,
       target.bank == "x86.high8", target.index < 4, target.width == .i8,
-      operation == .and, writesDestination,
+      ((operation == .and && writesDestination) || (operation == .test && !writesDestination)),
       case .immediate(let immediate, width: .i8) = source
     {
       words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
@@ -1701,9 +1701,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
       emitImmediate(0xFF, register: 15, into: &words)
       words.append(encodeLogical(.and, left: 9, right: 15, destination: 9))
       emitImmediate(immediate & 0xFF, register: 10, into: &words)
-      guard emitNarrowBinaryFlags(.and, writesDestination: true, into: &words) else {
+      guard emitNarrowBinaryFlags(operation, writesDestination: writesDestination, into: &words) else {
         return false
       }
+      if !writesDestination { return true }
       // AH/CH/DH/BH replace only bits 8...15 of the containing GPR.
       words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
       emitImmediate(~UInt64(0xFF00), register: 10, into: &words)
