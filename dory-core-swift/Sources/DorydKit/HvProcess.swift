@@ -574,7 +574,9 @@ public final class HvProcess: @unchecked Sendable {
     private var hasStarted = false
     private var suspended = false
 
+    #if DEBUG
     var launchArguments: [String] { configuration.arguments }
+    #endif
     private var restartCount = 0
     private var restartPending = false
     private var restartsEnabled = true
