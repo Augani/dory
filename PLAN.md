@@ -1129,6 +1129,8 @@ All cards are open at the product level. Only individually evidenced steps are c
 
 **Check:** On identical inputs, compare shipped, upstream and patched FEX; default Go regexp/runtime workloads must pass, with override only a diagnostic control.
 
+**Status:** `d5de35864` retains the previously private regexp/goroutine reproducer under `guest/diagnostics/fex-go-preemption`, pinned to Go 1.22.10 with matching hashes from two builds. The retained historical binary identifies itself as Go 1.22.10; earlier Go 1.25.9 notes describe separate inputs. On the same shipped FEX/kernel/base-rootfs tuple, the [retained binary replay](docs/virtualization/evidence/wave0-2026-09-08/wave1-fex-shipped-replay.json) failed default preemption with exit 2, and the [rebuilt source replay](docs/virtualization/evidence/wave0-2026-09-08/wave1-fex-rebuilt-replay.json) failed with exit 4 in Go stack unwinding. Both diagnostic `asyncpreemptoff` controls exited zero with total 133056000. Disposable clones were removed after shutdown. This is a current, reproducible failure, not a repaired compatibility result; the upstream/candidate comparison and all promotion gates stay open.
+
 #### A16.2 — Repair signal context handling
 
 - [ ] **Action:** Minimize signal arrival in translated code, dispatcher, syscall entry/return and host alternate stack. Validate unchanged versus edited RIP/RSP/GPR/flags/vector contexts, nested signals, interrupted syscalls, thread exit and restart behavior.

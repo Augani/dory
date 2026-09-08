@@ -1,0 +1,53 @@
+{
+  "scope": "Rebuilt Go 1.22.10 static amd64 stress on shipped FEX; not qualification",
+  "probeSHA256": "02953d292ee99a6e7b716330cf40981cbbb44c44e9244d341eb2ddc9ac275a2d",
+  "sourceSHA256": "a2f1561bde37b29425a5ebac89c9c56cefbdb06607e9e6d103dec5016722f21d",
+  "outerDeadlineSeconds": 160,
+  "exitCode": 1,
+  "timedOut": false,
+  "elapsedSeconds": 43.62185487498937,
+  "command": [
+    "<campaign>/dory-hv",
+    "agent-ping",
+    "--kernel",
+    "<repository>/guest/out/Image",
+    "--initfs",
+    "<campaign>/rootfs.ext4",
+    "--mem-mb",
+    "2048",
+    "--cpus",
+    "4",
+    "--timeout-sec",
+    "150",
+    "--cmdline",
+    "console=ttyAMA0 earlycon=pl011,mmio32,0x0c000000 root=/dev/vda rw panic=0 init=/dory-fex-init"
+  ],
+  "logSHA256": "70037d7da73df0b94e095e7085ae221a589da0c3469ba74faa1cb28377edf9db",
+  "sourceCommit": "d5de35864d74a158f96e21a12ef74c1f4c65f531",
+  "owner": "Codex",
+  "reviewer": "independent review open",
+  "kernelSHA256": "e5b539373575c68c385e000a23b491ae01dca394a34508c743b0d7e2fbebd48c",
+  "baseRootfsSHA256": "3281e758c629cd36eaed86ba2e684d3e7ad5b421000f26c801be37d8404dc641",
+  "signedRunnerSHA256": "d60665aced8675e970a77e07bc211c592c5ad4dcbd23fc5285102d93db43d717",
+  "host": {
+    "macOS": "27.0",
+    "architecture": "arm64"
+  },
+  "signing": "ad-hoc with Hypervisor entitlement; diagnostic production owner, not installed daemon",
+  "cleanup": "owned binary/rootfs campaign removed after both runner processes exited",
+  "remainingGates": [
+    "unpatched upstream FEX control",
+    "signal-context repair",
+    "default-mode Go and adjacent application qualification",
+    "reproducible candidate rebuild and transactional promotion/rollback"
+  ],
+  "caseExitCodes": {
+    "default": 4,
+    "diagnostic-preemptoff": 0
+  },
+  "controlExpectedOutputObserved": true,
+  "verdict": "default-mode failure reproduced; diagnostic control passed",
+  "runnerExitInterpretation": "Expected exit 1 after custom init powered off without starting agent; guest case markers determine results.",
+  "log": "docs/virtualization/evidence/wave0-2026-09-08/wave1-fex-rebuilt-replay.log.gz",
+  "redaction": "Campaign/repository paths replaced in command and guest logs."
+}
