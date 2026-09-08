@@ -1249,6 +1249,8 @@ All cards are open at the product level. Only individually evidenced steps are c
 
 **Check:** Cancel during run, WFI, IRQ, device work and teardown; verify owner threads, bounded rendezvous and generation-safe quiescence on production launches.
 
+**Status:** `58f141a5f` serializes ARM team-array initialization against incoming stop/pause requests, reads terminal state under the team lock, and protects the shared sysreg log counter across vCPUs. Nineteen focused PSCI/pause/register/owner-thread tests pass. A four-vCPU/1 GiB native Linux boot returned agent information over vsock and shut down in 2.90 seconds with disposable backing removed; [receipt](docs/virtualization/evidence/wave0-2026-09-08/wave1-arm-smp.json). This supports the source fix but does not close the startup-cancellation, IRQ/device-stress, quiescence or recovery campaign; A18.2 stays open.
+
 #### A18.3 — Qualify registers, PSCI and interrupts
 
 - [ ] **Action:** Validate the narrowed debug/PMU policy and sanitized guest feature state through guest-executed instructions, including unsupported encodings, read/write direction, exception entry and return. Complete PSCI version/features, CPU_ON/OFF, affinity, reset/poweroff and one GIC pending/in-service owner; hotplug/suspend requires explicit admission.
