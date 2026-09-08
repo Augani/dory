@@ -64,6 +64,7 @@ public final class DoryPCBootTimeline: @unchecked Sendable {
   private var matchers: [Matcher] = [
     .init(.grub, "GNU GRUB"),
     .init(.grub, "Welcome to GRUB"),
+    .init(.grub, "  Booting `"),
     .init(.kernel, "Linux version "),
     .init(.rootMounted, "VFS: Mounted root"),
     .init(.initStarted, "Run /init as init process"),

@@ -10,6 +10,6 @@
     "Diagnostic exit code zero reports a captured machine stop, not a successful boot.",
     "GRUB printed its Booting menu-entry message, which the captured runner did not recognize as a timeline marker.",
     "Corrected exception-delivery run is separate; this result is not a latency baseline.",
-    "A small Swift test build overlapped part of this diagnostic campaign; timing is not a controlled performance comparison."
+    "Host load was not controlled; this diagnostic is not a controlled performance comparison."
   ]
 }

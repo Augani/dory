@@ -43,6 +43,20 @@ import Testing
     #expect(timeline.snapshot().events.last?.milestone == .kernel)
   }
 
+  @Test func grubMenuBootMessageDoesNotRequireTheInteractiveBanner() throws {
+    let clock = Clock()
+    let timeline = DoryPCBootTimeline(now: clock.read)
+    let uart = DoryPCUART16550()
+    uart.observeBoot(with: timeline)
+    try transmit("\u{1b}[H\u{1b}[J\u{1b}[1;1H  Boot", to: uart)
+    clock.set(180)
+    try transmit("ing `Dory PC production-compatible smoke'\n\r", to: uart)
+    #expect(timeline.snapshot().events.last?.milestone == .grub)
+    #expect(timeline.snapshot().events.last?.elapsedNanoseconds == 80)
+    try transmit("GNU GRUB", to: uart)
+    #expect(timeline.snapshot().events.filter { $0.milestone == .grub }.count == 1)
+  }
+
   @Test func observationsSurviveConsoleOverflowAndRemainBounded() throws {
     let uart = DoryPCUART16550(queueCapacity: 1)
     let timeline = DoryPCBootTimeline()
