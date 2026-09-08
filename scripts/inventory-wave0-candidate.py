@@ -347,6 +347,37 @@ def desktop_rootfs_metadata(root: Path, guest: Path) -> dict[str, Any]:
     return {"status": status, "buildStamps": records}
 
 
+def mesa_producer_metadata(root: Path, guest: Path) -> dict[str, Any]:
+    """Verify each architecture/profile instead of admitting present archives."""
+    records = []
+    for profile, arch, name in (
+        ("venus", "arm64", "verify-build.sh"),
+        ("arm-virgl2", "arm64", "verify-pc-virgl2-build.sh"),
+        ("pc-virgl2", "x86_64", "verify-pc-virgl2-build.sh"),
+    ):
+        record = {"profile": profile, "architecture": arch, "status": "unavailable"}
+        verifier = root / "guest/mesa" / name
+        if direct_regular(verifier):
+            try:
+                result = subprocess.run(
+                    [str(verifier), arch], cwd=root,
+                    env={**os.environ, "DORY_MESA_OUT_DIR": str(guest)},
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    check=False, timeout=120,
+                )
+                record["status"] = "matches-current-producer" if result.returncode == 0 else "verification-failed"
+                record["verificationSHA256"] = hashlib.sha256(result.stdout + result.stderr).hexdigest()
+            except (OSError, subprocess.TimeoutExpired):
+                record["status"] = "verification-unavailable"
+        records.append(record)
+    return {
+        "status": "matches-current-producer" if all(
+            record["status"] == "matches-current-producer" for record in records
+        ) else "verification-failed",
+        "profiles": records,
+    }
+
+
 def kernel_producer_metadata(root: Path, guest: Path, *, arch: str, profile: str) -> dict[str, str]:
     """Require the kernel producer's own verifier, not artifact presence alone."""
     verifier = root / "guest/kernel/verify-build.sh"
@@ -462,6 +493,12 @@ def main() -> int:
             metadata=kernel_producer_metadata(root, guest, arch="arm64", profile="venus"),
         ),
         producer(
+            identifier="arm64-desktop-kernel", owner="guest/kernel accelerated-desktop profile producer",
+            inputs=source_inputs(root, ("guest/kernel/build.sh", "guest/kernel/profile.sh")),
+            artifacts=[guest_file("arm64-desktop-kernel", "Image-desktop"), guest_file("arm64-desktop-stamp", "kernel-build-arm64-desktop.stamp")],
+            metadata=kernel_producer_metadata(root, guest, arch="arm64", profile="accelerated-desktop"),
+        ),
+        producer(
             identifier="x86_64-kernel", owner="guest/kernel PC VirGL2 profile producer",
             inputs=source_inputs(root, ("guest/kernel/build.sh", "guest/kernel/profile.sh")),
             artifacts=[guest_file("x86_64-pc-virgl2-kernel", "bzImage-x86-pc-virgl2"), guest_file("x86_64-pc-virgl2-stamp", "kernel-build-amd64-pc-virgl2.stamp")],
@@ -481,9 +518,10 @@ def main() -> int:
             metadata=desktop_rootfs_metadata(root, guest),
         ),
         producer(
-            identifier="mesa", owner="guest/mesa Venus and PC VirGL2 producers",
+            identifier="mesa", owner="guest/mesa Venus and ARM64/x86_64 VirGL2 producers",
             inputs=source_inputs(root, ("guest/mesa/PINS", "guest/mesa/build.sh", "guest/mesa/build-pc-virgl2.sh")),
-            artifacts=[guest_file("arm64-venus-mesa", "dory-mesa-venus-arm64.tar.zst"), guest_file("x86_64-virgl2-mesa", "dory-mesa-virgl2-x86_64.tar.zst")],
+            artifacts=[guest_file("arm64-venus-mesa", "dory-mesa-venus-arm64.tar.zst"), guest_file("arm64-virgl2-mesa", "dory-mesa-virgl2-arm64.tar.zst"), guest_file("x86_64-virgl2-mesa", "dory-mesa-virgl2-x86_64.tar.zst")],
+            metadata=mesa_producer_metadata(root, guest),
         ),
         producer(
             identifier="guest-tools", owner="guest initfs and Docker producers",

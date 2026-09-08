@@ -189,6 +189,24 @@ class CandidateInventoryTests(unittest.TestCase):
                 self.assertEqual(app["status"], "incomplete")
                 self.assertEqual(app["metadata"]["status"], "invalid-app-identity")
 
+    def test_mesa_profiles_require_individual_verification(self):
+        mesa = self.root / "guest/mesa"
+        mesa.mkdir(parents=True)
+        for name in ("verify-build.sh", "verify-pc-virgl2-build.sh"):
+            verifier = mesa / name
+            verifier.write_text('#!/bin/sh\ntest "$1" = arm64\n')
+            verifier.chmod(0o755)
+        result = self.run_inventory()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        entry = next(x for x in json.loads(result.stdout)["producers"] if x["id"] == "mesa")
+        self.assertEqual(entry["metadata"]["status"], "verification-failed")
+        profiles = {x["profile"]: x["status"] for x in entry["metadata"]["profiles"]}
+        self.assertEqual(profiles, {
+            "venus": "matches-current-producer", "arm-virgl2": "matches-current-producer",
+            "pc-virgl2": "verification-failed",
+        })
+        self.assertEqual(entry["status"], "incomplete")
+
     def test_app_symlink_is_rejected(self):
         alias = self.root / "alias.app"
         alias.symlink_to(self.app)
