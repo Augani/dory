@@ -1,0 +1,48 @@
+{
+  "kind": "dev.dory.wave0.tooling-review",
+  "schemaVersion": 1,
+  "releaseQualified": false,
+  "sourceCommit": "acf7320ebf50301aa109313f1af4c4fe508e5c77",
+  "tests": {
+    "matrix": 12,
+    "inventory": 7,
+    "fixturePreflight": 6,
+    "historicalAudit": 4,
+    "signedHandoffHarness": 3,
+    "runtimeGateContracts": 9,
+    "ciUmbrella": 2
+  },
+  "pcGatePolling": "Passed protocol success, running state, stopped state, and real subprocess deadline checks; no physical GPU qualification claimed.",
+  "matrixValidation": {
+    "approvalPayloadSHA256": "72577062a9f57cd2c2cad3bfe2fae73630807c261b710ef4109d1b31e8c69bf2",
+    "graphicsProfiles": 4,
+    "guestCells": 5,
+    "linuxFamilies": {
+      "arm64": [
+        "debian",
+        "fedora"
+      ],
+      "x86_64": [
+        "debian",
+        "fedora"
+      ]
+    },
+    "matrixSHA256": "3d16b72402b3afc731b999c184d529c7bb1f8574bad3c88862c8a1a88dd9585e",
+    "status": "review-pending",
+    "unpinnedGraphicsInputs": [
+      "arm64-virgl2-angle-metal.kernel",
+      "arm64-virgl2-angle-metal.mesa"
+    ]
+  },
+  "scriptSHA256": {
+    "scripts/validate-wave0-qualification-matrix.py": "28204a7dbc074e522b52dde3605d9d8d90a719153fb7ca7313e0a998cc995e1d",
+    "scripts/pc-gpu-daemon-live-gate.sh": "ad916d5cd6a81dd3bf8483df25f8ea2c0d3e5a8f0e5f1f0fb9525cce3517bd23",
+    "scripts/test-pc-gpu-daemon-live-gate.sh": "6748c6cf1e52fb5de9d9404ca15e418d7ce732740f86decba02304382fb9ebcd"
+  },
+  "limitations": [
+    "Matrix and PC gate scripts remain uncommitted pending their specific local hook allowlist approvals.",
+    "Matrix content approval remains pending; its ARM64 VirGL2 kernel and Mesa inputs are not pinned.",
+    "Current app inventory is incomplete because its embedded source binding is stale.",
+    "Wrong-team signing credentials and a production-root signed schema-2 catalog remain unavailable."
+  ]
+}
