@@ -1,0 +1,66 @@
+{
+  "schemaVersion": 1,
+  "classification": "development-diagnostic-not-qualification",
+  "control": "efi=debug only; KASLR remains enabled",
+  "executionElapsedNanoseconds": 600000069042,
+  "bootTimeline": {
+    "clock": "host-dispatch-uptime-nanoseconds",
+    "elapsedNanoseconds": 600000127125,
+    "events": [
+      {
+        "elapsedNanoseconds": 0,
+        "milestone": "executionStarted"
+      },
+      {
+        "elapsedNanoseconds": 24273959334,
+        "milestone": "grub"
+      },
+      {
+        "elapsedNanoseconds": 131471663792,
+        "milestone": "kernel"
+      },
+      {
+        "elapsedNanoseconds": 502731786000,
+        "milestone": "rootMounted"
+      },
+      {
+        "elapsedNanoseconds": 586707926125,
+        "milestone": "initStarted"
+      }
+    ],
+    "observationID": "04FB593B-7FEB-42BE-B009-E92C72A1218C",
+    "observedSerialBytes": 47826,
+    "originNanoseconds": 125498671011166,
+    "terminationReason": "host-execution-deadline",
+    "unobservedMilestones": [],
+    "unobservedStatus": "censored"
+  },
+  "timedOut": true,
+  "stop": "poweredOff(instructionCount: 3648538242)",
+  "runnerSHA256": "04ea5b2b913dc19ff7cbce6c3123a4bf78d5876b8d3fe79f7c7cfb8f61832a8f",
+  "firmwareCodeSHA256": "461cc0af580f1cfc91c944250950f18ea151c70e2d12e34739ad1ec38c47f4ca",
+  "installerMediaSHA256": "87d22c7a452fd367b04852e18dec2067db6704d7aed012868ea82ba6917d9809",
+  "attachments": [
+    {
+      "path": "out.json.gz",
+      "sha256": "563043b503cb23b57a70e36b64a55f6a2d6fafe3ff31d7a0f376400f80681d33"
+    },
+    {
+      "path": "err.log.gz",
+      "sha256": "1456a0f5644b1c6fb650532b426c3b3d9a99cb85525b140a665210205aa4c989"
+    },
+    {
+      "path": "invocation.json.gz",
+      "sha256": "716ddf18f1b855069e76168ce5703159e65d8016a54101eb8b86eddd4cd68f22"
+    },
+    {
+      "path": "media-change.json.gz",
+      "sha256": "4902491aa68e99460c21c9dd676b0bbb2363d768735b691a20fe5abb4ce060aa"
+    }
+  ],
+  "limitations": [
+    "Single sample with concurrent Mesa producer; no latency improvement claim.",
+    "Init execution observed; agent readiness and RPC not observed.",
+    "Avoided the earlier EFI panic on this run; does not identify or fix its cause."
+  ]
+}
