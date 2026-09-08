@@ -52,6 +52,43 @@ import Testing
     #expect(decoded.cpuid(leaf: 0xD, xcr0: 7) == .init())
   }
 
+  @Test func v3IdentitiesRemainMaskedAcrossPublicAndPersistedBoundaries() throws {
+    let additions: Set<DoryX86Feature> = [.f16c, .fma, .bmi1, .bmi2, .lzcnt, .movbe]
+    let requested = DoryX86CPUProfile.compatibleV1.features.union(additions)
+      .union([.xsave, .avx])
+    let internalProfile = profile(requested, allowingUnqualifiedSIMDAndExtendedState: true)
+    #expect(internalProfile.cpuid(leaf: 1).ecx & ((1 << 12) | (1 << 22) | (1 << 29))
+      == (1 << 12) | (1 << 22) | (1 << 29))
+    #expect(internalProfile.cpuid(leaf: 7).ebx == (1 << 3) | (1 << 8))
+    #expect(internalProfile.cpuid(leaf: 0x8000_0001).ecx & (1 << 5) != 0)
+    let restored = try JSONDecoder().decode(
+      DoryX86CPUProfile.self, from: JSONEncoder().encode(internalProfile))
+    for candidate in [profile(requested), restored] {
+      #expect(candidate.features.isDisjoint(with: additions))
+      #expect(candidate.cpuid(leaf: 1).ecx & ((1 << 12) | (1 << 22) | (1 << 29)) == 0)
+      #expect(candidate.cpuid(leaf: 7).ebx == 0)
+      #expect(candidate.cpuid(leaf: 0x8000_0001).ecx & (1 << 5) == 0)
+    }
+    let legacy = DoryX86CPUProfile.compatibleV1
+    #expect(try JSONDecoder().decode(DoryX86CPUProfile.self,
+      from: JSONEncoder().encode(legacy)) == legacy)
+  }
+
+  @Test func v3VectorDependenciesDoNotAccidentallyGateIntegerFeatures() {
+    let additions: Set<DoryX86Feature> = [.f16c, .fma, .bmi1, .bmi2, .lzcnt, .movbe]
+    for missing: DoryX86Feature in [.avx, .xsave, .sse, .sse2, .fxsave] {
+      let requested = DoryX86CPUProfile.compatibleV1.features.union(additions)
+        .union([.xsave, .avx]).subtracting([missing])
+      let cpu = profile(requested, allowingUnqualifiedSIMDAndExtendedState: true)
+      #expect(!cpu.supports(.f16c))
+      #expect(!cpu.supports(.fma))
+      #expect(cpu.cpuid(leaf: 1).ecx & ((1 << 12) | (1 << 29)) == 0)
+      for integer: DoryX86Feature in [.bmi1, .bmi2, .lzcnt, .movbe] {
+        #expect(cpu.supports(integer))
+      }
+    }
+  }
+
   @Test func candidateIdentityDoesNotInventAHypervisorABI() {
     let cpu = DoryX86CPUProfile.compatibleV1
     let identity = cpu.cpuid(leaf: 0)

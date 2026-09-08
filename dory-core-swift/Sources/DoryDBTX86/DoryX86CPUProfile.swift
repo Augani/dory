@@ -36,6 +36,12 @@ public enum DoryX86Feature: String, Codable, CaseIterable, Sendable, Hashable {
   case physicalAddressExtension
   case pageGlobalEnable
   case pageAttributeTable
+  case f16c
+  case fma
+  case bmi1
+  case bmi2
+  case lzcnt
+  case movbe
   fileprivate var membershipBit: UInt64 {
     switch self {
     case .x87: return 1 << 0
@@ -71,6 +77,12 @@ public enum DoryX86Feature: String, Codable, CaseIterable, Sendable, Hashable {
     case .physicalAddressExtension: return 1 << 30
     case .pageGlobalEnable: return 1 << 31
     case .pageAttributeTable: return 1 << 32
+    case .f16c: return 1 << 33
+    case .fma: return 1 << 34
+    case .bmi1: return 1 << 35
+    case .bmi2: return 1 << 36
+    case .lzcnt: return 1 << 37
+    case .movbe: return 1 << 38
     }
   }
 
@@ -111,12 +123,13 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
   public let identity: DoryX86CPUIdentity
   private let supportedFeatureMask: UInt64
 
-  /// Optional SIMD and extended-state advertisement remain unavailable until
+  /// Unqualified v2/v3 advertisement remains unavailable until
   /// XSAVE/XRSTOR and the complete optional SIMD/VEX surface have architectural qualification.
   /// Keep these values decodable for profile compatibility, but never retain
   /// them through the public construction boundary.
   private static let unqualifiedSIMDAndExtendedStateFeatures: Set<DoryX86Feature> = [
     .sse3, .ssse3, .sse41, .sse42, .xsave, .osxsave, .avx, .avx2,
+    .f16c, .fma, .bmi1, .bmi2, .lzcnt, .movbe,
   ]
 
   /// Creates a guest profile, omitting optional SIMD and extended-state
@@ -227,7 +240,7 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
     case .sse2: return supports(.sse, in: features)
     case .sse3, .ssse3, .sse41, .sse42: return supports(.sse2, in: features)
     case .avx: return supports(.xsave, in: features) && supports(.sse2, in: features) && supports(.fxsave, in: features)
-    case .avx2: return supports(.avx, in: features)
+    case .avx2, .f16c, .fma: return supports(.avx, in: features)
     case .longMode, .executeDisable: return supports(.physicalAddressExtension, in: features)
     case .oneGiBPages:
       return supports(.physicalAddressExtension, in: features) && supports(.longMode, in: features)
@@ -262,14 +275,17 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       var edx: UInt32 = 0
       set(.sse3, bit: 0, in: &ecx)
       set(.ssse3, bit: 9, in: &ecx)
+      set(.fma, bit: 12, in: &ecx)
       set(.cmpxchg16b, bit: 13, in: &ecx)
       set(.sse41, bit: 19, in: &ecx)
       set(.sse42, bit: 20, in: &ecx)
+      set(.movbe, bit: 22, in: &ecx)
       set(.popcnt, bit: 23, in: &ecx)
       set(.xsave, bit: 26, in: &ecx)
       // CPUID.1:ECX.OSXSAVE reports guest CR4.OSXSAVE, not a static profile bit.
       if supports(.xsave), cr4 & (1 << 18) != 0 { ecx |= 1 << 27 }
       set(.avx, bit: 28, in: &ecx)
+      set(.f16c, bit: 29, in: &ecx)
       set(.x87, bit: 0, in: &edx)
       set(.tsc, bit: 4, in: &edx)
       set(.msr, bit: 5, in: &edx)
@@ -296,7 +312,9 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       )
     case (7, 0):
       var ebx: UInt32 = 0
+      set(.bmi1, bit: 3, in: &ebx)
       set(.avx2, bit: 5, in: &ebx)
+      set(.bmi2, bit: 8, in: &ebx)
       return .init(ebx: ebx)
     case (0xD, _):
       guard supports(.xsave) else { return .init() }
@@ -332,6 +350,7 @@ public struct DoryX86CPUProfile: Codable, Sendable, Hashable {
       var ecx: UInt32 = 0
       var edx: UInt32 = 0
       set(.lahf64, bit: 0, in: &ecx)
+      set(.lzcnt, bit: 5, in: &ecx)
       set(.syscall, bit: 11, in: &edx)
       set(.executeDisable, bit: 20, in: &edx)
       set(.oneGiBPages, bit: 26, in: &edx)
