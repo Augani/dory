@@ -1265,6 +1265,8 @@ All cards are open at the product level. Only individually evidenced steps are c
 
 **Check:** Assert placement, ranges, reservations, timers, initial state and resource bounds; real kernels boot at admitted minima and under host memory pressure.
 
+**Status:** `4fb4396e8` fixes legacy Image text-offset interpretation, enforces 2 MiB base alignment, and rejects overflowing or reserved kernel extents before copying to RAM. The production direct loader reserves DTB/payload space through the shared loader, replacing its post-copy overlap check. Twelve focused loader/payload tests pass. A disposable two-vCPU/1 GiB native-HV boot using Linux 6.12.106-dory returned real agent information over vsock and exited in 2.91 seconds; [receipt and logs](docs/virtualization/evidence/wave0-2026-09-08/wave1-arm-agent-ping.json) bind the exact kernel/rootfs/entitled runner. This ad-hoc development rerun is not UEFI, signed-daemon, memory-pressure or minimum-host qualification; A18.4 remains open.
+
 #### A18.5 — Prove parity and retire duplication
 
 - [ ] **Action:** Run SMP direct-kernel and UEFI workloads at admitted CPU/RAM limits, IRQ storms, memory pressure, rapid lifecycle and sleep/wake. Preserve correct all-pages-dirty reporting until CPU/DMA/granule write coverage proves optimized tracking. Remove duplicate execution only after production and minimum-host parity.
