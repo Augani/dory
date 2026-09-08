@@ -27,10 +27,15 @@ private final class SmokeDeadline: @unchecked Sendable {
   private let lock = NSLock()
   private var finished = false
   private var expired = false
-  private var work: DispatchWorkItem?
+  private var timer: DispatchSourceTimer?
 
   init(machine: DoryPCDirectKernelMachine, seconds: UInt64) {
-    let work = DispatchWorkItem { [weak self, machine] in
+    // asyncAfter permits timer coalescing; a 600-second diagnostic returned at
+    // 630 seconds. Use a strict, zero-leeway timer to remove that allowance;
+    // host scheduling can still delay delivery, so this is not a realtime claim.
+    let timer = DispatchSource.makeTimerSource(
+      flags: .strict, queue: DispatchQueue.global(qos: .userInitiated))
+    timer.setEventHandler { [weak self, machine] in
       guard let self else { return }
       self.lock.withLock {
         guard !self.finished else { return }
@@ -38,14 +43,15 @@ private final class SmokeDeadline: @unchecked Sendable {
         machine.powerController.request(.powerOff)
       }
     }
-    self.work = work
-    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + Double(seconds), execute: work)
+    self.timer = timer
+    timer.schedule(deadline: .now() + Double(seconds), leeway: .nanoseconds(0))
+    timer.resume()
   }
 
   @discardableResult func finish() -> Bool {
     let result = lock.withLock { finished = true; return expired }
-    work?.cancel()
-    work = nil
+    timer?.cancel()
+    timer = nil
     return result
   }
 }
