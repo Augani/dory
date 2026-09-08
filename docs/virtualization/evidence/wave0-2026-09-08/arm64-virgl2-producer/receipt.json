@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "classification": "verified-producer-not-graphics-qualification",
+  "architecture": "arm64",
+  "profile": "arm-virgl2",
+  "runtimePath": "guest/out/dory-mesa-virgl2-arm64.tar.zst",
+  "runtimeSHA256": "ff13fe0c73fd2596f098d8008526c21886a63aba9f981c65d43e3fbe2e82e319",
+  "runtimeByteCount": 8143701,
+  "verification": "guest/mesa/verify-pc-virgl2-build.sh arm64 passed after publication",
+  "attachments": [
+    {
+      "path": "build.log.gz",
+      "sha256": "7a505012786b15510a1f71d74045b5089b2c5fb67d3058957ce9277f85b77316"
+    },
+    {
+      "path": "producer.stamp.gz",
+      "sha256": "ac51764a9e0d7e4c884c31c961d02152e4344eb188838a12582a89d54630245f"
+    }
+  ]
+}
