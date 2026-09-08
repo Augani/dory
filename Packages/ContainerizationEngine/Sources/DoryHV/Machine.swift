@@ -664,9 +664,13 @@ enum VirtioMMIODeviceTree {
       // can read it concurrently, and give each vCPU its own hot lookup cache in `runLoop`.
       bus.seal()
       let count = max(1, configuration.cpuCount)
-      teamHandles = Array(repeating: nil, count: count)
-      secondaryStarts = Array(repeating: nil, count: count)
-      psciCPUState = ARMPSCICPUState(cpuCount: count)
+      // requestStop can arrive as the owner thread begins running. Publish the
+      // team arrays under the same lock used by stop/pause and handle teardown.
+      teamCondition.withLock {
+        teamHandles = Array(repeating: nil, count: count)
+        secondaryStarts = Array(repeating: nil, count: count)
+        psciCPUState = ARMPSCICPUState(cpuCount: count)
+      }
 
       for index in 1..<count {
         let thread = Thread { [self] in cpuMain(index: index) }
@@ -690,9 +694,9 @@ enum VirtioMMIODeviceTree {
       // The guest has stopped (or bring-up failed). Wake every secondary, cancel any still
       // running under Hypervisor.framework, and JOIN them all before returning so the caller
       // (and Machine.deinit -> hv_vm_destroy) never races a live vCPU thread.
-      let terminalReason =
-        stopReason
-        ?? .crash("boot CPU exited without a published stop reason")
+      let terminalReason = teamCondition.withLock {
+        stopReason ?? .crash("boot CPU exited without a published stop reason")
+      }
       stopAll(terminalReason)
       teamCondition.lock()
       while finishedSecondaries < count - 1 {
@@ -991,8 +995,12 @@ enum VirtioMMIODeviceTree {
     /// UNDEFINED exception was delivered and PC already points at the vector.
     private func handleSystemRegisterTrap(vcpu: VCPU, syndrome: UInt64) throws -> Bool {
       let trap = ARMSystemRegisterTrap(syndrome: syndrome)
-      if sysregLogCount < 8 {
+      let shouldLog = teamCondition.withLock {
+        guard sysregLogCount < 8 else { return false }
         sysregLogCount += 1
+        return true
+      }
+      if shouldLog {
         let action = trap.disposition == .readAsZeroWriteIgnore ? "RAZ/WI" : "UNDEFINED"
         FileHandle.standardError.write(
           Data(
