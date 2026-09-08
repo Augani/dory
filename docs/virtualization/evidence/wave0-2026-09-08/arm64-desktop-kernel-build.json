@@ -1,0 +1,28 @@
+{
+  "kind": "dev.dory.arm64-accelerated-desktop-kernel-producer",
+  "releaseQualified": false,
+  "profile": "accelerated-desktop",
+  "guestPageKiB": 4,
+  "inputFingerprint": "3965fb3e93dfbce33a8e8b215a681ac7bad39cd947ce1f774f99b03d29d6cb07",
+  "kernel": {
+    "path": "guest/out/Image-desktop",
+    "sha256": "d60981a8d87287fff2ee111264080f0c3a009394001df64e7851059a4d7c2eb1",
+    "byteCount": 73861632
+  },
+  "builderRunnerSHA256": "675d0648ec60b2ba993dd0aea8abff9e69e49c937b67fdcc2a37fa6bde423111",
+  "dockerServer": "29.6.1 linux/aarch64",
+  "buildCommand": "DORY_KERNEL_PROFILE=accelerated-desktop DORY_KERNEL_BUILD_JOBS=4 bash guest/kernel/build.sh arm64",
+  "verification": "producer verifier passed after publication; isolated engine stopped gracefully",
+  "logsSHA256": {
+    "arm64-desktop-kernel-build.log.gz": "defd004c07b500c8ec528a3e5c33e2b5ee3304ce7ab529cfd3af8fb3f8fb84e3",
+    "arm64-desktop-kernel-verify.log.gz": "dd130a203831c2857bc9a9c74cbce7c918e489f1554da4932044c0b56b91b403",
+    "arm64-desktop-kernel-engine-start.log.gz": "5857885ea849e18d5f6723e57a794f55ab289307a5b7decb19a5255b8efe2c07",
+    "kernel-build-arm64-desktop.stamp.gz": "34986b1b298399f360c4646ff14314e0c2895d0e99fda03d53b3f826e26e25ee",
+    "config-arm64-desktop.gz": "b5297f0db90a2b0ccc75c5822ec6c7cef340fd3cfe50d4f0cac136fec65be6d0"
+  },
+  "limitations": [
+    "Kernel producer identity only; no graphical guest qualification.",
+    "Classic ARM64 VirGL2 Mesa input and matrix approval remain missing.",
+    "Kernel build ran inside the current signed development runner through a disposable standalone engine; this is not release catalog admission."
+  ]
+}
