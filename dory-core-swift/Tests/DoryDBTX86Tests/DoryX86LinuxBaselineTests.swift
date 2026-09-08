@@ -36,6 +36,21 @@ import Testing
     ]))
   }
 
+  @Test func v3AuditExposesAllMissingFeaturesAndStateWithoutPromoting() {
+    let assessment = DoryX86CPUProfile.compatibleV1.linuxBaselineAssessment(for: .v3)
+    #expect(assessment.advertisement.missingProfileFeatures == Set([
+      .popcnt, .sse3, .ssse3, .sse41, .sse42, .avx, .avx2,
+      .bmi1, .bmi2, .f16c, .fma, .lzcnt, .movbe, .xsave,
+    ]))
+    #expect(assessment.advertisement.unavailableGuestControls.map(\.name).sorted()
+      == ["OSXSAVE", "SSE", "X87", "YMM"])
+    #expect(!assessment.isQualified)
+    #expect(assessment.semanticQualification == .unqualified)
+    // v3 must include every v2 requirement and keep control gates separate.
+    #expect(DoryX86LinuxBaselineRequirements.v2.cpuid.isSubset(of: assessment.requirements.cpuid))
+    #expect(!assessment.requirements.cpuid.contains { $0.feature == .osxsave })
+  }
+
   @Test func selectedProfilesAdvertiseBaselineAndExposeTheExactV2Gap() {
     let v2Gap: Set<DoryX86Feature> = [.popcnt, .sse3, .ssse3, .sse41, .sse42]
     #expect(DoryX86LinuxBaselinePolicy.firstSupportedLevel == .baseline)

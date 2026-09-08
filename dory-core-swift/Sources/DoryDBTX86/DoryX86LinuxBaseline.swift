@@ -6,6 +6,7 @@
 public enum DoryX86LinuxISALevel: String, Codable, CaseIterable, Sendable, Hashable {
   case baseline = "x86-64-baseline"
   case v2 = "x86-64-v2"
+  case v3 = "x86-64-v3"
 }
 
 /// The CPUID register containing a Linux ISA-level feature bit.
@@ -61,6 +62,7 @@ public struct DoryX86LinuxGuestControlRequirement: Codable, Sendable, Hashable {
   public enum Register: String, Codable, Sendable, Hashable {
     case cr4 = "CR4"
     case ia32EFER = "IA32_EFER"
+    case xcr0 = "XCR0"
   }
 
   public let name: String
@@ -131,10 +133,36 @@ public struct DoryX86LinuxBaselineRequirements: Codable, Sendable, Hashable {
     guestControls: baseline.guestControls
   )
 
+  /// v3 adds integer and vector requirements. OSXSAVE is a guest-controlled
+  /// gate: CPUID.1:ECX[27] reflects CR4, so do not require it in reset-state CPUID.
+  /// XCR0 gates describe the state the guest must be able to enable, not proof
+  /// that a running guest has enabled it or that instruction semantics qualify.
+  public static let v3 = Self(
+    level: .v3,
+    cpuid: v2.cpuid.union([
+      .init(feature: .avx, leaf: 1, register: .ecx, bit: 28),
+      .init(feature: .avx2, leaf: 7, register: .ebx, bit: 5),
+      .init(feature: .bmi1, leaf: 7, register: .ebx, bit: 3),
+      .init(feature: .bmi2, leaf: 7, register: .ebx, bit: 8),
+      .init(feature: .f16c, leaf: 1, register: .ecx, bit: 29),
+      .init(feature: .fma, leaf: 1, register: .ecx, bit: 12),
+      .init(feature: .lzcnt, leaf: 0x8000_0001, register: .ecx, bit: 5),
+      .init(feature: .movbe, leaf: 1, register: .ecx, bit: 22),
+      .init(feature: .xsave, leaf: 1, register: .ecx, bit: 26),
+    ]),
+    guestControls: v2.guestControls.union([
+      .init(name: "OSXSAVE", register: .cr4, bit: 18, profileFeatures: [.xsave]),
+      .init(name: "X87", register: .xcr0, bit: 0, profileFeatures: [.xsave, .x87]),
+      .init(name: "SSE", register: .xcr0, bit: 1, profileFeatures: [.xsave, .sse]),
+      .init(name: "YMM", register: .xcr0, bit: 2, profileFeatures: [.xsave, .avx]),
+    ])
+  )
+
   public static func requirements(for level: DoryX86LinuxISALevel) -> Self {
     switch level {
     case .baseline: baseline
     case .v2: v2
+    case .v3: v3
     }
   }
 }
