@@ -1,0 +1,15 @@
+{
+  "kind": "dev.dory.pc-incomplete-diagnostic",
+  "releaseQualified": false,
+  "candidateIdentityReceipt": "measurement.json",
+  "executionNanoseconds": 118529706208,
+  "stop": "exception(DoryDBTX86.DoryX86Exception(kind: DoryDBTX86.DoryX86Exception.Kind.pageFault, vector: 14, errorCode: Optional(0), instructionPointer: 18446744071805766992, linearAddress: Optional(18446612682070589440), commitsPartialProgress: false), instructionCount: 1004931535)",
+  "observedSerialBytes": 108,
+  "limitations": [
+    "Invocation omitted --exception-policy deliver and used the diagnostic stop policy. This is not evidence of a production CPU exception-delivery failure.",
+    "Diagnostic exit code zero reports a captured machine stop, not a successful boot.",
+    "GRUB printed its Booting menu-entry message, which the captured runner did not recognize as a timeline marker.",
+    "Corrected exception-delivery run is separate; this result is not a latency baseline.",
+    "A small Swift test build overlapped part of this diagnostic campaign; timing is not a controlled performance comparison."
+  ]
+}
