@@ -1,0 +1,56 @@
+{
+  "kind": "dev.dory.pc-efi-diagnostic",
+  "releaseQualified": false,
+  "baseIdentityReceipt": "measurement.json",
+  "bootArgumentsAdded": [
+    "efi=debug",
+    "nokaslr"
+  ],
+  "executionNanoseconds": 630000496041,
+  "deadlineSeconds": 600,
+  "timedOut": true,
+  "stop": "poweredOff(instructionCount: 3629131945)",
+  "bootTimeline": {
+    "clock": "host-dispatch-uptime-nanoseconds",
+    "elapsedNanoseconds": 630000560625,
+    "events": [
+      {
+        "elapsedNanoseconds": 0,
+        "milestone": "executionStarted"
+      },
+      {
+        "elapsedNanoseconds": 135596098750,
+        "milestone": "kernel"
+      },
+      {
+        "elapsedNanoseconds": 563954325375,
+        "milestone": "rootMounted"
+      }
+    ],
+    "observationID": "17B56467-B23E-491E-902E-364C0DBC8410",
+    "observedSerialBytes": 47647,
+    "originNanoseconds": 124637858153833,
+    "terminationReason": "host-execution-deadline",
+    "unobservedMilestones": [
+      "grub",
+      "initStarted"
+    ],
+    "unobservedStatus": "censored"
+  },
+  "logsSHA256": {
+    "efi-map-diagnostic-out.json.gz": "956b4e883ee1359878478296026a10440158f4deee4fce75793ec59fa4d5c34e",
+    "efi-map-diagnostic-err.log.gz": "89595df4d19b7a18d83faca25cb2dc7e48d9598e57c1702efc47d5fad2e73767",
+    "efi-map-diagnostic-invocation.json.gz": "ee25ac2162b49c6e16b70cbca33e6d3310a72c984469ae49bde917c7f11a4d03",
+    "efi-map-diagnostic-media-change.json.gz": "6dcebc74cf06833d2498e7db18ec62d5815a99fbe5afd56badc1d17bb533e82a",
+    "efi-map-diagnostic-progress-symbols.json.gz": "1e807b6c6da1169766f16083fc66de9a6d07ea6e456e94fd1ca92334064063af",
+    "efi-map-diagnostic-host-sample.txt.gz": "6248dc6ec99f8143d01cfb33e98de8f6517666663585a58cd95022a2774fb0a7"
+  },
+  "limitations": [
+    "Two changed boot arguments: this run cannot identify which avoided the earlier EFI fault.",
+    "Root mount observed; init and agent/RPC completion unobserved.",
+    "600-second deadline returned at 630 seconds; asyncAfter coalescing is being removed and retested.",
+    "Concurrent kernel build and a bounded host sample prevent latency comparison.",
+    "Guest symbol mapping uses the pinned vmlinux ELF and disabled KASLR; coarse progress observations are not time attribution.",
+    "The captured runner predates the GRUB menu marker correction."
+  ]
+}

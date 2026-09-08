@@ -1,0 +1,25 @@
+{
+  "kind": "dev.dory.pc-strict-deadline-validation",
+  "releaseQualified": false,
+  "runnerSHA256": "04ea5b2b913dc19ff7cbce6c3123a4bf78d5876b8d3fe79f7c7cfb8f61832a8f",
+  "samples": [
+    {
+      "requestedSeconds": 2,
+      "executionNanoseconds": 2000051583,
+      "timedOut": true,
+      "stop": "poweredOff(instructionCount: 1007671)",
+      "exitCode": 2
+    },
+    {
+      "requestedSeconds": 10,
+      "executionNanoseconds": 10000058833,
+      "timedOut": true,
+      "stop": "poweredOff(instructionCount: 5480919)",
+      "exitCode": 2
+    }
+  ],
+  "limitations": [
+    "Host scheduling remains non-realtime; these two observations do not prove a maximum cancellation latency for every guest workload.",
+    "Firmware interpreter runs only; no boot completion claimed."
+  ]
+}
