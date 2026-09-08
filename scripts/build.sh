@@ -92,7 +92,6 @@ if [ "$BUNDLE_SIGN_IDENTITY" != - ] && [ "$BUNDLE_EXPECTED_TEAM" = - ]; then
   echo "error: DORY_BUNDLE_SIGN_IDENTITY requires DORY_BUNDLE_EXPECTED_TEAM" >&2
   exit 64
 fi
-
 # Replacing or re-signing the same DerivedData bundle while its app, daemon, or helpers are
 # executing can leave macOS provenance locks behind and corrupt the bundle's CodeResources.
 # Fail before deleting any product so the caller can stop that runtime cleanly first.
@@ -562,7 +561,13 @@ bundle_debug_hv_helper() {
 
 verify_debug_renderer_packaging() {
   local app runner_app legacy managed_kernel renderer_enabled
+  local pc_kernel pc_kernel_sha256 pc_mesa pc_mesa_sha256
+  local -a renderer_pc_args=()
   managed_kernel="${DORY_RENDERER_MANAGED_KERNEL:-guest/out/Image-desktop}"
+  pc_kernel="${DORY_RENDERER_PC_MANAGED_KERNEL:-}"
+  pc_kernel_sha256="${DORY_RENDERER_PC_MANAGED_KERNEL_SHA256:-}"
+  pc_mesa="${DORY_RENDERER_PC_GUEST_MESA:-}"
+  pc_mesa_sha256="${DORY_RENDERER_PC_GUEST_MESA_SHA256:-}"
   renderer_enabled="${DORY_BUNDLE_RENDERER:-${DORY_BUNDLE_VENUS:-}}"
   if [ -z "$renderer_enabled" ]; then
     if [ "$XCODE_CONFIGURATION" = Release ]; then
@@ -575,6 +580,16 @@ verify_debug_renderer_packaging() {
     0|1) ;;
     *) echo "error: renderer bundle control must be 0 or 1" >&2; return 1 ;;
   esac
+  if [ -n "$pc_kernel$pc_kernel_sha256$pc_mesa$pc_mesa_sha256" ]; then
+    [ -n "$pc_kernel" ] && [ -n "$pc_kernel_sha256" ] \
+      && [ -n "$pc_mesa" ] && [ -n "$pc_mesa_sha256" ] \
+      && [ -f "$pc_kernel" ] && [ ! -L "$pc_kernel" ] \
+      && [ -f "$pc_mesa" ] && [ ! -L "$pc_mesa" ] || {
+        echo "error: renderer verification requires all exact PC kernel and Mesa inputs" >&2
+        return 1
+      }
+    renderer_pc_args=(--pc-managed-kernel "$pc_kernel" --pc-guest-mesa "$pc_mesa")
+  fi
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
     runner_app="$app/Contents/Helpers/DoryHVRunner.app"
@@ -587,12 +602,14 @@ verify_debug_renderer_packaging() {
         python3 scripts/package-renderer-production-bundle.py verify \
           --runner-app "$runner_app" --outer-app "$app" \
           --expected-team - --allow-adhoc-test \
-          --managed-kernel "$managed_kernel" || return 1
+          --managed-kernel "$managed_kernel" \
+          "${renderer_pc_args[@]}" || return 1
       else
         python3 scripts/package-renderer-production-bundle.py verify \
           --runner-app "$runner_app" --outer-app "$app" \
           --expected-team "$BUNDLE_EXPECTED_TEAM" \
-          --managed-kernel "$managed_kernel" || return 1
+          --managed-kernel "$managed_kernel" \
+          "${renderer_pc_args[@]}" || return 1
       fi
       continue
     fi
@@ -931,11 +948,182 @@ write_development_source_binding() {
   done
 }
 
+reseal_preview_renderer_graph() {
+  local app runner_app fs_worker_app renderer_worker_app renderer_inventory renderer_mode
+  local link_root link_inventory managed_kernel managed_kernel_sha256 pc_kernel pc_kernel_sha256
+  local pc_mesa pc_mesa_sha256 scratch issued_at expires_at payload
+  app="$1"
+  runner_app="$app/Contents/Helpers/DoryHVRunner.app"
+  fs_worker_app="$runner_app/Contents/XPCServices/DoryFSWorker.xpc"
+  renderer_worker_app="$runner_app/Contents/XPCServices/DoryRendererWorker.xpc"
+  renderer_inventory="$runner_app/Contents/Resources/renderer-production-inventory.json"
+  renderer_mode="${DORY_RENDERER_QUALIFICATION_MODE:-preview}"
+
+  case "$renderer_mode" in
+    preview) ;;
+    release)
+      echo "error: an Xcode automatic-signing renderer graph cannot be promoted by post-build resealing; use a release Xcode signing identity and detached qualification signature" >&2
+      return 1 ;;
+    *) echo "error: renderer qualification mode is invalid" >&2; return 1 ;;
+  esac
+  [ "$BUNDLE_SIGN_IDENTITY" != - ] && [ "$BUNDLE_EXPECTED_TEAM" != - ] || {
+    echo "error: preview renderer resealing requires the explicit bundle signing identity and team" >&2
+    return 1
+  }
+  link_root="${DORY_RENDERER_LINK_ROOT:-}"
+  link_inventory="${DORY_RENDERER_LINK_INVENTORY:-}"
+  managed_kernel="${DORY_RENDERER_MANAGED_KERNEL:-}"
+  managed_kernel_sha256="${DORY_RENDERER_MANAGED_KERNEL_SHA256:-}"
+  [ -n "$link_root" ] && [ -n "$link_inventory" ] \
+    && [ -n "$managed_kernel" ] && [ -n "$managed_kernel_sha256" ] || {
+      echo "error: preview renderer resealing requires exact link and managed-kernel inputs" >&2
+      return 1
+  }
+  [ -d "$link_root" ] && [ -f "$link_inventory" ] && [ -f "$managed_kernel" ] || {
+    echo "error: preview renderer resealing input is unavailable" >&2
+    return 1
+  }
+
+  for payload in \
+    "$renderer_worker_app/Contents/Frameworks/libEGL.dylib" \
+    "$renderer_worker_app/Contents/Frameworks/libGLESv2.dylib"; do
+    [ -f "$payload" ] && [ ! -L "$payload" ] || {
+      echo "error: preview renderer ANGLE payload is unavailable" >&2
+      return 1
+    }
+    /usr/bin/codesign --force --sign "$BUNDLE_SIGN_IDENTITY" \
+      --identifier "com.pythonxi.Dory.HVRunner.RendererWorker.$(basename "$payload")" \
+      --options runtime --timestamp "$payload" || return 1
+  done
+  /usr/bin/codesign --force --sign "$BUNDLE_SIGN_IDENTITY" \
+    --identifier com.pythonxi.Dory.HVRunner.FSWorker --options runtime --timestamp \
+    --entitlements Packages/ContainerizationEngine/DoryFSWorker.entitlements \
+    "$fs_worker_app" || return 1
+  /usr/bin/codesign --force --sign "$BUNDLE_SIGN_IDENTITY" \
+    --identifier com.pythonxi.Dory.HVRunner.RendererWorker --options runtime --timestamp \
+    --entitlements Packages/ContainerizationEngine/DoryRendererWorker.entitlements \
+    "$renderer_worker_app" || return 1
+
+  # Recreate the inventory after the Developer ID worker signature changes its
+  # Mach-O bytes.  The receipt must bind this final worker, not Xcode's earlier
+  # Apple Development staging signature.
+  python3 scripts/package-renderer-production-bundle.py package \
+    --runner-app "$runner_app" --link-root "$link_root" --link-inventory "$link_inventory" \
+    --runner-entitlements Packages/ContainerizationEngine/dory-hv.entitlements \
+    --expected-team "$BUNDLE_EXPECTED_TEAM" || return 1
+  /usr/bin/codesign --force --sign "$BUNDLE_SIGN_IDENTITY" \
+    --identifier com.pythonxi.Dory.HVRunner --options runtime --timestamp \
+    --entitlements Packages/ContainerizationEngine/dory-hv.entitlements \
+    "$runner_app" || return 1
+
+  scratch="$(mktemp -d "${TMPDIR:-/tmp}/dory-renderer-preview-reseal.XXXXXX")" || return 1
+  issued_at="$(python3 - <<'PY'
+import datetime as dt
+now = dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+print(now.strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+)" || { rm -rf "$scratch"; return 1; }
+  expires_at="$(python3 - "$issued_at" <<'PY'
+import datetime as dt
+import sys
+issued = dt.datetime.strptime(sys.argv[1], "%Y-%m-%dT%H:%M:%SZ")
+print((issued + dt.timedelta(days=30)).strftime("%Y-%m-%dT%H:%M:%SZ"))
+PY
+)" || { rm -rf "$scratch"; return 1; }
+  "$runner_app/Contents/MacOS/dory-hv" renderer-qualify \
+    --inventory "$renderer_inventory" --managed-kernel-sha256 "$managed_kernel_sha256" \
+    --issued-at "$issued_at" --expires-at "$expires_at" \
+    --output "$scratch/renderer-bootstrap-qualification.json" || { rm -rf "$scratch"; return 1; }
+
+  pc_kernel="${DORY_RENDERER_PC_MANAGED_KERNEL:-}"
+  pc_kernel_sha256="${DORY_RENDERER_PC_MANAGED_KERNEL_SHA256:-}"
+  pc_mesa="${DORY_RENDERER_PC_GUEST_MESA:-}"
+  pc_mesa_sha256="${DORY_RENDERER_PC_GUEST_MESA_SHA256:-}"
+  if [ -n "$pc_kernel$pc_kernel_sha256$pc_mesa$pc_mesa_sha256" ]; then
+    [ -n "$pc_kernel" ] && [ -n "$pc_kernel_sha256" ] && [ -n "$pc_mesa" ] && [ -n "$pc_mesa_sha256" ] \
+      && [ -f "$pc_kernel" ] && [ -f "$pc_mesa" ] || {
+        rm -rf "$scratch"
+        echo "error: preview PC renderer resealing requires all exact PC kernel and Mesa inputs" >&2
+        return 1
+      }
+    "$runner_app/Contents/MacOS/dory-hv" renderer-qualify \
+      --producer-fence-contract dory-pc-x86_64-virgl2 \
+      --inventory "$renderer_inventory" --managed-kernel-sha256 "$pc_kernel_sha256" \
+      --guest-mesa-sha256 "$pc_mesa_sha256" --issued-at "$issued_at" --expires-at "$expires_at" \
+      --output "$scratch/renderer-bootstrap-qualification-pc-x86_64-virgl2.json" \
+      || { rm -rf "$scratch"; return 1; }
+  fi
+  install -m0644 "$scratch/renderer-bootstrap-qualification.json" \
+    "$runner_app/Contents/Resources/renderer-bootstrap-qualification.json" || { rm -rf "$scratch"; return 1; }
+  if [ -n "$pc_kernel" ]; then
+    install -m0644 "$scratch/renderer-bootstrap-qualification-pc-x86_64-virgl2.json" \
+      "$runner_app/Contents/Resources/renderer-bootstrap-qualification-pc-x86_64-virgl2.json" \
+      || { rm -rf "$scratch"; return 1; }
+  fi
+  rm -rf "$scratch"
+
+  # The receipts are ordinary resources of the final runner and must be sealed
+  # after publication.  They bind only final worker identity/bytes, so this
+  # does not invalidate either receipt.
+  /usr/bin/codesign --force --sign "$BUNDLE_SIGN_IDENTITY" \
+    --identifier com.pythonxi.Dory.HVRunner --options runtime --timestamp \
+    --entitlements Packages/ContainerizationEngine/dory-hv.entitlements \
+    "$runner_app" || return 1
+  /usr/bin/codesign --verify --strict --deep "$runner_app" || return 1
+
+  set -- --runner-app "$runner_app" --managed-kernel "$managed_kernel" \
+    --expected-team "$BUNDLE_EXPECTED_TEAM"
+  if [ -n "$pc_kernel" ]; then
+    set -- "$@" --pc-managed-kernel "$pc_kernel" --pc-guest-mesa "$pc_mesa"
+  fi
+  python3 scripts/package-renderer-production-bundle.py verify "$@" || return 1
+}
+
+seal_unqualified_runner_graph() {
+  local app runner_app fs_worker_app renderer_worker_app renderer_inventory
+  app="$1"
+  runner_app="$app/Contents/Helpers/DoryHVRunner.app"
+  fs_worker_app="$runner_app/Contents/XPCServices/DoryFSWorker.xpc"
+  renderer_worker_app="$runner_app/Contents/XPCServices/DoryRendererWorker.xpc"
+  renderer_inventory="$runner_app/Contents/Resources/renderer-production-inventory.json"
+
+  [ -d "$runner_app" ] && [ ! -L "$runner_app" ] \
+    && [ -d "$fs_worker_app" ] && [ ! -L "$fs_worker_app" ] \
+    && [ -d "$renderer_worker_app" ] && [ ! -L "$renderer_worker_app" ] || {
+      echo "error: DoryHVRunner signing graph is incomplete" >&2
+      return 1
+    }
+
+  # Xcode emits an Apple Development staging graph when automatic signing is
+  # active. Preview qualification is allowed to re-seal that graph explicitly
+  # with the bundle's Developer ID identity; release qualification must arrive
+  # already signed by its dedicated release Xcode configuration.
+  if [ -e "$renderer_inventory" ] || [ -L "$renderer_inventory" ]; then
+    reseal_preview_renderer_graph "$app" || return 1
+    return 0
+  fi
+
+  sign_hardened_payload "$fs_worker_app" \
+    Packages/ContainerizationEngine/DoryFSWorker.entitlements \
+    com.pythonxi.Dory.HVRunner.FSWorker || return 1
+  sign_hardened_payload "$renderer_worker_app" \
+    Packages/ContainerizationEngine/DoryRendererWorker.entitlements \
+    com.pythonxi.Dory.HVRunner.RendererWorker || return 1
+  sign_hardened_payload "$runner_app" \
+    Packages/ContainerizationEngine/dory-hv.entitlements \
+    com.pythonxi.Dory.HVRunner || return 1
+  verify_hardened_runtime_signature "$fs_worker_app" DoryFSWorker.xpc || return 1
+  verify_hardened_runtime_signature "$renderer_worker_app" DoryRendererWorker.xpc || return 1
+  verify_hardened_runtime_signature "$runner_app" DoryHVRunner.app || return 1
+  codesign --verify --deep --strict "$runner_app" || return 1
+}
+
 sign_debug_apps() {
   local app helper framework extension
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
     xattr -cr "$app" 2>/dev/null || true
+    seal_unqualified_runner_graph "$app" || return 1
     for helper in docker docker-credential-osxkeychain docker-buildx docker-compose kubectl dory dory-doctor; do
       [ -f "$app/Contents/Helpers/$helper" ] || continue
       codesign --force -s "$BUNDLE_SIGN_IDENTITY" "$app/Contents/Helpers/$helper" >/dev/null 2>&1 || true

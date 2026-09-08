@@ -81,9 +81,19 @@ for payload in (
     assert f"sign_hardened_payload {payload}" in runner
     assert f"verify_hardened_runtime_signature {payload}" in runner
 assert "codesign --verify --deep --strict \"$runner_app\"" in runner
+release_signer = function_body("seal_unqualified_runner_graph")
+assert 'renderer-production-inventory.json' in release_signer
+assert 'sign_hardened_payload "$fs_worker_app"' in release_signer
+assert 'sign_hardened_payload "$renderer_worker_app"' in release_signer
+assert 'sign_hardened_payload "$runner_app"' in release_signer
+assert 'codesign --verify --deep --strict "$runner_app"' in release_signer
 renderer_verifier = function_body("verify_debug_renderer_packaging")
 assert 'renderer_enabled="${DORY_BUNDLE_RENDERER:-${DORY_BUNDLE_VENUS:-}}"' in renderer_verifier
 assert '[ "$XCODE_CONFIGURATION" = Release ] && [ "$renderer_enabled" = 1 ]' in renderer_verifier
+assert 'DORY_RENDERER_PC_MANAGED_KERNEL' in renderer_verifier
+assert 'DORY_RENDERER_PC_GUEST_MESA' in renderer_verifier
+assert 'renderer_pc_args=(--pc-managed-kernel "$pc_kernel" --pc-guest-mesa "$pc_mesa")' in renderer_verifier
+assert '"${renderer_pc_args[@]}"' in renderer_verifier
 vmm = function_body("bundle_doryd_swiftpm_helpers")
 assert 'sign_hardened_payload "$helper" "$entitlements" dory-vmm' in vmm
 assert 'sign_hardened_payload "$vmm_app" "$entitlements" dory-vmm' in vmm
@@ -103,8 +113,17 @@ for required in (
 assert 'DORY_BUILD_DORYD_HELPERS:-1' in installable
 assert 'DORY_BUILD_DEBUG_HELPERS:-1' in installable
 assert 'DORY_ALLOW_MISSING_GVPROXY:-0' in installable
+assert 'development-source-binding.json' in installable
+source_binding = function_body("write_development_source_binding")
+assert 'scripts/write-development-source-binding.py create' in text[:text.index("LOG=/tmp/dory_build.log")]
+assert 'cp "$SOURCE_BINDING_INPUT" "$binding"' in source_binding
+assert 'scripts/write-development-source-binding.py verify' in source_binding
+assert '--source-root "$ROOT"' in source_binding
 assert text.index("verify_installable_app_bundle || status=$?") < text.index(
     "sign_debug_apps || status=$?"
+)
+assert text.index("write_development_source_binding || status=$?") < text.index(
+    "verify_installable_app_bundle || status=$?"
 )
 pc_firmware = function_body("bundle_dory_pc_firmware")
 pc_builder = pathlib.Path(sys.argv[2]).read_text(encoding="utf-8")
