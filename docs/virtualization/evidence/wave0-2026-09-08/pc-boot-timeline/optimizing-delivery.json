@@ -1,0 +1,46 @@
+{
+  "kind": "dev.dory.pc-boot-failure",
+  "releaseQualified": false,
+  "candidateIdentityReceipt": "measurement.json",
+  "executionNanoseconds": 163975955708,
+  "termination": "tripleFault",
+  "instructionPointer": "0xffffffff8562eb20",
+  "bootTimeline": {
+    "clock": "host-dispatch-uptime-nanoseconds",
+    "elapsedNanoseconds": 163979188500,
+    "events": [
+      {
+        "elapsedNanoseconds": 0,
+        "milestone": "executionStarted"
+      },
+      {
+        "elapsedNanoseconds": 134833423916,
+        "milestone": "kernel"
+      }
+    ],
+    "observationID": "16CA512B-B97A-4B03-B930-3ACFFFA77B7E",
+    "observedSerialBytes": 14416,
+    "originNanoseconds": 123454656192375,
+    "terminationReason": "tripleFault(source: DoryMachinePC.DoryPCTripleFaultSource.exception(DoryMachinePC.DoryPCTripleFaultExceptionEvidence(exception: ",
+    "unobservedMilestones": [
+      "grub",
+      "rootMounted",
+      "initStarted"
+    ],
+    "unobservedStatus": "censored"
+  },
+  "observedFailure": "Linux instruction-fetch page fault at physical EFI runtime pointer 0x3fdc3743 in virt_efi_set_variable_nb / efi_delete_dummy_variable / efi_enter_virtual_mode, followed by kernel panic and triple fault.",
+  "logsSHA256": {
+    "optimizing-delivery-out.json.gz": "c05c9a1aec39563e7a628dad1e98f15a4744408cc11ff3acdbd84bd3fb174b37",
+    "optimizing-delivery-err.log.gz": "6bb78542eb9a4e0e8e83c211db2434f3fc5597eda04ffa106d78f6e41099e4ce",
+    "optimizing-delivery-invocation.json.gz": "0e700330be65eca061e5d6c862e5f74eb940bc48d46d2ef5913d1937e8ef559d"
+  },
+  "limitations": [
+    "No root mount, init or RPC completion.",
+    "Same copied firmware, installer and pristine disk as measurement.json; exception policy explicitly deliver.",
+    "Concurrent Swift/Xcode build load means elapsed time is not a controlled performance baseline.",
+    "Runner predates GRUB Booting marker correction; full serial output retains the bootloader message.",
+    "Host sampling did not run: the process had already exited.",
+    "Root cause remains unproven; baseline-tier control is a separate run."
+  ]
+}

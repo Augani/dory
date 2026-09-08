@@ -1,0 +1,21 @@
+{
+  "kind": "dev.dory.pc-bounded-host-sample",
+  "releaseQualified": false,
+  "candidateIdentityReceipt": "measurement.json",
+  "sample": {
+    "path": "baseline-firmware-host-sample.txt.gz",
+    "sha256": "601f30b49b489c53f97458a7d572818874659e5bafb3778f9f7edaeb026d385c",
+    "requestedSeconds": 5,
+    "intervalMilliseconds": 10,
+    "pid": 71807,
+    "mainThreadSamples": 415,
+    "baselineExecuteChainedSummaryInclusiveSamples": 402
+  },
+  "scope": "Baseline JIT firmware stage near 700 million retired instructions; kernel milestone not yet observed at the preceding progress report.",
+  "limitations": [
+    "Inclusive stack counts overlap; they are not additive categories or a CPU-time decomposition.",
+    "The idle work-queue stack is a separate thread and must not be counted as guest idle time.",
+    "Sample is a single interval, not a whole-boot profile.",
+    "Concurrent signed app build and sampling overhead prevent a latency comparison."
+  ]
+}

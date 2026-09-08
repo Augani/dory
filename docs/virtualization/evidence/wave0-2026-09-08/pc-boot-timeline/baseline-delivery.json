@@ -1,0 +1,42 @@
+{
+  "kind": "dev.dory.pc-baseline-boot-failure",
+  "releaseQualified": false,
+  "candidateIdentityReceipt": "measurement.json",
+  "executionNanoseconds": 165762799375,
+  "termination": "tripleFault",
+  "bootTimeline": {
+    "clock": "host-dispatch-uptime-nanoseconds",
+    "elapsedNanoseconds": 165764219792,
+    "events": [
+      {
+        "elapsedNanoseconds": 0,
+        "milestone": "executionStarted"
+      },
+      {
+        "elapsedNanoseconds": 136732487417,
+        "milestone": "kernel"
+      }
+    ],
+    "observationID": "2AFA9612-D4DE-4AB3-AA88-FB672372851E",
+    "observedSerialBytes": 14404,
+    "originNanoseconds": 123717908407333,
+    "terminationReason": "tripleFault(source: DoryMachinePC.DoryPCTripleFaultSource.exception(DoryMachinePC.DoryPCTripleFaultExceptionEvidence(exception: ",
+    "unobservedMilestones": [
+      "grub",
+      "rootMounted",
+      "initStarted"
+    ],
+    "unobservedStatus": "censored"
+  },
+  "failure": "Same 0x3fdc3743 EFI variable instruction-fetch fault and kernel panic as optimizing-delivery.json.",
+  "logsSHA256": {
+    "baseline-delivery-out.json.gz": "f1938f7e55ae6ec07d66577b99c99cf81809a9c674e5bfea7f9803eb2b92f06f",
+    "baseline-delivery-err.log.gz": "54215e585e62de2d739f75e43fd426d52605dd54d8200dffa8aceb3837594b02",
+    "baseline-delivery-invocation.json.gz": "7800054871a7a52f5e07c49ffef1e6e8d8730e127abab7ae414d248bf81e6f7a"
+  },
+  "limitations": [
+    "Failure reproduced on both JIT tiers; root cause not established.",
+    "Concurrent build and sampling; no performance comparison claimed.",
+    "No root mount, init or RPC completion."
+  ]
+}
