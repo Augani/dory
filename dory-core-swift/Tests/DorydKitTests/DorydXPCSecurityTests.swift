@@ -42,4 +42,45 @@ final class DorydXPCSecurityTests: XCTestCase {
         XCTAssertTrue(DorydXPCSecurity.productionClientRequirement.contains("dorydctl"))
         XCTAssertTrue(DorydXPCSecurity.productionDaemonRequirement.contains("identifier \"doryd\""))
     }
+
+    func testProductionDaemonIdentityRejectsWrongTeam() {
+        // A00.3: a binary signed by a different team is not the production daemon.
+        XCTAssertFalse(DorydXPCSecurity.isProductionDaemonIdentity(
+            teamIdentifier: "WRONGTEAM",
+            signingIdentifier: "doryd"
+        ))
+        XCTAssertFalse(DorydXPCSecurity.isProductionDaemonIdentity(
+            teamIdentifier: "",
+            signingIdentifier: "doryd"
+        ))
+    }
+
+    func testProductionDaemonIdentityRejectsWrongSigningIdentifier() {
+        // A00.3: a same-team binary with a different signing identifier is not doryd.
+        XCTAssertFalse(DorydXPCSecurity.isProductionDaemonIdentity(
+            teamIdentifier: DorydXPCSecurity.productionTeamID,
+            signingIdentifier: "Dory"
+        ))
+        XCTAssertFalse(DorydXPCSecurity.isProductionDaemonIdentity(
+            teamIdentifier: DorydXPCSecurity.productionTeamID,
+            signingIdentifier: "dorydctl"
+        ))
+        XCTAssertFalse(DorydXPCSecurity.isProductionDaemonIdentity(
+            teamIdentifier: DorydXPCSecurity.productionTeamID,
+            signingIdentifier: "dory-vmm"
+        ))
+    }
+
+    func testProductionDaemonIdentityRejectsUnsignedPeer() {
+        // A00.3: an unsigned or missing identity cannot satisfy the production requirement.
+        XCTAssertFalse(DorydXPCSecurity.isProductionDaemonIdentity(
+            teamIdentifier: nil,
+            signingIdentifier: "doryd"
+        ))
+        XCTAssertFalse(DorydXPCSecurity.isProductionDaemonIdentity(
+            teamIdentifier: DorydXPCSecurity.productionTeamID,
+            signingIdentifier: nil
+        ))
+    }
+
 }

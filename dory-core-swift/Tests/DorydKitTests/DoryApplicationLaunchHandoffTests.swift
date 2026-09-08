@@ -284,6 +284,169 @@ final class DoryApplicationLaunchHandoffTests: XCTestCase {
         }
     }
 
+    func testAbsentPeerConnectionFailsBeforeAnyDescriptorUse() throws {
+        // A00.3: an absent daemon peer must fail before any launch authority is consumed.
+        // The socket path does not exist, so the connection must fail closed. No descriptor
+        // targets are requested, but the client must not proceed past the connection attempt.
+        let absentSocket = "/tmp/dory-absent-peer-\(getpid())-\(UInt32.random(in: 0..<UInt32.max)).sock"
+        XCTAssertFalse(FileManager.default.fileExists(atPath: absentSocket))
+        XCTAssertThrowsError(try DoryApplicationLaunchHandoffClient.receiveIfRequested(
+            arguments: [
+                "desktop",
+                DoryApplicationLaunchHandoffClient.socketArgument, absentSocket,
+                DoryApplicationLaunchHandoffClient.tokenArgument,
+                String(repeating: "a", count: DoryApplicationLaunchHandoffProtocol.tokenByteCount * 2),
+            ],
+            authenticateDaemon: { _ in
+                XCTFail("authentication must not run when the peer is absent")
+            }
+        )) { error in
+            // The connection failure surfaces as a syscall error (ENOENT or ECONNREFUSED),
+            // never as a silent success or an invalidInvocation.
+            let handoffError = error as? DoryApplicationLaunchHandoffError
+            XCTAssertNotNil(handoffError)
+            switch handoffError {
+            case .syscall:
+                break
+            case .timeout:
+                break
+            default:
+                XCTFail("absent peer must fail with a syscall or timeout error, got: \(error)")
+            }
+        }
+    }
+
+    func testAuthenticationFailureLeavesTargetDescriptorsUninstalled() throws {
+        // A00.3: rejection must precede descriptor use. When daemon authentication fails
+        // (wrong-team, unsigned, or wrong-identity), no descriptor may be installed at any
+        // target slot. This test uses the internal authentication seam to simulate each
+        // rejection class and verifies the target FDs remain unavailable afterward.
+        let server = try DoryApplicationLaunchHandoffServer()
+        defer { server.cleanup() }
+        let directory = try makeTemporaryDirectory(prefix: "dory-auth-rejection-fd")
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let authorityPath = directory + "/authority"
+        try Data("unreachable-authority".utf8).write(to: URL(fileURLWithPath: authorityPath))
+        let authorityDescriptor = open(authorityPath, O_RDONLY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(authorityDescriptor, 0)
+        defer { Darwin.close(authorityDescriptor) }
+
+        let targetDescriptor: Int32 = 950
+        Darwin.close(targetDescriptor)
+        defer { Darwin.close(targetDescriptor) }
+
+        for rejectionCase in FixtureDaemonRejection.allCases {
+            let clientResult = LockedLaunchHandoffResult()
+            let clientFinished = DispatchGroup()
+            clientFinished.enter()
+            DispatchQueue.global(qos: .userInitiated).async {
+                defer { clientFinished.leave() }
+                clientResult.set(Result {
+                    try DoryApplicationLaunchHandoffClient.receiveIfRequested(
+                        arguments: [
+                            "desktop",
+                            DoryApplicationLaunchHandoffClient.socketArgument, server.path,
+                            DoryApplicationLaunchHandoffClient.tokenArgument, server.token,
+                        ],
+                        authenticateDaemon: { _ in throw rejectionCase.error }
+                    )
+                })
+            }
+
+            var runnerAuthenticated = false
+            XCTAssertThrowsError(try server.transfer(
+                toExpectedPID: getpid(),
+                mappings: [
+                    InheritedDescriptorMapping(
+                        parentDescriptor: authorityDescriptor,
+                        childDescriptor: targetDescriptor
+                    ),
+                ]
+            ) {
+                runnerAuthenticated = true
+            })
+            XCTAssertEqual(clientFinished.wait(timeout: .now() + 2), .success)
+            XCTAssertFalse(runnerAuthenticated, "runner must not authenticate for \(rejectionCase)")
+            XCTAssertThrowsError(try clientResult.get().get()) { error in
+                XCTAssertEqual(error as? FixtureDaemonRejection, rejectionCase)
+            }
+
+            // The target descriptor must remain uninstalled: authentication failed before
+            // the server sent any descriptors, so the child slot is still closed.
+            errno = 0
+            XCTAssertEqual(fcntl(targetDescriptor, F_GETFD), -1)
+            XCTAssertEqual(errno, EBADF)
+        }
+    }
+
+    func testValidPeerSuccessInstallsDescriptorsOnlyAfterAuthentication() throws {
+        // A00.3: normal authenticated success. Descriptors appear at their targets only
+        // after the authentication callback has run, proving the ordering invariant.
+        let server = try DoryApplicationLaunchHandoffServer()
+        defer { server.cleanup() }
+        let directory = try makeTemporaryDirectory(prefix: "dory-auth-success-fd")
+        defer { try? FileManager.default.removeItem(atPath: directory) }
+        let authorityPath = directory + "/authority"
+        try Data("valid-authority".utf8).write(to: URL(fileURLWithPath: authorityPath))
+        let authorityDescriptor = open(authorityPath, O_RDONLY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(authorityDescriptor, 0)
+        defer { Darwin.close(authorityDescriptor) }
+
+        let targetDescriptor: Int32 = 951
+        Darwin.close(targetDescriptor)
+        defer { Darwin.close(targetDescriptor) }
+
+        // Before the handshake, the target must be unavailable.
+        errno = 0
+        XCTAssertEqual(fcntl(targetDescriptor, F_GETFD), -1)
+        XCTAssertEqual(errno, EBADF)
+
+        let clientResult = LockedLaunchHandoffResult()
+        let clientFinished = DispatchGroup()
+        clientFinished.enter()
+        let authOrder = LockedAuthenticationOrder()
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { clientFinished.leave() }
+            clientResult.set(Result {
+                try DoryApplicationLaunchHandoffClient.receiveIfRequested(
+                    arguments: [
+                        "desktop",
+                        DoryApplicationLaunchHandoffClient.socketArgument, server.path,
+                        DoryApplicationLaunchHandoffClient.tokenArgument, server.token,
+                    ],
+                    authenticateDaemon: { pid in
+                        authOrder.recordClientAuthentication(pid: pid)
+                    }
+                )
+            })
+        }
+
+        var serverAuthenticatedAfterClient = false
+        let peerAuditToken = try server.transfer(
+            toExpectedPID: getpid(),
+            mappings: [
+                InheritedDescriptorMapping(
+                    parentDescriptor: authorityDescriptor,
+                    childDescriptor: targetDescriptor
+                ),
+            ]
+        ) {
+            serverAuthenticatedAfterClient = authOrder.clientAuthenticated()
+        }
+
+        XCTAssertEqual(clientFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertEqual(try clientResult.get().get(), ["desktop"])
+        XCTAssertEqual(try readAll(descriptor: targetDescriptor), Data("valid-authority".utf8))
+        XCTAssertEqual(
+            DoryApplicationLaunchHandoffProtocol.signal(
+                SIGCONT,
+                auditToken: peerAuditToken
+            ),
+            .delivered
+        )
+        XCTAssertTrue(serverAuthenticatedAfterClient)
+    }
+
     func testRendererGenerationHandoffTransfersFreshBootstrapDescriptor() throws {
         let directory = try makeTemporaryDirectory(prefix: "dory-renderer-generation-handoff")
         defer { try? FileManager.default.removeItem(atPath: directory) }
@@ -728,6 +891,24 @@ private enum FixtureDaemonAuthenticationError: Error {
     case rejected
 }
 
+/// A00.3: the three production rejection classes — wrong-team, wrong-identity, and unsigned —
+/// are indistinguishable at the transport seam because `SecCodeCheckValidity` requires real
+/// signed binaries. This enum lets the focused test exercise each rejection path and verify
+/// that descriptor authority is never released regardless of the failure cause.
+private enum FixtureDaemonRejection: Error, Equatable, CaseIterable {
+    case wrongTeam
+    case wrongIdentity
+    case unsigned
+
+    var error: Error {
+        switch self {
+        case .wrongTeam: return FixtureDaemonRejection.wrongTeam
+        case .wrongIdentity: return FixtureDaemonRejection.wrongIdentity
+        case .unsigned: return FixtureDaemonRejection.unsigned
+        }
+    }
+}
+
 private final class LockedLaunchHandoffResult: @unchecked Sendable {
     private let lock = NSLock()
     private var result: Result<[String], Error>?
@@ -786,6 +967,19 @@ private final class LockedBool: @unchecked Sendable {
 
     func set(_ value: Bool) {
         lock.withLock { stored = value }
+    }
+}
+
+private final class LockedAuthenticationOrder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var didAuthenticateClient = false
+
+    func recordClientAuthentication(pid: pid_t) {
+        lock.withLock { didAuthenticateClient = true }
+    }
+
+    func clientAuthenticated() -> Bool {
+        lock.withLock { didAuthenticateClient }
     }
 }
 
