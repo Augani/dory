@@ -1,0 +1,500 @@
+{
+  "appIdentity": {
+    "CFBundleIdentifier": "com.pythonxi.Dory",
+    "CFBundleShortVersionString": "0.4.6",
+    "CFBundleVersion": "52",
+    "LSMinimumSystemVersion": "14.0",
+    "status": "available"
+  },
+  "candidateSourceBinding": "verified: app embeds the current complete development source snapshot",
+  "candidateStatus": "development-source-bound",
+  "incompleteProducers": [],
+  "kind": "dev.dory.wave0-producer-inventory",
+  "producers": [
+    {
+      "artifacts": [
+        {
+          "byteCount": 96664448,
+          "id": "dory-app",
+          "minimumMacOS": "14.0",
+          "path": "Dory.app/Contents/MacOS/Dory",
+          "sha256": "3987350455610be7fd9e8e9d1a7bfcfaefb44e775f1a94f0ef62a20b9abbc84b",
+          "status": "available"
+        }
+      ],
+      "id": "app",
+      "metadata": {
+        "identity": {
+          "CFBundleIdentifier": "com.pythonxi.Dory",
+          "CFBundleShortVersionString": "0.4.6",
+          "CFBundleVersion": "52",
+          "LSMinimumSystemVersion": "14.0",
+          "status": "available"
+        },
+        "sourceBinding": {
+          "bindingSHA256": "5bfa783b7d7bb29a17988caed2c2543b6b75ad48973988ded79063fd72d7e9c7",
+          "status": "matches-current-source"
+        },
+        "status": "matches-current-source"
+      },
+      "owner": "Dory Xcode application target",
+      "sourceInputs": [
+        {
+          "path": "Dory.xcodeproj/project.pbxproj",
+          "sha256": "894b6ab4913162e2e41ed5f084795eb1452d4fc8aec3c904c041ae5ffdd5961c",
+          "status": "available"
+        },
+        {
+          "path": "Config/Dory-Info.plist",
+          "sha256": "e68732726a17ecfa027c28f49543a30e23e1ca064928d597227704b43a6e37fe",
+          "status": "available"
+        },
+        {
+          "path": "scripts/build.sh",
+          "sha256": "08b4da23a6e167e51dfca3e125a14d295079d6cd1ba64d294348cb3d246b0920",
+          "status": "available"
+        }
+      ],
+      "status": "available"
+    },
+    {
+      "artifacts": [
+        {
+          "byteCount": 39958672,
+          "id": "doryd",
+          "minimumMacOS": "14.0",
+          "path": "Dory.app/Contents/Helpers/doryd",
+          "sha256": "a69cf2d0dfdd7603ea561067d01e763234fd20ea018097ebd7dd52cdfca4057d",
+          "status": "available"
+        }
+      ],
+      "id": "daemon",
+      "owner": "dory-core-swift doryd",
+      "sourceInputs": [
+        {
+          "path": "dory-core-swift/Package.swift",
+          "sha256": "c63386dd52fb0496b5a8eff53b151492bb58186443361c041cf5bc04a944ccd4",
+          "status": "available"
+        },
+        {
+          "path": "dory-core-swift/Sources/doryd/main.swift",
+          "sha256": "6c08a3723a903ab1f6945e08c9539cb041a3a8c7439b5fbc05032c4ee9b6ecef",
+          "status": "available"
+        }
+      ],
+      "status": "available"
+    },
+    {
+      "artifacts": [
+        {
+          "byteCount": 122311472,
+          "id": "dory-ffi",
+          "path": "dory-core-swift/artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a",
+          "sha256": "ee59c027b28537d6ab6769f2ce66367e0374f755672b0903cfd3f1937da3dd86",
+          "status": "available"
+        }
+      ],
+      "id": "ffi",
+      "metadata": {
+        "maximumSupportedMacOS": "14.0.0",
+        "receiptSHA256": "ac83f3f7c65ce469fb3df8c67129ed33281693204d9573d2d126df56204fdf6d",
+        "slices": [
+          {
+            "architecture": "arm64",
+            "maximumMinimumMacOS": "14.0.0",
+            "minimumMacOSCounts": {
+              "11.0.0": 384,
+              "14.0.0": 800
+            },
+            "objectCount": 1184
+          },
+          {
+            "architecture": "x86_64",
+            "maximumMinimumMacOS": "14.0.0",
+            "minimumMacOSCounts": {
+              "10.12.0": 286,
+              "14.0.0": 813
+            },
+            "objectCount": 1099
+          }
+        ],
+        "status": "matches-current-archive"
+      },
+      "owner": "dory-core Rust static library producer",
+      "sourceInputs": [
+        {
+          "path": "dory-core/Cargo.lock",
+          "sha256": "015646eeb635c76666cb0b725537945a1045ae993a8d80322cdec8faf38e8b5f",
+          "status": "available"
+        },
+        {
+          "path": "scripts/build-dory-ffi-xcframework.sh",
+          "sha256": "43e2fff92c1109575834be525323d854c572eb150727ccc31669c897de8e47b8",
+          "status": "available"
+        },
+        {
+          "path": "scripts/verify-dory-ffi-deployment-targets.py",
+          "sha256": "c4a2cb179c23d10e8ff82fcf8ac2e1b131e45cd14ad9c32fb1d0cd02a626b3d9",
+          "status": "available"
+        }
+      ],
+      "status": "available"
+    },
+    {
+      "artifacts": [
+        {
+          "byteCount": 71985248,
+          "id": "dory-hv",
+          "minimumMacOS": "15.0",
+          "path": "Dory.app/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv",
+          "sha256": "675d0648ec60b2ba993dd0aea8abff9e69e49c937b67fdcc2a37fa6bde423111",
+          "status": "available"
+        }
+      ],
+      "id": "runner",
+      "owner": "ContainerizationEngine dory-hv",
+      "sourceInputs": [
+        {
+          "path": "Packages/ContainerizationEngine/Package.swift",
+          "sha256": "aa812dc9d6421d8ee0461be30ee10b8d75a94942c9b370cda78d8d8e6b69fc28",
+          "status": "available"
+        },
+        {
+          "path": "Packages/ContainerizationEngine/Sources/dory-hv/main.swift",
+          "sha256": "ec68eee15dab4989866302ceafab8890230a97f4ca6768a65cdfd9ffcb502254",
+          "status": "available"
+        },
+        {
+          "path": "scripts/build.sh",
+          "sha256": "08b4da23a6e167e51dfca3e125a14d295079d6cd1ba64d294348cb3d246b0920",
+          "status": "available"
+        }
+      ],
+      "status": "available"
+    },
+    {
+      "artifacts": [
+        {
+          "byteCount": 10635504,
+          "id": "renderer-worker",
+          "minimumMacOS": "15.0",
+          "path": "Dory.app/Contents/Helpers/DoryHVRunner.app/Contents/XPCServices/DoryRendererWorker.xpc/Contents/MacOS/DoryRendererWorker",
+          "sha256": "223928e761201522e83929ec73632701b165663b109c92b209bfba3cee4b4887",
+          "status": "available"
+        },
+        {
+          "byteCount": 19290,
+          "id": "renderer-production-inventory",
+          "path": "Dory.app/Contents/Helpers/DoryHVRunner.app/Contents/Resources/renderer-production-inventory.json",
+          "sha256": "1626d55e3bc43de8530c8ddb2501d551dbd991195fbc441deb4d2f22a67ef065",
+          "status": "available"
+        }
+      ],
+      "id": "renderer",
+      "owner": "renderer tuple and nested worker producer",
+      "sourceInputs": [
+        {
+          "path": "Config/DoryRendererProductionTuple.json",
+          "sha256": "13d0ffcff1affe63635f4521a804fc29bf5bb8e74f10eaafa3f5385824e54ebf",
+          "status": "available"
+        },
+        {
+          "path": "scripts/xcode-package-renderer-production.sh",
+          "sha256": "8f58854f0fb69ee0bfcca5aada66398a5ddb1db762b50372f7a314c5e0dd7a1c",
+          "status": "available"
+        },
+        {
+          "path": "scripts/assemble-renderer-production-worker.sh",
+          "sha256": "e646669d95e4e5a7088fb49c0f44c47771925c1e8ad375488763384b7a65acc7",
+          "status": "available"
+        }
+      ],
+      "status": "available"
+    },
+    {
+      "artifacts": [
+        {
+          "byteCount": 972,
+          "id": "pc-firmware-manifest",
+          "path": "guest/out/dory-pc-firmware/manifest.json",
+          "sha256": "627f3f79bed5fc1d4f481cefa0df48aa0d9c192cd577a08212406c11baa99607",
+          "status": "available"
+        },
+        {
+          "byteCount": 3653632,
+          "id": "pc-firmware-code",
+          "path": "guest/out/dory-pc-firmware/firmware-code.fd",
+          "sha256": "461cc0af580f1cfc91c944250950f18ea151c70e2d12e34739ad1ec38c47f4ca",
+          "status": "available"
+        }
+      ],
+      "id": "pc-firmware",
+      "metadata": {
+        "firmwareABIIdentity": "dory.edk2.pc@1",
+        "machineABIIdentity": "dory.pc@1",
+        "manifestSHA256": "627f3f79bed5fc1d4f481cefa0df48aa0d9c192cd577a08212406c11baa99607",
+        "source": {
+          "repository": "https://github.com/tianocore/edk2.git",
+          "revision": "2970e5699ba6267f3384ffab20f96647578aebc8"
+        },
+        "status": "matches-current-firmware"
+      },
+      "owner": "DoryFirmware PC bundle producer",
+      "sourceInputs": [
+        {
+          "path": "dory-core-swift/Sources/DoryFirmware/DoryFirmwareBundleBuilder.swift",
+          "sha256": "6aed87bea6dd9b2b52ce3ccac3e6e8efe4f9a3c85b23797430824eb1a4b667a1",
+          "status": "available"
+        },
+        {
+          "path": "dory-core-swift/Sources/DoryFirmware/DoryPCUEFILaunchPlan.swift",
+          "sha256": "1e15d5380da42513cba5a5d5eda809a9441f302f0b4215052d7ca0504fab7fb6",
+          "status": "available"
+        }
+      ],
+      "status": "available"
+    },
+    {
+      "artifacts": [
+        {
+          "byteCount": 63764992,
+          "id": "arm64-venus-kernel",
+          "path": "guest/out/Image-gpu",
+          "sha256": "fb8a381992afec20f3522bc6242868548829f82c209b261e0efd57e01498494f",
+          "status": "available"
+        },
+        {
+          "byteCount": 557,
+          "id": "arm64-venus-stamp",
+          "path": "guest/out/kernel-build-arm64-gpu.stamp",
+          "sha256": "663796344a72d89594cfb5e01f351dcb3f57d41895684a55d30c48302b87cd64",
+          "status": "available"
+        }
+      ],
+      "id": "arm64-kernel",
+      "metadata": {
+        "status": "matches-current-producer",
+        "verificationSHA256": "115d54d0a78bf428171ad233e9936009cd216a0414a32e66f034981f87d95580"
+      },
+      "owner": "guest/kernel Venus profile producer",
+      "sourceInputs": [
+        {
+          "path": "guest/kernel/build.sh",
+          "sha256": "f1be1dadbbba68096ce782dce2a34387bad9e04d10bed73eddb8444949c5bef9",
+          "status": "available"
+        },
+        {
+          "path": "guest/kernel/profile.sh",
+          "sha256": "6e5fff55d1dcf81ea4096fdd123655eb324234f26aa253eb852d4a47ba75f17b",
+          "status": "available"
+        }
+      ],
+      "status": "available"
+    },
+    {
+      "artifacts": [
+        {
+          "byteCount": 13104128,
+          "id": "x86_64-pc-virgl2-kernel",
+          "path": "guest/out/bzImage-x86-pc-virgl2",
+          "sha256": "d301a250643bd578413d4b6f17829d1253cc61838d9ebb4114ff6c69979252b4",
+          "status": "available"
+        },
+        {
+          "byteCount": 643,
+          "id": "x86_64-pc-virgl2-stamp",
+          "path": "guest/out/kernel-build-amd64-pc-virgl2.stamp",
+          "sha256": "3dbe1c0a6d03fff58542db4fdc107588236ecc200c59e8d4ccb017376471a6e0",
+          "status": "available"
+        }
+      ],
+      "id": "x86_64-kernel",
+      "metadata": {
+        "status": "matches-current-producer",
+        "verificationSHA256": "29a6dafaa31842635642f5e5bd2dfdbf4426fe6da3387351c53dba3c907d3245"
+      },
+      "owner": "guest/kernel PC VirGL2 profile producer",
+      "sourceInputs": [
+        {
+          "path": "guest/kernel/build.sh",
+          "sha256": "f1be1dadbbba68096ce782dce2a34387bad9e04d10bed73eddb8444949c5bef9",
+          "status": "available"
+        },
+        {
+          "path": "guest/kernel/profile.sh",
+          "sha256": "6e5fff55d1dcf81ea4096fdd123655eb324234f26aa253eb852d4a47ba75f17b",
+          "status": "available"
+        }
+      ],
+      "status": "available"
+    },
+    {
+      "artifacts": [
+        {
+          "byteCount": 730910646,
+          "id": "desktop-debian-rootfs",
+          "path": "guest/out/dory-desktop-debian-rootfs-arm64.ext4.zst",
+          "sha256": "f709e9bbc7529b6ee81838dad177c7c5849100b2e0cbbd26cff2bbfaef6940ae",
+          "status": "available"
+        },
+        {
+          "byteCount": 602598000,
+          "id": "desktop-ubuntu-rootfs",
+          "path": "guest/out/dory-desktop-ubuntu-rootfs-arm64.ext4.zst",
+          "sha256": "10d578f9b4d8e448c926a9c35b899d3410ad0b9cb2e0c297010f2e5a4166e677",
+          "status": "available"
+        },
+        {
+          "byteCount": 826716439,
+          "id": "desktop-kali-rootfs",
+          "path": "guest/out/dory-desktop-kali-rootfs-arm64.ext4.zst",
+          "sha256": "3628924ee7d98f205e43178b5ad7a3e6fa24da235d439c65c1f97787ec7b152f",
+          "status": "available"
+        }
+      ],
+      "id": "desktop-rootfs",
+      "metadata": {
+        "buildStamps": [
+          {
+            "actualCompressedSHA256": "f709e9bbc7529b6ee81838dad177c7c5849100b2e0cbbd26cff2bbfaef6940ae",
+            "currentInputSHA256": "2884eb9f24804c054cadb6bfe09a092114b7c4c9a776b9b6f787083bb54cb71e",
+            "distro": "debian",
+            "recordedCompressedSHA256": "f709e9bbc7529b6ee81838dad177c7c5849100b2e0cbbd26cff2bbfaef6940ae",
+            "recordedInputSHA256": "2884eb9f24804c054cadb6bfe09a092114b7c4c9a776b9b6f787083bb54cb71e",
+            "stamp": "guest/out/dory-desktop-debian-build-arm64.stamp",
+            "status": "matches-current-inputs"
+          },
+          {
+            "actualCompressedSHA256": "10d578f9b4d8e448c926a9c35b899d3410ad0b9cb2e0c297010f2e5a4166e677",
+            "currentInputSHA256": "8e5ab11dc93e5d5661753b3a4d336a26e3bbd964f016e8b176c4ede69c02523f",
+            "distro": "ubuntu",
+            "recordedCompressedSHA256": "10d578f9b4d8e448c926a9c35b899d3410ad0b9cb2e0c297010f2e5a4166e677",
+            "recordedInputSHA256": "8e5ab11dc93e5d5661753b3a4d336a26e3bbd964f016e8b176c4ede69c02523f",
+            "stamp": "guest/out/dory-desktop-ubuntu-build-arm64.stamp",
+            "status": "matches-current-inputs"
+          },
+          {
+            "actualCompressedSHA256": "3628924ee7d98f205e43178b5ad7a3e6fa24da235d439c65c1f97787ec7b152f",
+            "currentInputSHA256": "4c52de8f73567b02193bbb0fe8f9b7fb2ac62c40caa432b2314c95057f1f5aea",
+            "distro": "kali",
+            "recordedCompressedSHA256": "3628924ee7d98f205e43178b5ad7a3e6fa24da235d439c65c1f97787ec7b152f",
+            "recordedInputSHA256": "4c52de8f73567b02193bbb0fe8f9b7fb2ac62c40caa432b2314c95057f1f5aea",
+            "stamp": "guest/out/dory-desktop-kali-build-arm64.stamp",
+            "status": "matches-current-inputs"
+          }
+        ],
+        "status": "matches-current-inputs"
+      },
+      "owner": "guest/desktop general-purpose distro producer",
+      "sourceInputs": [
+        {
+          "path": "guest/desktop/PINS",
+          "sha256": "7b8aea3d9d47558a6b0a01565daa9fb5f462d674d615b5a7503155729b395ce4",
+          "status": "available"
+        },
+        {
+          "path": "guest/desktop/build.sh",
+          "sha256": "d510dc3e05c16fe34e42ba5fc4279dd736721d27647c26e4c93d23771fb4713c",
+          "status": "available"
+        },
+        {
+          "path": "guest/desktop/input-fingerprint.sh",
+          "sha256": "cbc35faa3e811ba4c13ea0ec26634abdef3cccbe128ae6ee95ec40ecac67c39e",
+          "status": "available"
+        },
+        {
+          "path": "guest/desktop/verify-build.sh",
+          "sha256": "1e3ca62a19ab221762c37fc2b6593330eaaffcf6786120f1f97d17ebae9ed381",
+          "status": "available"
+        }
+      ],
+      "status": "available"
+    },
+    {
+      "artifacts": [
+        {
+          "byteCount": 655990,
+          "id": "arm64-venus-mesa",
+          "path": "guest/out/dory-mesa-venus-arm64.tar.zst",
+          "sha256": "fa12e2bef9855dd382c3cd7f1dcd434f65302fc13471ae06367179f1ad37124c",
+          "status": "available"
+        },
+        {
+          "byteCount": 8330399,
+          "id": "x86_64-virgl2-mesa",
+          "path": "guest/out/dory-mesa-virgl2-x86_64.tar.zst",
+          "sha256": "410e364a0f9a93ed9f370c4eae90c88a625416be1dffa96dd8af5952a6558450",
+          "status": "available"
+        }
+      ],
+      "id": "mesa",
+      "owner": "guest/mesa Venus and PC VirGL2 producers",
+      "sourceInputs": [
+        {
+          "path": "guest/mesa/PINS",
+          "sha256": "939aaef3df4cc8aef46e12f8e576973e985627f96138f3d0b96231d04edc6b0e",
+          "status": "available"
+        },
+        {
+          "path": "guest/mesa/build.sh",
+          "sha256": "9ee01086f980605473f45044e305f374bac39304d8fe9224548854eb84994f5f",
+          "status": "available"
+        },
+        {
+          "path": "guest/mesa/build-pc-virgl2.sh",
+          "sha256": "837a3b2ebac95b4e0122a06be458e963ae561bc2cceb85ba2d12fdeb2f955867",
+          "status": "available"
+        }
+      ],
+      "status": "available"
+    },
+    {
+      "artifacts": [
+        {
+          "byteCount": 1410944,
+          "id": "arm64-agent",
+          "path": "guest/out/dory-agent-arm64",
+          "sha256": "148e0f1b49db9440188bed115af8cfa129081f2d3c0be93bc7799e1f1f4a268f",
+          "status": "available"
+        },
+        {
+          "byteCount": 1515920,
+          "id": "x86_64-agent",
+          "path": "guest/out/dory-agent-amd64",
+          "sha256": "bf05db6232afa5b4943375f163af16de302693032aeee0efb0002f9391f7cda3",
+          "status": "available"
+        },
+        {
+          "byteCount": 77985084,
+          "id": "arm64-docker",
+          "path": "guest/out/docker-29.6.1-dory1/docker-29.6.1-dory1-arm64.tgz",
+          "sha256": "3ba01aa0b2f8dbf60dbea797d5f677aa85b9d124737473aafbab1b376c576064",
+          "status": "available"
+        }
+      ],
+      "id": "guest-tools",
+      "owner": "guest initfs and Docker producers",
+      "sourceInputs": [
+        {
+          "path": "guest/initfs/build.sh",
+          "sha256": "8d52611438886111775db6be3dc41b515c6ee948aa18ba91c95d235e039fa4eb",
+          "status": "available"
+        },
+        {
+          "path": "guest/initfs/vendor/docker-29.6.1-dory1/rebuild.sh",
+          "sha256": "262654dbd6a94d3791cd5fef541b47bc3ef3f4e41f0d92cc10ac322d56b90229",
+          "status": "available"
+        }
+      ],
+      "status": "available"
+    }
+  ],
+  "releaseQualified": false,
+  "schemaVersion": 1,
+  "sourceState": {
+    "headCommit": "2bf57eb7ced94b90560b33f3a799e7a47b7bdb59",
+    "status": "available",
+    "worktreeDirty": true,
+    "worktreeStatusSHA256": "fdf536e59a461f1651d06665bca15f0b94facf3c40b5e844a9a1e770c4ddd77a"
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "arguments": [
+    "bash",
+    "scripts/build.sh",
+    "CODE_SIGN_STYLE=Manual",
+    "DEVELOPMENT_TEAM=864H636QW4",
+    "CODE_SIGN_IDENTITY=Developer ID Application: Augustus Otu (864H636QW4)"
+  ],
+  "environment": {
+    "DEVELOPER_DIR": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+    "DORY_XCODE_CONFIGURATION": "Release",
+    "DORY_XCODE_CODE_SIGNING_ALLOWED": "YES",
+    "DORY_BUNDLE_SIGN_IDENTITY": "Developer ID Application: Augustus Otu (864H636QW4)",
+    "DORY_BUNDLE_EXPECTED_TEAM": "864H636QW4",
+    "DORY_DESKTOP_BUNDLE_MODE": "none",
+    "DORY_REQUIRE_CORE_ASSETS": "1",
+    "DORY_VM_QUALIFICATION_BOOTSTRAP": "0",
+    "DORY_BUNDLE_RENDERER": "1",
+    "DORY_BUNDLE_VENUS": "1",
+    "DORY_RENDERER_LINK_ROOT": "$REPOSITORY/.dory-build/renderer-static-link",
+    "DORY_RENDERER_LINK_INVENTORY": "$REPOSITORY/.dory-build/renderer-static-link/renderer-static-link-inventory.json",
+    "DORY_RENDERER_MANAGED_KERNEL": "$REPOSITORY/guest/out/Image-gpu",
+    "DORY_RENDERER_MANAGED_KERNEL_SHA256": "fb8a381992afec20f3522bc6242868548829f82c209b261e0efd57e01498494f",
+    "DORY_RENDERER_PC_MANAGED_KERNEL": "$REPOSITORY/guest/out/vmlinux-x86-pc-virgl2",
+    "DORY_RENDERER_PC_MANAGED_KERNEL_SHA256": "7b25d6c81f8c42624fad40f410baaddee3f4f9694a9239bf1e3c5cd41d72093d",
+    "DORY_RENDERER_PC_GUEST_MESA": "$REPOSITORY/guest/out/dory-mesa-virgl2-x86_64.tar.zst",
+    "DORY_RENDERER_PC_GUEST_MESA_SHA256": "410e364a0f9a93ed9f370c4eae90c88a625416be1dffa96dd8af5952a6558450"
+  }
+}
