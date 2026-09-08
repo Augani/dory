@@ -1,0 +1,59 @@
+{
+  "task": "A01/A16 restore production FEX patch provenance",
+  "sourceCommit": "d9ff409b14cfe8a25369ff31ea7eba0229545084",
+  "owner": "Codex",
+  "reviewer": "independent review open",
+  "patchChecks": [
+    {
+      "variant": "shipped",
+      "applyCheck": "passed",
+      "sourceCommit": "1cc4b93e7a71c883ec021b71359f136394dc1f3c",
+      "patches": [
+        {
+          "path": "patches/fex-container-fd-isolation.patch",
+          "sha256": "374eb59a207c0356f548295552f235c0eeadcdbac360a64b01535933a1af8f8a"
+        },
+        {
+          "path": "patches/fex-processor-id-stack-fix.patch",
+          "sha256": "e1da91d76caf48ed30183486abcc9a0eb768d28fd5d041a8b4cbe1c7b75df35c"
+        },
+        {
+          "path": "patches/fex-restore-complete-signal-context.patch",
+          "sha256": "e06507751d42ff359b2257d413fc07d145483e4739b286596c1e12d6dde45e90"
+        }
+      ]
+    },
+    {
+      "variant": "candidate",
+      "applyCheck": "passed",
+      "sourceCommit": "1cc4b93e7a71c883ec021b71359f136394dc1f3c",
+      "patches": [
+        {
+          "path": "patches/fex-container-fd-isolation.patch",
+          "sha256": "374eb59a207c0356f548295552f235c0eeadcdbac360a64b01535933a1af8f8a"
+        },
+        {
+          "path": "patches/fex-processor-id-stack-fix.patch",
+          "sha256": "e1da91d76caf48ed30183486abcc9a0eb768d28fd5d041a8b4cbe1c7b75df35c"
+        },
+        {
+          "path": "patches/fex-signal-context-hostaltstack-candidate.patch",
+          "sha256": "66abe2067bd469efdbeafdc3cd9862b86efc7000c70cf8ee8d4230f7a53c53f6"
+        }
+      ]
+    }
+  ],
+  "initfsVerification": {
+    "command": "bash guest/initfs/verify-build.sh arm64",
+    "exitCode": 0,
+    "output": "verified arm64 initfs input fingerprint 9328714a5a288c3f622f037d01c41b3cb3a3a9bf105413b8540a869ef3c0a4cd\n",
+    "logSHA256": "86d68ef71591f855d5ad39ce7ea6a0944ba1753dfb6be2c8fd43fe5e72f007a4"
+  },
+  "changedBehavior": "Pinned producer selects exact shipped signal patch again; experimental patch retained separately and not selected.",
+  "limitations": [
+    "No new FEX binary build or promotion",
+    "Both patch checks reconstruct only files touched by the patches from the pinned upstream Git object",
+    "Default Go asynchronous preemption remains failing",
+    "Full Wave 0 candidate requires regeneration after source changes"
+  ]
+}

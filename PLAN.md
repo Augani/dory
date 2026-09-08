@@ -1155,6 +1155,8 @@ All cards are open at the product level. Only individually evidenced steps are c
 
 **Check:** Two clean builds record source/patch/toolchain hashes and matching expected artifacts; default-mode regression evidence precedes pin changes.
 
+**Status:** `d9ff409b1` repairs a producer provenance mismatch: the production patch path had been overwritten by the unpromoted September 6 candidate while rebuild pins still selected the shipped hash. The exact shipped patch is restored; the experimental bytes are retained separately as `patches/fex-signal-context-hostaltstack-candidate.patch`. Both sequences apply to the pinned upstream revision, and the full ARM64 initfs verifier again passes fingerprint `9328714a5a288c3f622f037d01c41b3cb3a3a9bf105413b8540a869ef3c0a4cd`; [verification](docs/virtualization/evidence/wave0-2026-09-08/wave1-fex-patch-binding.json). No translator bytes or production pins changed. Two clean candidate builds and default-mode qualification remain open.
+
 #### A16.5 — Promote with rollback
 
 - [ ] **Action:** Promote transactionally with rollback and repeat ordinary container lifecycle/data tests.
