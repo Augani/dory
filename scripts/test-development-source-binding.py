@@ -122,6 +122,34 @@ class DevelopmentSourceBindingTests(unittest.TestCase):
         verified = self.run_tool("verify", "--binding", str(self.binding))
         self.assertEqual(verified.returncode, 0, verified.stderr)
 
+    def test_evidence_commit_preserves_sources_but_not_strict_assembly_identity(self) -> None:
+        self.assertEqual(self.run_tool("create", "--output", str(self.binding)).returncode, 0)
+        original = self.binding.read_bytes()
+        evidence = self.root / "docs/virtualization/evidence/receipt.json"
+        evidence.parent.mkdir(parents=True)
+        evidence.write_text("{}\n")
+        self.run_git("add", ".")
+        self.run_git("commit", "-qm", "retain evidence")
+        self.assertNotEqual(self.run_tool("verify", "--binding", str(self.binding)).returncode, 0)
+        checked = self.run_tool("verify-sources", "--binding", str(self.binding))
+        self.assertEqual(checked.returncode, 0, checked.stderr)
+        self.assertEqual(self.binding.read_bytes(), original)
+        (self.root / "tracked.txt").chmod(0o755)
+        self.assertNotEqual(self.run_tool("verify-sources", "--binding", str(self.binding)).returncode, 0)
+
+    def test_source_comparison_rejects_content_drift_and_corrupt_capture_metadata(self) -> None:
+        self.assertEqual(self.run_tool("create", "--output", str(self.binding)).returncode, 0)
+        original = self.binding.read_bytes()
+        payload = json.loads(original)
+        payload["git"]["headCommit"] = "not-a-commit"
+        self.binding.write_text(json.dumps(payload))
+        self.assertNotEqual(self.run_tool("verify-sources", "--binding", str(self.binding)).returncode, 0)
+        self.binding.write_bytes(original)
+        (self.root / "tracked.txt").write_text("different source\n")
+        self.run_git("add", ".")
+        self.run_git("commit", "-qm", "change source")
+        self.assertNotEqual(self.run_tool("verify-sources", "--binding", str(self.binding)).returncode, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

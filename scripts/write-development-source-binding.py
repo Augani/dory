@@ -142,6 +142,7 @@ def source_entry(root: Path, relative: str, tracking: str) -> dict[str, str]:
         "kind": kind,
         "sha256": digest,
         "tracking": tracking,
+        "mode": stat.S_IMODE(metadata.st_mode),
     }
 
 
@@ -218,6 +219,15 @@ def read_binding(path: Path) -> dict[str, Any]:
         fail(f"binding has the wrong schema or kind: {path}")
     if value.get("releaseQualified") is not False:
         fail("a development source binding must not claim release qualification")
+    git = value.get("git")
+    if not isinstance(git, dict) or set(git) != {"headCommit", "worktreeDirty", "worktreeStatusSHA256"}:
+        fail("binding has invalid captured Git metadata")
+    for field, size in (("headCommit", 40), ("worktreeStatusSHA256", 64)):
+        text = git.get(field)
+        if not isinstance(text, str) or len(text) != size or any(c not in "0123456789abcdef" for c in text):
+            fail("binding has invalid captured Git metadata")
+    if type(git.get("worktreeDirty")) is not bool:
+        fail("binding has invalid captured Git metadata")
     return value
 
 
@@ -233,7 +243,7 @@ def write_binding(path: Path, value: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("operation", choices=("create", "verify"))
+    parser.add_argument("operation", choices=("create", "verify", "verify-sources"))
     parser.add_argument("--source-root", type=Path, required=True)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--binding", type=Path)
@@ -248,7 +258,15 @@ def main() -> int:
         fail("verify requires --binding and does not accept --output")
     actual = read_binding(arguments.binding.absolute())
     expected = binding(root)
-    if actual != expected:
+    # Assembly uses strict `verify`. Post-build inventory may compare the exact
+    # entries while retaining the original Git metadata as capture-time history.
+    # Committing excluded evidence must not relabel or invalidate identical bytes.
+    comparison_actual = actual
+    comparison_expected = expected
+    if arguments.operation == "verify-sources":
+        comparison_actual = {key: value for key, value in actual.items() if key != "git"}
+        comparison_expected = {key: value for key, value in expected.items() if key != "git"}
+    if comparison_actual != comparison_expected:
         fail("binding does not match the current complete source snapshot")
     print(f"verified development source binding {actual['sourceTree']['sha256']}")
     return 0

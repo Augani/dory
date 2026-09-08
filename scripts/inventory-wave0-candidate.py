@@ -163,7 +163,7 @@ def source_binding_metadata(root: Path, app: Path) -> dict[str, Any]:
         return {"status": "unavailable"}
     try:
         result = subprocess.run(
-            [sys.executable, str(tool), "verify", "--source-root", str(root), "--binding", str(binding)],
+            [sys.executable, str(tool), "verify-sources", "--source-root", str(root), "--binding", str(binding)],
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -509,7 +509,7 @@ def main() -> int:
             else "development-unbound"
         ),
         "candidateSourceBinding": (
-            "verified: app embeds the current complete development source snapshot"
+            "verified: app embeds identical complete source entries; Git metadata records capture time"
             if source_bound
             else "unproven: app artifacts do not embed the current source revision"
         ),
