@@ -9,13 +9,44 @@ private enum SmokeError: Error, CustomStringConvertible {
   case usage(String)
   case invalidNumber(String)
   case missingSerialMarker(String)
+  case executionDeadlineExceeded
 
   var description: String {
     switch self {
     case .usage(let message): message
     case .invalidNumber(let value): "invalid unsigned integer: \(value)"
+    case .executionDeadlineExceeded: "host execution deadline expired; incomplete boot remains censored"
     case .missingSerialMarker(let marker): "expected serial marker was not observed: \(marker)"
     }
+  }
+}
+
+/// Uses the machine's thread-safe power request so an active quantum or HLT wait
+/// returns through normal teardown and can retain a censored result on timeout.
+private final class SmokeDeadline: @unchecked Sendable {
+  private let lock = NSLock()
+  private var finished = false
+  private var expired = false
+  private var work: DispatchWorkItem?
+
+  init(machine: DoryPCDirectKernelMachine, seconds: UInt64) {
+    let work = DispatchWorkItem { [weak self, machine] in
+      guard let self else { return }
+      self.lock.withLock {
+        guard !self.finished else { return }
+        self.expired = true
+        machine.powerController.request(.powerOff)
+      }
+    }
+    self.work = work
+    DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + Double(seconds), execute: work)
+  }
+
+  @discardableResult func finish() -> Bool {
+    let result = lock.withLock { finished = true; return expired }
+    work?.cancel()
+    work = nil
+    return result
   }
 }
 
@@ -62,6 +93,7 @@ private func identity(of file: URL) throws -> FileIdentity {
 private struct Arguments {
   let firmwareBundle: URL
   let maximumInstructions: UInt64
+  let timeoutSeconds: UInt64
   let progressInstructions: UInt64
   let memoryBytes: Int
   let processorCount: Int
@@ -72,6 +104,7 @@ private struct Arguments {
   let executionTier: DoryPCExecutionTier
   let expectedSerialMarker: String?
   let bootProbe: Bool
+  let bootTimelineEnabled: Bool
   let clockSource: DoryPCClockSource
   let clockSourceDescription: String
   let initialRTCUnixSeconds: UInt64
@@ -89,11 +122,11 @@ private struct Arguments {
       let name = values[index]
       guard
         [
-          "--firmware-bundle", "--max-instructions", "--memory-bytes", "--processor-count",
+          "--firmware-bundle", "--max-instructions", "--timeout-seconds", "--memory-bytes", "--processor-count",
           "--system-disk", "--installer-media", "--variable-store-directory",
           "--exception-policy", "--execution-tier", "--progress-instructions",
           "--expected-serial-marker",
-          "--boot-probe", "--clock-source",
+          "--boot-probe", "--clock-source", "--boot-timeline",
           "--initial-rtc-unix-seconds",
           "--trace-after-instructions", "--trace-capacity", "--trace-break-rip-below",
         ].contains(name)
@@ -112,12 +145,22 @@ private struct Arguments {
           + "[--execution-tier interpreter|baseline-jit|optimizing-jit] "
           + "[--expected-serial-marker text] "
           + "[--boot-probe enabled|disabled] [--clock-source host-monotonic|deterministic] "
-          + "[--initial-rtc-unix-seconds seconds] "
+          + "[--initial-rtc-unix-seconds seconds] [--boot-timeline enabled|disabled] "
           + "[--trace-after-instructions count] [--trace-capacity count] "
           + "[--trace-break-rip-below address] "
-          + "[--max-instructions count] [--progress-instructions count] [--memory-bytes count]"
+          + "[--timeout-seconds 1...7200] [--max-instructions count] [--progress-instructions count] [--memory-bytes count]"
       )
     }
+    switch options["--boot-timeline"] ?? "enabled" {
+    case "enabled": bootTimelineEnabled = true
+    case "disabled": bootTimelineEnabled = false
+    default: throw SmokeError.usage("--boot-timeline must be enabled or disabled")
+    }
+    let timeoutText = options["--timeout-seconds"] ?? "900"
+    guard let timeoutSeconds = UInt64(timeoutText), (1...7200).contains(timeoutSeconds) else {
+      throw SmokeError.invalidNumber(timeoutText)
+    }
+    self.timeoutSeconds = timeoutSeconds
     let instructionText = options["--max-instructions"] ?? "1000000"
     let progressText = options["--progress-instructions"] ?? "10000000"
     let memoryText =
@@ -526,7 +569,8 @@ private func runWithProgress(
   exceptionPolicy: DoryPCExceptionPolicy,
   traceAfterInstructions: UInt64?,
   traceCapacity: Int,
-  traceBreakRIPBelow: UInt64?
+  traceBreakRIPBelow: UInt64?,
+  bootTimeline: DoryPCBootTimeline?
 ) throws -> (stop: DoryPCMachineStop, trace: [[String: Any]], traceStopReason: String?) {
   var completed: UInt64 = 0
   var trace: [[String: Any]] = []
@@ -574,6 +618,9 @@ private func runWithProgress(
       let state = machine.state
       let statistics = machine.executionStatistics
       let payload: [String: Any] = [
+        "bootTimeline": try bootTimeline.map {
+          try JSONSerialization.jsonObject(with: JSONEncoder().encode($0.snapshot()))
+        } ?? NSNull(),
         "completedInstructions": completed,
         "instructionPointer": state.map { hexadecimal($0.cs.base &+ $0.rip) } ?? "unavailable",
         "interpreterInstructions": statistics.interpreterInstructions,
@@ -723,6 +770,12 @@ private func run() throws {
     executionTier: arguments.executionTier,
     clockSource: arguments.clockSource
   )
+  let bootTimeline = arguments.bootTimelineEnabled ? DoryPCBootTimeline() : nil
+  composed.machine.serial.observeBoot(with: bootTimeline)
+  defer { bootTimeline?.finish(reason: "execution-error") }
+  let deadline = SmokeDeadline(machine: composed.machine, seconds: arguments.timeoutSeconds)
+  defer { deadline.finish() }
+  let executionStarted = DispatchTime.now().uptimeNanoseconds
   let execution = try runWithProgress(
     machine: composed.machine,
     blockDevices: composed.blockDevices,
@@ -731,9 +784,13 @@ private func run() throws {
     exceptionPolicy: arguments.exceptionPolicy,
     traceAfterInstructions: arguments.traceAfterInstructions,
     traceCapacity: arguments.traceCapacity,
-    traceBreakRIPBelow: arguments.traceBreakRIPBelow
+    traceBreakRIPBelow: arguments.traceBreakRIPBelow,
+    bootTimeline: bootTimeline
   )
+  let executionElapsed = DispatchTime.now().uptimeNanoseconds - executionStarted
   let stop = execution.stop
+  let timedOut = deadline.finish()
+  bootTimeline?.finish(reason: timedOut ? "host-execution-deadline" : String(describing: stop))
   let executionStatistics = composed.machine.executionStatistics
   let state = composed.machine.state
   let architecturalStateSHA256 = try state.map(sha256(of:))
@@ -823,6 +880,9 @@ private func run() throws {
       ] as [String: Any]
     } ?? NSNull()
   let payload: [String: Any] = [
+    "bootTimeline": try bootTimeline.map {
+      try JSONSerialization.jsonObject(with: JSONEncoder().encode($0.snapshot()))
+    } ?? NSNull(),
     "cpuProfileIdentifier": composed.machine.interpreter.profile.identifier,
     "cpuIdentity": composed.machine.interpreter.profile.identity.rawValue,
     "virtualTSCFrequencyHz": composed.machine.interpreter.profile.virtualTSCFrequencyHz,
@@ -844,6 +904,9 @@ private func run() throws {
     "machineABIIdentity": artifacts.manifest.machineABIIdentity,
     "memoryBytes": arguments.memoryBytes,
     "maximumInstructions": arguments.maximumInstructions,
+    "executionTimeoutSeconds": arguments.timeoutSeconds,
+    "executionElapsedNanoseconds": executionElapsed,
+    "timedOut": timedOut,
     "progressInstructions": arguments.progressInstructions,
     "traceAfterInstructions": arguments.traceAfterInstructions.map { $0 as Any } ?? NSNull(),
     "traceBreakRIPBelow": arguments.traceBreakRIPBelow.map { $0 as Any } ?? NSNull(),
@@ -908,6 +971,7 @@ private func run() throws {
   ]
   let output = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
   FileHandle.standardOutput.write(output + Data("\n".utf8))
+  if timedOut { throw SmokeError.executionDeadlineExceeded }
   if let marker = arguments.expectedSerialMarker, serialMarkerMatched != true {
     throw SmokeError.missingSerialMarker(marker)
   }
