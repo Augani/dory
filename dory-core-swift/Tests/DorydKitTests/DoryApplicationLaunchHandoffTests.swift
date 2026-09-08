@@ -231,6 +231,43 @@ final class DoryApplicationLaunchHandoffTests: XCTestCase {
         }
     }
 
+    func testProductionAuthenticationRejectsTestPeerDespiteLegacyBypassEnvironment() throws {
+        let key = "DORY_TEST_BYPASS_DAEMON_AUTH"
+        let previous = getenv(key).map { String(cString: $0) }
+        setenv(key, "1", 1)
+        defer {
+            if let previous { setenv(key, previous, 1) } else { unsetenv(key) }
+        }
+        let server = try DoryApplicationLaunchHandoffServer()
+        defer { server.cleanup() }
+        let clientResult = LockedLaunchHandoffResult()
+        let clientFinished = DispatchGroup()
+        clientFinished.enter()
+        DispatchQueue.global(qos: .userInitiated).async {
+            defer { clientFinished.leave() }
+            clientResult.set(Result {
+                try DoryApplicationLaunchHandoffClient.receiveIfRequested(
+                    arguments: [
+                        "desktop",
+                        DoryApplicationLaunchHandoffClient.socketArgument, server.path,
+                        DoryApplicationLaunchHandoffClient.tokenArgument, server.token,
+                    ]
+                )
+            })
+        }
+
+        var runnerAuthenticated = false
+        XCTAssertThrowsError(try server.transfer(
+            toExpectedPID: getpid(),
+            mappings: []
+        ) {
+            runnerAuthenticated = true
+        })
+        XCTAssertEqual(clientFinished.wait(timeout: .now() + 2), .success)
+        XCTAssertFalse(runnerAuthenticated)
+        XCTAssertThrowsError(try clientResult.get().get())
+    }
+
     func testMalformedLaunchSuffixFailsClosedWhileDirectArgumentsRemainUnchanged() throws {
         let direct = ["desktop", "--machine-id", "fixture"]
         XCTAssertEqual(

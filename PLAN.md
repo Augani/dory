@@ -1,14 +1,14 @@
 # Dory virtualization: implementation review and delivery checklist
 
-**Reviewed:** 2026-09-03; implementation verification and delivery status updated 2026-09-05.
+**Reviewed:** 2026-09-08 against clean source baseline `08d7524c27b6cf7e21b475c71050ff5dc1b83392`. This review inspected implementation, recent changes, retained receipts and task dependencies; it did not rerun physical VM campaigns. Earlier observations retain their original dates and qualification limits.
 
 **Original review baseline:** commit `78375a12e`, including the working-tree changes present at the start of that review. **Completed P00 baseline:** source `a65187e13`, with exact phase-entry state, focused fixes and retained evidence in the [P00 receipt](docs/virtualization/p00-baseline-2026-09-04.json).
 
 **Purpose:** the single implementation plan for the team. This replaces the previous project roadmaps, architecture proposals, research plans, and narrative progress ledgers.
 
-**Current work:** reconcile implemented behavior with the roadmap, remove demonstrated dead code and tests that only assert source wording, and fix connected runtime defects. Use GPT-5.5 agents with disjoint file ownership for implementation and a coordinating integration review. Physical guest and release qualification remain open.
+**Current work:** execute the detailed work packages in section 12, starting with release authentication, reproducible production launches, x86 latency diagnosis and Linux GPU qualification. Preserve completed P00/P01 work and existing GPU composition. Use disjoint agent ownership and integration review; select models using the user’s current settings rather than historical assignments. Physical guest and release qualification remain open. **Scope confirmed by the user on 2026-09-08: macOS ARM64 and Linux ARM64/x86_64 on Apple Silicon macOS hosts.**
 
-**Jump to:** [current audit](#2-what-exists-today-evidence-based-audit) · [code removal programme](#4-remove-replace-retain-the-code-cleanup-programme) · [phase order and owners](#5-delivery-order-and-team-ownership) · [module/interface map](#6-concrete-module-and-interface-work-map) · [final completion checklist](#10-final-completion-checklist).
+**Jump to:** [agent execution backlog](#12-agent-ready-remaining-work-and-acceptance-contracts) · [latest review](#26-review-reconciliation-2026-09-08) · [current audit](#2-what-exists-today-evidence-based-audit) · [code removal programme](#4-remove-replace-retain-the-code-cleanup-programme) · [phase order and owners](#5-delivery-order-and-team-ownership) · [module/interface map](#6-concrete-module-and-interface-work-map) · [final completion checklist](#10-final-completion-checklist).
 
 ## 1. The outcome we are building
 
@@ -116,7 +116,7 @@ Keep new private runtime artifacts in durable qualification directories. Retain 
 - The earlier ARM integer-loop receipt reports about 95.99% of host-native throughput on one M2 Pro. A small loop cannot establish whole-system Linux performance. Historical graphics observations and firmware scenario definitions also cannot qualify an altered candidate.
 - Mac restore-image metadata discovery is not installation. Static decoder coverage is not executed instruction semantics. Interpreter/JIT agreement is not an independent architectural reference.
 
-### 2.4 Current cleanup verification
+### 2.4a Historical cleanup verification
 
 The current macOS fix adds a production-used install/start lifecycle seam; synchronous and duplicate installer stops no longer terminate the desktop before first boot, while start failures and real postboot stops retain their termination behavior. `DoryVZMacAdapterTests` passes 7 XCTest cases from a fresh task-specific SwiftPM build using the local RC Xcode, with zero failures. Full physical install/Metal qualification is still open.
 
@@ -138,9 +138,40 @@ The native Mac lifecycle passes a [MachineManager composition check](docs/virtua
 
 The signed embedded-metadata daemon candidate now starts an isolated GPU engine and renderer worker. The real Linux guest identifies Virtio-GPU Venus (Apple M2 Pro), creates a Vulkan device, submits work and signals a fence ([guest readiness evidence](docs/virtualization/evidence/p06-container-2026-09-05/guest-vulkan-readiness.json)). This advances the earlier carrier probe to actual guest execution. A real ARM64 container also passes a Vulkan shader dispatch with all 65,536 outputs matching a CPU reference ([compute evidence](docs/virtualization/evidence/p06-container-2026-09-05/container-shader-compute.json)). The refreshed daemon also passes the same shader workload through standard Docker `--gpus all`, with inspected translation to the exact render node and `rw` permissions ([standard request evidence](docs/virtualization/evidence/p06-container-2026-09-05/container-standard-gpu-shader.json)). The earlier API failure came from a stale linked FFI archive and was resolved by the existing artifact producer. Application Settings flow and sustained workloads remain open. After fixing reuse of a one-shot renderer bootstrap, a disposable endpoint passes one automatic engine restart following an idle renderer kill: the volume sentinel survives and standard `--gpus all` compute returns 65,536 correct outputs again ([recovery evidence](docs/virtualization/evidence/p06-container-2026-09-05/container-gpu-recovery.json)). That recovery campaign explicitly sets driver environment variables. A subsequent supported-image build installs the tuple-bound ICD in the standard Vulkan search directory; an independent 60-second run without driver environment overrides completes 2,345 device/create/dispatch/teardown cycles and verifies 153,681,920 outputs with zero mismatches ([repeated compute evidence](docs/virtualization/evidence/p06-container-2026-09-05/container-repeated-no-env-compute.json)). The repository now provides `guest/initfs/export-container-image.sh` to verify and export the managed root-owned image, with explicit ARM64 import and source labels ([producer evidence](docs/virtualization/evidence/p06-container-2026-09-05/container-supported-image-producer.json)). A [pending-fence recovery campaign](docs/virtualization/evidence/p06-container-2026-09-05/renderer-pending-fence-failure-recovery.json) observes VK_NOT_READY after submission before killing the disposable renderer, then verifies renewed bootstrap authority, a preserved volume sentinel and successful fresh no-env compute. It does not establish fence status at the exact signal instant. The interrupted container reappears as Created with exit=0. Retained metadata contains a temporary running-state checkpoint and a committed never-started record, consistent with Docker 29.6.1 starting the task before committing its checkpoint. A maintained Docker 29.6.1 source patch now checkpoints start intent before task execution and reconciles interrupted, running, paused and indeterminate task states. Its [12 focused ARM64 tests](docs/virtualization/evidence/p06-container-2026-09-05/docker-start-intent-patch.json) pass independently, including disk reload and checkpoint failure injection. The [pinned binary producer and explicit initfs override](docs/virtualization/evidence/p06-container-2026-09-05/docker-producer-source.json) are implemented: admission checks artifact digest, architecture, current producer inputs and successful version execution. A stale ARM64 receipt was correctly rejected; a subsequent rebuild against the final producer passes version execution and initfs override admission. Independent digest and ownership checks match the earlier ARM64 binary and archive. A [disposable patched-daemon restart](docs/virtualization/evidence/p06-container-2026-09-05/patched-docker-restart.json) runs Docker 29.6.1-dory1, restores an interrupted container as exited/255, preserves its volume sentinel, and successfully runs a fresh ARM64 container. The same work fixes existing-file `/tmp` versus `/private/tmp` disk-authority mismatch; 14 engine policy checks pass independently. The exact pre-ack checkpoint boundary and a repeated GPU renderer-crash campaign remain required before production integration; the ordinary running image still uses upstream Docker. Upstream AMD64 static dockerd also exits 255 under the current FEX endpoint. [Minimal static Go probes](docs/virtualization/evidence/p06-container-2026-09-05/static-go-fex-startup.json) reproduce pre-main faults with Go 1.25.9 on AMD64 while the same sources pass natively on ARM64; GOAMD64 v1–v3 do not resolve it. The failure is broader than Moby. A controlled FEX build omitting Dory’s unconditional signal-context restoration patch passes the same minimal programs with default Go preemption. The [guarded replacement and rebuilt initfs](docs/virtualization/evidence/p06-container-2026-09-05/fex-guarded-signal-integration.json) now preserve changed signal contexts while allowing unchanged host/syscall execution to resume. Minimal Go programs, an RSP-only pivot and asynchronous signal/arithmetic checks pass. A concurrent Go regexp reproducer and AMD64 dockerd still fail with default asynchronous preemption in both the guarded and upstream/no-restore candidates; that second compatibility issue remains open. An AMD64 Docker candidate is not yet admitted. Long-term resource/performance qualification remains open, and the original observation does not establish a Dory storage failure. Arbitrary third-party images still need compatible guest drivers. Killing an idle renderer with restart disabled stops the engine and removes Docker availability ([fail-stop evidence](docs/virtualization/evidence/p06-container-2026-09-05/renderer-fail-stop.json)). This proves bounded failure containment, not automatic recovery or outstanding-work handling.
 
-The x86_64 Mesa VirGL2 archive, kernel and rootfs pass their [artifact checks](docs/virtualization/evidence/p06-pc-2026-09-05/mesa-virgl2-build.json). The latest [normal EFI boot](docs/virtualization/evidence/p06-pc-2026-09-05/normal-efi-init-handoff.json) reaches `/sbin/init`, registers EFI variable operations and both xHCI USB buses, and mounts its ext4 system disk read/write. It completes the 3-billion-instruction budget without the earlier EFI transition or xHCI panic. The smoke runner lacks the `dorycfg` virtio-fs share needed by this userspace fixture. A later [signed production run](docs/virtualization/evidence/p06-pc-2026-09-05/production-clock-boot-progress.json) supplies that share with guest-only virtio-fs, reaches early Linux HPET initialization and avoids the earlier filesystem-worker invalidation, but times out after 1,500 seconds before userspace. The production-clock calibration path is the next diagnosis target; the final serial line alone does not establish its cause. The observed display is software virtio-gpu with no accelerated capsets, so this is not GLX/Vulkan or ordinary desktop-installation proof. The [RNG capability fix](docs/virtualization/evidence/p06-pc-2026-09-05/rng-pci-capability-probe.json) removes an invalid empty device-specific PCI capability and passes its focused transport tests; a full guest RNG probe rerun remains required.
+The x86_64 Mesa VirGL2 archive, kernel and rootfs pass their [artifact checks](docs/virtualization/evidence/p06-pc-2026-09-05/mesa-virgl2-build.json). The latest [normal EFI boot](docs/virtualization/evidence/p06-pc-2026-09-05/normal-efi-init-handoff.json) reaches `/sbin/init`, registers EFI variable operations and both xHCI USB buses, and mounts its ext4 system disk read/write. It completes the 3-billion-instruction budget without the earlier EFI transition or xHCI panic. The smoke runner lacks the `dorycfg` virtio-fs share needed by this userspace fixture. A later [signed production run](docs/virtualization/evidence/p06-pc-2026-09-05/production-clock-boot-progress.json) supplies that share with guest-only virtio-fs, reaches early Linux HPET initialization and avoids the earlier filesystem-worker invalidation, but times out after 1,500 seconds before userspace. That historical run did not identify a clock root cause; the 2026-09-06 clock rescope in section 2.6 records later normal interrupt delivery and completed RPC. Diagnose current latency from A02 stage measurements. The observed display is software virtio-gpu with no accelerated capsets, so this is not GLX/Vulkan or ordinary desktop-installation proof. The [RNG capability fix](docs/virtualization/evidence/p06-pc-2026-09-05/rng-pci-capability-probe.json) removes an invalid empty device-specific PCI capability and passes its focused transport tests; a full guest RNG probe rerun remains required.
 
 Profile-guided JIT work has reduced avoidable memory-callback setup and immutable CPU-feature lookup overhead. [Native signed-extension support](docs/virtualization/evidence/p06-pc-2026-09-05/native-signed-extension.json) now admits the MOVSX/MOVSXD instructions observed in the boot's fallback diagnostics; all 83 baseline JIT tests pass, including sign-boundary parity and restartable memory faults. These focused checks do not establish whole-boot speedup. Production-clock userspace completion, ordinary distro installation, accelerated guest rendering and workload-level performance measurements remain open.
+
+### 2.6 Review reconciliation, 2026-09-08
+
+This is the review-entry interpretation of the earlier audit, not a new physical qualification. The follow-up fixes in section 2.7 supersede the authentication/harness defects recorded here. Source inspection covered CPU profiles/execution ownership, PC renderer composition, launch authentication and recent changes; retained evidence was sampled at the critical CPU/GPU/Mac/container boundaries. This is not a line-by-line certification of the whole repository. **No guest cell is release-qualified.**
+
+| Finding | Evidence and current conclusion | Required next action |
+|---|---|---|
+| Release-path authentication bypass | `Packages/ContainerizationEngine/Sources/dory-hv/main.swift` selects `authenticateDaemon: { _ in }` when `DORY_TEST_BYPASS_DAEMON_AUTH=1`; no compile-time test guard surrounds this branch. `DoryApplicationLaunchHandoff.swift` exposes the seam publicly. The commit describes this as test-only, but the inspected entrypoint does not enforce that restriction. | **A00 follow-up:** the shipping bypass is removed and the test seam is internal again (section 2.7). Exact signed Release negative testing remains open; retain isolated test injection. This is a source-confirmed trust-boundary defect, not a claim of a demonstrated full exploit. |
+| Latest PC graphics harness | `08d7524c2` adds a real gvproxy selection, read-only `dorycfg` staging and a configurable handoff deadline in `MachineManagerResolvedPlanIntegrationTests.swift`. Its commit reports init/config-share/agent-copy progress over two hours, without agent readiness. | Treat the commit report as an observation requiring raw candidate-bound evidence. The earlier [Track C blocker](docs/virtualization/evidence/p06-pc-2026-09-06/track-c-blocker.json) describes an older runner; rebuild and reproduce current production composition after A00. No PC hardware-rendered frame has been established by this change. |
+| Clock diagnosis is superseded | [Clock rescope receipt](docs/virtualization/evidence/p06-pc-2026-09-06/clock-stall-rescope.json) records normal interrupt delivery and boot/RPC with the host-monotonic configuration at `051c97f25`. | Do not assign a speculative HPET/TSC rewrite. Keep broad timing qualification open and reopen a defect only with a new minimized failing trace. |
+| x86 performance remains far from usable | [Tier receipt](docs/virtualization/evidence/p06-pc-2026-09-06/tier-comparison-rpcdiag.json) reports optimizing-JIT bind-ready at 3,901 s and RPC at 218.725 s; baseline bind-ready at 3,361 s, handshake at 57.568 s and RPC timeout. | A 3.5× handshake improvement is not a whole-boot speedup; baseline reached bind-ready earlier in these observations. Estimated completion times for timed-out tiers are not measurements. Separate boot, transport, scheduling and command execution before optimizing. |
+| x86 profile is deliberately incomplete | `DoryX86CPUProfile.swift` strips SSE3/SSSE3/SSE4.1/SSE4.2/XSAVE/OSXSAVE/AVX/AVX2 in production construction. `compatibleV1` is explicitly not x86-64-v2. | Complete A03–A09 with a form-by-form coverage inventory; feature masking is an interim safety gate, not completion of the requested translation work. |
+| Nominal vCPU count is not parallel execution | `DoryPCDirectKernelMachine.run` owns a machine lock around its loop and selects the next runnable processor for each slice. | A10 must implement and qualify actual concurrent execution with x86 memory ordering; increasing the configured CPU count alone cannot close SMP. |
+| PC GPU wiring exists | `DoryPCMode.swift` creates `DoryPCVirGLRendererAuthority` from the worker command lane and contains presentation/reset/replacement lifecycle paths. | Audit and finish those paths; do not assign initial worker wiring as if absent. Device semantics, ordinary guest rendering, Venus mapping and production admission remain open. |
+| Container GPU wiring and bounded compute exist | Earlier P06 receipts record standard Docker device requests, no-env shader execution and bounded worker recovery. | Finish combined FEX/GPU configuration, live readiness, sustained/concurrent isolation and patched-engine promotion. Do not rebuild the bootstrap from scratch. |
+| Mac progress is substantial but fixture-scoped | P08 records real guest Metal compute and private signed-helper install/lifecycle evidence. | Run the installed production daemon/catalog and actual app journey, then post-restore graphics/workloads, privacy policy and recovery. Helper success alone does not qualify a Mac desktop. |
+| Documentation drift | P06 and section 9 still assigned already connected composition; an old production-clock investigation was presented as the next root cause. Some package READMEs link to removed architecture documents. | Correct stale assignments here; A28 validates active build/help links and reconciles remaining phase items with executable evidence. Preserve immutable historical receipts. |
+
+**What is already accomplished:** a Dory-owned ARM runtime and PC firmware/machine/DBT stack, integrated control-plane planning, bounded Linux userspace/RPC execution, isolated renderer composition, ARM64 container hardware compute, and a working development Mac/Metal/lifecycle path. **What is not accomplished:** ordinary supported-media installation and daily use across all three cells, complete declared x86 instruction/system semantics and performant SMP, qualified accelerated Linux desktops on both ISAs, combined translated-container GPU support, and exact signed release qualification.
+
+The largest remaining engineering risks are full-system x86 correctness/performance, PC Venus shared-memory correctness, stock Linux graphics synchronization, and integration/recovery through production authority. Checkbox counts and instruction counts are not a completion percentage.
+
+### 2.7 Review fixes and clean implementation handoff, 2026-09-08
+
+The follow-up change removes `DORY_TEST_BYPASS_DAEMON_AUTH` handling from the runner and restores internal-only authentication injection for tests. The public handoff path still performs the production daemon identity check. The runner Debug build, 26 XCTest cases and the selected 50-test Swift Testing suite complete with zero failures; the opt-in physical GPU test is explicitly skipped. Focused verification is recorded in [the review-fix receipt](docs/virtualization/evidence/review-fixes-2026-09-08/verification.json); this does not close signed Release qualification.
+
+The private PC GPU harness now uses a monotonic, bounded campaign deadline, with an explicit connection/workload/grace budget for translated probes. It requires real gvproxy input and an existing guest agent, rejects missing readiness/software graphics/failed or timed-out render probes, and reports an explicit skip when the physical campaign is not enabled. It captures bounded serial/probe diagnostics outside its scratch state, cleans disposable disks after successful stop, and preserves backing with a failed test result if teardown cannot be confirmed. Synthetic quarantine tests retain their existing cleanup semantics. These changes repair the harness; they do not establish PC GPU or x86 performance qualification.
+
+Storage cleanup on this host removed redundant inactive campaign disk/media copies and old build outputs, increasing available space by approximately 71.4 GiB before subsequent verification builds. Source, repository evidence, production VM data and representative Mac fixtures were preserved. Historical receipts may now point to removed disposable local payloads; reacquire/rebuild those inputs instead of treating missing fixtures as a pass. Cleanup manifests remain at `~/.dory/cleanup-reports/2026-09-08/` on this host.
+
+Next assignments remain A01/A02 and the native/Mac paths, with A00's packaged Release authentication gate still required. Do not reintroduce an ambient bypass to make an XCTest-launched helper pass production authentication; the physical campaign must supply the proper signed daemon identity.
 
 ## 3. Architectural decisions: stop expanding the system in competing directions
 
@@ -488,13 +519,13 @@ Use the [Virtio specification](https://docs.oasis-open.org/virtio/virtio/v1.3/vi
 
 **Required scope, confirmed 2026-09-04:** GPU acceleration is a primary deliverable for **Linux ARM64 VMs, Linux x86_64 VMs, macOS ARM64 guests, and Docker containers**. Mac guest Metal remains P08. Container Vulkan/compute belongs to this phase, not a retired experiment. Existing ARM worker rendering, GPU kernel selection, container GPU launch/configuration and PC integration assets must be preserved until a connected replacement supplies their required behavior. Do not remove needed GPU development code merely because its production connection is unfinished.
 
-**Immediate priority:** connect and verify the signed worker path for the ARM container engine while advancing PC graphics integration. Correctness, explicit capability reporting and real workload output are required; filesystem/library presence and a visible toggle are insufficient. The current container runner still rejects acceleration, and the PC runner rejects it without renderer authority. Those are implementation gaps to close, not desired permanent product policy.
+**Immediate priority:** qualify the already connected ARM container and PC worker paths through actual production authority. Complete PC shared GPU semantics/Venus mappings and obtain real desktop output. Correctness, effective capability reporting and workload output are required; filesystem/library presence and a visible toggle are insufficient. Reject missing authority, while admitting valid supported compositions. See section 2.6 and A00/A11–A17 for the current work sequence.
 
 | Product path | Existing connection to retain | Missing production connection |
 |---|---|---|
 | ARM Linux VM | `MachineManager` renderer staging → `DesktopRendererWorkerLaunch.prepare` → `DesktopMode.Controller` → worker-backed `VirtioGPU`, host-visible memory and synchronized presentation. | Consistent admitted image/kernel/renderer/runtime qualification and physical guest workload evidence. |
-| Docker engine | `DorydConfiguration` GPU kernel/configuration and shim device-request normalization. | Engine renderer bootstrap/command lane, GPU device attachment and guest DRM readiness. Runtime readiness must replace ambient environment flags for device authorization. |
-| x86 Linux VM | `DoryPCVirGLRendererAuthority` → portable GPU authority; PC PCI/UEFI constructors already accept acceleration authority. | `MachineManager` PC renderer admission and `DoryPCMode` envelope/worker forwarding. VirGL2 first; Venus additionally needs blob BAR and generation-bound host mappings. |
+| Docker engine | `DorydConfiguration` GPU kernel/configuration and shim device-request normalization. | Bootstrap/device attachment and bounded compute are implemented. Remaining: live readiness reporting, FEX/GPU compatibility, sustained/concurrent use and release packaging. |
+| x86 Linux VM | `DoryPCVirGLRendererAuthority` → portable GPU authority; PC PCI/UEFI constructors already accept acceleration authority. | Admission, envelope forwarding and VirGL authority exist. Remaining: production-authenticated launch and actual VirGL desktop evidence; Venus additionally requires qualified blob BAR and generation-bound host mappings. |
 | macOS guest | Apple VZ Mac graphics and the existing VZMac display view. | P08 connected lifecycle/device-policy checks and physical guest Metal qualification. |
 
 ### P06.A Profiles and dependency ownership
@@ -531,7 +562,7 @@ Use the [Virtio specification](https://docs.oasis-open.org/virtio/virtio/v1.3/vi
 
 ### P06.D PC OpenGL and Vulkan
 
-- [ ] **P06-24** Compose the signed renderer bootstrap in `DoryPCMode`, pass the shared authority through `DoryPCUEFIRuntimeAuthority` to the PCI GPU, and wire shared texture output into the existing host display. Remove the launch rejection only after its complete profile gate passes.
+- [ ] **P06-24** Finish and qualify the existing signed renderer composition in `DoryPCMode`, `DoryPCUEFIRuntimeAuthority`, PCI GPU and host display. Trace actual granted descriptors and worker/texture generations; fix demonstrated gaps rather than reimplementing bootstrap/forwarding. A00/A11/A12 must establish production-authenticated accelerated guest output before this closes.
 - [ ] **P06-25** Replace full-backing CPU staging with bounded region transfers where possible; preserve immutable validated command snapshots. Measure synchronous stalls and copied bytes before and after.
 - [ ] **P06-26** Add a versioned PCI host-visible shared-memory capability and blob BAR. Define sizing/probing, address assignment, memory-decode enables, aperture bounds and RAM-hole interaction without silently breaking persisted machine ABI.
 - [ ] **P06-27** Map renderer-exported validated shared memory into the PC address space. Integrate unmap/remap with DBT page tables, cached host pointers, code invalidation and permissions. Never permit execution from revoked or reused mappings.
@@ -555,7 +586,7 @@ Use the [Virtio specification](https://docs.oasis-open.org/virtio/virtio/v1.3/vi
 
 ### P06.F Docker container GPU acceleration
 
-- [ ] **P06-C01** Reuse the production isolated renderer bootstrap and worker command lane in `dory-hv engine`. Carry verified renderer authority from the daemon, attach the real `VirtioGPU` to the engine machine, provide host-visible memory and propagate worker failure without falsely reporting a healthy GPU.
+- [ ] **P06-C01** Retain the implemented isolated renderer bootstrap, command lane, GPU attachment and host-visible memory in `dory-hv engine`. Close remaining production qualification: app-to-daemon authority, observed guest readiness, active-work failure reporting, restart and teardown. Bounded shader/recovery receipts establish progress, not completion.
 - [ ] **P06-C02** Preserve GPU kernel/guest-driver selection as one verified contract. Resolve the current 16 KiB GPU-kernel versus 4 KiB FEX requirement before advertising GPU together with x86_64 application compatibility. Unsupported combinations must produce a clear preflight error; do not silently change architecture, disable requested translation, or substitute a software device.
 - [ ] **P06-C03** Package and expose the guest DRM render node and matching Vulkan ICD through the container device request/OCI path with bounded permissions. Support the documented Docker/API request end to end; do not authorize a device merely because the request string is present. The daemon dataplane now translates an admitted generic `--gpus all` request (or device `0`) into `/dev/dri/renderD128` with `rw` permissions, preserves unrelated requests, and rejects unsupported driver/capability/count/options and conflicting mappings. All 53 dataplane tests pass, including HTTP forwarding of the translated request and rejection before backend access. The [supported ARM64 image producer](docs/virtualization/evidence/p06-container-2026-09-05/container-supported-image-producer.json) now packages the matching ICD in its standard search directory. A real container using standard `--gpus all` verifies 65,536 shader outputs, with only the authorized render node mapped. Broader image compatibility and AMD64 execution remain open.
 - [ ] **P06-C04** Derive Settings, daemon, shim and guest capability reporting from the configured worker and observed guest readiness. Replace the app's ambient `dlopen`/Homebrew renderer probe with the same verified authority as the runner. Preserve requested settings on initialization failure and explain recovery. The app shim's environment-driven GPU request stripping and all-DRM cgroup grant are removed; requests now reach the backend's admission policy unchanged. The app/test bundle builds and all three shared-VM compatibility tests pass. LaunchServices initially blocked the test host beside the installed app; removing the duplicate hardcoded `LSMultipleInstancesProhibited` plist key lets the existing build setting control it. The signed test invocation uses `INFOPLIST_KEY_LSMultipleInstancesProhibited=NO`; normal build settings retain the existing restriction. Settings now also reuses the daemon’s signed-runner preflight instead of loading ambient/Homebrew renderer libraries. Startup retains the requested GPU setting when preflight fails, and conflicting GPU/FEX requests fail explicitly instead of silently selecting FEX. All 33 runtime-support app tests pass for this follow-up, including rejection of conflicting GPU/FEX requests. Settings currently reports package preflight rather than observed guest GPU readiness. Real ARM64 compute is separately verified by the P06-C03/C05 evidence; connecting that observed readiness to live application capability reporting remains open.
@@ -955,20 +986,20 @@ For every checked task record: **owner; source commit; affected entrypoints; reg
 
 ## 9. First implementation assignments
 
-The baseline and initial control-plane composition are already recorded. Assign current gaps, with one file owner per active change and a coordinator reviewing integration. Use GPT-5.5 workers for bounded work; do not launch multiple agents rewriting the same CPU/device owner.
+The baseline and initial control-plane composition are already recorded. Assign current gaps, with one file owner per active change and a coordinator reviewing integration. Use bounded agent assignments with the user’s current model settings; do not launch multiple agents rewriting the same CPU/device owner.
 
 | Workstream | Next implementation | Reviewable acceptance |
 |---|---|---|
 | Test/dead-code cleanup | Remove source-spelling/prose tests and disconnected production facades after consumer search; update active test entrypoints. | Smaller source/test surface, preserved behavioral/security/ABI coverage, focused suites pass. |
 | Native ARM | P03 vCPU lifetime, cancellation and owner selection; direct/UEFI regression baseline. | No destruction of a running vCPU; existing workloads preserved under one production owner. |
-| macOS lifecycle | P08-01/02 install-to-first-boot, then saved-state authority and actual device policy. | Production orchestration starts exactly once after install, remains alive until real shutdown, and reports failures correctly. |
+| macOS lifecycle | P08-02 production install-to-first-boot qualification, then remaining saved-state authority and actual device policy; preserve the completed P08-01 fix. | Production orchestration starts exactly once after install, remains alive until real shutdown, and reports failures correctly. |
 | CPU correctness | Remaining P02-11–16 fault/state/FP cases plus P02-20 independent x86 reference. | Minimal architectural regressions and affected pinned guest rerun; no widened CPU claims from decoder coverage. |
 | Devices/PC boot | P04 shared queue/device parity and P05 installer-to-installed-disk boot. | Same observable queue semantics over MMIO/PCI; installed guest boots without installer media. |
-| Graphics/guest/containers | Priority P06: reuse ARM worker for container compute, connect PC VirGL and x86 artifacts, and qualify Venus mapping/synchronization. | Correct GPU-compute output in real containers and real accelerated VM desktops through production runners; no fake fences or software substitution. |
+| Graphics/guest/containers | Priority P06: qualify existing ARM container compute and PC VirGL composition, finish PC Venus mappings and x86 packages, and prove real accelerated desktops. | Correct GPU-compute output in real containers and real accelerated VM desktops through production runners; no fake fences or software substitution. |
 | Performance | Profile the real ARM workload and x86 baseline-JIT fallbacks after correctness fixes. | Matched user workload improvement with unchanged semantics; report native and translated results separately. |
 | Product/release | Integrate each working cell into app/CLI and run candidate-bound physical campaigns. | Truthful capabilities, recoverable operations and qualified installed guest behavior. |
 
-Current delivery wave: the x86 worker must preserve observer lifetime through guest-agent bind and handshake on the next verified source-frozen runner before command and tier comparisons. The GPU worker must use the real signed-daemon `activate()` graph with a sealed private test catalog and MachineManager-owned renderer descriptors; XCTest peer rejection does not establish a guest GPU failure, and private test-root execution will not close production catalog admission. The FEX worker must resolve default Go asynchronous-preemption failures before promoting its signal-context/host-altstack candidate. Preserve active build caches and immutable inputs; remove disposable disks only after terminal-process checks and external evidence capture.
+Current delivery wave is defined by section 12. Start A00/A01, A02 x86 latency diagnosis, A18/A19 native installation and A21 Mac production lifecycle with disjoint ownership. Agent bind/handshake and `/bin/true` already succeeded in the retained diagnostic x86 run; reproduce them on the exact current candidate and real GPU composition rather than presenting them as wholly new bring-up. The FEX worker still owns default Go asynchronous-preemption compatibility. Preserve immutable inputs, active workloads and build caches.
 
 Prioritize the ARM Linux product path for the native-performance objective while x86 correctness and Mac lifecycle proceed independently. Do not gate native progress on a speculative x86 optimizing compiler, or restart P00/P01 because their earlier narrative still exists. Every completed wave must state what was removed, what behavior changed, what actually ran, and which gates remain open.
 
@@ -978,7 +1009,7 @@ Prioritize the ARM Linux product path for the native-performance objective while
 - [ ] **DONE-02** Each cell installs from its supported ordinary media, reboots without installer dependence, updates, shuts down and recovers through the app and CLI.
 - [ ] **DONE-03** ARM Linux uses the consolidated native Dory runtime; x86 Linux uses DoryDBT/DoryPC; Mac uses the supported VZMac path. No hidden QEMU runtime or architecture substitution remains.
 - [ ] **DONE-04** Both Linux ISAs have qualified guest OpenGL and Vulkan acceleration; Mac has qualified guest Metal; Docker containers have qualified GPU compute through the same isolated renderer architecture. Effective application/renderer evidence rules out accidental software rendering.
-- [ ] **DONE-05** CPU profiles, memory/fault semantics, interrupts/timers, device queues and parallel x86 execution pass the required correctness tests.
+- [ ] **DONE-05** The baseline, x86-64-v2 and declared v3/AVX2 CPU profiles in section 12.1, memory/fault/XSTATE semantics, interrupts/timers, device queues and actual parallel x86 execution pass the required correctness and independent-reference tests. Unsupported optional extensions are explicitly unadvertised.
 - [ ] **DONE-06** Display/input, storage/network, sound, shares and supported tools work through daily desktop/developer journeys. Optional capabilities and public API limits are accurately represented.
 - [ ] **DONE-07** Requested privacy/device/network policy equals actual configuration; disabled integrations cannot operate.
 - [ ] **DONE-08** Cold snapshots, clone/export/import, backup restore, safe upgrade and interruption recovery preserve guest data and correct identity. Any unsupported live-save capability is explicitly unavailable.
@@ -1008,3 +1039,381 @@ Use `CONTRIBUTING.md` for basic setup and `scripts/test.sh --help` for the exist
 Before running any build/test campaign, inspect its options and cleanup behavior. Existing release/benchmark scripts can stop runtimes, remove test products or purge a dedicated benchmark account. A documentation review does not authorize those operations against active user workloads.
 
 Release remains through the existing `scripts/publish-release.sh <version>` workflow after all applicable gates pass; this plan does not publish a release. It defines the work and evidence the team needs before doing so.
+
+## 12. Agent-ready remaining work and acceptance contracts
+
+This section decomposes the remaining P02–P15 obligations into executable work packages. It is the current assignment queue; the phase sections retain the full subsystem requirements. **An A-task closes only its stated boundary. Its parent P-phase stays open until every applicable requirement and physical gate passes.** All A-tasks below are open; implementation already present is explicitly identified. Do not restart P00/P01 or replace working runtimes to make the architecture look cleaner.
+
+### 12.1 Definition of “full running” and “complete x86_64 translation”
+
+The finish line is three production guest cells: Linux ARM64 on DoryHV/DoryARMVirt, Linux x86_64 on DoryDBT/DoryPC, and macOS ARM64 on VZMac. Every cell must install, boot offline from its installed disk, update, run daily workloads, preserve data through supported lifecycle/recovery operations, and meet its frozen resource/performance limits. Linux requires working guest OpenGL **and** Vulkan; Mac requires guest Metal. Container GPU and amd64 application compatibility remain additional required product gates.
+
+“Complete x86_64” must mean a published, versioned architecture contract, not all instructions ever designed by Intel/AMD or a decoder mnemonic count. The programme must finish baseline system execution and progress to a qualified x86-64-v2 profile and a modern x86-64-v3/AVX2 application profile. That v2/v3 expansion is **planned work, not current support**. A03 must inventory every mandatory feature of the selected psABI levels, including features missing from today's enum; v3 is more than AVX2 alone. Real/protected/compatibility/long-mode execution required by firmware, Linux and supported 32-bit compatibility applications belongs to the full-system contract. Optional crypto/random/extended instructions needed by the frozen application matrix get explicit implemented-or-unavailable decisions. AVX-512/v4, AMX, nested VMX/SVM, SGX and vendor-specific facilities are not silently promised; adding them requires an explicit scope change and complete state/semantics/testing. Never advertise “all x86 software” from a v3 result.
+
+Full-system DBT, FEX inside ARM Linux containers, and optional application translation inside macOS are separate mechanisms with separate evidence. FEX does not boot the x86 Linux kernel. Mac application translation does not create an Intel macOS VM. A fast native Metal renderer does not remove translated guest CPU overhead.
+
+Normative references for implementation agents: [Intel architecture manuals](https://www.intel.com/content/www/us/en/developer/articles/technical/intel-sdm.html), [x86-64 psABI source](https://gitlab.com/x86-psABIs/x86-64-ABI), [VirtIO specification](https://docs.oasis-open.org/virtio/virtio/v1.3/virtio-v1.3.html), [Mesa Venus requirements](https://docs.mesa3d.org/drivers/venus.html), [Apple Virtualization](https://developer.apple.com/documentation/virtualization), and [Apple paravirtualized graphics](https://developer.apple.com/documentation/paravirtualizedgraphics). Pin the actual revision/section used in each architectural fixture. Upstream documentation is a design constraint; it is not proof Dory implements it.
+
+### 12.2 Assignment, evidence and dependency rules
+
+Each agent receives one A-task or a bounded numbered step, its parent P-task IDs, prerequisites, owned files, allowed shared-interface edits, input/candidate identities and acceptance command/workload. Existing source paths below are starting points, not permission to rewrite adjacent modules. Split any package that cannot be reviewed in a focused change into numbered child issues while retaining this parent ID. A coordinator owns shared files such as `MachineManager.swift`, `DoryPCMode.swift`, `DoryX86Interpreter.swift`, `DoryARM64BaselineJIT.swift`, package manifests and renderer wire contracts. Agents propose interface changes before another agent builds against them.
+
+Record **implementation status and qualification status separately**. An implementation may be merged while its physical gate remains blocked by hardware or media. Required unavailable fixtures mean blocked qualification, not a pass or a completed task. A failing campaign retains its result and a follow-up defect; a retry does not overwrite it. Do not check boxes from a commit message, successful compilation, mocked lifecycle, device enumeration or a permissive diagnostic harness.
+
+Every task handoff must contain:
+
+1. Source commit/dirty diff, affected production call path and files actually changed.
+2. Exact command, toolchain, fixture hashes and build inputs; for live work, signed app/runner/worker/firmware/guest identities and host/guest settings.
+3. Expected result, observed output, exit status, timeout/cancellation state and resource cleanup; raw data plus a bounded structured receipt under `docs/virtualization/evidence/`.
+4. Focused regression result, relevant real-guest rerun and limitations; performance work also includes matched before/after samples and correctness.
+5. Parent P-tasks advanced, remaining dependencies, reviewer and any retired implementation. No unsupported “fully done” summary.
+
+**Scheduling:** A00/A01 are the authority/evidence foundation. A02 and A03 begin CPU work; A04–A09 may split by nonoverlapping semantics, then A10 qualifies SMP. GPU A11/A12 depend on A00/A01 and a reproducible boot; A13 precedes A14 Vulkan qualification. A18/A19 and A21/A22 can advance native Linux and Mac independently of slow x86. A17 depends on A16 plus the compatible GPU page-size solution. A23–A28 integrate each available cell. A29/A30 are final candidate gates. Physical campaigns on a shared host must reserve resources; overlapping GPU/CPU benchmarks invalidate matched performance comparisons.
+
+### 12.3 Immediate blockers and reproducible execution
+
+#### A00 — Remove production authentication bypass (P13-02/03/12)
+
+**Owner/home:** runner launch authority; `Packages/ContainerizationEngine/Sources/dory-hv/main.swift`, `DorydKit/DoryApplicationLaunchHandoff.swift`, handoff integration tests. **Dependencies:** none. **Priority:** release blocker.
+
+- [x] Remove the runtime environment-controlled no-op authentication branch from every shipped runner entrypoint. Source fix and focused public-path rejection coverage: [review-fix receipt](docs/virtualization/evidence/review-fixes-2026-09-08/verification.json). Keep test injection in a nonshipping harness/test composition with explicit scope; restoring a comment saying “test-only” is insufficient.
+- [x] Restore the smallest API visibility needed for authentication test seams. `receiveIfRequested(arguments:authenticateDaemon:)` is internal again; production entrypoint uses the validating public overload. Broader launch/renderer override and child-environment audit remains A27.
+- [ ] Execute the packaged Release runner with the bypass variable set against a wrong-team/unsigned/wrong-identity handoff peer. Require rejection before consuming launch arguments or resource authority. Cover normal authenticated success as well as a missing/malformed peer.
+- [ ] Rebuild the real private GPU harness using valid scoped signing/peer identity; it may use fixture media/catalog data, but must not disable the production authentication boundary.
+- [ ] Retain behavioral evidence on the signed candidate and revalidate A11 after this change. **Exit:** changing environment variables cannot disable daemon authentication in shipped binaries.
+
+#### A01 — Freeze source, artifacts, fixtures and qualification matrix (P00 follow-through, P13, P14-01)
+
+**Owner/home:** qualification/build; existing component manifests, firmware locks, renderer tuple and evidence scripts. **Dependencies:** none; production launch result depends on A00.
+
+- [ ] Inventory current app, daemon, FFI archive, runner, renderer, firmware, kernel, rootfs, Mesa and guest-tool producers; record source ownership and eliminate mixed-revision candidates. The 2026-09-08 focused builds warn that existing prebuilt FFI objects target macOS 27.0 while consumers target 14.0/15.0; rebuild/pin compatible FFI deployment targets and verify the oldest advertised host before release. Inspect ignored evidence with explicit paths: ordinary `rg --files` can omit these directories.
+- [ ] Validate critical historical receipt references, raw logs and candidate bindings. Label inaccessible local-only artifacts as unavailable; preserve historical JSON bytes and do not convert their summaries into new passes.
+- [ ] Freeze an explicit matrix of host SoC/OS/build/resource class, Linux distro/version/ISA/kernel/Mesa/compositor, Mac restore/guest build, GPU profile and CPU profile. Select at least two Linux distro families per ISA; pin media digests and their publisher verification. Select final versions using current vendor support/API evidence.
+- [ ] Prepare disposable fixture copies and a documented acquisition path; record disk authority and cleanup ownership. Install/restore media requiring interactive setup remains a named prerequisite. Do not substitute an already-installed Alpine disk for a fresh general-purpose installer campaign.
+- [ ] Produce one source-bound development candidate, then a release-signing candidate when ready. **Exit:** another agent can reproduce the same launch inputs and distinguish mock, private fixture, development and release evidence.
+
+#### A02 — Explain x86 boot and RPC latency before broad optimization (P07-01/02, P14-02/09)
+
+**Owner/home:** DBT performance and PC runner; `DoryPCDirectKernelMachine`, `DoryARM64BaselineJIT`, `DoryPCMode`, guest agent/vsock instrumentation. **Dependencies:** A01; no speculative clock rewrite.
+
+- [ ] Reproduce the retained UEFI/host-monotonic/optimizing-JIT boot on a single frozen candidate. Capture GRUB, kernel, root mount, init, agent copy, agent bind, handshake, request receipt, process start, process exit and response delivery as separate milestones.
+- [ ] Measure host CPU samples, instructions/second by stage, native/fallback counts by instruction form, compilation/block lookup/page-walk/helper/device time, timer interrupts and runnable/idle time. Keep instrumentation bounded and measure its overhead.
+- [ ] Separate a serial guest command from an agent RPC command on the same already-ready VM; test echo/ping and command execution independently to isolate transport scheduling from CPU execution and process creation.
+- [ ] Repeat baseline and optimizing tiers with the same disk state, resources, observer and timeout. Retain incomplete runs as censored/timeouts. Do not turn projected 765-second RPC time into an observed measurement or claim a boot win from handshake timing.
+- [ ] Rank bottlenecks and assign minimized A09 changes. Keep long diagnostic deadlines distinct from product usability budgets; provide bounded user cancellation even during slow boot. **Exit:** a reproducible latency breakdown and measured dominant cause, followed by verified workload improvement, not merely increased timeouts.
+
+### 12.4 Complete the declared x86 architecture and execution engine
+
+#### A03 — Build the authoritative instruction and feature coverage ledger (P02-10–20, P07)
+
+**Owner/home:** `DoryX86CPUProfile`, decoder/feature policy, `dory-x86-decode-audit`, vectors and independent-reference fixtures. **Dependencies:** A01.
+
+- [ ] Enumerate required v1/v2/v3 feature bits and every encoding/operand/address-size/mode form, prefix legality and privileged state dependency. Include SSE3 through SSE4.2, POPCNT, XSAVE/OSXSAVE, AVX/AVX2, F16C/FMA, BMI1/BMI2, LZCNT and MOVBE in the v3 requirements audit; derive completeness from psABI rather than this illustrative list.
+- [ ] Extend the existing machine-readable support catalog with separate decoder, interpreter, baseline JIT, optimizing JIT, flags, exceptions, memory ordering and independent-reference evidence. Distinguish unsupported, implemented-unqualified and qualified; do not use source anchors alone as execution proof.
+- [ ] Compare public CPUID leaves/subleaves, MSRs, XCR0 and feature dependencies to implemented state. Add round-trip persisted-profile compatibility and unsupported-instruction/#UD tests before enabling new profile bits.
+- [ ] Generate a finite gap list assigning each form to A04–A08. Audit optional application-required crypto/CRC/random features explicitly; entropy must have real semantics, and unsupported feature probing must fail architecturally.
+- [ ] Freeze baseline/v2/v3 profile identifiers and upgrade rules. **Exit:** zero unknown forms in each advertised profile, with every required semantic/fault path linked to evidence; optional unimplemented features remain clearly unadvertised.
+
+#### A04 — Finish scalar decode, flags, memory operands and restartability (P02-14)
+
+**Owner/home:** decoder/interpreter/IR/JIT scalar instructions. **Dependencies:** A03; coordinate interpreter file ownership.
+
+- [ ] Validate prefix groups, REX/high-byte register rules, ModRM/SIB/displacements, RIP-relative and FS/GS addressing, signed immediates, 16/32/64-bit address wrapping and the 15-byte instruction limit.
+- [ ] Exhaust boundary cases for arithmetic, ADC/SBB, shifts/rotates including zero/oversized counts, bit scans/tests, multiply/divide including overflow, compare/exchange, conditional moves/sets and flag materialization. Mask undefined outputs in independent comparisons; preserve architecturally defined ones.
+- [ ] Test read-modify-write operations with faults at each memory access, unaligned/cross-page operands, MMIO and page permissions. Faulting instructions cannot leak partial register/flag/store changes except where architecture specifies partial progress.
+- [ ] Verify REP MOVS/STOS/CMPS/SCAS/LODS in both directions, zero counts, segment/address-size variants, overlap and interruption mid-string. Resume must retain exact RCX/RSI/RDI/flags and side effects.
+- [ ] Run identical vectors under all tiers and actual compiler/libc workloads. **Exit:** all A03 scalar forms covered, precise faults preserved, no kernel-address-specific workaround.
+
+#### A05 — Finish privileged execution, paging, interrupts and architectural time (P02-11–13, P04-08–10)
+
+**Owner/home:** architectural state, paging/interrupt code, PC clocks/APIC and firmware transitions. **Dependencies:** A03; rerun A02 only when affected.
+
+- [ ] Validate real→protected→long and compatibility transitions, descriptor caches/limits, GDT/LDT/IDT/TSS, CPL/IOPL, interrupt gates/IST stacks, IRET and syscall/sysenter return paths, including invalid descriptor and stack cases.
+- [ ] Cover page sizes/modes, canonicality, reserved/NX bits, WP, user/supervisor access, A/D updates, PAE latches, CR3/INVLPG and cross-page instruction fetch. Test page-table edits against both interpreter and cached translations.
+- [ ] Implement exact exception priority, error codes, CR2 and fault RIP; test nested faults, double/triple fault, debug state, NMI blocking, interrupt shadow and restart after delivery. Validate exposed CR/MSR semantics rather than successful blanket no-ops.
+- [ ] Exercise local/IO APIC priorities, EOI/remote-IRR, level interrupts, logical destinations, AP startup, PIT/HPET/RTC/PM timer wrap and clock calibration. Distinguish deterministic test time from production host-monotonic time; test suspend/resume and host sleep discontinuities.
+- [ ] Boot ordinary firmware and multiple Linux kernels through syscall, signal, process/thread and I/O stress. **Exit:** required privileged feature/state inventory passes, with independent instruction checks and real kernel evidence. The old nonreproducible clock stall is not assumed to be the cause of future failures.
+
+#### A06 — Finish floating point and v2 SIMD (P02-15/16)
+
+**Owner/home:** x87/extended-float/environment, SIMD interpreter and lowerings. **Dependencies:** A03/A04.
+
+- [ ] Qualify x87 80-bit state, stack tags, precision/rounding controls, NaNs/infinities/denormals, pending/unmasked exceptions, conversions and save/restore; test MMX aliasing and EMMS.
+- [ ] Complete SSE/SSE2 and v2-required SSE3/SSSE3/SSE4.1/SSE4.2 forms: lane selection, saturation, shuffle/immediates, comparisons, conversions, alignment and access faults. Include CRC/string-comparison variants as required by the profile.
+- [ ] Preserve guest MXCSR and exception behavior independently of host floating-point state. Test host-thread migration and transitions between interpreted/native paths; do not infer equivalence from ARM floating-point defaults.
+- [ ] Use independent physical-x86 reference outputs with defined tolerances only where the ISA allows them. Exercise numeric libraries, image processing, browser/media code and libc dispatch on the v2 candidate.
+- [ ] Promote v2 CPUID only after all dependencies and state tests pass. **Exit:** a qualified v2 profile, with no masked mandatory feature left as a permanent completion shortcut.
+
+#### A07 — Implement XSTATE and the complete v3/AVX2 contract (P02-16, P07-02)
+
+**Owner/home:** CPU profile/state, decoder, interpreter, vector IR/JIT and snapshot format. **Dependencies:** A03/A06; snapshot owner reviews ABI.
+
+- [ ] Specify CPUID leaf 0xD, XSAVE-area layout/alignment/sizing, XGETBV/XSETBV validation, CR4.OSXSAVE/XCR0 enablement and fault behavior. Implement the advertised XSAVE/XRSTOR variants and initial/modified component semantics before enabling AVX.
+- [ ] Implement all required VEX encodings, 128/256-bit operations, upper-lane zero/preserve rules, VZEROUPPER/VZEROALL, FMA rounding and F16C conversion behavior, plus required integer/bit-manipulation instructions. Add architectural state/feature cases currently missing from the profile model.
+- [ ] Test masked memory/gather operations, partial/restartable faults where specified, cross-page operands and unsupported prefix/feature combinations. Lower 256-bit operations to appropriate ARM sequences without losing lane or exception semantics.
+- [ ] Preserve full vector state across guest context switches, signals, exceptions, JIT fallback, stop/resume and snapshot/restore. Stress applications that mix scalar, SSE and AVX code on many threads.
+- [ ] Run independent reference vectors and v3-targeted real binaries, then enable the versioned profile. **Exit:** required v3 features are implemented and qualified end to end; AVX2 decode support or a widened enum alone cannot close this task.
+
+#### A08 — Establish an independent x86 conformance service (P02-20, Q01/02)
+
+**Owner/home:** existing `guest/diagnostics/p02-x86-reference` and support vectors. **Dependencies:** A03; can run alongside A04–A07.
+
+- [ ] Acquire a declared physical x86 reference with known CPUID/OS/toolchain. Separate user-mode vector execution from a controlled privileged test environment; do not execute privileged vectors in the ordinary host OS.
+- [ ] Serialize input registers/flags/memory/control state and output registers/memory/faults with undefined-bit masks and versioned endianness. Hash test bytes and reference identity.
+- [ ] Execute the same vectors through interpreter and both JIT tiers from isolated initial states; prevent shared mutable fixture memory from making engines agree accidentally.
+- [ ] Add seeded randomized cases, cross-page faults, SMC and minimized regressions. Retain reproducible seeds and triage disagreements against the specification before changing expected output.
+- [ ] Require independent coverage for every profile family and all discovered regressions. **Exit:** the reference can reject an intentionally incorrect implementation; self-consistency is not the only correctness oracle.
+
+#### A09 — Make translated execution fast and bounded (P07-01–08/15/16)
+
+**Owner/home:** JIT/IR/optimizer/memory and native runtime C boundaries. **Dependencies:** A02 plus corresponding semantic coverage.
+
+- [ ] Optimize measured hot instruction/forms first: reduce helper transitions and redundant decoding, improve register residency/lazy flags, block lookup/linking and address translation. Each change includes cold compile time, warm throughput, code size and whole-workload impact.
+- [ ] Audit every cached block key against mode/CPL, segment assumptions, feature profile, page mapping, code bytes/generation and memory permissions. Test self-modifying code, executable aliases, remap, DMA writes and cross-vCPU invalidation.
+- [ ] Preserve guest RIP/state recovery at every possible fault/interrupt boundary, including mid-block memory faults and REP. Guard optimizations with explicit deoptimization paths rather than incorrect host assumptions.
+- [ ] Bound code cache, compilation jobs, block linking and retirement; verify W^X, instruction-cache publication and active-reader reclamation in signed Release builds. Never deserialize executable host code from guest snapshots.
+- [ ] Rerun installed boot, package install, compile, compression, browser and RPC workloads against A02 and the pinned external full-system reference. **Exit:** frozen absolute usability budgets and relevant throughput targets pass without changing guest work, durability or correctness.
+
+#### A10 — Implement real parallel x86 vCPUs and TSO (P07-09–14)
+
+**Owner/home:** PC machine scheduler, per-vCPU DBT state, memory/JIT publication and device event owners. **Dependencies:** A05/A08; A09 changes must integrate against the same ownership model.
+
+- [ ] Document ordinary load/store, locked RMW, fences, unaligned/cross-cache-line/cross-page atomics, instruction visibility and CPU↔DMA ordering on ARM. Start with a conservative correct barrier/locking strategy and independent litmus expectations.
+- [ ] Replace the global serialized run-loop ownership with one execution context per vCPU. Separate shared RAM, device, interrupt and code-cache synchronization; preserve deterministic single-thread replay as a diagnostic mode.
+- [ ] Implement AP startup, interrupt enqueue/wakeup, HLT idle, stop/pause/reset rendezvous, timeout and teardown without a CPU waiting on a resource held by a stopped peer.
+- [ ] Test memory-order litmus, futexes, kernel lock torture, concurrent page-table edits, JIT code invalidation, GPU DMA, flush and reset at 1/2/4/8 vCPUs where admitted. Use race/sanitizer tooling where supported, plus guest stress for uninstrumented generated code.
+- [ ] Measure real simultaneous host execution, scaling/contention/fairness and multi-VM behavior. **Exit:** advertised multicore is genuinely parallel, architecture-correct and stable; serialized virtual SMP alone does not pass.
+
+### 12.5 GPU acceleration: required implementation and proof
+
+#### A11 — Qualify production renderer admission and first PC accelerated frame (P06-01–06/24)
+
+**Owner/home:** daemon production activation, `DoryPCMode`, `DoryPCVirGLRendererAuthority`, renderer launch/wire contracts and host display. **Dependencies:** A00/A01 and reproducible x86 boot from A02.
+
+- [ ] Trace the real app/CLI → installed daemon → immutable plan → signed runner → granted renderer descriptors → worker → PCI GPU → host display path. Record which component owns every FD, receipt and generation; prohibit fixture authority substitutions in release evidence.
+- [ ] Reuse the existing PC authority/bootstrap/presentation code. Confirm the real network helper and read-only configuration share work, guest tools match x86_64, and progress timeout/cancellation does not invalidate live worker resources.
+- [ ] Boot with the VirGL profile; verify actual guest DRM node, capset/driver binding and nonsoftware renderer. Execute a known shader/render pattern and validate resulting pixels before requiring an entire compositor to start.
+- [ ] Present those pixels through Dory's real window with producer completion and consumer retirement evidence. A worker process, successful GL context or software framebuffer is insufficient.
+- [ ] Repeat after cold boot and through the production catalog. **Exit:** first verified PC hardware-rendered frame and valid production authority. This does not yet qualify sustained desktop, Vulkan or reset behavior.
+
+#### A12 — Finish shared GPU resource, queue and fence semantics (P04, P06-07–15/25/38/39)
+
+**Owner/home:** raw/portable virtio GPU, worker command lane, shared texture/blob leases. **Dependencies:** A01; integrate with A11.
+
+- [ ] Inventory raw-MMIO versus portable-PCI behavior and choose one owner per shared semantic. Port incrementally using identical vectors over both transports; retain working accelerated paths until parity.
+- [ ] Validate resource/context creation/destruction, attach/detach backing, capsets, transfer bounds/strides/formats, scanouts and cursor updates. Add per-resource plus aggregate VM/worker limits.
+- [ ] Retain descriptors until actual fence completion, with global/context/ring ordering and exactly-once completion. Exercise out-of-order signals, no-fence commands, insufficient responses, timeouts and errors without blocking the vCPU on worker RPC.
+- [ ] Test backing readback against concurrent unrelated guest writes; preserve dirty regions and producer/consumer ownership. Validate reset/ID reuse, stale callbacks, late texture retirement and worker replacement across generations.
+- [ ] Kill a worker during confirmed outstanding work, reset the device and teardown the VM. **Exit:** bounded failure, correct guest-visible errors/reset, no stale DMA/publication, no leaked textures/FDs and parity across MMIO/PCI.
+
+#### A13 — Implement and validate PC Venus shared memory (P06-10/18/26–29)
+
+**Owner/home:** `DoryPCPCIExpress`, physical memory, GPU transport, DBT mappings and renderer leases. **Dependencies:** A12; shared ABI changes require machine/DBT review.
+
+- [ ] Inventory current blob support before adding files. Specify the versioned host-visible PCI capability/BAR, aperture size/alignment/address limits and overlap with RAM/firmware/MMIO; preserve or migrate persisted machine ABI.
+- [ ] Implement BAR sizing/relocation, memory-decode control and CREATE/MAP/UNMAP/SET_SCANOUT_BLOB with explicit feature admission. Reject invalid offset/size/resource/format/permissions and unsupported mapping modes.
+- [ ] Import only validated worker-exported handles; implement 4 KiB guest-page versus host allocation-granule bounds/coherence. No mapped subrange may expose adjacent host/other-VM memory.
+- [ ] Bind all mappings to memory/device/worker generations. Unmap/remap must revoke DBT cached pointers/translations, prevent stale execution and synchronize active CPU/GPU readers before backing reuse.
+- [ ] Stress CPU/GPU sharing, BAR relocation, worker death, reset and allocation failure; build architecture-correct x86_64 Venus artifacts. **Exit:** valid Vulkan memory/fence operations on PC with negative isolation tests; keep Vulkan unadvertised until A14.
+
+#### A14 — Qualify OpenGL/Vulkan and compositors on both Linux ISAs (P06-16–23/30–37)
+
+**Owner/home:** guest Mesa/kernel/desktop packaging and live graphics gates. **Dependencies:** A11/A12; PC Vulkan requires A13. ARM cells may progress earlier.
+
+- [ ] Freeze separate managed/stock guest profiles with exact kernel/Mesa/host renderer requirements. Test producer fences on stock kernels; supply an explicit supported guest package when needed instead of weakening admission or silently replacing the user's kernel.
+- [ ] Run shader/pixel comparisons and selected relevant GL/Vulkan conformance cases, robust-access and device-loss tests. Record passed/failed/skipped cases and avoid claiming formal Khronos conformance without its process.
+- [ ] Exercise Vulkan external memory/semaphore import/export, acquire→render→submit→present, optimal-image→linear-scanout copies and queue/fence lifetime. Count CPU and GPU copies and attribute CPU translator time separately from GPU execution.
+- [ ] Qualify Xorg, XWayland and native Wayland on GNOME/KDE as separate cells; verify actively redrawing hardware-rendered GTK/Qt/browser/WebGL/editor windows, text, resize, scaling, fullscreen and sustained resource churn. Remove compositor overrides only after their original failures pass.
+- [ ] Repeat at declared resolutions, resource limits, host sleep/wake and multiple VM pressure. **Exit:** both Linux ISAs pass required GL and Vulkan desktop workloads without llvmpipe/lavapipe fallback; optional codecs/compute APIs remain independently reported.
+
+#### A15 — Finish GPU product behavior and recovery (P06-06/22/34/38/39, P12)
+
+**Owner/home:** effective capabilities, UI/daemon events, display and worker recovery. **Dependencies:** A12/A14; usability can be developed earlier with explicit fixtures.
+
+- [ ] Project requested versus admitted versus observed graphics state, guest driver/API/features, workload readiness and loss/recovery into one daemon-owned result. Distinguish worker-ready, guest-device-ready and first-presented-frame.
+- [ ] Make a required Vulkan request fail clearly when only VirGL/software is available; offer an explicit user choice where appropriate. Never silently turn a mandatory GPU request into software rendering.
+- [ ] Implement bounded renderer-loss recovery with queue cancellation/device reset or a clearly explained VM restart where live recovery is impossible. Preserve disks and report failed GPU work honestly.
+- [ ] Exercise cursor/input focus, resize, multiple scanouts where advertised, minimize/occlusion, display disconnect and teardown; establish per-VM/global resource admission and reclamation grace periods.
+- [ ] Run concurrent VM malicious/exhaustion cases and active-work kill/restart cycles. **Exit:** UI reports effective reality, failed work is not marked successful, and recovery/data/resource behavior matches the documented capability.
+
+#### A16 — Repair and promote FEX application compatibility (P06-C02/C06, existing container contract)
+
+**Owner/home:** pinned FEX producer, signal-context patches, initfs and container live gates. **Dependencies:** A01; independent of full-system DBT implementation.
+
+- [ ] Reproduce default Go asynchronous-preemption regexp failures against shipped, upstream-control and candidate FEX on identical kernels/rootfs/toolchains. Keep `GODEBUG=asyncpreemptoff` as a diagnostic control, never the compatibility acceptance condition.
+- [ ] Minimize signal arrival in translated code, dispatcher, syscall entry/return and host alternate stack. Validate unchanged versus edited RIP/RSP/GPR/flags/vector contexts, nested signals, interrupted syscalls, thread exit and restart behavior.
+- [ ] Verify static PIE/nested chroot, binfmt exec, execveat, descriptor isolation and seccomp behavior remain intact. Run Go/runtime stress, real amd64 dockerd and supported package-manager/compiler/container workloads with default settings.
+- [ ] Rebuild from clean pinned source, record patch/source/toolchain hashes and independently verify outputs. Do not alter production pins until all default-mode regressions pass.
+- [ ] Promote transactionally with rollback and repeat ordinary container lifecycle/data tests. **Exit:** supported amd64 applications pass with defaults; a full-system x86 VM result cannot substitute for this FEX gate.
+
+#### A17 — Deliver combined native/amd64 container GPU support (P06-C01–06)
+
+**Owner/home:** engine configuration, guest kernel/Mesa/initfs, OCI device admission and Docker producer. **Dependencies:** A12/A16; ARM-only compute can be qualified earlier.
+
+- [ ] Resolve the 16 KiB GPU versus 4 KiB FEX guest-page conflict with a reproducible experiment matrix. Prefer a correctly qualified common guest configuration; if separate engine profiles are necessary, specify explicit switching/data compatibility and do not claim combined same-engine support until it actually works.
+- [ ] Package correct ARM64 and amd64 userspace ICD/libraries for supported container images. Verify the guest kernel DRM ABI and translation/driver interaction; host ARM libraries are not valid substitutes for guest amd64 libraries.
+- [ ] Run normal `docker run --gpus all` with no driver environment overrides; validate exact render-node permissions and hardware compute outputs for both ISAs. Test denied/conflicting device requests and cross-container isolation.
+- [ ] Requalify maintained Docker start-intent checkpoint changes at the pre-ack crash boundary and during genuinely pending GPU work. Inspect restored task state, exit status, volume checksums and automatic engine recovery; promote pinned binaries only after these gates.
+- [ ] Connect observed GPU readiness to Settings/daemon, run concurrent sustained workloads and measure memory/resource reclamation. **Exit:** default native and supported translated container GPU workloads succeed, interrupted work is truthful, and existing container data/compatibility gates remain intact.
+
+### 12.6 Installation, native execution and complete macOS operation
+
+#### A18 — Finish native ARM execution ownership and machine correctness (P03)
+
+**Owner/home:** `DoryHV/Machine.swift`, `DoryNativeHVArm64`, ARM machine/DTB and HV adapters. **Dependencies:** A01.
+
+- [ ] Trace the actual production HV/vCPU/GIC/memory owners and probe-only APIs. Adapt the working runtime with the smallest useful interface; remove duplicate ownership only after direct and UEFI boot parity.
+- [ ] Implement or narrow deadline/cancellation contracts, correct-thread vCPU creation/destruction, start/stop rendezvous and quiesce barriers. Test cancellation while a CPU runs, waits, handles IRQs or tears down.
+- [ ] Review trapped system-register policy and advertised CPU state; replace unjustified read-zero/write-ignore behavior. Validate PSCI CPU_ON/OFF/features/affinity/reset/poweroff and GIC pending/in-service routing.
+- [ ] Verify kernel placement, DTB/memory map, firmware ranges, reserved memory, timer frequency and boot registers against the real constructed machine. Test CPU/RAM admission boundaries, host memory pressure, WFI and sleep/wake.
+- [ ] Run SMP and direct/UEFI guest workloads after each extraction; retain correct all-pages-dirty tracking until optimized tracking covers CPU and DMA writes. **Exit:** one production execution owner, reliable lifecycle and no reachable unimplemented deadline contract.
+
+#### A19 — Qualify ordinary Linux installation and updates on both ISAs (P05)
+
+**Owner/home:** firmware/media pipeline, machine planners, install journals and guest catalog. **Dependencies:** A01/A18 for ARM, A04/A05/A02 for PC; accelerated desktop exit also needs A14.
+
+- [ ] Rebuild ARM/PC firmware from pinned inputs on two clean builders; verify ABI and reproducibility. Exercise reset/entry, console/GOP, boot variables, device enumeration, ExitBootServices and runtime variables.
+- [ ] Validate ISO/raw/imported media detection, architecture, allocation limits and selected firmware path. Reject malformed/wrong-ISA media before allocating mutable VM artifacts; preserve original input bytes.
+- [ ] Install each frozen distro/ISA from fresh ordinary supported media through the app and CLI into a new disk. Verify partitioning, bootloader, keyboard/network/storage, installer progress and cancellation/retry without fixed diagnostic load addresses.
+- [ ] Detach installation media, relaunch Dory/daemon, cold boot offline, change resources while stopped and reboot repeatedly. Persist boot order/NVRAM and installed-media state; no hidden dependency on installer/initfs/config scratch paths.
+- [ ] Perform package and kernel/bootloader updates, tools/graphics package updates and rollback/recovery. **Exit:** two selected distro families per ISA complete install→installed boot→update→recovery, with accelerated profiles explicitly gated by A14.
+
+#### A20 — Finish essential device parity and daily I/O (P04, P09)
+
+**Owner/home:** shared virtio cores, MMIO/PCI transports, host network/audio/USB/input adapters. **Dependencies:** A01; run against A18/A19 guests.
+
+- [ ] Inventory queue/feature/reset differences; validate descriptor chains, indirect/loop/overflow bounds, event suppression, queue wrap and exactly-once asynchronous completion over both transports. Test DMA authority independent of CPU virtual-address privilege rules.
+- [ ] Qualify block geometry/read/write/flush/discard/write-zeroes, short I/O, read-only errors, cancellation and reset. Verify data checksums and promised persistence after completed flushes.
+- [ ] Validate network offload/MTU/backpressure/link change, cryptographic RNG, vsock flow control/half-close/reset and guest-agent framing/deadlines. Do not reintroduce empty invalid PCI capabilities.
+- [ ] Complete keyboard release/focus recovery, relative/absolute pointer/scrolling, audio routing/latency/underrun, USB/xHCI enumeration/reset/detach and the actually advertised camera/mass-storage policies. Keep physical passthrough distinct from emulated devices.
+- [ ] Stress I/O during reset/stop and multi-VM load; remove duplicate cores only after transport parity and guest regressions pass. **Exit:** device features work in real daily workloads, unsupported hotplug rejects explicitly, and malformed guest input remains contained.
+
+#### A21 — Finish production Mac installation and lifecycle (P08-02–09/17–25/31)
+
+**Owner/home:** VZMac adapter/application/core, daemon activation/manager and install/saved-state journals. **Dependencies:** A00/A01; preserve completed P08-01 behavior.
+
+- [ ] Use Apple-supported restore discovery and verify hardware-model compatibility and resource minima. Through the actual installed daemon and signed helper, run download/cache→prepare→install→first boot→Setup Assistant→installed cold boot without the IPSW cache.
+- [ ] Preserve hardware model, machine identifier, auxiliary storage, disk and configuration as one owned bundle. Verify retry and cold restart never regenerate identity or replace a user's disk.
+- [ ] Qualify start/guest shutdown/forced stop/restart/pause/suspend/restore with observed state transitions and bounded cancellation. Perform a real guest file/compute task after restore; a resumed title/window is insufficient.
+- [ ] Inject failure at reserve/quiesce/save/validate/publish/acknowledge and restore/consume/cleanup boundaries. Reopen with a fresh daemon after each interruption. Stop/discard of a suspended VM must reconcile backend bundle and daemon wrapper atomically, preserving cold-bootable disk state.
+- [ ] Test locked/unlocked console behavior, host sleep/restart, disk full, external-drive loss, stale leases, unsupported saved-state compatibility and guest/Dory upgrades. Offer safe cold boot for incompatible RAM state without discarding data. **Exit:** real production install/lifecycle/recovery passes; private fixture successes remain supporting evidence only.
+
+#### A22 — Finish Mac device policy, guest tools and Metal qualification (P08-10–16/26–30, P09)
+
+**Owner/home:** `DoryVZMacConfigurationBuilder`, guest tools, host brokers and Mac live gate. **Dependencies:** A21 for production qualification; policy implementation may run earlier.
+
+- [ ] Trace CPU/RAM/display/network/audio input/output/clipboard/shares/camera/USB settings from definition through resolved plan into actual VZ configuration and brokers. Verify disabled devices are absent or effectively blocked in the guest.
+- [ ] Finish granted-directory authority and directional clipboard enforcement. Reject unsupported network/camera/USB modes truthfully; do not replace a denied mode with shared NAT or bidirectional clipboard.
+- [ ] Install and supervise machine-bound Mac guest tools using supported service mechanisms. Report guest OS/build, tools protocol/capabilities and actual readiness; distinguish helper alive, VM running, guest login and workload-ready.
+- [ ] Run real guest Metal render and compute workloads with validated pixels/outputs, feature inventory and no host-only proxy success. Repeat after suspend/restore, resize, sleep/wake, resource pressure and long application use.
+- [ ] Qualify browser/productivity and representative Xcode build/debug, input shortcuts, audio, clipboard and shared-folder workflows through the production app. **Exit:** accelerated Mac desktop with enforced policy, observed readiness and retained sustained workload evidence; Apple API limits are explicitly documented.
+
+### 12.7 Data, integrations and the shipped product
+
+#### A23 — Make storage, snapshots, clone and backup recoverable (P10, P08-20–24)
+
+**Owner/home:** artifact mutation/leases, snapshot/backup/import/export and Mac bundle recovery. **Dependencies:** A19/A21 per cell; coordinate GPU/CPU quiescence with A10/A12/A18.
+
+- [ ] Define the durable inventory and transaction states for each backend: disks, firmware variables, Mac identity/auxiliary storage, configuration and optional saved RAM. Acquire exclusive mutation authority and reject concurrent destructive operations.
+- [ ] Verify raw sparse disk flush/error semantics, allocation/capacity changes, ENOSPC and external-drive disconnect. Implement supported format import via bounded transactional conversion; retain originals until verified commit.
+- [ ] Qualify stopped/cold snapshots first. For any advertised live save, quiesce CPUs/devices/workers, drain or cancel I/O/GPU work and record compatible backend state; otherwise explicitly limit that operation to cold snapshots.
+- [ ] Distinguish same-machine restore from new-machine clone; preserve or regenerate identities intentionally. Portable exports exclude host-bound executable/RAM state, validate paths/sizes/hashes and import on a second supported Mac.
+- [ ] Inject crash at copy/fsync/rename/metadata/cleanup boundaries; test backup retention, disk-full backup, interrupted restore and actual restore drills with checksums. **Exit:** every advertised data operation preserves recoverable originals and passes interruption testing; a success receipt alone is insufficient.
+
+#### A24 — Finish networking and filesystem sharing (P11)
+
+**Owner/home:** network helpers/brokers, guest-facing adapters and filesystem worker. **Dependencies:** A20/A21 per backend.
+
+- [ ] Define effective NAT/isolated/bridged/source-preserving modes supported per cell; verify DHCP/DNS/IPv4/IPv6, MTU, port forwarding and inbound rules with real packets and guest connections.
+- [ ] Test host VPN/Wi-Fi changes, sleep/wake, offline launch, address/port conflicts, helper death and daemon reconnect. Enforce privileged mode admission and prevent unintended exposure beyond configured interfaces.
+- [ ] Verify read-only/writable granted roots, path traversal/symlink containment, rename/unlink/open-file behavior, permissions, case/Unicode handling, xattrs and timestamp semantics supported by each guest share mechanism.
+- [ ] Keep zero-TTL/non-DAX as the correctness baseline until cross-host/guest edit coherence is proven. Stress multiple writers, editors/watchers, git/build trees, large files and revocation while requests are in flight.
+- [ ] Measure throughput/latency and recovery under worker death/mount disconnect. **Exit:** effective policy matches observed network/share access, denied roots remain inaccessible and supported development workflows preserve data/coherence.
+
+#### A25 — Finish guest-tool delivery and desktop integration (P09)
+
+**Owner/home:** Rust agent/transports, `GuestTools`, architecture-specific installers and host UI integration. **Dependencies:** A19/A21/A20.
+
+- [ ] Inventory required tools per OS/ISA, build reproducible artifacts and bind architecture/protocol/version to the machine. Support installation/update/uninstall with restart/rollback and no ambient host-process authority.
+- [ ] Implement bounded machine-authenticated health, shutdown, resize and permitted file/clipboard operations; reconnect after guest/service/daemon restart and reject stale sessions or incompatible messages.
+- [ ] Make tools absence, denied permission, unsupported feature and unhealthy VM distinct statuses. Installer boot and normal OS boot must not depend on an uninstalled guest agent.
+- [ ] Exercise key layouts/modifiers, trackpad/pointer focus, high-DPI scaling, resize, audio playback/recording and clipboard/file transfer with Unicode/large payloads and policy changes.
+- [ ] Test user login/logout and multiple desktop sessions where supported. **Exit:** ordinary desktop/developer journeys work without debug environment setup; tools failure is recoverable and cannot grant unrelated host access.
+
+#### A26 — Finish app/CLI/API parity and upgrade migration (P12)
+
+**Owner/home:** creation/settings/machines UI, `AppStore`, operation projections, CLI and daemon manager. **Dependencies:** capabilities from A15/A19/A21/A22; can implement UI with explicit unqualified states earlier.
+
+- [ ] Deliver one creation flow for media/ISA/native-versus-translated execution, CPU/RAM/disks, graphics and integration permissions. Detect wrong media and unsupported requests before expensive provisioning.
+- [ ] Expose observed preparation/install/boot/tools/desktop progress, bounded cancellation, actionable failures and retry/recovery. A launched process cannot turn a slow or failed guest into a green “ready” VM.
+- [ ] Align start/stop/reset/pause/suspend/snapshot/clone/import/export/delete semantics and operation IDs across app/CLI/API. Handle reconnect/missed events with daemon snapshots plus versioned events, not divergent UI state caches.
+- [ ] Migrate existing definitions/components/catalogs and preserve installed VM data. Reject retired architectures intelligibly; test clean and upgraded accounts, offline boot, component removal, failed update and uninstall preservation.
+- [ ] Add automated full user journeys and accessibility/keyboard checks around real backend outcomes. **Exit:** each qualified cell is usable through shipped surfaces with truthful capabilities and no private harness requirement.
+
+#### A27 — Qualify trust boundaries, isolation and component delivery (P13)
+
+**Owner/home:** signing/component import, sandbox policies, parsers, JIT/worker boundaries and release inventory. **Dependencies:** A00; final run against integrated candidate.
+
+- [ ] Map untrusted media/instructions/queues/GPU commands/shares/tools/local IPC to their validation and resource owner. Audit rights inherited by child processes and granted descriptor/resource revocation.
+- [ ] Fuzz bounded parsers and state transitions; test malformed lengths/overflow, malicious archives, stale generations, wrong signatures/architectures, downgrade attempts and conflicting resources. Retain minimized cases and affected runtime regressions.
+- [ ] Run actual packaged sandbox/entitlement tests and JIT publication/retirement checks. Test resource exhaustion per object, per VM and globally; one guest cannot acquire another VM's backing or authority.
+- [ ] Verify signed component install/update/rollback from clean and offline accounts, actual linked libraries/RPATHs, SBOM/source provenance and required notices. Review current vendor terms where distribution requires it; never infer license compliance from dependency names alone.
+- [ ] Inspect support-bundle redaction and diagnostic opt-in for sensitive data. **Exit:** no unresolved critical/high-severity defects, no ambient authentication bypass and no unqualified components admitted into release.
+
+#### A28 — Consolidate obsolete code, stale tasks and active documentation (R01–R20, Q08, P12/13/15)
+
+**Owner/home:** coordinator with affected subsystem owners; build manifests, READMEs and this plan. **Dependencies:** the replacement's behavioral and physical parity, not simply file age.
+
+- [ ] Reconcile every remaining P-checkbox with existing implementation/receipts and A-task outcomes; retain open qualification even when a portion is implemented. Update stale “next investigation” text and links rather than appending contradictory status paragraphs.
+- [ ] Inventory duplicate native/device/control ownership and production QEMU/legacy helpers using call sites, built artifacts and process inventory. Remove only after replacement parity and migration; preserve test-only external comparators and attribution accurately.
+- [ ] Retire source-spelling tests and private fixture-only production branches after equivalent behavioral/security coverage. Resolve stale package README links to deleted architecture documents using the relevant PLAN section or current build contract.
+- [ ] Remove unused entitlements, dependencies and build jobs; run affected build/package checks and inspect actual shipped payloads. Preserve immutable historical evidence and its old paths as historical references where necessary.
+- [ ] Keep this as the only active roadmap. **Exit:** no release-critical obsolete path, no contradicted active assignment, and each deferred optional cleanup has an explicit owner/dependency.
+
+### 12.8 Performance, reliability and release closure
+
+#### A29 — Run frozen performance and reliability campaigns (P14, Q01–08)
+
+**Owner/home:** qualification owner plus CPU/GPU/OS reviewers; existing Linux performance schemas/live gates and Mac campaign. **Dependencies:** all applicable implementation tasks for the candidate/cell.
+
+- [ ] Calibrate and freeze numerical budgets for every advertised cell before judging the release candidate. Keep P14 targets as targets until validated; record allowed resources, resolutions, workload versions and measurement boundaries. Do not lower budgets after seeing a failing candidate.
+- [ ] Run correctness before speed: independent instruction/guest checks, shader pixels/compute output, storage checksums and actual effective GPU identities. Collect end-to-end boot/input/presentation/RPC, CPU throughput, I/O, code cache, worker/VM resource and energy/thermal observations separately.
+- [ ] Use cold/warm repeated runs, balanced order and attributable process accounting. Compare ARM/Mac to matched same-guest native virtualization references and x86 to a pinned full-system translated reference; retain absolute latency even when relative performance looks favorable.
+- [ ] Complete the P14 matrix: oldest admitted host class, midrange/high-resource classes, supported host OS branches, two distro families per Linux ISA, selected Mac builds, 1/2/4/8 admitted CPUs, RAM/storage variants and concurrent VMs. Run at least 100 lifecycle cycles and a 48-hour mixed workload per required composition, with frozen suspend/restore and active-GPU failure counts.
+- [ ] Validate install→guest update→Dory update→recovery and failure injection on the exact signed candidate. **Exit:** raw artifacts validate, frozen budgets pass, resources reclaim, no unexpected crash/data corruption remains and every failed sample is accounted for. Missing hardware/metrics blocks the affected claim.
+
+#### A30 — Qualify and publish the exact release (P15, DONE-01–14)
+
+**Owner/home:** release coordinator, existing workflow/catalog/support owners. **Dependencies:** A23–A29 and all required CPU/GPU/Mac/container gates; no partial cell implies completion of the entire programme.
+
+- [ ] Build the candidate from reviewed source with locked dependencies and refreshed component manifests; verify nested signatures, entitlements, notarization/Gatekeeper behavior and clean-machine installation. Bind qualification to exact bytes, not just a version string.
+- [ ] Exercise production catalog/download/activation, actual launchd daemon, UI/CLI and all supported guest profiles on that candidate. No private catalog, authentication bypass or unnotarized helper substitutes for release-path acceptance.
+- [ ] Generate public capabilities/limits from qualified results. Keep optional codec, GPU compute API, nested virtualization, live-save and CPU extension limits explicit; remove universal native-speed/universal-x86 claims.
+- [ ] Verify update/rollback, component compatibility, recovery support bundles and public documentation. Freeze known limitations and confirm none contradict a required DONE gate.
+- [ ] Use the existing `scripts/publish-release.sh <version>` workflow only when release publication is authorized and all applicable gates pass. Verify all distribution surfaces serve the same candidate. **Exit:** all DONE items have evidence/reviewer sign-off, shipped claims match the tested product and no release-critical task is left hidden behind “experimental.”
+
+### 12.9 Coverage crosswalk and ready-to-use agent brief
+
+| Existing obligation | Detailed assignment | Closing evidence |
+|---|---|---|
+| P00/P01 baseline and control plane | Preserve; A01/A26 verify subsequent changes | Source/candidate identity and real effective launch contract |
+| P02 complete CPU semantics | A03–A08 | Form/feature inventory, precise faults, independent reference and Linux workloads |
+| P03 native ARM | A18 | Actual native owner, lifecycle/SMP and direct/UEFI tests |
+| P04 devices/memory/interrupts | A05/A10/A12/A13/A20 | Same device semantics across transports and real concurrent guest I/O |
+| P05 firmware/install | A19 | Fresh installs, detached-media cold boots, updates and recovery |
+| P06 Linux GPU/container compute | A11–A17 | Production GL/Vulkan desktop, mappings/fences, compute correctness and recovery |
+| P07 DBT throughput/SMP | A02/A09/A10 | Matched workload speed, correct parallelism, bounded resources |
+| P08 Mac | A21/A22/A23 | Production install/lifecycle, policy, Metal, identity and recovery |
+| P09 desktop/tools | A20/A22/A25 | Daily workflows and machine-bound tool health/policy |
+| P10 durable data | A23 | Crash-boundary checks and real restore drills |
+| P11 network/shares | A24 | Observed connectivity/policy/coherence and recovery |
+| P12 product | A15/A26 | Clean/upgrade app and CLI journeys with truthful capabilities |
+| P13 security/build | A00/A01/A27/A28 | Packaged negative cases, pinned/signed components and inventory |
+| P14 performance/reliability | A02/A09/A14/A17/A29 | Frozen budgets, full matrix, raw measurements and sustained campaigns |
+| P15 release, R cleanup, Q and DONE | A28/A29/A30 | Exact shipped candidate, no remaining required gate |
+
+Use this brief when starting an implementation agent:
+
+> Read PLAN.md sections 2.6 and 12, then execute **Axx [title]**, steps [numbers], advancing parent **Pxx** requirements. Start from [source revision/worktree] and own [exact files/modules]; coordinate shared interface changes with [owner]. Prerequisites are [IDs and evidence]. Preserve [existing implementation/results]. Implement through the real production call path, add behavioral regression coverage, run [focused command] and [candidate-bound guest workload] when prerequisites are available, and retain raw results plus the standard receipt. Do not widen CPU/GPU claims, disable authority, replace required hardware rendering with software, or mark unavailable physical qualification passed. Update the matching task in PLAN.md with observed evidence and remaining boundaries; report changed behavior, verification, reviewer needs and the next unblocked assignment.
+
+For a documentation-only planning handoff, no VM launch, disk mutation, process termination, destructive cleanup or release publication has occurred. Implementation agents should inspect `scripts/test.sh` and the selected campaign's cleanup behavior before execution, use disposable owned fixtures, and run focused checks first. The public integration entrypoints remain `scripts/build.sh` and `scripts/test.sh` (modes: `rust`, `gvproxy`, `swift`, `app`, `ui`, `build`, `all`); use package-specific filters for bounded work after confirming package/toolchain settings. A full test/build run must not be claimed from this plan review.

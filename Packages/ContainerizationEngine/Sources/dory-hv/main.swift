@@ -217,17 +217,9 @@ func runAgentPing(_ options: Options) {
 
 let arguments: [String]
 do {
-    let rawArguments = Array(CommandLine.arguments.dropFirst())
-    if ProcessInfo.processInfo.environment["DORY_TEST_BYPASS_DAEMON_AUTH"] == "1" {
-        arguments = try DoryApplicationLaunchHandoffClient.receiveIfRequested(
-            arguments: rawArguments,
-            authenticateDaemon: { _ in }
-        )
-    } else {
-        arguments = try DoryApplicationLaunchHandoffClient.receiveIfRequested(
-            arguments: rawArguments
-        )
-    }
+    arguments = try DoryApplicationLaunchHandoffClient.receiveIfRequested(
+        arguments: Array(CommandLine.arguments.dropFirst())
+    )
 } catch {
     fail("application launch authority handoff failed: \(error)")
 }

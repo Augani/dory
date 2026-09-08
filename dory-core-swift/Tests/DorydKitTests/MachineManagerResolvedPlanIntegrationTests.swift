@@ -925,10 +925,10 @@ struct MachineManagerResolvedPlanIntegrationTests {
         }
     }
 
-    @Test("private signed PC hardware-3D launch harness uses MachineManager fd9 authority")
+    @Test("private signed PC hardware-3D launch harness uses MachineManager fd9 authority",
+          .enabled(if: ProcessInfo.processInfo.environment["DORY_PC_GPU_REAL_HARNESS"] == "1"))
     func privateSignedPCHardware3DLaunchHarness() throws {
         let environment = ProcessInfo.processInfo.environment
-        guard environment["DORY_PC_GPU_REAL_HARNESS"] == "1" else { return }
 
         let qualificationRoot = environment["DORY_PC_GPU_REAL_HARNESS_ROOT"]
             ?? NSHomeDirectory() + "/.dory/qualification/renderer-reset-signed-runner-20260906/pc-gpu-launch-prep-20260906023500"
@@ -959,7 +959,13 @@ struct MachineManagerResolvedPlanIntegrationTests {
             ?? "/mnt/dory-gpu-probe/dory-pc-virgl2-clear-readback-probe"
         let receiptPath = environment["DORY_PC_GPU_REAL_HARNESS_RECEIPT"]
             ?? qualificationRoot + "/private-real-machine-manager-pc-hardware3d-launch.json"
-        let waitSeconds = TimeInterval(environment["DORY_PC_GPU_REAL_HARNESS_WAIT_SECONDS"].flatMap(Double.init) ?? 1_800)
+        let waitSeconds = environment["DORY_PC_GPU_REAL_HARNESS_WAIT_SECONDS"].flatMap(Double.init) ?? 7_200
+        let campaign = try PCGPUHarnessDeadline(seconds: waitSeconds)
+        let handoffSeconds = environment["DORY_PC_GPU_REAL_HARNESS_HANDOFF_TIMEOUT"].flatMap(Double.init) ?? waitSeconds
+        _ = try PCGPUHarnessDeadline(seconds: handoffSeconds)
+        let gvproxy = try #require(environment["DORY_PC_GPU_REAL_HARNESS_GVPROXY"],
+            "the real GPU harness requires an explicit gvproxy executable")
+        try requireRegularFile(gvproxy, label: "gvproxy executable")
 
         try requireRegularFile(runnerExecutable, label: "signed fc82 runner executable")
         try requireRegularFile(systemDisk, label: "PC system disk")
@@ -1137,7 +1143,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
             "testCatalogArchitecture": verifiedTestCatalog.architecture,
             "testCatalogByteTotalsRepairedInMemory": true,
             "networkQualification": "excluded",
-            "gvproxyArgument": "/usr/bin/true",
+            "gvproxyArgument": gvproxy,
             "gvproxyScope": "private GPU render/readback probe only; this receipt does not qualify guest networking",
         ]
 
@@ -1151,8 +1157,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
         // and the guest agent. Stage both from the built x86_64 guest agent.
         let guestAgentSource = environment["DORY_PC_GPU_REAL_HARNESS_GUEST_AGENT"]
             ?? workspaceRoot.appendingPathComponent("guest/out/dory-agent-amd64").path
-        let bootConfigDirectory = qualificationRoot + "/dorycfg"
-        try? FileManager.default.removeItem(atPath: bootConfigDirectory)
+        try requireRegularFile(guestAgentSource, label: "x86 guest agent")
+        let bootConfigDirectory = qualificationRoot + "/dorycfg-" + UUID().uuidString
+        defer { try? FileManager.default.removeItem(atPath: bootConfigDirectory) }
         try FileManager.default.createDirectory(
             atPath: bootConfigDirectory, withIntermediateDirectories: true
         )
@@ -1193,7 +1200,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 acceleratedExecutablePath: runnerExecutable,
                 acceleratedDesktopBaseArgumentsOverride: [
                     "desktop", "--gvproxy",
-                    environment["DORY_PC_GPU_REAL_HARNESS_GVPROXY"] ?? "/usr/bin/true",
+                    gvproxy,
                 ],
                 guestArchitecture: .x86_64,
                 bootMode: .efi,
@@ -1206,7 +1213,8 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 memoryMB: 1_024,
                 cpuCount: 1,
                 shares: [dorycfgShare, share],
-                preserveStateDirectory: true,
+                preserveStateDirectory: false,
+                requireConfirmedStopForCleanup: true,
                 requiresReadyHandoff: true,
                 authenticatedRuntime: false,
                 initialEnvironment: [
@@ -1215,11 +1223,15 @@ struct MachineManagerResolvedPlanIntegrationTests {
                     DoryDesktopGraphicsPreference.environmentKey:
                         DoryDesktopGraphicsPreference.virglVenus.rawValue,
                 ],
-                desktopHandoffReadyTimeoutSeconds: TimeInterval(
-                    environment["DORY_PC_GPU_REAL_HARNESS_HANDOFF_TIMEOUT"].flatMap(Double.init) ?? 1800
-                ),
+                desktopHandoffReadyTimeoutSeconds: min(handoffSeconds, campaign.remainingSeconds),
                 starter: starter
             ) { manager, starter, state in
+                defer {
+                    if let console = try? manager.serialConsole(id: "dev", limit: 65_536) {
+                        receipt["serialConsoleTail"] = String(data: console.bytes, encoding: .utf8) ?? ""
+                    }
+                    try? writeReceipt(receipt, to: receiptPath)
+                }
                 let plans = MutablePlanStore()
                 let operations = manager.resolvedLaunchCompatibilityOperations(
                     for: .doryHypervisor
@@ -1314,9 +1326,9 @@ struct MachineManagerResolvedPlanIntegrationTests {
                     }
                 }
 
-                let deadline = Date().addingTimeInterval(waitSeconds)
+                let deadline = campaign
                 var status = manager.status(id: "dev")
-                while Date() < deadline {
+                while deadline.remainingSeconds > 0 {
                     status = manager.status(id: "dev")
                     if status?.state == .running { break }
                     if status?.state == .failed { break }
@@ -1343,15 +1355,16 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 if status?.state == .running, let agentSocket = runtimeAgentSocket {
                     var readinessProbes: [[String: Any]] = []
                     var guestReady = false
-                    while Date() < deadline {
+                    while deadline.remainingSeconds > 0 {
                         let readiness = runCalibrationProbe(
                             calibrationTool: calibrationTool,
                             agentSocket: agentSocket,
                             guestProbePath: "/bin/true",
-                            timeoutSeconds: 10
+                            timeoutSeconds: 300,
+                            campaign: campaign
                         )
                         readinessProbes.append(readiness)
-                        if readiness["returncode"] as? Int32 == 0 {
+                        if PCGPUHarnessResult.probePassed(readiness) {
                             guestReady = true
                             break
                         }
@@ -1370,10 +1383,11 @@ struct MachineManagerResolvedPlanIntegrationTests {
                             calibrationTool: calibrationTool,
                             agentSocket: agentSocket,
                             guestProbePath: probeGuestPath,
-                            timeoutSeconds: 90
+                            timeoutSeconds: 300,
+                            campaign: campaign
                         )
                         receipt["clearReadbackProbe"] = probe
-                        if probe["returncode"] as? Int32 == 0 {
+                        if PCGPUHarnessResult.probePassed(probe) {
                             receipt["privateGPUClearReadbackPassed"] = true
                         }
                     }
@@ -1381,6 +1395,13 @@ struct MachineManagerResolvedPlanIntegrationTests {
                 if let console = try? manager.serialConsole(id: "dev", limit: 65_536) {
                     receipt["serialConsoleTail"] = String(data: console.bytes, encoding: .utf8) ?? ""
                 }
+                status = manager.status(id: "dev")
+                try PCGPUHarnessResult.requireSuccess(
+                    running: status?.state == .running,
+                    hardwareGraphics: status?.runtimeGraphicsSelection?.accelerationLevel == .hardwareAccelerated3D,
+                    agentReady: receipt["guestAgentReady"] as? Bool == true,
+                    renderPassed: receipt["privateGPUClearReadbackPassed"] as? Bool == true
+                )
                 _ = try manager.stop(id: "dev")
             }
         } catch {
@@ -3461,6 +3482,7 @@ struct MachineManagerResolvedPlanIntegrationTests {
         cpuCount: Int? = nil,
         shares: [DoryMachineShareConfiguration] = [],
         preserveStateDirectory: Bool = false,
+        requireConfirmedStopForCleanup: Bool = false,
         requiresReadyHandoff: Bool = false,
         useShortStatePath: Bool = false,
         authenticatedRuntime: Bool = false,
@@ -3566,9 +3588,24 @@ struct MachineManagerResolvedPlanIntegrationTests {
             // child exits before reaching the requested crash boundary.
             if !preserveStateDirectory,
                ProcessInfo.processInfo.environment["DORY_RECONNECT_DAEMON_ROOT"] != state {
-                _ = try? manager.stop(id: "dev")
-                _ = try? manager.delete(id: "dev")
-                _ = try? FileManager.default.removeItem(atPath: state)
+                if requireConfirmedStopForCleanup {
+                    do {
+                        try PCGPUHarnessResult.cleanup(directory: URL(fileURLWithPath: state)) {
+                            if manager.status(id: "dev") != nil {
+                                _ = try manager.stop(id: "dev")
+                                _ = try manager.delete(id: "dev")
+                            }
+                        }
+                    } catch {
+                        Issue.record("fixture cleanup failed; retained \(state): \(error)")
+                    }
+                } else {
+                    // Synthetic quarantine/failure fixtures deliberately reject lifecycle
+                    // operations and contain no real VM disk requiring a confirmed stop.
+                    _ = try? manager.stop(id: "dev")
+                    _ = try? manager.delete(id: "dev")
+                    _ = try? FileManager.default.removeItem(atPath: state)
+                }
             }
         }
         let rootfsPath: String
@@ -4200,51 +4237,20 @@ struct MachineManagerResolvedPlanIntegrationTests {
         calibrationTool: String,
         agentSocket: String,
         guestProbePath: String,
-        timeoutSeconds: TimeInterval
+        timeoutSeconds: TimeInterval,
+        campaign: PCGPUHarnessDeadline
     ) -> [String: Any] {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: calibrationTool)
-        process.arguments = [
-            "exec",
-            "--agent-socket", agentSocket,
-            "--timeout-ms", String(Int(timeoutSeconds * 1_000)),
-            "--output-limit-bytes", "8192",
-            "--", guestProbePath,
-        ]
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-        let started = Date()
-        do {
-            try process.run()
-            let deadline = Date().addingTimeInterval(timeoutSeconds + 15)
-            while process.isRunning && Date() < deadline {
-                Thread.sleep(forTimeInterval: 0.25)
-            }
-            if process.isRunning { process.terminate() }
-            process.waitUntilExit()
-            let stdoutData = stdout.fileHandleForReading.readDataToEndOfFile()
-            let stderrData = stderr.fileHandleForReading.readDataToEndOfFile()
-            return [
-                "command": [
-                    calibrationTool, "exec", "--agent-socket", agentSocket,
-                    "--timeout-ms", String(Int(timeoutSeconds * 1_000)),
-                    "--output-limit-bytes", "8192", "--", guestProbePath,
-                ],
-                "returncode": process.terminationStatus,
-                "terminatedByTimeout": Date() >= deadline && process.terminationStatus != 0,
-                "elapsedSeconds": Date().timeIntervalSince(started),
-                "stdout": String(data: stdoutData.prefix(8192), encoding: .utf8) ?? "",
-                "stderr": String(data: stderrData.prefix(8192), encoding: .utf8) ?? "",
-            ]
-        } catch {
-            return [
-                "command": [calibrationTool, "exec", "--agent-socket", agentSocket, "--", guestProbePath],
-                "launchError": String(describing: error),
-                "elapsedSeconds": Date().timeIntervalSince(started),
-            ]
-        }
+        PCGPUHarnessProcess.run(
+            executable: calibrationTool,
+            arguments: [
+                "exec", "--agent-socket", agentSocket,
+                "--timeout-ms", String(Int(timeoutSeconds * 1_000)),
+                "--output-limit-bytes", "8192", "--", guestProbePath,
+            ],
+            // AgentClient allows 120 s to connect, then exec allows its workload budget
+            // plus 30 s of RPC grace. The campaign deadline caps the entire attempt.
+            deadline: campaign.capped(seconds: 120 + timeoutSeconds + 30)
+        )
     }
 
     private func writeExecutable(_ contents: String, path: String) throws {

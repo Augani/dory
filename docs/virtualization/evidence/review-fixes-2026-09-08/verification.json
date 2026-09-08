@@ -1,0 +1,56 @@
+{
+  "schemaVersion": 1,
+  "kind": "dory-review-fix-verification",
+  "date": "2026-09-08",
+  "baseCommit": "08d7524c27b6cf7e21b475c71050ff5dc1b83392",
+  "sourceBinding": "Base commit plus the committed patch; modified code/test bytes are independently hashed below. PLAN.md is deliberately excluded from its own receipt hash.",
+  "files": {
+    "Packages/ContainerizationEngine/Sources/dory-hv/main.swift": "601ece69cfb4567ca59ed9f2cf7e8828d14561800c102def02ed09f8778a241b",
+    "dory-core-swift/Sources/DorydKit/DoryApplicationLaunchHandoff.swift": "496a3a8e5d0d910b86d23914fa65d4a37a11a92475cf587488d896d3b664bad7",
+    "dory-core-swift/Tests/DorydKitTests/DoryApplicationLaunchHandoffTests.swift": "2610121ebf1dc6183ff4e8770101cf5aea3a736ca5e47806b6425726dcf96cb1",
+    "dory-core-swift/Tests/DorydKitTests/MachineManagerResolvedPlanIntegrationTests.swift": "bb30574bbf80d59753bc97c72579979b81bb84e66754fb0841a6d4e9a809b8ef",
+    "dory-core-swift/Tests/DorydKitTests/PCGPUHarnessSupport.swift": "2c48ea4c92c55fe4fed4277e2e80461da00956c64eed6d245dad9fa41c10ba45",
+    "dory-core-swift/Tests/DorydKitTests/PCGPUHarnessSupportTests.swift": "d02814fe91a197c4764d137fbdd67f07739ab993e301a7d3531366edcbaebc95"
+  },
+  "host": {
+    "architecture": "arm64",
+    "macOS": "27.0"
+  },
+  "developerDirectory": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+  "checks": [
+    {
+      "command": "xcrun swift test --package-path dory-core-swift --jobs 4 --filter 'PCGPUHarnessSupportTests|DoryApplicationLaunchHandoffTests|MachineManagerResolvedPlanIntegrationTests'",
+      "exitCode": 0,
+      "xctestExecuted": 26,
+      "xctestFailures": 0,
+      "swiftTestingReportedTests": 50,
+      "swiftTestingFailures": 0,
+      "explicitlySkippedPhysicalTests": [
+        "privateSignedPCHardware3DLaunchHarness"
+      ],
+      "log": "focused-tests.log.gz"
+    },
+    {
+      "command": "xcrun swift build --package-path Packages/ContainerizationEngine --product dory-hv --jobs 4",
+      "exitCode": 0,
+      "configuration": "debug",
+      "log": "runner-build.log.gz"
+    }
+  ],
+  "intermediateFailure": {
+    "log": "intermediate-cleanup-regression.log.gz",
+    "cause": "Strict stop-before-delete cleanup initially applied to a synthetic quarantine fixture that intentionally rejects lifecycle operations.",
+    "resolution": "Scope confirmed-stop cleanup to the physical GPU fixture. Preserve the existing cleanup policy for synthetic fixtures. Full selected suites then passed."
+  },
+  "limitations": [
+    "No physical GPU VM campaign or signed Release packaging gate was executed.",
+    "The private physical fixture must use an authenticated production daemon identity; no authentication bypass remains in the shipping entrypoint.",
+    "Existing prebuilt FFI objects emit macOS deployment-target mismatch warnings (27.0 objects linked into 14.0/15.0 targets); candidate/toolchain qualification remains required."
+  ],
+  "releaseQualified": false,
+  "logs": {
+    "focused-tests.log.gz": "2fcba59f49128ab99f2ce0a4e8dd1030f49f595e6beb274d7e50c89de5ea6d97",
+    "runner-build.log.gz": "400ef827d8785260649de6ebea058392204cf4ed9bcf8edaaeca90cf839f7bc9",
+    "intermediate-cleanup-regression.log.gz": "bad32a29846895a0d7fc83dcd1a95a124f3de5dc60b2fefbd63afe2077effece"
+  }
+}
