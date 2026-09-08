@@ -237,3 +237,7 @@ scripts/__pycache__/
 # Wave 0 producer inventory.
 !/scripts/inventory-wave0-candidate.py
 !/scripts/test-inventory-wave0-candidate.py
+
+# Wave 0 preflight-wave0-fixtures.
+!/scripts/preflight-wave0-fixtures.py
+!/scripts/test-preflight-wave0-fixtures.py
