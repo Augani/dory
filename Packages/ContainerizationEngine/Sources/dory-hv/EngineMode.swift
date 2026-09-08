@@ -265,6 +265,10 @@ enum EngineMode {
         var memoryMB: UInt64
         var cpus: Int
         var stateDirectory: String
+        /// Optional root for the internal read-only boot-config and writable guest-log shares.
+        /// Standalone runtimes share the user's home but keep these helper-owned paths outside it,
+        /// so host-share coherence never has two virtio-fs devices over the same host subtree.
+        var internalShareDirectory: String? = nil
         /// Exact production descriptor authority or an explicit standalone developer path.
         var dockerDataDiskAuthority: DockerDataDiskAuthority
         /// Canonical root of the managed data drive, when one owns the inherited descriptor.
@@ -1022,18 +1026,27 @@ enum EngineMode {
         try? FileManager.default.removeItem(atPath: bootRootfs)
         try FileManager.default.copyItem(atPath: pristineRootfs, toPath: bootRootfs)
 
-        let bootConfigShare = try writeBootConfiguration(stateDirectory: state, script: guestBootScript(
-            shares: configuration.shares,
-            reclaimPolicy: configuration.reclaimPolicy,
-            amd64Emulation: configuration.amd64Emulation,
-            nativeIPv6: nativeIPv6,
-            bridgeNetwork: bridgeNetwork,
-            sourcePreservingLAN: sourcePreservingLAN,
-            allowDockerDataFormat: allowDockerDataFormat,
-            expectedDockerDataDiskUUID: expectedDockerDataDiskUUID,
-            gpuMode: configuration.gpuMode
-        ), guestAgentPath: configuration.guestAgentPath)
-        let guestLogShare = try guestLogShareConfiguration(stateDirectory: state)
+        let internalShareDirectory = try prepareStateDirectory(
+            configuration.internalShareDirectory ?? state
+        )
+        let bootConfigShare = try writeBootConfiguration(
+            directory: internalShareDirectory + "/boot-config",
+            script: guestBootScript(
+                shares: configuration.shares,
+                reclaimPolicy: configuration.reclaimPolicy,
+                amd64Emulation: configuration.amd64Emulation,
+                nativeIPv6: nativeIPv6,
+                bridgeNetwork: bridgeNetwork,
+                sourcePreservingLAN: sourcePreservingLAN,
+                allowDockerDataFormat: allowDockerDataFormat,
+                expectedDockerDataDiskUUID: expectedDockerDataDiskUUID,
+                gpuMode: configuration.gpuMode
+            ),
+            guestAgentPath: configuration.guestAgentPath
+        )
+        let guestLogShare = try guestLogShareConfiguration(
+            directory: internalShareDirectory + "/guest-logs"
+        )
         let filesystemShares = [bootConfigShare, guestLogShare] + configuration.shares
         // `IgnoreSelf` is worker-process scoped, so validate internal and user mounts together.
         // An overlapping writable disabled mount could otherwise hide its mutations from a
@@ -1486,13 +1499,12 @@ enum EngineMode {
         note("engine stopped: \(stop)")
     }
 
-    private static func writeBootConfiguration(
-        stateDirectory: String,
+    static func writeBootConfiguration(
+        directory: String,
         script: String,
         guestAgentPath: String?
     ) throws -> VirtioFSShareConfiguration {
-        let directory = stateDirectory + "/boot-config"
-        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+        let directory = try prepareStateDirectory(directory)
         let path = directory + "/boot.sh"
         let temporary = path + ".partial"
         try? FileManager.default.removeItem(atPath: temporary)
@@ -1528,9 +1540,8 @@ enum EngineMode {
         }
     }
 
-    private static func guestLogShareConfiguration(stateDirectory: String) throws -> VirtioFSShareConfiguration {
-        let directory = stateDirectory + "/guest-logs"
-        try FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true)
+    static func guestLogShareConfiguration(directory: String) throws -> VirtioFSShareConfiguration {
+        let directory = try prepareStateDirectory(directory)
         return try VirtioFSShareConfiguration(tag: "dorylogs", path: directory, readOnly: false)
     }
 

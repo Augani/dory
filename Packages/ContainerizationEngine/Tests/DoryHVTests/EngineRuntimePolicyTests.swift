@@ -401,4 +401,47 @@ struct EngineRuntimePolicyTests {
             _ = try EngineMode.prepareStateDirectory(alias)
         }
     }
+    @Test func engineInternalSharesStayPrivateAndDisjointFromHome() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-engine-shares-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let home = try EngineMode.prepareStateDirectory(root.appendingPathComponent("home").path)
+        let internalRoot = try EngineMode.prepareStateDirectory(root.appendingPathComponent("internal").path)
+        let boot = try EngineMode.writeBootConfiguration(
+            directory: internalRoot + "/boot-config", script: "#!/bin/sh\nexit 0\n", guestAgentPath: nil)
+        let logs = try EngineMode.guestLogShareConfiguration(directory: internalRoot + "/guest-logs")
+        let homeShare = try VirtioFSShareConfiguration(tag: "home", path: home, readOnly: false)
+        try VirtioFSShareConfiguration.validateWritableTopology([boot, logs, homeShare])
+        #expect(boot.readOnly)
+        #expect(!logs.readOnly)
+        #expect(try String(contentsOfFile: boot.path + "/boot.sh", encoding: .utf8) == "#!/bin/sh\nexit 0\n")
+        for share in [boot, logs] {
+            var status = stat()
+            #expect(lstat(share.path, &status) == 0)
+            #expect(status.st_mode & mode_t(0o7777) == mode_t(0o700))
+        }
+        let overlapping = try EngineMode.guestLogShareConfiguration(directory: home + "/guest-logs")
+        #expect(throws: (any Error).self) {
+            try VirtioFSShareConfiguration.validateWritableTopology([boot, overlapping, homeShare])
+        }
+    }
+
+    @Test func engineInternalShareWritersRejectSymlinkDirectories() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dory-engine-share-links-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = try EngineMode.prepareStateDirectory(root.appendingPathComponent("target").path)
+        let alias = root.appendingPathComponent("alias").path
+        #expect(symlink(target, alias) == 0)
+        #expect(throws: (any Error).self) {
+            _ = try EngineMode.writeBootConfiguration(directory: alias, script: "unexpected", guestAgentPath: nil)
+        }
+        #expect(throws: (any Error).self) {
+            _ = try EngineMode.guestLogShareConfiguration(directory: alias)
+        }
+        #expect(try FileManager.default.contentsOfDirectory(atPath: target).isEmpty)
+    }
+
 }

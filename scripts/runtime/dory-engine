@@ -1,5 +1,5 @@
 #!/bin/bash
-# dory-engine — Dory's container engine as a standalone, Colima-style runtime.
+# dory-engine — Dory's container engine as a standalone native Hypervisor.framework runtime.
 #
 #   dory-engine start [--mem-mb N] [--cpus N] [--data-drive PATH]
 #                     [--amd64|--no-amd64]
@@ -21,6 +21,11 @@ BIN="$HERE/bin"
 SHARE="$HERE/share/dory"
 DORY_ROOT="$HOME/.dory"
 STATE="$DORY_ROOT/standalone"
+# dory-hv mounts its boot configuration and guest logs through separate virtio-fs devices. They
+# cannot be descendants of the writable home share: a single worker cannot safely preserve
+# coherence across overlapping read-only and writable source trees. This small helper-owned
+# directory is deliberately outside HOME and contains no workload state.
+INTERNAL_SHARE_DIR="${DORY_ENGINE_INTERNAL_SHARE_DIR:-/tmp/dory-engine-$UID-vm-shares}"
 DATA_DRIVE="${DORY_DATA_DRIVE:-$HOME/Library/Application Support/Dory/Dory.dorydrive}"
 SOCK="$DORY_ROOT/engine.sock"
 BACKEND_SOCK="$STATE/hv/docker-backend.sock"
@@ -391,6 +396,7 @@ cmd_start() {
   nohup "$BIN/dory-hv" engine \
     --engine-sock "$BACKEND_SOCK" \
     --state-dir "$STATE/hv" \
+    --internal-share-dir "$INTERNAL_SHARE_DIR" \
     --data-drive "$DATA_DRIVE" \
     --kernel "$KERNEL" \
     --gvproxy "$BIN/gvproxy" \

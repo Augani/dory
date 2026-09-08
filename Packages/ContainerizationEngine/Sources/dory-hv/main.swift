@@ -370,6 +370,7 @@ case "desktop":
     var operationID: UUID?
     var reconnectIdentity: DoryRuntimeReconnectLaunchIdentity?
     var stateDirectory: String?
+    var internalShareDirectory: String?
     var kernel: String?
     var initrd: String?
     var rootfs: String?
@@ -610,6 +611,7 @@ case "desktop":
                 envelope: pcRuntimeLaunchEnvelope,
                 authority: authority,
                 stateDirectory: stateDirectory,
+        internalShareDirectory: internalShareDirectory,
                 handoffSocketPath: handoffSocket,
                 agentSocketPath: agentSocket,
                 shellSocketPath: shellSocket,
@@ -856,6 +858,11 @@ case "engine":
                 fail("engine --state-dir requires a non-empty path")
             }
             stateDirectory = value
+        case "--internal-share-dir":
+            guard let value = iterator.next(), value.hasPrefix("/") else {
+                fail("engine --internal-share-dir requires an absolute path")
+            }
+            internalShareDirectory = value
         case "--data-disk":
             guard let value = iterator.next(), !value.isEmpty else {
                 fail("engine --data-disk requires a non-empty absolute path")
