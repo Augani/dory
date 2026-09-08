@@ -1,0 +1,63 @@
+{
+  "kind": "dev.dory.wave0.build-repairs",
+  "schemaVersion": 1,
+  "releaseQualified": false,
+  "sourceCommit": "2d5456af8aae206ee3f68286d34ace65faf385d3",
+  "files": {
+    "scripts/build.sh": "08b4da23a6e167e51dfca3e125a14d295079d6cd1ba64d294348cb3d246b0920",
+    "scripts/release.sh": "2c9650ddc04caaf8332a8c809eb85d1ca4c25deb8c7035d66d8fcc3630afe120",
+    "scripts/runtime/dory-hv-launcher": "65326c1e608a23b750edb3d0bb4ac57cbccb03a7ba8847ae562372190e97af97",
+    "scripts/runtime/dory-engine": "4a4bd3cecab45a248c1033e6eb6e9f60a34183ef9bc70427e80613728d6417ef",
+    "guest/desktop/build.sh": "d510dc3e05c16fe34e42ba5fc4279dd736721d27647c26e4c93d23771fb4713c",
+    "guest/desktop/verify-build.sh": "1e3ca62a19ab221762c37fc2b6593330eaaffcf6786120f1f97d17ebae9ed381",
+    "Packages/ContainerizationEngine/Sources/dory-hv/EngineMode.swift": "9546a00dc5cda78b12de5c3ae0e1cff89654e30ba5ea2ae5174b2a0ade5bdc30",
+    "Packages/ContainerizationEngine/Sources/dory-hv/main.swift": "ec68eee15dab4989866302ceafab8890230a97f4ca6768a65cdfd9ffcb502254"
+  },
+  "checks": [
+    {
+      "command": "python3 scripts/test-development-source-binding.py",
+      "result": "passed",
+      "tests": 6
+    },
+    {
+      "command": "swift test --package-path Packages/ContainerizationEngine --jobs 4 --filter EngineRuntimePolicyTests",
+      "result": "passed",
+      "tests": 16,
+      "log": "engine-share-tests.log.gz"
+    },
+    {
+      "command": "bash scripts/test-build-components.sh",
+      "result": "passed",
+      "scope": "Current worktree, including the still-uncommitted PC GPU gate invocation; output ended with component packaging test passed. Later launcher behavioral test passed separately."
+    },
+    {
+      "command": "python3 .github/scripts/test-renderer-production-tuple.py",
+      "result": "passed",
+      "tests": 8
+    },
+    {
+      "command": "bash guest/desktop/verify-build.sh arm64 ubuntu",
+      "result": "passed",
+      "log": "ubuntu-desktop-verify.log.gz"
+    },
+    {
+      "command": "dory-hv lzfse compress/decompress",
+      "result": "passed",
+      "scope": "1 MiB binary round trip through current SwiftPM executable; invalid operation rejected"
+    },
+    {
+      "command": "standalone runner launcher fixture in scripts/test-build-components.sh",
+      "result": "passed",
+      "scope": "Arguments including spaces, shell punctuation and empty string preserved; exit status propagated; missing, non-executable and symlinked runner rejected"
+    }
+  ],
+  "logsSHA256": {
+    "engine-share-tests.log.gz": "34dd437669cbee0e56df5eb4ccc7862913f80ed4f7df949e77dff5f4aeecf541",
+    "ubuntu-desktop-verify.log.gz": "65b5441527dd55fb5e14fcf2688b9005c97cf0682934c008d4fd3c765f99277d"
+  },
+  "limitations": [
+    "No full signed app rebuild was performed for these commits. Prior source-bound development previews are stale for current HEAD.",
+    "Engine share tests exercise production share constructors and topology checks without booting a guest.",
+    "No claim of minimum-host, wrong-team signing, approved-matrix or release-catalog qualification."
+  ]
+}
