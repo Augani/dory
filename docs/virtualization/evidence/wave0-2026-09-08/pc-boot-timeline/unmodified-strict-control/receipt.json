@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "classification": "development-diagnostic-failed-boot",
+  "control": "original installer command line on same strict-deadline runner as EFI flag controls",
+  "executionElapsedNanoseconds": 176096196042,
+  "bootTimeline": {
+    "clock": "host-dispatch-uptime-nanoseconds",
+    "elapsedNanoseconds": 176099620833,
+    "events": [
+      {
+        "elapsedNanoseconds": 0,
+        "milestone": "executionStarted"
+      },
+      {
+        "elapsedNanoseconds": 27471846583,
+        "milestone": "grub"
+      },
+      {
+        "elapsedNanoseconds": 141954676375,
+        "milestone": "kernel"
+      }
+    ],
+    "observationID": "38C042AF-72FD-4B9E-AF71-D10936CAE422",
+    "observedSerialBytes": 14465,
+    "originNanoseconds": 126448085778083,
+    "terminationReason": "tripleFault(source: DoryMachinePC.DoryPCTripleFaultSource.exception(DoryMachinePC.DoryPCTripleFaultExceptionEvidence(exception: ",
+    "unobservedMilestones": [
+      "rootMounted",
+      "initStarted"
+    ],
+    "unobservedStatus": "censored"
+  },
+  "runnerSHA256": "04ea5b2b913dc19ff7cbce6c3123a4bf78d5876b8d3fe79f7c7cfb8f61832a8f",
+  "firmwareCodeSHA256": "461cc0af580f1cfc91c944250950f18ea151c70e2d12e34739ad1ec38c47f4ca",
+  "installerMediaSHA256": "b98b737b7fd14a1cf2bdd52889be6809bc0065ac567b9173d354fc7b05a887eb",
+  "observedFailure": "EFI instruction-fetch page fault at 0x3fdc3743, followed by triple fault; process zero is not successful boot.",
+  "attachments": [
+    {
+      "path": "out.json.gz",
+      "sha256": "4b2acb3f466ebad7ae29ffed86bdfaa0666a2c3d46141aa3c33b2958dcd45954"
+    },
+    {
+      "path": "err.log.gz",
+      "sha256": "45c2f765cb2802b43f0d41b5482b0bd35201d5d463d59763f06838d687d2959e"
+    },
+    {
+      "path": "invocation.json.gz",
+      "sha256": "bec3abb1cde5800cd94077053423609fb403fa5f351ee00b2de1ae0955e27077"
+    },
+    {
+      "path": "rejected-preflight-invocation.json.gz",
+      "sha256": "333b1af2a82921121c2dd87cac6e624a201fdd5d9690a1716fa606323eaf7e80"
+    },
+    {
+      "path": "rejected-preflight.log.gz",
+      "sha256": "abdea9161a088a6e85e53ad4b290b20f664191188b9f220db960ff5fb9e873d2"
+    }
+  ],
+  "interpretation": "The efi=debug memory map classifies the fault address as Boot Code. Linux efi_free_boot_services skips freeing and unmapping boot-service regions when EFI_DBG is enabled. This supports investigating a runtime reference into boot-service code; the owning symbol and cause remain unverified.",
+  "source": "https://raw.githubusercontent.com/torvalds/linux/v6.12/arch/x86/platform/efi/quirks.c"
+}
