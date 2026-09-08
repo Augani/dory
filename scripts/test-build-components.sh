@@ -400,7 +400,7 @@ for distro in debian ubuntu kali; do
   write_fixture "$SOURCE/dory-desktop-$distro-rootfs-arm64.ext4" 327680
   printf 'schema=fixture\n' > "$SOURCE/dory-desktop-$distro-build-arm64.stamp"
   if [ "$distro" = ubuntu ]; then
-    printf 'ubuntu-desktop-minimal\tfixture\nubuntu-session\tfixture\ngdm3\tfixture\n' \
+    printf 'ubuntu-desktop-minimal\tfixture\nubuntu-session\tfixture\ngnome-session\tfixture\ngdm3\tfixture\n' \
       > "$SOURCE/dory-desktop-$distro-packages-arm64.txt"
   else
     printf 'gnome-shell\tfixture\ngdm3\tfixture\n' \

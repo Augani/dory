@@ -390,7 +390,8 @@ for package in gnome-shell gnome-session gdm3; do
 done
 case "$DISTRO" in
   ubuntu)
-    grep -Fq 'firefox_firefox.desktop/firefox.desktop' <<<"$DISPLAY_CONFIGURATION" \
+    grep -Fq 'favorites="${favorites//firefox_firefox.desktop/$browser_desktop}"' \
+      <<<"$DISPLAY_CONFIGURATION" \
       || fail "GNOME does not repair Ubuntu's stale Snap Firefox favorite"
     grep -Fq 'gnome-control-center.desktop/org.gnome.Settings.desktop' <<<"$DISPLAY_CONFIGURATION" \
       || fail "GNOME does not repair Ubuntu's stale Settings favorite"

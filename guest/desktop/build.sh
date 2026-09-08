@@ -103,7 +103,11 @@ case "$DISTRO" in
     # utilities are explicit so the image is complete offline. Firefox is installed below from
     # Mozilla's signed ARM64 APT repository; Ubuntu's `firefox` package is only a Snap transition,
     # and WebKitGTK saturated the software-rendered desktop during real browser use.
-    PACKAGES="$COMMON_PACKAGES,ubuntu-minimal,ubuntu-desktop-minimal,network-manager-gnome,appstream,baobab,eog,evince,file-roller,fonts-liberation,fonts-noto-color-emoji,fonts-ubuntu,gnome-calculator,gnome-characters,gnome-clocks,gnome-disk-utility,gnome-keyring,gnome-system-monitor,gnome-terminal,gnome-text-editor,gsettings-ubuntu-schemas,gvfs-fuse,libglib2.0-bin,libnss-mdns,libpam-gnome-keyring,nautilus-sendto,network-manager-config-connectivity-ubuntu,packagekit,policykit-desktop-privileges,seahorse,ubuntu-wallpapers,xcursor-themes,xdg-desktop-portal-gnome,xdg-utils,yaru-theme-gnome-shell,yaru-theme-gtk,yaru-theme-icon,yaru-theme-sound"
+    # ubuntu-desktop-minimal supplies Ubuntu's session, but not the standalone
+    # GNOME session package required by Dory's shared GNOME contract and its
+    # offline provenance verifier.  Request it explicitly rather than letting
+    # a transitive desktop-package change silently weaken that contract.
+    PACKAGES="$COMMON_PACKAGES,ubuntu-minimal,ubuntu-desktop-minimal,gnome-session,network-manager-gnome,appstream,baobab,eog,evince,file-roller,fonts-liberation,fonts-noto-color-emoji,fonts-ubuntu,gnome-calculator,gnome-characters,gnome-clocks,gnome-disk-utility,gnome-keyring,gnome-system-monitor,gnome-terminal,gnome-text-editor,gsettings-ubuntu-schemas,gvfs-fuse,libglib2.0-bin,libnss-mdns,libpam-gnome-keyring,nautilus-sendto,network-manager-config-connectivity-ubuntu,packagekit,policykit-desktop-privileges,seahorse,ubuntu-wallpapers,xcursor-themes,xdg-desktop-portal-gnome,xdg-utils,yaru-theme-gnome-shell,yaru-theme-gtk,yaru-theme-icon,yaru-theme-sound"
     ;;
   kali) PACKAGES="$COMMON_PACKAGES,$GNOME_PACKAGES,network-manager-applet,nm-connection-editor,kali-desktop-gnome,kali-defaults,kali-menu,firefox-esr" ;;
 esac
