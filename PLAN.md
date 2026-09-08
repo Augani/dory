@@ -243,9 +243,13 @@ All cards are open at the product level. Only individually evidenced steps are c
 
 **Check:** On packaged binaries, capture wrong-team, unsigned, wrong-identity, malformed, absent and valid-peer outcomes; rejection precedes descriptor use.
 
+**Status:** Logic-level rejection coverage merged — `testAbsentPeerConnectionFailsBeforeAnyDescriptorUse`, `testAuthenticationFailureLeavesTargetDescriptorsUninstalled` (wrong-team/wrong-identity/unsigned cases), `testValidPeerSuccessInstallsDescriptorsOnlyAfterAuthentication`, plus `DorydXPCSecurityTests` identity-rejection cases. The reproducible `scripts/qualify-signed-launch-handoff.py` harness now exercises a scoped Developer-ID-signed Release app with the legacy variable set: valid peer + granted descriptor succeeds; unsigned/wrong-identity peers receive neither token nor descriptor; absent and malformed invocations fail closed. Its wrong-team case is explicitly unavailable on the current host because every installed Apple signing identity has Dory’s team; it exits nonzero rather than claiming completion. See the [partial supporting receipt](docs/virtualization/evidence/wave0-2026-09-08/verification.json) and [renderer preview receipt](docs/virtualization/evidence/wave0-2026-09-08/renderer-preview-candidate.json). Neither is a release qualification, and physical GPU execution remains open.
+
 #### A00.4 — Restore the physical GPU harness
 
 - [ ] **Action:** Rebuild the real private GPU harness using valid scoped signing/peer identity; it may use fixture media/catalog data, but must not disable the production authentication boundary.
+
+**Status:** `scripts/pc-gpu-daemon-live-gate.sh` now supplies an isolated, hardware-only DoryPC VirGL campaign through the signed app daemon. It rejects legacy or test-root component catalogs through the normal production catalog verifier before it can create a VM; it neither uses QEMU nor enables Docker, bootstrap activation, test roots, or testing validators. The first local admission run proved that boundary against the retained test-root catalog: the daemon returned `component catalog signature is invalid`, no machine-creation artifact was written, and its temporary launch service was removed; see [the negative-admission receipt](docs/virtualization/evidence/wave0-2026-09-08/pc-gpu-daemon-test-root-rejection.json). The configured production endpoint was also inspected on 2026-09-08: it still serves schema-1 release `0.4.5`, with no `virtualMachineQualification`; [the catalog audit](docs/virtualization/evidence/wave0-2026-09-08/production-catalog-schema-audit.json) records the exact fetched bytes. This is intentionally not a GPU pass. The remaining input is a current schema-2 PC candidate whose catalog signature verifies under the production component root; that input is required before the gate can create the disposable VM, verify the hardware VirGL status, and run the guest command.
 
 **Why:** A harness must exercise the same authority as the product.
 
@@ -271,11 +275,13 @@ All cards are open at the product level. Only individually evidenced steps are c
 
 **Legacy coverage:** P00 follow-through, P13, P14-01.
 
-**Starting point:** Producers and historical receipts exist; there is no coherent fully qualified release candidate. FFI deployment-target mismatch is unresolved.
+**Starting point:** Producers and historical receipts exist; there is no coherent fully qualified release candidate. The FFI producer now rebuilds in a private target directory at macOS 14.0 and rejects any archive object above that floor; the current rebuilt archive contains 2,283 verified objects across arm64/x86_64. Candidate/release and physical matrix completion remain open.
 
 #### A01.1 — Inventory every producer
 
-- [ ] **Action:** Inventory current app, daemon, FFI archive, runner, renderer, firmware, kernel, rootfs, Mesa and guest-tool producers; record source ownership and eliminate mixed-revision candidates. The 2026-09-08 focused builds warn that existing prebuilt FFI objects target macOS 27.0 while consumers target 14.0/15.0; rebuild/pin compatible FFI deployment targets and verify the oldest advertised host before release. Inspect ignored evidence with explicit paths: ordinary `rg --files` can omit these directories.
+- [x] **Action:** Inventory current app, daemon, FFI archive, runner, renderer, firmware, kernel, rootfs, Mesa and guest-tool producers; record source ownership and eliminate mixed-revision candidates. The 2026-09-08 focused builds warn that existing prebuilt FFI objects target macOS 27.0 while consumers target 14.0/15.0; rebuild/pin compatible FFI deployment targets and verify the oldest advertised host before release. Inspect ignored evidence with explicit paths: ordinary `rg --files` can omit these directories.
+
+**Status:** `scripts/inventory-wave0-candidate.py` records the app, daemon, FFI, runner, renderer, PC firmware, both kernel profiles, desktop rootfs, both Mesa runtimes and guest tools with source-input and artifact hashes, plus ARM64 deployment targets for app binaries. Desktop rootfs admission validates each stamped fingerprint against the current producer inputs. Kernel admission invokes the exact profile verifier and rejects image presence without a package/toolchain receipt. `scripts/build.sh` seals each development app with a complete source snapshot and the inventory rejects a missing or stale binding; generated qualification receipts are intentionally excluded so recording evidence cannot invalidate the artifact it describes. The current Developer-ID-signed Release preview is captured in [the producer inventory](docs/virtualization/evidence/wave0-2026-09-08/candidate-producer-inventory.json) as `development-source-bound`, with no incomplete producer: the rebuilt ARM64 Venus kernel now verifies alongside the PC kernel/Mesa, current Debian/Ubuntu/Kali rootfs, FFI archive and renderer graph. Its preview-only, local Developer-ID evidence is not a release candidate, and oldest-advertised-host verification remains a release gate.
 
 **Required cases:** Maintain one renderer lock manifest with validated/generated Swift, Python and guest-PINS consumers. Separate signed host artifact identity from guest ISA/kernel/driver requirements; source upgrades do not automatically change the wire ABI. Audit fork patches against upstream and retain a regression and owner for each required patch.
 
@@ -285,7 +291,9 @@ All cards are open at the product level. Only individually evidenced steps are c
 
 #### A01.2 — Validate historical evidence
 
-- [ ] **Action:** Validate critical historical receipt references, raw logs and candidate bindings. Label inaccessible local-only artifacts as unavailable; preserve historical JSON bytes and do not convert their summaries into new passes.
+- [x] **Action:** Validate critical historical receipt references, raw logs and candidate bindings. Label inaccessible local-only artifacts as unavailable; preserve historical JSON bytes and do not convert their summaries into new passes.
+
+**Status:** `scripts/audit-plan-evidence.py` now audits the eight historical documents directly cited in “Evidence worth reading first” and retains a machine-readable classification in [the Wave 0 audit](docs/virtualization/evidence/wave0-2026-09-08/historical-evidence-audit.json). The ARM review, prior review fixes and private Mac lifecycle receipt retain matching local payload hashes; the ARM smoke JSONL parses. Four receipts remain explicitly incomplete: the private ARM manager has only machine-local artifact paths, both PC receipts lack portable raw attachments, and the Mac suspend/restore receipt lacks a portable test payload. They remain historical-only evidence and must be reacquired rather than promoted into a candidate pass.
 
 **Why:** A summary is only as trustworthy as its retained inputs.
 
@@ -295,13 +303,17 @@ All cards are open at the product level. Only individually evidenced steps are c
 
 - [ ] **Action:** Freeze an explicit matrix of host SoC/OS/build/resource class, Linux distro/version/ISA/kernel/Mesa/compositor, Mac restore/guest build, GPU profile and CPU profile. Select at least two Linux distro families per ISA; pin media digests and their publisher verification. Select final versions using current vendor support/API evidence.
 
+**Status:** The proposed, fail-closed [Wave 0 qualification matrix](Config/DoryWave0QualificationMatrix.json) now identifies the exact required host class; CPU and graphics profiles; 4 KiB/16 KiB page-size split; resource classes and workloads; immutable ARM64/x86_64 Ubuntu 24.04.4 and Fedora 44 media cells; and the exact Mac restore image cell. It cross-references current vendor lifecycle/API material and checks the actual managed kernel/Mesa digests. `scripts/validate-wave0-qualification-matrix.py` rejects missing, duplicate or unpinned tuple inputs and public `scripts/release.sh` now requires its `--require-approved` mode. The status remains `proposed-review-required`: the release owner, runtime owner and security reviewer must approve the exact matrix digest before it can be frozen or authorize a public candidate.
+
 **Why:** Support must be finite enough to test completely.
 
 **Check:** Reviewer approves host/guest versions, ISAs, CPU/GPU profiles, page sizes, resources and workloads; every required cell has immutable input identities.
 
 #### A01.4 — Prepare owned fixtures
 
-- [ ] **Action:** Prepare disposable fixture copies and a documented acquisition path; record disk authority and cleanup ownership. Install/restore media requiring interactive setup remains a named prerequisite. Do not substitute an already-installed Alpine disk for a fresh general-purpose installer campaign.
+- [x] **Action:** Prepare disposable fixture copies and a documented acquisition path; record disk authority and cleanup ownership. Install/restore media requiring interactive setup remains a named prerequisite. Do not substitute an already-installed Alpine disk for a fresh general-purpose installer campaign.
+
+**Status:** The recorded [fixture preflight](docs/virtualization/evidence/wave0-2026-09-08/owned-fixture-preflight.json) confirms 53,407,662,080 free bytes against a 12 GiB minimum and a new `.dory-build/wave0-fixtures` campaign path. A temporary Colima Docker engine rebuilt Debian, Ubuntu, and Kali ARM64 desktop rootfs inputs through `guest/desktop/build.sh`; each producer completed its offline verification, recorded a compressed digest, and now has a stamp matching its current inputs. Colima was removed and the original Docker context restored. The native [standalone offline-boot receipt](docs/virtualization/evidence/wave0-2026-09-08/native-runtime-offline-boot-full-runner/20260908T192256Z-54520/manifest.txt) then cloned an exact disposable Dory runtime, booted its bundled ARM64 kernel/rootfs on Dory's Virtualization.framework runner under an isolated HOME with dead proxy settings, stopped it, hid the compressed sources, and booted again only from the prepared local cache. Both boots passed; the gate removed its disposable runtime clone and HOME on exit, and no user runtime/VM path was adopted. This is a development native-runtime fixture check, not GPU or release qualification.
 
 **Why:** Qualification must neither reuse mutable unknown inputs nor endanger user disks.
 
@@ -310,6 +322,8 @@ All cards are open at the product level. Only individually evidenced steps are c
 #### A01.5 — Build a coherent candidate
 
 - [ ] **Action:** Produce one source-bound development candidate, then a release-signing candidate when ready.
+
+**Status:** A local Developer-ID-signed Release renderer preview now exists, with strict signature verification, exact ARM64/PC renderer-artifact binding and an embedded current development-source snapshot. The rebuilt ARM64 Venus producer now verifies with its package/toolchain receipts, and the current producer inventory has no incomplete entry. A second clean Xcode build on the same pinned toolchain reproduced the complete source snapshot and immutable FFI/kernel/Mesa/renderer-link inputs; its separately sealed artifact identities are retained in [the second-clean-build receipt](docs/virtualization/evidence/wave0-2026-09-08/second-clean-source-bound-build.json), rather than falsely treating timestamped Developer-ID outputs as byte-identical. After the physical DoryPC gate work, a fresh Developer-ID build resealed the current 2,216-entry source snapshot and exact ARM/PC renderer tuple; see [the current gate-preview receipt](docs/virtualization/evidence/wave0-2026-09-08/current-source-bound-gate-preview.json). This remains a source-bound development preview, not a release-signing candidate: the host and preview receipt mode prohibit promotion. Physical qualification, the approved matrix and the release-signing candidate remain open.
 
 **Why:** All later results need the same reproducible foundation.
 
@@ -408,6 +422,8 @@ All cards are open at the product level. Only individually evidenced steps are c
 **Why:** A guest may execute anything CPUID and XCR0 advertise.
 
 **Check:** Compare guest-observed CPUID/MSRs/XCR0 against enabled code and state; invalid combinations trap and old persisted profiles retain their meaning.
+
+**Status:** Partial implementation in `a7aecb1ef` and `2f05f941e` adds F16C/FMA/BMI1/BMI2/LZCNT/MOVBE identities and the v3 CPUID/control requirements to the existing profile policy. Public construction and persisted-profile decoding keep all new unqualified features masked. F16C/FMA require AVX state dependencies; integer features remain independent. Eighteen focused CPU/profile tests pass, including unchanged legacy profile round trips and rejection of semantic promotion from feature advertisement alone. This is a feature/state inventory, not the complete encoding/form ledger or guest execution qualification; A03.1–A03.5 stay open. See [focused verification](docs/virtualization/evidence/wave0-2026-09-08/wave1-foundation-verification.json).
 
 #### A03.4 — Assign each gap
 

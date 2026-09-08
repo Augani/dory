@@ -1,0 +1,43 @@
+{
+  "scope": "A01 FFI validation, A00 handoff regressions, A03 partial v3 feature/state inventory",
+  "sourceCommit": "86e7758147dc6353b908edd4f877ff7aef997af6",
+  "owner": "Codex",
+  "reviewer": "independent review open",
+  "runs": [
+    {
+      "filter": "DoryX86CPUProfileTests",
+      "testsPassed": 12,
+      "skipped": 0,
+      "exitCode": 0,
+      "rawOriginalSHA256": "910a0d7e787a814bce1a6f5969e0610a3d429ff630170aa9650e25eff3468708",
+      "log": "docs/virtualization/evidence/wave0-2026-09-08/wave1-cpu-profile-tests.log.gz",
+      "logSHA256": "3d6166e697e2c03f5416e890d6ca2226bd7da0f9276ea3c3a5fd23308db5f067"
+    },
+    {
+      "filter": "DoryX86LinuxBaselineTests|DoryX86CPUProfileTests",
+      "testsPassed": 18,
+      "skipped": 0,
+      "exitCode": 0,
+      "rawOriginalSHA256": "09cb3b8e794fa292ef009d915204eedba6a0db1a53dcbf80e69f5a06c2bae855",
+      "log": "docs/virtualization/evidence/wave0-2026-09-08/wave1-baseline-tests.log.gz",
+      "logSHA256": "5410fef4097a99515034c5c4b7866befe58d0e64c8f3d4bc261404bd7d966607"
+    },
+    {
+      "filter": "DoryApplicationLaunchHandoffTests|DorydXPCSecurityTests",
+      "testsPassed": 31,
+      "skipped": 0,
+      "exitCode": 0,
+      "rawOriginalSHA256": "a849655ae61da0742a5f1569dd5d9fefcbd123d54f9e718f3561177b9324e95a",
+      "log": "docs/virtualization/evidence/wave0-2026-09-08/wave1-auth-tests.log.gz",
+      "logSHA256": "bffebcf6394e1b9285f7aa184263ebbf543e30bc23863c4f580895bd1676597f"
+    }
+  ],
+  "redaction": "Repository and user-home paths replaced; original log digests retained.",
+  "candidateApplicability": "Focused source tests only; no signed release or guest qualification.",
+  "remainingGates": [
+    "A00 wrong-team signed peer and production catalog/GPU activation",
+    "A01 matrix approval and release candidate",
+    "A03 full encoding inventory and independent execution evidence",
+    "A02 A16 A18 A21 implementation and physical campaigns remain open"
+  ]
+}
