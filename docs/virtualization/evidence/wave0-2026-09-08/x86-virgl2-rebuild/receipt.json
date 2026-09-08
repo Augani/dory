@@ -1,0 +1,18 @@
+{
+  "schemaVersion": 1,
+  "classification": "verified-producer-not-graphics-qualification",
+  "runtimePath": "guest/out/dory-mesa-virgl2-x86_64.tar.zst",
+  "runtimeSHA256": "410e364a0f9a93ed9f370c4eae90c88a625416be1dffa96dd8af5952a6558450",
+  "runtimeByteCount": 8330399,
+  "verification": "All three Mesa profiles passed their producer verifiers after x86_64 publication.",
+  "attachments": [
+    {
+      "path": "build.log.gz",
+      "sha256": "246ea848ab694ab9fd9c8d93284ac527bfe86c093e482955d54636d0c7407fe7"
+    },
+    {
+      "path": "producer.stamp.gz",
+      "sha256": "5a9a85bab9c34336954da84c467877d7153594d9aa94563d27f00102b7a21e59"
+    }
+  ]
+}
