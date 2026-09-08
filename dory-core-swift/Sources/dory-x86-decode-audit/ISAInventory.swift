@@ -56,12 +56,22 @@ struct ISAInventoryRecord: Encodable {
   var jitSupport = ISAJITQualification()
   var flags = ISAQualification()
   var faults = ISAQualification()
+  // Historical support annotations cover only their recorded execution cases.
+  // In particular, neither a retired instruction nor matching two Dory engines
+  // proves architectural state, TSO, or agreement with an independent oracle.
+  let architecturalState = ISAQualification(
+    scope: "Open A03/A05/A07 gap: no complete feature/control/XSTATE dependency evidence for this exact form.")
+  let memoryOrdering = ISAQualification(
+    scope: "Open A08 gap: no independent ordering evidence or reviewed non-memory applicability for this exact form.")
+  let independentReference = ISAQualification(
+    scope: "Open A08 gap: no exact-form independent-reference execution receipt.")
+  let qualificationStatus = "unqualified"
   var executedFormCount = 0
   var faultAttemptFormCount = 0
 }
 
 struct ISAInventoryReport: Encodable {
-  let schemaVersion = 2
+  let schemaVersion = 3
   let corpusID: String
   let corpusSHA256: String
   let scope: String

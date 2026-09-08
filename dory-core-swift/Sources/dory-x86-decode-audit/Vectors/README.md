@@ -50,3 +50,10 @@ Historical evidence does not qualify later source revisions, all operands or
 fault conditions, all JIT tiers, the physical reference backend, or the full ISA.
 The current inventory invocation executes zero guest instructions. The JSON keeps
 that count separate from historical retired forms and fault attempts.
+
+Inventory report schema 3 includes per-form `architecturalState`, `memoryOrdering`,
+and `independentReference` dimensions with explicit open gaps. The historical
+support catalog does not supply evidence for these dimensions, so each remains
+`unmeasured` and every row remains `unqualified`, including rows with retained
+retirement or fault observations. A non-memory vector also needs a reviewed
+applicability decision; its name alone does not discharge ordering proof.

@@ -423,6 +423,8 @@ All cards are open at the product level. Only individually evidenced steps are c
 
 **Check:** Each catalog row has interpreter/JIT/state/fault status and links to executable vectors and independent evidence, or an explicit open gap.
 
+**Development progress (2026-09-08):** Inventory report schema 3 now reports per-form architectural-state, memory-ordering and independent-reference gaps alongside the existing interpreter/JIT/flags/fault annotations. Retained retirement and fault observations leave every form unqualified. Fifteen audit tests pass, including serialized-gap checks after verified historical support is attached; see [test evidence](docs/virtualization/evidence/wave0-2026-09-08/isa-proof-dimensions-tests.log.gz). The architectural denominator, full form ledger and independent execution evidence remain incomplete.
+
 #### A03.3 — Audit public feature state
 
 - [ ] **Action:** Compare public CPUID leaves/subleaves, MSRs, XCR0 and feature dependencies to implemented state. Add round-trip persisted-profile compatibility and unsupported-instruction/#UD tests before enabling new profile bits.

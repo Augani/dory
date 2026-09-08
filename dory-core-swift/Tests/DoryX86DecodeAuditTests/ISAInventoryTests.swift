@@ -36,7 +36,8 @@ import Testing
     for record in report.records {
       #expect(record.executedFormCount == 0)
       for qualification in [record.interpreterSemantics, record.jitSupport.baseline,
-        record.jitSupport.optimizing, record.flags, record.faults] {
+        record.jitSupport.optimizing, record.flags, record.faults,
+        record.architecturalState, record.memoryOrdering, record.independentReference] {
         #expect(qualification.status == "unmeasured")
         #expect(qualification.evidence.isEmpty)
       }
@@ -44,6 +45,24 @@ import Testing
     let unsupported = try #require(report.records.first { $0.vector.id == "0f01.register.c8.long64" })
     #expect(unsupported.decoderSupport == "recognizedUnsupported")
     #expect(unsupported.decodedInstruction?.operation == .unsupportedSystemInstruction(.monitor))
+  }
+
+  @Test func historicalExecutionCannotQualifyUncoveredProofDimensions() throws {
+    let report = try supportReport()
+    #expect(report.executedFormCount > 0)
+    let json = try #require(JSONSerialization.jsonObject(with: ISAInventory.json(report)) as? [String: Any])
+    #expect(json["schemaVersion"] as? Int == 3)
+    let rows = try #require(json["records"] as? [[String: Any]])
+    #expect(rows.count == report.corpusVectorCount)
+    for row in rows {
+      #expect(row["qualificationStatus"] as? String == "unqualified")
+      for key in ["architecturalState", "memoryOrdering", "independentReference"] {
+        let dimension = try #require(row[key] as? [String: Any])
+        #expect(dimension["status"] as? String == "unmeasured")
+        #expect((dimension["evidence"] as? [String]) == [])
+        #expect((dimension["scope"] as? String)?.hasPrefix("Open A") == true)
+      }
+    }
   }
 
   @Test func rejectedFormsRetainAuthoredMetadataAndExpectedFailure() throws {
