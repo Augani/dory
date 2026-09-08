@@ -905,8 +905,9 @@ enum VirtioMMIODeviceTree {
         try advancePC(vcpu)
         return result
       case .systemRegisterTrap:
-        try handleSystemRegisterTrap(vcpu: vcpu, syndrome: syndrome)
-        try advancePC(vcpu)
+        if try handleSystemRegisterTrap(vcpu: vcpu, syndrome: syndrome) {
+          try advancePC(vcpu)
+        }
         return nil
       }
     }
@@ -988,23 +989,46 @@ enum VirtioMMIODeviceTree {
       return nil
     }
 
-    private func handleSystemRegisterTrap(vcpu: VCPU, syndrome: UInt64) throws {
-      // RAZ/WI for trapped system registers the hardware does not virtualize (debug, PMU).
-      let isRead = syndrome & 1 == 1
-      let registerIndex = Int((syndrome >> 5) & 0x1F)
+    /// Returns true when the trapped instruction should retire (RAZ/WI). False means an
+    /// UNDEFINED exception was delivered and PC already points at the vector.
+    private func handleSystemRegisterTrap(vcpu: VCPU, syndrome: UInt64) throws -> Bool {
+      let trap = ARMSystemRegisterTrap(syndrome: syndrome)
       if sysregLogCount < 8 {
         sysregLogCount += 1
-        let encoding = String(
-          format: "op0=%d op1=%d crn=%d crm=%d op2=%d",
-          Int((syndrome >> 20) & 0b11), Int((syndrome >> 14) & 0b111),
-          Int((syndrome >> 10) & 0b1111), Int((syndrome >> 1) & 0b1111),
-          Int((syndrome >> 17) & 0b111))
+        let action = trap.disposition == .readAsZeroWriteIgnore ? "RAZ/WI" : "UNDEFINED"
         FileHandle.standardError.write(
-          Data("dory-hv: sysreg trap (\(isRead ? "read" : "write")) \(encoding), RAZ/WI\n".utf8))
+          Data(
+            "dory-hv: sysreg trap (\(trap.isRead ? "read" : "write")) \(trap.encodingDescription), \(action)\n"
+              .utf8))
       }
-      if isRead && registerIndex != 31 {
-        try vcpu.write(registerFor(registerIndex), 0)
+      switch trap.disposition {
+      case .readAsZeroWriteIgnore:
+        if trap.isRead && trap.registerIndex != 31 {
+          try vcpu.write(registerFor(trap.registerIndex), 0)
+        }
+        return true
+      case .undefined:
+        try injectUndefinedInstruction(vcpu: vcpu)
+        return false
       }
+    }
+
+    /// Take a 32-bit UNDEFINED exception to EL1. Used when a trapped encoding is not in the
+    /// reviewed RAZ/WI set, so the guest cannot observe a successful zeroed ID/timer register.
+    private func injectUndefinedInstruction(vcpu: VCPU) throws {
+      let pc = try vcpu.read(HV_REG_PC)
+      let cpsr = try vcpu.read(HV_REG_CPSR)
+      let vbar = try vcpu.readSystem(HV_SYS_REG_VBAR_EL1)
+      let sctlr = try vcpu.readSystem(HV_SYS_REG_SCTLR_EL1)
+      let pfr1 = try vcpu.readSystem(HV_SYS_REG_ID_AA64PFR1_EL1)
+      let vectorOffset = ARMUndefinedInstructionEntry.vectorOffset(cpsr: cpsr)
+      try vcpu.writeSystem(HV_SYS_REG_ELR_EL1, pc)
+      try vcpu.writeSystem(HV_SYS_REG_SPSR_EL1, cpsr)
+      // EC=0x00 unknown/undefined, IL=1 (A64 instruction).
+      try vcpu.writeSystem(HV_SYS_REG_ESR_EL1, 1 << 25)
+      try vcpu.write(HV_REG_CPSR, ARMUndefinedInstructionEntry.pstate(
+        cpsr: cpsr, sctlr: sctlr, hasMTE: (pfr1 >> 8) & 0xF != 0))
+      try vcpu.write(HV_REG_PC, vbar &+ vectorOffset)
     }
 
     /// A fault inside the RAM window MIGHT be the guest touching a page that free page reporting

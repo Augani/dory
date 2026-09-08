@@ -20,6 +20,9 @@
       var pendingExit: PendingExit?
       var injectedInterrupt: DoryArchitecturalInterrupt?
       var pausedAt: DorySnapshotBarrierProgress?
+      var isRunning = false
+      var deadlineWatchGeneration: UInt64 = 1
+      var deadlineWatchSource: DispatchSourceTimer?
 
       init(
         id: DoryVCPUIdentifier,
@@ -56,11 +59,13 @@
     }
 
     private let lock = NSLock()
+    private let deadlineQueue = DispatchQueue(label: "dev.dory.native-hv.deadline")
     private var vcpus: [DoryVCPUIdentifier: VCPURecord] = [:]
     private var creatingVCPUs: Set<DoryVCPUIdentifier> = []
     private var mappings: [UInt32: MemoryRecord] = [:]
     private var cancellation: DoryExecutionCancellationRequest?
     private var isClosed = false
+    private var deadlineCancellationGeneration: UInt64 = 1
 
     public init(executionGeneration: UInt64) throws {
       guard executionGeneration > 0 else {
@@ -79,30 +84,22 @@
 
     public func close() throws {
       lock.lock()
-      guard !isClosed else {
-        lock.unlock()
-        return
-      }
+      defer { lock.unlock() }
+      guard !isClosed else { return }
       let liveVCPUs = Set(vcpus.keys).union(creatingVCPUs).sorted()
       guard liveVCPUs.isEmpty else {
-        lock.unlock()
         throw DoryNativeHVArm64Error.engineStillOwnsVCPUs(liveVCPUs)
       }
-      let mapped = mappings.values.map(\.mapping.region)
-      lock.unlock()
-
-      for region in mapped {
+      // Serialize closing with reservation, mapping and teardown. Retain only mappings
+      // that still exist if an HV operation fails so a later close can safely retry.
+      for (id, record) in Array(mappings) {
+        let region = record.mapping.region
         let size = try hostSize(region.range.byteCount)
-        try doryNativeHVCheck(
-          hv_vm_unmap(region.range.base.rawValue, size),
-          "hv_vm_unmap"
-        )
+        try doryNativeHVCheck(hv_vm_unmap(region.range.base.rawValue, size), "hv_vm_unmap")
+        mappings.removeValue(forKey: id)
       }
       try doryNativeHVCheck(hv_vm_destroy(), "hv_vm_destroy")
-      lock.lock()
-      mappings.removeAll()
       isClosed = true
-      lock.unlock()
     }
 
     public func createVCPU(
@@ -111,6 +108,10 @@
     ) throws -> DoryVCPU {
       try requireOpen()
       lock.lock()
+      guard !isClosed else {
+        lock.unlock()
+        throw DoryNativeHVArm64Error.engineClosed
+      }
       let exists = vcpus[id] != nil || creatingVCPUs.contains(id)
       if !exists { creatingVCPUs.insert(id) }
       lock.unlock()
@@ -133,6 +134,7 @@
       }
       do {
         try DoryARM64HypervisorRegisterBank.apply(initialState, to: handle)
+        try sanitizeUnimplementedDebugAndPMUIdentity(handle: handle)
       } catch {
         _ = hv_vcpu_destroy(handle)
         throw error
@@ -152,14 +154,39 @@
     }
 
     public func destroyVCPU(_ vcpu: DoryVCPU) throws {
-      let record = try ownedRecord(for: vcpu)
+      guard vcpu.architecture == .arm64 else {
+        throw DoryNativeHVArm64Error.wrongVCPUArchitecture(vcpu.architecture)
+      }
+      try requireOpen()
+      lock.lock()
+      guard let record = vcpus[vcpu.id] else {
+        lock.unlock()
+        throw DoryNativeHVArm64Error.unknownVCPU(vcpu.id)
+      }
+      let actualThread = currentThreadID()
+      guard actualThread == record.ownerThread else {
+        lock.unlock()
+        throw DoryNativeHVArm64Error.wrongOwnerThread(
+          vcpu: vcpu.id,
+          expected: record.ownerThread,
+          actual: actualThread
+        )
+      }
+      guard !record.isRunning else {
+        lock.unlock()
+        throw DoryNativeHVArm64Error.vcpuStillRunning(vcpu.id)
+      }
       guard record.pendingExit == nil else {
+        lock.unlock()
         throw DoryNativeHVArm64Error.pendingExitMustBeCompleted(vcpu.id)
       }
+      record.deadlineWatchSource?.cancel()
+      record.deadlineWatchSource = nil
+      // Pin the handle table through destruction: close must still see this CPU,
+      // cancellation must not target a destroyed handle, and failure must be retryable.
+      defer { lock.unlock() }
       try doryNativeHVCheck(hv_vcpu_destroy(record.handle), "hv_vcpu_destroy")
-      lock.lock()
       vcpus.removeValue(forKey: vcpu.id)
-      lock.unlock()
     }
 
     public func reset(_ vcpu: DoryVCPU, to state: DoryARM64ArchitecturalState) throws {
@@ -176,11 +203,12 @@
       try requireOpen()
       let size = try hostSize(mapping.region.range.byteCount)
       lock.lock()
+      defer { lock.unlock() }
+      guard !isClosed else { throw DoryNativeHVArm64Error.engineClosed }
       let duplicate = mappings[mapping.region.id] != nil
       let overlap = mappings.values.contains {
         $0.mapping.region.range.overlaps(mapping.region.range)
       }
-      lock.unlock()
       guard !duplicate else {
         throw DoryNativeHVArm64Error.memoryRegionAlreadyMapped(mapping.region.id)
       }
@@ -195,9 +223,7 @@
         ),
         "hv_vm_map"
       )
-      lock.lock()
       mappings[mapping.region.id] = MemoryRecord(mapping: mapping)
-      lock.unlock()
     }
 
     public func unmapMemory(
@@ -206,8 +232,9 @@
     ) throws {
       try requireOpen()
       lock.lock()
+      defer { lock.unlock() }
+      guard !isClosed else { throw DoryNativeHVArm64Error.engineClosed }
       let match = mappings.first { $0.value.mapping.region.range == range }
-      lock.unlock()
       guard let (id, record) = match else {
         throw DoryNativeHVArm64Error.memoryMappingNotFound
       }
@@ -219,9 +246,7 @@
       }
       let size = try hostSize(range.byteCount)
       try doryNativeHVCheck(hv_vm_unmap(range.base.rawValue, size), "hv_vm_unmap")
-      lock.lock()
       mappings.removeValue(forKey: id)
-      lock.unlock()
     }
 
     public func inject(_ interrupt: DoryArchitecturalInterrupt, into vcpu: DoryVCPU) throws {
@@ -258,14 +283,44 @@
       _ vcpu: DoryVCPU,
       until deadline: DoryVirtualDeadline?
     ) throws -> DoryCPUExit {
-      guard deadline == nil else { throw DoryNativeHVArm64Error.deadlineNotImplemented }
       let record = try ownedRecord(for: vcpu)
       guard record.pausedAt == nil else { throw DoryNativeHVArm64Error.vcpuPaused(vcpu.id) }
       guard record.pendingExit == nil else {
         throw DoryNativeHVArm64Error.pendingExitMustBeCompleted(vcpu.id)
       }
 
+      let hostNow = DoryNativeHVArm64HostClock.nowTicks()
+      if let deadline, DoryNativeHVArm64HostClock.hasExpired(deadline, at: hostNow) {
+        return try deadlineExceededExit(vcpu: vcpu.id)
+      }
+
+      lock.lock()
+      guard !record.isRunning else {
+        lock.unlock()
+        throw DoryNativeHVArm64Error.vcpuStillRunning(vcpu.id)
+      }
+      record.isRunning = true
+      lock.unlock()
+      defer {
+        lock.lock()
+        record.isRunning = false
+        lock.unlock()
+        disarmDeadlineWatch(record)
+      }
+      if let deadline {
+        armDeadlineWatch(deadline: deadline, record: record)
+      }
+
       while true {
+        if let deadline,
+          DoryNativeHVArm64HostClock.hasExpired(
+            deadline,
+            at: DoryNativeHVArm64HostClock.nowTicks()
+          )
+        {
+          return try deadlineExceededExit(vcpu: vcpu.id)
+        }
+
         try doryNativeHVCheck(hv_vcpu_run(record.handle), "hv_vcpu_run")
         let exit = record.exit.pointee
         switch exit.reason {
@@ -278,6 +333,19 @@
               retiredInstructions: 0,
               reason: .cancelled(cancellation)
             )
+          }
+          if let deadline,
+            DoryNativeHVArm64HostClock.hasExpired(
+              deadline,
+              at: DoryNativeHVArm64HostClock.nowTicks()
+            )
+          {
+            return try deadlineExceededExit(vcpu: vcpu.id)
+          }
+          if deadline != nil {
+            // Consume an early or stale hv_vcpus_exit and keep running until a
+            // real guest exit or the deadline actually expires.
+            continue
           }
           return try DoryCPUExit(
             vcpu: vcpu.id,
@@ -398,12 +466,16 @@
       lock.lock()
       cancellation = request
       var handles = vcpus.values.map(\.handle)
+      // Issue hv_vcpus_exit while the handle table is still pinned. destroyVCPU
+      // unpublishes the handle under this lock, so a teardown cannot destroy a
+      // vCPU that this stop pass still holds.
+      if !handles.isEmpty {
+        let status = hv_vcpus_exit(&handles, UInt32(handles.count))
+        lock.unlock()
+        try doryNativeHVCheck(status, "hv_vcpus_exit")
+        return
+      }
       lock.unlock()
-      guard !handles.isEmpty else { return }
-      try doryNativeHVCheck(
-        hv_vcpus_exit(&handles, UInt32(handles.count)),
-        "hv_vcpus_exit"
-      )
     }
 
     public func captureState(
@@ -601,10 +673,136 @@
       if closed { throw DoryNativeHVArm64Error.engineClosed }
     }
 
+    /// Match DoryHV `ARMGuestDebugPMUIdentity`: do not advertise debug/trace/PMU/SPE.
+    private static let dfr0UnimplementedMask: UInt64 = UInt64.max
+
+    func debugPMUIdentity(of vcpu: DoryVCPU) throws -> (dfr0: UInt64, dfr1: UInt64) {
+      let record = try ownedRecord(for: vcpu)
+      var dfr0: UInt64 = 0
+      var dfr1: UInt64 = 0
+      try doryNativeHVCheck(
+        hv_vcpu_get_sys_reg(record.handle, HV_SYS_REG_ID_AA64DFR0_EL1, &dfr0),
+        "hv_vcpu_get_sys_reg(ID_AA64DFR0_EL1)"
+      )
+      try doryNativeHVCheck(
+        hv_vcpu_get_sys_reg(record.handle, HV_SYS_REG_ID_AA64DFR1_EL1, &dfr1),
+        "hv_vcpu_get_sys_reg(ID_AA64DFR1_EL1)"
+      )
+      return (dfr0, dfr1)
+    }
+
+    private func sanitizeUnimplementedDebugAndPMUIdentity(handle: hv_vcpu_t) throws {
+      var host0: UInt64 = 0
+      var host1: UInt64 = 0
+      try doryNativeHVCheck(
+        hv_vcpu_get_sys_reg(handle, HV_SYS_REG_ID_AA64DFR0_EL1, &host0),
+        "hv_vcpu_get_sys_reg(ID_AA64DFR0_EL1)"
+      )
+      try doryNativeHVCheck(
+        hv_vcpu_get_sys_reg(handle, HV_SYS_REG_ID_AA64DFR1_EL1, &host1),
+        "hv_vcpu_get_sys_reg(ID_AA64DFR1_EL1)"
+      )
+      let dfr0 = host0 & ~Self.dfr0UnimplementedMask
+      try doryNativeHVCheck(
+        hv_vcpu_set_sys_reg(handle, HV_SYS_REG_ID_AA64DFR0_EL1, dfr0),
+        "hv_vcpu_set_sys_reg(ID_AA64DFR0_EL1)"
+      )
+      try doryNativeHVCheck(
+        hv_vcpu_set_sys_reg(handle, HV_SYS_REG_ID_AA64DFR1_EL1, 0),
+        "hv_vcpu_set_sys_reg(ID_AA64DFR1_EL1)"
+      )
+      var observed0: UInt64 = 0
+      var observed1: UInt64 = 0
+      try doryNativeHVCheck(
+        hv_vcpu_get_sys_reg(handle, HV_SYS_REG_ID_AA64DFR0_EL1, &observed0),
+        "hv_vcpu_get_sys_reg(ID_AA64DFR0_EL1)"
+      )
+      try doryNativeHVCheck(
+        hv_vcpu_get_sys_reg(handle, HV_SYS_REG_ID_AA64DFR1_EL1, &observed1),
+        "hv_vcpu_get_sys_reg(ID_AA64DFR1_EL1)"
+      )
+      guard (observed0 & Self.dfr0UnimplementedMask) == 0, observed1 == 0 else {
+        throw DoryNativeHVArm64Error.debugPMUIdentityRejected(dfr0: observed0, dfr1: observed1)
+      }
+    }
+
     private func cancellationRequest() -> DoryExecutionCancellationRequest? {
       lock.lock()
       defer { lock.unlock() }
       return cancellation
+    }
+
+    private func deadlineExceededExit(vcpu: DoryVCPUIdentifier) throws -> DoryCPUExit {
+      let request = try DoryExecutionCancellationRequest(
+        executionGeneration: executionGeneration,
+        cancellationGeneration: nextDeadlineCancellationGeneration(),
+        reason: .deadlineExceeded
+      )
+      return try DoryCPUExit(
+        vcpu: vcpu,
+        retiredInstructions: 0,
+        reason: .cancelled(request)
+      )
+    }
+
+    private func nextDeadlineCancellationGeneration() -> UInt64 {
+      lock.lock()
+      defer { lock.unlock() }
+      let generation = deadlineCancellationGeneration
+      deadlineCancellationGeneration &+= 1
+      if deadlineCancellationGeneration == 0 { deadlineCancellationGeneration = 1 }
+      return generation
+    }
+
+    private func armDeadlineWatch(deadline: DoryVirtualDeadline, record: VCPURecord) {
+      let remaining = DoryNativeHVArm64HostClock.nanosecondsUntil(
+        deadline,
+        from: DoryNativeHVArm64HostClock.nowTicks()
+      )
+      lock.lock()
+      record.deadlineWatchGeneration &+= 1
+      if record.deadlineWatchGeneration == 0 { record.deadlineWatchGeneration = 1 }
+      let generation = record.deadlineWatchGeneration
+      record.deadlineWatchSource?.cancel()
+      let source = DispatchSource.makeTimerSource(queue: deadlineQueue)
+      record.deadlineWatchSource = source
+      lock.unlock()
+
+      source.setEventHandler { [weak self] in
+        self?.fireDeadlineWatch(deadline: deadline, generation: generation, record: record)
+      }
+      // Bound the dispatch interval (including saturated deadlines) and keep watching
+      // after a premature/spurious wakeup. The run loop owns the actual clock check.
+      let interval = Int(min(remaining, UInt64(Int.max / 2)))
+      source.schedule(
+        deadline: .now() + .nanoseconds(interval),
+        repeating: .milliseconds(1),
+        leeway: .microseconds(50)
+      )
+      source.resume()
+    }
+
+    private func fireDeadlineWatch(deadline: DoryVirtualDeadline, generation: UInt64, record: VCPURecord) {
+      guard DoryNativeHVArm64HostClock.hasExpired(deadline, at: DoryNativeHVArm64HostClock.nowTicks()) else { return }
+      lock.lock()
+      defer { lock.unlock() }
+      guard record.isRunning,
+        record.deadlineWatchGeneration == generation,
+        record.deadlineWatchSource != nil
+      else {
+        return
+      }
+      var handles = [record.handle]
+      _ = hv_vcpus_exit(&handles, 1)
+    }
+
+    private func disarmDeadlineWatch(_ record: VCPURecord) {
+      lock.lock()
+      record.deadlineWatchGeneration &+= 1
+      if record.deadlineWatchGeneration == 0 { record.deadlineWatchGeneration = 1 }
+      record.deadlineWatchSource?.cancel()
+      record.deadlineWatchSource = nil
+      lock.unlock()
     }
 
     private func hostSize(_ byteCount: UInt64) throws -> Int {

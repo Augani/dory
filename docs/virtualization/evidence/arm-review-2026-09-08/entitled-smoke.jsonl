@@ -1,0 +1,4 @@
+{"architecturalX0":18446744073709551615,"dirtyPageCount":1,"hypercallNumber":42,"programCounter":2147483656}
+{"farFutureHypercallNumber":42,"pastDeadlineProgramCounter":2147483648,"pastDeadlineReason":"deadlineExceeded","spinDeadlineElapsedNanoseconds":54070375,"spinDeadlineReason":"deadlineExceeded"}
+{"cancelThenOwnerDestroy":"userRequested","closeWhileLive":"engineStillOwnsVCPUs","destroyWithPendingExit":"pendingExitMustBeCompleted","wrongThreadDestroy":"wrongOwnerThread","wrongThreadRun":"wrongOwnerThread"}
+{"dfr0":0,"dfr1":0,"hidesDebugTracePMUAndSPE":true}

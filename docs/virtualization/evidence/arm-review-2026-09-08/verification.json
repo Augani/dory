@@ -1,0 +1,72 @@
+{
+  "date": "2026-09-08",
+  "baseCommit": "713473475283cadc3543d3e0e9bfa1c419546ad1",
+  "sourceSHA256": {
+    "Packages/ContainerizationEngine/Sources/DoryHV/ARMSystemRegisterTrap.swift": "48e4ce98ff8ea689c54dec9f9111b02c3b518f26947b6c969559241554b0b7f8",
+    "Packages/ContainerizationEngine/Sources/DoryHV/Machine.swift": "ffd7cbb027bb7924549b32d259b85f72f8c05ef6102aac3923f26abe5f28e60e",
+    "Packages/ContainerizationEngine/Sources/DoryHV/VCPU.swift": "495294e0096942340033f382598aa6697e1a9683091be213e4ab8a9fcf3b2418",
+    "Packages/ContainerizationEngine/Tests/DoryHVTests/ARMSystemRegisterTrapTests.swift": "1691b138afdd8d5c41efccb90cd451293b98014cdc0d384fa4027d31e83c33b8",
+    "Packages/ContainerizationEngine/Tests/DoryHVTests/DeviceLogicTests.swift": "2d46bac1dcbe69d4bc96eac6079b4706a6317ff375291e0f395c89f03bea3413",
+    "dory-core-swift/Sources/DoryNativeHVArm64/NativeHVArm64Engine.swift": "5546468b1ee9d426372496da7a544e4651362edf5f21437147c924fc0b2927b7",
+    "dory-core-swift/Sources/DoryNativeHVArm64/NativeHVArm64HostClock.swift": "eaf43acc93308fb2686057d82101e2376deddeb83aa718d22918b524f07a8660",
+    "dory-core-swift/Sources/DoryNativeHVArm64/NativeHVArm64Smoke.swift": "ae0da1c1de253ac8516dc368ed86266b510409bf7b6c37ca7f46ed4cca5101d1",
+    "dory-core-swift/Sources/DoryNativeHVArm64/NativeHVError.swift": "23079d4b69185635ee03a15b04c084fbc06cd1200c08196e32d6ea12826c5823",
+    "dory-core-swift/Sources/dory-native-hv-smoke/main.swift": "4b7be06b3b3017cfa370379b6314957eb1c386ebecc0ff9c034ba23fd773f853",
+    "dory-core-swift/Tests/DoryNativeHVArm64Tests/NativeHVArm64EngineTests.swift": "55bd2157f55dccbe7f9ef6f524d9fba3d493f5a199850df33d76a74b5b5d451c",
+    "dory-core-swift/Tests/DoryNativeHVArm64Tests/NativeHVArm64HostClockTests.swift": "94991d68af09b590ea9bb770cb1b85129340c0a1dcf53ce9be64aea87b889cb9"
+  },
+  "host": "macOS-27.0-arm64-arm-64bit",
+  "toolchain": "/Applications/Xcode-26.6.0-Release.Candidate.app/Contents/Developer",
+  "scope": "Focused development review; not production guest or release qualification",
+  "checks": [
+    {
+      "command": "xcrun swift test --package-path dory-core-swift --jobs 4 --filter 'NativeHVArm64HostClockTests|NativeHVArm64EngineTests|ARM64ArchitecturalStateTests'",
+      "exit": 0,
+      "reportedTests": 17,
+      "explicitlySkippedLiveTests": 6,
+      "log": "core-tests.log"
+    },
+    {
+      "command": "xcrun swift test --package-path Packages/ContainerizationEngine --jobs 4 --filter 'ARMSystemRegisterTrapTests|VCPUExitTests'",
+      "exit": 0,
+      "executedTests": 6,
+      "note": "VCPUExitTests matches no suite; six tests are ARMSystemRegisterTrapTests. Package also builds dory-hv.",
+      "log": "device-tests.log"
+    },
+    {
+      "command": "codesign --force --sign - --entitlements Config/DoryNativeHVSmoke.entitlements dory-core-swift/.build/arm64-apple-macosx/debug/dory-native-hv-smoke; execute with external 30-second process timeout",
+      "exit": 0,
+      "log": "entitled-smoke.jsonl"
+    }
+  ],
+  "fixes": [
+    "Full-width saturating, ceiling clock conversion",
+    "Repeated generation-bound deadline wakeup with safe Dispatch interval",
+    "Pin vCPU tracking through successful destruction; serialize close and mapping transitions",
+    "Reject unexpected lifecycle-smoke outcomes; preserve backing after teardown failure",
+    "Narrow debug/PMU encoding and register-direction policy; hide all unimplemented DFR fields",
+    "Preserve exception-entry flags and apply PAN/SSBS/MTE state rules"
+  ],
+  "limitations": [
+    "Six opt-in live Swift Testing tests were skipped; entitled executable separately exercised guest execution, deadlines, cancellation, lifecycle and ID readback.",
+    "No stock ARM Linux boot, guest-executed MRS/undefined-handler campaign, full IRQ/quiescence race campaign, GPU or macOS guest campaign was run.",
+    "Existing FFI archive deployment-target warnings (macOS 27 objects versus 14/15 consumers) remain A01 release blocker.",
+    "Earlier p03-native receipts describe earlier source snapshots and are retained unmodified as historical evidence."
+  ],
+  "references": [
+    "https://developer.apple.com/documentation/hypervisor/hv_vcpus_exit(_:_:)",
+    "https://github.com/torvalds/linux/blob/master/arch/arm64/include/asm/sysreg.h",
+    "https://github.com/torvalds/linux/blob/master/arch/arm64/kvm/hyp/exception.c"
+  ],
+  "unredactedArtifactSHA256": {
+    "entitled-smoke.jsonl": "0d1407aa763a2c269faf6d413bd4f3db14936c13d7865d7463719dc69ca68c11",
+    "device-tests.log": "1a2191eb2e510f043716f7a8db1eb3aedb447daa7e525a686fdee70b9d786174",
+    "core-tests.log": "32376dc68c7943719ce508f03f2394e2f45b29a4465479eec5e19972474a1745"
+  },
+  "redaction": "Committed build logs replace the local repository root with <REPOSITORY> and home directory with <HOME>; original log hashes retained.",
+  "artifactSHA256": {
+    "entitled-smoke.jsonl": "0d1407aa763a2c269faf6d413bd4f3db14936c13d7865d7463719dc69ca68c11",
+    "device-tests.log": "7d69332869d806a260fb9e187938914efb5b36e9f5e6e0329f848ea1daecb3d5",
+    "core-tests.log": "f7749ae3f0a1625a72e7c415a2ed905b59ef1c00397424aebacba17eead3eebf"
+  }
+}

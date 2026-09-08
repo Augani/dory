@@ -16,10 +16,10 @@ public enum DoryNativeHVArm64Error: Error, Equatable, Sendable, CustomStringConv
   case dirtyTrackingDisabled(UInt32)
   case dirtyEpochMismatch(expected: UInt64, actual: UInt64)
   case pendingExitMustBeCompleted(DoryVCPUIdentifier)
+  case vcpuStillRunning(DoryVCPUIdentifier)
   case noPendingExit(DoryExecutionResumeToken)
   case staleResumeToken(expected: DoryExecutionResumeToken, actual: DoryExecutionResumeToken)
   case invalidExitResponse
-  case deadlineNotImplemented
   case vcpuPaused(DoryVCPUIdentifier)
   case vcpuNotPaused(DoryVCPUIdentifier)
   case unexpectedExitReason(UInt32)
@@ -27,6 +27,7 @@ public enum DoryNativeHVArm64Error: Error, Equatable, Sendable, CustomStringConv
   case memorySizeTooLarge(UInt64)
   case invalidExecutionGeneration(UInt64)
   case snapshotGenerationMismatch(expected: UInt64, actual: UInt64)
+  case debugPMUIdentityRejected(dfr0: UInt64, dfr1: UInt64)
 
   public var description: String {
     switch self {
@@ -60,14 +61,14 @@ public enum DoryNativeHVArm64Error: Error, Equatable, Sendable, CustomStringConv
       "dirty epoch mismatch: expected \(expected), got \(actual)"
     case .pendingExitMustBeCompleted(let id):
       "vCPU \(id.rawValue) has a restartable exit awaiting completion"
+    case .vcpuStillRunning(let id):
+      "vCPU \(id.rawValue) is still executing and cannot be destroyed on a live run"
     case .noPendingExit(let token):
       "no pending exit exists for token \(token.sequence)"
     case .staleResumeToken(let expected, let actual):
       "stale resume token \(actual.sequence); expected \(expected.sequence)"
     case .invalidExitResponse:
       "machine-model response does not match the pending CPU exit"
-    case .deadlineNotImplemented:
-      "native ARM64 execution deadlines are not implemented"
     case .vcpuPaused(let id):
       "vCPU \(id.rawValue) is paused"
     case .vcpuNotPaused(let id):
@@ -82,6 +83,8 @@ public enum DoryNativeHVArm64Error: Error, Equatable, Sendable, CustomStringConv
       "native ARM64 execution generation must be nonzero: \(generation)"
     case .snapshotGenerationMismatch(let expected, let actual):
       "snapshot generation mismatch: expected \(expected), got \(actual)"
+    case .debugPMUIdentityRejected(let dfr0, let dfr1):
+      "ID_AA64DFR0/1 still advertise debug/PMU after sanitization (dfr0=0x\(String(dfr0, radix: 16)), dfr1=0x\(String(dfr1, radix: 16)))"
     }
   }
 }

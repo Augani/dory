@@ -12,10 +12,12 @@ public final class VCPU {
         var exitPointer: UnsafeMutablePointer<hv_vcpu_exit_t>?
         try hvCheck(hv_vcpu_create(&vcpu, &exitPointer, nil), "hv_vcpu_create")
         guard let exitPointer else {
+            hv_vcpu_destroy(vcpu)
             throw VMError.bootFailure("hv_vcpu_create returned no exit buffer")
         }
         self.handle = vcpu
         self.exitInfo = exitPointer
+        try sanitizeUnimplementedDebugAndPMUIdentity()
     }
 
     deinit {
@@ -44,6 +46,23 @@ public final class VCPU {
 
     public func setVTimerMask(_ masked: Bool) throws {
         try hvCheck(hv_vcpu_set_vtimer_mask(handle, masked), "hv_vcpu_set_vtimer_mask")
+    }
+
+    /// Hide debug/trace/PMU/SPE from ID_AA64DFR0/1 so advertised features match RAZ/WI traps.
+    func sanitizeUnimplementedDebugAndPMUIdentity() throws {
+        let hostDFR0 = try readSystem(HV_SYS_REG_ID_AA64DFR0_EL1)
+        let hostDFR1 = try readSystem(HV_SYS_REG_ID_AA64DFR1_EL1)
+        let dfr0 = ARMGuestDebugPMUIdentity.sanitizedDFR0(from: hostDFR0)
+        let dfr1 = ARMGuestDebugPMUIdentity.sanitizedDFR1(from: hostDFR1)
+        try writeSystem(HV_SYS_REG_ID_AA64DFR0_EL1, dfr0)
+        try writeSystem(HV_SYS_REG_ID_AA64DFR1_EL1, dfr1)
+        let observed0 = try readSystem(HV_SYS_REG_ID_AA64DFR0_EL1)
+        let observed1 = try readSystem(HV_SYS_REG_ID_AA64DFR1_EL1)
+        guard ARMGuestDebugPMUIdentity.advertisesNoDebugOrPMU(dfr0: observed0, dfr1: observed1) else {
+            throw VMError.bootFailure(
+                "ID_AA64DFR0/1 still advertise debug/PMU after sanitization (dfr0=0x\(String(observed0, radix: 16)), dfr1=0x\(String(observed1, radix: 16)))"
+            )
+        }
     }
 
     @discardableResult

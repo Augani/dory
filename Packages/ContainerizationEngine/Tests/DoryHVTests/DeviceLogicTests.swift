@@ -471,6 +471,7 @@ import Testing
         #expect(ExceptionClass(syndrome: UInt64(0x20) << 26) == .instructionAbortLowerEL)
         #expect(ExceptionClass(syndrome: UInt64(0x16) << 26) == .hvc64)
         #expect(ExceptionClass(syndrome: UInt64(0x17) << 26) == .smc64)
+        #expect(ExceptionClass(syndrome: UInt64(0x18) << 26) == .systemRegisterTrap)
     }
     #endif
 }
