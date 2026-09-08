@@ -551,15 +551,13 @@ enum VirtioMMIODeviceTree {
     ) throws {
       try bootPayload.consumeForGuestLoad { kernelData, loadInitrd in
         let kernel = try KernelImage(data: kernelData)
-        entryPoint = try kernel.load(into: memory)
         dtbAddress = GuestLayout.ramBase + GuestLayout.dtbOffset
-        let (kernelEndOffset, kernelEndOverflowed) =
-          kernel.textOffset.addingReportingOverflow(kernel.imageSize)
-        guard !kernelEndOverflowed,
-          kernelEndOffset < GuestLayout.dtbOffset
-        else {
-          throw VMError.bootFailure("kernel image overlaps DTB placement")
-        }
+        // Reserve the DTB and all subsequent boot payload space before copying
+        // the kernel; a rejected image must not overwrite those structures.
+        entryPoint = try kernel.load(
+          into: memory,
+          reservedRanges: [dtbAddress..<(GuestLayout.ramBase + configuration.memoryBytes)]
+        )
         let initrdRange = try loadInitrdIfPresent(try loadInitrd())
         let dtb = try buildDeviceTree(
           commandLine: commandLine,

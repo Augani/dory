@@ -22,19 +22,36 @@ public struct KernelImage {
             throw VMError.bootFailure("not an arm64 boot Image (magic 0x\(String(magic, radix: 16)))")
         }
         self.data = data
-        self.textOffset = data.readLittleEndian(UInt64.self, at: 8)
         let declaredSize = data.readLittleEndian(UInt64.self, at: 16)
+        // Pre-v3.17 headers have unspecified text_offset endianness. The boot
+        // protocol defines the legacy offset whenever image_size is zero.
+        self.textOffset = declaredSize == 0 ? 0x80000
+            : data.readLittleEndian(UInt64.self, at: 8)
         self.imageSize = max(declaredSize, UInt64(data.count))
     }
 
     /// Copies the image into guest RAM and returns the entry point.
-    public func load(into memory: GuestMemory) throws -> UInt64 {
+    public func load(
+        into memory: GuestMemory, reservedRanges: [Range<UInt64>] = []
+    ) throws -> UInt64 {
+        guard memory.guestBase.isMultiple(of: 2 * 1024 * 1024) else {
+            throw VMError.bootFailure("kernel RAM base must be 2 MiB aligned")
+        }
         let (loadAddress, addressOverflowed) = memory.guestBase.addingReportingOverflow(textOffset)
         guard !addressOverflowed else {
             throw VMError.bootFailure("kernel load address overflows")
         }
         guard memory.contains(loadAddress, count: imageSize) else {
             throw VMError.bootFailure("kernel does not fit in guest RAM")
+        }
+        let (loadEnd, endOverflowed) = loadAddress.addingReportingOverflow(imageSize)
+        guard !endOverflowed else {
+            throw VMError.bootFailure("kernel loaded extent overflows")
+        }
+        // Reject reserved boot structures before any image byte can overwrite RAM.
+        let loadedRange = loadAddress..<loadEnd
+        guard !reservedRanges.contains(where: { $0.overlaps(loadedRange) }) else {
+            throw VMError.bootFailure("kernel image overlaps reserved boot memory")
         }
         let destination = try memory.hostPointer(at: loadAddress, count: UInt64(data.count))
         data.withUnsafeBytes { source in
