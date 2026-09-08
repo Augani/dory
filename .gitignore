@@ -162,6 +162,7 @@ docs/
 !/docs/virtualization/p02-linux-cpu-baseline-2026-09-04.md
 !/docs/virtualization/evidence/
 /docs/virtualization/evidence/*
+!/docs/virtualization/evidence/wave0-2026-09-08/
 !/docs/virtualization/evidence/p01-control-plane-2026-09-03/
 !/docs/virtualization/evidence/p01-control-plane-2026-09-04/
 !/docs/virtualization/evidence/p01-parallel-review-2026-09-04/
@@ -188,6 +189,8 @@ docs/
 !/scripts/verify-virgl-resource-info-abi.c
 !/scripts/prepare-virtualization-fixtures.py
 !/scripts/test-prepare-virtualization-fixtures.py
+!/scripts/verify-dory-ffi-deployment-targets.py
+!/scripts/test-verify-dory-ffi-deployment-targets.py
 
 # Candidate-bound physical Linux developer smoke (fail-closed; never release qualification).
 !/scripts/linux-local-runtime-smoke.sh
