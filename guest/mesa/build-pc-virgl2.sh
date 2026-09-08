@@ -91,7 +91,7 @@ deb [check-valid-until=no] %s bullseye-security main
   find /etc/apt/sources.list.d -type f -delete 2>/dev/null || true
   if [ ! -s /etc/ssl/certs/ca-certificates.crt ]; then
     apt-get -o Acquire::https::Verify-Peer=false -o Acquire::Retries=3 update -qq
-    apt-get -o Acquire::https::Verify-Peer=false install -y -qq \
+    apt-get -o Acquire::https::Verify-Peer=false -o Acquire::Retries=3 install -y -qq \
       --no-install-recommends ca-certificates
   fi
   apt-get -o Acquire::Retries=3 update -qq
@@ -99,7 +99,7 @@ deb [check-valid-until=no] %s bullseye-security main
     dpkg --add-architecture "$DEBIAN_ARCH"
   fi
   apt-get -o Acquire::Retries=3 update -qq
-  apt-get install -y -qq --no-install-recommends \
+  apt-get -o Acquire::Retries=3 install -y -qq --no-install-recommends \
     bison build-essential ca-certificates curl flex g++-$COMPILER_TARGET \
     gcc-$COMPILER_TARGET git libdrm-dev:$DEBIAN_ARCH libexpat1-dev:$DEBIAN_ARCH \
     libx11-xcb-dev:$DEBIAN_ARCH libxcb-dri2-0-dev:$DEBIAN_ARCH libxcb-dri3-dev:$DEBIAN_ARCH \
