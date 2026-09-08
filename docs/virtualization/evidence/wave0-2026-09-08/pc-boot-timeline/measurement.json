@@ -1,0 +1,119 @@
+{
+  "kind": "dev.dory.pc-boot-timeline-development-measurement",
+  "releaseQualified": false,
+  "sourceCommit": "f38c4033a57c7aae49e5a0c4b476f1e0048bbfa2",
+  "runner": {
+    "byteCount": 10865168,
+    "sha256": "85405e10ac2c75ecf4c679d4c65b960625aead2d800d0b5caf940aaf7640fdce"
+  },
+  "firmware": {
+    "byteCount": 3653632,
+    "sha256": "461cc0af580f1cfc91c944250950f18ea151c70e2d12e34739ad1ec38c47f4ca"
+  },
+  "installer": {
+    "byteCount": 67108864,
+    "sha256": "b98b737b7fd14a1cf2bdd52889be6809bc0065ac567b9173d354fc7b05a887eb"
+  },
+  "pristineSystemDisk": {
+    "byteCount": 1073741824,
+    "sha256": "d851c88763032f2b6169c2427f88c2d971b9ca93b8ec2e3800939bf0c6c063b9"
+  },
+  "samples": [
+    {
+      "name": "matched-0-enabled",
+      "capture": "enabled",
+      "executionNanoseconds": 17061569708,
+      "stop": "instructionBudget(100000000)",
+      "timeline": {
+        "clock": "host-dispatch-uptime-nanoseconds",
+        "elapsedNanoseconds": 17061873208,
+        "events": [
+          {
+            "elapsedNanoseconds": 0,
+            "milestone": "executionStarted"
+          }
+        ],
+        "observationID": "1B639815-BC4D-490B-A2DE-D692C74A5817",
+        "observedSerialBytes": 33,
+        "originNanoseconds": 123106465996000,
+        "terminationReason": "instructionBudget(100000000)",
+        "unobservedMilestones": [
+          "grub",
+          "kernel",
+          "rootMounted",
+          "initStarted"
+        ],
+        "unobservedStatus": "censored"
+      },
+      "serialBytes": 33,
+      "interpreterInstructions": 286147,
+      "baselineJITInstructions": 3125590,
+      "optimizingJITInstructions": 96588263
+    },
+    {
+      "name": "matched-1-disabled",
+      "capture": "disabled",
+      "executionNanoseconds": 17150218458,
+      "stop": "instructionBudget(100000000)",
+      "timeline": null,
+      "serialBytes": 33,
+      "interpreterInstructions": 286046,
+      "baselineJITInstructions": 2986824,
+      "optimizingJITInstructions": 96727130
+    },
+    {
+      "name": "matched-2-disabled",
+      "capture": "disabled",
+      "executionNanoseconds": 17190803583,
+      "stop": "instructionBudget(100000000)",
+      "timeline": null,
+      "serialBytes": 33,
+      "interpreterInstructions": 286659,
+      "baselineJITInstructions": 3097992,
+      "optimizingJITInstructions": 96615349
+    },
+    {
+      "name": "matched-3-enabled",
+      "capture": "enabled",
+      "executionNanoseconds": 17594802083,
+      "stop": "instructionBudget(100000000)",
+      "timeline": {
+        "clock": "host-dispatch-uptime-nanoseconds",
+        "elapsedNanoseconds": 17595065792,
+        "events": [
+          {
+            "elapsedNanoseconds": 0,
+            "milestone": "executionStarted"
+          }
+        ],
+        "observationID": "A05EB44E-E09A-4AD6-B74D-70962AA816BF",
+        "observedSerialBytes": 33,
+        "originNanoseconds": 123158095709416,
+        "terminationReason": "instructionBudget(100000000)",
+        "unobservedMilestones": [
+          "grub",
+          "kernel",
+          "rootMounted",
+          "initStarted"
+        ],
+        "unobservedStatus": "censored"
+      },
+      "serialBytes": 33,
+      "interpreterInstructions": 288981,
+      "baselineJITInstructions": 3046058,
+      "optimizingJITInstructions": 96664961
+    }
+  ],
+  "meanCaptureOnVsOffPercent": 0.918288773186493,
+  "limitations": [
+    "Early firmware only: all samples emit 33 terminal control bytes and reach no GRUB or later marker.",
+    "Two samples per setting do not establish whole-boot overhead or statistical significance.",
+    "Host-monotonic time permits different guest paths and native instruction counts despite equal total instruction budgets.",
+    "Fresh disk clones and variable stores, 1 vCPU, 1 GiB, optimizing JIT, 100 million instructions, identical progress observer and 120-second timeout.",
+    "No agent, handshake, command or RPC measurement; no completed boot."
+  ],
+  "tests": {
+    "timelineAndGuestUART": 6,
+    "productionRendererResetLifecycle": 5
+  }
+}

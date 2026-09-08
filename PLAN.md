@@ -357,6 +357,8 @@ All cards are open at the product level. Only individually evidenced steps are c
 
 **Check:** Timestamp firmware, kernel, init, agent bind and ready milestones using one host clock; every interval has a start, end or explicit timeout.
 
+**Development progress (2026-09-08):** The UART now records bounded host-clock milestones before console-buffer loss; production execution publishes a separate observation identity for each machine generation. Six timeline/guest-port tests and five production reset lifecycle tests pass. The UEFI diagnostic supports capture-on/off comparison and an execution deadline that requests normal machine power-off. A two-second deadline test retained its unfinished boot as censored. Four matched 100-million-instruction firmware samples averaged 17.328 seconds with capture and 17.171 seconds without (0.92% difference), but each emitted only 33 terminal-control bytes and reached no GRUB marker. This does not establish whole-boot overhead or complete A02.1; agent/RPC milestones and a coherent-candidate boot remain outstanding. Raw outputs, identities and limitations are retained in [the development timing receipt](docs/virtualization/evidence/wave0-2026-09-08/pc-boot-timeline/measurement.json).
+
 #### A02.2 — Attribute execution cost
 
 - [ ] **Action:** Measure host CPU samples, instructions/second by stage, native/fallback counts by instruction form, compilation/block lookup/page-walk/helper/device time, timer interrupts and runnable/idle time. Keep instrumentation bounded and measure its overhead.
