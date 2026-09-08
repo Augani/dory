@@ -1,0 +1,21 @@
+#!/bin/sh
+mount -t proc proc /proc
+mount -t sysfs sysfs /sys
+mount -t devtmpfs devtmpfs /dev
+mount -t tmpfs tmpfs /tmp
+mkdir -p /run /tmp/fex-default /tmp/fex-control
+export HOME=/root FEX_ROOTFS=/ FEX_SERVER_PATH=/usr/lib/dory/fex/FEXServer
+unset GODEBUG GOMAXPROCS
+printf 'DORY_FEX_KERNEL '; uname -a
+sha256sum /usr/lib/dory/fex/FEX /usr/lib/dory/fex/FEXServer /regexpstress
+export FEX_APP_DATA_LOCATION=/tmp/fex-default FEX_SERVERSOCKETPATH=/tmp/fex-default.sock
+printf 'DORY_FEX_CASE default BEGIN\n'
+timeout -s KILL 20 /usr/lib/dory/fex/FEX /regexpstress
+printf 'DORY_FEX_CASE default EXIT=%s\n' "$?"
+export FEX_APP_DATA_LOCATION=/tmp/fex-control FEX_SERVERSOCKETPATH=/tmp/fex-control.sock
+printf 'DORY_FEX_CASE diagnostic-preemptoff BEGIN\n'
+GODEBUG=asyncpreemptoff=1 timeout -s KILL 90 /usr/lib/dory/fex/FEX /regexpstress
+printf 'DORY_FEX_CASE diagnostic-preemptoff EXIT=%s\n' "$?"
+printf 'DORY_FEX_CAMPAIGN_DONE\n'
+sync
+poweroff -f
