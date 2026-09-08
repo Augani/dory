@@ -1068,6 +1068,20 @@ enum DoryPCMode {
         }
 
         private nonisolated func execute() {
+            var observedMachine: DoryPCDirectKernelMachine?
+            var bootTimeline: DoryPCBootTimeline?
+            var publishedTimelineEvents = 0
+            func publishTimeline() {
+                guard let bootTimeline,
+                      let bytes = try? JSONEncoder().encode(bootTimeline.snapshot()),
+                      let text = String(data: bytes, encoding: .utf8) else { return }
+                Self.log("boot timeline \(text)")
+            }
+            defer {
+                bootTimeline?.finish(reason: "execution-loop-ended")
+                publishTimeline()
+                observedMachine?.serial.observeBoot(with: nil)
+            }
             let progressLogIntervalNanoseconds: UInt64 = 30_000_000_000
             var nextProgressLogNanoseconds = DispatchTime.now().uptimeNanoseconds
                 &+ progressLogIntervalNanoseconds
@@ -1076,6 +1090,16 @@ enum DoryPCMode {
                 while try machineState.executionPause.enter(participant: 0) {
                     defer { machineState.executionPause.leave(participant: 0) }
                     let composed = machineState.current()
+                    if observedMachine !== composed.machine {
+                        bootTimeline?.finish(reason: "machine-replaced")
+                        publishTimeline()
+                        observedMachine?.serial.observeBoot(with: nil)
+                        observedMachine = composed.machine
+                        bootTimeline = DoryPCBootTimeline()
+                        composed.machine.serial.observeBoot(with: bootTimeline)
+                        publishedTimelineEvents = 1
+                        publishTimeline()
+                    }
                     let stop = try composed.machine.run(
                         maximumInstructions: 250_000,
                         exceptionPolicy: .deliver
@@ -1090,6 +1114,10 @@ enum DoryPCMode {
                     }
                     for byte in composed.machine.serial.drainTransmittedBytes() {
                         serialOutput.enqueue(byte)
+                    }
+                    if let count = bootTimeline?.snapshot().events.count, count > publishedTimelineEvents {
+                        publishedTimelineEvents = count
+                        publishTimeline()
                     }
                     let now = DispatchTime.now().uptimeNanoseconds
                     if now >= nextProgressLogNanoseconds {
