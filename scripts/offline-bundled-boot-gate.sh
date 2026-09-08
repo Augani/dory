@@ -64,13 +64,21 @@ for relative in dory-engine bin/dory-hv bin/gvproxy bin/dory-dataplane-proxy; do
   [ -f "$path" ] && [ ! -L "$path" ] && [ -s "$path" ] && [ -x "$path" ] \
     || die "required runtime helper is missing or indirect: $path"
 done
+for relative in \
+  lib/DoryHVRunner.app/Contents/MacOS/dory-hv \
+  lib/DoryHVRunner.app/Contents/XPCServices/DoryFSWorker.xpc/Contents/MacOS/DoryFSWorker \
+  lib/DoryHVRunner.app/Contents/XPCServices/DoryRendererWorker.xpc/Contents/MacOS/DoryRendererWorker; do
+  path="$RUNTIME/$relative"
+  [ -f "$path" ] && [ ! -L "$path" ] && [ -s "$path" ] && [ -x "$path" ] \
+    || die "required signed runtime worker is missing or indirect: $path"
+done
 for relative in share/dory/dory-hv-kernel-arm64.lzfse \
   share/dory/dory-engine-rootfs.ext4.lzfse share/dory/dory-agent-linux-arm64; do
   path="$RUNTIME/$relative"
   [ -f "$path" ] && [ ! -L "$path" ] && [ -s "$path" ] \
     || die "required runtime asset is missing or indirect: $path"
 done
-for command in cmp cp curl lsof ps python3 shasum; do
+for command in cmp codesign cp curl diff lsof ps python3 shasum; do
   command -v "$command" >/dev/null || die "required command is missing: $command"
 done
 case "$WORKROOT" in /*) ;; *) die "--workroot must be absolute" ;; esac
@@ -162,6 +170,10 @@ for relative in dory-engine bin/dory-hv bin/gvproxy bin/dory-dataplane-proxy \
   cmp "$RUNTIME/$relative" "$RUNTIME_COPY/$relative" \
     || die "runtime clone differs before testing: $relative"
 done
+diff -qr "$RUNTIME/lib/DoryHVRunner.app" "$RUNTIME_COPY/lib/DoryHVRunner.app" \
+  || die "runtime clone differs in its signed runner bundle"
+codesign --verify --deep --strict "$RUNTIME_COPY/lib/DoryHVRunner.app" \
+  || die "runtime clone has an invalid DoryHVRunner.app signature graph"
 
 kernel_asset="$RUNTIME_COPY/share/dory/dory-hv-kernel-arm64.lzfse"
 rootfs_asset="$RUNTIME_COPY/share/dory/dory-engine-rootfs.ext4.lzfse"
@@ -170,6 +182,7 @@ rootfs_asset_sha="$(shasum -a 256 "$rootfs_asset" | awk '{print $1}')"
 agent_asset_sha="$(shasum -a 256 "$RUNTIME_COPY/share/dory/dory-agent-linux-arm64" | awk '{print $1}')"
 dory_engine_sha="$(shasum -a 256 "$RUNTIME_COPY/dory-engine" | awk '{print $1}')"
 dory_hv_sha="$(shasum -a 256 "$RUNTIME_COPY/bin/dory-hv" | awk '{print $1}')"
+dory_hv_runner_sha="$(shasum -a 256 "$RUNTIME_COPY/lib/DoryHVRunner.app/Contents/MacOS/dory-hv" | awk '{print $1}')"
 gvproxy_sha="$(shasum -a 256 "$RUNTIME_COPY/bin/gvproxy" | awk '{print $1}')"
 dataplane_sha="$(shasum -a 256 "$RUNTIME_COPY/bin/dory-dataplane-proxy" | awk '{print $1}')"
 
@@ -295,6 +308,7 @@ release_qualifying=false
   echo "run_id=$RUN_ID"
   echo "dory_engine_sha256=$dory_engine_sha"
   echo "dory_hv_sha256=$dory_hv_sha"
+  echo "dory_hv_runner_sha256=$dory_hv_runner_sha"
   echo "gvproxy_sha256=$gvproxy_sha"
   echo "dataplane_proxy_sha256=$dataplane_sha"
   echo "kernel_asset_sha256=$kernel_asset_sha"

@@ -122,7 +122,7 @@ case "$WORKROOT/" in "$APP/"*|"$RUNTIME/"*) die "workroot cannot be inside candi
 case "$APP/" in "$WORKROOT/"*) die "workroot cannot contain the app" ;; esac
 case "$RUNTIME/" in "$WORKROOT/"*) die "workroot cannot contain the runtime" ;; esac
 [ ! -e "$WORKROOT" ] || die "workroot already exists: $WORKROOT"
-for command in cmp codesign curl lsof netstat python3 shasum spctl ssh sudo xcrun; do
+for command in cmp codesign curl diff lsof netstat python3 shasum spctl ssh sudo xcrun; do
   command -v "$command" >/dev/null || die "missing command: $command"
 done
 sudo -n true >/dev/null 2>&1 || die "runner does not provide required noninteractive sudo"
@@ -194,8 +194,12 @@ grep -q 'TeamIdentifier=864H636QW4' "$WORKROOT/evidence/app-signature.txt" \
   || die "candidate app has the wrong signing team"
 [ -s "$APP/Contents/Library/LaunchDaemons/dev.dory.network-helper.plist" ] \
   || die "candidate app omits the privileged network LaunchDaemon"
-cmp "$RUNTIME/bin/dory-hv" "$APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" \
-  || die "runtime dory-hv differs from the candidate app"
+[ -d "$RUNTIME/lib/DoryHVRunner.app" ] && [ ! -L "$RUNTIME/lib/DoryHVRunner.app" ] \
+  || die "runtime omits the signed DoryHVRunner.app"
+codesign --verify --strict --deep "$RUNTIME/lib/DoryHVRunner.app" \
+  || die "runtime DoryHVRunner.app signature is invalid"
+diff -qr "$RUNTIME/lib/DoryHVRunner.app" "$APP/Contents/Helpers/DoryHVRunner.app" \
+  || die "runtime signed runner bundle differs from the candidate app"
 cmp "$RUNTIME/bin/gvproxy" "$APP/Contents/Helpers/gvproxy" \
   || die "runtime gvproxy differs from the candidate app"
 
@@ -550,7 +554,7 @@ done
   || die "a new host panic report appeared during physical network certification"
 
 APP_SHA="$(shasum -a 256 "$APP/Contents/MacOS/Dory" | awk '{print $1}')"
-HV_SHA="$(shasum -a 256 "$RUNTIME/bin/dory-hv" | awk '{print $1}')"
+HV_SHA="$(shasum -a 256 "$RUNTIME/lib/DoryHVRunner.app/Contents/MacOS/dory-hv" | awk '{print $1}')"
 cat > "$WORKROOT/evidence/manifest.txt" <<EOF
 schema=1
 status=PASS

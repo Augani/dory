@@ -211,7 +211,7 @@ printf '%s\n' "$ECR_REGION" | grep -Eq '^[a-z]{2}(-gov)?-[a-z]+-[0-9]+$' \
   || die "release qualification requires at least eight endurance hours"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
-for command in caffeinate codesign curl ditto git htpasswd node npm openssl pmset python3 shasum \
+for command in caffeinate codesign curl diff ditto git htpasswd node npm openssl pmset python3 shasum \
   spctl tar xcodebuild xcrun; do
   command -v "$command" >/dev/null || die "missing required command: $command"
 done
@@ -321,7 +321,16 @@ tar -xzf "$RUNTIME_TAR" -C "$WORKDIR/extracted-runtime"
 RUNTIME_DIR="$WORKDIR/extracted-runtime/dory-engine-$VERSION-arm64"
 RUNTIME="$RUNTIME_DIR/dory-engine"
 [ -x "$RUNTIME_DIR/bin/dory-hv" ] || die "standalone runtime dory-hv is missing"
+CANDIDATE_HV_RUNNER_APP="$RUNTIME_DIR/lib/DoryHVRunner.app"
+CANDIDATE_HV_RUNNER="$CANDIDATE_HV_RUNNER_APP/Contents/MacOS/dory-hv"
+CANDIDATE_FS_WORKER="$CANDIDATE_HV_RUNNER_APP/Contents/XPCServices/DoryFSWorker.xpc/Contents/MacOS/DoryFSWorker"
+CANDIDATE_RENDERER_WORKER="$CANDIDATE_HV_RUNNER_APP/Contents/XPCServices/DoryRendererWorker.xpc/Contents/MacOS/DoryRendererWorker"
+for worker in "$CANDIDATE_HV_RUNNER" "$CANDIDATE_FS_WORKER" "$CANDIDATE_RENDERER_WORKER"; do
+  [ -f "$worker" ] && [ ! -L "$worker" ] && [ -x "$worker" ] \
+    || die "standalone runtime signed worker is missing or indirect: $worker"
+done
 CANDIDATE_DORY_HV_SHA="$(shasum -a 256 "$RUNTIME_DIR/bin/dory-hv" | awk '{print $1}')"
+CANDIDATE_HV_RUNNER_SHA="$(shasum -a 256 "$CANDIDATE_HV_RUNNER" | awk '{print $1}')"
 DOCKER="$APP/Contents/Helpers/docker"
 COMPOSE="$APP/Contents/Helpers/docker-compose"
 BUILDX="$APP/Contents/Helpers/docker-buildx"
@@ -374,7 +383,8 @@ DATAPLANE="$APP/Contents/Helpers/dory-dataplane-proxy"
 KERNEL="$RUNTIME_DIR/share/dory/dory-hv-kernel-arm64.lzfse"
 ROOTFS="$RUNTIME_DIR/share/dory/dory-engine-rootfs.ext4.lzfse"
 GUEST_AGENT="$RUNTIME_DIR/share/dory/dory-agent-linux-arm64"
-for executable in "$APP_EXECUTABLE" "$DORYD" "$DORY_VMM" "$RUNTIME_DIR/bin/dory-hv" \
+for executable in "$APP_EXECUTABLE" "$DORYD" "$DORY_VMM" "$RUNTIME_DIR/bin/dory-hv" "$CANDIDATE_HV_RUNNER" \
+  "$CANDIDATE_FS_WORKER" "$CANDIDATE_RENDERER_WORKER" \
   "$RUNTIME_DIR/bin/gvproxy" "$DATAPLANE" "$DOCKER" "$COMPOSE" "$BUILDX" "$KUBECTL"; do
   [ -f "$executable" ] && [ ! -L "$executable" ] && [ -x "$executable" ] \
     || die "candidate executable is missing or indirect: $(basename "$executable")"
@@ -396,6 +406,8 @@ CANDIDATE_ROOTFS_SHA="$(shasum -a 256 "$ROOTFS" | awk '{print $1}')"
 CANDIDATE_GUEST_AGENT_SHA="$(shasum -a 256 "$GUEST_AGENT" | awk '{print $1}')"
 
 codesign --verify --strict --deep "$APP"
+codesign --verify --strict --deep "$CANDIDATE_HV_RUNNER_APP" \
+  || die "standalone runtime DoryHVRunner.app signature graph is invalid"
 codesign -dv --verbose=4 "$APP" 2> "$WORKDIR/evidence/codesign-details.txt"
 grep -q 'Authority=Developer ID Application' "$WORKDIR/evidence/codesign-details.txt" \
   || die "candidate is not Developer ID signed"
@@ -418,7 +430,9 @@ grep -q 'source=Notarized Developer ID' "$WORKDIR/evidence/gatekeeper-assessment
   || die "Gatekeeper did not accept the notarized Developer ID candidate"
 scripts/verify-sparkle-update.sh "$APP" "$UPDATE_ZIP" "$BUILD_DIR/appcast.xml" \
   > "$WORKDIR/evidence/sparkle-verification.txt"
-for helper in dory-hv gvproxy dory-dataplane-proxy; do
+diff -qr "$CANDIDATE_HV_RUNNER_APP" "$APP/Contents/Helpers/DoryHVRunner.app" \
+  || die "standalone signed runner bundle differs from the qualified app"
+for helper in gvproxy dory-dataplane-proxy; do
   cmp "$RUNTIME_DIR/bin/$helper" "$APP/Contents/Helpers/$helper" \
     || die "standalone runtime $helper differs from the qualified app"
 done
@@ -778,7 +792,8 @@ incomplete_runtime_poweroff=PASS
 fresh_helper_pair=PASS
 docker_api_recovery=PASS
 runtime_launcher_sha256=$(shasum -a 256 "$RUNTIME" | awk '{print $1}')
-dory_hv_sha256=$(shasum -a 256 "$RUNTIME_DIR/bin/dory-hv" | awk '{print $1}')
+dory_hv_sha256=$CANDIDATE_DORY_HV_SHA
+dory_hv_runner_sha256=$CANDIDATE_HV_RUNNER_SHA
 dataplane_sha256=$(shasum -a 256 "$RUNTIME_DIR/bin/dory-dataplane-proxy" | awk '{print $1}')
 release_qualifying=true
 EOF
@@ -1538,7 +1553,8 @@ verify_candidate_digest() {
 verify_candidate_digest "$APP_EXECUTABLE" "$CANDIDATE_APP_EXECUTABLE_SHA" "app executable"
 verify_candidate_digest "$DORYD" "$CANDIDATE_DORYD_SHA" "doryd helper"
 verify_candidate_digest "$DORY_VMM" "$CANDIDATE_DORY_VMM_SHA" "dory-vmm helper"
-verify_candidate_digest "$RUNTIME_DIR/bin/dory-hv" "$CANDIDATE_DORY_HV_SHA" "dory-hv helper"
+verify_candidate_digest "$RUNTIME_DIR/bin/dory-hv" "$CANDIDATE_DORY_HV_SHA" "dory-hv launcher"
+verify_candidate_digest "$CANDIDATE_HV_RUNNER" "$CANDIDATE_HV_RUNNER_SHA" "dory-hv runner"
 verify_candidate_digest "$RUNTIME_DIR/bin/gvproxy" "$CANDIDATE_GVPROXY_SHA" "gvproxy helper"
 verify_candidate_digest "$DATAPLANE" "$CANDIDATE_DATAPLANE_SHA" "dataplane helper"
 verify_candidate_digest "$DOCKER" "$CANDIDATE_DOCKER_SHA" "Docker CLI"
