@@ -6,6 +6,7 @@
 # DEVELOPER_DIR=/path/to/Xcode.app/Contents/Developer.
 set -u
 cd "$(dirname "$0")/.." || exit 1
+ROOT="$(pwd -P)"
 
 usage() {
   cat <<'EOF'
@@ -144,6 +145,15 @@ fi
 # DoryCore. The runner is now an unconditional dependency of Dory.app, so every clean build must
 # materialize the ignored generated Swift and XCFramework before Xcode resolves either package.
 scripts/build-dory-ffi-xcframework.sh --if-needed || exit 1
+
+# Bind the source actually presented to the compilers, then require it to remain
+# unchanged through helper assembly. A fresh post-build snapshot alone can label
+# old object code with a source edit made while compilation was in progress.
+SOURCE_BINDING_WORK="$(mktemp -d "${TMPDIR:-/tmp}/dory-build-source.XXXXXX")" || exit 1
+trap 'rm -rf "$SOURCE_BINDING_WORK"' EXIT
+SOURCE_BINDING_INPUT="$SOURCE_BINDING_WORK/development-source-binding.json"
+python3 scripts/write-development-source-binding.py create \
+  --source-root "$ROOT" --output "$SOURCE_BINDING_INPUT" || exit 1
 
 LOG=/tmp/dory_build.log
 
@@ -878,6 +888,9 @@ verify_installable_app_bundle() {
     found=1
     [ -x "$app/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" ] \
       || { echo "error: installable Dory bundle is missing DoryHVRunner.app" >&2; return 1; }
+    [ -f "$app/Contents/Resources/development-source-binding.json" ] \
+      && [ ! -L "$app/Contents/Resources/development-source-binding.json" ] \
+      || { echo "error: installable Dory bundle is missing its sealed development source binding" >&2; return 1; }
     if [ "${DORY_BUILD_DORYD_HELPERS:-1}" = "1" ]; then
       for helper in doryd dorydctl dory-vmm dory-network-helper; do
         [ -x "$app/Contents/Helpers/$helper" ] && [ ! -L "$app/Contents/Helpers/$helper" ] \
@@ -900,6 +913,22 @@ verify_installable_app_bundle() {
   done
   [ "$found" -eq 1 ] \
     || { echo "error: Xcode produced no Dory.app to verify" >&2; return 1; }
+}
+
+write_development_source_binding() {
+  local app binding
+  for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
+    [ -d "$app" ] || continue
+    binding="$app/Contents/Resources/development-source-binding.json"
+    python3 scripts/write-development-source-binding.py verify \
+      --source-root "$ROOT" --binding "$SOURCE_BINDING_INPUT" || return 1
+    mkdir -p "$(dirname "$binding")" || return 1
+    [ ! -L "$binding" ] || { echo "error: source binding output is a symlink" >&2; return 1; }
+    cp "$SOURCE_BINDING_INPUT" "$binding" || return 1
+    # Recheck immediately before sealing, without substituting a new source identity.
+    python3 scripts/write-development-source-binding.py verify \
+      --source-root "$ROOT" --binding "$binding" || return 1
+  done
 }
 
 sign_debug_apps() {
@@ -1048,6 +1077,9 @@ if [ "$status" -eq 0 ]; then
 fi
 if [ "$status" -eq 0 ]; then
   bundle_dory_pc_firmware || status=$?
+fi
+if [ "$status" -eq 0 ]; then
+  write_development_source_binding || status=$?
 fi
 if [ "$status" -eq 0 ]; then
   verify_installable_app_bundle || status=$?
