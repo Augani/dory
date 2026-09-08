@@ -12,6 +12,8 @@ WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 STAMP="$ART/.dory-ffi-input.sha256"
 OUTPUT_STAMP="$ART/.dory-ffi-output.sha256"
+DEPLOYMENT_TARGET="${DORY_FFI_MACOSX_DEPLOYMENT_TARGET:-14.0}"
+DEPLOYMENT_RECEIPT="$ART/DoryFFI.xcframework/deployment-targets.json"
 
 usage() {
   echo "usage: build-dory-ffi-xcframework.sh [--if-needed]" >&2
@@ -31,8 +33,9 @@ input_fingerprint() {
     cd "$ROOT"
     {
       printf 'rustc=%s\n' "$(rustc --version)"
+      printf 'macosDeploymentTarget=%s\n' "$DEPLOYMENT_TARGET"
       shasum -a 256 dory-core/Cargo.toml dory-core/Cargo.lock \
-        scripts/build-dory-ffi-xcframework.sh
+        scripts/build-dory-ffi-xcframework.sh scripts/verify-dory-ffi-deployment-targets.py
       find dory-core/proto dory-core/pb dory-core/dataplane dory-core/remote \
            dory-core/ffi dory-core/sync \
         -type f \( -name '*.rs' -o -name '*.proto' -o -name 'Cargo.toml' -o -name 'build.rs' \) \
@@ -51,6 +54,7 @@ output_fingerprint() {
       artifacts/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a \
       artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/dory_ffiFFI.h \
       artifacts/DoryFFI.xcframework/macos-arm64_x86_64/Headers/module.modulemap \
+      artifacts/DoryFFI.xcframework/deployment-targets.json \
       Sources/DoryCore/generated/dory_ffi.swift \
       | shasum -a 256 | awk '{print $1}'
   )
@@ -77,7 +81,15 @@ if ! xcrun --find xcodebuild >/dev/null 2>&1; then
     fi
   done
 fi
-export MACOSX_DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
+case "$DEPLOYMENT_TARGET" in
+  14|14.0|14.0.0) DEPLOYMENT_TARGET=14.0 ;;
+  *) echo "error: DORY_FFI_MACOSX_DEPLOYMENT_TARGET must be the supported floor 14.0" >&2; exit 64 ;;
+esac
+export MACOSX_DEPLOYMENT_TARGET="$DEPLOYMENT_TARGET"
+# C/C++ build-script output is keyed to Cargo's target directory rather than every relevant
+# environment variable. A private target root makes an FFI rebuild independent of previously
+# cached objects made against a newer SDK/deployment target.
+export CARGO_TARGET_DIR="$WORK/cargo-target"
 
 rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null
 
@@ -92,8 +104,8 @@ echo "building staticlib (unstripped release) for both arches..."
 echo "lipo -> universal static lib..."
 mkdir -p "$WORK/lib"
 lipo -create \
-  "$CORE/target/aarch64-apple-darwin/release/libdory_ffi.a" \
-  "$CORE/target/x86_64-apple-darwin/release/libdory_ffi.a" \
+  "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/libdory_ffi.a" \
+  "$CARGO_TARGET_DIR/x86_64-apple-darwin/release/libdory_ffi.a" \
   -output "$WORK/lib/libdory_ffi.a"
 
 echo "generating Swift bindings..."
@@ -103,7 +115,7 @@ echo "generating Swift bindings..."
   cargo build -p dory-ffi --release --config 'profile.release.strip=false' \
     --target aarch64-apple-darwin >/dev/null
   cargo run -p dory-ffi --features bindgen --bin uniffi-bindgen -- \
-    generate --library "target/aarch64-apple-darwin/release/libdory_ffi.dylib" \
+    generate --library "$CARGO_TARGET_DIR/aarch64-apple-darwin/release/libdory_ffi.dylib" \
     --language swift --out-dir "$WORK/gen"
 )
 
@@ -119,6 +131,13 @@ mkdir -p "$ART"
 xcodebuild -create-xcframework \
   -library "$WORK/lib/libdory_ffi.a" -headers "$WORK/headers" \
   -output "$ART/DoryFFI.xcframework"
+
+VTOOL="$(xcrun --find vtool)"
+python3 "$ROOT/scripts/verify-dory-ffi-deployment-targets.py" \
+  --library "$ART/DoryFFI.xcframework/macos-arm64_x86_64/libdory_ffi.a" \
+  --maximum-macos "$DEPLOYMENT_TARGET" \
+  --vtool "$VTOOL" \
+  --output "$DEPLOYMENT_RECEIPT"
 
 echo "installing generated Swift into DoryCore..."
 mkdir -p "$GEN"
