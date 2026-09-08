@@ -245,3 +245,8 @@ scripts/__pycache__/
 # Wave 0 audit-plan-evidence.
 !/scripts/audit-plan-evidence.py
 !/scripts/test-audit-plan-evidence.py
+
+# Physical signed-peer handoff qualification.
+!/scripts/qualify-signed-launch-handoff.py
+!/scripts/test-qualify-signed-launch-handoff.py
+!/scripts/fixtures/signed-launch-handoff-peer.c
