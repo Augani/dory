@@ -224,10 +224,26 @@ do {
     fail("application launch authority handoff failed: \(error)")
 }
 guard let command = arguments.first else {
-    fail("usage: dory-hv <smoke|madvtest|desktop|agent-ping|camera-qualify|data-drive|engine|usb|renderer-qualify> [options]")
+    fail("usage: dory-hv <smoke|madvtest|desktop|agent-ping|camera-qualify|data-drive|engine|lzfse|usb|renderer-qualify> [options]")
 }
 
 switch command {
+case "lzfse":
+    guard arguments.count == 4 else {
+        fail("usage: dory-hv lzfse <compress|decompress> <source> <destination>")
+    }
+    do {
+        switch arguments[1] {
+        case "compress":
+            try DorydLZFSE.compress(source: arguments[2], destination: arguments[3])
+        case "decompress":
+            try DorydLZFSE.decompress(source: arguments[2], destination: arguments[3])
+        default:
+            fail("usage: dory-hv lzfse <compress|decompress> <source> <destination>")
+        }
+    } catch {
+        fail("lzfse \(arguments[1]) failed: \(error)")
+    }
 case "data-drive":
     guard arguments.count >= 2 else {
         fail("usage: dory-hv data-drive <resolve|prepare|id|selected-path|select|bind-existing|recover-existing|capacity|grow|backup|verify-backup|restore> [paths]")
@@ -370,7 +386,6 @@ case "desktop":
     var operationID: UUID?
     var reconnectIdentity: DoryRuntimeReconnectLaunchIdentity?
     var stateDirectory: String?
-    var internalShareDirectory: String?
     var kernel: String?
     var initrd: String?
     var rootfs: String?
@@ -611,7 +626,6 @@ case "desktop":
                 envelope: pcRuntimeLaunchEnvelope,
                 authority: authority,
                 stateDirectory: stateDirectory,
-        internalShareDirectory: internalShareDirectory,
                 handoffSocketPath: handoffSocket,
                 agentSocketPath: agentSocket,
                 shellSocketPath: shellSocket,
@@ -824,6 +838,7 @@ case "engine":
     var cpus = 4
     var rootfs: String?
     var stateDirectory: String?
+    var internalShareDirectory: String?
     var dockerDataDiskArguments = EngineMode.DockerDataDiskArguments()
     var shares: [VirtioFSShareConfiguration] = []
     var directIPRequested = false
@@ -1037,6 +1052,7 @@ case "engine":
         memoryMB: memoryMB,
         cpus: cpus,
         stateDirectory: stateDirectory,
+        internalShareDirectory: internalShareDirectory,
         dockerDataDiskAuthority: dockerDataDiskAuthority,
         dataDriveRoot: dataDriveRoot,
         dataDriveDiskPath: dataDriveDiskPath,
