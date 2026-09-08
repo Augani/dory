@@ -1,0 +1,61 @@
+{
+  "schemaVersion": 1,
+  "classification": "development-diagnostic-failed-boot",
+  "control": "nokaslr only; efi=debug absent",
+  "executionElapsedNanoseconds": 172802686208,
+  "bootTimeline": {
+    "clock": "host-dispatch-uptime-nanoseconds",
+    "elapsedNanoseconds": 172805201833,
+    "events": [
+      {
+        "elapsedNanoseconds": 0,
+        "milestone": "executionStarted"
+      },
+      {
+        "elapsedNanoseconds": 25342591416,
+        "milestone": "grub"
+      },
+      {
+        "elapsedNanoseconds": 139805764916,
+        "milestone": "kernel"
+      }
+    ],
+    "observationID": "8898E28F-A4EF-4419-8CE7-F8DC997282B8",
+    "observedSerialBytes": 14480,
+    "originNanoseconds": 126098844168250,
+    "terminationReason": "tripleFault(source: DoryMachinePC.DoryPCTripleFaultSource.exception(DoryMachinePC.DoryPCTripleFaultExceptionEvidence(exception: ",
+    "unobservedMilestones": [
+      "rootMounted",
+      "initStarted"
+    ],
+    "unobservedStatus": "censored"
+  },
+  "stop": "tripleFault(source: DoryMachinePC.DoryPCTripleFaultSource.exception(DoryMachinePC.DoryPCTripleFaultExceptionEvidence(exception: DoryDBTX86.DoryX86Exception(kind: DoryDBTX86.DoryX86Exception.Kind.pageFault, vector: 14, errorCode: Optional(16), instructionPointer: 18446744071579036448, linearAddress: Optional(18446744071579036448), commitsPartialProgress: false), processor: 0, executionMode: DoryDBTX86.DoryX86ExecutionMode.long64, state: DoryDBTX86.DoryX86ArchitecturalState(registers: DoryDBTX86.DoryX86GeneralRegisters(rax: 0, rcx: 3, rdx: 1, rbx: 0, rsp: 18446744071604026984, rbp: 18446744071604027176, rsi: 143, rdi: 18446744071615511056, r8: 204, r9: 204, r10: 2, r11: 18446744071604383776, r12: 0, r13: 101, r14: 0, r15: 0), rip: 18446744071579036448, rflags: DoryDBTX86.DoryX86RFLAGS(rawValue: 70), cs: DoryDBTX86.DoryX86SegmentState(selector: 16, attributes: 41115, limit: 4294967295, base: 0), ds: DoryDBTX86.DoryX86SegmentState(selector: 0, attributes: 0, limit: 0, base: 0), es: DoryDBTX86.DoryX86SegmentState(selector: 0, attributes: 0, limit: 0, base: 0), fs: DoryDBTX86.DoryX86SegmentState(selector: 0, attributes: 0, limit: 0, base: 0), gs: DoryDBTX86.DoryX86SegmentState(selector: 0, attributes: 0, limit: 0, base: 18446612683101831168), ss: DoryDBTX86.DoryX86SegmentState(selector: 0, attributes: 0, limit: 0, base: 0), tr: DoryDBTX86.DoryX86SegmentState(selector: 64, attributes: 139, limit: 16519, base: 18446741874686308352), ldtr: DoryDBTX86.DoryX86SegmentState(selector: 0, attributes: 0, limit: 0, base: 0), gdtr: DoryDBTX86.DoryX86DescriptorTableState(limit: 127, base: 18446741874686300160), idtr: DoryDBTX86.DoryX86DescriptorTableState(limit: 4095, base: 18446741874686296064), control: DoryDBTX86.DoryX86ControlState(cr0: 2147811379, cr2: 18446744071579036448, cr3: 0, cr4: 1776, cr8: 0, efer: 3329, xcr0: 1, legacyPAEPDPTEs: nil), debug: DoryDBTX86.DoryX86DebugState(dr0: 0, dr1: 0, dr2: 0, dr3: 0, dr6: 4294905840, dr7: 1024), modelSpecific: DoryDBTX86.DoryX86ModelSpecificRegisterState(apicBase: 4276095232, systemEnterCS: 16, systemEnterStackPointer: 18446741874686308352, systemEnterInstructionPointer: 18446744071595630000, pageAttributeTable: 1974748653749254, star: 9851692904349696, longStar: 18446744071595622528, compatibilityStar: 18446744071595630192, syscallFlagMask: 2457557, fsBase: 0, gsBase: 18446612683101831168, kernelGSBase: 0, biosUpdateSignature: 0), floatingPoint: DoryDBTX86.DoryX86FloatingPointState(x87: [DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0])], ymm: [DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]), DoryDBTX86.DoryX86RegisterBytes(bytes: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0])], x87ControlWord: 895, x87StatusWord: 0, x87TagWord: 65535, x87InstructionPointer: 0, x87InstructionSelector: 0, x87DataPointer: 0, x87DataSelector: 0, x87Opcode: 0, mxcsr: 8064, mxcsrMask: 65535), interruptShadow: nil, nmiBlocked: false, tsc: 172802344500, tscAux: 0), instructionBytes: [])), instructionCount: 1207906730)",
+  "runnerSHA256": "04ea5b2b913dc19ff7cbce6c3123a4bf78d5876b8d3fe79f7c7cfb8f61832a8f",
+  "firmwareCodeSHA256": "461cc0af580f1cfc91c944250950f18ea151c70e2d12e34739ad1ec38c47f4ca",
+  "installerMediaSHA256": "79e623937e6c6771b09da35968433d4535ae31b417761d6daebb7a2ac12635ab",
+  "attachments": [
+    {
+      "path": "out.json.gz",
+      "sha256": "87ca801e30b9a02b26227e49cff363086505fd3382eee3619060a6e27f0ae44b"
+    },
+    {
+      "path": "err.log.gz",
+      "sha256": "67586398b675e012e7715062e0339608d188a96536076738ad823047c7e9d9e7"
+    },
+    {
+      "path": "invocation.json.gz",
+      "sha256": "76ea2a07c729c81a34993d26541b97ad9b56bb61886f0189003b1e23ec814f48"
+    },
+    {
+      "path": "media-change.json.gz",
+      "sha256": "beb6d01592f4fbb6fecdd67212069de02a074104570de83b5c86cd5e6c826cf1"
+    }
+  ],
+  "observedFailure": "EFI runtime instruction-fetch page fault at 0x3fdc3743 in virt_efi_set_variable_nb, followed by triple fault",
+  "limitations": [
+    "Diagnostic process exited zero because no expected serial marker was requested; full stop and serial output prove failed boot.",
+    "One sample; no root mount, init, agent readiness or RPC observed.",
+    "This control and efi-debug-only use the same strict-deadline runner. Earlier unmodified command-line runs used the previous diagnostic runner."
+  ]
+}
