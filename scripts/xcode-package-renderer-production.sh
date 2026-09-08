@@ -106,7 +106,6 @@ elif [ -z "$SIGN_IDENTITY" ] || [ "$SIGN_IDENTITY" = - ]; then
   echo "error: production renderer assembly requires Xcode's expanded signing identity" >&2
   exit 1
 fi
-
 ADHOC_ARGUMENTS=()
 [ "$ALLOW_ADHOC_TEST" = 0 ] || ADHOC_ARGUMENTS+=(--allow-adhoc-test)
 
@@ -407,6 +406,28 @@ if [ "$PC_QUALIFICATION_ENABLED" = 1 ]; then
 fi
 python3 "$ROOT/scripts/package-renderer-production-bundle.py" seal-evidence \
   --runner-app "$RUNNER_APP_CANONICAL" \
+  --managed-kernel "$MANAGED_KERNEL" \
+  --expected-team "$EXPECTED_TEAM" \
+  "${PC_EVIDENCE_ARGUMENTS[@]+"${PC_EVIDENCE_ARGUMENTS[@]}"}" \
+  "${ADHOC_ARGUMENTS[@]+"${ADHOC_ARGUMENTS[@]}"}" \
+  "${RELEASE_ARGUMENTS[@]+"${RELEASE_ARGUMENTS[@]}"}"
+# `renderer-qualify` necessarily writes the receipts after the runner is first
+# signed so the executable can participate in the live challenge.  Re-seal the
+# runner only after those receipts exist.  This changes the runner's CMS blob,
+# not its worker bytes or recorded worker CDHash, and makes the copied runner a
+# self-contained signed graph rather than relying on an outer-app copy phase to
+# repair it.
+/usr/bin/codesign \
+  --force \
+  --sign "$SIGN_IDENTITY" \
+  --identifier com.pythonxi.Dory.HVRunner \
+  --options runtime \
+  --timestamp \
+  --entitlements "$ROOT/Packages/ContainerizationEngine/dory-hv.entitlements" \
+  "$RUNNER_APP"
+/usr/bin/codesign --verify --strict --deep "$RUNNER_APP"
+python3 "$ROOT/scripts/package-renderer-production-bundle.py" verify \
+  --runner-app "$RUNNER_APP" \
   --managed-kernel "$MANAGED_KERNEL" \
   --expected-team "$EXPECTED_TEAM" \
   "${PC_EVIDENCE_ARGUMENTS[@]+"${PC_EVIDENCE_ARGUMENTS[@]}"}" \

@@ -292,7 +292,7 @@ class StaticTupleTests(unittest.TestCase):
                 "for angle_name in libEGL.dylib libGLESv2.dylib; do\n"
                 "  /usr/bin/codesign"
             ),
-            assembler.index('"${CODESIGN_ARGUMENTS[@]}" "$WORKER_BUNDLE"'),
+            assembler.index('"${CODESIGN_ARGUMENTS[@]}" "${TIMESTAMP_ARGUMENTS[@]+"${TIMESTAMP_ARGUMENTS[@]}"}" "$WORKER_BUNDLE"'),
         )
         self.assertIn("verify_angle_runtime_closure", package)
         self.assertIn("if macho_rpaths(library)", package)
