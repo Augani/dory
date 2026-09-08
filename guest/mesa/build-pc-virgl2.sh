@@ -7,15 +7,21 @@ source guest/mesa/PINS
 source guest/kernel/docker-endpoint.sh
 
 case "${1:-x86_64}" in
-  amd64|x86_64) ;;
-  *) echo "the Dory PC VirGL2 runtime supports x86_64 only" >&2; exit 64 ;;
+  amd64|x86_64) ARCH=x86_64; PROFILE=pc-virgl2 ;;
+  arm64|aarch64) ARCH=arm64; PROFILE=arm-virgl2 ;;
+  *) echo "the Dory VirGL2 runtime supports x86_64 and arm64" >&2; exit 64 ;;
+esac
+
+case "$ARCH" in
+  x86_64) DEBIAN_ARCH=amd64; TRIPLE=x86_64-linux-gnu; COMPILER_TARGET=x86-64-linux-gnu; CPU=x86_64 ;;
+  arm64) DEBIAN_ARCH=arm64; TRIPLE=aarch64-linux-gnu; COMPILER_TARGET=aarch64-linux-gnu; CPU=aarch64 ;;
 esac
 
 OUT="$ROOT/guest/out"
 mkdir -p "$OUT"
-RUNTIME="$OUT/dory-mesa-virgl2-x86_64.tar.zst"
-STAMP="$OUT/dory-mesa-virgl2-build-x86_64.stamp"
-INPUT_SHA256="$(guest/mesa/input-pc-virgl2-fingerprint.sh x86_64)"
+RUNTIME="$OUT/dory-mesa-virgl2-$ARCH.tar.zst"
+STAMP="$OUT/dory-mesa-virgl2-build-$ARCH.stamp"
+INPUT_SHA256="$(guest/mesa/input-pc-virgl2-fingerprint.sh "$ARCH")"
 BUILD_JOBS="${DORY_MESA_BUILD_JOBS:-3}"
 case "$BUILD_JOBS" in
   ''|*[!0-9]*|0) echo "DORY_MESA_BUILD_JOBS must be a positive integer" >&2; exit 64 ;;
@@ -23,7 +29,7 @@ esac
 
 if [ -s "$RUNTIME" ] && [ -s "$STAMP" ] \
   && grep -Fqx "input_sha256=$INPUT_SHA256" "$STAMP" \
-  && guest/mesa/verify-pc-virgl2-build.sh x86_64 >/dev/null 2>&1; then
+  && guest/mesa/verify-pc-virgl2-build.sh "$ARCH" >/dev/null 2>&1; then
   echo "using current $RUNTIME"
   exit 0
 fi
@@ -35,7 +41,7 @@ docker_cmd() {
   dory_kernel_docker "$DOCKER_BIN" "$DOCKER_ENDPOINT" "$@"
 }
 
-STAGING="$(mktemp -d "$OUT/.mesa-virgl2-build-x86_64.XXXXXX")"
+STAGING="$(mktemp -d "$OUT/.mesa-virgl2-build-$ARCH.XXXXXX")"
 CID=""
 cleanup() {
   status=$?
@@ -50,6 +56,8 @@ cleanup() {
 trap cleanup EXIT
 
 CID="$(docker_cmd create --platform linux/arm64 \
+  -e ARCH="$ARCH" -e PROFILE="$PROFILE" -e DEBIAN_ARCH="$DEBIAN_ARCH" \
+  -e TRIPLE="$TRIPLE" -e COMPILER_TARGET="$COMPILER_TARGET" -e CPU="$CPU" \
   -e DEBIAN_FRONTEND=noninteractive \
   -e LC_ALL=C \
   -e TZ=UTC \
@@ -87,19 +95,21 @@ deb [check-valid-until=no] %s bullseye-security main
       --no-install-recommends ca-certificates
   fi
   apt-get -o Acquire::Retries=3 update -qq
-  dpkg --add-architecture amd64
+  if [ "$(dpkg --print-architecture)" != "$DEBIAN_ARCH" ]; then
+    dpkg --add-architecture "$DEBIAN_ARCH"
+  fi
   apt-get -o Acquire::Retries=3 update -qq
   apt-get install -y -qq --no-install-recommends \
-    bison build-essential ca-certificates curl flex g++-x86-64-linux-gnu \
-    gcc-x86-64-linux-gnu git libdrm-dev:amd64 libexpat1-dev:amd64 \
-    libx11-xcb-dev:amd64 libxcb-dri2-0-dev:amd64 libxcb-dri3-dev:amd64 \
-    libxcb-glx0-dev:amd64 libxcb-present-dev:amd64 libxcb-randr0-dev:amd64 \
-    libxcb-shm0-dev:amd64 libxcb-sync-dev:amd64 libxcb-xfixes0-dev:amd64 \
-    libxdamage-dev:amd64 libxext-dev:amd64 \
-    libxfixes-dev:amd64 libxrandr-dev:amd64 libxshmfence-dev:amd64 \
-    libxxf86vm-dev:amd64 libzstd-dev:amd64 ninja-build patch pkg-config python3-mako \
+    bison build-essential ca-certificates curl flex g++-$COMPILER_TARGET \
+    gcc-$COMPILER_TARGET git libdrm-dev:$DEBIAN_ARCH libexpat1-dev:$DEBIAN_ARCH \
+    libx11-xcb-dev:$DEBIAN_ARCH libxcb-dri2-0-dev:$DEBIAN_ARCH libxcb-dri3-dev:$DEBIAN_ARCH \
+    libxcb-glx0-dev:$DEBIAN_ARCH libxcb-present-dev:$DEBIAN_ARCH libxcb-randr0-dev:$DEBIAN_ARCH \
+    libxcb-shm0-dev:$DEBIAN_ARCH libxcb-sync-dev:$DEBIAN_ARCH libxcb-xfixes0-dev:$DEBIAN_ARCH \
+    libxdamage-dev:$DEBIAN_ARCH libxext-dev:$DEBIAN_ARCH \
+    libxfixes-dev:$DEBIAN_ARCH libxrandr-dev:$DEBIAN_ARCH libxshmfence-dev:$DEBIAN_ARCH \
+    libxxf86vm-dev:$DEBIAN_ARCH libzstd-dev:$DEBIAN_ARCH ninja-build patch pkg-config python3-mako \
     python3-packaging python3-pip python3-ply python3-yaml xz-utils \
-    zlib1g-dev:amd64 zstd
+    zlib1g-dev:$DEBIAN_ARCH zstd
 
   source_dir=/build/mesa
   git init -q "$source_dir"
@@ -131,28 +141,28 @@ deb [check-valid-until=no] %s bullseye-security main
   python3 -m pip install $pip_system_flag --disable-pip-version-check \
     --no-index "$meson_wheel" >/dev/null
 
-  cat >/build/x86_64-linux-gnu.cross <<EOF
+  cat >/build/$TRIPLE.cross <<EOF
 [binaries]
-c = '\''x86_64-linux-gnu-gcc'\''
-cpp = '\''x86_64-linux-gnu-g++'\''
-ar = '\''x86_64-linux-gnu-gcc-ar'\''
-strip = '\''x86_64-linux-gnu-strip'\''
-readelf = '\''x86_64-linux-gnu-readelf'\''
+c = '\''$TRIPLE-gcc'\''
+cpp = '\''$TRIPLE-g++'\''
+ar = '\''$TRIPLE-gcc-ar'\''
+strip = '\''$TRIPLE-strip'\''
+readelf = '\''$TRIPLE-readelf'\''
 pkgconfig = '\''pkg-config'\''
 
 [properties]
 needs_exe_wrapper = true
-pkg_config_libdir = ['\''/usr/lib/x86_64-linux-gnu/pkgconfig'\'', '\''/usr/share/pkgconfig'\'']
+pkg_config_libdir = ['\''/usr/lib/$TRIPLE/pkgconfig'\'', '\''/usr/share/pkgconfig'\'']
 
 [host_machine]
 system = '\''linux'\''
-cpu_family = '\''x86_64'\''
-cpu = '\''x86_64'\''
+cpu_family = '\''$CPU'\''
+cpu = '\''$CPU'\''
 endian = '\''little'\''
 EOF
-  export PKG_CONFIG_LIBDIR=/usr/lib/x86_64-linux-gnu/pkgconfig:/usr/share/pkgconfig
+  export PKG_CONFIG_LIBDIR=/usr/lib/$TRIPLE/pkgconfig:/usr/share/pkgconfig
 
-  meson setup --cross-file /build/x86_64-linux-gnu.cross --wrap-mode=nodownload /build/mesa-build "$source_dir" \
+  meson setup --cross-file /build/$TRIPLE.cross --wrap-mode=nodownload /build/mesa-build "$source_dir" \
     --prefix=/opt/dory/mesa \
     --libdir=lib \
     --buildtype=release \
@@ -245,11 +255,11 @@ EOF
   find /stage/opt/dory/mesa/lib/dri -type l -delete
   install -d -m0755 /stage/opt/dory/mesa/share/dory
 
-  driver_dynamic="$(x86_64-linux-gnu-readelf -d --wide "$driver")"
+  driver_dynamic="$($TRIPLE-readelf -d --wide "$driver")"
   gl_loader=/stage/opt/dory/mesa/lib/libGL.so.1
   gallium=/stage/opt/dory/mesa/lib/libgallium-${DORY_MESA_VERSION}.so
-  gl_loader_dynamic="$(x86_64-linux-gnu-readelf -d --wide "$gl_loader")"
-  gallium_dynamic="$(x86_64-linux-gnu-readelf -d --wide "$gallium")"
+  gl_loader_dynamic="$($TRIPLE-readelf -d --wide "$gl_loader")"
+  gallium_dynamic="$($TRIPLE-readelf -d --wide "$gallium")"
   for dynamic_section in "$driver_dynamic" "$gl_loader_dynamic" "$gallium_dynamic"; do
     if printf "%s\n" "$dynamic_section" | grep -Eq "\((RPATH|RUNPATH)\)"; then
       echo "PC VirGL2 runtime unexpectedly carries an ambient loader search path" >&2
@@ -258,7 +268,7 @@ EOF
   done
   runtime_dyn_symbols="$(
     for runtime_elf in "$driver" "$gl_loader" "$gallium"; do
-      x86_64-linux-gnu-readelf --dyn-syms --wide "$runtime_elf"
+      $TRIPLE-readelf --dyn-syms --wide "$runtime_elf"
     done
   )"
   max_glibc_symbol="$(printf "%s\n" "$runtime_dyn_symbols" \
@@ -292,8 +302,8 @@ EOF
     | LC_ALL=C sort | paste -sd, -)"
   build_packages="$(dpkg-query -W -f="\${binary:Package}=\${Version}\n" \
     | LC_ALL=C sort | sha256sum | cut -d " " -f 1)"
-  printf "schema=2\nprofile=pc-virgl2\narchitecture=x86_64\nlibc_family=%s\nmax_glibc_symbol=%s\ngallium_driver=virgl\ndri_driver=virtio_gpu_dri.so\ngl_loader=libGL.so.1\ngallium_library=libgallium-%s.so\nrequired_guest_ld_library_path=/opt/dory/mesa/lib\nrequired_guest_libgl_drivers_path=/opt/dory/mesa/lib/dri\ndriver_needed_sonames=%s\ngl_loader_needed_sonames=%s\ngallium_needed_sonames=%s\nbuild_packages_sha256=%s\nmesa_version=%s\nmesa_source_commit=%s\nmesa_source_tree=%s\nmesa_source_date_epoch=%s\nbuilder_snapshot=%s\n" \
-    "$DORY_MESA_RUNTIME_LIBC_FAMILY" "$max_glibc_symbol" \
+  printf "schema=2\nprofile=%s\narchitecture=%s\nlibc_family=%s\nmax_glibc_symbol=%s\ngallium_driver=virgl\ndri_driver=virtio_gpu_dri.so\ngl_loader=libGL.so.1\ngallium_library=libgallium-%s.so\nrequired_guest_ld_library_path=/opt/dory/mesa/lib\nrequired_guest_libgl_drivers_path=/opt/dory/mesa/lib/dri\ndriver_needed_sonames=%s\ngl_loader_needed_sonames=%s\ngallium_needed_sonames=%s\nbuild_packages_sha256=%s\nmesa_version=%s\nmesa_source_commit=%s\nmesa_source_tree=%s\nmesa_source_date_epoch=%s\nbuilder_snapshot=%s\n" \
+    "$PROFILE" "$ARCH" "$DORY_MESA_RUNTIME_LIBC_FAMILY" "$max_glibc_symbol" \
     "$DORY_MESA_VERSION" "$driver_needed_sonames" \
     "$gl_loader_needed_sonames" "$gallium_needed_sonames" \
     "$build_packages" "$DORY_MESA_VERSION" \
@@ -312,36 +322,36 @@ EOF
   mkdir -p /out
   tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
     -C /stage -cf - . | zstd -19 -T"$DORY_MESA_BUILD_JOBS" \
-      -o /out/dory-mesa-virgl2-x86_64.tar.zst
+      -o /out/dory-mesa-virgl2-$ARCH.tar.zst
 '
 
-docker_cmd cp "$CID:/out/dory-mesa-virgl2-x86_64.tar.zst" "$STAGING/"
-chmod 0644 "$STAGING/dory-mesa-virgl2-x86_64.tar.zst"
+docker_cmd cp "$CID:/out/dory-mesa-virgl2-$ARCH.tar.zst" "$STAGING/"
+chmod 0644 "$STAGING/dory-mesa-virgl2-$ARCH.tar.zst"
 
-TEMP_STAMP="$STAGING/dory-mesa-virgl2-build-x86_64.stamp"
+TEMP_STAMP="$STAGING/dory-mesa-virgl2-build-$ARCH.stamp"
 {
-  printf 'schema=2\narch=x86_64\nprofile=pc-virgl2\ninput_sha256=%s\n' "$INPUT_SHA256"
+  printf 'schema=2\narch=%s\nprofile=%s\ninput_sha256=%s\n' "$ARCH" "$PROFILE" "$INPUT_SHA256"
   printf 'runtime_sha256=%s\n' \
-    "$(shasum -a 256 "$STAGING/dory-mesa-virgl2-x86_64.tar.zst" | awk '{print $1}')"
+    "$(shasum -a 256 "$STAGING/dory-mesa-virgl2-$ARCH.tar.zst" | awk '{print $1}')"
   printf 'mesa_version=%s\nmesa_source_commit=%s\nmesa_source_tree=%s\nmesa_source_date_epoch=%s\n' \
     "$MESA_VERSION" "$MESA_SOURCE_COMMIT" "$MESA_SOURCE_TREE" "$MESA_SOURCE_DATE_EPOCH"
   printf 'libc_family=%s\nglibc_symbol_ceiling=%s\n' \
     "$MESA_RUNTIME_LIBC_FAMILY" "$MESA_RUNTIME_MAX_GLIBC_SYMBOL"
 } > "$TEMP_STAMP"
 
-DORY_MESA_OUT_DIR="$STAGING" guest/mesa/verify-pc-virgl2-build.sh x86_64 \
+DORY_MESA_OUT_DIR="$STAGING" guest/mesa/verify-pc-virgl2-build.sh "$ARCH" \
   >"$STAGING/verify-pc-virgl2-build.log" 2>&1 || {
     cat "$STAGING/verify-pc-virgl2-build.log" >&2
     exit 1
   }
 docker_cmd rm -f "$CID" >/dev/null
 CID=""
-mv -f "$STAGING/dory-mesa-virgl2-x86_64.tar.zst" "$RUNTIME"
+mv -f "$STAGING/dory-mesa-virgl2-$ARCH.tar.zst" "$RUNTIME"
 mv -f "$TEMP_STAMP" "$STAMP"
 rm -f "$STAGING/verify-pc-virgl2-build.log"
 rmdir "$STAGING"
 STAGING=""
 trap - EXIT
 
-guest/mesa/verify-pc-virgl2-build.sh x86_64
+guest/mesa/verify-pc-virgl2-build.sh "$ARCH"
 echo "built $RUNTIME"

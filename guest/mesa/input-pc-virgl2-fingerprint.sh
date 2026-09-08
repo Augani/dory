@@ -6,12 +6,13 @@ cd "$ROOT"
 source guest/mesa/PINS
 
 case "${1:-x86_64}" in
-  amd64|x86_64) ;;
-  *) echo "the Dory PC VirGL2 runtime supports x86_64 only" >&2; exit 64 ;;
+  amd64|x86_64) ARCH=x86_64; PROFILE=pc-virgl2 ;;
+  arm64|aarch64) ARCH=arm64; PROFILE=arm-virgl2 ;;
+  *) echo "the Dory VirGL2 runtime supports x86_64 and arm64" >&2; exit 64 ;;
 esac
 
 {
-  printf 'schema=2\narch=x86_64\nprofile=pc-virgl2\n'
+  printf 'schema=2\narch=%s\nprofile=%s\n' "$ARCH" "$PROFILE"
   printf 'mesa_version=%s\nmeson_version=%s\nbuilder=%s\n' \
     "$MESA_VERSION" "$MESON_VERSION" "$MESA_BUILDER_IMAGE"
   for input in \

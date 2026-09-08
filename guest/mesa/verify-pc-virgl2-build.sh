@@ -6,13 +6,14 @@ cd "$ROOT"
 source guest/mesa/PINS
 
 case "${1:-x86_64}" in
-  amd64|x86_64) ;;
-  *) echo "the Dory PC VirGL2 runtime supports x86_64 only" >&2; exit 64 ;;
+  amd64|x86_64) ARCH=x86_64; PROFILE=pc-virgl2 ;;
+  arm64|aarch64) ARCH=arm64; PROFILE=arm-virgl2 ;;
+  *) echo "the Dory VirGL2 runtime supports x86_64 and arm64" >&2; exit 64 ;;
 esac
 
 OUT="${DORY_MESA_OUT_DIR:-$ROOT/guest/out}"
-RUNTIME="$OUT/dory-mesa-virgl2-x86_64.tar.zst"
-STAMP="$OUT/dory-mesa-virgl2-build-x86_64.stamp"
+RUNTIME="$OUT/dory-mesa-virgl2-$ARCH.tar.zst"
+STAMP="$OUT/dory-mesa-virgl2-build-$ARCH.stamp"
 fail() {
   echo "Dory PC VirGL2 runtime verification failed: $*" >&2
   exit 1
@@ -22,8 +23,8 @@ fail() {
 [ -s "$STAMP" ] || fail "missing $STAMP"
 stamp_value() { sed -n "s/^$1=//p" "$STAMP"; }
 [ "$(stamp_value schema)" = 2 ] || fail "unsupported stamp schema"
-[ "$(stamp_value arch)" = x86_64 ] || fail "runtime was built for another architecture"
-[ "$(stamp_value profile)" = pc-virgl2 ] || fail "runtime was built for another profile"
+[ "$(stamp_value arch)" = "$ARCH" ] || fail "runtime was built for another architecture"
+[ "$(stamp_value profile)" = "$PROFILE" ] || fail "runtime was built for another profile"
 [ "$(stamp_value mesa_version)" = "$MESA_VERSION" ] || fail "Mesa version is stale"
 [ "$(stamp_value mesa_source_commit)" = "$MESA_SOURCE_COMMIT" ] \
   || fail "Mesa source commit is stale"
@@ -35,14 +36,14 @@ stamp_value() { sed -n "s/^$1=//p" "$STAMP"; }
   || fail "runtime libc family is stale"
 [ "$(stamp_value glibc_symbol_ceiling)" = "$MESA_RUNTIME_MAX_GLIBC_SYMBOL" ] \
   || fail "runtime GNU-libc ceiling is stale"
-[ "$(stamp_value input_sha256)" = "$(guest/mesa/input-pc-virgl2-fingerprint.sh x86_64)" ] \
+[ "$(stamp_value input_sha256)" = "$(guest/mesa/input-pc-virgl2-fingerprint.sh "$ARCH")" ] \
   || fail "runtime inputs are stale"
 [ "$(stamp_value runtime_sha256)" = "$(shasum -a 256 "$RUNTIME" | awk '{print $1}')" ] \
   || fail "runtime digest does not match its stamp"
 
 ZSTD="${DORY_ZSTD:-$(command -v zstd 2>/dev/null || true)}"
 [ -n "$ZSTD" ] || fail "zstd is required"
-READELF="${DORY_X86_64_READELF:-$(command -v x86_64-elf-readelf 2>/dev/null || command -v llvm-readelf 2>/dev/null || command -v aarch64-elf-readelf 2>/dev/null || command -v readelf 2>/dev/null || true)}"
+READELF="${DORY_MESA_READELF:-${DORY_X86_64_READELF:-$(command -v x86_64-elf-readelf 2>/dev/null || command -v llvm-readelf 2>/dev/null || command -v aarch64-elf-readelf 2>/dev/null || command -v readelf 2>/dev/null || true)}}"
 OBJDUMP="${DORY_X86_64_OBJDUMP:-$(command -v llvm-objdump 2>/dev/null || xcrun --find llvm-objdump 2>/dev/null || true)}"
 if [ -n "$READELF" ]; then
   elf_dynamic() { "$READELF" --dynamic --wide "$1"; }
@@ -51,7 +52,7 @@ elif [ -n "$OBJDUMP" ]; then
   elf_dynamic() { "$OBJDUMP" --private-headers "$1"; }
   elf_dynsyms() { "$OBJDUMP" --dynamic-syms "$1"; }
 else
-  fail "x86_64 readelf or llvm-objdump is required for exact ELF verification"
+  fail "readelf or llvm-objdump is required for exact ELF verification"
 fi
 "$ZSTD" -q -t "$RUNTIME" || fail "runtime archive is corrupt"
 
@@ -98,8 +99,8 @@ cmp -s "$GALLIUM" "$DRIVER" \
   || fail "runtime DRI driver is not byte-identical to the packaged Gallium SONAME library"
 
 grep -Fqx 'schema=2' "$MANIFEST" || fail "runtime manifest schema is stale"
-grep -Fqx 'profile=pc-virgl2' "$MANIFEST" || fail "runtime manifest profile is stale"
-grep -Fqx 'architecture=x86_64' "$MANIFEST" || fail "runtime manifest architecture is stale"
+grep -Fqx "profile=$PROFILE" "$MANIFEST" || fail "runtime manifest profile is stale"
+grep -Fqx "architecture=$ARCH" "$MANIFEST" || fail "runtime manifest architecture is stale"
 grep -Fqx "libc_family=$MESA_RUNTIME_LIBC_FAMILY" "$MANIFEST" \
   || fail "runtime manifest libc family is stale"
 grep -Fqx "mesa_version=$MESA_VERSION" "$MANIFEST" || fail "runtime manifest Mesa version is stale"
@@ -125,8 +126,12 @@ grep -Fqx 'required_guest_libgl_drivers_path=/opt/dory/mesa/lib/dri' "$MANIFEST"
   || fail "runtime manifest does not declare the required DRI search path"
 
 for runtime_elf in "$DRIVER" "$GL_LOADER" "$GALLIUM"; do
-  file "$runtime_elf" | grep -Eq 'ELF 64-bit.*x86-64|ELF 64-bit.*x86_64' \
-    || fail "${runtime_elf#$EXTRACT} is not an x86_64 ELF shared object"
+  case "$ARCH" in
+    x86_64) elf_pattern='ELF 64-bit.*(x86-64|x86_64)' ;;
+    arm64) elf_pattern='ELF 64-bit.*(ARM aarch64|aarch64)' ;;
+  esac
+  file "$runtime_elf" | grep -Eq "$elf_pattern" \
+    || fail "${runtime_elf#$EXTRACT} is not an $ARCH ELF shared object"
 done
 grep -aFq 'virgl' "$DRIVER" || fail "DRI driver does not contain the VirGL driver identity"
 grep -aFq 'virtio_gpu_driver_descriptor' "$DRIVER" \
