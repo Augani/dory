@@ -531,7 +531,7 @@ bundle_debug_hv_helper() {
         chmod 0755 "$app/Contents/Resources/dory-agent-linux-$arch"
       fi
       if [ -f "guest/out/initfs-$arch.ext4" ]; then
-        cp "guest/out/initfs-$arch.ext4" "$app/Contents/Resources/dory-machine-rootfs-$arch.ext4"
+        cp -c "guest/out/initfs-$arch.ext4" "$app/Contents/Resources/dory-machine-rootfs-$arch.ext4"
         chmod 0644 "$app/Contents/Resources/dory-machine-rootfs-$arch.ext4"
         if [ "$arch" = "arm64" ]; then
           ln -sf "dory-machine-rootfs-$arch.ext4" "$app/Contents/Resources/dory-machine-rootfs.ext4"
