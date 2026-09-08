@@ -4,6 +4,19 @@ import Testing
 @testable import DoryMachinePC
 
 @Suite struct DoryPCDirectKernelMachineTests {
+  @Test func guestPortOutputProducesBootTimelineBeforeConsoleDrain() throws {
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+    let timeline = DoryPCBootTimeline()
+    machine.serial.observeBoot(with: timeline)
+    var code: [UInt8] = [0xBA, 0xF8, 0x03, 0, 0] // mov edx, 0x3f8
+    for byte in "Linux version ".utf8 { code += [0xB0, byte, 0xEE] } // mov al; out dx, al
+    code.append(0xF4)
+    try machine.load(kernel: makeELF(code: code), commandLine: "x")
+    _ = try machine.runOnDedicatedStack(maximumInstructions: 100)
+    #expect(timeline.snapshot().events.last?.milestone == .kernel)
+    #expect(String(decoding: machine.serial.drainTransmittedBytes(), as: UTF8.self) == "Linux version ")
+  }
+
   @Test func diagnosticInstructionBytesFollowTheLoadedProcessor() throws {
     let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
     try machine.load(kernel: makeELF(code: [0x90, 0xF4]), commandLine: "x")

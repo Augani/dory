@@ -112,10 +112,16 @@ public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
   private var droppedTransmittedByteCount = 0
   private var interruptSink: (@Sendable (Bool) -> Void)?
   private var lastInterruptLevel = false
+  private var bootTimeline: DoryPCBootTimeline?
 
   public init(basePort: UInt16 = 0x3F8, queueCapacity: Int = 64 * 1024) {
     self.basePort = basePort
     self.queueCapacity = max(1, queueCapacity)
+  }
+
+  /// Attach before execution; replacement starts an independent boot observation generation.
+  public func observeBoot(with timeline: DoryPCBootTimeline?) {
+    lock.withLock { bootTimeline = timeline }
   }
 
   public func enqueueReceivedBytes(_ bytes: [UInt8]) {
@@ -214,6 +220,7 @@ public final class DoryPCUART16550: DoryPCPortIODevice, @unchecked Sendable {
     switch offset {
     case 0 where divisorLatchEnabled: divisorLow = value
     case 0:
+      bootTimeline?.observeTransmittedByte(value)
       if transmitted.count < queueCapacity {
         transmitted.append(value)
       } else {
