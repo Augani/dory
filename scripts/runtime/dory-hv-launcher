@@ -1,0 +1,13 @@
+#!/bin/bash
+# Keep dory-hv inside its signed app bundle. The virtual-machine executable uses
+# named XPC services for filesystem and renderer work; copying only its Mach-O
+# strips those services from NSBundle's lookup scope and fails closed at launch.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+RUNNER="$HERE/../lib/DoryHVRunner.app/Contents/MacOS/dory-hv"
+
+[ -f "$RUNNER" ] && [ ! -L "$RUNNER" ] && [ -x "$RUNNER" ] \
+  || { echo "dory-hv: missing signed DoryHVRunner.app runtime bundle" >&2; exit 66; }
+
+exec "$RUNNER" "$@"

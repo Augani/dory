@@ -229,3 +229,7 @@ scripts/__pycache__/
 # Development build source identity.
 !/scripts/write-development-source-binding.py
 !/scripts/test-development-source-binding.py
+
+# Standalone signed runner bundle launcher.
+!/scripts/runtime/
+!/scripts/runtime/dory-hv-launcher

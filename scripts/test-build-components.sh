@@ -9,6 +9,42 @@ if [ -d /Applications/Xcode.app/Contents/Developer ]; then
   export DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer
 fi
 
+# Exercise the installed wrapper with an adjacent bundle and literal arguments.
+python3 - "$ROOT/scripts/runtime/dory-hv-launcher" "$TMP" <<'PYLAUNCHER'
+import json
+import pathlib
+import shutil
+import subprocess
+import sys
+
+root = pathlib.Path(sys.argv[2]) / "launcher runtime"
+launcher = root / "bin/dory-hv"
+launcher.parent.mkdir(parents=True)
+shutil.copy2(sys.argv[1], launcher)
+launcher.chmod(0o755)
+runner = root / "lib/DoryHVRunner.app/Contents/MacOS/dory-hv"
+
+def run(*arguments):
+    return subprocess.run([str(launcher), *arguments], capture_output=True, text=True)
+
+assert run().returncode == 66
+runner.parent.mkdir(parents=True)
+runner.write_text("#!/usr/bin/env python3\nimport json, sys\nprint(json.dumps(sys.argv[1:]))\nsys.exit(23)\n")
+runner.chmod(0o755)
+arguments = ["engine", "path with spaces", "literal;$value", ""]
+result = run(*arguments)
+assert result.returncode == 23, result.stderr
+assert json.loads(result.stdout) == arguments
+runner.chmod(0o644)
+assert run().returncode == 66
+runner.chmod(0o755)
+target = runner.with_name("real-runner")
+runner.rename(target)
+runner.symlink_to(target)
+assert run().returncode == 66
+print("standalone runner launcher tests passed")
+PYLAUNCHER
+
 python3 - "$ROOT/scripts/build.sh" \
   "$ROOT/scripts/build-dory-armvirt-firmware.py" <<'PY'
 import pathlib

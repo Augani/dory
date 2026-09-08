@@ -585,6 +585,30 @@ verify_codesign() {
   fi
 }
 
+# The VM executable is not a standalone Mach-O: it locates the filesystem and
+# renderer workers as named services nested in DoryHVRunner.app. Preserve the
+# complete already-signed app bundle in the standalone archive and verify that
+# graph before the small bin/dory-hv launcher delegates into it.
+verify_standalone_runtime_runner() {
+  local runner_app="$1" runner fs_worker_xpc fs_worker renderer_worker_xpc renderer_worker
+  runner="$runner_app/Contents/MacOS/dory-hv"
+  fs_worker_xpc="$runner_app/Contents/XPCServices/DoryFSWorker.xpc"
+  fs_worker="$fs_worker_xpc/Contents/MacOS/DoryFSWorker"
+  renderer_worker_xpc="$runner_app/Contents/XPCServices/DoryRendererWorker.xpc"
+  renderer_worker="$renderer_worker_xpc/Contents/MacOS/DoryRendererWorker"
+  [ -d "$runner_app" ] && [ ! -L "$runner_app" ] \
+    || release_error "standalone DoryHVRunner.app is missing or indirect: $runner_app"
+  for helper in "$runner" "$fs_worker" "$renderer_worker"; do
+    [ -f "$helper" ] && [ ! -L "$helper" ] && [ -x "$helper" ] \
+      || release_error "standalone runtime worker is missing or indirect: $helper"
+  done
+  codesign --verify --deep --strict --verbose=2 "$runner_app" \
+    || release_error "standalone DoryHVRunner.app signature graph is invalid"
+  verify_developer_id_signature "$runner_app"
+  verify_developer_id_signature "$fs_worker_xpc"
+  verify_developer_id_signature "$renderer_worker_xpc"
+}
+
 verify_developer_id_signature() {
   local path="$1" details
   [ "${DORY_REQUIRE_DEVELOPER_ID_SIGNATURES:-1}" = "1" ] || return 0
@@ -1317,8 +1341,11 @@ if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] && [ "${DORY_BUILD_RUNTIME:-1}" = "1" ] 
   RUNTIME_NAME="dory-engine-$VERSION-arm64"
   RUNTIME_DIR="$BUILD_DIR/runtime/$RUNTIME_NAME"
   rm -rf "$BUILD_DIR/runtime"
-  mkdir -p "$RUNTIME_DIR/bin" "$RUNTIME_DIR/share/dory"
-  cp "$ARM64_APP/Contents/Helpers/DoryHVRunner.app/Contents/MacOS/dory-hv" "$RUNTIME_DIR/bin/"
+  mkdir -p "$RUNTIME_DIR/bin" "$RUNTIME_DIR/lib" "$RUNTIME_DIR/share/dory"
+  ditto "$ARM64_APP/Contents/Helpers/DoryHVRunner.app" "$RUNTIME_DIR/lib/DoryHVRunner.app"
+  verify_standalone_runtime_runner "$RUNTIME_DIR/lib/DoryHVRunner.app"
+  cp scripts/runtime/dory-hv-launcher "$RUNTIME_DIR/bin/dory-hv"
+  chmod 0755 "$RUNTIME_DIR/bin/dory-hv"
   cp "$ARM64_APP/Contents/Helpers/gvproxy" "$RUNTIME_DIR/bin/"
   cp "$ARM64_APP/Contents/Helpers/dory-dataplane-proxy" "$RUNTIME_DIR/bin/"
   cp "$ARM64_APP/Contents/Resources/dory-hv-kernel-arm64.lzfse" "$RUNTIME_DIR/share/dory/"
@@ -1333,8 +1360,9 @@ if [ "${DORY_BUNDLE_ENGINE:-1}" = "1" ] && [ "${DORY_BUILD_RUNTIME:-1}" = "1" ] 
   cat > "$RUNTIME_DIR/README.md" <<EOF
 # dory-engine $VERSION (arm64)
 
-Dory's container engine as a standalone, Colima-style runtime: one shared Linux VM running
-dockerd, with virtio free-page reporting. Host-pressure reclaim remains opt-in and experimental.
+Dory's container engine as a standalone native Hypervisor.framework runtime: one shared Linux
+VM running dockerd, with virtio free-page reporting. Host-pressure reclaim remains opt-in and
+experimental.
 
     ./dory-engine start          # boots the engine; bundled FEX/amd64 is on by default
     ./dory-engine start --no-amd64 # explicit native-only opt-out
