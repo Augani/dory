@@ -195,8 +195,6 @@ def main() -> int:
         blockers.append("campaign-root-is-not-a-new-owned-scratch-path")
     if any(item["status"] != "available" for item in sources):
         blockers.append("desktop-producer-input-unavailable")
-    if any(item["status"] != "available" for item in rootfs):
-        blockers.append("desktop-rootfs-artifacts-unavailable")
     payload: dict[str, Any] = {
         "schemaVersion": 1,
         "kind": "dev.dory.wave0-owned-fixture-preflight",
@@ -204,6 +202,7 @@ def main() -> int:
         "guestOutput": str(output),
         "sourceInputs": sources,
         "desktopRootfs": rootfs,
+        "existingArtifactStatus": "available" if all(item["status"] == "available" for item in rootfs) else "incomplete",
         "docker": docker,
         "capacity": capacity,
         "campaignRoot": campaign,

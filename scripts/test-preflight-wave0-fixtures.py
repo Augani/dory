@@ -42,13 +42,14 @@ class FixturePreflightTests(unittest.TestCase):
             check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
         )
 
-    def test_missing_rootfs_is_a_blocker_not_a_fixture_pass(self) -> None:
+    def test_missing_rootfs_allows_acquisition_without_claiming_artifact_readiness(self) -> None:
         result = self.preflight()
 
         self.assertEqual(result.returncode, 0, result.stderr)
         payload = json.loads(result.stdout)
-        self.assertEqual(payload["fixtureReadiness"], "blocked")
-        self.assertIn("desktop-rootfs-artifacts-unavailable", payload["blockers"])
+        self.assertEqual(payload["fixtureReadiness"], "ready-to-build")
+        self.assertEqual(payload["existingArtifactStatus"], "incomplete")
+        self.assertFalse(payload["releaseQualified"])
         self.assertEqual(payload["campaignRoot"]["status"], "reserved-uncreated")
         self.assertFalse((self.root / ".dory-build/wave0-fixtures").exists())
 
