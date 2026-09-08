@@ -94,6 +94,7 @@ for required in (
     "dorydctl",
     "dory-vmm",
     "dory-network-helper",
+    "dory-dataplane-proxy",
     "DoryVMM.app/Contents/MacOS/dory-vmm",
     "dev.dory.doryd.plist",
     "gvproxy",

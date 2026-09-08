@@ -620,7 +620,7 @@ bundle_doryd_swiftpm_helpers() {
   fi
 
   echo "note: building and bundling doryd SwiftPM helpers ($configuration)" >&2
-  for product in doryd dorydctl dory-vmm dory-network-helper; do
+  for product in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy; do
     swift build --package-path dory-core-swift -c "$configuration" --product "$product" || return 1
   done
   bin_path="$(swift build --package-path dory-core-swift -c "$configuration" --show-bin-path 2>/dev/null)"
@@ -631,7 +631,7 @@ bundle_doryd_swiftpm_helpers() {
   for app in "$HOME"/Library/Developer/Xcode/DerivedData/Dory-*/Build/Products/"$XCODE_CONFIGURATION"/Dory.app; do
     [ -d "$app" ] || continue
     mkdir -p "$app/Contents/Helpers"
-    for product in doryd dorydctl dory-vmm dory-network-helper; do
+    for product in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy; do
       [ -x "$bin_path/$product" ] || { echo "error: $product helper was not produced" >&2; return 1; }
       helper="$app/Contents/Helpers/$product"
       cp "$bin_path/$product" "$helper"
@@ -892,7 +892,7 @@ verify_installable_app_bundle() {
       && [ ! -L "$app/Contents/Resources/development-source-binding.json" ] \
       || { echo "error: installable Dory bundle is missing its sealed development source binding" >&2; return 1; }
     if [ "${DORY_BUILD_DORYD_HELPERS:-1}" = "1" ]; then
-      for helper in doryd dorydctl dory-vmm dory-network-helper; do
+      for helper in doryd dorydctl dory-vmm dory-network-helper dory-dataplane-proxy; do
         [ -x "$app/Contents/Helpers/$helper" ] && [ ! -L "$app/Contents/Helpers/$helper" ] \
           || { echo "error: installable Dory bundle is missing direct engine helper $helper" >&2; return 1; }
       done
