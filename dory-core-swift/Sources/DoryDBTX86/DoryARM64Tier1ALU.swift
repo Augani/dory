@@ -140,6 +140,28 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Stores one measured qword register source through the transactional write callback. Flags
+  /// are materialized before the lazy-payload words are borrowed to stage the address and value.
+  func emitMemoryStore(
+    sourceGuestRegister: Int,
+    address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(sourceGuestRegister) else { return false }
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    guard Self.emitMemoryAddress(address, into: &fragment) else { return false }
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    fragment.append(
+      Self.encodeStore64(
+        register: UInt32(sourceGuestRegister),
+        word: .lazyFlagsSource2
+      ))
+    Self.emitStagedMemoryWrite(byteCount: 8, into: &fragment)
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Performs the mandatory source read for a dword/qword memory CMOV before evaluating the
   /// predicate. A false CMOV therefore still faults; dword forms apply the architecture's
   /// destination zero-extension on either predicate outcome.
@@ -570,7 +592,41 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
 
     var fragment: [UInt32] = []
     DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
-    let source = UInt32(sourceGuestRegister)
+    Self.emitUnsignedAccumulatorMultiplyCore(
+      width: width,
+      sourceRegister: UInt32(sourceGuestRegister),
+      into: &fragment
+    )
+    words.append(contentsOf: fragment)
+    return true
+  }
+
+  /// Reads the measured qword memory source before publishing the complete product through
+  /// RDX:RAX. The callback restores the old accumulator pair before the staged operand is used.
+  func emitMemoryUnsignedAccumulatorMultiply(
+    address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    guard Self.emitMemoryRead(width: .i64, address: address, into: &fragment) else {
+      return false
+    }
+    fragment.append(Self.encodeLoad64(register: 17, word: .rip))
+    Self.emitUnsignedAccumulatorMultiplyCore(
+      width: .i64,
+      sourceRegister: 17,
+      into: &fragment
+    )
+    words.append(contentsOf: fragment)
+    return true
+  }
+
+  private static func emitUnsignedAccumulatorMultiplyCore(
+    width: DoryIRIntegerWidth,
+    sourceRegister source: UInt32,
+    into fragment: inout [UInt32]
+  ) {
     if width == .i64 {
       fragment.append(Self.encodeMultiply64(left: 0, right: source, destination: 16))
       fragment.append(
@@ -609,8 +665,6 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       Self.encodeLogical(
         .or, is64Bit: true, left: 25, right: 26, shiftAmount: 11, destination: 25))
     fragment.append(Self.encodeMove(destination: 26, source: 31, is64Bit: true))
-    words.append(contentsOf: fragment)
-    return true
   }
 
   /// Exchanges two pinned qword registers without changing NZCV or lazy flags.
@@ -2141,7 +2195,15 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       Self.encodeAddSubtractImmediate(
         add: false, is64Bit: true, left: 4, immediate: 8, destination: 16))
     fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    Self.emitStagedMemoryWrite(byteCount: 8, into: &fragment)
+    fragment.append(Self.encodeLoad64(register: 4, word: .lazyFlagsSource1))
+  }
 
+  /// Invokes the write callback with an address and value staged in the lazy-payload words.
+  private static func emitStagedMemoryWrite(
+    byteCount: UInt64,
+    into fragment: inout [UInt32]
+  ) {
     for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
       fragment.append(
         Self.encodeStore64(
@@ -2151,7 +2213,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     fragment.append(Self.encodeMove(destination: 0, source: 19, is64Bit: true))
     fragment.append(Self.encodeLoad64(register: 1, word: .lazyFlagsSource1))
     fragment.append(Self.encodeLoad64(register: 2, word: .lazyFlagsSource2))
-    Self.emitImmediate(8, register: 3, into: &fragment)
+    Self.emitImmediate(byteCount, register: 3, into: &fragment)
     fragment.append(Self.encodeBranchWithLink(register: 21))
     for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
       fragment.append(
@@ -2159,7 +2221,6 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
           register: register,
           word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
     }
-    fragment.append(Self.encodeLoad64(register: 4, word: .lazyFlagsSource1))
   }
 
   /// Resolves lazy flags and performs one restartable POPQ through the preserved read callback.
@@ -2326,6 +2387,35 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     address: DoryIRMemoryAddress,
     into words: inout [UInt32]
   ) -> Bool {
+    var fragment: [UInt32] = []
+    guard emitMemoryAddress(address, into: &fragment) else { return false }
+
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        encodeStore64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    fragment.append(encodeMove(destination: 0, source: 19, is64Bit: true))
+    fragment.append(encodeMove(destination: 1, source: 16, is64Bit: true))
+    emitImmediate(UInt64(width.rawValue / 8), register: 2, into: &fragment)
+    fragment.append(encodeBranchWithLink(register: 20))
+    fragment.append(encodeStore64(register: 0, word: .rip))
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        encodeLoad64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    words.append(contentsOf: fragment)
+    return true
+  }
+
+  /// Forms one supported scalar effective address in x16 while preserving all pinned guest GPRs.
+  private static func emitMemoryAddress(
+    _ address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
     guard address.segment == nil || address.segment == "fs" || address.segment == "gs",
       address.addressWidth == .i32 || address.addressWidth == .i64,
       address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8
@@ -2387,24 +2477,6 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
           right: 17,
           destination: 16
         ))
-    }
-
-    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
-      fragment.append(
-        encodeStore64(
-          register: register,
-          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
-    }
-    fragment.append(encodeMove(destination: 0, source: 19, is64Bit: true))
-    fragment.append(encodeMove(destination: 1, source: 16, is64Bit: true))
-    emitImmediate(UInt64(width.rawValue / 8), register: 2, into: &fragment)
-    fragment.append(encodeBranchWithLink(register: 20))
-    fragment.append(encodeStore64(register: 0, word: .rip))
-    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
-      fragment.append(
-        encodeLoad64(
-          register: register,
-          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
     }
     words.append(contentsOf: fragment)
     return true

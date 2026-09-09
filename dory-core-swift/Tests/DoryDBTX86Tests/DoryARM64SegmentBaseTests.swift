@@ -65,7 +65,7 @@ import Testing
               ).execute(bytes: bytes, at: 0, mode: .long64, addressSpaceID: 0,
                 maximumInstructions: 1, state: &state, memory: memory))
               let expectedTier: DoryARM64CompilationTier =
-                tier1Enabled && opcode == 0x8B
+                tier1Enabled && opcode != 0x01
                 ? .tier1
                 : DoryARM64CompilationTier(rawValue: optimization.rawValue)!
               #expect(result.block.tier == expectedTier)

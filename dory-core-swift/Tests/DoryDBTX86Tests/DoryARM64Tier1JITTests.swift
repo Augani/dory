@@ -555,7 +555,7 @@ import Testing
     #if arch(arm64)
       let address: UInt64 = 0x3000
       let registerBytes: [UInt8] = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0]  // mov rax, 1
-      let memoryBytes: [UInt8] = [0x48, 0x89, 0x00]  // mov [rax], rax
+      let memoryBytes: [UInt8] = [0x89, 0x00]  // dword memory stores remain bounded
       for (tier1Enabled, bytes) in [(false, registerBytes), (true, memoryBytes)] {
         let memory = try DoryX86ByteArrayMemory(byteCount: 0x4000)
         let executor = try DoryARM64BaselineExecutor(
@@ -1592,6 +1592,176 @@ import Testing
           mode: .long64,
           addressSpaceID: UInt64(index),
           maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        ))
+
+        #expect(execution.block.tier == .tier1)
+        #expect(execution.exitCode == .interpreter)
+        #expect(state == initial)
+        #expect(memory.snapshot() == initialMemory)
+      }
+    #endif
+  }
+
+  @Test func measuredMemoryMultiplyStoreBlockCompilesWithRestartableRead() throws {
+    let address: UInt64 = 0xFFFF_FFFF_8136_2EBE
+    let bytes: [UInt8] = [
+      0x48, 0xF7, 0x64, 0x24, 0x08,  // mulq 0x8(%rsp)
+      0x4C, 0x89, 0x9E, 0xC8, 0x00, 0x00, 0x00,  // movq %r11,0xc8(%rsi)
+    ]
+    let block = try DoryX86IRTranslator().translate(bytes, at: address, mode: .long64)
+    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+
+    #expect(compiled.tier == .tier1)
+    #expect(compiled.guestByteCount == bytes.count)
+    #expect(compiled.guestInstructionCount == 2)
+    #expect(compiled.requiresMemoryCallbacks)
+    #expect(compiled.requiresRestartableMemoryReads)
+    #expect(compiled.mayExitToInterpreter)
+
+    for unsupportedBytes: [UInt8] in [
+      [0xF7, 0x64, 0x24, 0x08],  // mull 0x8(%rsp)
+      [0x44, 0x89, 0x9E, 0xC8, 0x00, 0x00, 0x00],  // movl %r11d,0xc8(%rsi)
+    ] {
+      let unsupported = try DoryX86IRTranslator().translate(
+        unsupportedBytes,
+        at: 0x2000,
+        mode: .long64
+      )
+      #expect(DoryARM64Tier1Emitter().compile(unsupported) == nil)
+    }
+  }
+
+  @Test func memoryAccumulatorMultiplyAndMeasuredStoreMatchTheInterpreter() throws {
+    #if arch(arm64)
+      struct MultiplyCase {
+        let bytes: [UInt8]
+        let registers: DoryX86GeneralRegisters
+        let sourceAddress: UInt64
+        let instructionCount: Int
+        let comment: String
+      }
+      let measuredBytes: [UInt8] = [
+        0x48, 0xF7, 0x64, 0x24, 0x08,
+        0x4C, 0x89, 0x9E, 0xC8, 0x00, 0x00, 0x00,
+      ]
+      let cases = [
+        MultiplyCase(
+          bytes: measuredBytes,
+          registers: .init(
+            rax: 0xFFFF_FFFF_FFFF_FFFE,
+            rdx: 0xDEAD,
+            rsp: 0x800,
+            rsi: 0x1000,
+            r11: 0x8877_6655_4433_2211
+          ),
+          sourceAddress: 0x808,
+          instructionCount: 2,
+          comment: "measured memory MUL and qword store"
+        ),
+        MultiplyCase(
+          bytes: [0x48, 0xF7, 0x20],
+          registers: .init(rax: 0x800, rdx: 0xDEAD),
+          sourceAddress: 0x800,
+          instructionCount: 1,
+          comment: "memory MUL address aliases RAX"
+        ),
+        MultiplyCase(
+          bytes: [0x48, 0xF7, 0x22],
+          registers: .init(rax: UInt64.max, rdx: 0x800),
+          sourceAddress: 0x800,
+          instructionCount: 1,
+          comment: "memory MUL address aliases RDX"
+        ),
+      ]
+      let sourceValue: UInt64 = 3
+
+      for (index, testCase) in cases.enumerated() {
+        let codeAddress = UInt64(0x400 + index * 0x20)
+        let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x3000)
+        let tier1Memory = try DoryX86ByteArrayMemory(byteCount: 0x3000)
+        let sourceBytes = (0..<8).map {
+          UInt8(truncatingIfNeeded: sourceValue >> UInt64($0 * 8))
+        }
+        for memory in [interpretedMemory, tier1Memory] {
+          try memory.write(at: codeAddress, bytes: testCase.bytes)
+          try memory.write(at: testCase.sourceAddress, bytes: sourceBytes)
+        }
+        let initial = try DoryX86ArchitecturalState(
+          registers: testCase.registers,
+          rip: codeAddress,
+          rflags: [.reservedOne, .parity, .auxiliaryCarry, .zero, .sign, .direction]
+        )
+        var interpreted = initial
+        for _ in 0..<testCase.instructionCount {
+          guard case .retired = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: interpretedMemory,
+            mode: .long64
+          ) else {
+            Issue.record(Comment(rawValue: "interpreter failed \(testCase.comment)"))
+            return
+          }
+        }
+
+        var tier1 = initial
+        let execution = try #require(DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: true
+        ).execute(
+          bytes: testCase.bytes,
+          at: codeAddress,
+          mode: .long64,
+          addressSpaceID: UInt64(index),
+          maximumInstructions: testCase.instructionCount,
+          state: &tier1,
+          memory: tier1Memory
+        ))
+
+        #expect(execution.block.tier == .tier1, Comment(rawValue: testCase.comment))
+        #expect(tier1 == interpreted, Comment(rawValue: testCase.comment))
+        #expect(
+          tier1Memory.snapshot() == interpretedMemory.snapshot(),
+          Comment(rawValue: testCase.comment)
+        )
+      }
+    #endif
+  }
+
+  @Test func failedMeasuredMultiplyStoreCallbacksLeaveStateAndMemoryRestartable() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [
+        0x48, 0xF7, 0x64, 0x24, 0x08,
+        0x4C, 0x89, 0x9E, 0xC8, 0x00, 0x00, 0x00,
+      ]
+      let cases: [DoryX86GeneralRegisters] = [
+        .init(rax: 7, rsp: 0x1000, rsi: 0x200, r11: 0xA5A5),
+        .init(rax: 7, rsp: 0x200, rsi: 0x1000, r11: 0xA5A5),
+      ]
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        tier1Enabled: true
+      )
+
+      for (index, registers) in cases.enumerated() {
+        let initial = try DoryX86ArchitecturalState(
+          registers: registers,
+          rip: 0x700,
+          rflags: [.reservedOne, .carry, .direction]
+        )
+        var state = initial
+        let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+        if index == 1 {
+          try memory.write(at: 0x208, bytes: Array(repeating: 0x03, count: 8))
+        }
+        let initialMemory = memory.snapshot()
+        let execution = try #require(executor.execute(
+          bytes: bytes,
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: UInt64(index),
+          maximumInstructions: 2,
           state: &state,
           memory: memory
         ))

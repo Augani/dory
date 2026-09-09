@@ -16,7 +16,12 @@ struct DoryARM64Tier1Emitter: Sendable {
     var wroteMemory = false
     for statement in block.statements {
       switch statement {
-      case .copy(_, .memory):
+      case .copy(.memory, _):
+        guard !wroteMemory else { return nil }
+        memoryCallbackCount += 1
+        requiresMemoryCallbacks = true
+        wroteMemory = true
+      case .copy(_, .memory), .unsignedAccumulatorMultiply(.memory):
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
@@ -54,27 +59,39 @@ struct DoryARM64Tier1Emitter: Sendable {
     for statement in block.statements {
       switch statement {
       case .copy(let destination, let source):
-        guard let destination = lowRegister(destination) else { return nil }
-        switch source {
-        case .memory(let address, let width):
-          guard width == destination.width,
-            alu.emitMemoryLoad(
-              width: width,
-              destinationGuestRegister: Int(destination.index),
+        if case .memory(let address, let width) = destination {
+          guard width == .i64,
+            let source = lowRegister(source), source.width == width,
+            alu.emitMemoryStore(
+              sourceGuestRegister: Int(source.index),
               address: address,
               into: &body
             )
           else { return nil }
           nativeFlags = nil
-        default:
-          guard let source = lowSource(source, matching: destination.width),
-            alu.emitCopy(
-              width: destination.width,
-              destinationGuestRegister: Int(destination.index),
-              source: source,
-              into: &body
-            )
-          else { return nil }
+        } else {
+          guard let destination = lowRegister(destination) else { return nil }
+          switch source {
+          case .memory(let address, let width):
+            guard width == destination.width,
+              alu.emitMemoryLoad(
+                width: width,
+                destinationGuestRegister: Int(destination.index),
+                address: address,
+                into: &body
+              )
+            else { return nil }
+            nativeFlags = nil
+          default:
+            guard let source = lowSource(source, matching: destination.width),
+              alu.emitCopy(
+                width: destination.width,
+                destinationGuestRegister: Int(destination.index),
+                source: source,
+                into: &body
+              )
+            else { return nil }
+          }
         }
 
       case .binary(let operation, let destination, let source, let writesDestination):
@@ -411,14 +428,21 @@ struct DoryARM64Tier1Emitter: Sendable {
         nativeFlags = nil
 
       case .unsignedAccumulatorMultiply(let source):
-        guard let source = lowRegister(source),
-          source.width == .i32 || source.width == .i64,
-          alu.emitUnsignedAccumulatorMultiply(
-            width: source.width,
-            sourceGuestRegister: Int(source.index),
-            into: &body
-          )
-        else { return nil }
+        switch source {
+        case .memory(let address, let width):
+          guard width == .i64,
+            alu.emitMemoryUnsignedAccumulatorMultiply(address: address, into: &body)
+          else { return nil }
+        default:
+          guard let source = lowRegister(source),
+            source.width == .i32 || source.width == .i64,
+            alu.emitUnsignedAccumulatorMultiply(
+              width: source.width,
+              sourceGuestRegister: Int(source.index),
+              into: &body
+            )
+          else { return nil }
+        }
         nativeFlags = nil
 
       default:

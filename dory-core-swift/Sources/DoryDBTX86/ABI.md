@@ -204,6 +204,16 @@ share the replay and rollback contract above. Wider memory-destination,
 memory-writing, and atomic ALU forms remain outside tier 1 pending dedicated
 qualification or an inline transactional write path.
 
+The measured qword accumulator MUL memory-source form reads and stages its
+operand before publishing RDX:RAX or replacing CF/OF. Effective addresses based
+on the old RAX or RDX therefore remain exact. A qword register-to-memory MOV may
+terminate the same block through the transactional write callback; it resolves
+pending flags before borrowing the lazy-payload words for address and value
+staging. A MUL-read followed by that store requires replay-safe scalar memory,
+and failure at either callback rolls the complete block back. Narrower
+memory-source accumulator MUL and narrower or immediate memory stores remain
+outside tier 1 until independently measured and qualified.
+
 ## Helper-call shim
 
 A C helper may clobber `x0`...`x18` and NZCV. A generated shim therefore:
