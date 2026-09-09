@@ -1,0 +1,162 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-memory-push",
+  "observedAt": "2026-09-09T14:40:16Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and bounded performance evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "implementationCommit": "bf82e7ab9b14cff18ec36202e1f07985af121bbf",
+    "runnerBuildCommit": "ca259cfe5b60da71d37208225a24075e75b7cc88",
+    "runnerBuildEquivalence": "The amended implementation commit changes only the measured-address test fixture; production sources are identical to the runner build commit.",
+    "parentCommit": "05d91e2a2219ac6260ad778f25549a6673dd9b14",
+    "parentRunnerSHA256": "e8340ecaf5c6fc4da4f0f8988b946e8c90c74f50a19e6d8b3d475edc2a017170",
+    "candidateRunnerSHA256": "34e3299dca99deb25051c86de29744881b0b190b9843e5b464f12594462e4bcd",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "operation": "long-mode qword PUSH from a scalar memory source",
+    "callbacks": "restartable scalar read followed by transactional scalar write",
+    "ordering": "the source is read through the old register image before RSP is decremented, including RSP-relative and source/destination-aliasing forms",
+    "measuredSites": [
+      {
+        "guestRIP": "0xffffffff8100176d",
+        "symbol": "swapgs_restore_regs_and_return_to_usermode",
+        "instruction": "pushq 0x20(%rdi)",
+        "priorNegativeCacheHits": 3243
+      },
+      {
+        "guestRIP": "0xffffffff81001770",
+        "symbol": "swapgs_restore_regs_and_return_to_usermode",
+        "instruction": "pushq 0x18(%rdi)",
+        "priorNegativeCacheHits": 3096
+      },
+      {
+        "guestRIP": "0xffffffff81001773",
+        "symbol": "swapgs_restore_regs_and_return_to_usermode",
+        "instruction": "pushq 0x10(%rdi)",
+        "priorNegativeCacheHits": 4790
+      }
+    ],
+    "priorVisibleHitsRemoved": 11129,
+    "deferred": "non-qword memory PUSH IR, memory SETcc, and memory read-modify-write forms"
+  },
+  "verification": {
+    "tier1Suite": "37 tests passed",
+    "dbtAndPCGate": "1,435 tests in 171 suites passed; one pinned PVH environment test skipped because its environment variables were absent",
+    "differentialCoverage": "Ordinary base-plus-displacement, old-RSP-relative, and source/destination-aliasing PUSH forms match the interpreter in architectural state and memory.",
+    "rollbackCoverage": "A failed source read and a failed destination write after a successful read both preserve the original architectural state and memory.",
+    "negativeAdmissionCoverage": "A direct non-qword memory PUSH IR fixture remains a tier-one decline.",
+    "inputHashesReverifiedByEveryRunnerInvocation": true
+  },
+  "fullRun": {
+    "runID": "3e0de5e5-2905-49ce-884c-3841784415d6",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 147529939667,
+    "retiredInstructions": 734484716,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19247,
+    "baselineJITInstructions": 731571713,
+    "interpreterInstructions": 2913003,
+    "deliveredMaskableInterrupts": 58096,
+    "retiredInterruptReturns": 146310,
+    "compiledBlocks": 186008,
+    "tier1CompilationAttempts": 229174,
+    "tier1CompilationDeclines": 130204,
+    "tier1CompiledBlocks": 98970,
+    "lazyFlagMaterializations": 60523592,
+    "nativeTraceAttempts": 673763,
+    "nativeTraceReplays": 463089,
+    "measuredPushSitesRemainInNegativeCache": false
+  },
+  "boundedAB": {
+    "purpose": "Separate candidate cost from the unmatched full-run wall-time swing.",
+    "order": [
+      "parent",
+      "candidate",
+      "candidate",
+      "parent",
+      "parent",
+      "candidate"
+    ],
+    "maximumInstructionsPerTrial": 200000000,
+    "wallSecondsPerTrial": 180,
+    "requestedWorkload": "bootstrap.filesystems",
+    "expectedOutcome": "instruction-budget before userspace; timing evidence only",
+    "parentTrials": [
+      {
+        "runID": "e16396c1-87eb-42a4-9685-f34c3d35dbb9",
+        "elapsedNanoseconds": 37144907125
+      },
+      {
+        "runID": "7c2b25b4-074b-42f3-814f-c91e0893bb25",
+        "elapsedNanoseconds": 37999589000
+      },
+      {
+        "runID": "7e29a7a3-18a0-4a15-b8ad-67ac0869d9d5",
+        "elapsedNanoseconds": 38178665667
+      }
+    ],
+    "candidateTrials": [
+      {
+        "runID": "999f5c7d-40d3-4462-b315-8914979e16c9",
+        "elapsedNanoseconds": 37247306041
+      },
+      {
+        "runID": "57b27afb-7ee2-44d1-a9ad-b6a62409108a",
+        "elapsedNanoseconds": 37696069541
+      },
+      {
+        "runID": "f2bf3e85-88c8-4e27-a75b-4e4fd10ffa76",
+        "elapsedNanoseconds": 38057524334
+      }
+    ],
+    "parentMedianNanoseconds": 37999589000,
+    "candidateMedianNanoseconds": 37696069541,
+    "elapsedReductionPercent": 0.798744057469,
+    "speedupRatio": 1.008051753477,
+    "throughputIncreasePercent": 0.805175347711,
+    "interpretation": "The balanced bounded comparison shows no measurable regression and a small directional improvement; it is not a statistical performance claim."
+  },
+  "unmatchedFullRunComparison": {
+    "priorElapsedNanoseconds": 134193528792,
+    "candidateElapsedNanoseconds": 147529939667,
+    "candidateSlowerPercent": 9.93819224746,
+    "interpretation": "The single sequential full runs differ in dynamic instruction and interrupt totals and are not a matched performance comparison. The balanced fixed-instruction A/B is the retained directional measurement."
+  },
+  "interpretation": "The bounded qword memory-PUSH slice removes the three selected measured native-emitter declines, preserves restartability across both callbacks, passes a complete userspace workload run, and does not regress the balanced fixed-instruction comparison. A05.2 remains open because 130,204 of 229,174 full-run tier-one attempts still declined.",
+  "limitations": [
+    "All trials ran on one local Apple M2 Pro and do not establish cross-host or hardware behavior.",
+    "The six bounded trials stop at the instruction budget before userspace and support only a directional candidate-cost comparison.",
+    "The complete workload evidence contains one candidate run; its elapsed time must not be compared statistically with an earlier single run.",
+    "The diagnostic runner marks every record releaseQualified=false; this evidence does not satisfy G1-G5."
+  ]
+}
