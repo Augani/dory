@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-byte-memory-shift",
+  "observedAt": "2026-09-09T23:23:04Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "5fe283a240c4ba144af67f37b0845f4f16807e0a",
+    "candidateRunnerSHA256": "cea29f701a2ca9eb6b879bd6c783b6d8bf346cc2f7c7b3da20fa85a3f44e0e1c",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "guestRIP": "0xffffffff815cc28b",
+    "symbol": "free_frozen_page_commit+0x2b",
+    "guestByteCount": 3,
+    "guestInstructionCount": 1,
+    "instructionBytes": [
+      208,
+      110,
+      25
+    ],
+    "instruction": "shrb 0x19(%rsi)",
+    "lowering": "The exact byte SHR performs one replay-safe byte read, computes the result before a final transactional byte write, and publishes its lazy SHR flags descriptor only after the write succeeds.",
+    "boundedRule": "The measured RIP, complete three-byte single instruction, logical-right operation, byte width, immediate count one, RSI base, 0x19 displacement, and 64-bit address width must all match. An adjacent RIP or changed displacement declines.",
+    "priorNegativeCacheHits": 5039,
+    "remainsInCandidateRunNegativeCache": false
+  },
+  "verification": {
+    "focusedGate": "The exact byte memory-SHR block passes its tier-one differential and rejected-write matrix.",
+    "dbtPCAndRunnerGate": "1,496 tests in 175 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Input bytes 0x00, 0x01, 0x80, and 0xff match the interpreter for complete state, resulting memory, and defined SHR-by-one flags.",
+    "faultCoverage": "A forced final-write rejection preserves complete block-entry state and memory after exactly one write attempt.",
+    "negativeCoverage": "An adjacent RIP and a changed displacement both decline tier one.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "312dd5f5-c0c8-45cb-b717-e6ddab281a8e",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 142971260625,
+    "retiredInstructions": 733386471,
+    "throughputMIPS": 5.129607641381877,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731040721,
+    "interpreterInstructions": 2345750,
+    "deliveredMaskableInterrupts": 57924,
+    "retiredInterruptReturns": 146103,
+    "compiledBlocks": 184839,
+    "tier1CompilationAttempts": 216615,
+    "tier1CompilationDeclines": 115383,
+    "tier1DeclinePercentOfAttempts": 53.266394294023954,
+    "tier1CompiledBlocks": 101232,
+    "lazyFlagMaterializations": 54644140,
+    "translationCacheInvalidations": 246568
+  },
+  "unmatchedPriorRunComparison": {
+    "patchedMemoryBTRElapsedNanoseconds": 153000422833,
+    "byteMemorySHRElapsedNanoseconds": 142971260625,
+    "directionalElapsedDecreasePercent": 6.554989863620725,
+    "tier1AttemptDecrease": 2069,
+    "tier1DeclineDecrease": 1157,
+    "tier1CompiledBlockDecrease": 912,
+    "interpreterInstructionDecrease": 15250,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. Exact-site absence establishes production use; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleSites": [
+    {
+      "guestRIP": "0xffffffff81722852",
+      "symbol": "kernfs_activate_one+0x12",
+      "instructionBytes": [
+        102,
+        131,
+        75,
+        60,
+        16
+      ],
+      "instruction": "orw $0x10,0x3c(%rbx)",
+      "hitCount": 13241,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff813cd9a6",
+      "instructionBytes": [
+        243,
+        72,
+        165
+      ],
+      "instruction": "rep movsq",
+      "visibleHitsAcrossAddressSpaces": 13726,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff810017e8",
+      "symbol": "native_irq_return_iret",
+      "instructionBytes": [
+        72,
+        207
+      ],
+      "instruction": "iretq",
+      "visibleHitsAcrossAddressSpaces": 8284,
+      "declineReason": "interpreterHelper"
+    }
+  ],
+  "interpretation": "The exact 5,039-hit byte memory-SHR site is absent from the candidate's capped live negative-cache sample. A05.2 remains open because 115,383 of 216,615 tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
