@@ -1,3 +1,4 @@
+import DoryJITRuntimeC
 import Foundation
 
 public struct DoryX86Exception: Error, Codable, Sendable, Hashable {
@@ -8966,13 +8967,12 @@ public struct DoryX86Interpreter: Sendable {
 /// Callers must acquire this gate before entering memory implementation locks.
 final class DoryX86AtomicGate: @unchecked Sendable {
   static let shared = DoryX86AtomicGate()
-  private let lock = NSLock()
 
   private init() {}
 
   func withLock<Result>(_ operation: () throws -> Result) rethrows -> Result {
-    lock.lock()
-    defer { lock.unlock() }
+    dory_jit_atomic_lock()
+    defer { dory_jit_atomic_unlock() }
     return try operation()
   }
 
@@ -8980,8 +8980,8 @@ final class DoryX86AtomicGate: @unchecked Sendable {
     state: inout State,
     _ operation: (inout State) throws -> Result
   ) rethrows -> Result {
-    lock.lock()
-    defer { lock.unlock() }
+    dory_jit_atomic_lock()
+    defer { dory_jit_atomic_unlock() }
     return try operation(&state)
   }
 }

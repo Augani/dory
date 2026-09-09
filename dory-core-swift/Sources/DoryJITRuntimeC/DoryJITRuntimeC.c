@@ -16,6 +16,7 @@ enum {
 };
 
 static const uint64_t dory_jit_tlb_maximum_generation = (UINT64_C(1) << 28) - 1;
+static pthread_mutex_t dory_jit_atomic_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 struct dory_jit_tlb {
     uint32_t magic;
@@ -314,6 +315,136 @@ uintptr_t dory_jit_tlb_resolve_from_context_address(void) {
         );
         uintptr_t address;
     } resolver = {.function = dory_jit_tlb_resolve_from_context};
+    return resolver.address;
+}
+
+void dory_jit_atomic_lock(void) {
+    (void)pthread_mutex_lock(&dory_jit_atomic_mutex);
+}
+
+void dory_jit_atomic_unlock(void) {
+    (void)pthread_mutex_unlock(&dory_jit_atomic_mutex);
+}
+
+static uint64_t dory_jit_atomic_compare_exchange(
+    void *host_address,
+    uint64_t expected,
+    uint64_t desired,
+    uint32_t byte_count
+) {
+    switch (byte_count) {
+        case 1: {
+            uint8_t value = (uint8_t)expected;
+            (void)__atomic_compare_exchange_n(
+                (uint8_t *)host_address,
+                &value,
+                (uint8_t)desired,
+                0,
+                __ATOMIC_SEQ_CST,
+                __ATOMIC_SEQ_CST
+            );
+            return value;
+        }
+        case 2: {
+            uint16_t value = (uint16_t)expected;
+            (void)__atomic_compare_exchange_n(
+                (uint16_t *)host_address,
+                &value,
+                (uint16_t)desired,
+                0,
+                __ATOMIC_SEQ_CST,
+                __ATOMIC_SEQ_CST
+            );
+            return value;
+        }
+        case 4: {
+            uint32_t value = (uint32_t)expected;
+            (void)__atomic_compare_exchange_n(
+                (uint32_t *)host_address,
+                &value,
+                (uint32_t)desired,
+                0,
+                __ATOMIC_SEQ_CST,
+                __ATOMIC_SEQ_CST
+            );
+            return value;
+        }
+        default: {
+            uint64_t value = expected;
+            (void)__atomic_compare_exchange_n(
+                (uint64_t *)host_address,
+                &value,
+                desired,
+                0,
+                __ATOMIC_SEQ_CST,
+                __ATOMIC_SEQ_CST
+            );
+            return value;
+        }
+    }
+}
+
+int dory_jit_atomic_compare_exchange_from_context(
+    const uint64_t *context,
+    void *memory_context,
+    uint64_t linear_address,
+    uint64_t expected,
+    uint64_t desired,
+    uint32_t byte_count,
+    uint64_t *observed_out
+) {
+    if (context == NULL || observed_out == NULL ||
+        (byte_count != 1 && byte_count != 2 && byte_count != 4 && byte_count != 8)) {
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
+    if ((linear_address & UINT64_C(0xfff)) > UINT64_C(4096) - byte_count) {
+        return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
+    }
+
+    dory_jit_tlb_resolution resolution = {0};
+    const int result = dory_jit_tlb_resolve_from_context(
+        context,
+        memory_context,
+        DORY_JIT_TLB_ACCESS_WRITE,
+        linear_address,
+        byte_count,
+        &resolution
+    );
+    if (result != 0) {
+        return DORY_JIT_ATOMIC_RESOLUTION_ERROR;
+    }
+    if (resolution.status == DORY_JIT_TLB_RESOLUTION_PAGE_FAULT) {
+        return DORY_JIT_ATOMIC_RESOLUTION_PAGE_FAULT;
+    }
+    if (resolution.status == DORY_JIT_TLB_RESOLUTION_FALLBACK ||
+        (resolution.host_address & (byte_count - 1)) != 0) {
+        return DORY_JIT_ATOMIC_RESOLUTION_FALLBACK;
+    }
+
+    dory_jit_atomic_lock();
+    *observed_out = dory_jit_atomic_compare_exchange(
+        (void *)(uintptr_t)resolution.host_address,
+        expected,
+        desired,
+        byte_count
+    );
+    dory_jit_atomic_unlock();
+    return DORY_JIT_ATOMIC_RESOLUTION_SUCCESS;
+}
+
+uintptr_t dory_jit_atomic_compare_exchange_from_context_address(void) {
+    union {
+        int (*function)(
+            const uint64_t *,
+            void *,
+            uint64_t,
+            uint64_t,
+            uint64_t,
+            uint32_t,
+            uint64_t *
+        );
+        uintptr_t address;
+    } resolver = {.function = dory_jit_atomic_compare_exchange_from_context};
     return resolver.address;
 }
 

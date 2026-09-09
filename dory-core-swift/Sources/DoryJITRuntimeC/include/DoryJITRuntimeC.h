@@ -31,6 +31,13 @@ typedef struct dory_jit_tlb_resolution {
     uint32_t fault_error_code;
     uint32_t status;
 } dory_jit_tlb_resolution;
+
+typedef enum dory_jit_atomic_resolution_status {
+    DORY_JIT_ATOMIC_RESOLUTION_SUCCESS = 0,
+    DORY_JIT_ATOMIC_RESOLUTION_PAGE_FAULT = 1,
+    DORY_JIT_ATOMIC_RESOLUTION_FALLBACK = 2,
+    DORY_JIT_ATOMIC_RESOLUTION_ERROR = 3,
+} dory_jit_atomic_resolution_status;
 typedef uint64_t (*dory_jit_memory_read_function)(
     void *memory_context,
     uint64_t address,
@@ -121,6 +128,18 @@ int dory_jit_tlb_resolve_from_context(
     dory_jit_tlb_resolution *resolution_out
 );
 uintptr_t dory_jit_tlb_resolve_from_context_address(void);
+void dory_jit_atomic_lock(void);
+void dory_jit_atomic_unlock(void);
+int dory_jit_atomic_compare_exchange_from_context(
+    const uint64_t *context,
+    void *memory_context,
+    uint64_t linear_address,
+    uint64_t expected,
+    uint64_t desired,
+    uint32_t byte_count,
+    uint64_t *observed_out
+);
+uintptr_t dory_jit_atomic_compare_exchange_from_context_address(void);
 
 // Implemented by DoryDBTX86 and called only through dory_jit_tlb_resolve's C boundary.
 int32_t dory_x86_jit_translate(
