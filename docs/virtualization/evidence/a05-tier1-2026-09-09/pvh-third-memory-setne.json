@@ -1,0 +1,112 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-third-memory-setne",
+  "observedAt": "2026-09-09T22:34:03Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "44588a1b0",
+    "candidateRunnerSHA256": "296badf34beb7268c9e4e507cc51bf8bca3d5a41934a4bd8f17a1841ae078386",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "operation": "measured byte memory SETNE",
+    "guestRIP": "0xffffffff812df2df",
+    "symbol": "lookup_address_in_pgd_attr+0x15f",
+    "instructionBytes": [15, 149, 3],
+    "instruction": "setne (rbx)",
+    "lowering": "The exact site reuses the production-qualified flag materialization and transactional byte-write callback path.",
+    "boundedRule": "The measured RIP, one-instruction three-byte block, SETNE condition, byte width, and RBX base must all match. An adjacent RIP declines.",
+    "priorNegativeCacheHits": 11623,
+    "remainsInCandidateRunNegativeCache": false
+  },
+  "verification": {
+    "focusedGate": "Both additional exact memory-SETNE sites pass the tier-one differential matrix.",
+    "dbtPCAndRunnerGate": "1,492 tests in 175 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Both zero-flag outcomes match the interpreter for complete architectural state, destination byte, and full memory image.",
+    "negativeCoverage": "Identical bytes at an adjacent RIP decline tier one.",
+    "restartabilityCoverage": "The shared transactional memory-SETcc emitter retains failed-write rollback coverage.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "374e0b6c-2419-44b1-be28-4d878b12ad6e",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 147528386125,
+    "retiredInstructions": 733600078,
+    "throughputMIPS": 4.973,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731230219,
+    "interpreterInstructions": 2369859,
+    "deliveredMaskableInterrupts": 57961,
+    "retiredInterruptReturns": 146145,
+    "compiledBlocks": 186014,
+    "tier1CompilationAttempts": 220143,
+    "tier1CompilationDeclines": 118082,
+    "tier1DeclinePercentOfAttempts": 53.63877116238081,
+    "tier1CompiledBlocks": 102061,
+    "lazyFlagMaterializations": 54836547,
+    "translationCacheInvalidations": 240900
+  },
+  "unmatchedPriorRunComparison": {
+    "dwordExchangeElapsedNanoseconds": 139351198417,
+    "thirdMemorySetNEElapsedNanoseconds": 147528386125,
+    "directionalElapsedIncreasePercent": 5.868042615270708,
+    "tier1AttemptIncrease": 850,
+    "tier1DeclineIncrease": 691,
+    "tier1CompiledBlockIncrease": 159,
+    "interpreterInstructionDecrease": 45296,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. Exact-site absence establishes production use; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleSites": [
+    {
+      "guestRIP": "aslr-dependent-userspace",
+      "instructionBytes": [243, 15, 111, 6],
+      "instruction": "movdqu xmm0,(rsi)",
+      "hitCount": 53376,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "aslr-dependent-userspace",
+      "instructionBytes": [15, 17, 71, 240],
+      "instruction": "movups xmmword ptr [rdi-0x10],xmm0",
+      "hitCount": 22624,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff815e3559",
+      "symbol": "__slab_free+0x69",
+      "instructionBytes": [102, 68, 43, 100, 36, 20],
+      "instruction": "subw 0x14(rsp),r12w",
+      "blockGuestByteCount": 11,
+      "hitCount": 3687,
+      "declineReason": "nativeEmitter"
+    }
+  ],
+  "interpretation": "The exact 11,623-hit SETNE site is absent from the candidate's capped live negative-cache sample. A05.2 remains open because 118,082 of 220,143 tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
