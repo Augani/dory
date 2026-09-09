@@ -482,6 +482,53 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Executes the measured `shrb $1,0x19(%rsi)` read/modify/write. The original byte remains in
+  /// the temporary RIP slot across the transactional write callback, allowing the lazy shift
+  /// record to be published only after the write succeeds. A rejected write therefore leaves the
+  /// caller's architectural state and memory fully restartable.
+  func emitMeasuredByteLogicalShiftRightOne(
+    address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    guard Self.emitMemoryRead(width: .i8, address: address, into: &fragment),
+      Self.emitMemoryAddress(address, into: &fragment)
+    else { return false }
+
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    fragment.append(Self.encodeLoad64(register: 17, word: .rip))
+    Self.emitImmediate(1, register: 26, into: &fragment)
+    fragment.append(
+      Self.encodeVariableShift(
+        .logicalRight, is64Bit: true, value: 17, count: 26, destination: 17))
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+    Self.emitStagedMemoryWrite(byteCount: 1, into: &fragment)
+
+    fragment.append(Self.encodeLoad64(register: 16, word: .rip))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    fragment.append(Self.encodeStore64(register: 31, word: .lazyFlagsSource2))
+    Self.emitImmediate(1, register: 17, into: &fragment)
+    fragment.append(
+      Self.encodeVariableShift(
+        .logicalRight, is64Bit: true, value: 16, count: 17, destination: 16))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
+    Self.emitImmediate(UInt64(DoryIRIntegerWidth.i8.rawValue), register: 17, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
+    Self.emitImmediate(
+      DoryARM64LazyFlagsState.Operation.logicalShiftRight.rawValue,
+      register: 26,
+      into: &fragment
+    )
+    Self.emitImmediate(1, register: 16, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: 26, right: 16, shiftAmount: 8, destination: 26))
+    fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Performs the mandatory source read for a dword/qword memory CMOV before evaluating the
   /// predicate. A false CMOV therefore still faults; dword forms apply the architecture's
   /// destination zero-extension on either predicate outcome.

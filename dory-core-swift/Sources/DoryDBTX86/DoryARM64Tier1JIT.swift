@@ -26,6 +26,7 @@ struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredCR3WriteRAXRIP: UInt64 = 0xFFFF_FFFF_8100_1B43
   private static let measuredCR3WriteRDIRIP: UInt64 = 0xFFFF_FFFF_8100_17B7
   private static let measuredSlabFreeWordSubtractStoreRIP: UInt64 = 0xFFFF_FFFF_815E_3559
+  private static let measuredFreeFrozenPageByteShiftRIP: UInt64 = 0xFFFF_FFFF_815C_C28B
   private let boundary = DoryARM64Tier1BoundaryEmitter()
   private let alu = DoryARM64Tier1ALUEmitter()
 
@@ -76,6 +77,11 @@ struct DoryARM64Tier1Emitter: Sendable {
         requiresMemoryCallbacks = true
         wroteMemory = true
       case .binary where Self.isMeasuredPatchedByteXORBlock(block):
+        guard !wroteMemory else { return nil }
+        memoryCallbackCount += 2
+        requiresMemoryCallbacks = true
+        wroteMemory = true
+      case .shift where Self.isMeasuredFreeFrozenPageByteShiftBlock(block):
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 2
         requiresMemoryCallbacks = true
@@ -323,6 +329,16 @@ struct DoryARM64Tier1Emitter: Sendable {
         else { return nil }
 
       case .shift(let operation, let destination, let count):
+        if case .memory(let address, let width) = destination {
+          guard Self.isMeasuredFreeFrozenPageByteShiftBlock(block),
+            operation == .logicalRight,
+            width == .i8,
+            count == .immediate(1),
+            alu.emitMeasuredByteLogicalShiftRightOne(address: address, into: &body)
+          else { return nil }
+          nativeFlags = nil
+          continue
+        }
         guard let destination = lowRegister(destination),
           alu.emitShift(
             operation,
@@ -706,6 +722,28 @@ struct DoryARM64Tier1Emitter: Sendable {
       let statement = block.statements.first
     else { return false }
     return isMeasuredPatchedByteXOR(statement)
+  }
+
+  private static func isMeasuredFreeFrozenPageByteShiftBlock(
+    _ block: DoryIRBasicBlock
+  ) -> Bool {
+    guard block.guestStart == measuredFreeFrozenPageByteShiftRIP,
+      block.guestByteCount == 3,
+      block.guestInstructionCount == 1,
+      block.statements.count == 1,
+      case .shift(
+        .logicalRight,
+        .memory(let address, let width),
+        .immediate(1)
+      ) = block.statements[0]
+    else { return false }
+    return width == .i8
+      && address
+        == .init(
+          base: .init(bank: "x86.gpr", index: 6, width: .i64),
+          displacement: 0x19,
+          addressWidth: .i64
+        )
   }
 
   private static func isMeasuredMemorySetConditionBlock(_ block: DoryIRBasicBlock) -> Bool {
