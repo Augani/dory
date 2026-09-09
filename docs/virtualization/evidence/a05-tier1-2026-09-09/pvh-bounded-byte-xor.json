@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-bounded-byte-xor",
+  "observedAt": "2026-09-09T15:59:32Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and bounded production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "lockedImplementationCommit": "12d487ef37e35c79a2b892f1540a65e1efe252c1",
+    "patchedCompanionCommit": "d049a355dda1b0b35c384fdbe2aeeb6477e04814",
+    "admissionBoundaryCommit": "3fa3cf2797306024d5c46b32f3d90da58cf9b992",
+    "parentCommit": "c7a336d3f241552f89b8f666b396429044a2322d",
+    "candidateRunnerSHA256": "251a902152cd34c0fe50a9dd8f7f1dc548ff6965628417ead091a438942eec50",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "measuredSite": {
+      "guestRIP": "0xffffffff8153a159",
+      "symbol": "filemap_map_pages+0x1f9",
+      "guestByteCount": 5,
+      "originalInstruction": "lock xorb $0x1,0(%rbp)",
+      "originalBytes": "f0 80 75 00 01",
+      "patchedInstruction": "ds xorb $0x1,0(%rbp)",
+      "patchedBytes": "3e 80 75 00 01",
+      "priorPatchedNegativeCacheHits": 2237,
+      "remainsInBoundedRunNegativeCache": false
+    },
+    "kernelPatchEvidence": {
+      "smpLocksEntry": "0xffffffff832d4a14",
+      "entryRawLittleEndian": "45 57 26 fe",
+      "signedRelativeOffset": -31041723,
+      "resolvedTarget": "0xffffffff8153a159",
+      "alternativesPatchInstruction": "alternatives_smp_module_add+0x155 stores byte 0x3e before text_poke_early",
+      "interpretation": "The pinned Linux image registers the measured lock prefix for SMP alternatives and replaces 0xf0 with the same-length 0x3e DS prefix in the uniprocessor guest."
+    },
+    "lockedSemantics": "one compare-exchange callback loop through the shared x86 atomic gate, followed by an eight-bit logical lazy-flags record",
+    "patchedSemantics": "one replay-safe byte read followed by a final transactional byte write, followed by the same logical lazy-flags record",
+    "boundedRule": "The patched non-atomic form is admissible only when the complete block starts at 0xffffffff8153a159 and contains exactly the measured five bytes, one guest instruction, and one IR statement.",
+    "deferred": "the same non-atomic operation at every other RIP, other byte immediates or sources, other widths, and all other memory-writing ALU forms"
+  },
+  "verification": {
+    "focusedGate": "43 tests in DoryARM64Tier1JITTests passed",
+    "dbtAndPCGate": "1,441 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent",
+    "differentialCoverage": "Both f0 and 3e encodings match the interpreter across initial bytes 0x00, 0x01, 0x7f, 0x80, and 0xff, including architectural flags and high-canonical effective addresses.",
+    "rollbackCoverage": "An atomic callback failure and a patched-form failed read or failed write preserve the original architectural state and memory.",
+    "concurrencyCoverage": "Three mixed interpreter/tier-one workers perform 195 locked toggles through one physical byte and observe the expected single-copy result.",
+    "negativeAdmissionCoverage": "Immediate two, register-source, and word forms decline in both prefix images; the exact patched operation also declines at the adjacent RIP.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "rejectedBroadAdmissionDiagnostic": {
+    "status": "rejected after production correctness failure",
+    "runnerSHA256": "aa74e02638378aa007196872473afc494af9627ee588928b94a8f5f5e19206bb",
+    "runID": "c5ddf044-61ec-46a4-bc98-683a2cf0db78",
+    "elapsedNanoseconds": 124911413500,
+    "retiredInstructions": 631779500,
+    "outcome": "guest-reset",
+    "failure": "NX-protected init-text instruction fetch at 0xffffffff830c96ac while free_init_pages was setting init memory non-executable; the fatal exception in an interrupt reset the guest before its receipt",
+    "tier1CompilationAttempts": 141199,
+    "tier1CompilationDeclines": 79452,
+    "tier1CompiledBlocks": 61747,
+    "interpretation": "Matching only the decoded byte-XOR operation admitted unrelated memory-writing sites and reproduced the prior broad memory-ALU NX panic. This run is failure evidence and is not accepted as a correctness or performance result."
+  },
+  "boundedFullRun": {
+    "runID": "a78bc2a3-18e2-4269-9648-a26a196a65f0",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 150234191625,
+    "retiredInstructions": 735741653,
+    "throughputMIPS": 4.897298311669,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19247,
+    "baselineJITInstructions": 732962251,
+    "interpreterInstructions": 2779402,
+    "deliveredMaskableInterrupts": 58174,
+    "retiredInterruptReturns": 146389,
+    "compiledBlocks": 185532,
+    "tier1CompilationAttempts": 224625,
+    "tier1CompilationDeclines": 125948,
+    "tier1DeclinePercentOfAttempts": 56.070339454647,
+    "tier1CompiledBlocks": 98677,
+    "lazyFlagMaterializations": 60440531,
+    "nativeTraceAttempts": 654664,
+    "nativeTraceReplays": 454866,
+    "measuredByteXORSiteRemainsInNegativeCache": false,
+    "nextVisibleNativeEmitterSite": {
+      "guestRIP": "0xffffffff815cab95",
+      "symbol": "__free_one_page+0x95",
+      "instruction": "sete 0x23(%rsp)",
+      "guestByteCount": 5,
+      "hitCount": 2388
+    }
+  },
+  "unmatchedFullRunComparison": {
+    "priorLockedOnlyElapsedNanoseconds": 145043152250,
+    "boundedCandidateElapsedNanoseconds": 150234191625,
+    "directionalElapsedIncreasePercent": 3.578962049896,
+    "interpretation": "The two single full runs differ in dynamic instruction, interrupt, compilation, address-space, and trace totals. The elapsed change is reported for completeness and is not a performance claim."
+  },
+  "interpretation": "The pinned Linux kernel rewrites the measured locked XOR into a DS-prefixed non-atomic form. Tier one now handles both runtime images with their distinct atomicity contracts, while the fixture-RIP boundary avoids the correctness failure exposed by generic memory-XOR admission. The measured site disappears from the visible negative cache and the authenticated workload gate powers off cleanly. A05.2 remains open because 125,948 of 224,625 full-run tier-one attempts still declined.",
+  "limitations": [
+    "The complete workload evidence contains one bounded candidate run on one local Apple M2 Pro.",
+    "The admission address is intentionally tied to the pinned kernel image and must not be generalized without separate memory-RMW qualification.",
+    "The hot-site sampler is capped and proves absence only from the retained visible list, not from every historical cache entry.",
+    "The prior and candidate full runs are unmatched dynamic executions and establish no performance delta.",
+    "The diagnostic runner marks every record releaseQualified=false; this evidence does not satisfy G1-G5."
+  ]
+}
