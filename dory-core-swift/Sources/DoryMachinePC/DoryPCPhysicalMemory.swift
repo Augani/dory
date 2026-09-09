@@ -93,7 +93,7 @@ extension DoryPCMMIODevice {
 /// interpreter, and every future JIT helper observe an identical DoryPC-v1 memory map.
 public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   DoryX86AtomicScalarMemory, DoryX86CodeGenerationMemory, DoryX86DirectHostAddressSpaceMemory,
-  DoryX86PageTableWriteTrackingMemory, @unchecked Sendable
+  DoryX86PageTableWriteTrackingMemory, DoryX86TranslatedCodeProtectionMemory, @unchecked Sendable
 {
   private enum DiagnosticCounter: Int, CaseIterable {
     case instructionFetchHelperCalls
@@ -591,6 +591,20 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
 
   public func consumePendingPageTableWrite() -> Bool {
     (ram as? any DoryX86PageTableWriteTrackingMemory)?.consumePendingPageTableWrite() ?? false
+  }
+
+  public func protectTranslatedCode(at address: UInt64, byteCount: Int) throws {
+    guard let protector = ram as? any DoryX86TranslatedCodeProtectionMemory else { return }
+    let resolved = try resolveRAM(
+      address: address,
+      byteCount: byteCount,
+      access: .instructionFetch
+    )
+    try protector.protectTranslatedCode(at: resolved.backingAddress, byteCount: byteCount)
+  }
+
+  public var protectedTranslatedCodePageCount: Int {
+    (ram as? any DoryX86TranslatedCodeProtectionMemory)?.protectedTranslatedCodePageCount ?? 0
   }
 
   /// Once the router is sealed and RAM has no device overlays, the two binary mapping searches

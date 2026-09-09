@@ -141,6 +141,25 @@ import Testing
     #expect(info.protection == VM_PROT_READ)
   }
 
+  @Test func translatedCodeProtectionRevokesWritesUntilCheckedMutationInvalidatesIt() throws {
+    let page = Int(getpagesize())
+    let memory = try DoryX86MmapMemory(validatingByteCount: page)
+    try memory.write(at: 0, bytes: [0x90])
+    let generation = try #require(try memory.codeGeneration(at: 0, byteCount: 1))
+
+    try memory.protectTranslatedCode(at: 0, byteCount: 1)
+    #expect(memory.protectedTranslatedCodePageCount == 1)
+    #expect(regionProtection(at: memory.hostAddressSpaceBase) == VM_PROT_READ)
+
+    try memory.write(at: 0, bytes: [0xCC])
+    #expect(memory.protectedTranslatedCodePageCount == 0)
+    #expect(
+      regionProtection(at: memory.hostAddressSpaceBase)
+        == VM_PROT_READ | VM_PROT_WRITE)
+    #expect(try memory.read(at: 0, byteCount: 1) == [0xCC])
+    #expect(try memory.codeGeneration(at: 0, byteCount: 1) != generation)
+  }
+
   @Test func sparseReservationRejectsReadOnlyOverlapAndOverflow() throws {
     let page = Int(getpagesize())
     for mapping in [
@@ -158,5 +177,22 @@ import Testing
         )
       }
     }
+  }
+
+
+  private func regionProtection(at rawAddress: UInt64) -> vm_prot_t? {
+    var address = mach_vm_address_t(rawAddress)
+    var size: mach_vm_size_t = 0
+    var info = vm_region_basic_info_data_64_t()
+    var count = mach_msg_type_number_t(
+      MemoryLayout<vm_region_basic_info_data_64_t>.size / MemoryLayout<integer_t>.size)
+    var objectName: mach_port_t = 0
+    let result = withUnsafeMutablePointer(to: &info) { infoPointer in
+      infoPointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+        mach_vm_region(
+          mach_task_self_, &address, &size, VM_REGION_BASIC_INFO_64, rebound, &count, &objectName)
+      }
+    }
+    return result == KERN_SUCCESS ? info.protection : nil
   }
 }

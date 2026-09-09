@@ -44,7 +44,8 @@ public struct DoryX86MmapReadOnlyMapping: Sendable, Equatable {
 /// by the host's VM system, so allocating 16 GB of guest RAM does not consume
 /// 16 GB of host physical memory — only pages that are actually touched cost RAM.
 public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMemory,
-  DoryX86DirectHostAddressSpaceMemory, DoryX86PageTableWriteTrackingMemory, @unchecked Sendable
+  DoryX86DirectHostAddressSpaceMemory, DoryX86PageTableWriteTrackingMemory,
+  DoryX86TranslatedCodeProtectionMemory, @unchecked Sendable
 {
   public let baseAddress: UInt64
   public let byteCount: Int
@@ -57,8 +58,13 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
   private var trackedPageTablePages: Set<Int> = []
   private var pageTableWalkerWriteDepth = 0
   private var pendingPageTableWrite = false
+  private var protectedCodePagesByHostPage: [Int: Set<Int>] = [:]
 
   var trackedCodePageCount: Int { lock.withLock { codePageGenerations.count } }
+
+  public var protectedTranslatedCodePageCount: Int {
+    lock.withLock { protectedCodePagesByHostPage.values.reduce(0) { $0 + $1.count } }
+  }
 
   public var hostAddressSpaceBase: UInt64 {
     UInt64(UInt(bitPattern: pointer))
@@ -367,6 +373,71 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     }
   }
 
+  public func protectTranslatedCode(at address: UInt64, byteCount: Int) throws {
+    guard byteCount > 0 else { return }
+    try lock.withLock {
+      let offset = try checkedOffset(
+        address: address,
+        byteCount: byteCount,
+        access: .instructionFetch
+      )
+      let firstPage = offset / 4_096
+      let lastPage = (offset + byteCount - 1) / 4_096
+      let hostPageByteCount = Int(getpagesize())
+      for logicalPage in firstPage...lastPage {
+        let logicalOffset = logicalPage * 4_096
+        let hostOffset = resolvedHostOffset(forLogicalOffset: logicalOffset).offset
+        let hostPage = hostOffset / hostPageByteCount
+        if protectedCodePagesByHostPage[hostPage] == nil {
+          guard
+            mprotect(
+              pointer.advanced(by: hostPage * hostPageByteCount),
+              hostPageByteCount,
+              PROT_READ
+            ) == 0
+          else {
+            throw DoryX86MemoryAllocationError.protectionFailed(
+              offset: hostPage * hostPageByteCount,
+              byteCount: hostPageByteCount,
+              errorNumber: errno
+            )
+          }
+        }
+        protectedCodePagesByHostPage[hostPage, default: []].insert(logicalPage)
+      }
+    }
+  }
+
+  private func prepareTranslatedCodePagesForWrite(offset: Int, byteCount: Int) throws {
+    guard byteCount > 0, !protectedCodePagesByHostPage.isEmpty else { return }
+    let hostPageByteCount = Int(getpagesize())
+    let firstLogicalPage = offset / 4_096
+    let lastLogicalPage = (offset + byteCount - 1) / 4_096
+    var hostPages: Set<Int> = []
+    for logicalPage in firstLogicalPage...lastLogicalPage {
+      let hostOffset = resolvedHostOffset(forLogicalOffset: logicalPage * 4_096).offset
+      hostPages.insert(hostOffset / hostPageByteCount)
+    }
+    for hostPage in hostPages {
+      guard let codePages = protectedCodePagesByHostPage[hostPage] else { continue }
+      guard
+        mprotect(
+          pointer.advanced(by: hostPage * hostPageByteCount),
+          hostPageByteCount,
+          PROT_READ | PROT_WRITE
+        ) == 0
+      else {
+        throw DoryX86MemoryAllocationError.protectionFailed(
+          offset: hostPage * hostPageByteCount,
+          byteCount: hostPageByteCount,
+          errorNumber: errno
+        )
+      }
+      protectedCodePagesByHostPage.removeValue(forKey: hostPage)
+      for codePage in codePages { codePageGenerations[codePage, default: 0] &+= 1 }
+    }
+  }
+
   public func trackPageTablePage(containing address: UInt64) {
     lock.withLock {
       guard address >= baseAddress, address - baseAddress < UInt64(byteCount) else { return }
@@ -471,6 +542,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: bytes.count, access: .write)
+    try prepareTranslatedCodePagesForWrite(offset: offset, byteCount: bytes.count)
     copyBytes(bytes, toLogicalOffset: offset)
     markCodePagesWritten(offset: offset, byteCount: bytes.count)
   }
@@ -482,6 +554,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
+    try prepareTranslatedCodePagesForWrite(offset: offset, byteCount: byteCount)
     let resolved = resolvedHostOffset(forLogicalOffset: offset)
     if byteCount <= resolved.availableByteCount {
       for index in 0..<byteCount {
@@ -510,6 +583,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     lock.lock()
     defer { lock.unlock() }
     let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
+    try prepareTranslatedCodePagesForWrite(offset: offset, byteCount: byteCount)
     let resolved = resolvedHostOffset(forLogicalOffset: offset)
     var observed: UInt64 = 0
     if byteCount <= resolved.availableByteCount {
@@ -610,7 +684,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     maximumByteCount: Int
   ) throws -> Int? {
     guard maximumByteCount > 0 else { return maximumByteCount == 0 ? 0 : nil }
-    return lock.withLock {
+    return try lock.withLock {
       guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
       let sourceDistance = sourceAddress - baseAddress
       let destinationDistance = destinationAddress - baseAddress
@@ -627,6 +701,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       guard count > 0 else { return nil }
       guard sourceOffset + count <= destinationOffset || destinationOffset + count <= sourceOffset
       else { return nil }
+      try prepareTranslatedCodePagesForWrite(offset: destinationOffset, byteCount: count)
       pointer.advanced(by: destinationResolved.offset).copyMemory(
         from: pointer.advanced(by: sourceResolved.offset), byteCount: count)
       markCodePagesWritten(offset: destinationOffset, byteCount: count)
@@ -644,7 +719,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     guard elementByteCount > 0, maximumElementCount > 0,
       maximumElementCount <= Int.max / elementByteCount
     else { return maximumElementCount == 0 ? 0 : nil }
-    return lock.withLock {
+    return try lock.withLock {
       guard sourceAddress >= baseAddress, destinationAddress >= baseAddress else { return nil }
       let sourceDistance = sourceAddress - baseAddress
       let destinationDistance = destinationAddress - baseAddress
@@ -674,6 +749,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       else {
         return nil
       }
+      try prepareTranslatedCodePagesForWrite(offset: destinationOffset, byteCount: totalBytes)
       pointer.advanced(by: destinationResolved.offset).copyMemory(
         from: pointer.advanced(by: sourceResolved.offset), byteCount: totalBytes)
       markCodePagesWritten(offset: destinationOffset, byteCount: totalBytes)
@@ -689,7 +765,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     guard !pattern.isEmpty, maximumElementCount > 0 else {
       return maximumElementCount == 0 ? 0 : nil
     }
-    return lock.withLock {
+    return try lock.withLock {
       guard destinationAddress >= baseAddress else { return nil }
       let distance = destinationAddress - baseAddress
       guard distance < UInt64(byteCount), distance <= UInt64(Int.max) else { return nil }
@@ -702,6 +778,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       )
       guard elementCount > 0 else { return nil }
       let totalBytes = elementCount * pattern.count
+      try prepareTranslatedCodePagesForWrite(offset: offset, byteCount: totalBytes)
       pattern.withUnsafeBufferPointer { buffer in
         let dest = pointer.advanced(by: resolved.offset)
         dest.copyMemory(from: buffer.baseAddress!, byteCount: pattern.count)

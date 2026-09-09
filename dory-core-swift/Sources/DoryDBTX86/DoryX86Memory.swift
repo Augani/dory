@@ -211,6 +211,14 @@ public protocol DoryX86PageTableWriteTrackingMemory: DoryX86Memory {
   func consumePendingPageTableWrite() -> Bool
 }
 
+/// Optional SMC boundary for RAM that can revoke host writes to pages backing translated guest
+/// code. Implementations restore writes before their checked mutation APIs commit and advance the
+/// affected code-generation tokens so resident translations fail validation synchronously.
+public protocol DoryX86TranslatedCodeProtectionMemory: DoryX86Memory {
+  func protectTranslatedCode(at address: UInt64, byteCount: Int) throws
+  var protectedTranslatedCodePageCount: Int { get }
+}
+
 extension DoryX86Memory {
   public func validateRead(at address: UInt64, byteCount: Int) throws {
     _ = try read(at: address, byteCount: byteCount)
