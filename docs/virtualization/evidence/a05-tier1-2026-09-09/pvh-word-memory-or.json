@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-word-memory-or",
+  "observedAt": "2026-09-09T23:32:48Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "c2325ef602e791be5533730ae2ce726d3dba612a",
+    "candidateRunnerSHA256": "0d6a03a09bbc22cb0199d2a86776bb70d4f029126ca5ab02a7130e6db22abc38",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "guestRIP": "0xffffffff81722852",
+    "symbol": "kernfs_activate_one+0x12",
+    "guestByteCount": 5,
+    "guestInstructionCount": 1,
+    "instructionBytes": [
+      102,
+      131,
+      75,
+      60,
+      16
+    ],
+    "instruction": "orw $0x10,0x3c(%rbx)",
+    "lowering": "The exact word OR performs one replay-safe word read, computes the result before a final transactional word write, and publishes its lazy logical-flags descriptor only after the write succeeds.",
+    "boundedRule": "The measured RIP, complete five-byte single instruction, OR operation, word width, immediate 0x10, RBX base, 0x3c displacement, and 64-bit address width must all match. An adjacent RIP, changed displacement, or changed immediate declines.",
+    "priorNegativeCacheHits": 13241,
+    "remainsInCandidateRunNegativeCache": false
+  },
+  "verification": {
+    "focusedGate": "The exact word memory-OR block passes its tier-one differential and rejected-write matrix.",
+    "dbtPCAndRunnerGate": "1,497 tests in 175 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Input words 0x0000, 0x0001, 0x8000, and 0xffff match the interpreter for complete state, resulting memory, and logical-operation flags.",
+    "faultCoverage": "A forced final-write rejection preserves complete block-entry state and memory after exactly one write attempt.",
+    "negativeCoverage": "An adjacent RIP, a changed displacement, and a changed immediate all decline tier one.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "4bebaa55-b101-4b06-bbd3-d732ceea5779",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 141778091083,
+    "retiredInstructions": 734176186,
+    "throughputMIPS": 5.178347235400405,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731824294,
+    "interpreterInstructions": 2351892,
+    "deliveredMaskableInterrupts": 58010,
+    "retiredInterruptReturns": 146201,
+    "compiledBlocks": 184413,
+    "tier1CompilationAttempts": 217420,
+    "tier1CompilationDeclines": 116538,
+    "tier1DeclinePercentOfAttempts": 53.600404746573446,
+    "tier1CompiledBlocks": 100882,
+    "lazyFlagMaterializations": 54747969,
+    "translationCacheInvalidations": 241387
+  },
+  "unmatchedPriorRunComparison": {
+    "byteMemorySHRElapsedNanoseconds": 142971260625,
+    "wordMemoryORElapsedNanoseconds": 141778091083,
+    "directionalElapsedDecreasePercent": 0.8345520189050931,
+    "tier1AttemptIncrease": 805,
+    "tier1DeclineIncrease": 1155,
+    "tier1CompiledBlockDecrease": 350,
+    "interpreterInstructionIncrease": 6142,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. Exact-site absence establishes production use; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleSites": [
+    {
+      "guestRIP": "0xffffffff812df1e6",
+      "symbol": "lookup_address_in_pgd_attr+0x66",
+      "instructionBytes": [
+        15,
+        149,
+        1
+      ],
+      "instruction": "setne (%rcx)",
+      "hitCount": 11649,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff81e35772",
+      "instructionBytes": [
+        243,
+        72,
+        165
+      ],
+      "instruction": "rep movsq",
+      "hitCount": 11912,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff810017e8",
+      "symbol": "native_irq_return_iret",
+      "instructionBytes": [
+        72,
+        207
+      ],
+      "instruction": "iretq",
+      "visibleHitsAcrossAddressSpaces": 3048,
+      "declineReason": "interpreterHelper"
+    }
+  ],
+  "interpretation": "The exact 13,241-hit word memory-OR site is absent from the candidate's capped live negative-cache sample. A05.2 remains open because 116,538 of 217,420 tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
