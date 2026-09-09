@@ -13,6 +13,7 @@ struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredMemorySetNotEqualRIP: UInt64 = 0xFFFF_FFFF_812D_F36A
   private static let measuredMemoryBitTestRIP: UInt64 = 0xFFFF_FFFF_81E1_C883
   private static let measuredMemoryBitResetRIP: UInt64 = 0xFFFF_FFFF_81E1_B3A6
+  private static let measuredMemoryBitResetR14RIP: UInt64 = 0xFFFF_FFFF_8168_1078
   private static let measuredCR3WriteRAXRIP: UInt64 = 0xFFFF_FFFF_8100_1B43
   private static let measuredCR3WriteRDIRIP: UInt64 = 0xFFFF_FFFF_8100_17B7
   private let boundary = DoryARM64Tier1BoundaryEmitter()
@@ -675,15 +676,31 @@ struct DoryARM64Tier1Emitter: Sendable {
   }
 
   private static func isMeasuredMemoryBitResetBlock(_ block: DoryIRBasicBlock) -> Bool {
-    guard block.guestStart == measuredMemoryBitResetRIP,
-      let statement = block.statements.first,
+    guard block.guestByteCount == 4,
+      block.guestInstructionCount == 1,
+      block.statements.count == 1,
       case .bitTestMemoryRegister(
         .reset,
-        .memory(_, let width),
+        .memory(let address, let width),
         .register(let index)
-      ) = statement
+      ) = block.statements[0]
     else { return false }
-    return width == .i64 && index == .init(bank: "x86.gpr", index: 1, width: .i64)
+    guard
+      width == .i64,
+      address
+        == .init(
+          base: .init(bank: "x86.gpr", index: 0, width: .i64),
+          addressWidth: .i64
+        )
+    else { return false }
+    switch block.guestStart {
+    case measuredMemoryBitResetRIP:
+      return index == .init(bank: "x86.gpr", index: 1, width: .i64)
+    case measuredMemoryBitResetR14RIP:
+      return index == .init(bank: "x86.gpr", index: 14, width: .i64)
+    default:
+      return false
+    }
   }
 
   private static func isMeasuredMemoryBitOperationBlock(_ block: DoryIRBasicBlock) -> Bool {
