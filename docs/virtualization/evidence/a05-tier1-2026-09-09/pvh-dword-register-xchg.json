@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-dword-register-xchg",
+  "observedAt": "2026-09-09T22:21:10Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "182a5b7030abea49faf33cf15dd38dd64925c276",
+    "candidateRunnerSHA256": "3c7617f355a6fb6d344e4a077f7f76aded49bd069e5e5aebf101a04369e1fc0d",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "operation": "32-bit register-register XCHG",
+    "measuredEncoding": [146],
+    "measuredInstruction": "xchg eax,edx",
+    "semantics": "Both low dwords are staged before publication, exchanged, and zero-extended into their full 64-bit architectural registers without changing flags.",
+    "boundedRule": "Only equal-width dword and qword general-register forms lower to native IR. Word exchange remains on the architectural interpreter path.",
+    "previouslyMeasuredSite": {
+      "guestRIP": "aslr-dependent-userspace",
+      "instructionBytes": [146],
+      "priorNegativeCacheHits": 122159,
+      "remainsInCandidateRunNegativeCache": false
+    }
+  },
+  "verification": {
+    "focusedGate": "The measured register-only firmware-site differential passes across baseline and tier-one JITs.",
+    "dbtPCAndRunnerGate": "1,492 tests in 175 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Nonzero upper halves prove that both exchanged dword results are zero-extended exactly like the interpreter.",
+    "negativeCoverage": "The operand-size-overridden 16-bit register form declines native compilation.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "1ac92ec5-3d4c-40ed-9429-7729b4c295ac",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 139351198417,
+    "retiredInstructions": 733811367,
+    "throughputMIPS": 5.266,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731396212,
+    "interpreterInstructions": 2415155,
+    "deliveredMaskableInterrupts": 57967,
+    "retiredInterruptReturns": 146206,
+    "compiledBlocks": 185953,
+    "tier1CompilationAttempts": 219293,
+    "tier1CompilationDeclines": 117391,
+    "tier1DeclinePercentOfAttempts": 53.531576475309286,
+    "tier1CompiledBlocks": 101902,
+    "lazyFlagMaterializations": 54720838,
+    "translationCacheInvalidations": 241135
+  },
+  "unmatchedPriorRunComparison": {
+    "liveByteTelemetryElapsedNanoseconds": 139051497167,
+    "dwordExchangeElapsedNanoseconds": 139351198417,
+    "directionalElapsedIncreasePercent": 0.21553255887641443,
+    "tier1AttemptDecrease": 1621,
+    "tier1DeclineDecrease": 1631,
+    "tier1CompiledBlockIncrease": 10,
+    "interpreterInstructionDecrease": 75187,
+    "priorDeclinePercentOfAttempts": 53.87707433661968,
+    "candidateDeclinePercentOfAttempts": 53.531576475309286,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. Byte-level absence establishes production use; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleSites": [
+    {
+      "guestRIP": "0xffffffff812dd0cf",
+      "symbol": "native_flush_tlb_one_user+0x1f",
+      "instructionBytes": [15, 1, 63],
+      "instruction": "invlpg (rdi)",
+      "hitCount": 130863,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "aslr-dependent-userspace",
+      "instructionBytes": [243, 15, 111, 6],
+      "instruction": "movdqu xmm0,(rsi)",
+      "hitCount": 53494,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff812df2df",
+      "symbol": "lookup_address_in_pgd_attr+0x15f",
+      "instructionBytes": [15, 149, 3],
+      "instruction": "setne (rbx)",
+      "hitCount": 11623,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff81722852",
+      "symbol": "kernfs_activate_one+0x12",
+      "instructionBytes": [102, 131, 75, 60, 16],
+      "instruction": "orw $0x10,0x3c(rbx)",
+      "hitCount": 9430,
+      "declineReason": "nativeEmitter"
+    }
+  ],
+  "interpretation": "The measured 122,159-hit byte-stable dword exchange no longer appears anywhere in the candidate's capped live negative-cache sample. A05.2 remains open because 117,391 of 219,293 tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves byte-level absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
