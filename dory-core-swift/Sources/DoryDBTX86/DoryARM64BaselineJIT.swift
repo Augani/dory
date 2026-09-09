@@ -96,6 +96,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private static let atomicCompareExchangePairOffset =
     DoryARM64Tier1ABI.ContextWord.atomicCompareExchangePair.byteOffset
   private static let rspOffset = DoryARM64Tier1ABI.ContextWord.rsp.byteOffset
+  private static let cr3Offset = DoryARM64Tier1ABI.ContextWord.cr3.byteOffset
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
   private static let arithmeticFlagMask: UInt64 =
@@ -251,7 +252,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return false
       case .stackPushFlags, .loadFlagsIntoAH, .storeAHIntoFlags, .setCarryFlag,
         .complementCarryFlag, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
-        .signExtendAccumulatorHigh, .memoryFence, .helper:
+        .signExtendAccumulatorHigh, .readControlRegister, .memoryFence, .helper:
         return false
       }
     }
@@ -302,6 +303,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return true
     case .readSegment(let segment, let destination):
       return emitReadSegment(segment, destination: destination, into: &words)
+    case .readControlRegister(let index, let destination):
+      return emitReadControlRegister(index, destination: destination, into: &words)
     case .copy(let destination, let source):
       return emitCopy(destination: destination, source: source, into: &words)
     case .binary(let operation, let destination, let source, let writesDestination):
@@ -902,6 +905,19 @@ public struct DoryARM64BaselineEmitter: Sendable {
     }
   }
 
+  private func emitReadControlRegister(
+    _ index: UInt8,
+    destination: DoryIRRegister,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard index == 3, destination.bank == "x86.gpr", destination.index < 16,
+      destination.width == .i64
+    else { return false }
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.cr3Offset))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(destination.index) * 8))
+    return true
+  }
+
   private static func segmentSelectorOffset(_ segment: DoryX86SegmentRegister) -> Int {
     switch segment {
     case .cs: csSelectorOffset
@@ -1059,7 +1075,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .readSegment(_, let destination):
       if case .memory = destination { return 1 }
       return 0
-    case .effectiveAddress, .loadFlagsIntoAH, .storeAHIntoFlags, .setCarryFlag,
+    case .effectiveAddress, .readControlRegister, .loadFlagsIntoAH, .storeAHIntoFlags,
+      .setCarryFlag,
       .complementCarryFlag, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
       .signExtendAccumulatorHigh, .helper:
       return 0
@@ -5682,6 +5699,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
+    if mode != .long64 || key.privilegeLevel != 0,
+      block.statements.contains(where: {
+        if case .readControlRegister = $0 { return true }
+        return false
+      })
+    {
+      return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
+    }
     if key.privilegeLevel != 0,
       block.statements.contains(where: {
         switch $0 {
@@ -6202,6 +6227,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializer.rawValue] =
       doryARM64LazyFlagsMaterializerAddress()
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.cr3.rawValue] = state.control.cr3
   }
 
   private func recordLazyFlagMaterializations(
