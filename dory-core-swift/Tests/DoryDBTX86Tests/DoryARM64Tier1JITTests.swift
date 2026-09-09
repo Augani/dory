@@ -1028,6 +1028,171 @@ import Testing
     #endif
   }
 
+  @Test func measuredAtomicMemoryBitSetUsesSignedIndexAndMatchesInterpreter() throws {
+    let codeAddress: UInt64 = 0xFFFF_FFFF_8133_CB0F
+    let bytes: [UInt8] = [
+      0x48, 0x63, 0xC1,  // movslq %ecx,%rax
+      0xF0, 0x48, 0x0F, 0xAB, 0x06,  // lock btsq %rax,(%rsi)
+    ]
+    let block = try DoryX86IRTranslator().translate(bytes, at: codeAddress, mode: .long64)
+    #expect(block.guestByteCount == 8)
+    #expect(block.guestInstructionCount == 2)
+    #expect(block.statements.count == 2)
+    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+    #expect(compiled.tier == .tier1)
+    #expect(compiled.requiresMemoryCallbacks)
+    #expect(!compiled.requiresRestartableMemoryReads)
+    #expect(compiled.mayExitToInterpreter)
+
+    let sameOperationElsewhere = try DoryX86IRTranslator().translate(
+      bytes,
+      at: codeAddress + 1,
+      mode: .long64
+    )
+    #expect(DoryARM64Tier1Emitter().compile(sameOperationElsewhere) == nil)
+
+    #if arch(arm64)
+      let memoryBase = codeAddress - 0x200
+      let dataAddress = codeAddress + 0x1800
+      for signedIndex: Int32 in [0, 63, 64, -1, -65] {
+        let elementOffset = Int64(signedIndex) >> 6
+        let bitOffset = UInt64(UInt32(bitPattern: signedIndex)) & 63
+        let selectedAddress = UInt64(
+          bitPattern: Int64(bitPattern: dataAddress) &+ elementOffset &* 8
+        )
+        let bit = UInt64(1) << bitOffset
+        for selected in [false, true] {
+          let interpretedMemory = try DoryX86ByteArrayMemory(
+            baseAddress: memoryBase,
+            byteCount: 0x3000
+          )
+          let tier1Memory = try DoryX86ByteArrayMemory(
+            baseAddress: memoryBase,
+            byteCount: 0x3000
+          )
+          let pattern: UInt64 = 0xA55A_6996_C33C_F00F
+          let initialQword = selected ? pattern | bit : pattern & ~bit
+          let qwordBytes = (0..<8).map {
+            UInt8(truncatingIfNeeded: initialQword >> ($0 * 8))
+          }
+          for memory in [interpretedMemory, tier1Memory] {
+            try memory.write(at: codeAddress, bytes: bytes)
+            try memory.write(at: selectedAddress, bytes: qwordBytes)
+          }
+          let rcx = 0xA5A5_A5A5_0000_0000 | UInt64(UInt32(bitPattern: signedIndex))
+          let initial = try DoryX86ArchitecturalState(
+            registers: .init(rax: 0x1111, rcx: rcx, rsi: dataAddress),
+            rip: codeAddress,
+            rflags: selected
+              ? [.reservedOne, .direction]
+              : [.reservedOne, .carry, .direction]
+          )
+          var interpreted = initial
+          for _ in 0..<2 {
+            guard case .retired = DoryX86Interpreter().step(
+              state: &interpreted,
+              memory: interpretedMemory,
+              mode: .long64
+            ) else {
+              Issue.record("interpreter did not retire measured atomic memory BTS fixture")
+              return
+            }
+          }
+          var tier1 = initial
+          let execution = try #require(
+            DoryARM64BaselineExecutor(
+              maximumCodeBytes: 16 * 1024,
+              tier1Enabled: true
+            ).execute(
+              bytes: bytes,
+              at: codeAddress,
+              mode: .long64,
+              addressSpaceID: UInt64(UInt32(bitPattern: signedIndex)),
+              maximumInstructions: 2,
+              state: &tier1,
+              memory: tier1Memory
+            ))
+          #expect(execution.block.tier == .tier1)
+          #expect(tier1 == interpreted)
+          #expect(tier1Memory.snapshot() == interpretedMemory.snapshot())
+          #expect(tier1.rflags.contains(.carry) == selected)
+          #expect(try tier1Memory.readScalar(at: selectedAddress, byteCount: 8) & bit != 0)
+        }
+      }
+
+      let failedMemory = try DoryX86ByteArrayMemory(
+        baseAddress: codeAddress,
+        bytes: bytes
+      )
+      let failedInitial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x1111, rcx: 7, rsi: codeAddress + 0x1000),
+        rip: codeAddress,
+        rflags: [.reservedOne, .carry, .direction]
+      )
+      var failed = failedInitial
+      let failedSnapshot = failedMemory.snapshot()
+      let failure = try #require(
+        DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: true
+        ).execute(
+          bytes: bytes,
+          at: codeAddress,
+          mode: .long64,
+          addressSpaceID: 0xB75,
+          maximumInstructions: 2,
+          state: &failed,
+          memory: failedMemory
+        ))
+      #expect(failure.block.tier == .tier1)
+      #expect(failure.exitCode == .interpreter)
+      #expect(failed == failedInitial)
+      #expect(failedMemory.snapshot() == failedSnapshot)
+
+      let workerCount = 8
+      let sharedMemory = try DoryX86ByteArrayMemory(
+        baseAddress: memoryBase,
+        byteCount: 0x3000
+      )
+      try sharedMemory.write(at: codeAddress, bytes: bytes)
+      try sharedMemory.write(at: dataAddress, bytes: Array(repeating: 0, count: 8))
+      let executors = try (0..<workerCount).map { _ in
+        try DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024, tier1Enabled: true)
+      }
+      let results = Tier1AtomicResults()
+      DispatchQueue.concurrentPerform(iterations: workerCount) { worker in
+        do {
+          var state = try DoryX86ArchitecturalState(
+            registers: .init(rax: 0x1111, rcx: 7, rsi: dataAddress),
+            rip: codeAddress,
+            rflags: [.reservedOne, .direction]
+          )
+          guard
+            let execution = try executors[worker].execute(
+              bytes: bytes,
+              at: codeAddress,
+              mode: .long64,
+              addressSpaceID: UInt64(worker),
+              maximumInstructions: 2,
+              state: &state,
+              memory: sharedMemory
+            ), execution.block.tier == .tier1, execution.exitCode != .interpreter
+          else {
+            results.record("atomic BTS worker declined")
+            return
+          }
+          results.recordCarry(state.rflags.contains(.carry))
+        } catch {
+          results.record(String(describing: error))
+        }
+      }
+      #expect(results.failures.isEmpty)
+      #expect(results.carryStates.filter { !$0 }.count == 1)
+      #expect(results.carryStates.filter { $0 }.count == workerCount - 1)
+      #expect(try sharedMemory.readScalar(at: dataAddress, byteCount: 8) == 1 << 7)
+    #endif
+  }
+
   @Test func measuredDelayTSCMulLoadBlockCompilesInTier1() throws {
     let address: UInt64 = 0xFFFF_FFFF_81E2_DC36
     let bytes: [UInt8] = [
@@ -3630,11 +3795,17 @@ import Testing
 private final class Tier1AtomicResults: @unchecked Sendable {
   private let lock = NSLock()
   private var storedFailures: [String] = []
+  private var storedCarryStates: [Bool] = []
 
   var failures: [String] { lock.withLock { storedFailures } }
+  var carryStates: [Bool] { lock.withLock { storedCarryStates } }
 
   func record(_ failure: String) {
     lock.withLock { storedFailures.append(failure) }
+  }
+
+  func recordCarry(_ carry: Bool) {
+    lock.withLock { storedCarryStates.append(carry) }
   }
 }
 

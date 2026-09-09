@@ -308,6 +308,138 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Executes the measured `lock btsq %rax,(%rsi)` through the preserved atomic
+  /// compare-exchange callback. The signed register index first selects a surrounding qword;
+  /// a failed comparison supplies the next expected value without a non-atomic read. CF is
+  /// published from the value replaced by the successful exchange, and callback failure leaves
+  /// the executor free to discard the temporary block context and retry in the interpreter.
+  func emitMeasuredAtomicMemoryBitSet(
+    width: DoryIRIntegerWidth,
+    address: DoryIRMemoryAddress,
+    indexGuestRegister: Int,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard width == .i64, (0..<16).contains(indexGuestRegister) else { return false }
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    guard Self.emitMemoryAddress(address, into: &fragment) else { return false }
+
+    Self.emitImmediate(6, register: 26, into: &fragment)
+    fragment.append(
+      Self.encodeVariableShift(
+        .arithmeticRight,
+        is64Bit: true,
+        value: UInt32(indexGuestRegister),
+        count: 26,
+        destination: 17
+      ))
+    fragment.append(
+      Self.encodeAddSubtract(
+        add: true,
+        is64Bit: true,
+        left: 16,
+        right: 17,
+        leftShift: 3,
+        destination: 16
+      ))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    fragment.append(Self.encodeStore64(register: 31, word: .lazyFlagsResult))
+
+    let retry = fragment.count
+    fragment.append(Self.encodeLoad64(register: 16, word: .lazyFlagsResult))
+    Self.emitImmediate(63, register: 17, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .and,
+        is64Bit: true,
+        left: UInt32(indexGuestRegister),
+        right: 17,
+        destination: 17
+      ))
+    Self.emitImmediate(1, register: 26, into: &fragment)
+    fragment.append(
+      Self.encodeVariableShift(
+        .left, is64Bit: true, value: 26, count: 17, destination: 17))
+    fragment.append(
+      Self.encodeLogical(.or, is64Bit: true, left: 16, right: 17, destination: 17))
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        Self.encodeStore64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    fragment.append(Self.encodeMove(destination: 0, source: 19, is64Bit: true))
+    fragment.append(Self.encodeLoad64(register: 1, word: .lazyFlagsSource1))
+    fragment.append(Self.encodeLoad64(register: 2, word: .lazyFlagsResult))
+    fragment.append(Self.encodeLoad64(register: 3, word: .lazyFlagsSource2))
+    Self.emitImmediate(8, register: 4, into: &fragment)
+    fragment.append(
+      Self.encodeAddSubtractImmediate(
+        add: true,
+        is64Bit: true,
+        left: DoryARM64Tier1ABI.contextRegister,
+        immediate: UInt32(DoryARM64Tier1ABI.ContextWord.lazyFlagsWidth.byteOffset),
+        destination: 5
+      ))
+    fragment.append(Self.encodeBranchWithLink(register: 22))
+    fragment.append(
+      Self.encodeAddSubtractSetFlags(
+        add: false, is64Bit: false, left: 0, right: 31, destination: 31))
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        Self.encodeLoad64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    let failure = fragment.count
+    fragment.append(0)
+
+    fragment.append(Self.encodeLoad64(register: 16, word: .lazyFlagsWidth))
+    fragment.append(Self.encodeLoad64(register: 17, word: .lazyFlagsResult))
+    fragment.append(
+      Self.encodeAddSubtractSetFlags(
+        add: false, is64Bit: true, left: 16, right: 17, destination: 31))
+    let succeeded = fragment.count
+    fragment.append(0)
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
+    fragment.append(Self.encodeUnconditionalBranch(wordOffset: retry - fragment.count))
+
+    let success = fragment.count
+    Self.emitImmediate(63, register: 17, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .and,
+        is64Bit: true,
+        left: UInt32(indexGuestRegister),
+        right: 17,
+        destination: 17
+      ))
+    Self.emitImmediate(1, register: 26, into: &fragment)
+    fragment.append(
+      Self.encodeVariableShift(
+        .left, is64Bit: true, value: 26, count: 17, destination: 17))
+    fragment.append(
+      Self.encodeLogical(
+        .andSetFlags, is64Bit: true, left: 16, right: 17, destination: 17))
+    fragment.append(Self.encodeConditionalSet(register: 17, condition: .notEqual))
+    Self.emitImmediate(~DoryX86RFLAGS.carry.rawValue, register: 26, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(.and, is64Bit: true, left: 25, right: 26, destination: 25))
+    fragment.append(
+      Self.encodeLogical(.or, is64Bit: true, left: 25, right: 17, destination: 25))
+
+    let done = fragment.count
+    fragment.append(Self.encodeMove(destination: 26, source: 31, is64Bit: true))
+    fragment[failure] = Self.encodeConditionalBranch(
+      condition: .equal, wordOffset: done - failure)
+    fragment[succeeded] = Self.encodeConditionalBranch(
+      condition: .equal, wordOffset: success - succeeded)
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Executes the measured `ds xorb $1,(base)` image installed when Linux removes the lock
   /// prefix for a uniprocessor guest. The read is replay-safe and the transactional write is the
   /// final callback; only after it returns does the fragment publish the replacement flags record.
