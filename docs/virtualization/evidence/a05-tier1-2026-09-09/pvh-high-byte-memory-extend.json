@@ -1,0 +1,135 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-high-byte-memory-extend",
+  "observedAt": "2026-09-09T20:46:10Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "863bc58b98004cf6f21cba7738ff58837f06a20d",
+    "candidateRunnerSHA256": "a92202937d82e0deb0956a34818e8696ea3c730ffa9ff5bd4953545d370950cf",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "capability": {
+    "highByteCopy": "Tier one copies low bytes, legacy high bytes, and immediates into AH/CH/DH/BH with the source staged before destination mutation. Surrounding bits, NZCV, and the pending lazy-flags record remain unchanged.",
+    "memoryExtendMove": "Memory-source MOVSX/MOVZX uses one restartable scalar read followed by the existing register extension lowering. A read fault returns to the block checkpoint before any preceding high-byte copy is published.",
+    "measuredBlock": {
+      "guestRIP": "0xffffffff81e1c6be",
+      "symbol": "__radix_tree_replace+0x9e",
+      "instructions": "movb %cl,%bh; movzwl 0x2(%rsi),%ecx",
+      "bytes": "88 cf 0f b7 4e 02",
+      "priorNegativeCacheHits": 18919,
+      "remainsInCandidateRunNegativeCache": false
+    }
+  },
+  "verification": {
+    "focusedGate": "Two focused tests pass.",
+    "dbtAndPCGate": "1,455 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Low-byte, high-byte-alias, and immediate sources preserve surrounding destination bits and match the interpreter; the measured two-instruction block matches exact state and rolls the earlier BH write back on a failing memory read.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "8493a743-82ad-40ab-be15-9dfa8aa891f5",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 153437849083,
+    "retiredInstructions": 733282139,
+    "throughputMIPS": 4.779,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 730629250,
+    "interpreterInstructions": 2652889,
+    "deliveredMaskableInterrupts": 57958,
+    "retiredInterruptReturns": 146178,
+    "byteValidationHits": 72229,
+    "codeGenerationMismatches": 78031,
+    "sharedCodeHits": 114409,
+    "compiledBlocks": 185628,
+    "tier1CompilationAttempts": 223679,
+    "tier1CompilationDeclines": 121786,
+    "tier1DeclinePercentOfAttempts": 54.446774171916005,
+    "tier1CompiledBlocks": 101893,
+    "lazyFlagMaterializations": 54644876,
+    "translationCacheInvalidations": 241450
+  },
+  "unmatchedPriorRunComparison": {
+    "rcxMemoryBitTestElapsedNanoseconds": 145315513416,
+    "highByteMemoryExtendElapsedNanoseconds": 153437849083,
+    "directionalElapsedIncreasePercent": 5.5894484188676365,
+    "tier1AttemptReduction": 172,
+    "tier1DeclineReduction": 3995,
+    "tier1CompiledBlockIncrease": 3823,
+    "interpreterInstructionReduction": 57155,
+    "lazyFlagMaterializationReduction": 4800230,
+    "interpretation": "Attempt totals are close, but the executions still have different interrupt, cache, trace, address-space, and instruction totals. Counter movements demonstrate wider native coverage; the elapsed increase is run noise and not a performance claim."
+  },
+  "nextVisibleKernelSites": [
+    {
+      "guestRIP": "0xffffffff813cd9a6",
+      "guestByteCount": 3,
+      "hitCount": 24487,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff812df23d",
+      "instruction": "setne (%rbx)",
+      "guestByteCount": 3,
+      "hitCount": 11524,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff81e35772",
+      "instruction": "rep movsq",
+      "guestByteCount": 3,
+      "hitCount": 10633,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81a07cd3",
+      "instruction": "inb %dx,%al",
+      "guestByteCount": 1,
+      "hitCount": 9300,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81681086",
+      "instruction": "btq %rax,(%rdi); jb",
+      "guestByteCount": 6,
+      "hitCount": 1316,
+      "declineReason": "nativeEmitter"
+    }
+  ],
+  "interpretation": "The measured high-byte-copy plus memory-MOVZX block is absent from the retained negative-cache sample and the authenticated workload completes. A05.2 remains open because 121,786 of 223,679 full-run tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
