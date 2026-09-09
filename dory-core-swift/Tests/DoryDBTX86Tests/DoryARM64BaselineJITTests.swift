@@ -3243,6 +3243,67 @@ import Testing
     #endif
   }
 
+  @Test func implicitLockedMemoryExchangeUsesTranslatedHostAtomicPath() throws {
+    #if arch(arm64)
+      let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+      let paging = DoryX86PagingUnit()
+      let originalFlags: DoryX86RFLAGS = [.reservedOne, .carry, .sign]
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rcx: 0x8877_6655_4433_2211, rdx: 0x80),
+        rip: 0x3600,
+        rflags: originalFlags
+      )
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: state, mode: .long64)
+      )
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+      let bytes: [UInt8] = [0x48, 0x87, 0x0A]
+      try physical.writeScalar(
+        at: 0x80,
+        value: 0x1122_3344_5566_7788,
+        byteCount: 8
+      )
+
+      _ = try #require(
+        executor.execute(
+          bytes: bytes,
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(try physical.readScalar(at: 0x80, byteCount: 8) == 0x8877_6655_4433_2211)
+      #expect(state.registers.rcx == 0x1122_3344_5566_7788)
+      #expect(state.rflags == originalFlags)
+      #expect(paging.diagnostics.translationRequests == 1)
+
+      state.rip = 0x3600
+      state.registers.rcx = 0xAABB_CCDD_EEFF_0011
+      translated.updateContext(.init(state: state, mode: .long64))
+      _ = try #require(
+        executor.execute(
+          bytes: bytes,
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(try physical.readScalar(at: 0x80, byteCount: 8) == 0xAABB_CCDD_EEFF_0011)
+      #expect(state.registers.rcx == 0x8877_6655_4433_2211)
+      #expect(state.rflags == originalFlags)
+      #expect(paging.diagnostics.translationRequests == 1)
+      #expect(executor.diagnostics.translationCacheHits == 1)
+      #expect(executor.diagnostics.translationCacheMisses == 1)
+      #expect(executor.diagnostics.translationCacheFills == 1)
+    #endif
+  }
+
   @Test func lockedCompareExchangeDeclinesBeforeUnsupportedMemoryOrPrivilegeSideEffects() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0xF0, 0x0F, 0xB1, 0x17]
@@ -5679,7 +5740,6 @@ import Testing
 
   @Test func measuredRegisterOnlyFirmwareSitesKeepUnsupportedFormsBounded() throws {
     let unsupported: [[UInt8]] = [
-      [0x48, 0x87, 0x08],  // xchg qword ptr [rax],rcx is implicitly locked memory exchange
       [0x87, 0xCA],  // 32-bit register exchange remains interpreter until explicitly qualified
       [0x98],  // cwde is distinct from measured REX.W cdqe
       [0xF6, 0x10],  // not byte ptr [rax] is a memory write
@@ -6457,6 +6517,7 @@ import Testing
     #expect(words[DoryJITExecutableRegion.readTLBHitCounterWordIndex] != 0)
     #expect(words[DoryJITExecutableRegion.writeTLBHitCounterWordIndex] != 0)
     #expect(words[DoryJITExecutableRegion.atomicCompareExchangeWordIndex] != 0)
+    #expect(words[DoryJITExecutableRegion.atomicExchangeWordIndex] != 0)
 
     words.withUnsafeMutableBufferPointer { context in
       DoryARM64BaselineExecutor.populateExecutionContext(
@@ -6476,6 +6537,7 @@ import Testing
     #expect(words[DoryJITExecutableRegion.readTLBHitCounterWordIndex] == 0)
     #expect(words[DoryJITExecutableRegion.writeTLBHitCounterWordIndex] == 0)
     #expect(words[DoryJITExecutableRegion.atomicCompareExchangeWordIndex] == 0)
+    #expect(words[DoryJITExecutableRegion.atomicExchangeWordIndex] == 0)
   }
 
   @Test func executorAdvancesTLBGenerationAndScopesPageInvalidation() throws {

@@ -140,6 +140,15 @@ int dory_jit_atomic_compare_exchange_from_context(
     uint64_t *observed_out
 );
 uintptr_t dory_jit_atomic_compare_exchange_from_context_address(void);
+int dory_jit_atomic_exchange_from_context(
+    const uint64_t *context,
+    void *memory_context,
+    uint64_t linear_address,
+    uint64_t value,
+    uint32_t byte_count,
+    uint64_t *observed_out
+);
+uintptr_t dory_jit_atomic_exchange_from_context_address(void);
 
 // Implemented by DoryDBTX86 and called only through dory_jit_tlb_resolve's C boundary.
 int32_t dory_x86_jit_translate(
