@@ -1,4 +1,5 @@
 import Darwin
+import Foundation
 import Testing
 
 @testable import DoryDBTX86
@@ -97,6 +98,65 @@ import Testing
         hostAddressSpaceByteCount: page + 1,
         ramMappings: [.init(logicalOffset: 0, hostOffset: 0, byteCount: page)]
       )
+    }
+  }
+
+  @Test func sparseReservationInstallsReadOnlyFilledMappings() throws {
+    let page = Int(getpagesize())
+    let memory = try DoryX86MmapMemory(
+      validatingByteCount: page,
+      hostAddressSpaceByteCount: page * 3,
+      ramMappings: [.init(logicalOffset: 0, hostOffset: 0, byteCount: page)],
+      readOnlyMappings: [
+        .init(
+          hostOffset: page * 2,
+          byteCount: page,
+          contents: Data([0x11, 0x22]),
+          contentsOffset: page - 2,
+          fillByte: 0xff
+        )
+      ]
+    )
+
+    let base = UnsafeRawPointer(bitPattern: UInt(memory.hostAddressSpaceBase))!
+    let region = base.advanced(by: page * 2).assumingMemoryBound(to: UInt8.self)
+    #expect(region.pointee == 0xff)
+    #expect(region.advanced(by: page - 3).pointee == 0xff)
+    #expect(region.advanced(by: page - 2).pointee == 0x11)
+    #expect(region.advanced(by: page - 1).pointee == 0x22)
+
+    var address = mach_vm_address_t(memory.hostAddressSpaceBase) + mach_vm_address_t(page * 2)
+    var size: mach_vm_size_t = 0
+    var info = vm_region_basic_info_data_64_t()
+    var count = mach_msg_type_number_t(
+      MemoryLayout<vm_region_basic_info_data_64_t>.size / MemoryLayout<integer_t>.size)
+    var objectName: mach_port_t = 0
+    let result = withUnsafeMutablePointer(to: &info) { infoPointer in
+      infoPointer.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { rebound in
+        mach_vm_region(
+          mach_task_self_, &address, &size, VM_REGION_BASIC_INFO_64, rebound, &count, &objectName)
+      }
+    }
+    #expect(result == KERN_SUCCESS)
+    #expect(info.protection == VM_PROT_READ)
+  }
+
+  @Test func sparseReservationRejectsReadOnlyOverlapAndOverflow() throws {
+    let page = Int(getpagesize())
+    for mapping in [
+      DoryX86MmapReadOnlyMapping(
+        hostOffset: 0, byteCount: page, contents: Data(), fillByte: 0xff),
+      DoryX86MmapReadOnlyMapping(
+        hostOffset: page * 2, byteCount: page, contents: Data([1]), contentsOffset: page),
+    ] {
+      #expect(throws: DoryX86MemoryAllocationError.self) {
+        try DoryX86MmapMemory(
+          validatingByteCount: page,
+          hostAddressSpaceByteCount: page * 2,
+          ramMappings: [.init(logicalOffset: 0, hostOffset: 0, byteCount: page)],
+          readOnlyMappings: [mapping]
+        )
+      }
     }
   }
 }

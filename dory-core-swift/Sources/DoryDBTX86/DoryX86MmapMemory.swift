@@ -15,6 +15,31 @@ public struct DoryX86MmapRAMMapping: Sendable, Equatable {
   }
 }
 
+/// Installs immutable bytes inside a sparse host reservation without adding the range to the
+/// compact interpreter-facing RAM object. Unoccupied bytes receive `fillByte` before the complete
+/// range is protected read-only.
+public struct DoryX86MmapReadOnlyMapping: Sendable, Equatable {
+  public let hostOffset: Int
+  public let byteCount: Int
+  public let contents: Data
+  public let contentsOffset: Int
+  public let fillByte: UInt8
+
+  public init(
+    hostOffset: Int,
+    byteCount: Int,
+    contents: Data,
+    contentsOffset: Int = 0,
+    fillByte: UInt8 = 0
+  ) {
+    self.hostOffset = hostOffset
+    self.byteCount = byteCount
+    self.contents = contents
+    self.contentsOffset = contentsOffset
+    self.fillByte = fillByte
+  }
+}
+
 /// Large-address-space backing store using mmap. Virtual pages are lazily backed
 /// by the host's VM system, so allocating 16 GB of guest RAM does not consume
 /// 16 GB of host physical memory — only pages that are actually touched cost RAM.
@@ -48,6 +73,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       byteCount: byteCount,
       hostAddressSpaceByteCount: byteCount,
       ramMappings: [.init(logicalOffset: 0, hostOffset: 0, byteCount: byteCount)],
+      readOnlyMappings: [],
       reserveThenCommit: false
     )
   }
@@ -59,7 +85,8 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     baseAddress: UInt64 = 0,
     validatingByteCount byteCount: Int,
     hostAddressSpaceByteCount: Int,
-    ramMappings: [DoryX86MmapRAMMapping]
+    ramMappings: [DoryX86MmapRAMMapping],
+    readOnlyMappings: [DoryX86MmapReadOnlyMapping] = []
   ) throws {
     try validateDoryX86RAMAllocation(baseAddress: baseAddress, byteCount: byteCount)
     let pageByteCount = Int(getpagesize())
@@ -116,11 +143,45 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
         byteCount: mapping.byteCount
       )
     }
+    var protectedHostRanges: [Range<Int>] = []
+    for mapping in readOnlyMappings {
+      let hostEnd = mapping.hostOffset.addingReportingOverflow(mapping.byteCount)
+      guard mapping.hostOffset >= 0,
+        mapping.byteCount > 0,
+        mapping.contentsOffset >= 0,
+        mapping.hostOffset.isMultiple(of: pageByteCount),
+        mapping.byteCount.isMultiple(of: pageByteCount),
+        !hostEnd.overflow,
+        hostEnd.partialValue <= hostAddressSpaceByteCount,
+        mapping.contentsOffset <= mapping.byteCount,
+        mapping.contents.count <= mapping.byteCount - mapping.contentsOffset
+      else {
+        throw DoryX86MemoryAllocationError.invalidHostReadOnlyMapping(
+          hostOffset: mapping.hostOffset,
+          byteCount: mapping.byteCount,
+          contentsOffset: mapping.contentsOffset,
+          contentsByteCount: mapping.contents.count
+        )
+      }
+      let protectedRange = mapping.hostOffset..<hostEnd.partialValue
+      guard !committedHostRanges.contains(where: { $0.overlaps(protectedRange) }),
+        !protectedHostRanges.contains(where: { $0.overlaps(protectedRange) })
+      else {
+        throw DoryX86MemoryAllocationError.invalidHostReadOnlyMapping(
+          hostOffset: mapping.hostOffset,
+          byteCount: mapping.byteCount,
+          contentsOffset: mapping.contentsOffset,
+          contentsByteCount: mapping.contents.count
+        )
+      }
+      protectedHostRanges.append(protectedRange)
+    }
     try self.init(
       validatedBaseAddress: baseAddress,
       byteCount: byteCount,
       hostAddressSpaceByteCount: hostAddressSpaceByteCount,
       ramMappings: sorted,
+      readOnlyMappings: readOnlyMappings,
       reserveThenCommit: true
     )
   }
@@ -130,6 +191,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     byteCount: Int,
     hostAddressSpaceByteCount: Int,
     ramMappings: [DoryX86MmapRAMMapping],
+    readOnlyMappings: [DoryX86MmapReadOnlyMapping],
     reserveThenCommit: Bool
   ) throws {
     let mapped = mmap(
@@ -151,6 +213,35 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
             PROT_READ | PROT_WRITE
           ) == 0
         else {
+          let errorNumber = errno
+          munmap(mapped, hostAddressSpaceByteCount)
+          throw DoryX86MemoryAllocationError.protectionFailed(
+            offset: mapping.hostOffset,
+            byteCount: mapping.byteCount,
+            errorNumber: errorNumber
+          )
+        }
+      }
+      for mapping in readOnlyMappings {
+        let region = mapped.advanced(by: mapping.hostOffset)
+        guard mprotect(region, mapping.byteCount, PROT_READ | PROT_WRITE) == 0 else {
+          let errorNumber = errno
+          munmap(mapped, hostAddressSpaceByteCount)
+          throw DoryX86MemoryAllocationError.protectionFailed(
+            offset: mapping.hostOffset,
+            byteCount: mapping.byteCount,
+            errorNumber: errorNumber
+          )
+        }
+        memset(region, Int32(mapping.fillByte), mapping.byteCount)
+        mapping.contents.withUnsafeBytes { contents in
+          guard let contentsBase = contents.baseAddress else { return }
+          region.advanced(by: mapping.contentsOffset).copyMemory(
+            from: contentsBase,
+            byteCount: contents.count
+          )
+        }
+        guard mprotect(region, mapping.byteCount, PROT_READ) == 0 else {
           let errorNumber = errno
           munmap(mapped, hostAddressSpaceByteCount)
           throw DoryX86MemoryAllocationError.protectionFailed(

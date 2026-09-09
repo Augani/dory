@@ -43,6 +43,12 @@ public enum DoryX86MemoryAllocationError: Error, Sendable, Equatable {
     hostOffset: Int,
     byteCount: Int
   )
+  case invalidHostReadOnlyMapping(
+    hostOffset: Int,
+    byteCount: Int,
+    contentsOffset: Int,
+    contentsByteCount: Int
+  )
   case mappingFailed(byteCount: Int, errorNumber: Int32)
   case protectionFailed(offset: Int, byteCount: Int, errorNumber: Int32)
   case heapAllocationFailed(byteCount: Int, errorNumber: Int32)
