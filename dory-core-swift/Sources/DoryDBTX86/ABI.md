@@ -76,7 +76,12 @@ chain; its target consumes the pinned state.
 ## Native flags producers and fusion
 
 `DoryARM64Tier1ALUEmitter` emits pinned-register ADD/ADC/SUB/SBB/CMP,
-AND/TEST/OR/XOR, and INC/DEC/NEG producers for 32- and 64-bit operands. Each
+AND/TEST/OR/XOR, and INC/DEC/NEG producers for low 8-, 16-, 32-, and 64-bit
+operands. Narrow writes merge only the architectural low part; their operands
+are aligned to the ARM sign bit before flag-setting arithmetic so N/Z/C/V have
+the x86 operand width. Narrow ADC/SBB retain exact results and lazy records but
+require materialization before any condition consumer because ARM's unshifted
+carry input cannot participate in that alignment. Each
 producer stores its complete lazy record at words 43...47 while leaving ARM
 NZCV live. A returned `NativeFlags` token may be used only by an immediately
 adjacent fused consumer. ADC/SBB and carry-preserving INC/DEC require any older

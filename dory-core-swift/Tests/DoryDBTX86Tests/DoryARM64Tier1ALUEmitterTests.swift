@@ -5,19 +5,23 @@ import Testing
 @Suite struct DoryARM64Tier1ALUEmitterTests {
   @Test func nativeProducersPersistLazyRecordsAndMatchInterpreter() throws {
     #if arch(arm64)
-      let cases: [(DoryIRBinaryOperation, UInt8, DoryARM64LazyFlagsState.Operation, Bool)] = [
-        (.add, 0x01, .add, true),
-        (.addWithCarry, 0x11, .addWithCarry, true),
-        (.or, 0x09, .logical, true),
-        (.and, 0x21, .logical, true),
-        (.subtract, 0x29, .subtract, true),
-        (.subtractWithBorrow, 0x19, .subtractWithBorrow, true),
-        (.xor, 0x31, .logical, true),
-        (.compare, 0x39, .subtract, false),
-        (.test, 0x85, .logical, false),
-      ]
+      let cases:
+        [(
+          DoryIRBinaryOperation, UInt8, UInt8, DoryARM64LazyFlagsState.Operation, Bool
+        )] = [
+          (.add, 0x00, 0x01, .add, true),
+          (.addWithCarry, 0x10, 0x11, .addWithCarry, true),
+          (.or, 0x08, 0x09, .logical, true),
+          (.and, 0x20, 0x21, .logical, true),
+          (.subtract, 0x28, 0x29, .subtract, true),
+          (.subtractWithBorrow, 0x18, 0x19, .subtractWithBorrow, true),
+          (.xor, 0x30, 0x31, .logical, true),
+          (.compare, 0x38, 0x39, .subtract, false),
+          (.test, 0x84, 0x85, .logical, false),
+        ]
       let values: [(UInt64, UInt64)] = [
-        (0, 0), (1, 1), (0, 1),
+        (0, 0), (1, 1), (0, 1), (0x7F, 1), (0x80, 0xFF), (0xFF, 1),
+        (0xA5A5_A5A5_A5A5_7FFF, 1), (0x5A5A_5A5A_5A5A_8000, 0xFFFF),
         (0x7FFF_FFFF, 1), (0x8000_0000, 0xFFFF_FFFF),
         (0x7FFF_FFFF_FFFF_FFFF, 1), (.max, 1),
       ]
@@ -26,9 +30,9 @@ import Testing
         [.reservedOne, .carry, .parity, .auxiliaryCarry, .direction, .overflow],
       ]
 
-      for width: DoryIRIntegerWidth in [.i32, .i64] {
-        let mask = width == .i64 ? UInt64.max : UInt64(UInt32.max)
-        for (operation, opcode, lazyOperation, writesDestination) in cases {
+      for width: DoryIRIntegerWidth in [.i8, .i16, .i32, .i64] {
+        let mask = width == .i64 ? UInt64.max : (UInt64(1) << width.rawValue) - 1
+        for (operation, byteOpcode, wideOpcode, lazyOperation, writesDestination) in cases {
           var words: [UInt32] = []
           DoryARM64Tier1BoundaryEmitter().emitEntry(into: &words)
           let producer = DoryARM64Tier1ALUEmitter().emitBinary(
@@ -51,11 +55,13 @@ import Testing
               var interpreted = try DoryX86ArchitecturalState(
                 registers: .init(rax: lhs, rcx: rhs), rip: 0x100, rflags: prior)
               let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
-              var bytes = [opcode, UInt8(0xC8)]
+              var bytes = [width == .i8 ? byteOpcode : wideOpcode, UInt8(0xC8)]
+              if width == .i16 { bytes.insert(0x66, at: 0) }
               if width == .i64 { bytes.insert(0x48, at: 0) }
               try memory.write(at: 0x100, bytes: bytes)
-              guard case .retired = DoryX86Interpreter().step(
-                state: &interpreted, memory: memory, mode: .long64)
+              guard
+                case .retired = DoryX86Interpreter().step(
+                  state: &interpreted, memory: memory, mode: .long64)
               else {
                 Issue.record("interpreter did not retire \(operation) \(width)")
                 continue
@@ -68,8 +74,9 @@ import Testing
               #expect(lazy.source2 == rhs & mask)
               #expect(lazy.materialized == prior)
               #expect(lazy.materialize() == interpreted.rflags)
-              #expect(context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
-                == interpreted.registers.rax)
+              #expect(
+                context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
+                  == interpreted.registers.rax)
             }
           }
         }
@@ -79,38 +86,46 @@ import Testing
 
   @Test func nativeUnaryProducersMatchInterpreterAndPreserveCarryWhereRequired() throws {
     #if arch(arm64)
-      let cases: [(DoryIRUnaryOperation, [UInt8], DoryARM64LazyFlagsState.Operation)] = [
-        (.increment, [0xFF, 0xC0], .increment),
-        (.decrement, [0xFF, 0xC8], .decrement),
-        (.negate, [0xF7, 0xD8], .negate),
-      ]
+      let cases:
+        [(
+          DoryIRUnaryOperation, [UInt8], [UInt8], DoryARM64LazyFlagsState.Operation
+        )] = [
+          (.increment, [0xFE, 0xC0], [0xFF, 0xC0], .increment),
+          (.decrement, [0xFE, 0xC8], [0xFF, 0xC8], .decrement),
+          (.negate, [0xF6, 0xD8], [0xF7, 0xD8], .negate),
+        ]
       let values: [UInt64] = [
-        0, 1, 0x7FFF_FFFF, 0x8000_0000,
+        0, 1, 0x7F, 0x80, 0xFF,
+        0xA5A5_A5A5_A5A5_7FFF, 0x5A5A_5A5A_5A5A_8000,
+        0x7FFF_FFFF, 0x8000_0000,
         0x7FFF_FFFF_FFFF_FFFF, 0x8000_0000_0000_0000, .max,
       ]
       let priorFlags: [DoryX86RFLAGS] = [
         [.reservedOne, .direction], [.reservedOne, .carry, .direction],
       ]
 
-      for width: DoryIRIntegerWidth in [.i32, .i64] {
-        for (operation, opcode, lazyOperation) in cases {
+      for width: DoryIRIntegerWidth in [.i8, .i16, .i32, .i64] {
+        for (operation, byteOpcode, wideOpcode, lazyOperation) in cases {
           var words: [UInt32] = []
           let boundary = DoryARM64Tier1BoundaryEmitter()
           let alu = DoryARM64Tier1ALUEmitter()
           boundary.emitEntry(into: &words)
-          let flags = try #require(alu.emitUnary(
-            operation,
-            width: width,
-            destinationGuestRegister: 0,
-            into: &words
-          ))
+          let flags = try #require(
+            alu.emitUnary(
+              operation,
+              width: width,
+              destinationGuestRegister: 0,
+              into: &words
+            ))
           #expect(flags.origin == .unary(operation))
-          #expect(alu.emitFusedSetCondition(
-            .equal, flags: flags, destinationGuestRegister: 2, into: &words))
+          #expect(
+            alu.emitFusedSetCondition(
+              .equal, flags: flags, destinationGuestRegister: 2, into: &words))
           if operation != .negate {
             let before = words.count
-            #expect(!alu.emitFusedSetCondition(
-              .below, flags: flags, destinationGuestRegister: 2, into: &words))
+            #expect(
+              !alu.emitFusedSetCondition(
+                .below, flags: flags, destinationGuestRegister: 2, into: &words))
             #expect(words.count == before)
           }
           boundary.emitExit(.dispatch, into: &words)
@@ -124,10 +139,13 @@ import Testing
               var interpreted = try DoryX86ArchitecturalState(
                 registers: .init(rax: value), rip: 0x100, rflags: prior)
               let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
-              let bytes = width == .i64 ? [UInt8(0x48)] + opcode : opcode
+              var bytes = width == .i8 ? byteOpcode : wideOpcode
+              if width == .i16 { bytes.insert(0x66, at: 0) }
+              if width == .i64 { bytes.insert(0x48, at: 0) }
               try memory.write(at: 0x100, bytes: bytes)
-              guard case .retired = DoryX86Interpreter().step(
-                state: &interpreted, memory: memory, mode: .long64)
+              guard
+                case .retired = DoryX86Interpreter().step(
+                  state: &interpreted, memory: memory, mode: .long64)
               else {
                 Issue.record("interpreter did not retire \(operation) \(width)")
                 continue
@@ -136,10 +154,12 @@ import Testing
               let lazy = try #require(DoryARM64LazyFlagsState(context: context))
               #expect(lazy.operation == lazyOperation)
               #expect(lazy.materialize() == interpreted.rflags)
-              #expect(context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
-                == interpreted.registers.rax)
-              #expect(context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue]
-                == 0xDD00 | (interpreted.rflags.contains(.zero) ? 1 : 0))
+              #expect(
+                context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
+                  == interpreted.registers.rax)
+              #expect(
+                context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue]
+                  == 0xDD00 | (interpreted.rflags.contains(.zero) ? 1 : 0))
             }
           }
         }
@@ -164,16 +184,18 @@ import Testing
         let boundary = DoryARM64Tier1BoundaryEmitter()
         let alu = DoryARM64Tier1ALUEmitter()
         boundary.emitEntry(into: &words)
-        let flags = try #require(alu.emitBinary(
-          .compare,
-          width: .i64,
-          destinationGuestRegister: 0,
-          source: .guestRegister(1),
-          writesDestination: false,
-          into: &words
-        ))
-        #expect(alu.emitFusedSetCondition(
-          condition, flags: flags, destinationGuestRegister: 2, into: &words))
+        let flags = try #require(
+          alu.emitBinary(
+            .compare,
+            width: .i64,
+            destinationGuestRegister: 0,
+            source: .guestRegister(1),
+            writesDestination: false,
+            into: &words
+          ))
+        #expect(
+          alu.emitFusedSetCondition(
+            condition, flags: flags, destinationGuestRegister: 2, into: &words))
         boundary.emitExit(.dispatch, into: &words)
         let region = try executableRegion(words)
 
@@ -182,25 +204,107 @@ import Testing
           #expect(try region.execute(at: 0, context: &context) == .dispatch)
           let lazy = try #require(DoryARM64LazyFlagsState(context: context))
           let expected = evaluate(condition, flags: lazy.materialize())
-          #expect(context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue]
-            == upper | (expected ? 1 : 0))
+          #expect(
+            context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue]
+              == upper | (expected ? 1 : 0))
         }
       }
     #endif
   }
 
+  @Test func narrowCompareConditionsUseWidthCorrectNativeNZCV() throws {
+    #if arch(arm64)
+      let conditions = allX86Conditions.filter {
+        $0 != .parity && $0 != .notParity
+      }
+      let values: [(UInt64, UInt64)] = [
+        (0, 0), (0, 1), (0x7F, 1), (0x80, 1), (0xFF, 1),
+        (0xA5A5_A5A5_A5A5_7FFF, 0x5A5A_5A5A_5A5A_8000),
+      ]
+      let upper = UInt64(0xD3D3_D3D3_D3D3_D300)
+
+      for width: DoryIRIntegerWidth in [.i8, .i16] {
+        for condition in conditions {
+          var words: [UInt32] = []
+          let boundary = DoryARM64Tier1BoundaryEmitter()
+          let alu = DoryARM64Tier1ALUEmitter()
+          boundary.emitEntry(into: &words)
+          let flags = try #require(
+            alu.emitBinary(
+              .compare,
+              width: width,
+              destinationGuestRegister: 0,
+              source: .guestRegister(1),
+              writesDestination: false,
+              into: &words
+            ))
+          #expect(
+            alu.emitFusedSetCondition(
+              condition, flags: flags, destinationGuestRegister: 2, into: &words))
+          boundary.emitExit(.dispatch, into: &words)
+          let region = try executableRegion(words)
+
+          for (lhs, rhs) in values {
+            var context = makeContext(
+              rax: lhs, rcx: rhs, rdx: upper,
+              rflags: [.reservedOne, .carry, .direction, .overflow])
+            #expect(try region.execute(at: 0, context: &context) == .dispatch)
+            let lazy = try #require(DoryARM64LazyFlagsState(context: context))
+            #expect(
+              context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue]
+                == upper | (evaluate(condition, flags: lazy.materialize()) ? 1 : 0))
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func narrowCarryArithmeticRequiresMaterializedConsumers() throws {
+    let alu = DoryARM64Tier1ALUEmitter()
+    for operation: DoryIRBinaryOperation in [.addWithCarry, .subtractWithBorrow] {
+      for width: DoryIRIntegerWidth in [.i8, .i16] {
+        var words: [UInt32] = []
+        let flags = try #require(
+          alu.emitBinary(
+            operation,
+            width: width,
+            destinationGuestRegister: 0,
+            source: .guestRegister(1),
+            writesDestination: true,
+            into: &words
+          ))
+        let producerEnd = words.count
+        for condition in allX86Conditions {
+          #expect(
+            !alu.emitFusedSetCondition(
+              condition, flags: flags, destinationGuestRegister: 2, into: &words))
+          #expect(words.count == producerEnd)
+        }
+      }
+    }
+  }
+
   @Test func fusedArithmeticAndLogicalConditionsUseTheirNativeCarryDomains() throws {
     #if arch(arm64)
       let cases: [(DoryIRBinaryOperation, [DoryX86Condition])] = [
-        (.add, allX86Conditions.filter {
-          $0 != .parity && $0 != .notParity && $0 != .belowOrEqual && $0 != .above
-        }),
-        (.addWithCarry, allX86Conditions.filter {
-          $0 != .parity && $0 != .notParity && $0 != .belowOrEqual && $0 != .above
-        }),
-        (.subtractWithBorrow, allX86Conditions.filter {
-          $0 != .parity && $0 != .notParity
-        }),
+        (
+          .add,
+          allX86Conditions.filter {
+            $0 != .parity && $0 != .notParity && $0 != .belowOrEqual && $0 != .above
+          }
+        ),
+        (
+          .addWithCarry,
+          allX86Conditions.filter {
+            $0 != .parity && $0 != .notParity && $0 != .belowOrEqual && $0 != .above
+          }
+        ),
+        (
+          .subtractWithBorrow,
+          allX86Conditions.filter {
+            $0 != .parity && $0 != .notParity
+          }
+        ),
         (.and, allX86Conditions.filter { $0 != .parity && $0 != .notParity }),
       ]
       let values: [(UInt64, UInt64)] = [
@@ -215,16 +319,18 @@ import Testing
           let boundary = DoryARM64Tier1BoundaryEmitter()
           let alu = DoryARM64Tier1ALUEmitter()
           boundary.emitEntry(into: &words)
-          let flags = try #require(alu.emitBinary(
-            operation,
-            width: .i64,
-            destinationGuestRegister: 0,
-            source: .guestRegister(1),
-            writesDestination: true,
-            into: &words
-          ))
-          #expect(alu.emitFusedSetCondition(
-            condition, flags: flags, destinationGuestRegister: 2, into: &words))
+          let flags = try #require(
+            alu.emitBinary(
+              operation,
+              width: .i64,
+              destinationGuestRegister: 0,
+              source: .guestRegister(1),
+              writesDestination: true,
+              into: &words
+            ))
+          #expect(
+            alu.emitFusedSetCondition(
+              condition, flags: flags, destinationGuestRegister: 2, into: &words))
           boundary.emitExit(.dispatch, into: &words)
           let region = try executableRegion(words)
 
@@ -233,8 +339,9 @@ import Testing
             #expect(try region.execute(at: 0, context: &context) == .dispatch)
             let lazy = try #require(DoryARM64LazyFlagsState(context: context))
             let expected = evaluate(condition, flags: lazy.materialize())
-            #expect(context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue]
-              == 0xCC00 | (expected ? 1 : 0))
+            #expect(
+              context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue]
+                == 0xCC00 | (expected ? 1 : 0))
           }
         }
       }
@@ -244,41 +351,48 @@ import Testing
   @Test func fusionRejectsParityAndNonNativeAdditionCarryZeroCombinations() throws {
     let alu = DoryARM64Tier1ALUEmitter()
     var words: [UInt32] = []
-    let compareFlags = try #require(alu.emitBinary(
-      .compare,
-      width: .i64,
-      destinationGuestRegister: 0,
-      source: .immediate(1),
-      writesDestination: false,
-      into: &words
-    ))
+    let compareFlags = try #require(
+      alu.emitBinary(
+        .compare,
+        width: .i64,
+        destinationGuestRegister: 0,
+        source: .immediate(1),
+        writesDestination: false,
+        into: &words
+      ))
     let compareEnd = words.count
-    #expect(!alu.emitFusedSetCondition(
-      .parity, flags: compareFlags, destinationGuestRegister: 1, into: &words))
+    #expect(
+      !alu.emitFusedSetCondition(
+        .parity, flags: compareFlags, destinationGuestRegister: 1, into: &words))
     #expect(words.count == compareEnd)
 
-    let addFlags = try #require(alu.emitBinary(
-      .add,
-      width: .i32,
-      destinationGuestRegister: 0,
-      source: .immediate(1),
-      writesDestination: true,
-      into: &words
-    ))
+    let addFlags = try #require(
+      alu.emitBinary(
+        .add,
+        width: .i32,
+        destinationGuestRegister: 0,
+        source: .immediate(1),
+        writesDestination: true,
+        into: &words
+      ))
     let addEnd = words.count
-    #expect(!alu.emitFusedSetCondition(
-      .belowOrEqual, flags: addFlags, destinationGuestRegister: 1, into: &words))
-    #expect(!alu.emitFusedSetCondition(
-      .above, flags: addFlags, destinationGuestRegister: 1, into: &words))
-    #expect(!alu.emitFusedConditionalMove(
-      .belowOrEqual,
-      flags: addFlags,
-      destinationGuestRegister: 1,
-      source: .immediate(0x1234),
-      into: &words
-    ))
-    #expect(!alu.emitFusedBranch(
-      .above, flags: addFlags, taken: 0x10, notTaken: 0x20, into: &words))
+    #expect(
+      !alu.emitFusedSetCondition(
+        .belowOrEqual, flags: addFlags, destinationGuestRegister: 1, into: &words))
+    #expect(
+      !alu.emitFusedSetCondition(
+        .above, flags: addFlags, destinationGuestRegister: 1, into: &words))
+    #expect(
+      !alu.emitFusedConditionalMove(
+        .belowOrEqual,
+        flags: addFlags,
+        destinationGuestRegister: 1,
+        source: .immediate(0x1234),
+        into: &words
+      ))
+    #expect(
+      !alu.emitFusedBranch(
+        .above, flags: addFlags, taken: 0x10, notTaken: 0x20, into: &words))
     #expect(words.count == addEnd)
   }
 
@@ -287,14 +401,15 @@ import Testing
       var words: [UInt32] = []
       let boundary = DoryARM64Tier1BoundaryEmitter()
       boundary.emitEntry(into: &words)
-      _ = try #require(DoryARM64Tier1ALUEmitter().emitBinary(
-        .add,
-        width: .i64,
-        destinationGuestRegister: 0,
-        source: .guestRegister(1),
-        writesDestination: true,
-        into: &words
-      ))
+      _ = try #require(
+        DoryARM64Tier1ALUEmitter().emitBinary(
+          .add,
+          width: .i64,
+          destinationGuestRegister: 0,
+          source: .guestRegister(1),
+          writesDestination: true,
+          into: &words
+        ))
       boundary.emitMaterializeLazyFlags(into: &words)
       boundary.emitMaterializeLazyFlags(into: &words)
       boundary.emitExit(.dispatch, into: &words)
@@ -309,9 +424,10 @@ import Testing
       #expect(lazy.result == 0)
       #expect(lazy.source1 == 0)
       #expect(lazy.source2 == 0)
-      #expect(lazy.materialize() == [
-        .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .direction,
-      ])
+      #expect(
+        lazy.materialize() == [
+          .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .direction,
+        ])
       #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] == 1)
       #expect(context[DoryARM64Tier1ABI.ContextWord.rax.rawValue] == 0)
       #expect(context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue] == 0x1234)
@@ -335,8 +451,9 @@ import Testing
       #expect(context[DoryARM64Tier1ABI.ContextWord.rax.rawValue] == 0x1122)
       #expect(context[DoryARM64Tier1ABI.ContextWord.rcx.rawValue] == 0x3344)
       #expect(context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue] == 0x5566)
-      #expect(context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue]
-        == (DoryX86RFLAGS.reservedOne.union([.carry, .direction])).rawValue)
+      #expect(
+        context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue]
+          == (DoryX86RFLAGS.reservedOne.union([.carry, .direction])).rawValue)
       #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] == 0)
     #endif
   }
@@ -348,20 +465,22 @@ import Testing
       var words: [UInt32] = []
       let boundary = DoryARM64Tier1BoundaryEmitter()
       boundary.emitEntry(into: &words)
-      _ = try #require(DoryARM64Tier1ALUEmitter().emitBinary(
-        .subtract,
-        width: .i64,
-        destinationGuestRegister: 0,
-        source: .guestRegister(1),
-        writesDestination: true,
-        into: &words
-      ))
-      boundary.emitHelperCall(.init(
-        target: .tlbResolver,
-        arguments: [.contextPointer],
-        liveGuestMask: .max,
-        requiresMaterializedFlags: true
-      ), into: &words)
+      _ = try #require(
+        DoryARM64Tier1ALUEmitter().emitBinary(
+          .subtract,
+          width: .i64,
+          destinationGuestRegister: 0,
+          source: .guestRegister(1),
+          writesDestination: true,
+          into: &words
+        ))
+      boundary.emitHelperCall(
+        .init(
+          target: .tlbResolver,
+          arguments: [.contextPointer],
+          liveGuestMask: .max,
+          requiresMaterializedFlags: true
+        ), into: &words)
       boundary.emitExit(.dispatch, into: &words)
       let region = try executableRegion(words)
       var context = makeContext(
@@ -375,8 +494,9 @@ import Testing
       #expect(context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue] == 0xCAFE)
       #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] == 0)
       #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] == 1)
-      #expect(context[DoryARM64Tier1ABI.ContextWord.tsc.rawValue]
-        == context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue])
+      #expect(
+        context[DoryARM64Tier1ABI.ContextWord.tsc.rawValue]
+          == context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue])
       #expect(context[DoryARM64Tier1ABI.ContextWord.fsBase.rawValue] == 0)
     #endif
   }
@@ -395,16 +515,18 @@ import Testing
         let boundary = DoryARM64Tier1BoundaryEmitter()
         let alu = DoryARM64Tier1ALUEmitter()
         boundary.emitEntry(into: &words)
-        _ = try #require(alu.emitBinary(
-          .compare,
-          width: .i64,
-          destinationGuestRegister: 0,
-          source: .guestRegister(1),
-          writesDestination: false,
-          into: &words
-        ))
-        #expect(alu.emitMaterializedSetCondition(
-          condition, destinationGuestRegister: 2, into: &words))
+        _ = try #require(
+          alu.emitBinary(
+            .compare,
+            width: .i64,
+            destinationGuestRegister: 0,
+            source: .guestRegister(1),
+            writesDestination: false,
+            into: &words
+          ))
+        #expect(
+          alu.emitMaterializedSetCondition(
+            condition, destinationGuestRegister: 2, into: &words))
         boundary.emitExit(.dispatch, into: &words)
         let region = try executableRegion(words)
 
@@ -414,11 +536,13 @@ import Testing
           #expect(try region.execute(at: 0, context: &context) == .dispatch)
           let flags = DoryX86RFLAGS(
             rawValue: context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue])
-          #expect(context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue]
-            == upper | (evaluate(condition, flags: flags) ? 1 : 0))
+          #expect(
+            context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue]
+              == upper | (evaluate(condition, flags: flags) ? 1 : 0))
           #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] == 0)
-          #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue]
-            == 1)
+          #expect(
+            context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue]
+              == 1)
         }
       }
     #endif
@@ -443,23 +567,26 @@ import Testing
         let boundary = DoryARM64Tier1BoundaryEmitter()
         let alu = DoryARM64Tier1ALUEmitter()
         boundary.emitEntry(into: &words)
-        let flags = try #require(alu.emitBinary(
-          .compare,
-          width: .i64,
-          destinationGuestRegister: 0,
-          source: .guestRegister(1),
-          writesDestination: false,
-          into: &words
-        ))
-        #expect(alu.emitFusedConditionalMove(
-          condition,
-          flags: flags,
-          destinationGuestRegister: 3,
-          source: .guestRegister(2),
-          into: &words
-        ))
-        #expect(alu.emitFusedBranch(
-          condition, flags: flags, taken: taken, notTaken: notTaken, into: &words))
+        let flags = try #require(
+          alu.emitBinary(
+            .compare,
+            width: .i64,
+            destinationGuestRegister: 0,
+            source: .guestRegister(1),
+            writesDestination: false,
+            into: &words
+          ))
+        #expect(
+          alu.emitFusedConditionalMove(
+            condition,
+            flags: flags,
+            destinationGuestRegister: 3,
+            source: .guestRegister(2),
+            into: &words
+          ))
+        #expect(
+          alu.emitFusedBranch(
+            condition, flags: flags, taken: taken, notTaken: notTaken, into: &words))
         boundary.emitExit(.dispatch, into: &words)
         let region = try executableRegion(words)
 
@@ -470,13 +597,16 @@ import Testing
           #expect(try region.execute(at: 0, context: &context) == .dispatch)
           let lazy = try #require(DoryARM64LazyFlagsState(context: context))
           let matches = evaluate(condition, flags: lazy.materialize())
-          #expect(context[DoryARM64Tier1ABI.ContextWord.rbx.rawValue]
-            == (matches ? source : originalDestination))
-          #expect(context[DoryARM64Tier1ABI.ContextWord.rip.rawValue]
-            == (matches ? taken : notTaken))
+          #expect(
+            context[DoryARM64Tier1ABI.ContextWord.rbx.rawValue]
+              == (matches ? source : originalDestination))
+          #expect(
+            context[DoryARM64Tier1ABI.ContextWord.rip.rawValue]
+              == (matches ? taken : notTaken))
           #expect(lazy.operation == .subtract)
-          #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue]
-            == 0)
+          #expect(
+            context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue]
+              == 0)
         }
       }
     #endif
@@ -488,30 +618,34 @@ import Testing
       let boundary = DoryARM64Tier1BoundaryEmitter()
       let alu = DoryARM64Tier1ALUEmitter()
       boundary.emitEntry(into: &words)
-      let flags = try #require(alu.emitBinary(
-        .and,
-        width: .i64,
-        destinationGuestRegister: 0,
-        source: .guestRegister(1),
-        writesDestination: true,
-        into: &words
-      ))
-      #expect(alu.emitFusedConditionalMove(
-        .below,
-        flags: flags,
-        destinationGuestRegister: 3,
-        source: .immediate(0xFFFF),
-        into: &words
-      ))
-      #expect(alu.emitFusedConditionalMove(
-        .aboveOrEqual,
-        flags: flags,
-        destinationGuestRegister: 2,
-        source: .immediate(0xABCD_EF01_2345_6789),
-        into: &words
-      ))
-      #expect(alu.emitFusedBranch(
-        .aboveOrEqual, flags: flags, taken: 0x1111, notTaken: 0x2222, into: &words))
+      let flags = try #require(
+        alu.emitBinary(
+          .and,
+          width: .i64,
+          destinationGuestRegister: 0,
+          source: .guestRegister(1),
+          writesDestination: true,
+          into: &words
+        ))
+      #expect(
+        alu.emitFusedConditionalMove(
+          .below,
+          flags: flags,
+          destinationGuestRegister: 3,
+          source: .immediate(0xFFFF),
+          into: &words
+        ))
+      #expect(
+        alu.emitFusedConditionalMove(
+          .aboveOrEqual,
+          flags: flags,
+          destinationGuestRegister: 2,
+          source: .immediate(0xABCD_EF01_2345_6789),
+          into: &words
+        ))
+      #expect(
+        alu.emitFusedBranch(
+          .aboveOrEqual, flags: flags, taken: 0x1111, notTaken: 0x2222, into: &words))
       boundary.emitExit(.dispatch, into: &words)
       let region = try executableRegion(words)
       var context = makeContext(
@@ -521,8 +655,9 @@ import Testing
 
       #expect(try region.execute(at: 0, context: &context) == .dispatch)
       #expect(context[DoryARM64Tier1ABI.ContextWord.rbx.rawValue] == 0xBBBB)
-      #expect(context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue]
-        == 0xABCD_EF01_2345_6789)
+      #expect(
+        context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue]
+          == 0xABCD_EF01_2345_6789)
       #expect(context[DoryARM64Tier1ABI.ContextWord.rip.rawValue] == 0x1111)
       #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] == 0)
     #endif
@@ -545,20 +680,22 @@ import Testing
         let boundary = DoryARM64Tier1BoundaryEmitter()
         let alu = DoryARM64Tier1ALUEmitter()
         boundary.emitEntry(into: &words)
-        _ = try #require(alu.emitBinary(
-          .compare,
-          width: .i64,
-          destinationGuestRegister: 0,
-          source: .guestRegister(1),
-          writesDestination: false,
-          into: &words
-        ))
-        #expect(alu.emitMaterializedConditionalMove(
-          condition,
-          destinationGuestRegister: 3,
-          source: .guestRegister(2),
-          into: &words
-        ))
+        _ = try #require(
+          alu.emitBinary(
+            .compare,
+            width: .i64,
+            destinationGuestRegister: 0,
+            source: .guestRegister(1),
+            writesDestination: false,
+            into: &words
+          ))
+        #expect(
+          alu.emitMaterializedConditionalMove(
+            condition,
+            destinationGuestRegister: 3,
+            source: .guestRegister(2),
+            into: &words
+          ))
         alu.emitMaterializedBranch(
           condition, taken: taken, notTaken: notTaken, into: &words)
         boundary.emitExit(.dispatch, into: &words)
@@ -572,13 +709,16 @@ import Testing
           let flags = DoryX86RFLAGS(
             rawValue: context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue])
           let matches = evaluate(condition, flags: flags)
-          #expect(context[DoryARM64Tier1ABI.ContextWord.rbx.rawValue]
-            == (matches ? source : originalDestination))
-          #expect(context[DoryARM64Tier1ABI.ContextWord.rip.rawValue]
-            == (matches ? taken : notTaken))
+          #expect(
+            context[DoryARM64Tier1ABI.ContextWord.rbx.rawValue]
+              == (matches ? source : originalDestination))
+          #expect(
+            context[DoryARM64Tier1ABI.ContextWord.rip.rawValue]
+              == (matches ? taken : notTaken))
           #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] == 0)
-          #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue]
-            == 1)
+          #expect(
+            context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue]
+              == 1)
         }
       }
     #endif
@@ -598,14 +738,15 @@ import Testing
       let boundary = DoryARM64Tier1BoundaryEmitter()
       let alu = DoryARM64Tier1ALUEmitter()
       boundary.emitEntry(into: &words)
-      _ = try #require(alu.emitBinary(
-        .compare,
-        width: .i64,
-        destinationGuestRegister: 0,
-        source: .guestRegister(1),
-        writesDestination: false,
-        into: &words
-      ))
+      _ = try #require(
+        alu.emitBinary(
+          .compare,
+          width: .i64,
+          destinationGuestRegister: 0,
+          source: .guestRegister(1),
+          writesDestination: false,
+          into: &words
+        ))
       alu.emitLoadFlagsIntoAH(into: &words)
       #expect(alu.emitPushedFlagsImage(destinationGuestRegister: 2, into: &words))
       boundary.emitExit(.dispatch, into: &words)
@@ -617,8 +758,9 @@ import Testing
         let flags = DoryX86RFLAGS(
           rawValue: context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue])
         let ah = (flags.rawValue & 0xD5) | DoryX86RFLAGS.reservedOne.rawValue
-        #expect(context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
-          == (lhs & ~UInt64(0xFF00)) | ah << 8)
+        #expect(
+          context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
+            == (lhs & ~UInt64(0xFF00)) | ah << 8)
         let pushed =
           (flags.rawValue
             & ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue))

@@ -20,6 +20,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       case subtraction
       case logical
       case carryPreserving
+      case materializedOnly
     }
 
     let origin: Origin
@@ -40,23 +41,28 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     writesDestination: Bool,
     into words: inout [UInt32]
   ) -> NativeFlags? {
-    guard width == .i32 || width == .i64,
-      (0..<16).contains(destinationGuestRegister),
+    guard (0..<16).contains(destinationGuestRegister),
       Self.validWriteMode(operation: operation, writesDestination: writesDestination)
     else { return nil }
     if case .guestRegister(let sourceRegister) = source {
       guard (0..<16).contains(sourceRegister) else { return nil }
     }
 
+    let isNarrow = width == .i8 || width == .i16
+    let alignsNarrowFlags =
+      isNarrow
+      && operation != .addWithCarry && operation != .subtractWithBorrow
     let lazyOperation: DoryARM64LazyFlagsState.Operation
     let domain: NativeFlags.Domain
     switch operation {
     case .add, .addWithCarry:
       lazyOperation = operation == .add ? .add : .addWithCarry
-      domain = .addition
+      domain = isNarrow && operation == .addWithCarry ? .materializedOnly : .addition
     case .subtract, .subtractWithBorrow, .compare:
       lazyOperation = operation == .subtractWithBorrow ? .subtractWithBorrow : .subtract
-      domain = .subtraction
+      domain =
+        isNarrow && operation == .subtractWithBorrow
+        ? .materializedOnly : .subtraction
     case .and, .test, .or, .xor:
       lazyOperation = .logical
       domain = .logical
@@ -64,54 +70,109 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
 
     var fragment: [UInt32] = []
     let is64Bit = width == .i64
+    let narrowShift = isNarrow ? UInt32(32 - Int(width.rawValue)) : 0
+    let mask = Self.mask(for: width)
     let destination = UInt32(destinationGuestRegister)
     if operation == .addWithCarry || operation == .subtractWithBorrow {
       Self.emitCarryFromMaterializedFlags(
         inverted: operation == .subtractWithBorrow, into: &fragment)
     }
-    fragment.append(Self.encodeMove(
-      destination: 16, source: destination, is64Bit: is64Bit))
-    fragment.append(Self.encodeStore64(
-      register: 16, word: .lazyFlagsSource1))
+    fragment.append(
+      Self.encodeMove(
+        destination: 16, source: destination, is64Bit: isNarrow || is64Bit))
+    if isNarrow {
+      Self.emitImmediate(mask, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: 16, right: 17, destination: 16))
+    }
+    fragment.append(
+      Self.encodeStore64(
+        register: 16, word: .lazyFlagsSource1))
 
     switch source {
     case .guestRegister(let sourceRegister):
-      fragment.append(Self.encodeMove(
-        destination: 17, source: UInt32(sourceRegister), is64Bit: is64Bit))
+      fragment.append(
+        Self.encodeMove(
+          destination: 17, source: UInt32(sourceRegister), is64Bit: isNarrow || is64Bit))
+      if isNarrow {
+        Self.emitImmediate(mask, register: 26, into: &fragment)
+        fragment.append(
+          Self.encodeLogical(
+            .and, is64Bit: true, left: 17, right: 26, destination: 17))
+      }
     case .immediate(let value):
-      Self.emitImmediate(
-        is64Bit ? value : value & 0xFFFF_FFFF, register: 17, into: &fragment)
+      Self.emitImmediate(value & mask, register: 17, into: &fragment)
     }
     fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
 
-    let resultRegister = writesDestination ? destination : 16
-    switch operation {
-    case .add:
-      fragment.append(Self.encodeAddSubtractSetFlags(
-        add: true, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
-    case .addWithCarry:
-      fragment.append(Self.encodeAddSubtractCarrySetFlags(
-        add: true, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
-    case .subtract, .compare:
-      fragment.append(Self.encodeAddSubtractSetFlags(
-        add: false, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
-    case .subtractWithBorrow:
-      fragment.append(Self.encodeAddSubtractCarrySetFlags(
-        add: false, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
-    case .and, .test:
-      fragment.append(Self.encodeLogical(
-        .andSetFlags, is64Bit: is64Bit, left: 16, right: 17,
-        destination: resultRegister))
-    case .or, .xor:
-      fragment.append(Self.encodeLogical(
-        operation == .or ? .or : .xor, is64Bit: is64Bit,
-        left: 16, right: 17, destination: resultRegister))
-      fragment.append(Self.encodeLogical(
-        .andSetFlags, is64Bit: is64Bit, left: resultRegister, right: resultRegister,
-        destination: 31))
+    if alignsNarrowFlags {
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: false, left: 31, right: 16,
+          shiftAmount: narrowShift, destination: 16))
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: false, left: 31, right: 17,
+          shiftAmount: narrowShift, destination: 17))
     }
 
-    fragment.append(Self.encodeStore64(register: resultRegister, word: .lazyFlagsResult))
+    let resultRegister = writesDestination && !isNarrow ? destination : 16
+    switch operation {
+    case .add:
+      fragment.append(
+        Self.encodeAddSubtractSetFlags(
+          add: true, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
+    case .addWithCarry:
+      fragment.append(
+        Self.encodeAddSubtractCarrySetFlags(
+          add: true, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
+    case .subtract, .compare:
+      fragment.append(
+        Self.encodeAddSubtractSetFlags(
+          add: false, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
+    case .subtractWithBorrow:
+      fragment.append(
+        Self.encodeAddSubtractCarrySetFlags(
+          add: false, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
+    case .and, .test:
+      fragment.append(
+        Self.encodeLogical(
+          .andSetFlags, is64Bit: is64Bit, left: 16, right: 17,
+          destination: resultRegister))
+    case .or, .xor:
+      fragment.append(
+        Self.encodeLogical(
+          operation == .or ? .or : .xor, is64Bit: is64Bit,
+          left: 16, right: 17, destination: resultRegister))
+      fragment.append(
+        Self.encodeLogical(
+          .andSetFlags, is64Bit: is64Bit, left: resultRegister, right: resultRegister,
+          destination: 31))
+    }
+
+    if alignsNarrowFlags {
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: false, left: 31, right: resultRegister,
+          shiftAmount: narrowShift, logicalRightShift: true, destination: 16))
+    } else if isNarrow {
+      Self.emitImmediate(mask, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: resultRegister, right: 17, destination: 16))
+    }
+    let normalizedResult = isNarrow ? UInt32(16) : resultRegister
+    fragment.append(Self.encodeStore64(register: normalizedResult, word: .lazyFlagsResult))
+    if writesDestination && isNarrow {
+      Self.emitImmediate(~mask, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: destination, right: 17, destination: destination))
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: true, left: destination, right: 16, destination: destination))
+    }
     Self.emitImmediate(UInt64(width.rawValue), register: 17, into: &fragment)
     fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
     Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
@@ -129,18 +190,37 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     destinationGuestRegister: Int,
     into words: inout [UInt32]
   ) -> NativeFlags? {
-    guard operation != .bitwiseNot, width == .i32 || width == .i64,
-      (0..<16).contains(destinationGuestRegister)
+    guard operation != .bitwiseNot, (0..<16).contains(destinationGuestRegister)
     else { return nil }
 
     var fragment: [UInt32] = []
     let is64Bit = width == .i64
+    let isNarrow = width == .i8 || width == .i16
+    let narrowShift = isNarrow ? UInt32(32 - Int(width.rawValue)) : 0
+    let mask = Self.mask(for: width)
     let destination = UInt32(destinationGuestRegister)
-    fragment.append(Self.encodeMove(
-      destination: 16, source: destination, is64Bit: is64Bit))
+    fragment.append(
+      Self.encodeMove(
+        destination: 16, source: destination, is64Bit: isNarrow || is64Bit))
+    if isNarrow {
+      Self.emitImmediate(mask, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: 16, right: 17, destination: 16))
+    }
     fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
     Self.emitImmediate(operation == .negate ? 0 : 1, register: 17, into: &fragment)
     fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+    if isNarrow {
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: false, left: 31, right: 16,
+          shiftAmount: narrowShift, destination: 16))
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: false, left: 31, right: 17,
+          shiftAmount: narrowShift, destination: 17))
+    }
 
     let lazyOperation: DoryARM64LazyFlagsState.Operation
     let domain: NativeFlags.Domain
@@ -148,23 +228,44 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     case .increment:
       lazyOperation = .increment
       domain = .carryPreserving
-      fragment.append(Self.encodeAddSubtractSetFlags(
-        add: true, is64Bit: is64Bit, left: 16, right: 17, destination: destination))
+      fragment.append(
+        Self.encodeAddSubtractSetFlags(
+          add: true, is64Bit: is64Bit, left: 16, right: 17,
+          destination: isNarrow ? 16 : destination))
     case .decrement:
       lazyOperation = .decrement
       domain = .carryPreserving
-      fragment.append(Self.encodeAddSubtractSetFlags(
-        add: false, is64Bit: is64Bit, left: 16, right: 17, destination: destination))
+      fragment.append(
+        Self.encodeAddSubtractSetFlags(
+          add: false, is64Bit: is64Bit, left: 16, right: 17,
+          destination: isNarrow ? 16 : destination))
     case .negate:
       lazyOperation = .negate
       domain = .subtraction
-      fragment.append(Self.encodeAddSubtractSetFlags(
-        add: false, is64Bit: is64Bit, left: 31, right: 16, destination: destination))
+      fragment.append(
+        Self.encodeAddSubtractSetFlags(
+          add: false, is64Bit: is64Bit, left: 31, right: 16,
+          destination: isNarrow ? 16 : destination))
     case .bitwiseNot:
       return nil
     }
 
-    fragment.append(Self.encodeStore64(register: destination, word: .lazyFlagsResult))
+    if isNarrow {
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: false, left: 31, right: 16,
+          shiftAmount: narrowShift, logicalRightShift: true, destination: 16))
+      fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
+      Self.emitImmediate(~mask, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: destination, right: 17, destination: destination))
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: true, left: destination, right: 16, destination: destination))
+    } else {
+      fragment.append(Self.encodeStore64(register: destination, word: .lazyFlagsResult))
+    }
     Self.emitImmediate(UInt64(width.rawValue), register: 17, into: &fragment)
     fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
     Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
@@ -197,10 +298,12 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     }
     Self.emitImmediate(~UInt64(0xFF), register: 17, into: &fragment)
     let destination = UInt32(destinationGuestRegister)
-    fragment.append(Self.encodeLogical(
-      .and, is64Bit: true, left: destination, right: 17, destination: destination))
-    fragment.append(Self.encodeLogical(
-      .or, is64Bit: true, left: destination, right: 16, destination: destination))
+    fragment.append(
+      Self.encodeLogical(
+        .and, is64Bit: true, left: destination, right: 17, destination: destination))
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: destination, right: 16, destination: destination))
     words.append(contentsOf: fragment)
     return true
   }
@@ -236,12 +339,13 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
         Self.emitSource(source, register: sourceRegister, into: &fragment)
       }
       let destination = UInt32(destinationGuestRegister)
-      fragment.append(Self.encodeConditionalSelect(
-        destination: destination,
-        trueRegister: sourceRegister,
-        falseRegister: destination,
-        condition: nativeCondition
-      ))
+      fragment.append(
+        Self.encodeConditionalSelect(
+          destination: destination,
+          trueRegister: sourceRegister,
+          falseRegister: destination,
+          condition: nativeCondition
+        ))
     }
     words.append(contentsOf: fragment)
     return true
@@ -291,10 +395,12 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
 
     Self.emitImmediate(~UInt64(0xFF), register: 26, into: &fragment)
     let destination = UInt32(destinationGuestRegister)
-    fragment.append(Self.encodeLogical(
-      .and, is64Bit: true, left: destination, right: 26, destination: destination))
-    fragment.append(Self.encodeLogical(
-      .or, is64Bit: true, left: destination, right: 16, destination: destination))
+    fragment.append(
+      Self.encodeLogical(
+        .and, is64Bit: true, left: destination, right: 26, destination: destination))
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: destination, right: 16, destination: destination))
     fragment.append(Self.encodeMove(destination: 26, source: 31, is64Bit: true))
     words.append(contentsOf: fragment)
     return true
@@ -322,15 +428,17 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       sourceRegister = 17
       Self.emitSource(source, register: sourceRegister, into: &fragment)
     }
-    fragment.append(Self.encodeAddSubtractSetFlags(
-      add: false, is64Bit: true, left: 16, right: 31, destination: 31))
+    fragment.append(
+      Self.encodeAddSubtractSetFlags(
+        add: false, is64Bit: true, left: 16, right: 31, destination: 31))
     let destination = UInt32(destinationGuestRegister)
-    fragment.append(Self.encodeConditionalSelect(
-      destination: destination,
-      trueRegister: sourceRegister,
-      falseRegister: destination,
-      condition: .notEqual
-    ))
+    fragment.append(
+      Self.encodeConditionalSelect(
+        destination: destination,
+        trueRegister: sourceRegister,
+        falseRegister: destination,
+        condition: .notEqual
+      ))
     fragment.append(Self.encodeMove(destination: 26, source: 31, is64Bit: true))
     words.append(contentsOf: fragment)
     return true
@@ -366,16 +474,20 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     var fragment: [UInt32] = []
     DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
     Self.emitImmediate(0xD5, register: 16, into: &fragment)
-    fragment.append(Self.encodeLogical(
-      .and, is64Bit: true, left: 25, right: 16, destination: 16))
+    fragment.append(
+      Self.encodeLogical(
+        .and, is64Bit: true, left: 25, right: 16, destination: 16))
     Self.emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 17, into: &fragment)
-    fragment.append(Self.encodeLogical(
-      .or, is64Bit: true, left: 16, right: 17, destination: 16))
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: 16, right: 17, destination: 16))
     Self.emitImmediate(~UInt64(0xFF00), register: 17, into: &fragment)
-    fragment.append(Self.encodeLogical(
-      .and, is64Bit: true, left: 0, right: 17, destination: 0))
-    fragment.append(Self.encodeLogical(
-      .or, is64Bit: true, left: 0, right: 16, shiftAmount: 8, destination: 0))
+    fragment.append(
+      Self.encodeLogical(
+        .and, is64Bit: true, left: 0, right: 17, destination: 0))
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: 0, right: 16, shiftAmount: 8, destination: 0))
     words.append(contentsOf: fragment)
   }
 
@@ -394,11 +506,13 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       into: &fragment
     )
     let destination = UInt32(destinationGuestRegister)
-    fragment.append(Self.encodeLogical(
-      .and, is64Bit: true, left: 25, right: 16, destination: destination))
+    fragment.append(
+      Self.encodeLogical(
+        .and, is64Bit: true, left: 25, right: 16, destination: destination))
     Self.emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 16, into: &fragment)
-    fragment.append(Self.encodeLogical(
-      .or, is64Bit: true, left: destination, right: 16, destination: destination))
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: destination, right: 16, destination: destination))
     words.append(contentsOf: fragment)
     return true
   }
@@ -412,22 +526,25 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     emitImmediate(1, register: 17, into: &words)
 
     func emitFlag(_ flag: DoryX86RFLAGS, into result: UInt32) {
-      words.append(encodeLogical(
-        .or,
-        is64Bit: true,
-        left: 31,
-        right: 25,
-        shiftAmount: UInt32(flag.rawValue.trailingZeroBitCount),
-        logicalRightShift: true,
-        destination: result
-      ))
-      words.append(encodeLogical(
-        .and, is64Bit: true, left: result, right: 17, destination: result))
+      words.append(
+        encodeLogical(
+          .or,
+          is64Bit: true,
+          left: 31,
+          right: 25,
+          shiftAmount: UInt32(flag.rawValue.trailingZeroBitCount),
+          logicalRightShift: true,
+          destination: result
+        ))
+      words.append(
+        encodeLogical(
+          .and, is64Bit: true, left: result, right: 17, destination: result))
     }
 
     func invert(_ result: UInt32) {
-      words.append(encodeLogical(
-        .xor, is64Bit: true, left: result, right: 17, destination: result))
+      words.append(
+        encodeLogical(
+          .xor, is64Bit: true, left: result, right: 17, destination: result))
     }
 
     switch condition {
@@ -443,8 +560,9 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     case .belowOrEqual, .above:
       emitFlag(.carry, into: 16)
       emitFlag(.zero, into: 26)
-      words.append(encodeLogical(
-        .or, is64Bit: true, left: 16, right: 26, destination: 16))
+      words.append(
+        encodeLogical(
+          .or, is64Bit: true, left: 16, right: 26, destination: 16))
       if condition == .above { invert(16) }
     case .sign, .notSign:
       emitFlag(.sign, into: 16)
@@ -455,17 +573,20 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     case .less, .greaterOrEqual:
       emitFlag(.sign, into: 16)
       emitFlag(.overflow, into: 26)
-      words.append(encodeLogical(
-        .xor, is64Bit: true, left: 16, right: 26, destination: 16))
+      words.append(
+        encodeLogical(
+          .xor, is64Bit: true, left: 16, right: 26, destination: 16))
       if condition == .greaterOrEqual { invert(16) }
     case .lessOrEqual, .greater:
       emitFlag(.sign, into: 16)
       emitFlag(.overflow, into: 26)
-      words.append(encodeLogical(
-        .xor, is64Bit: true, left: 16, right: 26, destination: 16))
+      words.append(
+        encodeLogical(
+          .xor, is64Bit: true, left: 16, right: 26, destination: 16))
       emitFlag(.zero, into: 26)
-      words.append(encodeLogical(
-        .or, is64Bit: true, left: 16, right: 26, destination: 16))
+      words.append(
+        encodeLogical(
+          .or, is64Bit: true, left: 16, right: 26, destination: 16))
       if condition == .greater { invert(16) }
     }
   }
@@ -480,6 +601,10 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     }
   }
 
+  private static func mask(for width: DoryIRIntegerWidth) -> UInt64 {
+    width == .i64 ? .max : (UInt64(1) << width.rawValue) - 1
+  }
+
   private enum ConditionLowering {
     case condition(ARM64Condition)
     case constant(Bool)
@@ -489,6 +614,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     _ condition: DoryX86Condition,
     domain: NativeFlags.Domain
   ) -> ConditionLowering? {
+    guard domain != .materializedOnly else { return nil }
     switch condition {
     case .overflow: return .condition(.overflowSet)
     case .notOverflow: return .condition(.overflowClear)
@@ -508,6 +634,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       case .subtraction: .condition(.carryClear)
       case .logical: .constant(false)
       case .carryPreserving: nil
+      case .materializedOnly: nil
       }
     case .aboveOrEqual:
       return switch domain {
@@ -515,6 +642,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       case .subtraction: .condition(.carrySet)
       case .logical: .constant(true)
       case .carryPreserving: nil
+      case .materializedOnly: nil
       }
     case .belowOrEqual:
       return switch domain {
@@ -522,6 +650,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       case .subtraction: .condition(.lowerOrSame)
       case .logical: .condition(.equal)
       case .carryPreserving: nil
+      case .materializedOnly: nil
       }
     case .above:
       return switch domain {
@@ -529,6 +658,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       case .subtraction: .condition(.higher)
       case .logical: .condition(.notEqual)
       case .carryPreserving: nil
+      case .materializedOnly: nil
       }
     }
   }
@@ -606,12 +736,13 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     right: UInt32,
     destination: UInt32
   ) -> UInt32 {
-    let base: UInt32 = switch (add, is64Bit) {
-    case (true, true): 0xAB00_0000
-    case (true, false): 0x2B00_0000
-    case (false, true): 0xEB00_0000
-    case (false, false): 0x6B00_0000
-    }
+    let base: UInt32 =
+      switch (add, is64Bit) {
+      case (true, true): 0xAB00_0000
+      case (true, false): 0x2B00_0000
+      case (false, true): 0xEB00_0000
+      case (false, false): 0x6B00_0000
+      }
     return base | right << 16 | left << 5 | destination
   }
 
@@ -622,12 +753,13 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     right: UInt32,
     destination: UInt32
   ) -> UInt32 {
-    let base: UInt32 = switch (add, is64Bit) {
-    case (true, true): 0xBA00_0000
-    case (true, false): 0x3A00_0000
-    case (false, true): 0xFA00_0000
-    case (false, false): 0x7A00_0000
-    }
+    let base: UInt32 =
+      switch (add, is64Bit) {
+      case (true, true): 0xBA00_0000
+      case (true, false): 0x3A00_0000
+      case (false, true): 0xFA00_0000
+      case (false, false): 0x7A00_0000
+      }
     return base | right << 16 | left << 5 | destination
   }
 
@@ -636,14 +768,17 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     into words: inout [UInt32]
   ) {
     emitImmediate(1, register: 17, into: &words)
-    words.append(encodeLogical(
-      .and, is64Bit: true, left: 25, right: 17, destination: 16))
+    words.append(
+      encodeLogical(
+        .and, is64Bit: true, left: 25, right: 17, destination: 16))
     if inverted {
-      words.append(encodeLogical(
-        .xor, is64Bit: true, left: 16, right: 17, destination: 16))
+      words.append(
+        encodeLogical(
+          .xor, is64Bit: true, left: 16, right: 17, destination: 16))
     }
-    words.append(encodeAddSubtractSetFlags(
-      add: false, is64Bit: true, left: 16, right: 17, destination: 31))
+    words.append(
+      encodeAddSubtractSetFlags(
+        add: false, is64Bit: true, left: 16, right: 17, destination: 31))
   }
 
   private static func encodeLogical(
@@ -655,16 +790,17 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     logicalRightShift: Bool = false,
     destination: UInt32
   ) -> UInt32 {
-    let base: UInt32 = switch (operation, is64Bit) {
-    case (.and, true): 0x8A00_0000
-    case (.and, false): 0x0A00_0000
-    case (.or, true): 0xAA00_0000
-    case (.or, false): 0x2A00_0000
-    case (.xor, true): 0xCA00_0000
-    case (.xor, false): 0x4A00_0000
-    case (.andSetFlags, true): 0xEA00_0000
-    case (.andSetFlags, false): 0x6A00_0000
-    }
+    let base: UInt32 =
+      switch (operation, is64Bit) {
+      case (.and, true): 0x8A00_0000
+      case (.and, false): 0x0A00_0000
+      case (.or, true): 0xAA00_0000
+      case (.or, false): 0x2A00_0000
+      case (.xor, true): 0xCA00_0000
+      case (.xor, false): 0x4A00_0000
+      case (.andSetFlags, true): 0xEA00_0000
+      case (.andSetFlags, false): 0x6A00_0000
+      }
     let shift = logicalRightShift ? UInt32(1) << 22 : 0
     return base | shift | shiftAmount << 10 | right << 16 | left << 5 | destination
   }
