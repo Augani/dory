@@ -114,6 +114,11 @@ so a validated native-flags token can cross them into the next fused condition
 consumer. The legacy baseline emitter admits the same word MOV/NOT forms so a
 tier-1 decline never changes fallback coverage.
 
+Qword register XCHG, dword/qword BSWAP, register MOVSX/MOVZX/MOVSXD, and
+CDQ/CQO also operate directly on the pinned GPR bank. Their move, bitfield,
+byte-reversal, and variable-shift encodings do not set NZCV, so neither the
+lazy record nor an eligible native-flags token changes while they execute.
+
 SHL/SHR/SAR/ROL/ROR/RCL/RCR producers accept immediate or pinned-CL counts at every
 architectural width. They resolve older lazy flags before a nonzero operation,
 mask counts according to x86 rules, preserve upper register parts, and publish a
