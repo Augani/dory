@@ -17,6 +17,7 @@ struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredMemoryBitTestRIP: UInt64 = 0xFFFF_FFFF_81E1_C883
   private static let measuredMemoryBitTestRCXRIP: UInt64 = 0xFFFF_FFFF_81E1_B3A0
   private static let measuredMemoryBitTestRDIRSIRIP: UInt64 = 0xFFFF_FFFF_81E1_C65C
+  private static let measuredMemoryBitTestRAXRDIRIP: UInt64 = 0xFFFF_FFFF_8168_1086
   private static let measuredMemoryBitResetRIP: UInt64 = 0xFFFF_FFFF_81E1_B3A6
   private static let measuredMemoryBitResetR14RIP: UInt64 = 0xFFFF_FFFF_8168_1078
   private static let measuredAtomicMemoryBitSetRIP: UInt64 = 0xFFFF_FFFF_8133_CB0F
@@ -823,6 +824,14 @@ struct DoryARM64Tier1Emitter: Sendable {
             addressWidth: .i64
           )
         && index == .init(bank: "x86.gpr", index: 7, width: .i64)
+    case measuredMemoryBitTestRAXRDIRIP:
+      return block.guestByteCount == 6
+        && address
+          == .init(
+            base: .init(bank: "x86.gpr", index: 7, width: .i64),
+            addressWidth: .i64
+          )
+        && index == .init(bank: "x86.gpr", index: 0, width: .i64)
     default:
       return false
     }
