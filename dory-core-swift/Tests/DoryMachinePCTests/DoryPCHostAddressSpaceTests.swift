@@ -36,6 +36,25 @@ import Testing
     return result == KERN_SUCCESS && address == hostAddress ? info.protection : nil
   }
 
+  private func kernelReadResult(at hostAddress: UInt64) -> kern_return_t {
+    var value: UInt8 = 0
+    var copiedByteCount: mach_vm_size_t = 0
+    return withUnsafeMutablePointer(to: &value) { valuePointer in
+      mach_vm_read_overwrite(
+        mach_task_self_, mach_vm_address_t(hostAddress), 1,
+        mach_vm_address_t(UInt(bitPattern: valuePointer)), &copiedByteCount)
+    }
+  }
+
+  private func kernelWriteResult(at hostAddress: UInt64) -> kern_return_t {
+    var value: UInt8 = 0
+    return withUnsafeMutablePointer(to: &value) { valuePointer in
+      mach_vm_write(
+        mach_task_self_, mach_vm_address_t(hostAddress),
+        vm_offset_t(UInt(bitPattern: valuePointer)), 1)
+    }
+  }
+
   @Test func configuredRAMUsesAFullGuestPhysicalReservation() throws {
     let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 << 20)
     #expect(machine.hostAddressSpaceBase != 0)
@@ -47,6 +66,9 @@ import Testing
       protection(at: machine.hostAddressSpaceBase + DoryPCV1ABI.pcieMMIOBase)
         == VM_PROT_NONE
     )
+    #expect(
+      kernelReadResult(at: machine.hostAddressSpaceBase + DoryPCV1ABI.pcieMMIOBase)
+        != KERN_SUCCESS)
     #expect(machine.physicalMemory.hostAddressSpaceBase == machine.hostAddressSpaceBase)
     #expect(
       machine.physicalMemory.hostAddressSpaceByteCount == machine.hostAddressSpaceByteCount)
@@ -93,6 +115,7 @@ import Testing
     #expect(rom.advanced(by: Int(flash.imageOffset)).pointee == 0xA5)
     #expect(rom.advanced(by: Int(flash.byteCount) - 1).pointee == 0xA5)
     #expect(protection(at: romAddress) == VM_PROT_READ)
+    #expect(kernelWriteResult(at: romAddress) != KERN_SUCCESS)
     #expect(
       try machine.physicalMemory.read(at: DoryPCV1ABI.uefiResetAddress, byteCount: 1) == [0xA5])
     #expect(throws: DoryPCPhysicalMemoryError.self) {
