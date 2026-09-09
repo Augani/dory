@@ -27,6 +27,7 @@ struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredCR3WriteRDIRIP: UInt64 = 0xFFFF_FFFF_8100_17B7
   private static let measuredSlabFreeWordSubtractStoreRIP: UInt64 = 0xFFFF_FFFF_815E_3559
   private static let measuredFreeFrozenPageByteShiftRIP: UInt64 = 0xFFFF_FFFF_815C_C28B
+  private static let measuredKernfsActivateWordORRIP: UInt64 = 0xFFFF_FFFF_8172_2852
   private let boundary = DoryARM64Tier1BoundaryEmitter()
   private let alu = DoryARM64Tier1ALUEmitter()
 
@@ -77,6 +78,11 @@ struct DoryARM64Tier1Emitter: Sendable {
         requiresMemoryCallbacks = true
         wroteMemory = true
       case .binary where Self.isMeasuredPatchedByteXORBlock(block):
+        guard !wroteMemory else { return nil }
+        memoryCallbackCount += 2
+        requiresMemoryCallbacks = true
+        wroteMemory = true
+      case .binary where Self.isMeasuredKernfsActivateWordORBlock(block):
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 2
         requiresMemoryCallbacks = true
@@ -182,6 +188,13 @@ struct DoryARM64Tier1Emitter: Sendable {
           if Self.isMeasuredPatchedByteXORBlock(block), operation == .xor, width == .i8,
             source == .immediate(1, width: .i8), writesDestination,
             alu.emitMeasuredPatchedByteXOR(address: address, into: &body)
+          {
+            nativeFlags = nil
+            continue
+          }
+          if Self.isMeasuredKernfsActivateWordORBlock(block), operation == .or, width == .i16,
+            source == .immediate(0x10, width: .i16), writesDestination,
+            alu.emitMeasuredWordORImmediate16(address: address, into: &body)
           {
             nativeFlags = nil
             continue
@@ -742,6 +755,30 @@ struct DoryARM64Tier1Emitter: Sendable {
         == .init(
           base: .init(bank: "x86.gpr", index: 6, width: .i64),
           displacement: 0x19,
+          addressWidth: .i64
+        )
+  }
+
+  private static func isMeasuredKernfsActivateWordORBlock(
+    _ block: DoryIRBasicBlock
+  ) -> Bool {
+    guard block.guestStart == measuredKernfsActivateWordORRIP,
+      block.guestByteCount == 5,
+      block.guestInstructionCount == 1,
+      block.statements.count == 1,
+      case .binary(
+        .or,
+        .memory(let address, let width),
+        .immediate(0x10, width: let sourceWidth),
+        writesDestination: true
+      ) = block.statements[0]
+    else { return false }
+    return width == .i16
+      && sourceWidth == .i16
+      && address
+        == .init(
+          base: .init(bank: "x86.gpr", index: 3, width: .i64),
+          displacement: 0x3C,
           addressWidth: .i64
         )
   }

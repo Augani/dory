@@ -4561,6 +4561,141 @@ import Testing
       #expect(rejectedWriteMemory.writeAttempts == 1)
     #endif
   }
+
+  @Test func measuredKernfsActivateWordORIsExactAndMatchesInterpreter() throws {
+    let codeAddress: UInt64 = 0xFFFF_FFFF_8172_2852
+    let bytes: [UInt8] = [0x66, 0x83, 0x4B, 0x3C, 0x10]  // orw $0x10,0x3c(%rbx)
+    let block = try DoryX86IRTranslator().translate(bytes, at: codeAddress, mode: .long64)
+    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+    #expect(compiled.tier == .tier1)
+    #expect(compiled.guestByteCount == 5)
+    #expect(compiled.guestInstructionCount == 1)
+    #expect(compiled.requiresMemoryCallbacks)
+    #expect(compiled.requiresRestartableMemoryReads)
+    #expect(compiled.mayExitToInterpreter)
+
+    let adjacent = try DoryX86IRTranslator().translate(
+      bytes,
+      at: codeAddress + 1,
+      mode: .long64
+    )
+    #expect(DoryARM64Tier1Emitter().compile(adjacent) == nil)
+    var changedDisplacementBytes = bytes
+    changedDisplacementBytes[3] = 0x3D
+    let changedDisplacement = try DoryX86IRTranslator().translate(
+      changedDisplacementBytes,
+      at: codeAddress,
+      mode: .long64
+    )
+    #expect(DoryARM64Tier1Emitter().compile(changedDisplacement) == nil)
+    var changedImmediateBytes = bytes
+    changedImmediateBytes[4] = 0x20
+    let changedImmediate = try DoryX86IRTranslator().translate(
+      changedImmediateBytes,
+      at: codeAddress,
+      mode: .long64
+    )
+    #expect(DoryARM64Tier1Emitter().compile(changedImmediate) == nil)
+
+    #if arch(arm64)
+      let dataAddress = codeAddress + 0x800
+      for (index, value) in [UInt16(0), 1, 0x8000, 0xFFFF].enumerated() {
+        let interpretedMemory = try DoryX86ByteArrayMemory(
+          baseAddress: codeAddress,
+          byteCount: 0x1000
+        )
+        let tier1Memory = try DoryX86ByteArrayMemory(
+          baseAddress: codeAddress,
+          byteCount: 0x1000
+        )
+        let valueBytes = [UInt8(truncatingIfNeeded: value), UInt8(truncatingIfNeeded: value >> 8)]
+        for memory in [interpretedMemory, tier1Memory] {
+          try memory.write(at: codeAddress, bytes: bytes)
+          try memory.write(at: dataAddress, bytes: valueBytes)
+        }
+        let initial = try DoryX86ArchitecturalState(
+          registers: .init(
+            rax: 0x0123_4567_89AB_CDEF,
+            rbx: dataAddress - 0x3C,
+            r15: 0xFEDC_BA98_7654_3210
+          ),
+          rip: codeAddress,
+          rflags: [
+            .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .sign, .direction,
+            .overflow,
+          ]
+        )
+        var interpreted = initial
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: interpretedMemory,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire measured word OR")
+          return
+        }
+
+        var tier1 = initial
+        let execution = try #require(
+          DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024,
+            tier1Enabled: true
+          ).execute(
+            bytes: bytes,
+            at: codeAddress,
+            mode: .long64,
+            addressSpaceID: UInt64(index),
+            maximumInstructions: 1,
+            state: &tier1,
+            memory: tier1Memory
+          ))
+        #expect(execution.block.tier == .tier1)
+        #expect(tier1 == interpreted)
+        #expect(tier1Memory.snapshot() == interpretedMemory.snapshot())
+        let expected = value | 0x10
+        #expect(
+          try tier1Memory.read(at: dataAddress, byteCount: 2)
+            == [UInt8(truncatingIfNeeded: expected), UInt8(truncatingIfNeeded: expected >> 8)]
+        )
+      }
+
+      let rejectedWriteMemory = try Tier1RejectingWriteMemory(
+        baseAddress: codeAddress,
+        byteCount: 0x1000
+      )
+      try rejectedWriteMemory.backing.write(at: codeAddress, bytes: bytes)
+      try rejectedWriteMemory.backing.write(at: dataAddress, bytes: [0x00, 0x80])
+      let rejectedInitial = try DoryX86ArchitecturalState(
+        registers: .init(
+          rax: 0x0123_4567_89AB_CDEF,
+          rbx: dataAddress - 0x3C,
+          r15: 0xFEDC_BA98_7654_3210
+        ),
+        rip: codeAddress,
+        rflags: [.reservedOne, .carry, .zero, .direction, .overflow]
+      )
+      var rejected = rejectedInitial
+      let rejectedSnapshot = rejectedWriteMemory.backing.snapshot()
+      let failure = try #require(
+        DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: true
+        ).execute(
+          bytes: bytes,
+          at: codeAddress,
+          mode: .long64,
+          addressSpaceID: 0x0A16,
+          maximumInstructions: 1,
+          state: &rejected,
+          memory: rejectedWriteMemory
+        ))
+      #expect(failure.block.tier == .tier1)
+      #expect(failure.exitCode == .interpreter)
+      #expect(rejected == rejectedInitial)
+      #expect(rejectedWriteMemory.backing.snapshot() == rejectedSnapshot)
+      #expect(rejectedWriteMemory.writeAttempts == 1)
+    #endif
+  }
 }
 
 private final class Tier1AtomicResults: @unchecked Sendable {
