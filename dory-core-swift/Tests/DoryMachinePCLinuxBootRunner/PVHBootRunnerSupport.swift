@@ -34,6 +34,8 @@ struct PVHRunnerConfiguration: Codable, Sendable {
   let initrdSHA256: String
   let commandLine: String
   let tier: DoryPCExecutionTier
+  // Older receipts predate the tier-one A/B switch. Missing means the production default.
+  let tier1Enabled: Bool?
   let memoryMiB: Int
   let maximumInstructions: UInt64
   let wallSeconds: UInt64
@@ -48,6 +50,7 @@ struct PVHRunnerConfiguration: Codable, Sendable {
   let stressIODirectory: String?
 
   var effectiveCPUProfile: DoryX86CPUProfile { (cpuProfile ?? .compatibleV1).profile }
+  var effectiveTier1Enabled: Bool { tier1Enabled ?? true }
   static let stressIOWorkloads = ["io.block_flush_reopen", "io.ethernet_frame_roundtrip"]
 
   static let usage = """
@@ -55,7 +58,7 @@ struct PVHRunnerConfiguration: Codable, Sendable {
       --kernel /absolute/vmlinux --kernel-sha256 HEX \
       --initrd /absolute/initramfs --initrd-sha256 HEX \
       --command-line 'console=ttyS0 rdinit=/init panic=-1' \
-      --tier interpreter|baseline-jit|optimizing-jit --memory-mib N \
+      --tier interpreter|baseline-jit|optimizing-jit [--tier1 enabled|disabled] --memory-mib N \
       --max-instructions N --wall-seconds N --run-id UUID --workload NAME [--workload NAME ...] \
       [--diagnostics /absolute/result.json] [--symbols /absolute/System.map --symbols-sha256 HEX] \
       [--cpu-profile dory.x86_64.compat-v1|dory.x86_64.intel-compatible-v1] \
@@ -69,6 +72,8 @@ struct PVHRunnerConfiguration: Codable, Sendable {
     --cpu-profile defaults to dory.x86_64.compat-v1. Both selectable profiles implement
     Dory's evidence-bound x86-64 Linux baseline; neither enables extra ISA features nor
     establishes x86-64-v2/v3, hardware, hypervisor or release qualification.
+    --tier1 defaults to enabled and controls tier-one admission in the baseline compiler;
+    disabled is retained only for matched engineering measurements.
     --stress-io-directory creates a fresh 32 MiB diagnostic disk and a bounded Ethernet
     peer, with no connection to host networking. It requires --diagnostics and exactly
     io.block_flush_reopen plus io.ethernet_frame_roundtrip. The new disk is retained;
@@ -86,7 +91,7 @@ struct PVHRunnerConfiguration: Codable, Sendable {
     let names: Set<String> = [
       "kernel", "kernel-sha256", "initrd", "initrd-sha256", "command-line", "tier",
       "memory-mib", "max-instructions", "wall-seconds", "run-id", "workload", "diagnostics",
-      "symbols", "symbols-sha256", "cpu-profile", "stress-io-directory",
+      "symbols", "symbols-sha256", "cpu-profile", "stress-io-directory", "tier1",
     ]
     var values: [String: String] = [:]
     var requestedWorkloads: [String] = []
@@ -146,6 +151,11 @@ struct PVHRunnerConfiguration: Codable, Sendable {
     case "baseline-jit": tier = .baselineJIT
     case "optimizing-jit": tier = .optimizingJIT
     default: throw PVHRunnerError("Unsupported --tier")
+    }
+    switch values["tier1"] ?? "enabled" {
+    case "enabled": tier1Enabled = true
+    case "disabled": tier1Enabled = false
+    default: throw PVHRunnerError("--tier1 must be enabled or disabled")
     }
     guard let memory = Int(try required("memory-mib")), (2...524288).contains(memory) else {
       throw PVHRunnerError("--memory-mib must be 2...524288")

@@ -139,6 +139,7 @@ private func run(_ configuration: PVHRunnerConfiguration) -> Never {
       initialRTCDate: Date(timeIntervalSince1970: 0),
       pciFunctions: pciFunctions,
       interpreter: .init(profile: configuration.effectiveCPUProfile), executionTier: configuration.tier,
+      baselineJITTier1Enabled: configuration.effectiveTier1Enabled,
       clockSource: .deterministic)
     try machine.load(kernel: kernel.data, initrd: Array(initrd.data), commandLine: configuration.commandLine)
     record.stage = "running"

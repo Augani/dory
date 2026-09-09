@@ -14,6 +14,8 @@ import Testing
     #expect(configuration.workloads == workloads)
     #expect(configuration.memoryMiB == 512)
     #expect(configuration.maximumInstructions == 10000)
+    #expect(configuration.tier1Enabled == true)
+    #expect(configuration.effectiveTier1Enabled)
     #expect(configuration.diagnostics == nil)
     #expect(throws: PVHRunnerError.self) { _ = try PVHRunnerConfiguration(arguments: []) }
     #expect(throws: PVHRunnerError.self) {
@@ -22,6 +24,25 @@ import Testing
     #expect(throws: PVHRunnerError.self) {
       _ = try PVHRunnerConfiguration(arguments: arguments() + ["--unknown", "value"])
     }
+  }
+
+  @Test func tier1ChoiceIsExplicitAndHistoricalReceiptsKeepTheProductionDefault() throws {
+    let disabled = try PVHRunnerConfiguration(
+      arguments: arguments() + ["--tier1", "disabled"])
+    #expect(disabled.tier1Enabled == false)
+    #expect(!disabled.effectiveTier1Enabled)
+    #expect(throws: PVHRunnerError.self) {
+      _ = try PVHRunnerConfiguration(arguments: arguments() + ["--tier1", "maybe"])
+    }
+
+    let encoded = try JSONEncoder().encode(disabled)
+    var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+    object.removeValue(forKey: "tier1Enabled")
+    let historical = try JSONDecoder().decode(
+      PVHRunnerConfiguration.self,
+      from: JSONSerialization.data(withJSONObject: object))
+    #expect(historical.tier1Enabled == nil)
+    #expect(historical.effectiveTier1Enabled)
   }
 
   @Test func configurationRejectsAmbiguousOrUnboundedInputs() {
