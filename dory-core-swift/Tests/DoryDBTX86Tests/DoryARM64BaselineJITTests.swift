@@ -1061,6 +1061,130 @@ import Testing
     #endif
   }
 
+  @Test func byteRevalidationReprotectsCodeBeforeAnInlineWriteTLBEntryCanMutateIt() throws {
+    #if arch(arm64)
+      let physical = try DoryX86MmapMemory(validatingByteCount: 0x8000)
+      let paging = DoryX86PagingUnit()
+      let targetAddress: UInt64 = 0x100
+      let siblingAddress: UInt64 = 0x180
+      let writerAddress: UInt64 = 0x5000
+      let targetOne: [UInt8] = [0xB8, 1, 0, 0, 0, 0x90, 0x90, 0x90]
+      let targetTwo: UInt64 = 0x9090_9000_0000_02B8
+      let writerBytes: [UInt8] = [0x48, 0x89, 0x18]
+      try physical.write(at: targetAddress, bytes: targetOne)
+      try physical.write(at: writerAddress, bytes: writerBytes)
+
+      var state = try DoryX86ArchitecturalState(rip: targetAddress)
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: state, mode: .long64)
+      )
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 8_192)
+      func executeOne(at address: UInt64) throws {
+        translated.updateContext(.init(state: state, mode: .long64))
+        _ = try #require(
+          executor.executeSummary(
+            byteProvider: { count in
+              try translated.instructionBytes(at: address, maximumCount: count)
+            },
+            codeGenerationProvider: { count in
+              try translated.codeGeneration(at: address, byteCount: count)
+            },
+            at: address,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &state,
+            memory: translated
+          ))
+      }
+
+      try executeOne(at: targetAddress)
+      #expect(state.registers.rax == 1)
+      #expect(physical.protectedTranslatedCodePageCount == 1)
+
+      // The first inline write invalidates the target page's generation but does not overlap the
+      // compiled instruction bytes. The next target lookup must byte-revalidate and re-protect it.
+      state.rip = writerAddress
+      state.registers.rax = siblingAddress
+      state.registers.rbx = 0xA5A5_A5A5_A5A5_A5A5
+      try executeOne(at: writerAddress)
+      state.rip = targetAddress
+      state.registers.rax = 0
+      try executeOne(at: targetAddress)
+      #expect(state.registers.rax == 1)
+      #expect(executor.diagnostics.byteValidationHits == 1)
+      #expect(physical.protectedTranslatedCodePageCount == 2)
+
+      // Re-protection revokes the existing page-wide write-TLB entry. The second write therefore
+      // crosses the invalidation boundary instead of silently changing bytes under valid code.
+      state.rip = writerAddress
+      state.registers.rax = targetAddress
+      state.registers.rbx = targetTwo
+      try executeOne(at: writerAddress)
+      state.rip = targetAddress
+      state.registers.rax = 0
+      try executeOne(at: targetAddress)
+      #expect(state.registers.rax == 2)
+      #expect(executor.diagnostics.codeGenerationMismatches == 2)
+      #expect(executor.diagnostics.translationCacheFills == 2)
+    #endif
+  }
+
+  @Test func sharedCodeReuseReprotectsAnUnchangedGuestPage() throws {
+    #if arch(arm64)
+      let memory = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+      let targetAddress: UInt64 = 0x100
+      let targetBytes: [UInt8] = [0xB8, 1, 0, 0, 0]
+      try memory.write(at: targetAddress, bytes: targetBytes)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+
+      var state = try DoryX86ArchitecturalState(rip: targetAddress)
+      _ = try #require(
+        executor.executeSummary(
+          byteProvider: { count in
+            try memory.instructionBytes(at: targetAddress, maximumCount: count)
+          },
+          codeGenerationProvider: { count in
+            try memory.codeGeneration(at: targetAddress, byteCount: count)
+          },
+          at: targetAddress,
+          mode: .long64,
+          addressSpaceID: 1,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        ))
+      #expect(memory.protectedTranslatedCodePageCount == 1)
+
+      // A sibling mutation invalidates the page generation without changing the block bytes.
+      try memory.writeScalar(at: 0x180, value: 0xA5, byteCount: 1)
+      #expect(memory.protectedTranslatedCodePageCount == 0)
+
+      state.rip = targetAddress
+      state.registers.rax = 0
+      _ = try #require(
+        executor.executeSummary(
+          byteProvider: { count in
+            try memory.instructionBytes(at: targetAddress, maximumCount: count)
+          },
+          codeGenerationProvider: { count in
+            try memory.codeGeneration(at: targetAddress, byteCount: count)
+          },
+          at: targetAddress,
+          mode: .long64,
+          addressSpaceID: 2,
+          maximumInstructions: 1,
+          state: &state,
+          memory: memory
+        ))
+      #expect(executor.diagnostics.sharedCodeHits == 1)
+      #expect(memory.protectedTranslatedCodePageCount == 1)
+      #expect(state.registers.rax == 1)
+    #endif
+  }
+
   @Test func nativePageTableWriteInvalidatesAnEarlierInlineReadBeforeBlockContinues() throws {
     #if arch(arm64)
       let physical = try DoryX86MmapMemory(validatingByteCount: 0x10_000)

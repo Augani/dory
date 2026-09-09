@@ -5496,6 +5496,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       // boundary. Invalidate and decode the available bytes before declining it.
       if currentBytes.count == byteCount, generation == cached.codeGeneration {
         byteValidationHitCount &+= 1
+        try protectValidatedGuestCode(
+          at: guestStart,
+          byteCount: byteCount,
+          memoryCodeGeneration: memoryGeneration,
+          memory: memory
+        )
         let resident = ResidentBlock(
           block: cached.block,
           offset: cached.offset,
@@ -5526,14 +5532,21 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         let generation = Self.fingerprint(bytes: guestBytes, mode: mode)
         if generation == shared.codeGeneration {
           sharedCodeHitCount &+= 1
+          let memoryCodeGeneration = readCodeGeneration(
+            using: codeGenerationProvider,
+            byteCount: byteCount
+          )
+          try protectValidatedGuestCode(
+            at: guestStart,
+            byteCount: byteCount,
+            memoryCodeGeneration: memoryCodeGeneration,
+            memory: memory
+          )
           let resident = ResidentBlock(
             block: shared.block,
             offset: shared.offset,
             codeGeneration: shared.codeGeneration,
-            memoryCodeGeneration: readCodeGeneration(
-              using: codeGenerationProvider,
-              byteCount: byteCount
-            ),
+            memoryCodeGeneration: memoryCodeGeneration,
             endsTimeBoundary: shared.endsTimeBoundary
           )
           publish(resident, for: key)
@@ -5741,30 +5754,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       using: codeGenerationProvider,
       byteCount: guestBytes.count
     )
-    let changedCodeProtection: Bool
-    if memoryCodeGeneration != nil,
-      let translatedMemory = memory as? DoryX86TranslatedMemory
-    {
-      changedCodeProtection = try translatedMemory.protectTranslatedCode(
-        at: guestStart,
-        byteCount: guestBytes.count
-      )
-    } else if memoryCodeGeneration != nil,
-      let protector = memory as? any DoryX86TranslatedCodeProtectionMemory
-    {
-      changedCodeProtection = try protector.protectTranslatedCode(
-        at: guestStart,
-        byteCount: guestBytes.count
-      )
-    } else {
-      changedCodeProtection = false
-    }
-    if changedCodeProtection {
-      // A write entry may have been filled while this host page was writable. Revoke it before
-      // any generated store can encounter the newly read-only host allocation granule.
-      invalidateAllTranslations()
-      recordCodeProtectionGeneration(for: memory)
-    }
+    try protectValidatedGuestCode(
+      at: guestStart,
+      byteCount: guestBytes.count,
+      memoryCodeGeneration: memoryCodeGeneration,
+      memory: memory
+    )
     let resident = ResidentBlock(
       block: compiled,
       offset: offset,
@@ -5776,6 +5771,40 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     compiledBlockCount &+= 1
     if compiled.tier == .tier1 { tier1CompiledBlockCount &+= 1 }
     return .init(resident: resident, emitterDeclineByteCount: nil, declineReason: nil)
+  }
+
+  /// Restores write protection whenever native code becomes lookup-visible after compilation or
+  /// byte revalidation. A generation mismatch can be caused by a write elsewhere in the same
+  /// host allocation granule; if the block's bytes are unchanged, republishing it without this
+  /// boundary leaves the page writable. A previously filled write-TLB entry could then mutate the
+  /// block without advancing its generation, allowing stale native code to execute.
+  private func protectValidatedGuestCode(
+    at guestStart: UInt64,
+    byteCount: Int,
+    memoryCodeGeneration: UInt64?,
+    memory: (any DoryX86Memory)?
+  ) throws {
+    guard memoryCodeGeneration != nil else { return }
+    let changedCodeProtection: Bool
+    if let translatedMemory = memory as? DoryX86TranslatedMemory {
+      changedCodeProtection = try translatedMemory.protectTranslatedCode(
+        at: guestStart,
+        byteCount: byteCount
+      )
+    } else if let protector = memory as? any DoryX86TranslatedCodeProtectionMemory {
+      changedCodeProtection = try protector.protectTranslatedCode(
+        at: guestStart,
+        byteCount: byteCount
+      )
+    } else {
+      changedCodeProtection = false
+    }
+    if changedCodeProtection {
+      // A write entry may have been filled while this host page was writable. Revoke it before
+      // any generated store can encounter the newly read-only host allocation granule.
+      invalidateAllTranslations()
+      recordCodeProtectionGeneration(for: memory)
+    }
   }
 
   private func codeProtectionState(
