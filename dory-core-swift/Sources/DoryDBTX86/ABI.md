@@ -34,7 +34,7 @@ a prologue or epilogue.
 
 ## Stable vCPU context
 
-The context is an array of 53 little-endian `UInt64` words. It is not a Swift
+The context is an array of 54 little-endian `UInt64` words. It is not a Swift
 struct ABI. The word layout is:
 
 | Words | Contents |
@@ -48,7 +48,7 @@ struct ABI. The word layout is:
 | 38...42 | scalar compare-exchange, exchange, fetch-add, generic RMW, and pair compare-exchange helpers |
 | 43...47 | lazy-flags operation plus count (low/high byte), width, result, source 1, and source 2 |
 | 48...49 | lazy-flags materializer helper and per-dispatch materialization count |
-| 50...52 | dispatch-entry CR3 snapshot, IA32_KERNEL_GS_BASE, and SWAPGS-performed marker |
+| 50...53 | dispatch-entry/current CR3, IA32_KERNEL_GS_BASE, SWAPGS-performed marker, and CR3-write-performed marker |
 
 The context pointer remains stable for a dispatch. TLB bases and helper
 addresses are derived from it; generated code must not retain them beyond that
@@ -276,8 +276,10 @@ writing `x0`...`x7` cannot destroy a later argument.
   allocation candidates.
 - Interpreter-to-JIT and JIT-to-interpreter transitions round-trip all 16 GPRs,
   RIP, RFLAGS, FS/GS bases, TSC, and visible segment selectors.
-- CPL0 long-mode control-register reads may consume the immutable CR3 snapshot
-  appended at word 50; writes and every other control register remain interpreter-owned.
+- CPL0 long-mode control-register reads may consume the CR3 snapshot at word 50. The two
+  measured flushing CR3-write sites may update it and set word 53; the dispatcher then
+  publishes CR3 and invalidates paging/JIT TLB state before another guest instruction runs.
+  Every other control-register write remains interpreter-owned.
 - CPL0 long-mode `SWAPGS` exchanges context words 19 and 51 without changing
   pinned GPRs or flags, then sets word 52; dispatcher publication uses that
   marker to mirror word 19 into both the visible GS descriptor base and

@@ -10,6 +10,8 @@ struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredMemorySetEqualRIP: UInt64 = 0xFFFF_FFFF_815C_AB95
   private static let measuredMemoryBitTestRIP: UInt64 = 0xFFFF_FFFF_81E1_C883
   private static let measuredMemoryBitResetRIP: UInt64 = 0xFFFF_FFFF_81E1_B3A6
+  private static let measuredCR3WriteRAXRIP: UInt64 = 0xFFFF_FFFF_8100_1B43
+  private static let measuredCR3WriteRDIRIP: UInt64 = 0xFFFF_FFFF_8100_17B7
   private let boundary = DoryARM64Tier1BoundaryEmitter()
   private let alu = DoryARM64Tier1ALUEmitter()
 
@@ -434,6 +436,15 @@ struct DoryARM64Tier1Emitter: Sendable {
           )
         else { return nil }
 
+      case .writeControlRegister(let index, let source):
+        guard Self.isMeasuredCR3WriteBlock(block, source: source),
+          alu.emitWriteControlRegister(
+            index,
+            sourceGuestRegister: Int(source.index),
+            into: &body
+          )
+        else { return nil }
+
       case .swapGS:
         alu.emitSwapGS(into: &body)
 
@@ -581,6 +592,23 @@ struct DoryARM64Tier1Emitter: Sendable {
       return false
     }
     return width == .i64
+  }
+
+  private static func isMeasuredCR3WriteBlock(
+    _ block: DoryIRBasicBlock,
+    source: DoryIRRegister
+  ) -> Bool {
+    guard block.guestByteCount == 3,
+      block.guestInstructionCount == 1,
+      block.statements.count == 1,
+      source.bank == "x86.gpr",
+      source.width == .i64
+    else { return false }
+    switch block.guestStart {
+    case measuredCR3WriteRAXRIP: return source.index == 0
+    case measuredCR3WriteRDIRIP: return source.index == 7
+    default: return false
+    }
   }
 
   private static func isMeasuredAtomicByteXOR(_ statement: DoryIRStatement) -> Bool {

@@ -117,6 +117,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case memoryFence(DoryX86MemoryFence)
   case readSegment(DoryX86SegmentRegister, destination: DoryIROperand)
   case readControlRegister(index: UInt8, destination: DoryIRRegister)
+  case writeControlRegister(index: UInt8, source: DoryIRRegister)
   case swapGS
   case setDirectionFlag(enabled: Bool)
   case readTimestampCounter
@@ -739,6 +740,16 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .writeControlRegister(let index, let source) where mode == .long64 && index == 3:
+      return (
+        [
+          .writeControlRegister(
+            index: index,
+            source: irRegister(source, width: .i64)
+          )
+        ],
+        .next(instruction.nextInstructionAddress)
+      )
     case .swapGS where mode == .long64:
       return ([.swapGS], nil)
     case .jump(let relative) where mode == .long64 || mode == .protected32:
@@ -822,7 +833,8 @@ public struct DoryX86IRTranslator: Sendable {
   ) -> Bool {
     lowering.statements.contains {
       switch $0 {
-      case .readTimestampCounter, .unsignedAccumulatorDivide, .signedAccumulatorDivide, .memoryFence:
+      case .readTimestampCounter, .unsignedAccumulatorDivide, .signedAccumulatorDivide,
+        .memoryFence, .writeControlRegister:
         return true
       default:
         return false
@@ -1164,6 +1176,8 @@ public struct DoryX86IRTranslator: Sendable {
       }
     case .readControlRegister(let index, let destination):
       return index == 3 && destination.width == .i64 && isJITGeneralRegister(destination)
+    case .writeControlRegister(let index, let source):
+      return index == 3 && source.width == .i64 && isJITGeneralRegister(source)
     case .signExtendAccumulatorHigh(let width):
       return width == .i32 || width == .i64
     case .loadFlagsIntoAH, .storeAHIntoFlags, .setCarryFlag, .complementCarryFlag, .swapGS,
@@ -1264,7 +1278,7 @@ public struct DoryX86IRTranslator: Sendable {
       return .none
     case .readSegment(_, let destination):
       return isMemory(destination) ? .write : .none
-    case .readControlRegister, .swapGS:
+    case .readControlRegister, .writeControlRegister, .swapGS:
       return .none
     case .effectiveAddress, .loadFlagsIntoAH, .storeAHIntoFlags, .setCarryFlag,
       .complementCarryFlag, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,

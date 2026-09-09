@@ -159,6 +159,9 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         invalidate(.register(destination), knownConstants: &knownConstants)
 
+      case .writeControlRegister:
+        statements.append(statement)
+
       case .clearInterruptFlag, .setDirectionFlag, .memoryFence, .swapGS:
         statements.append(statement)
 

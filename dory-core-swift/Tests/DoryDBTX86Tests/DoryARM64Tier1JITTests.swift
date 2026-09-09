@@ -174,6 +174,153 @@ import Testing
     #endif
   }
 
+  @Test func measuredCR3WritesMatchInterpreterAndInvalidateTranslationState() throws {
+    let measuredSites: [(UInt64, [UInt8], DoryX86GeneralRegister, UInt16)] = [
+      (0xFFFF_FFFF_8100_1B43, [0x0F, 0x22, 0xD8], .rax, 0),
+      (0xFFFF_FFFF_8100_17B7, [0x0F, 0x22, 0xDF], .rdi, 7),
+    ]
+    for (address, bytes, source, sourceIndex) in measuredSites {
+      let block = try DoryX86IRTranslator().translate(bytes, at: address, mode: .long64)
+      #expect(block.guestInstructionCount == 1)
+      #expect(block.terminator == .next(address + 3))
+      #expect(
+        block.statements == [
+          .writeControlRegister(
+            index: 3,
+            source: .init(bank: "x86.gpr", index: sourceIndex, width: .i64)
+          )
+        ])
+
+      var registers = DoryX86GeneralRegisters(rax: 0x1234_5007, rdi: 0x2345_6003)
+      registers[source] = source == .rax ? 0x1234_5007 : 0x2345_6003
+      let initial = try DoryX86ArchitecturalState(
+        registers: registers,
+        rip: address,
+        rflags: [.reservedOne, .carry, .direction],
+        cs: .init(selector: 0x10, attributes: 0xA09B, limit: .max),
+        control: .init(
+          cr0: 0x11,
+          cr3: 0x3000,
+          cr4: UInt64(1) << 5,
+          efer: 0x500
+        )
+      )
+      var interpreted = initial
+      let interpreterPaging = DoryX86PagingUnit()
+      let interpreterResult = DoryX86Interpreter().step(
+        state: &interpreted,
+        memory: try DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes),
+        mode: .long64,
+        pagingUnit: interpreterPaging
+      )
+      guard case .retired = interpreterResult
+      else {
+        Issue.record("interpreter did not retire measured CR3 write: \(interpreterResult)")
+        return
+      }
+      #expect(interpreted.control.cr3 == registers[source])
+      #expect(interpreterPaging.invalidationSnapshot.sequence == 1)
+
+      #if arch(arm64)
+        var native = initial
+        let nativePaging = DoryX86PagingUnit()
+        let translatedMemory = DoryX86TranslatedMemory(
+          physicalMemory: try DoryX86ByteArrayMemory(byteCount: 0x1000),
+          pagingUnit: nativePaging,
+          context: .init(state: initial, mode: .long64)
+        )
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: true
+        )
+        let execution = try #require(
+          executor.execute(
+            bytes: bytes,
+            at: address,
+            mode: .long64,
+            addressSpaceID: initial.control.cr3,
+            maximumInstructions: 1,
+            state: &native,
+            memory: translatedMemory
+          ))
+        #expect(execution.block.tier == .tier1)
+        #expect(execution.block.guestInstructionCount == 1)
+        #expect(native == interpreted)
+        #expect(nativePaging.invalidationSnapshot.sequence == 1)
+        #expect(executor.diagnostics.translationCacheInvalidations == 1)
+
+        var chained = initial
+        let chainedExecution = try #require(
+          executor.executeChainedSummary(
+            byteProvider: { currentRIP, maximumCount in
+              guard currentRIP == address else { return [0x90] }
+              return Array((bytes + [0x90]).prefix(maximumCount))
+            },
+            at: address,
+            mode: .long64,
+            addressSpaceID: initial.control.cr3,
+            maximumInstructions: 2,
+            state: &chained,
+            memory: translatedMemory
+          ))
+        #expect(chainedExecution.guestInstructionCount == 1)
+        #expect(chained.rip == address + 3)
+        #expect(chained.control.cr3 == registers[source])
+
+        var user = initial
+        user.cs.selector = 0x33
+        let userBefore = user
+        #expect(
+          try executor.execute(
+            bytes: bytes,
+            at: address,
+            mode: .long64,
+            addressSpaceID: initial.control.cr3,
+            maximumInstructions: 1,
+            state: &user,
+            memory: translatedMemory
+          ) == nil)
+        #expect(user == userBefore)
+
+        var invalid = initial
+        invalid.registers[source] = UInt64(1) << 52
+        let invalidBefore = invalid
+        let declined = try executor.execute(
+          bytes: bytes,
+          at: address,
+          mode: .long64,
+          addressSpaceID: initial.control.cr3,
+          maximumInstructions: 1,
+          state: &invalid,
+          memory: translatedMemory
+        )
+        #expect(declined == nil)
+        #expect(invalid == invalidBefore)
+
+        invalid.registers[source] = UInt64(1) << 63
+        let noFlushBefore = invalid
+        #expect(
+          try executor.execute(
+            bytes: bytes,
+            at: address,
+            mode: .long64,
+            addressSpaceID: initial.control.cr3,
+            maximumInstructions: 1,
+            state: &invalid,
+            memory: translatedMemory
+          ) == nil)
+        #expect(invalid == noFlushBefore)
+      #endif
+    }
+
+    let adjacent = try DoryX86IRTranslator().translate(
+      [0x0F, 0x22, 0xD8],
+      at: 0xFFFF_FFFF_8100_1B44,
+      mode: .long64
+    )
+    #expect(DoryARM64Tier1Emitter().compile(adjacent) == nil)
+  }
+
   @Test func hotKernelSwapGSMatchesInterpreterAndPreservesTheNativeConditionPath() throws {
     let measuredSites: [UInt64] = [
       0xFFFF_FFFF_8100_0084,  // entry_SYSCALL_64+0x4

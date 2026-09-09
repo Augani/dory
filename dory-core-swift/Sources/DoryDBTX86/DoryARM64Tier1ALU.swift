@@ -509,6 +509,30 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Publishes a prevalidated CR3 value from a pinned guest GPR. Bit 63 is the transient
+  /// PCID no-flush request rather than architectural CR3 state; measured native admission
+  /// currently accepts only flushing writes, but still normalizes the stored value here.
+  func emitWriteControlRegister(
+    _ index: UInt8,
+    sourceGuestRegister: Int,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard index == 3, (0..<16).contains(sourceGuestRegister) else { return false }
+    Self.emitImmediate(~(UInt64(1) << 63), register: 16, into: &words)
+    words.append(
+      Self.encodeLogical(
+        .and,
+        is64Bit: true,
+        left: UInt32(sourceGuestRegister),
+        right: 16,
+        destination: 16
+      ))
+    words.append(Self.encodeStore64(register: 16, word: .cr3))
+    Self.emitImmediate(1, register: 16, into: &words)
+    words.append(Self.encodeStore64(register: 16, word: .cr3WritePerformed))
+    return true
+  }
+
   /// Emits register-source BSF/BSR. The legacy deterministic policy preserves all undefined
   /// status bits and leaves the entire destination unchanged for a zero source, including the
   /// upper half of a dword destination. A prior lazy producer is therefore materialized first.

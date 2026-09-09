@@ -257,7 +257,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return false
       case .stackPushFlags, .loadFlagsIntoAH, .storeAHIntoFlags, .setCarryFlag,
         .complementCarryFlag, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
-        .signExtendAccumulatorHigh, .readControlRegister, .swapGS, .memoryFence, .helper:
+        .signExtendAccumulatorHigh, .readControlRegister, .writeControlRegister, .swapGS,
+        .memoryFence, .helper:
         return false
       }
     }
@@ -311,6 +312,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitReadSegment(segment, destination: destination, into: &words)
     case .readControlRegister(let index, let destination):
       return emitReadControlRegister(index, destination: destination, into: &words)
+    case .writeControlRegister:
+      return false
     case .swapGS:
       return emitSwapGS(into: &words)
     case .copy(let destination, let source):
@@ -1097,7 +1100,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .readSegment(_, let destination):
       if case .memory = destination { return 1 }
       return 0
-    case .effectiveAddress, .readControlRegister, .swapGS, .loadFlagsIntoAH, .storeAHIntoFlags,
+    case .effectiveAddress, .readControlRegister, .writeControlRegister, .swapGS,
+      .loadFlagsIntoAH, .storeAHIntoFlags,
       .setCarryFlag,
       .complementCarryFlag, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
       .signExtendAccumulatorHigh, .helper:
@@ -4587,19 +4591,22 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let codeGeneration: UInt64
     let memoryCodeGeneration: UInt64?
     let endsTimeBoundary: Bool
+    let cr3WriteSourceRegister: Int?
 
     init(
       block: DoryARM64CompiledBlock,
       offset: Int,
       codeGeneration: UInt64,
       memoryCodeGeneration: UInt64?,
-      endsTimeBoundary: Bool
+      endsTimeBoundary: Bool,
+      cr3WriteSourceRegister: Int?
     ) {
       self.block = block
       self.offset = offset
       self.codeGeneration = codeGeneration
       self.memoryCodeGeneration = memoryCodeGeneration
       self.endsTimeBoundary = endsTimeBoundary
+      self.cr3WriteSourceRegister = cr3WriteSourceRegister
     }
   }
 
@@ -5044,7 +5051,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     // reports the precise fault for a malformed/missing legacy PAE latch.
     do { try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits) } catch
     { return nil }
-    return try lock.withLock {
+    return try lock.withLock { () -> DoryARM64ExecutionSummary? in
       synchronizeCodeProtection(for: memory)
       chainedExecutionCallCount &+= 1
       chainedRequestedInstructionCount &+= UInt64(maximumInstructions)
@@ -5111,7 +5118,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               blockCount = replay.residentBlockCount
               if replay.exitCode != .dispatch || completed >= maximumInstructions {
                 chainedRetiredInstructionCount &+= UInt64(completed)
-                publishExecutionContext(context, to: &state)
+                publishExecutionContext(context, to: &state, memory: memory)
                 return DoryARM64ExecutionSummary(
                   guestInstructionCount: UInt32(completed),
                   residentBlockCount: UInt32(blockCount),
@@ -5150,7 +5157,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               guard completed > 0 else { return nil }
               chainedRetiredInstructionCount &+= UInt64(completed)
-              publishExecutionContext(context, to: &state)
+              publishExecutionContext(context, to: &state, memory: memory)
               return DoryARM64ExecutionSummary(
                 guestInstructionCount: UInt32(completed),
                 residentBlockCount: UInt32(blockCount),
@@ -5190,7 +5197,20 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             if resident.endsTimeBoundary, completed > 0 {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               chainedRetiredInstructionCount &+= UInt64(completed)
-              publishExecutionContext(context, to: &state)
+              publishExecutionContext(context, to: &state, memory: memory)
+              return DoryARM64ExecutionSummary(
+                guestInstructionCount: UInt32(completed),
+                residentBlockCount: UInt32(blockCount),
+                tier: resident.block.tier,
+                exitCode: .dispatch
+              )
+            }
+
+            guard canExecute(resident, context: context) else {
+              publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
+              guard completed > 0 else { return nil }
+              chainedRetiredInstructionCount &+= UInt64(completed)
+              publishExecutionContext(context, to: &state, memory: memory)
               return DoryARM64ExecutionSummary(
                 guestInstructionCount: UInt32(completed),
                 residentBlockCount: UInt32(blockCount),
@@ -5234,7 +5254,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               for index in context.indices { context[index] = checkpoint[index] }
               guard completed > 0 else { return nil }
               chainedRetiredInstructionCount &+= UInt64(completed)
-              publishExecutionContext(context, to: &state)
+              publishExecutionContext(context, to: &state, memory: memory)
               return DoryARM64ExecutionSummary(
                 guestInstructionCount: UInt32(completed),
                 residentBlockCount: UInt32(blockCount),
@@ -5249,7 +5269,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             else {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               chainedRetiredInstructionCount &+= UInt64(completed)
-              publishExecutionContext(context, to: &state)
+              publishExecutionContext(context, to: &state, memory: memory)
               return DoryARM64ExecutionSummary(
                 guestInstructionCount: UInt32(completed),
                 residentBlockCount: UInt32(blockCount),
@@ -5470,6 +5490,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           translationTLB: translationTLB,
           addressSpaceGeneration: translationGeneration
         )
+        guard canExecute(resident, context: context) else { return nil }
         let exit = try region.execute(
           at: resident.offset,
           context: context,
@@ -5482,7 +5503,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         {
           return ResidentExecution(resident: resident, exitCode: exit)
         }
-        publishExecutionContext(context, to: &state)
+        publishExecutionContext(context, to: &state, memory: memory)
         return ResidentExecution(resident: resident, exitCode: exit)
       }
     }
@@ -5546,7 +5567,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           offset: cached.offset,
           codeGeneration: cached.codeGeneration,
           memoryCodeGeneration: memoryGeneration,
-          endsTimeBoundary: cached.endsTimeBoundary
+          endsTimeBoundary: cached.endsTimeBoundary,
+          cr3WriteSourceRegister: cached.cr3WriteSourceRegister
         )
         publish(resident, for: key)
         return resident
@@ -5586,7 +5608,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             offset: shared.offset,
             codeGeneration: shared.codeGeneration,
             memoryCodeGeneration: memoryCodeGeneration,
-            endsTimeBoundary: shared.endsTimeBoundary
+            endsTimeBoundary: shared.endsTimeBoundary,
+            cr3WriteSourceRegister: shared.cr3WriteSourceRegister
           )
           publish(resident, for: key)
           return resident
@@ -5724,7 +5747,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     if mode != .long64 || key.privilegeLevel != 0,
       block.statements.contains(where: {
         switch $0 {
-        case .readControlRegister, .swapGS: return true
+        case .readControlRegister, .writeControlRegister, .swapGS: return true
         default: return false
         }
       })
@@ -5815,7 +5838,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       offset: offset,
       codeGeneration: Self.fingerprint(bytes: guestBytes, mode: mode),
       memoryCodeGeneration: memoryCodeGeneration,
-      endsTimeBoundary: Self.endsTimeBoundary(block)
+      endsTimeBoundary: Self.endsTimeBoundary(block),
+      cr3WriteSourceRegister: Self.cr3WriteSourceRegister(block)
     )
     publish(resident, for: key)
     compiledBlockCount &+= 1
@@ -5885,9 +5909,32 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
 
   private static func endsTimeBoundary(_ block: DoryIRBasicBlock) -> Bool {
     block.statements.contains {
-      if case .readTimestampCounter = $0 { return true }
-      return false
+      switch $0 {
+      case .readTimestampCounter, .writeControlRegister: true
+      default: false
+      }
     }
+  }
+
+  private static func cr3WriteSourceRegister(_ block: DoryIRBasicBlock) -> Int? {
+    guard block.statements.count == 1,
+      case .writeControlRegister(3, let source) = block.statements[0],
+      source.bank == "x86.gpr", source.width == .i64, source.index < 16
+    else { return nil }
+    return Int(source.index)
+  }
+
+  private func canExecute(
+    _ resident: ResidentBlock,
+    context: UnsafeMutableBufferPointer<UInt64>
+  ) -> Bool {
+    guard let source = resident.cr3WriteSourceRegister else { return true }
+    let value = context[source]
+    // The measured native path intentionally excludes PCID's no-flush form. The interpreter
+    // remains the authority for that path and for its feature-dependent validation.
+    guard value & (UInt64(1) << 63) == 0 else { return false }
+    let addressMask = ((UInt64(1) << physicalAddressBits) - 1) & ~UInt64(0xfff)
+    return value & ~addressMask & ~UInt64(0xfff) == 0
   }
 
   static func compilationDeclineReason(
@@ -6256,6 +6303,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[DoryARM64Tier1ABI.ContextWord.kernelGSBase.rawValue] =
       state.modelSpecific.kernelGSBase
     context[DoryARM64Tier1ABI.ContextWord.swapGSPerformed.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.cr3WritePerformed.rawValue] = 0
   }
 
   private func recordLazyFlagMaterializations(
@@ -6273,7 +6321,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   /// subset.
   private func publishExecutionContext(
     _ context: UnsafeMutableBufferPointer<UInt64>,
-    to state: inout DoryX86ArchitecturalState
+    to state: inout DoryX86ArchitecturalState,
+    memory: (any DoryX86Memory)?
   ) {
     recordLazyFlagMaterializations(in: context)
     if let lazyFlags = DoryARM64LazyFlagsState(context: context),
@@ -6281,13 +6330,17 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     {
       lazyFlagMaterializationCount &+= 1
     }
-    Self.apply(context: context, to: &state)
+    let wroteCR3 = Self.apply(context: context, to: &state)
+    if wroteCR3 {
+      (memory as? DoryX86TranslatedMemory)?.translationUnit.invalidateAll()
+      invalidateAllTranslations()
+    }
   }
 
-  private static func apply(
+  @discardableResult private static func apply(
     context: UnsafeMutableBufferPointer<UInt64>,
     to state: inout DoryX86ArchitecturalState
-  ) {
+  ) -> Bool {
     precondition(context.count == DoryJITExecutableRegion.contextWordCount)
     state.registers.rax = context[0]
     state.registers.rcx = context[1]
@@ -6315,6 +6368,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       state.modelSpecific.kernelGSBase =
         context[DoryARM64Tier1ABI.ContextWord.kernelGSBase.rawValue]
     }
+    let wroteCR3 = context[DoryARM64Tier1ABI.ContextWord.cr3WritePerformed.rawValue] != 0
+    if wroteCR3 {
+      state.control.cr3 = context[DoryARM64Tier1ABI.ContextWord.cr3.rawValue]
+    }
+    return wroteCR3
   }
 
   private static func fingerprint(bytes: [UInt8], mode: DoryX86ExecutionMode) -> UInt64 {
