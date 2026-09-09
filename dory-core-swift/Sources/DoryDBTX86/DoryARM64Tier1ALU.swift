@@ -91,6 +91,75 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Forms a 32- or 64-bit x86 effective address entirely in tier-1 scratch registers. LEA
+  /// ignores the segment base, preserves NZCV and lazy flags, and computes the complete address
+  /// before publishing the destination so base/index aliases remain correct.
+  func emitEffectiveAddress(
+    destinationWidth: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(destinationGuestRegister),
+      destinationWidth == .i32 || destinationWidth == .i64,
+      address.addressWidth == .i32 || address.addressWidth == .i64,
+      address.segment == nil || address.segment == "fs" || address.segment == "gs",
+      address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8
+    else { return false }
+    for register in [address.base, address.index].compactMap({ $0 }) {
+      guard register.bank == "x86.gpr", register.index < 16,
+        register.width == address.addressWidth
+      else { return false }
+    }
+
+    let addressIs64Bit = address.addressWidth == .i64
+    let displacement = UInt64(bitPattern: address.displacement)
+    Self.emitImmediate(
+      addressIs64Bit ? displacement : displacement & UInt64(UInt32.max),
+      register: 16,
+      into: &words
+    )
+    if let relativeBase = address.instructionRelativeBase {
+      Self.emitImmediate(relativeBase, register: 17, into: &words)
+      words.append(
+        Self.encodeAddSubtract(
+          add: true,
+          is64Bit: addressIs64Bit,
+          left: 16,
+          right: 17,
+          destination: 16
+        ))
+    }
+    if let base = address.base {
+      words.append(
+        Self.encodeAddSubtract(
+          add: true,
+          is64Bit: addressIs64Bit,
+          left: 16,
+          right: UInt32(base.index),
+          destination: 16
+        ))
+    }
+    if let index = address.index {
+      words.append(
+        Self.encodeAddSubtract(
+          add: true,
+          is64Bit: addressIs64Bit,
+          left: 16,
+          right: UInt32(index.index),
+          leftShift: UInt32(address.scale.trailingZeroBitCount),
+          destination: 16
+        ))
+    }
+    words.append(
+      Self.encodeMove(
+        destination: UInt32(destinationGuestRegister),
+        source: 16,
+        is64Bit: destinationWidth == .i64
+      ))
+    return true
+  }
+
   /// Exchanges two pinned qword registers without changing NZCV or lazy flags.
   func emitExchangeRegisters(
     lhsGuestRegister: Int,
@@ -1847,8 +1916,10 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     is64Bit: Bool,
     left: UInt32,
     right: UInt32,
+    leftShift: UInt32 = 0,
     destination: UInt32
   ) -> UInt32 {
+    precondition(leftShift < (is64Bit ? 64 : 32))
     let base: UInt32 =
       switch (add, is64Bit) {
       case (true, true): 0x8B00_0000
@@ -1856,7 +1927,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       case (false, true): 0xCB00_0000
       case (false, false): 0x4B00_0000
       }
-    return base | right << 16 | left << 5 | destination
+    return base | right << 16 | leftShift << 10 | left << 5 | destination
   }
 
   private static func encodeAddSubtractImmediate(

@@ -145,6 +145,16 @@ struct DoryARM64Tier1Emitter: Sendable {
           return nil
         }
 
+      case .effectiveAddress(let destination, let address):
+        guard let destination = lowRegister(destination),
+          alu.emitEffectiveAddress(
+            destinationWidth: destination.width,
+            destinationGuestRegister: Int(destination.index),
+            address: address,
+            into: &body
+          )
+        else { return nil }
+
       case .shift(let operation, let destination, let count):
         guard let destination = lowRegister(destination),
           alu.emitShift(

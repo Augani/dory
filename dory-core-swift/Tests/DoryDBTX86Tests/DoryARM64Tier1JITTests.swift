@@ -329,6 +329,111 @@ import Testing
     #endif
   }
 
+  @Test func effectiveAddressesMatchTheInterpreterAcrossAddressWidthsAndAliases() throws {
+    #if arch(arm64)
+      let cases: [([UInt8], DoryX86GeneralRegisters)] = [
+        (
+          [0x4E, 0x8D, 0x54, 0xCB, 0xE0],  // lea r10,[rbx+r9*8-0x20]
+          .init(rbx: 0x1000, r9: 0x21, r10: .max)
+        ),
+        (
+          [0x67, 0x8D, 0x44, 0x88, 0x20],  // lea eax,[eax+ecx*4+0x20]
+          .init(rax: 0xFFFF_FFFF_FFFF_FFF0, rcx: 8)
+        ),
+        (
+          [0x48, 0x8D, 0x04, 0xC0],  // lea rax,[rax+rax*8]
+          .init(rax: 0x1234)
+        ),
+        (
+          [0x48, 0x8D, 0x05, 0x34, 0x12, 0, 0],  // lea rax,[rip+0x1234]
+          .init(rax: .max)
+        ),
+      ]
+      let flags: DoryX86RFLAGS = [.reservedOne, .carry, .parity, .direction, .overflow]
+
+      for (index, testCase) in cases.enumerated() {
+        let address = UInt64(0x4A00 + index * 0x20)
+        let initial = try DoryX86ArchitecturalState(
+          registers: testCase.1,
+          rip: address,
+          rflags: flags
+        )
+        var interpreted = initial
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: try DoryX86ByteArrayMemory(baseAddress: address, bytes: testCase.0),
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire tier-1 LEA fixture")
+          return
+        }
+
+        var tier1 = initial
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: true
+        )
+        let execution = try #require(executor.execute(
+          bytes: testCase.0,
+          at: address,
+          mode: .long64,
+          addressSpaceID: UInt64(index),
+          maximumInstructions: 1,
+          state: &tier1
+        ))
+        #expect(execution.block.tier == .tier1)
+        #expect(tier1 == interpreted)
+        #expect(tier1.rflags == flags)
+      }
+    #endif
+  }
+
+  @Test func effectiveAddressPreservesTheNativeConditionPath() throws {
+    #if arch(arm64)
+      let address: UInt64 = 0x4E00
+      let bytes: [UInt8] = [
+        0x48, 0x39, 0xD8,  // cmp rax,rbx
+        0x48, 0x8D, 0x4C, 0x91, 0x08,  // lea rcx,[rcx+rdx*4+8]
+        0x75, 0x04,  // jne +4
+      ]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 7, rcx: 0x100, rdx: 3, rbx: 9),
+        rip: address,
+        rflags: [.reservedOne, .carry, .direction]
+      )
+      let memory = try DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+      var interpreted = initial
+      for _ in 0..<3 {
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: memory,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire tier-1 LEA condition fixture")
+          return
+        }
+      }
+
+      var tier1 = initial
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        tier1Enabled: true
+      )
+      let execution = try #require(executor.execute(
+        bytes: bytes,
+        at: address,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 3,
+        state: &tier1
+      ))
+      #expect(execution.block.tier == .tier1)
+      #expect(tier1 == interpreted)
+      #expect(tier1.rip == address + UInt64(bytes.count) + 4)
+      #expect(executor.diagnostics.lazyFlagMaterializations == 1)
+    #endif
+  }
+
   @Test func wordNotPreservesUpperBitsAndFlagsAcrossBaselineAndTier1() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x66, 0xF7, 0xD1]  // not cx
