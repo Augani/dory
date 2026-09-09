@@ -93,6 +93,15 @@ import Testing
     #expect(compiledIRQ.guestInstructionCount == 2)
     #expect(compiledIRQ.requiresMemoryCallbacks)
     #expect(!compiledIRQ.requiresRestartableMemoryReads)
+
+    for bytes: [UInt8] in [
+      [0x48, 0x83, 0x7B, 0x08, 0x7F],  // cmpq [rbx+8],127
+      [0x48, 0x85, 0x43, 0x08],  // test [rbx+8],rax
+      [0xF6, 0x05, 0x10, 0x00, 0x00, 0x00, 0x10],  // testb $0x10,[rip+0x10]
+    ] {
+      let block = try DoryX86IRTranslator().translate(bytes, at: 0x2000, mode: .long64)
+      #expect(DoryARM64Tier1Emitter().compile(block) == nil)
+    }
   }
 
   @Test func scalarMemoryBinaryOperationsMatchTheInterpreterAcrossWidths() throws {
@@ -110,8 +119,6 @@ import Testing
         MemoryALUCase(bytes: [0x23, 0x43, 0x08], comment: "and eax,[rbx+8]"),
         MemoryALUCase(bytes: [0x66, 0x0B, 0x43, 0x08], comment: "or ax,[rbx+8]"),
         MemoryALUCase(bytes: [0x32, 0x43, 0x08], comment: "xor al,[rbx+8]"),
-        MemoryALUCase(bytes: [0x48, 0x83, 0x7B, 0x08, 0x7F], comment: "cmpq [rbx+8],127"),
-        MemoryALUCase(bytes: [0x48, 0x85, 0x43, 0x08], comment: "test [rbx+8],rax"),
       ]
       for (index, testCase) in cases.enumerated() {
         let address = UInt64(0x400 + index * 0x20)

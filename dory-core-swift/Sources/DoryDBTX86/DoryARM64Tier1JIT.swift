@@ -90,7 +90,10 @@ struct DoryARM64Tier1Emitter: Sendable {
             into: &body
           )
         } else if case .memory(let address, let width) = destination {
-          guard let source = lowSource(source, matching: width) else { return nil }
+          guard operation == .test, width == .i16,
+            case .immediate = source,
+            let source = lowSource(source, matching: width)
+          else { return nil }
           nativeFlags = alu.emitMemoryDestinationBinary(
             operation,
             width: width,

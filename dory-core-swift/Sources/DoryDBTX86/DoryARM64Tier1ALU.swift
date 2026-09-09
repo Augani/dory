@@ -777,8 +777,8 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return nativeFlags
   }
 
-  /// Emits read-only CMP/TEST forms whose left operand is memory. Memory-writing ALU forms remain
-  /// outside tier 1 until the block can provide a restartable write transaction.
+  /// Emits the measured word TEST-immediate form whose left operand is memory. Other
+  /// memory-destination ALU forms remain outside tier 1 pending wider production qualification.
   func emitMemoryDestinationBinary(
     _ operation: DoryIRBinaryOperation,
     width: DoryIRIntegerWidth,
@@ -786,7 +786,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     source: Source,
     into words: inout [UInt32]
   ) -> NativeFlags? {
-    guard operation == .compare || operation == .test else { return nil }
+    guard operation == .test, width == .i16, case .immediate = source else { return nil }
     let binarySource: BinaryValue
     switch source {
     case .guestRegister(let register):
