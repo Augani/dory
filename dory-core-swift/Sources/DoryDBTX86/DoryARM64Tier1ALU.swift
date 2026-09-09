@@ -1296,6 +1296,54 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     words.append(contentsOf: fragment)
   }
 
+  /// Resolves an older producer before replacing CF with the requested architectural value.
+  func emitSetCarryFlag(enabled: Bool, into words: inout [UInt32]) {
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    Self.emitImmediate(
+      enabled ? DoryX86RFLAGS.carry.rawValue : ~DoryX86RFLAGS.carry.rawValue,
+      register: 16,
+      into: &fragment
+    )
+    fragment.append(
+      Self.encodeLogical(
+        enabled ? .or : .and,
+        is64Bit: true,
+        left: 25,
+        right: 16,
+        destination: 25
+      ))
+    words.append(contentsOf: fragment)
+  }
+
+  /// Resolves an older producer before toggling its materialized CF image.
+  func emitComplementCarryFlag(into words: inout [UInt32]) {
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    Self.emitImmediate(DoryX86RFLAGS.carry.rawValue, register: 16, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .xor, is64Bit: true, left: 25, right: 16, destination: 25))
+    words.append(contentsOf: fragment)
+  }
+
+  /// Updates a non-arithmetic flag without forcing a pending arithmetic record.
+  func emitSetNonArithmeticFlag(
+    _ flag: DoryX86RFLAGS,
+    enabled: Bool,
+    into words: inout [UInt32]
+  ) {
+    Self.emitImmediate(enabled ? flag.rawValue : ~flag.rawValue, register: 16, into: &words)
+    words.append(
+      Self.encodeLogical(
+        enabled ? .or : .and,
+        is64Bit: true,
+        left: 25,
+        right: 16,
+        destination: 25
+      ))
+  }
+
   /// Materializes and stages the architecturally sanitized PUSHF image in a pinned register.
   /// The tier-1 memory lowering consumes this value when it emits the stack write.
   func emitPushedFlagsImage(

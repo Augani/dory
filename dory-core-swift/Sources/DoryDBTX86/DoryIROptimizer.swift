@@ -122,7 +122,7 @@ public struct DoryIROptimizer: Sendable {
           .register(.init(bank: "x86.gpr", index: 0, width: .i64)),
           knownConstants: &knownConstants)
 
-      case .storeAHIntoFlags:
+      case .storeAHIntoFlags, .setCarryFlag, .complementCarryFlag:
         statements.append(statement)
 
       case .signedMultiply(let destination, _, _):

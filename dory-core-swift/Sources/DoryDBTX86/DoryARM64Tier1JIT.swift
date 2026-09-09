@@ -181,6 +181,20 @@ struct DoryARM64Tier1Emitter: Sendable {
         alu.emitStoreAHIntoFlags(into: &body)
         nativeFlags = nil
 
+      case .setCarryFlag(let enabled):
+        alu.emitSetCarryFlag(enabled: enabled, into: &body)
+        nativeFlags = nil
+
+      case .complementCarryFlag:
+        alu.emitComplementCarryFlag(into: &body)
+        nativeFlags = nil
+
+      case .clearInterruptFlag:
+        alu.emitSetNonArithmeticFlag(.interruptEnable, enabled: false, into: &body)
+
+      case .setDirectionFlag(let enabled):
+        alu.emitSetNonArithmeticFlag(.direction, enabled: enabled, into: &body)
+
       default:
         return nil
       }

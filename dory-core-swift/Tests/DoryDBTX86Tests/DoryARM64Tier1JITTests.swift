@@ -403,6 +403,82 @@ import Testing
     #endif
   }
 
+  @Test func scalarFlagControlsPreserveLazyArithmeticAndMatchTheInterpreter() throws {
+    #if arch(arm64)
+      let address: UInt64 = 0x5B00
+      let bytes: [UInt8] = [
+        0x48, 0x01, 0xD8,  // add rax, rbx
+        0xFD,  // std; must update the materialized base without resolving ADD
+        0xFA,  // cli; likewise leaves the arithmetic record pending
+        0xF9,  // stc; resolves ADD before replacing CF
+        0xF5,  // cmc
+        0xF8,  // clc
+        0x9F,  // lahf; observes the final arithmetic status image
+      ]
+      let translated = try DoryX86IRTranslator().translate(
+        bytes,
+        at: address,
+        mode: .long64
+      )
+      #expect(translated.statements == [
+        .binary(
+          .add,
+          destination: .register(.init(bank: "x86.gpr", index: 0, width: .i64)),
+          source: .register(.init(bank: "x86.gpr", index: 3, width: .i64)),
+          writesDestination: true
+        ),
+        .setDirectionFlag(enabled: true),
+        .clearInterruptFlag,
+        .setCarryFlag(enabled: true),
+        .complementCarryFlag,
+        .setCarryFlag(enabled: false),
+        .loadFlagsIntoAH,
+      ])
+
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 1, rbx: 1),
+        rip: address,
+        rflags: [.reservedOne, .carry, .interruptEnable, .overflow]
+      )
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x6000)
+      try memory.write(at: address, bytes: bytes)
+      var interpreted = initial
+      for _ in 0..<7 {
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: memory,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire scalar flag-control fixture")
+          return
+        }
+      }
+
+      for tier1Enabled in [false, true] {
+        var state = initial
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: tier1Enabled
+        )
+        let execution = try #require(executor.execute(
+          bytes: bytes,
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 7,
+          state: &state
+        ))
+
+        #expect(execution.block.tier == (tier1Enabled ? .tier1 : .baseline))
+        #expect(state == interpreted)
+        #expect(state.rflags.contains(.direction))
+        #expect(!state.rflags.contains(.interruptEnable))
+        #expect(!state.rflags.contains(.carry))
+        #expect(executor.diagnostics.lazyFlagMaterializations == (tier1Enabled ? 1 : 0))
+      }
+    #endif
+  }
+
   @Test func longModeFlagByteInstructionsHonorTheAdvertisedFeatureGate() throws {
     #if arch(arm64)
       let base = DoryX86CPUProfile.compatibleV1

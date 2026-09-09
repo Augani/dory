@@ -249,9 +249,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination)
       case .effectiveAddress:
         return false
-      case .stackPushFlags, .loadFlagsIntoAH, .storeAHIntoFlags, .clearInterruptFlag,
-        .setDirectionFlag, .readTimestampCounter, .signExtendAccumulatorHigh, .memoryFence,
-        .helper:
+      case .stackPushFlags, .loadFlagsIntoAH, .storeAHIntoFlags, .setCarryFlag,
+        .complementCarryFlag, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
+        .signExtendAccumulatorHigh, .memoryFence, .helper:
         return false
       }
     }
@@ -358,6 +358,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitLoadFlagsIntoAH(into: &words)
     case .storeAHIntoFlags:
       return emitStoreAHIntoFlags(into: &words)
+    case .setCarryFlag(let enabled):
+      return emitSetCarryFlag(enabled: enabled, into: &words)
+    case .complementCarryFlag:
+      return emitComplementCarryFlag(into: &words)
     case .clearInterruptFlag:
       return emitClearInterruptFlag(into: &words)
     case .setDirectionFlag(let enabled):
@@ -498,6 +502,31 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
     emitImmediate(~DoryX86RFLAGS.interruptEnable.rawValue, register: 10, into: &words)
     words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 10, into: &words)
+    words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
+    return true
+  }
+
+  private func emitSetCarryFlag(enabled: Bool, into words: inout [UInt32]) -> Bool {
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
+    if enabled {
+      emitImmediate(DoryX86RFLAGS.carry.rawValue, register: 10, into: &words)
+      words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
+    } else {
+      emitImmediate(~DoryX86RFLAGS.carry.rawValue, register: 10, into: &words)
+      words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
+    }
+    emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 10, into: &words)
+    words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
+    return true
+  }
+
+  private func emitComplementCarryFlag(into words: inout [UInt32]) -> Bool {
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
+    emitImmediate(DoryX86RFLAGS.carry.rawValue, register: 10, into: &words)
+    words.append(encodeLogical(.xor, left: 9, right: 10, destination: 9))
     emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 10, into: &words)
     words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
     words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.rflagsOffset))
@@ -1034,8 +1063,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .readSegment(_, let destination):
       if case .memory = destination { return 1 }
       return 0
-    case .effectiveAddress, .loadFlagsIntoAH, .storeAHIntoFlags, .clearInterruptFlag,
-      .setDirectionFlag, .readTimestampCounter, .signExtendAccumulatorHigh, .helper:
+    case .effectiveAddress, .loadFlagsIntoAH, .storeAHIntoFlags, .setCarryFlag,
+      .complementCarryFlag, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
+      .signExtendAccumulatorHigh, .helper:
       return 0
     }
   }

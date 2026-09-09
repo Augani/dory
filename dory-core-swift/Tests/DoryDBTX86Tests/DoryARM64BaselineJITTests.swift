@@ -4719,25 +4719,31 @@ import Testing
 
   @Test func cliFallsBackBeforeUserPrivilegeGeneralProtection() throws {
     #if arch(arm64)
-      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
       let initial = try DoryX86ArchitecturalState(
         rip: 0,
         rflags: [.reservedOne, .interruptEnable],
         cs: .init(selector: 3, attributes: 0xA0FB, limit: .max)
       )
-      var state = initial
+      for tier1Enabled in [false, true] {
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: tier1Enabled
+        )
+        var state = initial
 
-      #expect(
-        try executor.execute(
-          bytes: [0xFA],
-          at: state.rip,
-          mode: .long64,
-          addressSpaceID: 0,
-          maximumInstructions: 1,
-          state: &state
-        ) == nil
-      )
-      #expect(state == initial)
+        #expect(
+          try executor.execute(
+            bytes: [0xFA],
+            at: state.rip,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &state
+          ) == nil
+        )
+        #expect(state == initial)
+        #expect(executor.diagnostics.tier1CompiledBlocks == 0)
+      }
 
       var interpreted = initial
       guard
