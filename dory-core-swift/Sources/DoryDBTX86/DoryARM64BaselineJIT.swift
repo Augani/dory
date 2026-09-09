@@ -3827,6 +3827,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var translationTLBGeneration: UInt64 = 1
   private var translationTLBInvalidationCount: UInt64 = 0
   private var pagingInvalidationSequences: [ObjectIdentifier: UInt64] = [:]
+  private var codeProtectionGenerations: [ObjectIdentifier: UInt64] = [:]
 
   public init(
     maximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
@@ -4128,6 +4129,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     do { try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits) }
     catch { return nil }
     return try lock.withLock {
+      synchronizeCodeProtection(for: memory)
       chainedExecutionCallCount &+= 1
       chainedRequestedInstructionCount &+= UInt64(maximumInstructions)
       switch try executeQwordCopyLoop(
@@ -4498,6 +4500,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     do { try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits) }
     catch { return nil }
     return try lock.withLock { () -> ResidentExecution? in
+      synchronizeCodeProtection(for: memory)
       guard
         let resident = try resolveResident(
           byteProvider: byteProvider,
@@ -4800,17 +4803,29 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       using: codeGenerationProvider,
       byteCount: guestBytes.count
     )
+    let changedCodeProtection: Bool
     if memoryCodeGeneration != nil,
       let translatedMemory = memory as? DoryX86TranslatedMemory
     {
-      try translatedMemory.protectTranslatedCode(
+      changedCodeProtection = try translatedMemory.protectTranslatedCode(
         at: guestStart,
         byteCount: guestBytes.count
       )
     } else if memoryCodeGeneration != nil,
       let protector = memory as? any DoryX86TranslatedCodeProtectionMemory
     {
-      try protector.protectTranslatedCode(at: guestStart, byteCount: guestBytes.count)
+      changedCodeProtection = try protector.protectTranslatedCode(
+        at: guestStart,
+        byteCount: guestBytes.count
+      )
+    } else {
+      changedCodeProtection = false
+    }
+    if changedCodeProtection {
+      // A write entry may have been filled while this host page was writable. Revoke it before
+      // any generated store can encounter the newly read-only host allocation granule.
+      invalidateAllTranslations()
+      recordCodeProtectionGeneration(for: memory)
     }
     let resident = ResidentBlock(
       block: compiled,
@@ -4822,6 +4837,30 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     publish(resident, for: key)
     compiledBlockCount &+= 1
     return .init(resident: resident, emitterDeclineByteCount: nil, declineReason: nil)
+  }
+
+  private func codeProtectionState(
+    for memory: (any DoryX86Memory)?
+  ) -> (identity: ObjectIdentifier, generation: UInt64)? {
+    guard let memory else { return nil }
+    if let translatedMemory = memory as? DoryX86TranslatedMemory {
+      return (ObjectIdentifier(translatedMemory), translatedMemory.translatedCodeProtectionGeneration)
+    }
+    guard let protector = memory as? any DoryX86TranslatedCodeProtectionMemory else { return nil }
+    return (ObjectIdentifier(protector), protector.translatedCodeProtectionGeneration)
+  }
+
+  private func synchronizeCodeProtection(for memory: (any DoryX86Memory)?) {
+    guard let state = codeProtectionState(for: memory) else { return }
+    if let previous = codeProtectionGenerations[state.identity], previous != state.generation {
+      invalidateAllTranslations()
+    }
+    codeProtectionGenerations[state.identity] = state.generation
+  }
+
+  private func recordCodeProtectionGeneration(for memory: (any DoryX86Memory)?) {
+    guard let state = codeProtectionState(for: memory) else { return }
+    codeProtectionGenerations[state.identity] = state.generation
   }
 
   private static func endsTimeBoundary(_ block: DoryIRBasicBlock) -> Bool {

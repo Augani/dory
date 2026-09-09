@@ -59,11 +59,16 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
   private var pageTableWalkerWriteDepth = 0
   private var pendingPageTableWrite = false
   private var protectedCodePagesByHostPage: [Int: Set<Int>] = [:]
+  private var codeProtectionGeneration: UInt64 = 0
 
   var trackedCodePageCount: Int { lock.withLock { codePageGenerations.count } }
 
   public var protectedTranslatedCodePageCount: Int {
     lock.withLock { protectedCodePagesByHostPage.values.reduce(0) { $0 + $1.count } }
+  }
+
+  public var translatedCodeProtectionGeneration: UInt64 {
+    lock.withLock { codeProtectionGeneration }
   }
 
   public var hostAddressSpaceBase: UInt64 {
@@ -373,9 +378,9 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     }
   }
 
-  public func protectTranslatedCode(at address: UInt64, byteCount: Int) throws {
-    guard byteCount > 0 else { return }
-    try lock.withLock {
+  public func protectTranslatedCode(at address: UInt64, byteCount: Int) throws -> Bool {
+    guard byteCount > 0 else { return false }
+    return try lock.withLock {
       let offset = try checkedOffset(
         address: address,
         byteCount: byteCount,
@@ -384,6 +389,7 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       let firstPage = offset / 4_096
       let lastPage = (offset + byteCount - 1) / 4_096
       let hostPageByteCount = Int(getpagesize())
+      var changed = false
       for logicalPage in firstPage...lastPage {
         let logicalOffset = logicalPage * 4_096
         let hostOffset = resolvedHostOffset(forLogicalOffset: logicalOffset).offset
@@ -402,26 +408,31 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
               errorNumber: errno
             )
           }
+          codeProtectionGeneration &+= 1
+          changed = true
         }
         protectedCodePagesByHostPage[hostPage, default: []].insert(logicalPage)
       }
+      return changed
     }
   }
 
-  public func invalidateTranslatedCode(at address: UInt64, byteCount: Int) throws {
-    guard byteCount > 0 else { return }
-    try lock.withLock {
+  public func invalidateTranslatedCode(at address: UInt64, byteCount: Int) throws -> Bool {
+    guard byteCount > 0 else { return false }
+    return try lock.withLock {
       let offset = try checkedOffset(address: address, byteCount: byteCount, access: .write)
-      try prepareTranslatedCodePagesForWrite(offset: offset, byteCount: byteCount)
+      return try prepareTranslatedCodePagesForWrite(offset: offset, byteCount: byteCount)
     }
   }
 
-  private func prepareTranslatedCodePagesForWrite(offset: Int, byteCount: Int) throws {
-    guard byteCount > 0, !protectedCodePagesByHostPage.isEmpty else { return }
+  @discardableResult
+  private func prepareTranslatedCodePagesForWrite(offset: Int, byteCount: Int) throws -> Bool {
+    guard byteCount > 0, !protectedCodePagesByHostPage.isEmpty else { return false }
     let hostPageByteCount = Int(getpagesize())
     let firstLogicalPage = offset / 4_096
     let lastLogicalPage = (offset + byteCount - 1) / 4_096
     var hostPages: Set<Int> = []
+    var changed = false
     for logicalPage in firstLogicalPage...lastLogicalPage {
       let hostOffset = resolvedHostOffset(forLogicalOffset: logicalPage * 4_096).offset
       hostPages.insert(hostOffset / hostPageByteCount)
@@ -443,7 +454,9 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       }
       protectedCodePagesByHostPage.removeValue(forKey: hostPage)
       for codePage in codePages { codePageGenerations[codePage, default: 0] &+= 1 }
+      changed = true
     }
+    return changed
   }
 
   public func trackPageTablePage(containing address: UInt64) {

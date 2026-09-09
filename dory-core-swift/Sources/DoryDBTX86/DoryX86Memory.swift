@@ -215,9 +215,12 @@ public protocol DoryX86PageTableWriteTrackingMemory: DoryX86Memory {
 /// code. Implementations restore writes before their checked mutation APIs commit and advance the
 /// affected code-generation tokens so resident translations fail validation synchronously.
 public protocol DoryX86TranslatedCodeProtectionMemory: DoryX86Memory {
-  func protectTranslatedCode(at address: UInt64, byteCount: Int) throws
-  func invalidateTranslatedCode(at address: UInt64, byteCount: Int) throws
+  @discardableResult
+  func protectTranslatedCode(at address: UInt64, byteCount: Int) throws -> Bool
+  @discardableResult
+  func invalidateTranslatedCode(at address: UInt64, byteCount: Int) throws -> Bool
   var protectedTranslatedCodePageCount: Int { get }
+  var translatedCodeProtectionGeneration: UInt64 { get }
 }
 
 extension DoryX86Memory {

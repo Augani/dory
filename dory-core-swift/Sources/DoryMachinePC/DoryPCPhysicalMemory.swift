@@ -593,30 +593,41 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     (ram as? any DoryX86PageTableWriteTrackingMemory)?.consumePendingPageTableWrite() ?? false
   }
 
-  public func protectTranslatedCode(at address: UInt64, byteCount: Int) throws {
-    guard let protector = ram as? any DoryX86TranslatedCodeProtectionMemory else { return }
+  public func protectTranslatedCode(at address: UInt64, byteCount: Int) throws -> Bool {
+    guard let protector = ram as? any DoryX86TranslatedCodeProtectionMemory else { return false }
     let resolved = try resolveRAM(
       address: address,
       byteCount: byteCount,
       access: .instructionFetch
     )
-    try protector.protectTranslatedCode(at: resolved.backingAddress, byteCount: byteCount)
+    return try protector.protectTranslatedCode(
+      at: resolved.backingAddress,
+      byteCount: byteCount
+    )
   }
 
-  public func invalidateTranslatedCode(at address: UInt64, byteCount: Int) throws {
-    guard let protector = ram as? any DoryX86TranslatedCodeProtectionMemory else { return }
+  public func invalidateTranslatedCode(at address: UInt64, byteCount: Int) throws -> Bool {
+    guard let protector = ram as? any DoryX86TranslatedCodeProtectionMemory else { return false }
     let resolved = try resolveRAM(address: address, byteCount: byteCount, access: .write)
-    try protector.invalidateTranslatedCode(at: resolved.backingAddress, byteCount: byteCount)
+    return try protector.invalidateTranslatedCode(
+      at: resolved.backingAddress,
+      byteCount: byteCount
+    )
   }
 
   /// Explicit SMC hook for a device or exported host mapping that will mutate RAM without calling
   /// this bus's write APIs. Ordinary DMA writes already cross the same invalidation boundary.
   public func invalidateCodePage(gpa: UInt64, byteCount: Int = 1) throws {
-    try invalidateTranslatedCode(at: gpa, byteCount: byteCount)
+    _ = try invalidateTranslatedCode(at: gpa, byteCount: byteCount)
   }
 
   public var protectedTranslatedCodePageCount: Int {
     (ram as? any DoryX86TranslatedCodeProtectionMemory)?.protectedTranslatedCodePageCount ?? 0
+  }
+
+  public var translatedCodeProtectionGeneration: UInt64 {
+    (ram as? any DoryX86TranslatedCodeProtectionMemory)?
+      .translatedCodeProtectionGeneration ?? 0
   }
 
   /// Once the router is sealed and RAM has no device overlays, the two binary mapping searches

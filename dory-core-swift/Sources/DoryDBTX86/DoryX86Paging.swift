@@ -841,12 +841,13 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   /// Protects every physical RAM page backing one translated linear instruction span. The same
   /// instruction-fetch translations used by decoding preserve execute permissions and fault
   /// identity; non-RAM/device fetches simply retain generation validation.
-  public func protectTranslatedCode(at address: UInt64, byteCount: Int) throws {
+  public func protectTranslatedCode(at address: UInt64, byteCount: Int) throws -> Bool {
     guard byteCount > 0,
       let protector = physicalMemory as? any DoryX86TranslatedCodeProtectionMemory
-    else { return }
+    else { return false }
     var linearAddress = address
     var remaining = byteCount
+    var changed = false
     while remaining > 0 {
       let translation = try pagingUnit.translate(
         linearAddress: linearAddress,
@@ -855,13 +856,19 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
         physicalMemory: physicalMemory
       )
       let chunk = min(remaining, 4_096 - Int(linearAddress & 0xfff))
-      try protector.protectTranslatedCode(
+      changed = try protector.protectTranslatedCode(
         at: translation.physicalAddress,
         byteCount: chunk
-      )
+      ) || changed
       linearAddress &+= UInt64(chunk)
       remaining -= chunk
     }
+    return changed
+  }
+
+  public var translatedCodeProtectionGeneration: UInt64 {
+    (physicalMemory as? any DoryX86TranslatedCodeProtectionMemory)?
+      .translatedCodeProtectionGeneration ?? 0
   }
 
   /// Permission-checks one generated-code miss through the architectural walker. Backing access
