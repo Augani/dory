@@ -204,6 +204,127 @@ import Testing
     #endif
   }
 
+  @Test func registerTransformsMatchTheInterpreterAcrossWidths() throws {
+    #if arch(arm64)
+      let cases: [([UInt8], DoryX86GeneralRegisters)] = [
+        ([0x0F, 0xC8], .init(rax: 0xAABB_CCDD_1122_3344)),  // bswap eax
+        ([0x48, 0x0F, 0xC8], .init(rax: 0x1122_3344_5566_7788)),  // bswap rax
+        ([0x0F, 0xBE, 0xD8], .init(rax: 0x80, rbx: .max)),  // movsx ebx,al
+        ([0x48, 0x0F, 0xBE, 0xD8], .init(rax: 0x80, rbx: 0)),  // movsx rbx,al
+        ([0x0F, 0xBF, 0xD8], .init(rax: 0x8000, rbx: .max)),  // movsx ebx,ax
+        ([0x48, 0x0F, 0xBF, 0xD8], .init(rax: 0x8000, rbx: 0)),  // movsx rbx,ax
+        ([0x48, 0x63, 0xD8], .init(rax: 0x8000_0000, rbx: 0)),  // movsxd rbx,eax
+        ([0x0F, 0xB6, 0xD8], .init(rax: 0x80, rbx: .max)),  // movzx ebx,al
+        ([0x48, 0x0F, 0xB6, 0xD8], .init(rax: 0x80, rbx: .max)),  // movzx rbx,al
+        ([0x0F, 0xB7, 0xD8], .init(rax: 0xFEDC, rbx: .max)),  // movzx ebx,ax
+        ([0x48, 0x0F, 0xB7, 0xD8], .init(rax: 0xFEDC, rbx: .max)),  // movzx rbx,ax
+        ([0x99], .init(rax: 0x8000_0000, rdx: 0x1234)),  // cdq
+        ([0x48, 0x99], .init(rax: 0x8000_0000_0000_0000, rdx: 0x1234)),  // cqo
+        ([0x48, 0x87, 0xD8], .init(rax: 0x1111, rbx: 0x2222)),  // xchg rax,rbx
+      ]
+      let flags: DoryX86RFLAGS = [
+        .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .sign, .direction,
+        .interruptEnable, .overflow,
+      ]
+
+      for (index, testCase) in cases.enumerated() {
+        let address = UInt64(0x4000 + index * 0x10)
+        let initial = try DoryX86ArchitecturalState(
+          registers: testCase.1,
+          rip: address,
+          rflags: flags
+        )
+        var interpreted = initial
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: try DoryX86ByteArrayMemory(baseAddress: address, bytes: testCase.0),
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire tier-1 register transform")
+          return
+        }
+
+        var tier1 = initial
+        let executor = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: true
+        )
+        let execution = try #require(executor.execute(
+          bytes: testCase.0,
+          at: address,
+          mode: .long64,
+          addressSpaceID: UInt64(index),
+          maximumInstructions: 1,
+          state: &tier1
+        ))
+        #expect(execution.block.tier == .tier1)
+        #expect(tier1 == interpreted)
+        #expect(tier1.rflags == flags)
+      }
+    #endif
+  }
+
+  @Test func registerTransformsPreserveTheNativeConditionPath() throws {
+    #if arch(arm64)
+      let address: UInt64 = 0x4F00
+      let bytes: [UInt8] = [
+        0x48, 0x39, 0xD8,  // cmp rax,rbx
+        0x4D, 0x87, 0xC8,  // xchg r8,r9
+        0x49, 0x0F, 0xCA,  // bswap r10
+        0x4D, 0x0F, 0xBE, 0xDC,  // movsx r11,r12b
+        0x45, 0x0F, 0xB7, 0xEE,  // movzx r13d,r14w
+        0x48, 0x99,  // cqo
+        0x75, 0x04,  // jne +4
+      ]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(
+          rax: UInt64.max,
+          rdx: 0x1234,
+          rbx: 7,
+          r8: 0x1111,
+          r9: 0x2222,
+          r10: 0x1122_3344_5566_7788,
+          r11: 0,
+          r12: 0x80,
+          r13: .max,
+          r14: 0xFEDC
+        ),
+        rip: address,
+        rflags: [.reservedOne, .direction]
+      )
+      let memory = try DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+      var interpreted = initial
+      for _ in 0..<7 {
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: memory,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire transformed native-condition fixture")
+          return
+        }
+      }
+
+      var tier1 = initial
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        tier1Enabled: true
+      )
+      let execution = try #require(executor.execute(
+        bytes: bytes,
+        at: address,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 7,
+        state: &tier1
+      ))
+      #expect(execution.block.tier == .tier1)
+      #expect(tier1 == interpreted)
+      #expect(tier1.rip == address + UInt64(bytes.count) + 4)
+      #expect(executor.diagnostics.lazyFlagMaterializations == 1)
+    #endif
+  }
+
   @Test func wordNotPreservesUpperBitsAndFlagsAcrossBaselineAndTier1() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x66, 0xF7, 0xD1]  // not cx

@@ -108,6 +108,43 @@ struct DoryARM64Tier1Emitter: Sendable {
         }
         guard nativeFlags != nil else { return nil }
 
+      case .exchangeRegisters(let lhs, let rhs):
+        guard lhs.bank == "x86.gpr", rhs.bank == "x86.gpr",
+          lhs.width == .i64, rhs.width == .i64,
+          alu.emitExchangeRegisters(
+            lhsGuestRegister: Int(lhs.index),
+            rhsGuestRegister: Int(rhs.index),
+            into: &body
+          )
+        else { return nil }
+
+      case .byteSwap(let operand):
+        guard let register = lowRegister(operand),
+          alu.emitByteSwap(
+            width: register.width,
+            guestRegister: Int(register.index),
+            into: &body
+          )
+        else { return nil }
+
+      case .extendMove(let destination, let source, let signed):
+        guard let destination = lowRegister(destination),
+          let source = lowRegister(source),
+          alu.emitExtendMove(
+            destinationWidth: destination.width,
+            destinationGuestRegister: Int(destination.index),
+            sourceWidth: source.width,
+            sourceGuestRegister: Int(source.index),
+            signed: signed,
+            into: &body
+          )
+        else { return nil }
+
+      case .signExtendAccumulatorHigh(let width):
+        guard alu.emitSignExtendAccumulatorHigh(width: width, into: &body) else {
+          return nil
+        }
+
       case .shift(let operation, let destination, let count):
         guard let destination = lowRegister(destination),
           alu.emitShift(

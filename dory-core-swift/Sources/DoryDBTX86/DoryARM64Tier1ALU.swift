@@ -91,6 +91,98 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Exchanges two pinned qword registers without changing NZCV or lazy flags.
+  func emitExchangeRegisters(
+    lhsGuestRegister: Int,
+    rhsGuestRegister: Int,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(lhsGuestRegister), (0..<16).contains(rhsGuestRegister) else {
+      return false
+    }
+    guard lhsGuestRegister != rhsGuestRegister else { return true }
+    let lhs = UInt32(lhsGuestRegister)
+    let rhs = UInt32(rhsGuestRegister)
+    words.append(Self.encodeMove(destination: 16, source: lhs, is64Bit: true))
+    words.append(Self.encodeMove(destination: lhs, source: rhs, is64Bit: true))
+    words.append(Self.encodeMove(destination: rhs, source: 16, is64Bit: true))
+    return true
+  }
+
+  /// Reverses bytes in a pinned dword or qword. A dword destination zero-extends naturally.
+  func emitByteSwap(
+    width: DoryIRIntegerWidth,
+    guestRegister: Int,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(guestRegister), width == .i32 || width == .i64 else {
+      return false
+    }
+    let register = UInt32(guestRegister)
+    words.append(
+      Self.encodeReverseBytes(
+        is64Bit: width == .i64,
+        source: register,
+        destination: register
+      ))
+    return true
+  }
+
+  /// Extends a pinned byte/word (or signed dword) into a dword/qword destination.
+  func emitExtendMove(
+    destinationWidth: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    sourceWidth: DoryIRIntegerWidth,
+    sourceGuestRegister: Int,
+    signed: Bool,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(destinationGuestRegister),
+      (0..<16).contains(sourceGuestRegister),
+      destinationWidth == .i32 || destinationWidth == .i64,
+      sourceWidth == .i8 || sourceWidth == .i16
+        || (signed && sourceWidth == .i32 && destinationWidth == .i64)
+    else { return false }
+
+    let destination = UInt32(destinationGuestRegister)
+    let source = UInt32(sourceGuestRegister)
+    if signed {
+      let opcode: UInt32 = destinationWidth == .i64 ? 0x9340_0000 : 0x1300_0000
+      let signBit = UInt32(sourceWidth.rawValue) - 1
+      words.append(opcode | signBit << 10 | source << 5 | destination)
+    } else {
+      Self.emitImmediate(sourceWidth == .i8 ? 0xFF : 0xFFFF, register: 16, into: &words)
+      words.append(
+        Self.encodeLogical(
+          .and,
+          is64Bit: true,
+          left: source,
+          right: 16,
+          destination: destination
+        ))
+    }
+    return true
+  }
+
+  /// Implements CDQ/CQO from pinned RAX into RDX without changing flags.
+  func emitSignExtendAccumulatorHigh(
+    width: DoryIRIntegerWidth,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard width == .i32 || width == .i64 else { return false }
+    let is64Bit = width == .i64
+    Self.emitImmediate(is64Bit ? 63 : 31, register: 16, into: &words)
+    words.append(
+      Self.encodeVariableShift(
+        .arithmeticRight,
+        is64Bit: is64Bit,
+        value: 0,
+        count: 16,
+        destination: 2
+      ))
+    return true
+  }
+
   /// Inverts a pinned register operand without changing NZCV or lazy flags.
   func emitBitwiseNot(
     width: DoryIRIntegerWidth,
@@ -1703,6 +1795,14 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     is64Bit: Bool
   ) -> UInt32 {
     (is64Bit ? 0xAA00_03E0 : 0x2A00_03E0) | source << 16 | destination
+  }
+
+  private static func encodeReverseBytes(
+    is64Bit: Bool,
+    source: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    (is64Bit ? 0xDAC0_0C00 : 0x5AC0_0800) | source << 5 | destination
   }
 
   private static func encodeStore64(
