@@ -44,7 +44,7 @@ struct ABI. The word layout is:
 | 31...35 | TLB mask, address-space generation, reservation size, TLB storage, miss resolver |
 | 36...37 | inline read/write hit-counter pointers |
 | 38...42 | scalar compare-exchange, exchange, fetch-add, generic RMW, and pair compare-exchange helpers |
-| 43...47 | lazy-flags operation, width, result, source 1, and source 2 |
+| 43...47 | lazy-flags operation plus count (low/high byte), width, result, source 1, and source 2 |
 
 The context pointer remains stable for a dispatch. TLB bases and helper
 addresses are derived from it; generated code must not retain them beyond that

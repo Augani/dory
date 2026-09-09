@@ -10,7 +10,8 @@ import Testing
       width: .i16,
       result: 0x8000,
       source1: 0x7FFF,
-      source2: 0
+      source2: 0,
+      count: 3
     )
     var context = [UInt64](repeating: 0, count: DoryARM64Tier1ABI.contextWordCount)
     state.write(to: &context)
@@ -34,6 +35,7 @@ import Testing
     #expect(lazy.result == 0)
     #expect(lazy.source1 == 0)
     #expect(lazy.source2 == 0)
+    #expect(lazy.count == 0)
     #expect(lazy.materialize() == architectural.rflags)
   }
 
@@ -112,7 +114,8 @@ import Testing
 
   @Test func shiftAndRotateMaterializersMatchInterpreterAcrossWidthsAndCounts() throws {
     let cases: [(operation: DoryARM64LazyFlagsState.Operation, extension: UInt8)] = [
-      (.rotateLeft, 0), (.rotateRight, 1), (.shiftLeft, 4),
+      (.rotateLeft, 0), (.rotateRight, 1), (.rotateCarryLeft, 2),
+      (.rotateCarryRight, 3), (.shiftLeft, 4),
       (.logicalShiftRight, 5), (.arithmeticShiftRight, 7),
     ]
     for width: DoryIRIntegerWidth in [.i8, .i16, .i32, .i64] {
@@ -145,9 +148,53 @@ import Testing
               width: width,
               result: interpreted.registers.rax & mask,
               source1: value,
-              source2: UInt64(count)
+              count: count
             )
             #expect(lazy.materialize() == interpreted.rflags)
+          }
+        }
+      }
+    }
+  }
+
+  @Test func doubleShiftMaterializersMatchInterpreterAcrossWidthsAndCounts() throws {
+    let cases: [(operation: DoryARM64LazyFlagsState.Operation, opcode: UInt8)] = [
+      (.doubleShiftLeft, 0xA4), (.doubleShiftRight, 0xAC),
+    ]
+    for width: DoryIRIntegerWidth in [.i16, .i32, .i64] {
+      let mask = width == .i64 ? UInt64.max : (UInt64(1) << UInt64(width.rawValue)) - 1
+      let counts = [UInt8(0), 1, UInt8(width.rawValue - 1), UInt8(width.rawValue),
+        UInt8(width.rawValue &+ 1), 31, 63]
+      for testCase in cases {
+        for destination in [UInt64(0), 1, mask >> 1, UInt64(1) << UInt64(width.rawValue - 1), mask] {
+          for source in [UInt64(0), 1, 0xA55A_A55A_A55A_A55A & mask, mask] {
+            for count in counts {
+              let bytes = doubleShiftBytes(width: width, opcode: testCase.opcode, count: count)
+              let prior: DoryX86RFLAGS = [
+                .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .sign,
+                .direction, .overflow,
+              ]
+              var interpreted = try DoryX86ArchitecturalState(
+                registers: .init(rax: destination, rcx: source), rip: 0x100, rflags: prior)
+              let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+              try memory.write(at: 0x100, bytes: bytes)
+              guard case .retired = DoryX86Interpreter().step(
+                state: &interpreted, memory: memory, mode: .long64)
+              else {
+                Issue.record("interpreter did not retire \(testCase.operation) \(width) \(count)")
+                continue
+              }
+              let lazy = DoryARM64LazyFlagsState(
+                materialized: prior,
+                operation: testCase.operation,
+                width: width,
+                result: interpreted.registers.rax & mask,
+                source1: destination,
+                source2: source,
+                count: count
+              )
+              #expect(lazy.materialize() == interpreted.rflags)
+            }
           }
         }
       }
@@ -166,6 +213,19 @@ private func shiftBytes(
   case .i16: return [0x66, 0xC1, modRM, count]
   case .i32: return [0xC1, modRM, count]
   case .i64: return [0x48, 0xC1, modRM, count]
+  }
+}
+
+private func doubleShiftBytes(
+  width: DoryIRIntegerWidth,
+  opcode: UInt8,
+  count: UInt8
+) -> [UInt8] {
+  switch width {
+  case .i8: preconditionFailure("SHLD/SHRD have no byte form")
+  case .i16: return [0x66, 0x0F, opcode, 0xC8, count]
+  case .i32: return [0x0F, opcode, 0xC8, count]
+  case .i64: return [0x48, 0x0F, opcode, 0xC8, count]
   }
 }
 

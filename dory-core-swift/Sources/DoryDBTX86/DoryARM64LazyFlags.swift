@@ -19,6 +19,10 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
     case arithmeticShiftRight
     case rotateLeft
     case rotateRight
+    case rotateCarryLeft
+    case rotateCarryRight
+    case doubleShiftLeft
+    case doubleShiftRight
   }
 
   let materialized: DoryX86RFLAGS
@@ -27,6 +31,7 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
   let result: UInt64
   let source1: UInt64
   let source2: UInt64
+  let count: UInt8
 
   init(
     materialized: DoryX86RFLAGS,
@@ -34,7 +39,8 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
     width: DoryIRIntegerWidth = .i64,
     result: UInt64 = 0,
     source1: UInt64 = 0,
-    source2: UInt64 = 0
+    source2: UInt64 = 0,
+    count: UInt8 = 0
   ) {
     self.materialized = materialized
     self.operation = operation
@@ -42,13 +48,15 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
     self.result = result
     self.source1 = source1
     self.source2 = source2
+    self.count = count
   }
 
   init?<Context: RandomAccessCollection>(context: Context)
   where Context.Element == UInt64, Context.Index == Int {
     guard context.count == DoryARM64Tier1ABI.contextWordCount,
+      context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] & ~0xFFFF == 0,
       let operation = Operation(rawValue: context[
-        DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue]),
+        DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] & 0xFF),
       let width = DoryIRIntegerWidth(rawValue: UInt8(truncatingIfNeeded: context[
         DoryARM64Tier1ABI.ContextWord.lazyFlagsWidth.rawValue]))
     else { return nil }
@@ -58,14 +66,17 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
       width: width,
       result: context[DoryARM64Tier1ABI.ContextWord.lazyFlagsResult.rawValue],
       source1: context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource1.rawValue],
-      source2: context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource2.rawValue]
+      source2: context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource2.rawValue],
+      count: UInt8(truncatingIfNeeded: context[
+        DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] >> 8)
     )
   }
 
   func write(to context: inout [UInt64]) {
     precondition(context.count == DoryARM64Tier1ABI.contextWordCount)
     context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue] = materialized.rawValue
-    context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] = operation.rawValue
+    context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] =
+      operation.rawValue | UInt64(count) << 8
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsWidth.rawValue] = UInt64(width.rawValue)
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsResult.rawValue] = result
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource1.rawValue] = source1
@@ -123,7 +134,8 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
       set(.auxiliaryCarry, ((0 ^ lhs ^ value) & 0x10) != 0, in: &flags)
       setResultFlags(value, sign: sign, in: &flags)
     case .shiftLeft, .logicalShiftRight, .arithmeticShiftRight,
-      .rotateLeft, .rotateRight:
+      .rotateLeft, .rotateRight, .rotateCarryLeft, .rotateCarryRight,
+      .doubleShiftLeft, .doubleShiftRight:
       materializeShiftOrRotate(
         operation: operation, original: lhs, result: value, sign: sign, in: &flags)
     }
@@ -154,7 +166,7 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
   ) {
     let bitCount = Int(width.rawValue)
     let countMask: UInt8 = width == .i64 ? 0x3F : 0x1F
-    let maskedCount = Int(UInt8(truncatingIfNeeded: source2) & countMask)
+    let maskedCount = Int(count & countMask)
     guard maskedCount != 0 else { return }
 
     switch operation {
@@ -168,6 +180,29 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
       if maskedCount == 1 {
         set(.overflow, ((result >> UInt64(bitCount - 2)) & 3) == 1
           || ((result >> UInt64(bitCount - 2)) & 3) == 2, in: &flags)
+      }
+    case .rotateCarryLeft, .rotateCarryRight:
+      let effectiveCount = maskedCount % (bitCount + 1)
+      guard effectiveCount != 0 else { return }
+      var rotated = original
+      for _ in 0..<effectiveCount {
+        if operation == .rotateCarryLeft {
+          let outgoing = rotated & sign != 0
+          rotated = ((rotated << 1) | (flags.contains(.carry) ? 1 : 0)) & widthMask
+          set(.carry, outgoing, in: &flags)
+        } else {
+          let outgoing = rotated & 1 != 0
+          rotated = (rotated >> 1) | (flags.contains(.carry) ? sign : 0)
+          set(.carry, outgoing, in: &flags)
+        }
+      }
+      if maskedCount == 1 {
+        if operation == .rotateCarryLeft {
+          set(.overflow, (result & sign != 0) != flags.contains(.carry), in: &flags)
+        } else {
+          let topTwo = (result >> UInt64(bitCount - 2)) & 3
+          set(.overflow, topTwo == 1 || topTwo == 2, in: &flags)
+        }
       }
     case .shiftLeft:
       set(.carry, maskedCount <= bitCount
@@ -190,6 +225,27 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
         set(.carry, original & sign != 0, in: &flags)
       }
       if maskedCount == 1 { flags.remove(.overflow) }
+      flags.remove(.auxiliaryCarry)
+      setResultFlags(result, sign: sign, in: &flags)
+    case .doubleShiftLeft, .doubleShiftRight:
+      guard maskedCount <= bitCount else {
+        flags.remove([.carry, .auxiliaryCarry])
+        setResultFlags(result, sign: sign, in: &flags)
+        return
+      }
+      if operation == .doubleShiftLeft {
+        set(.carry, original & (UInt64(1) << UInt64(bitCount - maskedCount)) != 0,
+          in: &flags)
+        if maskedCount == 1 {
+          set(.overflow, (result & sign != 0) != flags.contains(.carry), in: &flags)
+        }
+      } else {
+        set(.carry, original & (UInt64(1) << UInt64(maskedCount - 1)) != 0,
+          in: &flags)
+        if maskedCount == 1 {
+          set(.overflow, (original & sign != 0) != (result & sign != 0), in: &flags)
+        }
+      }
       flags.remove(.auxiliaryCarry)
       setResultFlags(result, sign: sign, in: &flags)
     default:
