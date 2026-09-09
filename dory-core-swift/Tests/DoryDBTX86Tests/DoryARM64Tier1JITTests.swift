@@ -434,6 +434,52 @@ import Testing
     #endif
   }
 
+  @Test func timestampCounterReadsTheVirtualClockInTier1AndRemainsABoundary() throws {
+    #if arch(arm64)
+      let address: UInt64 = 0x4F80
+      let bytes: [UInt8] = [
+        0x0F, 0x31,  // rdtsc; the following instruction belongs to the next block
+        0xB8, 0xEF, 0xBE, 0xAD, 0xDE,  // mov eax,0xdeadbeef
+      ]
+      let initialFlags: DoryX86RFLAGS = [
+        .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .sign, .direction, .overflow,
+      ]
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: .max, rdx: .max),
+        rip: address,
+        rflags: initialFlags,
+        tsc: 0x1122_3344_5566_7788
+      )
+      let memory = try DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        tier1Enabled: true
+      )
+      let execution = try #require(executor.executeChainedSummary(
+        byteProvider: { rip, count in
+          try memory.instructionBytes(at: rip, maximumCount: count)
+        },
+        at: address,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 2,
+        state: &state,
+        memory: memory
+      ))
+
+      #expect(execution.tier == .tier1)
+      #expect(execution.guestInstructionCount == 1)
+      #expect(execution.residentBlockCount == 1)
+      #expect(state.rip == address + 2)
+      #expect(state.registers.rax == 0x5566_7788)
+      #expect(state.registers.rdx == 0x1122_3344)
+      #expect(state.rflags == initialFlags)
+      #expect(executor.diagnostics.tier1CompilationAttempts == 1)
+      #expect(executor.diagnostics.tier1CompilationDeclines == 0)
+      #expect(executor.diagnostics.tier1CompiledBlocks == 1)
+    #endif
+  }
+
   @Test func wordNotPreservesUpperBitsAndFlagsAcrossBaselineAndTier1() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0x66, 0xF7, 0xD1]  // not cx

@@ -270,6 +270,9 @@ struct DoryARM64Tier1Emitter: Sendable {
       case .setDirectionFlag(let enabled):
         alu.emitSetNonArithmeticFlag(.direction, enabled: enabled, into: &body)
 
+      case .readTimestampCounter:
+        alu.emitReadTimestampCounter(into: &body)
+
       default:
         return nil
       }

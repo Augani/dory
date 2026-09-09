@@ -160,6 +160,25 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Publishes the dispatcher-sampled virtual TSC through EDX:EAX without changing flags. The
+  /// translator makes RDTSC a dispatch boundary, so the machine clock is refreshed before this
+  /// fragment executes and again before any following guest instruction is compiled.
+  func emitReadTimestampCounter(into words: inout [UInt32]) {
+    words.append(Self.encodeLoad64(register: 16, word: .tsc))
+    words.append(
+      Self.encodeLogical(
+        .or,
+        is64Bit: true,
+        left: 31,
+        right: 16,
+        shiftAmount: 32,
+        logicalRightShift: true,
+        destination: 17
+      ))
+    words.append(Self.encodeMove(destination: 0, source: 16, is64Bit: false))
+    words.append(Self.encodeMove(destination: 2, source: 17, is64Bit: false))
+  }
+
   /// Exchanges two pinned qword registers without changing NZCV or lazy flags.
   func emitExchangeRegisters(
     lhsGuestRegister: Int,
