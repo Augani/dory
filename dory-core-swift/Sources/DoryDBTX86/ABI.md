@@ -229,11 +229,11 @@ interpreter/tier-1 vCPUs remain single-copy. Every other byte immediate, source
 kind, width, and atomic ALU operation remains outside tier 1. Linux lists this
 measured instruction in `.smp_locks` and replaces its `0xf0` lock prefix with a
 `0x3e` DS prefix when booting the uniprocessor guest. Tier 1 therefore also
-admits the exact non-atomic `ds xor $1,(memory)` companion. It performs one
-replay-safe byte read followed by a final transactional byte write, then
-publishes the same logical lazy record. Failure at either callback rolls the
-complete instruction back; other non-atomic memory-writing ALU forms remain
-outside tier 1.
+admits the exact five-byte non-atomic `ds xor $1,(memory)` companion only at the
+measured pinned-fixture RIP `0xffffffff8153a159`. It performs one replay-safe
+byte read followed by a final transactional byte write, then publishes the same
+logical lazy record. Failure at either callback rolls the complete instruction
+back; all other non-atomic memory-writing ALU forms remain outside tier 1.
 
 ## Helper-call shim
 

@@ -2076,6 +2076,13 @@ import Testing
     #expect(patched.requiresRestartableMemoryReads)
     #expect(patched.mayExitToInterpreter)
 
+    let sameOperationElsewhere = try DoryX86IRTranslator().translate(
+      patchedBytes,
+      at: address + 5,
+      mode: .long64
+    )
+    #expect(DoryARM64Tier1Emitter().compile(sameOperationElsewhere) == nil)
+
     for unsupportedBytes: [UInt8] in [
       [0xF0, 0x80, 0x75, 0x00, 0x02],  // lock xorb $2,0(%rbp)
       [0xF0, 0x30, 0x4D, 0x00],  // lock xorb %cl,0(%rbp)
@@ -2095,8 +2102,8 @@ import Testing
 
   @Test func measuredLockedByteXORMatchesInterpreterAndRollsBackFailure() throws {
     #if arch(arm64)
-      let codeAddress: UInt64 = 0x700
-      let dataAddress: UInt64 = 0x1200
+      let codeAddress: UInt64 = 0xFFFF_FFFF_8153_A159
+      let dataAddress = codeAddress + 0x1200
       let encodings: [[UInt8]] = [
         [0xF0, 0x80, 0x75, 0x00, 0x01],
         [0x3E, 0x80, 0x75, 0x00, 0x01],
@@ -2104,8 +2111,14 @@ import Testing
       var addressSpaceID: UInt64 = 0
       for bytes in encodings {
         for initialByte: UInt8 in [0, 1, 0x7F, 0x80, 0xFF] {
-          let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x3000)
-          let tier1Memory = try DoryX86ByteArrayMemory(byteCount: 0x3000)
+          let interpretedMemory = try DoryX86ByteArrayMemory(
+            baseAddress: codeAddress,
+            byteCount: 0x3000
+          )
+          let tier1Memory = try DoryX86ByteArrayMemory(
+            baseAddress: codeAddress,
+            byteCount: 0x3000
+          )
           for memory in [interpretedMemory, tier1Memory] {
             try memory.write(at: codeAddress, bytes: bytes)
             try memory.write(at: dataAddress, bytes: [initialByte])
@@ -2151,12 +2164,15 @@ import Testing
 
       let bytes = encodings[0]
       let failedInitial = try DoryX86ArchitecturalState(
-        registers: .init(rbp: 0x4000),
+        registers: .init(rbp: codeAddress + 0x4000),
         rip: codeAddress,
         rflags: [.reservedOne, .carry, .direction]
       )
       var failedState = failedInitial
-      let failedMemory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+      let failedMemory = try DoryX86ByteArrayMemory(
+        baseAddress: codeAddress,
+        byteCount: 0x1000
+      )
       try failedMemory.write(at: codeAddress, bytes: bytes)
       let initialMemory = failedMemory.snapshot()
       let failedExecution = try #require(
@@ -2177,7 +2193,10 @@ import Testing
       #expect(failedState == failedInitial)
       #expect(failedMemory.snapshot() == initialMemory)
 
-      let rejectedWriteMemory = try Tier1RejectingWriteMemory(byteCount: 0x3000)
+      let rejectedWriteMemory = try Tier1RejectingWriteMemory(
+        baseAddress: codeAddress,
+        byteCount: 0x3000
+      )
       try rejectedWriteMemory.backing.write(at: codeAddress, bytes: encodings[1])
       try rejectedWriteMemory.backing.write(at: dataAddress, bytes: [0x7F])
       let rejectedWriteInitial = try DoryX86ArchitecturalState(
@@ -2294,8 +2313,8 @@ private final class Tier1RejectingWriteMemory: DoryX86ScalarMemory,
   let backing: DoryX86ByteArrayMemory
   private(set) var writeAttempts = 0
 
-  init(byteCount: Int) throws {
-    backing = try DoryX86ByteArrayMemory(byteCount: byteCount)
+  init(baseAddress: UInt64 = 0, byteCount: Int) throws {
+    backing = try DoryX86ByteArrayMemory(baseAddress: baseAddress, byteCount: byteCount)
   }
 
   func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {

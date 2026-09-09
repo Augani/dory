@@ -6,6 +6,7 @@ import Foundation
 /// through a precise, restartable helper boundary declines the entire block, allowing the caller
 /// to compile it with the old baseline emitter while tier-1 coverage grows.
 struct DoryARM64Tier1Emitter: Sendable {
+  private static let measuredPatchedByteXORRIP: UInt64 = 0xFFFF_FFFF_8153_A159
   private let boundary = DoryARM64Tier1BoundaryEmitter()
   private let alu = DoryARM64Tier1ALUEmitter()
 
@@ -35,7 +36,7 @@ struct DoryARM64Tier1Emitter: Sendable {
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
-      case .binary where Self.isMeasuredPatchedByteXOR(statement):
+      case .binary where Self.isMeasuredPatchedByteXORBlock(block):
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 2
         requiresMemoryCallbacks = true
@@ -124,7 +125,7 @@ struct DoryARM64Tier1Emitter: Sendable {
             into: &body
           )
         } else if case .memory(let address, let width) = destination {
-          if operation == .xor, width == .i8,
+          if Self.isMeasuredPatchedByteXORBlock(block), operation == .xor, width == .i8,
             source == .immediate(1, width: .i8), writesDestination,
             alu.emitMeasuredPatchedByteXOR(address: address, into: &body)
           {
@@ -553,6 +554,16 @@ struct DoryARM64Tier1Emitter: Sendable {
       ) = statement
     else { return false }
     return width == .i8 && source == .immediate(1, width: .i8)
+  }
+
+  private static func isMeasuredPatchedByteXORBlock(_ block: DoryIRBasicBlock) -> Bool {
+    guard block.guestStart == measuredPatchedByteXORRIP,
+      block.guestByteCount == 5,
+      block.guestInstructionCount == 1,
+      block.statements.count == 1,
+      let statement = block.statements.first
+    else { return false }
+    return isMeasuredPatchedByteXOR(statement)
   }
 
   private func lowRegister(_ operand: DoryIROperand) -> DoryIRRegister? {
