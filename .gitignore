@@ -191,6 +191,10 @@ docs/
 !/scripts/test-prepare-virtualization-fixtures.py
 !/scripts/verify-dory-ffi-deployment-targets.py
 !/scripts/test-verify-dory-ffi-deployment-targets.py
+!/scripts/validate-wave0-qualification-matrix.py
+!/scripts/test-validate-wave0-qualification-matrix.py
+!/scripts/pc-gpu-daemon-live-gate.sh
+!/scripts/test-pc-gpu-daemon-live-gate.sh
 
 # Candidate-bound physical Linux developer smoke (fail-closed; never release qualification).
 !/scripts/linux-local-runtime-smoke.sh
