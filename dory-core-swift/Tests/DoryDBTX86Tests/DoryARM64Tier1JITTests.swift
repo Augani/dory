@@ -3192,6 +3192,11 @@ import Testing
           registers: .init(rsp: 0x1000),
           stackValue: 0x1800
         ),
+        StackCase(
+          bytes: [0xC9],  // leave installs rbp as rsp before popping the caller frame
+          registers: .init(rsp: 0x1800, rbp: 0x1000),
+          stackValue: 0x8877_6655_4433_2211
+        ),
       ]
       let initialFlags: DoryX86RFLAGS = [
         .reservedOne, .carry, .parity, .direction, .interruptEnable, .overflow,
@@ -3252,6 +3257,35 @@ import Testing
     #endif
   }
 
+  @Test func longModeLeaveLowersOnlyTheQwordFormIntoTier1() throws {
+    let block = try DoryX86IRTranslator().translate([0xC9], at: 0x880, mode: .long64)
+    #expect(
+      block.statements == [
+        .copy(
+          destination: .register(.init(bank: "x86.gpr", index: 4, width: .i64)),
+          source: .register(.init(bank: "x86.gpr", index: 5, width: .i64))
+        ),
+        .stackPop(
+          destination: .register(.init(bank: "x86.gpr", index: 5, width: .i64))
+        ),
+      ]
+    )
+    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+    #expect(compiled.tier == .tier1)
+    #expect(compiled.guestByteCount == 1)
+    #expect(compiled.guestInstructionCount == 1)
+    #expect(compiled.requiresMemoryCallbacks)
+    #expect(!compiled.requiresRestartableMemoryReads)
+    #expect(compiled.mayExitToInterpreter)
+
+    let wordLeave = try DoryX86IRTranslator().translate(
+      [0x66, 0xC9],
+      at: 0x890,
+      mode: .long64
+    )
+    #expect(DoryARM64Tier1Emitter().compile(wordLeave) == nil)
+  }
+
   @Test func stackCallbacksMaterializeAndRemainRestartable() throws {
     #if arch(arm64)
       let address: UInt64 = 0x900
@@ -3303,6 +3337,7 @@ import Testing
       for (failingBytes, registers) in [
         ([UInt8(0x53)], DoryX86GeneralRegisters(rbx: 0x1234, rsp: 4)),
         ([UInt8(0x58)], DoryX86GeneralRegisters(rax: 0x5678, rsp: 0x3000)),
+        ([UInt8(0xC9)], DoryX86GeneralRegisters(rsp: 0x800, rbp: 0x3000)),
       ] {
         let failedInitial = try DoryX86ArchitecturalState(
           registers: registers,

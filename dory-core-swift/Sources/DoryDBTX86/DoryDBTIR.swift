@@ -542,6 +542,19 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .leave(.quadword) where mode == .long64:
+      return (
+        [
+          .copy(
+            destination: .register(.init(bank: "x86.gpr", index: 4, width: .i64)),
+            source: .register(.init(bank: "x86.gpr", index: 5, width: .i64))
+          ),
+          .stackPop(
+            destination: .register(.init(bank: "x86.gpr", index: 5, width: .i64))
+          ),
+        ],
+        nil
+      )
     case .setInterruptsEnabled(false) where mode == .long64:
       return ([.clearInterruptFlag], nil)
     case .exchange(let lhs, let rhs) where mode == .long64:
