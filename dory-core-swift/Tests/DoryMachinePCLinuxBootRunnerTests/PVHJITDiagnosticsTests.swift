@@ -8,12 +8,19 @@ import Testing
     var sampler = PVHJITDiagnosticsSampler(enabled: false)
     var providerReads = 0
     var clockReads = 0
-    func clock() -> UInt64 { clockReads += 1; return 10 }
-    func provider() -> PVHJITCacheSnapshot? { providerReads += 1; return nil }
+    func clock() -> UInt64 {
+      clockReads += 1
+      return 10
+    }
+    func provider() -> PVHJITCacheSnapshot? {
+      providerReads += 1
+      return nil
+    }
     for terminal in [false, true] {
-      #expect(sampler.sampleIfDue(
-        retiredInstructions: .max, elapsedNanoseconds: clock(), terminal: terminal,
-        baseline: provider, optimizing: provider) == nil)
+      #expect(
+        sampler.sampleIfDue(
+          retiredInstructions: .max, elapsedNanoseconds: clock(), terminal: terminal,
+          baseline: provider, optimizing: provider) == nil)
     }
     #expect(providerReads == 0)
     #expect(clockReads == 0)
@@ -22,11 +29,15 @@ import Testing
   @Test func coarseSamplingDoesNotReadCachesOnEveryDispatchSlice() throws {
     var sampler = PVHJITDiagnosticsSampler(enabled: true)
     var providerReads = 0
-    func provider() -> PVHJITCacheSnapshot? { providerReads += 1; return nil }
+    func provider() -> PVHJITCacheSnapshot? {
+      providerReads += 1
+      return nil
+    }
     for count in stride(from: UInt64(1000), to: 1_000_000, by: 1000) {
-      #expect(sampler.sampleIfDue(
-        retiredInstructions: count, elapsedNanoseconds: count * 2, terminal: false,
-        baseline: provider, optimizing: provider) == nil)
+      #expect(
+        sampler.sampleIfDue(
+          retiredInstructions: count, elapsedNanoseconds: count * 2, terminal: false,
+          baseline: provider, optimizing: provider) == nil)
     }
     #expect(providerReads == 0)
     let firstSample = sampler.sampleIfDue(
@@ -37,21 +48,25 @@ import Testing
     #expect(first.sampleElapsedNanoseconds == 2_000_000)
     #expect(first.sampleIntervalInstructions == 1_000_000)
     #expect(providerReads == 2)
-    #expect(sampler.sampleIfDue(
-      retiredInstructions: 1_999_999, elapsedNanoseconds: 4_000_000, terminal: false,
-      baseline: provider, optimizing: provider) == nil)
+    #expect(
+      sampler.sampleIfDue(
+        retiredInstructions: 1_999_999, elapsedNanoseconds: 4_000_000, terminal: false,
+        baseline: provider, optimizing: provider) == nil)
     #expect(providerReads == 2)
-    #expect(sampler.sampleIfDue(
-      retiredInstructions: 2_000_000, elapsedNanoseconds: 4_000_001, terminal: false,
-      baseline: provider, optimizing: provider) != nil)
+    #expect(
+      sampler.sampleIfDue(
+        retiredInstructions: 2_000_000, elapsedNanoseconds: 4_000_001, terminal: false,
+        baseline: provider, optimizing: provider) != nil)
     #expect(providerReads == 4)
     // Deadline arithmetic remains checked at the unsigned count limit.
-    #expect(sampler.sampleIfDue(
-      retiredInstructions: .max, elapsedNanoseconds: .max, terminal: false,
-      baseline: provider, optimizing: provider) != nil)
-    #expect(sampler.sampleIfDue(
-      retiredInstructions: .max, elapsedNanoseconds: .max, terminal: false,
-      baseline: provider, optimizing: provider) == nil)
+    #expect(
+      sampler.sampleIfDue(
+        retiredInstructions: .max, elapsedNanoseconds: .max, terminal: false,
+        baseline: provider, optimizing: provider) != nil)
+    #expect(
+      sampler.sampleIfDue(
+        retiredInstructions: .max, elapsedNanoseconds: .max, terminal: false,
+        baseline: provider, optimizing: provider) == nil)
     #expect(providerReads == 6)
   }
 
@@ -80,14 +95,16 @@ import Testing
     let counterNames = [
       "recentLookupHits", "dictionaryLookupHits", "lookupMisses", "memoryGenerationHits",
       "byteValidationHits", "sharedCodeHits", "compiledBlocks", "declinedCompilations",
+      "tier1CompiledBlocks", "lazyFlagMaterializations",
       "negativeCacheHits", "negativeCacheMisses", "negativeGenerationMismatches",
       "codeCacheWraps", "nativeTraceAttempts", "nativeTraceReplays", "codeGenerationChecks",
       "codeGenerationMismatches", "chainedExecutionCalls", "chainedRequestedInstructions",
       "chainedRetiredInstructions",
     ]
-    let counters = Dictionary(uniqueKeysWithValues: counterNames.enumerated().map {
-      ($0.element, UInt64.max - UInt64($0.offset))
-    })
+    let counters = Dictionary(
+      uniqueKeysWithValues: counterNames.enumerated().map {
+        ($0.element, UInt64.max - UInt64($0.offset))
+      })
     let cache = PVHJITCacheSnapshot(
       cumulativeCounters: counters, negativeEntryCount: 512,
       negativeCacheHotSites: (0..<512).map { site(index: $0) })
@@ -135,9 +152,10 @@ import Testing
       retiredInstructions: 1_000_000, elapsedNanoseconds: 100, terminal: false,
       baseline: { snapshot(counter: 5) }, optimizing: { nil })
     let cached = record.jitDiagnostics
-    #expect(sampler.sampleIfDue(
-      retiredInstructions: 1_001_000, elapsedNanoseconds: 110, terminal: false,
-      baseline: { snapshot(counter: 6) }, optimizing: { nil }) == nil)
+    #expect(
+      sampler.sampleIfDue(
+        retiredInstructions: 1_001_000, elapsedNanoseconds: 110, terminal: false,
+        baseline: { snapshot(counter: 6) }, optimizing: { nil }) == nil)
     record.retiredInstructions = 1_001_000
     record.elapsedNanoseconds = 150
     record.outcome = .wallBudget
@@ -153,7 +171,9 @@ import Testing
   }
 
   private func snapshot(counter: UInt64) -> PVHJITCacheSnapshot {
-    .init(cumulativeCounters: ["compiledBlocks": counter], negativeEntryCount: 0, negativeCacheHotSites: [])
+    .init(
+      cumulativeCounters: ["compiledBlocks": counter], negativeEntryCount: 0,
+      negativeCacheHotSites: [])
   }
 
   private func site(index: Int) -> PVHJITNegativeCacheSite {

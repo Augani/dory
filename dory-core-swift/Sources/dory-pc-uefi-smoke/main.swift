@@ -15,7 +15,8 @@ private enum SmokeError: Error, CustomStringConvertible {
     switch self {
     case .usage(let message): message
     case .invalidNumber(let value): "invalid unsigned integer: \(value)"
-    case .executionDeadlineExceeded: "host execution deadline expired; incomplete boot remains censored"
+    case .executionDeadlineExceeded:
+      "host execution deadline expired; incomplete boot remains censored"
     case .missingSerialMarker(let marker): "expected serial marker was not observed: \(marker)"
     }
   }
@@ -49,7 +50,10 @@ private final class SmokeDeadline: @unchecked Sendable {
   }
 
   @discardableResult func finish() -> Bool {
-    let result = lock.withLock { finished = true; return expired }
+    let result = lock.withLock {
+      finished = true
+      return expired
+    }
     timer?.cancel()
     timer = nil
     return result
@@ -129,7 +133,8 @@ private struct Arguments {
       let name = values[index]
       guard
         [
-          "--firmware-bundle", "--max-instructions", "--timeout-seconds", "--memory-bytes", "--processor-count",
+          "--firmware-bundle", "--max-instructions", "--timeout-seconds", "--memory-bytes",
+          "--processor-count",
           "--system-disk", "--installer-media", "--variable-store-directory",
           "--exception-policy", "--execution-tier", "--progress-instructions",
           "--expected-serial-marker",
@@ -341,6 +346,8 @@ private func jitDiagnostics(_ diagnostics: DoryPCJITCacheStatistics?) -> Any {
     "byteValidationHits": diagnostics.byteValidationHits,
     "sharedCodeHits": diagnostics.sharedCodeHits,
     "compiledBlocks": diagnostics.compiledBlocks,
+    "tier1CompiledBlocks": diagnostics.tier1CompiledBlocks,
+    "lazyFlagMaterializations": diagnostics.lazyFlagMaterializations,
     "declinedCompilations": diagnostics.declinedCompilations,
     "negativeCacheHits": diagnostics.negativeCacheHits,
     "negativeCacheMisses": diagnostics.negativeCacheMisses,

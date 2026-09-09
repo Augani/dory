@@ -124,7 +124,8 @@ public struct DoryPCExecutionStatistics: Codable, Sendable, Hashable {
       interpreterInstructions: try container.decode(UInt64.self, forKey: .interpreterInstructions),
       baselineJITInstructions: try container.decode(UInt64.self, forKey: .baselineJITInstructions),
       baselineJITBlocks: try container.decode(UInt64.self, forKey: .baselineJITBlocks),
-      optimizingJITInstructions: try container.decode(UInt64.self, forKey: .optimizingJITInstructions),
+      optimizingJITInstructions: try container.decode(
+        UInt64.self, forKey: .optimizingJITInstructions),
       optimizingJITBlocks: try container.decode(UInt64.self, forKey: .optimizingJITBlocks),
       deliveredMaskableInterrupts: try container.decodeIfPresent(
         UInt64.self,
@@ -212,6 +213,8 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let byteValidationHits: UInt64
   public let sharedCodeHits: UInt64
   public let compiledBlocks: UInt64
+  public let tier1CompiledBlocks: UInt64
+  public let lazyFlagMaterializations: UInt64
   public let declinedCompilations: UInt64
   public let negativeCacheHits: UInt64
   public let negativeCacheMisses: UInt64
@@ -256,6 +259,8 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     byteValidationHits = sum(\.byteValidationHits)
     sharedCodeHits = sum(\.sharedCodeHits)
     compiledBlocks = sum(\.compiledBlocks)
+    tier1CompiledBlocks = sum(\.tier1CompiledBlocks)
+    lazyFlagMaterializations = sum(\.lazyFlagMaterializations)
     declinedCompilations = sum(\.declinedCompilations)
     negativeCacheHits = sum(\.negativeCacheHits)
     negativeCacheMisses = sum(\.negativeCacheMisses)
@@ -280,7 +285,8 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     chainedRetiredInstructions = sum(\.chainedRetiredInstructions)
     translationCacheEntryCount = sum(\.translationCacheEntryCount)
     translationCacheAllocatedBytes = sum(\.translationCacheAllocatedBytes)
-    translationCacheAddressSpaceGeneration = sources.map(\.translationCacheAddressSpaceGeneration)
+    translationCacheAddressSpaceGeneration =
+      sources.map(\.translationCacheAddressSpaceGeneration)
       .max() ?? 0
     translationCacheInvalidations = sum(\.translationCacheInvalidations)
     translationCacheHits = sum(\.translationCacheHits)
@@ -596,40 +602,38 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       ? max(4_096, baselineJITMaximumCodeBytes / 4)
       : baselineJITMaximumCodeBytes
     let perProcessorBaselineCodeBytes = max(4_096, baselineCodeBytes / processorCount)
-    baselineJITs = try
-      switch executionTier {
-      case .interpreter:
-        []
-      case .baselineJIT, .optimizingJIT:
-        try (0..<processorCount).map { _ in
-          try DoryARM64BaselineExecutor(
-            maximumCodeBytes: perProcessorBaselineCodeBytes,
-            decoder: interpreter.decoder,
-            cpuProfileIdentifier: interpreter.profile.identifier,
-            physicalAddressBits: interpreter.profile.physicalAddressBits,
-            profile: interpreter.profile,
-            optimization: .baseline
-          )
-        }
+    baselineJITs = try switch executionTier {
+    case .interpreter:
+      []
+    case .baselineJIT, .optimizingJIT:
+      try (0..<processorCount).map { _ in
+        try DoryARM64BaselineExecutor(
+          maximumCodeBytes: perProcessorBaselineCodeBytes,
+          decoder: interpreter.decoder,
+          cpuProfileIdentifier: interpreter.profile.identifier,
+          physicalAddressBits: interpreter.profile.physicalAddressBits,
+          profile: interpreter.profile,
+          optimization: .baseline
+        )
       }
+    }
     let optimizingCodeBytes = max(4_096, baselineJITMaximumCodeBytes * 3 / 4)
     let perProcessorOptimizingCodeBytes = max(4_096, optimizingCodeBytes / processorCount)
-    optimizingJITs = try
-      switch executionTier {
-      case .interpreter, .baselineJIT:
-        []
-      case .optimizingJIT:
-        try (0..<processorCount).map { _ in
-          try DoryARM64BaselineExecutor(
-            maximumCodeBytes: perProcessorOptimizingCodeBytes,
-            decoder: interpreter.decoder,
-            cpuProfileIdentifier: interpreter.profile.identifier,
-            physicalAddressBits: interpreter.profile.physicalAddressBits,
-            profile: interpreter.profile,
-            optimization: .optimizing
-          )
-        }
+    optimizingJITs = try switch executionTier {
+    case .interpreter, .baselineJIT:
+      []
+    case .optimizingJIT:
+      try (0..<processorCount).map { _ in
+        try DoryARM64BaselineExecutor(
+          maximumCodeBytes: perProcessorOptimizingCodeBytes,
+          decoder: interpreter.decoder,
+          cpuProfileIdentifier: interpreter.profile.identifier,
+          physicalAddressBits: interpreter.profile.physicalAddressBits,
+          profile: interpreter.profile,
+          optimization: .optimizing
+        )
       }
+    }
     firmwareConfiguration = DoryPCFirmwareConfiguration(
       totalRAMBytes: UInt64(memoryBytes),
       processorCount: processorCount,
@@ -679,7 +683,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     hostAddressSpaceBase = sharedMemory.hostAddressSpaceBase
     hostAddressSpaceByteCount = sharedMemory.hostAddressSpaceByteCount
     physicalMemories = try (0..<processorCount).map {
-      _ in try DoryPCPhysicalMemoryBus(ram: sharedMemory, diagnosticsEnabled: instrumentationEnabled)
+      _ in
+      try DoryPCPhysicalMemoryBus(ram: sharedMemory, diagnosticsEnabled: instrumentationEnabled)
     }
     physicalMemory = physicalMemories[0]
     memoryByteCount = memoryBytes
@@ -886,9 +891,11 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     }
     // Segment writes include BSS. No part may cross a reserved hole or depend on
     // the packed backing offsets used internally for RAM above four GiB.
-    guard kernelRanges.allSatisfy({ segment in
-      ram.contains { $0.lowerBound <= segment.lowerBound && segment.upperBound <= $0.upperBound }
-    }) else { throw DoryPCMachineError.bootArtifactOutsideRAM }
+    guard
+      kernelRanges.allSatisfy({ segment in
+        ram.contains { $0.lowerBound <= segment.lowerBound && segment.upperBound <= $0.upperBound }
+      })
+    else { throw DoryPCMachineError.bootArtifactOutsideRAM }
 
     let artifacts: [(UInt64, [UInt8])] = [
       (boot.layout.startInfo, boot.startInfo), (boot.layout.commandLine, boot.commandLine),
@@ -1141,7 +1148,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
         }
         completed += execution.instructionCount
         switch execution.jitTier {
-        case .baseline:
+        case .baseline, .tier1:
           baselineJITInstructionCount &+= execution.instructionCount
           baselineJITBlockCount &+= execution.jitBlockCount
         case .optimizing:
@@ -1246,7 +1253,8 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       deliveredMaskableInterrupts: deliveredMaskableInterruptCount,
       deliveredNonMaskableInterrupts: deliveredNonMaskableInterruptCount,
       retiredInterruptReturns: retiredInterruptReturnCount,
-      deliveredInterruptVectors: deliveredInterruptVectorCounts
+      deliveredInterruptVectors:
+        deliveredInterruptVectorCounts
         .sorted { lhs, rhs in
           if lhs.value == rhs.value { return lhs.key < rhs.key }
           return lhs.value > rhs.value
@@ -1291,13 +1299,16 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
       saturatingAdd(elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.processorEventNanoseconds)
     case .clockAdvancement:
       saturatingAdd(elapsed.wallNanoseconds, to: &hostWallTime.clockAdvancementNanoseconds)
-      saturatingAdd(elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.clockAdvancementNanoseconds)
+      saturatingAdd(
+        elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.clockAdvancementNanoseconds)
     case .interruptDelivery:
       saturatingAdd(elapsed.wallNanoseconds, to: &hostWallTime.interruptDeliveryNanoseconds)
-      saturatingAdd(elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.interruptDeliveryNanoseconds)
+      saturatingAdd(
+        elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.interruptDeliveryNanoseconds)
     case .processorExecution:
       saturatingAdd(elapsed.wallNanoseconds, to: &hostWallTime.processorExecutionNanoseconds)
-      saturatingAdd(elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.processorExecutionNanoseconds)
+      saturatingAdd(
+        elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.processorExecutionNanoseconds)
     case .idleWait:
       saturatingAdd(elapsed.wallNanoseconds, to: &hostWallTime.idleWaitNanoseconds)
       saturatingAdd(elapsed.threadCPUNanoseconds, to: &hostThreadCPUTime.idleWaitNanoseconds)
@@ -1307,7 +1318,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
   private func elapsedHostTime(since sample: HostTimeSample) -> HostTimeSample? {
     let wallNow = DispatchTime.now().uptimeNanoseconds
     let cpuNow = dory_thread_cpu_time_nanoseconds()
-    guard wallNow >= sample.wallNanoseconds, cpuNow >= sample.threadCPUNanoseconds else { return nil }
+    guard wallNow >= sample.wallNanoseconds, cpuNow >= sample.threadCPUNanoseconds else {
+      return nil
+    }
     return .init(
       wallNanoseconds: wallNow - sample.wallNanoseconds,
       threadCPUNanoseconds: cpuNow - sample.threadCPUNanoseconds

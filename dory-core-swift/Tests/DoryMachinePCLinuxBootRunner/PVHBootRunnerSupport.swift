@@ -98,7 +98,9 @@ struct PVHRunnerConfiguration: Codable, Sendable {
       else { throw PVHRunnerError("Unknown option or missing value: \(argument.prefix(80))") }
       let name = String(argument.dropFirst(2))
       let value = arguments[index + 1]
-      guard value.utf8.count <= 8192 else { throw PVHRunnerError("Option value too long: --\(name)") }
+      guard value.utf8.count <= 8192 else {
+        throw PVHRunnerError("Option value too long: --\(name)")
+      }
       if name == "workload" {
         requestedWorkloads.append(value)
       } else {
@@ -131,8 +133,9 @@ struct PVHRunnerConfiguration: Codable, Sendable {
     kernelSHA256 = try digest("kernel-sha256")
     initrd = try absolutePath("initrd")
     initrdSHA256 = try digest("initrd-sha256")
-    guard let selectedProfile = PVHRunnerCPUProfile(
-      rawValue: values["cpu-profile"] ?? PVHRunnerCPUProfile.compatibleV1.rawValue)
+    guard
+      let selectedProfile = PVHRunnerCPUProfile(
+        rawValue: values["cpu-profile"] ?? PVHRunnerCPUProfile.compatibleV1.rawValue)
     else { throw PVHRunnerError("Unsupported --cpu-profile") }
     guard selectedProfile.satisfiesSupportedLinuxBaseline else {
       throw PVHRunnerError("--cpu-profile is not qualified for Dory's Linux baseline")
@@ -169,7 +172,10 @@ struct PVHRunnerConfiguration: Codable, Sendable {
               || [45, 46, 95].contains($0)
           })
       })
-    else { throw PVHRunnerError("Supply 1...32 distinct --workload names using ASCII letters, digits, ._- ") }
+    else {
+      throw PVHRunnerError(
+        "Supply 1...32 distinct --workload names using ASCII letters, digits, ._- ")
+    }
     workloads = requestedWorkloads.sorted()
     let baseCommandLine = try required("command-line")
     guard !baseCommandLine.utf8.contains(0), !baseCommandLine.contains("dory.pvh_run_id=") else {
@@ -180,10 +186,12 @@ struct PVHRunnerConfiguration: Codable, Sendable {
       throw PVHRunnerError("Command line plus run ID exceeds the PVH limit")
     }
     diagnostics = values["diagnostics"] == nil ? nil : try absolutePath("diagnostics")
-    stressIODirectory = values["stress-io-directory"] == nil ? nil : try absolutePath("stress-io-directory")
+    stressIODirectory =
+      values["stress-io-directory"] == nil ? nil : try absolutePath("stress-io-directory")
     if stressIODirectory != nil {
       guard diagnostics != nil, workloads == Self.stressIOWorkloads.sorted() else {
-        throw PVHRunnerError("--stress-io-directory requires --diagnostics and both exact IO workloads")
+        throw PVHRunnerError(
+          "--stress-io-directory requires --diagnostics and both exact IO workloads")
       }
     }
     if values["symbols"] != nil || values["symbols-sha256"] != nil {
@@ -199,7 +207,9 @@ struct PVHRunnerConfiguration: Codable, Sendable {
         URL(fileURLWithPath: $0).standardizedFileURL.resolvingSymlinksInPath()
           == URL(fileURLWithPath: diagnostics).standardizedFileURL.resolvingSymlinksInPath()
       })
-    { throw PVHRunnerError("Diagnostic output aliases an input") }
+    {
+      throw PVHRunnerError("Diagnostic output aliases an input")
+    }
   }
 }
 
@@ -215,14 +225,19 @@ struct PVHPinnedInput {
   let identity: PVHArtifactIdentity
 
   static func read(path: String, sha256: String, maximumBytes: Int = 512 << 20) throws -> Self {
-    let descriptor = path.withCString { Darwin.open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK) }
+    let descriptor = path.withCString {
+      Darwin.open($0, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK)
+    }
     guard descriptor >= 0 else { throw PVHRunnerError("Cannot open required input: \(path)") }
     let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true)
     defer { try? handle.close() }
     var initial = stat()
     guard fstat(descriptor, &initial) == 0, initial.st_mode & S_IFMT == S_IFREG,
       initial.st_size > 0, initial.st_size <= maximumBytes
-    else { throw PVHRunnerError("Input must be a nonempty regular file within \(maximumBytes) bytes: \(path)") }
+    else {
+      throw PVHRunnerError(
+        "Input must be a nonempty regular file within \(maximumBytes) bytes: \(path)")
+    }
     var data = Data()
     var hasher = SHA256()
     while let chunk = try handle.read(upToCount: 65536), !chunk.isEmpty {
@@ -241,7 +256,9 @@ struct PVHPinnedInput {
       initial.st_ctimespec.tv_nsec == final.st_ctimespec.tv_nsec
     else { throw PVHRunnerError("Input changed during verification: \(path)") }
     let actual = hasher.finalize().map { String(format: "%02x", $0) }.joined()
-    guard actual == sha256 else { throw PVHRunnerError("SHA-256 mismatch for required input: \(path)") }
+    guard actual == sha256 else {
+      throw PVHRunnerError("SHA-256 mismatch for required input: \(path)")
+    }
     return .init(
       data: data,
       identity: .init(path: path, sha256: actual, byteCount: data.count, elfBuildID: nil))
@@ -323,7 +340,9 @@ struct PVHSymbolMap {
       else { throw PVHRunnerError("Malformed System.map line") }
       // Text symbols annotate PCs; data addresses are never dereferenced by this runner.
       if parts[1] == "T" || parts[1] == "t" || parts[1] == "W" || parts[1] == "w" {
-        guard parsed.count < 500_000 else { throw PVHRunnerError("Too many System.map text symbols") }
+        guard parsed.count < 500_000 else {
+          throw PVHRunnerError("Too many System.map text symbols")
+        }
         parsed.append((address, String(parts[2])))
       }
     }
@@ -381,12 +400,16 @@ struct PVHConsoleCapture: Sendable {
             found.schemaVersion == 1, found.doryPVHBoot == "userspace-ready",
             found.runID == runID, found.workloadsPassed,
             found.workloads.count == workloads.count, found.workloads.sorted() == workloads.sorted()
-          { receipt = found }
+          {
+            receipt = found
+          }
         }
         line.removeAll(keepingCapacity: true)
         discardingLine = false
       } else if !discardingLine {
-        if line.count < Self.maximumLineBytes { line.append(byte) } else {
+        if line.count < Self.maximumLineBytes {
+          line.append(byte)
+        } else {
           line.removeAll(keepingCapacity: true)
           discardingLine = true
         }
@@ -416,19 +439,33 @@ struct PVHStopSnapshot: Codable, Sendable {
     var bytes: [UInt8]?
     var interrupt: UInt8?
     switch stop {
-    case .instructionBudget(let count): reason = "instruction-quantum"; instructionCount = count
-    case .halted(let count): reason = "halted"; instructionCount = count
-    case .poweredOff(let count): reason = "powered-off"; instructionCount = count
-    case .reset(let count): reason = "reset"; instructionCount = count
+    case .instructionBudget(let count):
+      reason = "instruction-quantum"
+      instructionCount = count
+    case .halted(let count):
+      reason = "halted"
+      instructionCount = count
+    case .poweredOff(let count):
+      reason = "powered-off"
+      instructionCount = count
+    case .reset(let count):
+      reason = "reset"
+      instructionCount = count
     case .exception(let value, let count):
-      reason = "exception"; instructionCount = count; exception = value
+      reason = "exception"
+      instructionCount = count
+      exception = value
     case .tripleFault(let source, let count):
-      reason = "triple-fault"; instructionCount = count
+      reason = "triple-fault"
+      instructionCount = count
       switch source {
       case .exception(let evidence):
-        exception = evidence.exception; processor = evidence.processor
+        exception = evidence.exception
+        processor = evidence.processor
         bytes = Array(evidence.instructionBytes.prefix(15))
-      case .interrupt(let vector, _, let index): interrupt = vector; processor = index
+      case .interrupt(let vector, _, let index):
+        interrupt = vector
+        processor = index
       }
     }
     self.totalInstructions = totalInstructions
@@ -443,8 +480,10 @@ struct PVHStopSnapshot: Codable, Sendable {
 
   static func instructionCount(_ stop: DoryPCMachineStop) -> UInt64 {
     switch stop {
-    case .instructionBudget(let count), .halted(let count), .poweredOff(let count), .reset(let count),
-      .exception(_, let count), .tripleFault(_, let count): count
+    case .instructionBudget(let count), .halted(let count), .poweredOff(let count),
+      .reset(let count),
+      .exception(_, let count), .tripleFault(_, let count):
+      count
     }
   }
 }
@@ -461,7 +500,10 @@ struct PVHRunOutcome: Codable, Sendable {
     switch stop {
     case .instructionBudget: return nil
     case .poweredOff:
-      return .init(passed: receiptSeen, reason: receiptSeen ? "userspace-workloads-powered-off" : "missing-guest-receipt", exitCode: receiptSeen ? 0 : 1)
+      return .init(
+        passed: receiptSeen,
+        reason: receiptSeen ? "userspace-workloads-powered-off" : "missing-guest-receipt",
+        exitCode: receiptSeen ? 0 : 1)
     case .halted: return .init(passed: false, reason: "halted-without-poweroff", exitCode: 1)
     case .reset: return .init(passed: false, reason: "guest-reset", exitCode: 1)
     case .exception: return .init(passed: false, reason: "guest-exception", exitCode: 1)
@@ -502,7 +544,8 @@ struct PVHTimerInterruptSnapshot: Codable, Sendable {
     pitArmed = pit.armed
     let legacy = machine.legacyPIC.snapshot()
     pic = [
-      "masterVectorOffset": legacy.masterVectorOffset, "slaveVectorOffset": legacy.slaveVectorOffset,
+      "masterVectorOffset": legacy.masterVectorOffset,
+      "slaveVectorOffset": legacy.slaveVectorOffset,
       "masterMask": legacy.masterMask, "slaveMask": legacy.slaveMask,
       "masterRequest": legacy.masterRequest, "slaveRequest": legacy.slaveRequest,
       "masterInService": legacy.masterInService, "slaveInService": legacy.slaveInService,
@@ -513,7 +556,8 @@ struct PVHTimerInterruptSnapshot: Codable, Sendable {
     hpetMainCounter = hpet.mainCounter
     hpetInterruptStatus = hpet.interruptStatus
     hpetTimers = hpet.timers.prefix(32).map {
-      .init(configuration: $0.configuration, comparator: $0.comparator,
+      .init(
+        configuration: $0.configuration, comparator: $0.comparator,
         period: $0.period, armed: $0.armed)
     }
   }
@@ -573,6 +617,8 @@ struct PVHJITCacheSnapshot: Codable, Sendable {
         "byteValidationHits": source.byteValidationHits,
         "sharedCodeHits": source.sharedCodeHits,
         "compiledBlocks": source.compiledBlocks,
+        "tier1CompiledBlocks": source.tier1CompiledBlocks,
+        "lazyFlagMaterializations": source.lazyFlagMaterializations,
         "declinedCompilations": source.declinedCompilations,
         "negativeCacheHits": source.negativeCacheHits,
         "negativeCacheMisses": source.negativeCacheMisses,
@@ -606,7 +652,8 @@ struct PVHJITDiagnosticSample: Codable, Sendable {
   let sampleInstructionCount: UInt64
   let sampleElapsedNanoseconds: UInt64
   let sampleIntervalInstructions: UInt64
-  let observationScope = "Last completed coarse sample, or normal terminal slice. Timeout/error may retain an older sample. Counters are executor-lifetime totals; negativeEntryCount and the capped hot sites describe only live entries. Site reasons and hit counts are not cumulative reason totals."
+  let observationScope =
+    "Last completed coarse sample, or normal terminal slice. Timeout/error may retain an older sample. Counters are executor-lifetime totals; negativeEntryCount and the capped hot sites describe only live entries. Site reasons and hit counts are not cumulative reason totals."
   let baseline: PVHJITCacheSnapshot?
   let optimizing: PVHJITCacheSnapshot?
 }
@@ -626,8 +673,9 @@ struct PVHJITDiagnosticsSampler {
     baseline: () -> PVHJITCacheSnapshot?, optimizing: () -> PVHJITCacheSnapshot?
   ) -> PVHJITDiagnosticSample? {
     guard enabled,
-      terminal || (retiredInstructions >= lastSampleInstructionCount
-        && retiredInstructions - lastSampleInstructionCount >= Self.intervalInstructions)
+      terminal
+        || (retiredInstructions >= lastSampleInstructionCount
+          && retiredInstructions - lastSampleInstructionCount >= Self.intervalInstructions)
     else { return nil }
     lastSampleInstructionCount = retiredInstructions
     return .init(
@@ -645,7 +693,8 @@ struct PVHDiagnosticRecord: Codable, Sendable {
   let configuration: PVHRunnerConfiguration
   let hostOS = ProcessInfo.processInfo.operatingSystemVersionString
   let guestClock = "deterministic"
-  let observationScope = "Last runner slice exits; guest-handled exceptions are not sampled. Timeout state is the last completed slice."
+  let observationScope =
+    "Last runner slice exits; guest-handled exceptions are not sampled. Timeout state is the last completed slice."
   var stage = "verifying-inputs"
   var kernel: PVHArtifactIdentity?
   var initrd: PVHArtifactIdentity?

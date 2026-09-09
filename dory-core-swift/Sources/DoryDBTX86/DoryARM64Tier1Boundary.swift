@@ -53,28 +53,35 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
   /// architectural GPR plus RIP, the currently materialized RFLAGS image, and the pending lazy
   /// operation descriptor.
   func emitEntry(into words: inout [UInt32]) {
-    words.append(Self.encodeSubtractImmediate(left: 31, immediate: Self.hostFrameByteCount,
-      destination: 31))
+    words.append(
+      Self.encodeSubtractImmediate(
+        left: 31, immediate: Self.hostFrameByteCount,
+        destination: 31))
     for (pairIndex, first) in stride(from: 19, through: 29, by: 2).enumerated() {
-      words.append(Self.encodeStorePair(
-        first: UInt32(first), second: UInt32(first + 1), base: 31,
-        byteOffset: pairIndex * 16))
+      words.append(
+        Self.encodeStorePair(
+          first: UInt32(first), second: UInt32(first + 1), base: 31,
+          byteOffset: pairIndex * 16))
     }
     words.append(Self.encodeMove(destination: 28, source: 0))
     for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
-      words.append(Self.encodeLoad64(
-        register: register, base: 28,
-        byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: index)!.byteOffset))
+      words.append(
+        Self.encodeLoad64(
+          register: register, base: 28,
+          byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: index)!.byteOffset))
     }
-    words.append(Self.encodeLoad64(
-      register: DoryARM64Tier1ABI.guestRIPRegister, base: 28,
-      byteOffset: DoryARM64Tier1ABI.ContextWord.rip.byteOffset))
-    words.append(Self.encodeLoad64(
-      register: DoryARM64Tier1ABI.lazyFlagsRegisters[0], base: 28,
-      byteOffset: DoryARM64Tier1ABI.ContextWord.rflags.byteOffset))
-    words.append(Self.encodeLoad64(
-      register: DoryARM64Tier1ABI.lazyFlagsRegisters[1], base: 28,
-      byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
+    words.append(
+      Self.encodeLoad64(
+        register: DoryARM64Tier1ABI.guestRIPRegister, base: 28,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.rip.byteOffset))
+    words.append(
+      Self.encodeLoad64(
+        register: DoryARM64Tier1ABI.lazyFlagsRegisters[0], base: 28,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.rflags.byteOffset))
+    words.append(
+      Self.encodeLoad64(
+        register: DoryARM64Tier1ABI.lazyFlagsRegisters[1], base: 28,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
   }
 
   /// Materializes a pending record through the stable context helper. The zero-descriptor path is
@@ -84,36 +91,48 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
     let materializedBranch = words.count
     words.append(0)
     for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
-      words.append(Self.encodeStore64(
-        register: register, base: DoryARM64Tier1ABI.contextRegister,
-        byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: index)!.byteOffset))
+      words.append(
+        Self.encodeStore64(
+          register: register, base: DoryARM64Tier1ABI.contextRegister,
+          byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: index)!.byteOffset))
     }
-    words.append(Self.encodeStore64(
-      register: DoryARM64Tier1ABI.lazyFlagsRegisters[0],
-      base: DoryARM64Tier1ABI.contextRegister,
-      byteOffset: DoryARM64Tier1ABI.ContextWord.rflags.byteOffset))
-    words.append(Self.encodeStore64(
-      register: DoryARM64Tier1ABI.lazyFlagsRegisters[1],
-      base: DoryARM64Tier1ABI.contextRegister,
-      byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
-    words.append(Self.encodeLoad64(
-      register: DoryARM64Tier1ABI.scratchRegisters[0],
-      base: DoryARM64Tier1ABI.contextRegister,
-      byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializer.byteOffset))
+    words.append(
+      Self.encodeStore64(
+        register: DoryARM64Tier1ABI.lazyFlagsRegisters[0],
+        base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.rflags.byteOffset))
+    words.append(
+      Self.encodeStore64(
+        register: DoryARM64Tier1ABI.lazyFlagsRegisters[1],
+        base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
+    words.append(
+      Self.encodeLoad64(
+        register: DoryARM64Tier1ABI.scratchRegisters[0],
+        base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializer.byteOffset))
     words.append(Self.encodeMove(destination: 0, source: DoryARM64Tier1ABI.contextRegister))
     words.append(Self.encodeBranchWithLink(register: DoryARM64Tier1ABI.scratchRegisters[0]))
-    words.append(Self.encodeMove(
-      destination: DoryARM64Tier1ABI.lazyFlagsRegisters[0], source: 0))
-    words.append(Self.encodeMove(
-      destination: DoryARM64Tier1ABI.lazyFlagsRegisters[1], source: 31))
+    words.append(
+      Self.encodeMove(
+        destination: DoryARM64Tier1ABI.lazyFlagsRegisters[0], source: 0))
+    words.append(
+      Self.encodeMove(
+        destination: DoryARM64Tier1ABI.lazyFlagsRegisters[1], source: 31))
     for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
-      words.append(Self.encodeLoad64(
-        register: register, base: DoryARM64Tier1ABI.contextRegister,
-        byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: index)!.byteOffset))
+      words.append(
+        Self.encodeLoad64(
+          register: register, base: DoryARM64Tier1ABI.contextRegister,
+          byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: index)!.byteOffset))
     }
     words[materializedBranch] = Self.encodeCompareAndBranchZero(
       register: DoryARM64Tier1ABI.lazyFlagsRegisters[1],
       wordOffset: words.count - materializedBranch)
+  }
+
+  /// Replaces the pinned guest RIP with one statically validated direct target.
+  func emitGuestRIP(_ address: UInt64, into words: inout [UInt32]) {
+    Self.emitImmediate(address, register: DoryARM64Tier1ABI.guestRIPRegister, into: &words)
   }
 
   /// Emits one conservative helper boundary. Only the live pinned guest subset is checkpointed
@@ -126,98 +145,117 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
     for register in DoryARM64Tier1ABI.helperSpillRegisters(
       liveGuestMask: call.liveGuestMask
     ) {
-      words.append(Self.encodeStore64(
-        register: register, base: DoryARM64Tier1ABI.contextRegister,
-        byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: Int(register))!.byteOffset))
+      words.append(
+        Self.encodeStore64(
+          register: register, base: DoryARM64Tier1ABI.contextRegister,
+          byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: Int(register))!.byteOffset))
     }
-    words.append(Self.encodeStore64(
-      register: DoryARM64Tier1ABI.guestRIPRegister,
-      base: DoryARM64Tier1ABI.contextRegister,
-      byteOffset: DoryARM64Tier1ABI.ContextWord.rip.byteOffset))
-    words.append(Self.encodeStore64(
-      register: DoryARM64Tier1ABI.lazyFlagsRegisters[0],
-      base: DoryARM64Tier1ABI.contextRegister,
-      byteOffset: DoryARM64Tier1ABI.ContextWord.rflags.byteOffset))
-    words.append(Self.encodeStore64(
-      register: DoryARM64Tier1ABI.lazyFlagsRegisters[1],
-      base: DoryARM64Tier1ABI.contextRegister,
-      byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
-    words.append(Self.encodeLoad64(
-      register: DoryARM64Tier1ABI.scratchRegisters[0],
-      base: DoryARM64Tier1ABI.contextRegister,
-      byteOffset: call.target.byteOffset))
+    words.append(
+      Self.encodeStore64(
+        register: DoryARM64Tier1ABI.guestRIPRegister,
+        base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.rip.byteOffset))
+    words.append(
+      Self.encodeStore64(
+        register: DoryARM64Tier1ABI.lazyFlagsRegisters[0],
+        base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.rflags.byteOffset))
+    words.append(
+      Self.encodeStore64(
+        register: DoryARM64Tier1ABI.lazyFlagsRegisters[1],
+        base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
+    words.append(
+      Self.encodeLoad64(
+        register: DoryARM64Tier1ABI.scratchRegisters[0],
+        base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: call.target.byteOffset))
 
     for (argumentRegister, argument) in call.arguments.enumerated() {
       let destination = UInt32(argumentRegister)
       switch argument {
       case .contextPointer:
-        words.append(Self.encodeMove(
-          destination: destination, source: DoryARM64Tier1ABI.contextRegister))
+        words.append(
+          Self.encodeMove(
+            destination: destination, source: DoryARM64Tier1ABI.contextRegister))
       case .guestRegister(let index):
-        words.append(Self.encodeLoad64(
-          register: destination, base: DoryARM64Tier1ABI.contextRegister,
-          byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: index)!.byteOffset))
+        words.append(
+          Self.encodeLoad64(
+            register: destination, base: DoryARM64Tier1ABI.contextRegister,
+            byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: index)!.byteOffset))
       case .immediate(let value):
         Self.emitImmediate(value, register: destination, into: &words)
       case .contextWordValue(let word):
-        words.append(Self.encodeLoad64(
-          register: destination, base: DoryARM64Tier1ABI.contextRegister,
-          byteOffset: word.byteOffset))
+        words.append(
+          Self.encodeLoad64(
+            register: destination, base: DoryARM64Tier1ABI.contextRegister,
+            byteOffset: word.byteOffset))
       case .contextWordAddress(let word):
-        words.append(Self.encodeAddImmediate(
-          left: DoryARM64Tier1ABI.contextRegister,
-          immediate: word.byteOffset,
-          destination: destination))
+        words.append(
+          Self.encodeAddImmediate(
+            left: DoryARM64Tier1ABI.contextRegister,
+            immediate: word.byteOffset,
+            destination: destination))
       }
     }
     words.append(Self.encodeBranchWithLink(register: DoryARM64Tier1ABI.scratchRegisters[0]))
 
     if call.resultGuestRegister != nil {
-      words.append(Self.encodeMove(
-        destination: DoryARM64Tier1ABI.scratchRegisters[1], source: 0))
+      words.append(
+        Self.encodeMove(
+          destination: DoryARM64Tier1ABI.scratchRegisters[1], source: 0))
     }
     for register in DoryARM64Tier1ABI.helperSpillRegisters(
       liveGuestMask: call.liveGuestMask
     ) where Int(register) != call.resultGuestRegister {
-      words.append(Self.encodeLoad64(
-        register: register, base: DoryARM64Tier1ABI.contextRegister,
-        byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: Int(register))!.byteOffset))
+      words.append(
+        Self.encodeLoad64(
+          register: register, base: DoryARM64Tier1ABI.contextRegister,
+          byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: Int(register))!.byteOffset))
     }
     if let resultGuestRegister = call.resultGuestRegister {
-      words.append(Self.encodeMove(
-        destination: UInt32(resultGuestRegister),
-        source: DoryARM64Tier1ABI.scratchRegisters[1]))
+      words.append(
+        Self.encodeMove(
+          destination: UInt32(resultGuestRegister),
+          source: DoryARM64Tier1ABI.scratchRegisters[1]))
     }
   }
 
   /// Publishes pinned architectural state, restores the host ABI, and returns the dispatcher code.
   func emitExit(_ exitCode: DoryJITExitCode, into words: inout [UInt32]) {
     for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
-      words.append(Self.encodeStore64(
-        register: register, base: DoryARM64Tier1ABI.contextRegister,
-        byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: index)!.byteOffset))
+      words.append(
+        Self.encodeStore64(
+          register: register, base: DoryARM64Tier1ABI.contextRegister,
+          byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: index)!.byteOffset))
     }
-    words.append(Self.encodeStore64(
-      register: DoryARM64Tier1ABI.guestRIPRegister,
-      base: DoryARM64Tier1ABI.contextRegister,
-      byteOffset: DoryARM64Tier1ABI.ContextWord.rip.byteOffset))
-    words.append(Self.encodeStore64(
-      register: DoryARM64Tier1ABI.lazyFlagsRegisters[0],
-      base: DoryARM64Tier1ABI.contextRegister,
-      byteOffset: DoryARM64Tier1ABI.ContextWord.rflags.byteOffset))
-    words.append(Self.encodeStore64(
-      register: DoryARM64Tier1ABI.lazyFlagsRegisters[1],
-      base: DoryARM64Tier1ABI.contextRegister,
-      byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
-    words.append(Self.encodeMoveWideZero32(
-      register: 0, immediate: UInt16(exitCode.rawValue)))
+    words.append(
+      Self.encodeStore64(
+        register: DoryARM64Tier1ABI.guestRIPRegister,
+        base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.rip.byteOffset))
+    words.append(
+      Self.encodeStore64(
+        register: DoryARM64Tier1ABI.lazyFlagsRegisters[0],
+        base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.rflags.byteOffset))
+    words.append(
+      Self.encodeStore64(
+        register: DoryARM64Tier1ABI.lazyFlagsRegisters[1],
+        base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
+    words.append(
+      Self.encodeMoveWideZero32(
+        register: 0, immediate: UInt16(exitCode.rawValue)))
     for (pairIndex, first) in stride(from: 19, through: 29, by: 2).enumerated() {
-      words.append(Self.encodeLoadPair(
-        first: UInt32(first), second: UInt32(first + 1), base: 31,
-        byteOffset: pairIndex * 16))
+      words.append(
+        Self.encodeLoadPair(
+          first: UInt32(first), second: UInt32(first + 1), base: 31,
+          byteOffset: pairIndex * 16))
     }
-    words.append(Self.encodeAddImmediate(
-      left: 31, immediate: Self.hostFrameByteCount, destination: 31))
+    words.append(
+      Self.encodeAddImmediate(
+        left: 31, immediate: Self.hostFrameByteCount, destination: 31))
     words.append(0xD65F_03C0)  // ret
   }
 

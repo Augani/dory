@@ -11,6 +11,7 @@ public enum DoryJITExitCode: UInt32, Codable, Sendable, Hashable {
 
 public enum DoryARM64CompilationTier: String, Codable, Sendable, Hashable {
   case baseline
+  case tier1
   case optimizing
   case interpreterFallback
 }
@@ -136,7 +137,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
     let usesMemory = memoryCallbackCount > 0
     let guardsTerminator = requiresRuntimeAddressGuard(block.terminator)
     let guardsStack = block.statements.contains {
-      switch $0 { case .stackPush, .stackPushFlags, .stackPop: true; default: false }
+      switch $0 {
+      case .stackPush, .stackPushFlags, .stackPop: true
+      default: false
+      }
     }
     let guardsInterpreterExit = block.statements.contains {
       if case .unsignedAccumulatorDivide = $0 { return true }
@@ -187,7 +191,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     switch terminator {
     case .call, .indirectCall, .indirect, .returnFromCall: true
     case .conditional(_, let taken, let notTaken):
-      !DoryX86ArchitecturalState.isCanonical(taken) || !DoryX86ArchitecturalState.isCanonical(notTaken)
+      !DoryX86ArchitecturalState.isCanonical(taken)
+        || !DoryX86ArchitecturalState.isCanonical(notTaken)
     default: false
     }
   }
@@ -227,7 +232,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       case .signedMultiply(let destination, let lhs, let rhs):
         return isFSOrGS(destination) || isFSOrGS(lhs) || isFSOrGS(rhs)
       case .unsignedAccumulatorMultiply(let source), .unsignedAccumulatorDivide(let source),
-      .signedAccumulatorDivide(let source):
+        .signedAccumulatorDivide(let source):
         return isFSOrGS(source)
       case .doubleShiftRightCL(let destination, let source),
         .doubleShiftRightImmediate(let destination, let source, _):
@@ -259,7 +264,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       .shift(_, .memory, _), .stackPush, .stackPushFlags, .compareExchange(.memory, _),
       .compareExchangePair(.memory, _),
       .exchangeMemory(.memory, _), .exchangeAddMemory(.memory, _),
-      .atomicBitTestMemory(_, .memory, _): true
+      .atomicBitTestMemory(_, .memory, _):
+      true
     case .bitTestMemoryImmediate(let operation, .memory, _): operation != .test
     default: false
     }
@@ -327,7 +333,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitBitTest(operation: operation, base: base, index: index, into: &words)
     case .bitTestMemoryImmediate(let operation, let base, let index):
       return emitBitTest(
-        operation: operation, base: base, index: .immediate(UInt64(index), width: .i8), into: &words)
+        operation: operation, base: base, index: .immediate(UInt64(index), width: .i8), into: &words
+      )
     case .atomicBitTestMemory(let operation, let base, let index):
       return emitAtomicBitTestMemory(
         operation: operation, base: base, index: index, into: &words)
@@ -477,7 +484,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
 
   private func emitReadTimestampCounter(into words: inout [UInt32]) -> Bool {
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.tscOffset))
-    words.append(encodeLogical(.or, left: 31, right: 9, shiftAmount: 32, logicalRightShift: true, destination: 10))
+    words.append(
+      encodeLogical(
+        .or, left: 31, right: 9, shiftAmount: 32, logicalRightShift: true, destination: 10))
     words.append(encodeLogical(.or, is64Bit: false, left: 31, right: 9, destination: 9))
     words.append(encodeLogical(.or, is64Bit: false, left: 31, right: 10, destination: 10))
     words.append(encodeStore64(register: 9, base: 0, byteOffset: 0))
@@ -571,7 +580,6 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeStore64(register: 11, base: 0, byteOffset: Int(target.index) * 8))
     return true
   }
-
 
   private func emitBitTest(
     operation: DoryX86BitOperation,
@@ -684,20 +692,22 @@ public struct DoryARM64BaselineEmitter: Sendable {
         words.append(0x9340_0000 | 31 << 10 | 10 << 5 | 10)  // sxtw x10, w10
       }
       emitImmediate(width == .i64 ? 6 : 5, register: 11, into: &words)
-      words.append(encodeVariableShift(
-        .arithmeticRight,
-        is64Bit: width == .i64 || address.addressWidth == .i64,
-        value: 10,
-        count: 11,
-        destination: 10
-      ))
-      words.append(encodeAdd(
-        is64Bit: address.addressWidth == .i64,
-        left: 12,
-        right: 10,
-        leftShift: width == .i64 ? 3 : 2,
-        destination: 12
-      ))
+      words.append(
+        encodeVariableShift(
+          .arithmeticRight,
+          is64Bit: width == .i64 || address.addressWidth == .i64,
+          value: 10,
+          count: 11,
+          destination: 10
+        ))
+      words.append(
+        encodeAdd(
+          is64Bit: address.addressWidth == .i64,
+          left: 12,
+          right: 10,
+          leftShift: width == .i64 ? 3 : 2,
+          destination: 12
+        ))
       if let segment = address.segment {
         let offset = segment == "fs" ? Self.fsBaseOffset : Self.gsBaseOffset
         words.append(encodeLoad64(register: 10, base: 0, byteOffset: offset))
@@ -707,13 +717,14 @@ public struct DoryARM64BaselineEmitter: Sendable {
       emitImmediate(UInt64(width.rawValue - 1), register: 11, into: &words)
       words.append(encodeLogical(.and, left: 10, right: 11, destination: 10))
       emitImmediate(1, register: 11, into: &words)
-      words.append(encodeVariableShift(
-        .left,
-        is64Bit: width == .i64,
-        value: 11,
-        count: 10,
-        destination: 10
-      ))
+      words.append(
+        encodeVariableShift(
+          .left,
+          is64Bit: width == .i64,
+          value: 11,
+          count: 10,
+          destination: 10
+        ))
     case .immediate(let rawIndex, .i8):
       guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
       emitImmediate(
@@ -810,7 +821,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .register(let target)
     where target.bank == "x86.gpr" && target.index < 16 && target.width == .i16:
       words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
-      words.append(encodeLoad64(register: 10, base: 0, byteOffset: Self.segmentSelectorOffset(segment)))
+      words.append(
+        encodeLoad64(register: 10, base: 0, byteOffset: Self.segmentSelectorOffset(segment)))
       emitImmediate(~UInt64(0xFFFF), register: 11, into: &words)
       words.append(encodeLogical(.and, left: 9, right: 11, destination: 9))
       emitImmediate(0xFFFF, register: 11, into: &words)
@@ -820,7 +832,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return true
     case .memory(let address, width: .i16):
       guard emitMemoryAddress(address, into: 9, words: &words) else { return false }
-      words.append(encodeLoad64(register: 10, base: 0, byteOffset: Self.segmentSelectorOffset(segment)))
+      words.append(
+        encodeLoad64(register: 10, base: 0, byteOffset: Self.segmentSelectorOffset(segment)))
       emitImmediate(0xFFFF, register: 11, into: &words)
       words.append(encodeLogical(.and, left: 10, right: 11, destination: 10))
       emitMemoryWrite(addressRegister: 9, valueRegister: 10, width: .i16, words: &words)
@@ -963,7 +976,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       if case .memory = source { return 1 }
       return 0
     case .doubleShiftRightCL(let destination, let source),
-        .doubleShiftRightImmediate(let destination, let source, _):
+      .doubleShiftRightImmediate(let destination, let source, _):
       if case .memory = destination { return 1 }
       if case .memory = source { return 1 }
       return 0
@@ -1178,8 +1191,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
       // Native SDIV takes one signed word. Other RDX:RAX values still need the
       // interpreter's double-width division, before any architectural write.
       emitImmediate(is64Bit ? 63 : 31, register: 12, into: &words)
-      words.append(encodeVariableShift(.arithmeticRight, is64Bit: is64Bit,
-        value: 9, count: 12, destination: 12))
+      words.append(
+        encodeVariableShift(
+          .arithmeticRight, is64Bit: is64Bit,
+          value: 9, count: 12, destination: 12))
       words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 11, 12, 31))
       emitInterpreterUnless(condition: .equal, usesMemory: false, into: &words)
 
@@ -1197,8 +1212,10 @@ public struct DoryARM64BaselineEmitter: Sendable {
       words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 11, 31, 31))
       emitInterpreterUnless(condition: .equal, usesMemory: false, into: &words)
     }
-    words.append(encodeAccumulatorDivide(signed: signed, is64Bit: is64Bit,
-      dividend: 9, divisor: 10, quotient: 12))
+    words.append(
+      encodeAccumulatorDivide(
+        signed: signed, is64Bit: is64Bit,
+        dividend: 9, divisor: 10, quotient: 12))
     words.append(
       encodeMultiplySubtract(
         is64Bit: is64Bit,
@@ -1379,7 +1396,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         || (signed && register.width == .i32 && target.width == .i64)):
       sourceWidth = register.width
       words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(register.index) * 8))
-    case .memory(let address, let width) where width == .i8 || width == .i16
+    case .memory(let address, let width)
+    where width == .i8 || width == .i16
       || (signed && width == .i32 && target.width == .i64):
       guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
       sourceWidth = width
@@ -2213,18 +2231,22 @@ public struct DoryARM64BaselineEmitter: Sendable {
       width == (doubleQuadword ? .i64 : .i32),
       emitMemoryAddress(address, into: 13, words: &words)
     else { return false }
-    words.append(doubleQuadword
-      ? encodeLoad64(register: 9, base: 0, byteOffset: 0)
-      : encodeLoad32(register: 9, base: 0, byteOffset: 0))   // RAX/EAX: expected low
-    words.append(doubleQuadword
-      ? encodeLoad64(register: 10, base: 0, byteOffset: 16)
-      : encodeLoad32(register: 10, base: 0, byteOffset: 16)) // RDX/EDX: expected high
-    words.append(doubleQuadword
-      ? encodeLoad64(register: 11, base: 0, byteOffset: 24)
-      : encodeLoad32(register: 11, base: 0, byteOffset: 24)) // RBX/EBX: desired low
-    words.append(doubleQuadword
-      ? encodeLoad64(register: 12, base: 0, byteOffset: 8)
-      : encodeLoad32(register: 12, base: 0, byteOffset: 8))  // RCX/ECX: desired high
+    words.append(
+      doubleQuadword
+        ? encodeLoad64(register: 9, base: 0, byteOffset: 0)
+        : encodeLoad32(register: 9, base: 0, byteOffset: 0))  // RAX/EAX: expected low
+    words.append(
+      doubleQuadword
+        ? encodeLoad64(register: 10, base: 0, byteOffset: 16)
+        : encodeLoad32(register: 10, base: 0, byteOffset: 16))  // RDX/EDX: expected high
+    words.append(
+      doubleQuadword
+        ? encodeLoad64(register: 11, base: 0, byteOffset: 24)
+        : encodeLoad32(register: 11, base: 0, byteOffset: 24))  // RBX/EBX: desired low
+    words.append(
+      doubleQuadword
+        ? encodeLoad64(register: 12, base: 0, byteOffset: 8)
+        : encodeLoad32(register: 12, base: 0, byteOffset: 8))  // RCX/ECX: desired high
     words.append(encodeStore64(register: 9, base: 31, byteOffset: 64))
     words.append(encodeStore64(register: 10, base: 31, byteOffset: 72))
     words.append(encodeStore64(register: 11, base: 31, byteOffset: 80))
@@ -2254,20 +2276,22 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeAddSubtractSetFlags(add: false, is64Bit: true, 13, 31, 31))
 
     words.append(encodeLoad64(register: 14, base: 0, byteOffset: 0))
-    words.append(encodeConditionalSelect(
-      destination: 9,
-      trueRegister: 14,
-      falseRegister: 11,
-      condition: .equal
-    ))
+    words.append(
+      encodeConditionalSelect(
+        destination: 9,
+        trueRegister: 14,
+        falseRegister: 11,
+        condition: .equal
+      ))
     words.append(encodeStore64(register: 9, base: 0, byteOffset: 0))
     words.append(encodeLoad64(register: 14, base: 0, byteOffset: 16))
-    words.append(encodeConditionalSelect(
-      destination: 10,
-      trueRegister: 14,
-      falseRegister: 12,
-      condition: .equal
-    ))
+    words.append(
+      encodeConditionalSelect(
+        destination: 10,
+        trueRegister: 14,
+        falseRegister: 12,
+        condition: .equal
+      ))
     words.append(encodeStore64(register: 10, base: 0, byteOffset: 16))
 
     words.append(encodeConditionalSet(register: 13, condition: .equal))
@@ -2389,12 +2413,13 @@ public struct DoryARM64BaselineEmitter: Sendable {
       words.append(encodeLoad64(register: 11, base: 0, byteOffset: Self.rflagsOffset))
       emitImmediate(1, register: 15, into: &words)
       words.append(encodeLogical(.and, left: 11, right: 15, destination: 11))
-      words.append(encodeAdd(
-        is64Bit: width == .i64,
-        left: 10,
-        right: 11,
-        destination: 11
-      ))
+      words.append(
+        encodeAdd(
+          is64Bit: width == .i64,
+          left: 10,
+          right: 11,
+          destination: 11
+        ))
       words.append(encodeStore64(register: 11, base: 31, byteOffset: 72))
       atomicValueOffset = 72
     } else {
@@ -2424,34 +2449,37 @@ public struct DoryARM64BaselineEmitter: Sendable {
       words.append(encodeAddSubtractSetFlags(add: true, is64Bit: is64Bit, 9, 10, 11))
     case .addWithCarry:
       emitARMCarryFromX86(inverted: false, into: &words)
-      words.append(encodeAddSubtractCarrySetFlags(
-        add: true,
-        is64Bit: is64Bit,
-        9,
-        10,
-        11
-      ))
+      words.append(
+        encodeAddSubtractCarrySetFlags(
+          add: true,
+          is64Bit: is64Bit,
+          9,
+          10,
+          11
+        ))
     case .subtract:
       words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 9, 10, 11))
     case .subtractWithBorrow:
       emitARMCarryFromX86(inverted: true, into: &words)
-      words.append(encodeAddSubtractCarrySetFlags(
-        add: false,
-        is64Bit: is64Bit,
-        9,
-        10,
-        11
-      ))
+      words.append(
+        encodeAddSubtractCarrySetFlags(
+          add: false,
+          is64Bit: is64Bit,
+          9,
+          10,
+          11
+        ))
     case .and:
       words.append(encodeLogical(.andSetFlags, is64Bit: is64Bit, 9, 10, 11))
     case .or, .xor:
-      words.append(encodeLogical(
-        operation == .or ? .or : .xor,
-        is64Bit: is64Bit,
-        9,
-        10,
-        11
-      ))
+      words.append(
+        encodeLogical(
+          operation == .or ? .or : .xor,
+          is64Bit: is64Bit,
+          9,
+          10,
+          11
+        ))
       words.append(encodeLogical(.andSetFlags, is64Bit: is64Bit, 11, 11, 31))
     default:
       return false
@@ -2520,13 +2548,14 @@ public struct DoryARM64BaselineEmitter: Sendable {
       words.append(encodeAddSubtractSetFlags(add: false, is64Bit: is64Bit, 9, 10, 11))
     } else {
       emitImmediate(1, register: 10, into: &words)
-      words.append(encodeAddSubtractSetFlags(
-        add: operation == .increment,
-        is64Bit: is64Bit,
-        9,
-        10,
-        11
-      ))
+      words.append(
+        encodeAddSubtractSetFlags(
+          add: operation == .increment,
+          is64Bit: is64Bit,
+          9,
+          10,
+          11
+        ))
     }
     emitX86ArithmeticFlags(
       subtraction: operation != .increment,
@@ -2547,17 +2576,20 @@ public struct DoryARM64BaselineEmitter: Sendable {
   ) -> Bool {
     if case .register(let target) = destination,
       target.bank == "x86.high8", target.index < 4, target.width == .i8,
-      (((operation == .and || operation == .or) && writesDestination)
-        || (operation == .test && !writesDestination)),
+      ((operation == .and || operation == .or) && writesDestination)
+        || (operation == .test && !writesDestination),
       case .immediate(let immediate, width: .i8) = source
     {
       words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
-      words.append(encodeLogical(.or, left: 31, right: 9, shiftAmount: 8,
-        logicalRightShift: true, destination: 9))
+      words.append(
+        encodeLogical(
+          .or, left: 31, right: 9, shiftAmount: 8,
+          logicalRightShift: true, destination: 9))
       emitImmediate(0xFF, register: 15, into: &words)
       words.append(encodeLogical(.and, left: 9, right: 15, destination: 9))
       emitImmediate(immediate & 0xFF, register: 10, into: &words)
-      guard emitNarrowBinaryFlags(operation, writesDestination: writesDestination, into: &words) else {
+      guard emitNarrowBinaryFlags(operation, writesDestination: writesDestination, into: &words)
+      else {
         return false
       }
       if !writesDestination { return true }
@@ -2587,7 +2619,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     {
       switch source {
       case .register(let register)
-        where register.bank == "x86.gpr" && register.index < 16 && register.width == .i16:
+      where register.bank == "x86.gpr" && register.index < 16 && register.width == .i16:
         words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(register.index) * 8))
       case .immediate(let immediate, width: .i16):
         emitImmediate(immediate & 0xFFFF, register: 10, into: &words)
@@ -2613,15 +2645,18 @@ public struct DoryARM64BaselineEmitter: Sendable {
       case .immediate(let immediate, width: .i16):
         emitImmediate(immediate & 0xFFFF, register: 10, into: &words)
       case .register(let register)
-        where register.bank == "x86.gpr" && register.index < 16 && register.width == .i16:
+      where register.bank == "x86.gpr" && register.index < 16 && register.width == .i16:
         words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(register.index) * 8))
         emitImmediate(0xFFFF, register: 15, into: &words)
         words.append(encodeLogical(.and, left: 10, right: 15, destination: 10))
       default:
         return false
       }
-      guard emitNarrowBinaryFlags(operation, writesDestination: writesDestination,
-        width: .i16, into: &words) else { return false }
+      guard
+        emitNarrowBinaryFlags(
+          operation, writesDestination: writesDestination,
+          width: .i16, into: &words)
+      else { return false }
       if writesDestination {
         guard emitMemoryAddress(address, into: 12, words: &words) else { return false }
         emitMemoryWrite(addressRegister: 12, valueRegister: 11, width: .i16, words: &words)
@@ -2630,7 +2665,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     }
     if case .register(let target) = destination,
       target.bank == "x86.gpr", target.index < 16, target.width == .i16,
-      (operation == .or || operation == .and), writesDestination
+      operation == .or || operation == .and, writesDestination
     {
       return emitWordRegisterLogical(operation, destination: target, source: source, into: &words)
     }
@@ -2749,7 +2784,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(destination.index) * 8))
     emitImmediate(0xFFFF, register: 15, into: &words)
     words.append(encodeLogical(.and, left: 9, right: 15, destination: 9))
-    guard emitNarrowBinaryFlags(operation, writesDestination: true, width: .i16, into: &words) else {
+    guard emitNarrowBinaryFlags(operation, writesDestination: true, width: .i16, into: &words)
+    else {
       return false
     }
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(destination.index) * 8))
@@ -2784,8 +2820,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
   ) -> Bool {
     guard isLowByteRegister(destination) else { return false }
     if case .memory(let address, width: .i8) = source {
-      guard ((!writesDestination && (operation == .compare || operation == .test))
-        || (writesDestination && operation == .and)),
+      guard
+        (!writesDestination && (operation == .compare || operation == .test))
+          || (writesDestination && operation == .and),
         emitMemoryAddress(address, into: 12, words: &words)
       else { return false }
       emitMemoryRead(addressRegister: 12, width: .i8, resultRegister: 10, words: &words)
@@ -2796,11 +2833,13 @@ public struct DoryARM64BaselineEmitter: Sendable {
       else { return false }
     }
 
-    guard emitNarrowBinaryFlags(
-      operation,
-      writesDestination: writesDestination,
-      into: &words
-    ) else { return false }
+    guard
+      emitNarrowBinaryFlags(
+        operation,
+        writesDestination: writesDestination,
+        into: &words
+      )
+    else { return false }
     if writesDestination {
       words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(destination.index) * 8))
       emitImmediate(~UInt64(0xFF), register: 10, into: &words)
@@ -3356,9 +3395,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
     let accepted = words.count
     words.append(0)
     if usesMemory { emitMemoryEpilogue(into: &words) }
-    words.append(encodeMoveWideZero32(register: 0, immediate: UInt16(DoryJITExitCode.interpreter.rawValue)))
+    words.append(
+      encodeMoveWideZero32(register: 0, immediate: UInt16(DoryJITExitCode.interpreter.rawValue)))
     words.append(0xD65F_03C0)
-    words[accepted] = encodeConditionalBranch(condition: condition, wordOffset: words.count - accepted)
+    words[accepted] = encodeConditionalBranch(
+      condition: condition, wordOffset: words.count - accepted)
   }
 
   private func emitX86Condition(
@@ -3549,7 +3590,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
     0x9B20_7C00 | right << 16 | left << 5 | destination
   }
 
-  private func encodeCountLeadingZeros(is64Bit: Bool, source: UInt32, destination: UInt32) -> UInt32 {
+  private func encodeCountLeadingZeros(is64Bit: Bool, source: UInt32, destination: UInt32) -> UInt32
+  {
     (is64Bit ? 0xDAC0_1000 : 0x5AC0_1000) | source << 5 | destination
   }
 
@@ -3954,11 +3996,13 @@ func doryX86JITTranslate(
     let translatedMemory = callback.pointee.capabilities.memory as? DoryX86TranslatedMemory
   else { return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue) }
   do {
-    guard let hostAddressSpaceOffset = try translatedMemory.hostAddressSpaceOffsetForJIT(
-      linearAddress: linearAddress,
-      byteCount: Int(rawByteCount),
-      access: access
-    ) else { return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue) }
+    guard
+      let hostAddressSpaceOffset = try translatedMemory.hostAddressSpaceOffsetForJIT(
+        linearAddress: linearAddress,
+        byteCount: Int(rawByteCount),
+        access: access
+      )
+    else { return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue) }
     hostAddressSpaceOffsetOut.pointee = hostAddressSpaceOffset
     return Int32(DORY_JIT_TLB_RESOLUTION_FILLED.rawValue)
   } catch DoryX86MemoryError.pageFault(let address, let errorCode) {
@@ -4035,19 +4079,22 @@ private let doryJITMemoryCompareExchange: dory_jit_memory_compare_exchange_funct
   opaque, address, expected, desired, byteCount, observedOut in
   guard let opaque, let observedOut, [1, 2, 4, 8].contains(byteCount) else { return 0 }
   let context = opaque.assumingMemoryBound(to: DoryJITMemoryCallbackContext.self)
-  guard !context.pointee.failed, let atomicMemory = context.pointee.capabilities.atomicScalarMemory else {
+  guard !context.pointee.failed, let atomicMemory = context.pointee.capabilities.atomicScalarMemory
+  else {
     context.pointee.failed = true
     return 0
   }
   do {
-    guard let observed = try DoryX86AtomicGate.shared.withLock({
-      try atomicMemory.compareExchangeScalar(
-        at: address,
-        expected: expected,
-        desired: desired,
-        byteCount: Int(byteCount)
-      )
-    }) else {
+    guard
+      let observed = try DoryX86AtomicGate.shared.withLock({
+        try atomicMemory.compareExchangeScalar(
+          at: address,
+          expected: expected,
+          desired: desired,
+          byteCount: Int(byteCount)
+        )
+      })
+    else {
       context.pointee.failed = true
       return 0
     }
@@ -4325,6 +4372,8 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   public let byteValidationHits: UInt64
   public let sharedCodeHits: UInt64
   public let compiledBlocks: UInt64
+  public let tier1CompiledBlocks: UInt64
+  public let lazyFlagMaterializations: UInt64
   public let declinedCompilations: UInt64
   public let negativeCacheHits: UInt64
   public let negativeCacheMisses: UInt64
@@ -4503,6 +4552,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let physicalAddressBits: UInt8
   private let profile: DoryX86CPUProfile
   private let emitter: DoryARM64BaselineEmitter
+  private let tier1Emitter: DoryARM64Tier1Emitter
+  private let tier1Enabled: Bool
   private let optimization: DoryARM64JITOptimization
   private let optimizer: DoryIROptimizer
   private let region: DoryJITExecutableRegion
@@ -4520,6 +4571,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var byteValidationHitCount: UInt64 = 0
   private var sharedCodeHitCount: UInt64 = 0
   private var compiledBlockCount: UInt64 = 0
+  private var tier1CompiledBlockCount: UInt64 = 0
+  private var lazyFlagMaterializationCount: UInt64 = 0
   private var declinedCompilationCount: UInt64 = 0
   private var negativeCacheHitCount: UInt64 = 0
   private var negativeCacheMissCount: UInt64 = 0
@@ -4547,6 +4600,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     physicalAddressBits: UInt8 = DoryX86CPUProfile.compatibleV1.physicalAddressBits,
     profile: DoryX86CPUProfile = .compatibleV1,
     emitter: DoryARM64BaselineEmitter = .init(),
+    tier1Enabled: Bool = false,
     optimization: DoryARM64JITOptimization = .baseline,
     optimizer: DoryIROptimizer = .init()
   ) throws {
@@ -4559,6 +4613,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     self.physicalAddressBits = physicalAddressBits
     self.profile = profile
     self.emitter = emitter
+    self.tier1Emitter = .init()
+    self.tier1Enabled = tier1Enabled
     self.optimization = optimization
     self.optimizer = optimizer
     region = try DoryJITExecutableRegion(minimumCapacity: self.maximumCodeBytes)
@@ -4597,6 +4653,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         byteValidationHits: byteValidationHitCount,
         sharedCodeHits: sharedCodeHitCount,
         compiledBlocks: compiledBlockCount,
+        tier1CompiledBlocks: tier1CompiledBlockCount,
+        lazyFlagMaterializations: lazyFlagMaterializationCount,
         declinedCompilations: declinedCompilationCount,
         negativeCacheHits: negativeCacheHitCount,
         negativeCacheMisses: negativeCacheMissCount,
@@ -4837,8 +4895,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     else { return nil }
     // Fall back before fetch, optimized copies or native state publication. The interpreter
     // reports the precise fault for a malformed/missing legacy PAE latch.
-    do { try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits) }
-    catch { return nil }
+    do { try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits) } catch
+    { return nil }
     return try lock.withLock {
       synchronizeCodeProtection(for: memory)
       chainedExecutionCallCount &+= 1
@@ -4892,12 +4950,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           }
           if recordedTrace != nil { nativeTraceAttemptCount &+= 1 }
           if let trace = recordedTrace {
-            switch try replayNativeTrace(
+            let replayResult = try replayNativeTrace(
               trace,
               codeGenerationProvider: codeGenerationProvider,
               maximumInstructions: maximumInstructions,
               context: context
-            ) {
+            )
+            recordLazyFlagMaterializations(in: context)
+            switch replayResult {
             case .executed(let replay):
               nativeTraceReplayCount &+= 1
               completed = replay.guestInstructionCount
@@ -4959,11 +5019,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                 publishNativeTrace(newTrace, for: traceKey, if: true)
                 recordsTrace = false
               } else {
-                newTrace.append(.init(
-                  guestStart: currentRIP,
-                  resident: resident,
-                  codeCacheEpoch: codeCacheEpoch
-                ))
+                newTrace.append(
+                  .init(
+                    guestStart: currentRIP,
+                    resident: resident,
+                    codeCacheEpoch: codeCacheEpoch
+                  ))
                 if newTrace.count == Self.maximumRecordedNativeTraceBlocks {
                   publishNativeTrace(newTrace, for: traceKey, if: true)
                   recordsTrace = false
@@ -4983,7 +5044,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               )
             }
 
-            let hasCheckpoint = resident.block.requiresMemoryCallbacks || resident.block.mayExitToInterpreter
+            let hasCheckpoint =
+              resident.block.requiresMemoryCallbacks || resident.block.mayExitToInterpreter
             if hasCheckpoint {
               for index in context.indices { checkpoint[index] = context[index] }
             }
@@ -4997,6 +5059,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               requiresRestartableReads: resident.block.requiresRestartableMemoryReads,
               translationTLB: translationTLB
             )
+            recordLazyFlagMaterializations(in: context)
             if exit == .interpreter, hasCheckpoint {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               for index in context.indices { context[index] = checkpoint[index] }
@@ -5013,7 +5076,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
 
             completed += Int(resident.block.guestInstructionCount)
             blockCount += 1
-            guard exit == .dispatch, completed < maximumInstructions, !resident.endsTimeBoundary else {
+            guard exit == .dispatch, completed < maximumInstructions, !resident.endsTimeBoundary
+            else {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               chainedRetiredInstructionCount &+= UInt64(completed)
               Self.apply(context: context, to: &state)
@@ -5208,8 +5272,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       !DoryX86AlignmentPolicy.isEnabled(state: state),
       mode == .long64 || (mode == .protected32 && state.cs.base == 0 && state.cs.limit == .max)
     else { return nil }
-    do { try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits) }
-    catch { return nil }
+    do { try state.control.validateLegacyPAEPDPTEs(physicalAddressBits: physicalAddressBits) } catch
+    { return nil }
     return try lock.withLock { () -> ResidentExecution? in
       synchronizeCodeProtection(for: memory)
       guard
@@ -5243,6 +5307,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           memory: memory,
           requiresRestartableReads: resident.block.requiresRestartableMemoryReads
         )
+        recordLazyFlagMaterializations(in: context)
         if exit == .interpreter,
           resident.block.requiresMemoryCallbacks || resident.block.mayExitToInterpreter
         {
@@ -5294,7 +5359,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         return cached
       }
       if cached.memoryCodeGeneration != nil { codeGenerationMismatchCount &+= 1 }
-      let currentBytes = try speculativeInstructionBytes(using: byteProvider, maximumCount: byteCount)
+      let currentBytes = try speculativeInstructionBytes(
+        using: byteProvider, maximumCount: byteCount)
       let generation = Self.fingerprint(bytes: currentBytes, mode: mode)
       // A replacement can be shorter than the cached block, including at a fetch
       // boundary. Invalidate and decode the available bytes before declining it.
@@ -5378,8 +5444,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     using provider: (Int) throws -> [UInt8],
     maximumCount: Int
   ) throws -> [UInt8] {
-    do { return try provider(maximumCount) }
-    catch is DoryX86MemoryError {
+    do { return try provider(maximumCount) } catch is DoryX86MemoryError {
       // Guest fetch failures decline native execution, including when a preceding
       // block in the chain already committed stores. The caller publishes that
       // prefix before the interpreter retries the fetch at the faulting RIP.
@@ -5416,10 +5481,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     // and before any block prefix executes. The immutable profile applies to every
     // resident/shared/trace cache in this executor, so a masked profile cannot reuse
     // code compiled with the corresponding feature enabled.
-    if !profile.supports(.cmov), translated.statements.contains(where: {
-      if case .conditionalMove = $0 { return true }
-      return false
-    }) {
+    if !profile.supports(.cmov),
+      translated.statements.contains(where: {
+        if case .conditionalMove = $0 { return true }
+        return false
+      })
+    {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
     if translated.statements.contains(where: {
@@ -5473,7 +5540,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     if key.privilegeLevel != 0,
       block.statements.contains(where: {
         switch $0 {
-        case .unsignedAccumulatorMultiply, .unsignedAccumulatorDivide, .signedAccumulatorDivide, .doubleShiftRightCL,
+        case .unsignedAccumulatorMultiply, .unsignedAccumulatorDivide, .signedAccumulatorDivide,
+          .doubleShiftRightCL,
           .doubleShiftRightImmediate, .bitTestMemoryImmediate, .atomicBitTestMemory:
           return true
         default:
@@ -5483,11 +5551,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
-    let compiled = emitter.compile(
-      block,
-      tier: optimization == .optimizing ? .optimizing : .baseline,
-      executionMode: mode
-    )
+    let compiled =
+      (tier1Enabled ? tier1Emitter.compile(block) : nil)
+      ?? emitter.compile(
+        block,
+        tier: optimization == .optimizing ? .optimizing : .baseline,
+        executionMode: mode
+      )
     if compiled.tier == .interpreterFallback {
       let declineReason = Self.compilationDeclineReason(for: block)
       return .init(
@@ -5555,6 +5625,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     )
     publish(resident, for: key)
     compiledBlockCount &+= 1
+    if compiled.tier == .tier1 { tier1CompiledBlockCount &+= 1 }
     return .init(resident: resident, emitterDeclineByteCount: nil, declineReason: nil)
   }
 
@@ -5563,7 +5634,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   ) -> (identity: ObjectIdentifier, generation: UInt64)? {
     guard let memory else { return nil }
     if let translatedMemory = memory as? DoryX86TranslatedMemory {
-      return (ObjectIdentifier(translatedMemory), translatedMemory.translatedCodeProtectionGeneration)
+      return (
+        ObjectIdentifier(translatedMemory), translatedMemory.translatedCodeProtectionGeneration
+      )
     }
     guard let protector = memory as? any DoryX86TranslatedCodeProtectionMemory else { return nil }
     return (ObjectIdentifier(protector), protector.translatedCodeProtectionGeneration)
@@ -5750,8 +5823,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     guard let codeGenerationProvider else { return .invalid }
     for validation in trace.validations {
       codeGenerationCheckCount &+= 1
-      guard (try? codeGenerationProvider(validation.guestStart, validation.guestByteCount))
-        == validation.memoryCodeGeneration
+      guard
+        (try? codeGenerationProvider(validation.guestStart, validation.guestByteCount))
+          == validation.memoryCodeGeneration
       else {
         codeGenerationMismatchCount &+= 1
         return .invalid
@@ -5765,11 +5839,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     )
     guard execution.residentBlockCount > 0 else { return .unavailable }
     nativeBatchExecutionCountValue &+= 1
-    return .executed(NativeReplay(
-      guestInstructionCount: Int(execution.guestInstructionCount),
-      residentBlockCount: Int(execution.residentBlockCount),
-      exitCode: execution.exitCode
-    ))
+    return .executed(
+      NativeReplay(
+        guestInstructionCount: Int(execution.guestInstructionCount),
+        residentBlockCount: Int(execution.residentBlockCount),
+        exitCode: execution.exitCode
+      ))
   }
 
   private func readCodeGeneration(
@@ -5948,6 +6023,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] = 0
   }
 
+  private func recordLazyFlagMaterializations(
+    in context: UnsafeMutableBufferPointer<UInt64>
+  ) {
+    let index = DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue
+    lazyFlagMaterializationCount &+= context[index]
+    context[index] = 0
+  }
+
   private static func apply(
     context: UnsafeMutableBufferPointer<UInt64>,
     to state: inout DoryX86ArchitecturalState
@@ -5970,7 +6053,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state.registers.r14 = context[14]
     state.registers.r15 = context[15]
     state.rip = context[16]
-    state.rflags = DoryARM64LazyFlagsState(context: context)?.materialize()
+    state.rflags =
+      DoryARM64LazyFlagsState(context: context)?.materialize()
       ?? DoryX86RFLAGS(rawValue: context[17])
   }
 
