@@ -333,6 +333,15 @@ struct DoryARM64Tier1Emitter: Sendable {
         else { return nil }
         nativeFlags = nil
 
+      case .unsignedAccumulatorMultiply(let source):
+        guard let source = lowRegister(source), source.width == .i64,
+          alu.emitUnsignedAccumulatorMultiply(
+            sourceGuestRegister: Int(source.index),
+            into: &body
+          )
+        else { return nil }
+        nativeFlags = nil
+
       default:
         return nil
       }

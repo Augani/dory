@@ -5197,27 +5197,49 @@ import Testing
         ),
       ]
 
-      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+      let configurations: [(DoryARM64JITOptimization, Bool)] = [
+        (.baseline, false),
+        (.baseline, true),
+        (.optimizing, false),
+      ]
+      for (optimization, tier1Enabled) in configurations {
         let executor = try DoryARM64BaselineExecutor(
           maximumCodeBytes: 16 * 1024,
+          tier1Enabled: tier1Enabled,
           optimization: optimization
         )
+        let expectedTier: DoryARM64CompilationTier =
+          tier1Enabled ? .tier1 : DoryARM64CompilationTier(rawValue: optimization.rawValue)!
         for registers in multiplyCases {
           try assertNativeArithmeticParity(
             bytes: [0x48, 0xF7, 0xE2],
             registers: registers,
             flags: initialFlags,
             executor: executor,
-            optimization: optimization
+            expectedTier: expectedTier
           )
         }
+        try assertNativeArithmeticParity(
+          bytes: [0x48, 0xF7, 0xE0],  // mul rax (source aliases low destination)
+          registers: .init(rax: UInt64.max, rdx: 0x1234),
+          flags: initialFlags,
+          executor: executor,
+          expectedTier: expectedTier
+        )
+        try assertNativeArithmeticParity(
+          bytes: [0x49, 0xF7, 0xE1],  // mul r9
+          registers: .init(rax: 0x8000_0000_0000_0000, rdx: 0x1234, r9: 3),
+          flags: initialFlags,
+          executor: executor,
+          expectedTier: expectedTier
+        )
         for (registers, flags) in shiftCases {
           try assertNativeArithmeticParity(
             bytes: [0x48, 0x0F, 0xAD, 0xD0],
             registers: registers,
             flags: flags,
             executor: executor,
-            optimization: optimization
+            expectedTier: expectedTier
           )
         }
         try assertNativeArithmeticParity(
@@ -5225,7 +5247,7 @@ import Testing
           registers: .init(rax: 0x0123_4567_89AB_CDEF, rcx: 17),
           flags: initialFlags,
           executor: executor,
-          optimization: optimization
+          expectedTier: expectedTier
         )
         try assertNativeArithmeticParity(
           bytes: [0x48, 0x0F, 0xAD, 0xC8],
@@ -5235,7 +5257,7 @@ import Testing
           ),
           flags: initialFlags,
           executor: executor,
-          optimization: optimization
+          expectedTier: expectedTier
         )
         try assertNativeArithmeticParity(
           bytes: [0x48, 0x0F, 0xAD, 0xD1],
@@ -5245,7 +5267,7 @@ import Testing
           ),
           flags: initialFlags,
           executor: executor,
-          optimization: optimization
+          expectedTier: expectedTier
         )
         try assertNativeArithmeticSequenceParity(
           bytes: [0x48, 0xF7, 0xE2, 0x48, 0x0F, 0xAD, 0xD0],
@@ -5256,7 +5278,14 @@ import Testing
           ),
           flags: initialFlags,
           executor: executor,
-          optimization: optimization
+          expectedTier: expectedTier
+        )
+        try assertNativeArithmeticSequenceParity(
+          bytes: [0x48, 0x83, 0xC3, 0x01, 0x48, 0xF7, 0xE2],  // add rbx,1; mul rdx
+          registers: .init(rax: 3, rdx: 7, rbx: UInt64.max),
+          flags: initialFlags,
+          executor: executor,
+          expectedTier: expectedTier
         )
       }
     #endif
@@ -5283,7 +5312,7 @@ import Testing
                 ),
                 flags: flags,
                 executor: executor,
-                optimization: optimization
+                expectedTier: DoryARM64CompilationTier(rawValue: optimization.rawValue)!
               )
             }
           }
@@ -8304,7 +8333,7 @@ import Testing
     registers: DoryX86GeneralRegisters,
     flags: DoryX86RFLAGS,
     executor: DoryARM64BaselineExecutor,
-    optimization: DoryARM64JITOptimization
+    expectedTier: DoryARM64CompilationTier
   ) throws {
     let kernelCS = DoryX86SegmentState(selector: 8, attributes: 0xA09B, limit: .max)
     var interpreted = try DoryX86ArchitecturalState(
@@ -8336,7 +8365,7 @@ import Testing
       )
     )
 
-    #expect(execution.block.tier.rawValue == optimization.rawValue)
+    #expect(execution.block.tier == expectedTier)
     #expect(translated == interpreted)
   }
 
@@ -8345,7 +8374,7 @@ import Testing
     registers: DoryX86GeneralRegisters,
     flags: DoryX86RFLAGS,
     executor: DoryARM64BaselineExecutor,
-    optimization: DoryARM64JITOptimization
+    expectedTier: DoryARM64CompilationTier
   ) throws {
     let kernelCS = DoryX86SegmentState(selector: 8, attributes: 0xA09B, limit: .max)
     let memory = try DoryX86ByteArrayMemory(bytes: bytes)
@@ -8385,7 +8414,7 @@ import Testing
       )
     )
 
-    #expect(execution.block.tier.rawValue == optimization.rawValue)
+    #expect(execution.block.tier == expectedTier)
     #expect(execution.block.guestInstructionCount == 2)
     #expect(translated == interpreted)
   }
