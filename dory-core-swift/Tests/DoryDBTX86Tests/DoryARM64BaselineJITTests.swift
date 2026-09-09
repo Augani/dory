@@ -573,7 +573,10 @@ import Testing
     #if arch(arm64)
       let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
       try memory.write(at: 0x80, bytes: [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11])
-      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096)
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        tier1Enabled: true
+      )
       var state = try DoryX86ArchitecturalState(registers: .init(rax: 0x80), rip: 0x1000)
 
       let load = try #require(
@@ -587,7 +590,9 @@ import Testing
           memory: memory
         )
       )
+      #expect(load.block.tier == .tier1)
       #expect(load.block.requiresMemoryCallbacks)
+      #expect(!load.block.requiresRestartableMemoryReads)
       #expect(load.exitCode == .dispatch)
       #expect(state.registers.rbx == 0x1122_3344_5566_7788)
 
@@ -604,9 +609,173 @@ import Testing
           memory: memory
         )
       )
+      #expect(store.block.tier == .baseline)
       #expect(store.exitCode == .dispatch)
       #expect(
         try memory.read(at: 0x88, byteCount: 8) == [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11])
+    #endif
+  }
+
+  @Test func tier1ScalarLoadsMatchInterpreterAcrossWidthsAndAddressForms() throws {
+    #if arch(arm64)
+      struct LoadCase {
+        let bytes: [UInt8]
+        let registers: DoryX86GeneralRegisters
+        let dataAddress: UInt64
+        let dataValue: UInt64
+        let dataByteCount: Int
+      }
+      let cases = [
+        LoadCase(
+          bytes: [0x66, 0x8B, 0x08],  // mov cx,[rax]
+          registers: .init(rax: 0x80, rcx: 0x1122_3344_5566_7788),
+          dataAddress: 0x80,
+          dataValue: 0xBEEF,
+          dataByteCount: 2
+        ),
+        LoadCase(
+          bytes: [0x8B, 0x08],  // mov ecx,[rax]
+          registers: .init(rax: 0x80, rcx: UInt64.max),
+          dataAddress: 0x80,
+          dataValue: 0x89AB_CDEF,
+          dataByteCount: 4
+        ),
+        LoadCase(
+          bytes: [0x48, 0x8B, 0x00],  // mov rax,[rax]
+          registers: .init(rax: 0x80),
+          dataAddress: 0x80,
+          dataValue: 0x8877_6655_4433_2211,
+          dataByteCount: 8
+        ),
+        LoadCase(
+          bytes: [0x48, 0x8B, 0x05, 0, 0, 0, 0],  // mov rax,[rip]
+          registers: .init(rax: UInt64.max),
+          dataAddress: 7,
+          dataValue: 0x0123_4567_89AB_CDEF,
+          dataByteCount: 8
+        ),
+      ]
+      let flags: DoryX86RFLAGS = [
+        .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .sign, .direction, .overflow,
+      ]
+
+      for testCase in cases {
+        let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+        let translatedMemory = try DoryX86ByteArrayMemory(byteCount: 0x200)
+        try interpretedMemory.write(at: 0, bytes: testCase.bytes)
+        try translatedMemory.write(at: 0, bytes: testCase.bytes)
+        try interpretedMemory.writeScalar(
+          at: testCase.dataAddress,
+          value: testCase.dataValue,
+          byteCount: testCase.dataByteCount
+        )
+        try translatedMemory.writeScalar(
+          at: testCase.dataAddress,
+          value: testCase.dataValue,
+          byteCount: testCase.dataByteCount
+        )
+
+        var interpreted = try DoryX86ArchitecturalState(
+          registers: testCase.registers,
+          rip: 0,
+          rflags: flags
+        )
+        _ = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: interpretedMemory,
+          mode: .long64
+        )
+        var translated = try DoryX86ArchitecturalState(
+          registers: testCase.registers,
+          rip: 0,
+          rflags: flags
+        )
+        let execution = try #require(
+          DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024,
+            tier1Enabled: true
+          ).execute(
+            bytes: testCase.bytes,
+            at: 0,
+            mode: .long64,
+            addressSpaceID: 0,
+            maximumInstructions: 1,
+            state: &translated,
+            memory: translatedMemory
+          )
+        )
+
+        #expect(execution.block.tier == .tier1)
+        #expect(execution.block.requiresMemoryCallbacks)
+        #expect(!execution.block.requiresRestartableMemoryReads)
+        #expect(translated == interpreted)
+      }
+    #endif
+  }
+
+  @Test func tier1MultipleScalarLoadsRequireReplaySafeMemory() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [
+        0x48, 0x8B, 0x08,  // mov rcx,[rax]
+        0x48, 0x8B, 0x10,  // mov rdx,[rax]
+      ]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x80, rcx: 1, rdx: 2),
+        rip: 0,
+        rflags: [.reservedOne, .carry, .overflow]
+      )
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        tier1Enabled: true
+      )
+
+      let replaySafe = try DoryX86ByteArrayMemory(byteCount: 0x100)
+      try replaySafe.writeScalar(
+        at: 0x80,
+        value: 0x8877_6655_4433_2211,
+        byteCount: 8
+      )
+      var completed = initial
+      let completion = try #require(
+        executor.execute(
+          bytes: bytes,
+          at: 0,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 2,
+          state: &completed,
+          memory: replaySafe
+        )
+      )
+      #expect(completion.block.tier == .tier1)
+      #expect(completion.block.requiresRestartableMemoryReads)
+      #expect(completion.exitCode == .dispatch)
+      #expect(completed.registers.rcx == 0x8877_6655_4433_2211)
+      #expect(completed.registers.rdx == 0x8877_6655_4433_2211)
+
+      let nonReplaySafe = try ScalarTrackingMemory(byteCount: 0x100)
+      try nonReplaySafe.backing.writeScalar(
+        at: 0x80,
+        value: 0x1122_3344_5566_7788,
+        byteCount: 8
+      )
+      var declined = initial
+      let decline = try #require(
+        executor.execute(
+          bytes: bytes,
+          at: 0,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 2,
+          state: &declined,
+          memory: nonReplaySafe
+        )
+      )
+      #expect(decline.block.tier == .tier1)
+      #expect(decline.exitCode == .interpreter)
+      #expect(declined == initial)
+      #expect(nonReplaySafe.scalarReads == 0)
+      #expect(nonReplaySafe.arrayReads == 0)
     #endif
   }
 
@@ -1689,10 +1858,16 @@ import Testing
         .reservedOne, .carry, .parity, .direction, .interruptEnable, .overflow,
       ]
 
-      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+      let configurations: [(DoryARM64JITOptimization, Bool)] = [
+        (.baseline, false),
+        (.baseline, true),
+        (.optimizing, false),
+      ]
+      for (optimization, tier1Enabled) in configurations {
         for (bytes, registers, sourceAddress) in cases {
           let executor = try DoryARM64BaselineExecutor(
             maximumCodeBytes: 16 * 1024,
+            tier1Enabled: tier1Enabled,
             optimization: optimization
           )
           let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x200)
@@ -1730,7 +1905,9 @@ import Testing
             )
           )
 
-          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          let expectedTier: DoryARM64CompilationTier =
+            tier1Enabled ? .tier1 : DoryARM64CompilationTier(rawValue: optimization.rawValue)!
+          #expect(execution.block.tier == expectedTier)
           #expect(execution.block.requiresMemoryCallbacks)
           #expect(translated == interpreted)
           #expect(
@@ -1743,9 +1920,15 @@ import Testing
 
   @Test func lowByteMemoryMoveFaultLeavesArchitecturalStateRestartable() throws {
     #if arch(arm64)
-      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+      let configurations: [(DoryARM64JITOptimization, Bool)] = [
+        (.baseline, false),
+        (.baseline, true),
+        (.optimizing, false),
+      ]
+      for (optimization, tier1Enabled) in configurations {
         let executor = try DoryARM64BaselineExecutor(
           maximumCodeBytes: 16 * 1024,
+          tier1Enabled: tier1Enabled,
           optimization: optimization
         )
         let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
@@ -1767,7 +1950,9 @@ import Testing
           )
         )
 
-        #expect(execution.block.tier.rawValue == optimization.rawValue)
+        let expectedTier: DoryARM64CompilationTier =
+          tier1Enabled ? .tier1 : DoryARM64CompilationTier(rawValue: optimization.rawValue)!
+        #expect(execution.block.tier == expectedTier)
         #expect(execution.exitCode == .interpreter)
         #expect(state == initial)
       }

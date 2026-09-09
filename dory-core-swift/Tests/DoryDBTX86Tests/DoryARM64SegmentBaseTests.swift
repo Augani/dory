@@ -43,7 +43,12 @@ import Testing
 
   @Test func longModeFSAndGSLoadsStoresAndReadModifyWritesUseSegmentBase() throws {
     #if arch(arm64)
-      for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
+      let configurations: [(DoryARM64JITOptimization, Bool)] = [
+        (.baseline, false),
+        (.baseline, true),
+        (.optimizing, false),
+      ]
+      for (optimization, tier1Enabled) in configurations {
         for (prefix, segmentBase): (UInt8, UInt64) in [(0x64, 0x1000), (0x65, 0x2000)] {
           for addressPrefix: [UInt8] in [[], [0x67]] {
             for opcode: UInt8 in [0x8B, 0x89, 0x01] {
@@ -54,10 +59,16 @@ import Testing
               try memory.backing.writeScalar(at: segmentBase + 0x100, value: 0x20, byteCount: 8)
               var state = try makeState()
               let result = try #require(DoryARM64BaselineExecutor(
-                maximumCodeBytes: 16384, optimization: optimization
+                maximumCodeBytes: 16384,
+                tier1Enabled: tier1Enabled,
+                optimization: optimization
               ).execute(bytes: bytes, at: 0, mode: .long64, addressSpaceID: 0,
                 maximumInstructions: 1, state: &state, memory: memory))
-              #expect(result.block.tier.rawValue == optimization.rawValue)
+              let expectedTier: DoryARM64CompilationTier =
+                tier1Enabled && opcode == 0x8B
+                ? .tier1
+                : DoryARM64CompilationTier(rawValue: optimization.rawValue)!
+              #expect(result.block.tier == expectedTier)
               #expect(result.exitCode == .dispatch)
               #expect(memory.dataAccessCount > 0)
               #expect(state.rip == UInt64(bytes.count))

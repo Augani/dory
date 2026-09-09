@@ -91,6 +91,125 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Loads one scalar memory operand through the preserved read callback. The effective address
+  /// is complete before guest registers are checkpointed, and the callback result is staged in
+  /// the context RIP slot until all original GPRs are restored. The pinned x27 RIP remains the
+  /// source of truth and overwrites that temporary slot at the normal exit boundary.
+  func emitMemoryLoad(
+    width: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(destinationGuestRegister),
+      address.segment == nil || address.segment == "fs" || address.segment == "gs",
+      address.addressWidth == .i32 || address.addressWidth == .i64,
+      address.scale == 1 || address.scale == 2 || address.scale == 4 || address.scale == 8
+    else { return false }
+    for register in [address.base, address.index].compactMap({ $0 }) {
+      guard register.bank == "x86.gpr", register.index < 16,
+        register.width == address.addressWidth
+      else { return false }
+    }
+
+    var fragment: [UInt32] = []
+    let addressIs64Bit = address.addressWidth == .i64
+    let displacement = UInt64(bitPattern: address.displacement)
+    Self.emitImmediate(
+      addressIs64Bit ? displacement : displacement & UInt64(UInt32.max),
+      register: 16,
+      into: &fragment
+    )
+    if let relativeBase = address.instructionRelativeBase {
+      Self.emitImmediate(relativeBase, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeAddSubtract(
+          add: true,
+          is64Bit: addressIs64Bit,
+          left: 16,
+          right: 17,
+          destination: 16
+        ))
+    }
+    if let base = address.base {
+      fragment.append(
+        Self.encodeAddSubtract(
+          add: true,
+          is64Bit: addressIs64Bit,
+          left: 16,
+          right: UInt32(base.index),
+          destination: 16
+        ))
+    }
+    if let index = address.index {
+      fragment.append(
+        Self.encodeAddSubtract(
+          add: true,
+          is64Bit: addressIs64Bit,
+          left: 16,
+          right: UInt32(index.index),
+          leftShift: UInt32(address.scale.trailingZeroBitCount),
+          destination: 16
+        ))
+    }
+    if let segment = address.segment {
+      fragment.append(
+        Self.encodeLoad64(register: 17, word: segment == "fs" ? .fsBase : .gsBase))
+      fragment.append(
+        Self.encodeAddSubtract(
+          add: true,
+          is64Bit: true,
+          left: 16,
+          right: 17,
+          destination: 16
+        ))
+    }
+
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        Self.encodeStore64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    fragment.append(Self.encodeMove(destination: 0, source: 19, is64Bit: true))
+    fragment.append(Self.encodeMove(destination: 1, source: 16, is64Bit: true))
+    Self.emitImmediate(UInt64(width.rawValue / 8), register: 2, into: &fragment)
+    fragment.append(Self.encodeBranchWithLink(register: 20))
+    fragment.append(Self.encodeStore64(register: 0, word: .rip))
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        Self.encodeLoad64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    fragment.append(Self.encodeLoad64(register: 16, word: .rip))
+
+    let destination = UInt32(destinationGuestRegister)
+    switch width {
+    case .i32, .i64:
+      fragment.append(
+        Self.encodeMove(
+          destination: destination,
+          source: 16,
+          is64Bit: width == .i64
+        ))
+    case .i8, .i16:
+      let mask = Self.mask(for: width)
+      Self.emitImmediate(mask, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(.and, is64Bit: true, left: 16, right: 17, destination: 16))
+      Self.emitImmediate(~mask, register: 17, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: destination, right: 17, destination: destination))
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: true, left: destination, right: 16, destination: destination))
+    }
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Forms a 32- or 64-bit x86 effective address entirely in tier-1 scratch registers. LEA
   /// ignores the segment base, preserves NZCV and lazy flags, and computes the complete address
   /// before publishing the destination so base/index aliases remain correct.

@@ -72,9 +72,9 @@ restores that frame, and returns a `DoryJITExitCode` through `w0`.
 `DoryARM64Tier1Emitter` is admitted through the executor's `tier1Enabled`
 feature flag. The PC machine enables it for the production baseline executor;
 standalone executors retain an explicit opt-in so legacy/tier differential tests
-can select either path. It compiles a whole register-only IR block or declines
-it without publishing code; a decline is compiled by the legacy baseline
-emitter. Admitted blocks cover the producer and condition-consumer families
+can select either path. It compiles a whole supported IR block or declines it
+without publishing code; a decline is compiled by the legacy baseline emitter.
+Admitted blocks cover the producer and condition-consumer families
 below plus direct and conditional terminators. Their compiled tier is reported
 as `tier1` and contributes to the machine's baseline execution totals. Executor,
 machine, UEFI-smoke, and PVH-runner diagnostics expose cumulative
@@ -171,6 +171,16 @@ POP RSP its loaded-value precedence over the ordinary increment. No later
 callback may follow a committed stack write. A read-before-write sequence is
 admitted only with the executor's replay-safe scalar-read path, so failure can
 discard the temporary context without duplicating an observable read.
+
+Scalar memory-to-register MOV loads use the preserved read callback for 8-,
+16-, 32-, and 64-bit operands. Tier-1 forms the complete base/index/scale,
+displacement, RIP-relative, and optional FS/GS address before checkpointing all
+guest GPRs. The callback result temporarily occupies the context RIP word while
+the original pinned bank is restored; pinned `x27` remains authoritative and
+replaces that staging value at exit. Loads preserve the pending lazy-flags
+record, but the helper call invalidates any live native-NZCV token. Blocks with
+more than one scalar read require replay-safe memory, and callback failure rolls
+the entire block back to its executor checkpoint before interpreter fallback.
 
 ## Helper-call shim
 

@@ -2,9 +2,9 @@ import Foundation
 
 /// First-execution compiler for the pinned-register tier-1 ABI.
 ///
-/// Admission is intentionally block-atomic. A statement that cannot be represented without a
-/// helper or a precise side exit declines the entire block, allowing the caller to compile it with
-/// the old baseline emitter while tier-1 coverage grows.
+/// Admission is intentionally block-atomic. A statement that cannot be represented directly or
+/// through a precise, restartable helper boundary declines the entire block, allowing the caller
+/// to compile it with the old baseline emitter while tier-1 coverage grows.
 struct DoryARM64Tier1Emitter: Sendable {
   private let boundary = DoryARM64Tier1BoundaryEmitter()
   private let alu = DoryARM64Tier1ALUEmitter()
@@ -16,6 +16,10 @@ struct DoryARM64Tier1Emitter: Sendable {
     var wroteMemory = false
     for statement in block.statements {
       switch statement {
+      case .copy(_, .memory):
+        guard !wroteMemory else { return nil }
+        memoryCallbackCount += 1
+        requiresMemoryCallbacks = true
       case .stackPush, .stackPushFlags:
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
@@ -37,15 +41,28 @@ struct DoryARM64Tier1Emitter: Sendable {
     for statement in block.statements {
       switch statement {
       case .copy(let destination, let source):
-        guard let destination = lowRegister(destination),
-          let source = lowSource(source, matching: destination.width),
-          alu.emitCopy(
-            width: destination.width,
-            destinationGuestRegister: Int(destination.index),
-            source: source,
-            into: &body
-          )
-        else { return nil }
+        guard let destination = lowRegister(destination) else { return nil }
+        switch source {
+        case .memory(let address, let width):
+          guard width == destination.width,
+            alu.emitMemoryLoad(
+              width: width,
+              destinationGuestRegister: Int(destination.index),
+              address: address,
+              into: &body
+            )
+          else { return nil }
+          nativeFlags = nil
+        default:
+          guard let source = lowSource(source, matching: destination.width),
+            alu.emitCopy(
+              width: destination.width,
+              destinationGuestRegister: Int(destination.index),
+              source: source,
+              into: &body
+            )
+          else { return nil }
+        }
 
       case .binary(let operation, let destination, let source, let writesDestination):
         guard let destination = register(destination) else { return nil }

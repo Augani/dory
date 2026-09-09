@@ -23,6 +23,25 @@ import Testing
     #expect(DoryARM64Tier1Emitter().compile(memoryBlock) == nil)
   }
 
+  @Test func measuredDelayTSCMulLoadBlockCompilesInTier1() throws {
+    let address: UInt64 = 0xFFFF_FFFF_81E2_DC36
+    let bytes: [UInt8] = [
+      0xF7, 0xE2,  // mul edx
+      0x48, 0x8B, 0x05, 0x19, 0x2A, 0x69, 0x00,  // mov rax, [rip + 0x692a19]
+      0x48, 0x8D, 0x7A, 0x01,  // lea rdi, [rdx + 1]
+      0xE9, 0x38, 0xB8, 0x01, 0x00,  // jmp 0xffffffff81e4947f
+    ]
+    let block = try DoryX86IRTranslator().translate(bytes, at: address, mode: .long64)
+    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+
+    #expect(compiled.tier == .tier1)
+    #expect(compiled.guestByteCount == bytes.count)
+    #expect(compiled.guestInstructionCount == 4)
+    #expect(compiled.requiresMemoryCallbacks)
+    #expect(!compiled.requiresRestartableMemoryReads)
+    #expect(compiled.mayExitToInterpreter)
+  }
+
   @Test func executorRunsTier1BlockAndAggregatesOnDemandMaterialization() throws {
     #if arch(arm64)
       let address: UInt64 = 0x1000
@@ -93,7 +112,7 @@ import Testing
     #if arch(arm64)
       let address: UInt64 = 0x3000
       let registerBytes: [UInt8] = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0]  // mov rax, 1
-      let memoryBytes: [UInt8] = [0x48, 0x8B, 0x00]  // mov rax, [rax]
+      let memoryBytes: [UInt8] = [0x48, 0x89, 0x00]  // mov [rax], rax
       for (tier1Enabled, bytes) in [(false, registerBytes), (true, memoryBytes)] {
         let memory = try DoryX86ByteArrayMemory(byteCount: 0x4000)
         let executor = try DoryARM64BaselineExecutor(
