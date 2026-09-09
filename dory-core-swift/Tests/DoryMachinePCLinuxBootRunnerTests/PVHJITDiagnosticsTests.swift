@@ -91,7 +91,7 @@ import Testing
     #expect(next.optimizing == nil)
   }
 
-  @Test func serializationRetainsExactCountersAndCapsLiveSitesWithoutGuestBytes() throws {
+  @Test func serializationRetainsCountersAndCapsSitesWithConfirmedInstructionBytes() throws {
     let counterNames = [
       "recentLookupHits", "dictionaryLookupHits", "lookupMisses", "memoryGenerationHits",
       "byteValidationHits", "sharedCodeHits", "compiledBlocks", "declinedCompilations",
@@ -129,10 +129,11 @@ import Testing
     #expect(actual.negativeCacheHotSites.first?.privilegeLevel == 3)
     #expect(actual.negativeCacheHotSites.first?.pagingEnabled == true)
     #expect(actual.negativeCacheHotSites.first?.guestByteCount == 15)
+    #expect(actual.negativeCacheHotSites.first?.instructionBytes == [0x0F, 0xA2])
     #expect(actual.negativeCacheHotSites.first?.executionMode == "long64")
     #expect(actual.negativeCacheHotSites.first?.instructionBudget == 64)
     let text = String(decoding: data, as: UTF8.self)
-    #expect(!text.contains("instructionBytes"))
+    #expect(text.contains("instructionBytes"))
     #expect(!actual.cumulativeCounters.keys.contains("negativeEntryCount"))
     #expect(decoded.observationScope.contains("not cumulative reason totals"))
     #expect(data.count < 16_384)
@@ -182,6 +183,7 @@ import Testing
       guestRIP: 0xFFFF_FFFF_8100_0000 + UInt64(index), executionMode: "long64",
       instructionBudget: 64, addressSpaceID: 0x1000, privilegeLevel: 3,
       pagingEnabled: true, guestByteCount: 15,
+      instructionBytes: [0x0F, 0xA2],
       declineReason: index.isMultiple(of: 2) ? "interpreterHelper" : "nativeEmitter",
       hitCount: .max - UInt64(index))
   }

@@ -583,6 +583,7 @@ struct PVHJITNegativeCacheSite: Codable, Sendable {
   let privilegeLevel: UInt8
   let pagingEnabled: Bool
   let guestByteCount: Int
+  let instructionBytes: [UInt8]
   let declineReason: String
   let hitCount: UInt64
 }
@@ -596,6 +597,7 @@ extension PVHJITNegativeCacheSite {
     privilegeLevel = source.privilegeLevel
     pagingEnabled = source.pagingEnabled
     guestByteCount = source.guestByteCount
+    instructionBytes = source.instructionBytes
     declineReason = source.declineReason.rawValue
     hitCount = source.hitCount
   }
@@ -665,7 +667,7 @@ struct PVHJITDiagnosticSample: Codable, Sendable {
   let sampleElapsedNanoseconds: UInt64
   let sampleIntervalInstructions: UInt64
   let observationScope =
-    "Last completed coarse sample, or normal terminal slice. Timeout/error may retain an older sample. Counters are executor-lifetime totals; negativeEntryCount and the capped hot sites describe only live entries. Site reasons and hit counts are not cumulative reason totals."
+    "Last completed coarse sample, or normal terminal slice. Timeout/error may retain an older sample. Counters are executor-lifetime totals; negativeEntryCount and the capped hot sites describe only live entries. Site instructionBytes are the decoder-confirmed live instruction bytes captured when the entry was published. Site reasons and hit counts are not cumulative reason totals."
   let baseline: PVHJITCacheSnapshot?
   let optimizing: PVHJITCacheSnapshot?
 }
