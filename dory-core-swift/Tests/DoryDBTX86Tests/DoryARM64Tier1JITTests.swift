@@ -152,6 +152,148 @@ import Testing
     #endif
   }
 
+  @Test func measuredHighCanonicalMemoryCMOVExecutesLikeTheInterpreter() throws {
+    #if arch(arm64)
+      let address: UInt64 = 0xFFFF_FFFF_81E2_DC27
+      let dataAddress: UInt64 = 0xFFFF_FFFF_82A1_2010
+      let bytes: [UInt8] = [
+        0x48, 0x0F, 0x44, 0x15, 0xE1, 0x43, 0xBE, 0x00,  // cmove rdx,[rip + 0xbe43e1]
+        0x48, 0x69, 0xD2, 0xFA, 0x00, 0x00, 0x00,  // imul rdx,rdx,0xfa
+      ]
+      let memoryByteCount = Int(dataAddress - address) + 8
+      for predicate in [false, true] {
+        var flags: DoryX86RFLAGS = [.reservedOne, .carry, .direction]
+        if predicate { flags.insert(.zero) }
+        let initial = try DoryX86ArchitecturalState(
+          registers: .init(rdx: 3),
+          rip: address,
+          rflags: flags
+        )
+
+        let interpretedMemory = try DoryX86ByteArrayMemory(
+          baseAddress: address,
+          byteCount: memoryByteCount
+        )
+        try interpretedMemory.write(at: address, bytes: bytes)
+        try interpretedMemory.writeScalar(at: dataAddress, value: 4, byteCount: 8)
+        var interpreted = initial
+        for _ in 0..<2 {
+          guard case .retired = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: interpretedMemory,
+            mode: .long64
+          ) else {
+            Issue.record("reference measured memory-CMOV block unexpectedly faulted")
+            return
+          }
+        }
+
+        let translatedMemory = try DoryX86ByteArrayMemory(
+          baseAddress: address,
+          byteCount: memoryByteCount
+        )
+        try translatedMemory.writeScalar(at: dataAddress, value: 4, byteCount: 8)
+        var translated = initial
+        let execution = try #require(DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: true
+        ).execute(
+          bytes: bytes,
+          at: address,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 2,
+          state: &translated,
+          memory: translatedMemory
+        ))
+
+        #expect(execution.block.tier == .tier1)
+        #expect(translated == interpreted)
+      }
+    #endif
+  }
+
+  @Test func completeMeasuredDelayTSCBodyExecutesLikeTheInterpreter() throws {
+    #if arch(arm64)
+      let address: UInt64 = 0xFFFF_FFFF_81E2_DC14
+      let perCPUDataAddress: UInt64 = 0xFFFF_FFFF_832B_81D0
+      let conditionalDataAddress: UInt64 = 0xFFFF_FFFF_82A1_2010
+      let clockDataAddress: UInt64 = 0xFFFF_FFFF_824C_0658
+      let bytes: [UInt8] = [
+        0x65, 0x48, 0x8B, 0x15, 0xB4, 0xA5, 0x48, 0x01,
+        0x48, 0x8D, 0x04, 0xBD, 0, 0, 0, 0,
+        0x48, 0x85, 0xD2,
+        0x48, 0x0F, 0x44, 0x15, 0xE1, 0x43, 0xBE, 0x00,
+        0x48, 0x69, 0xD2, 0xFA, 0x00, 0x00, 0x00,
+        0xF7, 0xE2,
+        0x48, 0x8B, 0x05, 0x19, 0x2A, 0x69, 0x00,
+        0x48, 0x8D, 0x7A, 0x01,
+        0xE9, 0x38, 0xB8, 0x01, 0x00,
+      ]
+      let memoryByteCount = Int(perCPUDataAddress - address) + 8
+      for perCPUValue: UInt64 in [0, 2] {
+        let initial = try DoryX86ArchitecturalState(
+          registers: .init(rdi: 5),
+          rip: address,
+          rflags: [.reservedOne, .carry, .direction],
+          cs: .init(attributes: 0xA09B, limit: .max),
+          gs: .init(base: 0)
+        )
+
+        let interpretedMemory = try DoryX86ByteArrayMemory(
+          baseAddress: address,
+          byteCount: memoryByteCount
+        )
+        try interpretedMemory.write(at: address, bytes: bytes)
+        try interpretedMemory.writeScalar(
+          at: perCPUDataAddress, value: perCPUValue, byteCount: 8)
+        try interpretedMemory.writeScalar(
+          at: conditionalDataAddress, value: 4, byteCount: 8)
+        try interpretedMemory.writeScalar(
+          at: clockDataAddress, value: 0x1122_3344_5566_7788, byteCount: 8)
+        var interpreted = initial
+        for _ in 0..<9 {
+          guard case .retired = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: interpretedMemory,
+            mode: .long64
+          ) else {
+            Issue.record("reference complete delay_tsc body unexpectedly faulted")
+            return
+          }
+        }
+
+        let translatedMemory = try DoryX86ByteArrayMemory(
+          baseAddress: address,
+          byteCount: memoryByteCount
+        )
+        try translatedMemory.writeScalar(
+          at: perCPUDataAddress, value: perCPUValue, byteCount: 8)
+        try translatedMemory.writeScalar(
+          at: conditionalDataAddress, value: 4, byteCount: 8)
+        try translatedMemory.writeScalar(
+          at: clockDataAddress, value: 0x1122_3344_5566_7788, byteCount: 8)
+        var translated = initial
+        let execution = try #require(DoryARM64BaselineExecutor(
+          maximumCodeBytes: 32 * 1024,
+          tier1Enabled: true
+        ).execute(
+          bytes: bytes,
+          at: address,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 9,
+          state: &translated,
+          memory: translatedMemory
+        ))
+
+        #expect(execution.block.tier == .tier1)
+        #expect(execution.block.requiresRestartableMemoryReads)
+        #expect(translated == interpreted)
+      }
+    #endif
+  }
+
   @Test func executorRunsTier1BlockAndAggregatesOnDemandMaterialization() throws {
     #if arch(arm64)
       let address: UInt64 = 0x1000
