@@ -386,6 +386,90 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Emits the two- and three-operand signed IMUL forms for pinned registers. Only CF/OF are
+  /// defined; both become one when the full signed product is not the sign extension of the
+  /// truncated result. Other flags follow the engine's deterministic preserve policy.
+  func emitSignedMultiply(
+    width: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    lhsGuestRegister: Int,
+    rhs: Source,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard width == .i32 || width == .i64,
+      (0..<16).contains(destinationGuestRegister),
+      (0..<16).contains(lhsGuestRegister)
+    else { return false }
+    if case .guestRegister(let rhsRegister) = rhs {
+      guard (0..<16).contains(rhsRegister) else { return false }
+    }
+
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    let rightRegister: UInt32
+    switch rhs {
+    case .guestRegister(let register):
+      rightRegister = UInt32(register)
+    case .immediate(let value):
+      rightRegister = 17
+      Self.emitImmediate(value, register: rightRegister, into: &fragment)
+    }
+    let leftRegister = UInt32(lhsGuestRegister)
+    if width == .i64 {
+      fragment.append(
+        Self.encodeMultiply64(left: leftRegister, right: rightRegister, destination: 16))
+      fragment.append(
+        Self.encodeSignedMultiplyHigh64(
+          left: leftRegister,
+          right: rightRegister,
+          destination: 17
+        ))
+      Self.emitImmediate(63, register: 26, into: &fragment)
+      fragment.append(
+        Self.encodeVariableShift(
+          .arithmeticRight,
+          is64Bit: true,
+          value: 16,
+          count: 26,
+          destination: 26
+        ))
+      fragment.append(
+        Self.encodeAddSubtractSetFlags(
+          add: false, is64Bit: true, left: 17, right: 26, destination: 31))
+    } else {
+      fragment.append(
+        Self.encodeSignedMultiplyLong32(
+          left: leftRegister,
+          right: rightRegister,
+          destination: 16
+        ))
+      fragment.append(Self.encodeSignExtend32To64(source: 16, destination: 17))
+      fragment.append(
+        Self.encodeAddSubtractSetFlags(
+          add: false, is64Bit: true, left: 16, right: 17, destination: 31))
+    }
+
+    fragment.append(Self.encodeConditionalSet(register: 17, condition: .notEqual))
+    let overflowMask = DoryX86RFLAGS.carry.rawValue | DoryX86RFLAGS.overflow.rawValue
+    Self.emitImmediate(~overflowMask, register: 26, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(.and, is64Bit: true, left: 25, right: 26, destination: 25))
+    fragment.append(
+      Self.encodeLogical(.or, is64Bit: true, left: 25, right: 17, destination: 25))
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: 25, right: 17, shiftAmount: 11, destination: 25))
+    fragment.append(Self.encodeMove(destination: 26, source: 31, is64Bit: true))
+    fragment.append(
+      Self.encodeMove(
+        destination: UInt32(destinationGuestRegister),
+        source: 16,
+        is64Bit: width == .i64
+      ))
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Exchanges two pinned qword registers without changing NZCV or lazy flags.
   func emitExchangeRegisters(
     lhsGuestRegister: Int,
@@ -2114,6 +2198,37 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     destination: UInt32
   ) -> UInt32 {
     (is64Bit ? 0xDAC0_1000 : 0x5AC0_1000) | source << 5 | destination
+  }
+
+  private static func encodeMultiply64(
+    left: UInt32,
+    right: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    0x9B00_7C00 | right << 16 | left << 5 | destination
+  }
+
+  private static func encodeSignedMultiplyHigh64(
+    left: UInt32,
+    right: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    0x9B40_7C00 | right << 16 | left << 5 | destination
+  }
+
+  private static func encodeSignedMultiplyLong32(
+    left: UInt32,
+    right: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    0x9B20_7C00 | right << 16 | left << 5 | destination
+  }
+
+  private static func encodeSignExtend32To64(
+    source: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    0x9340_7C00 | source << 5 | destination
   }
 
   private static func encodeStore64(

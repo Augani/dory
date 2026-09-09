@@ -318,6 +318,21 @@ struct DoryARM64Tier1Emitter: Sendable {
         else { return nil }
         nativeFlags = nil
 
+      case .signedMultiply(let destination, let lhs, let rhs):
+        guard let destination = lowRegister(destination),
+          let lhs = lowRegister(lhs),
+          destination.width == lhs.width,
+          let rhs = lowSource(rhs, matching: destination.width),
+          alu.emitSignedMultiply(
+            width: destination.width,
+            destinationGuestRegister: Int(destination.index),
+            lhsGuestRegister: Int(lhs.index),
+            rhs: rhs,
+            into: &body
+          )
+        else { return nil }
+        nativeFlags = nil
+
       default:
         return nil
       }

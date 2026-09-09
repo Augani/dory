@@ -6980,6 +6980,22 @@ import Testing
           comment: "existing register dword sign extension"
         ),
         MultiplyCase(
+          bytes: [0x48, 0x6B, 0xD3, 0xFF],  // imul rdx,rbx,-1
+          registers: .init(rdx: 0x1234, rbx: 9),
+          memoryAddress: nil,
+          memoryValue: 0,
+          memoryWidth: 0,
+          comment: "register qword negative imm8"
+        ),
+        MultiplyCase(
+          bytes: [0x69, 0xD3, 0x00, 0x00, 0x00, 0x40],  // imul edx,ebx,0x40000000
+          registers: .init(rdx: 0x1234, rbx: 4),
+          memoryAddress: nil,
+          memoryValue: 0,
+          memoryWidth: 0,
+          comment: "register dword overflowing imm32"
+        ),
+        MultiplyCase(
           bytes: [0x48, 0x0F, 0xAF, 0x10],  // imul rdx,[rax]
           registers: .init(rax: 0x80, rdx: 7),
           memoryAddress: 0x80,
@@ -7044,7 +7060,13 @@ import Testing
           | DoryX86RFLAGS.overflow.rawValue
           | DoryX86RFLAGS.direction.rawValue
       )
-      for (optimizationIndex, optimization) in [DoryARM64JITOptimization.baseline, .optimizing].enumerated() {
+      let configurations: [(DoryARM64JITOptimization, Bool)] = [
+        (.baseline, false),
+        (.baseline, true),
+        (.optimizing, false),
+      ]
+      for (optimizationIndex, configuration) in configurations.enumerated() {
+        let (optimization, tier1Enabled) = configuration
         for (caseIndex, testCase) in cases.enumerated() {
           let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x200)
           let translatedMemory = try DoryX86ByteArrayMemory(byteCount: 0x200)
@@ -7067,7 +7089,11 @@ import Testing
           var translated = try DoryX86ArchitecturalState(
             registers: testCase.registers, rip: 0, rflags: initialFlags)
           let execution = try #require(
-            DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024, optimization: optimization).execute(
+            DoryARM64BaselineExecutor(
+              maximumCodeBytes: 16 * 1024,
+              tier1Enabled: tier1Enabled,
+              optimization: optimization
+            ).execute(
               bytes: testCase.bytes,
               at: 0,
               mode: .long64,
@@ -7078,7 +7104,11 @@ import Testing
             )
           )
 
-          #expect(execution.block.tier.rawValue == optimization.rawValue)
+          let expectedTier: DoryARM64CompilationTier =
+            tier1Enabled && testCase.memoryAddress == nil
+            ? .tier1
+            : DoryARM64CompilationTier(rawValue: optimization.rawValue)!
+          #expect(execution.block.tier == expectedTier)
           #expect(execution.block.requiresMemoryCallbacks == (testCase.memoryAddress != nil))
           #expect(!execution.block.requiresRestartableMemoryReads)
           #expect(translated == interpreted)
