@@ -1370,6 +1370,86 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Resolves lazy flags and performs one restartable PUSHQ through the preserved write callback.
+  /// The source is staged before RSP changes, preserving PUSH RSP semantics.
+  func emitStackPush(source: Source, into words: inout [UInt32]) -> Bool {
+    if case .guestRegister(let sourceRegister) = source {
+      guard (0..<16).contains(sourceRegister) else { return false }
+    }
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+
+    fragment.append(
+      Self.encodeAddSubtractImmediate(
+        add: false, is64Bit: true, left: 4, immediate: 8, destination: 16))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    switch source {
+    case .guestRegister(let sourceRegister):
+      fragment.append(
+        Self.encodeStore64(register: UInt32(sourceRegister), word: .lazyFlagsSource2))
+    case .immediate(let value):
+      Self.emitImmediate(value, register: 17, into: &fragment)
+      fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+    }
+
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        Self.encodeStore64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    fragment.append(Self.encodeMove(destination: 0, source: 19, is64Bit: true))
+    fragment.append(Self.encodeLoad64(register: 1, word: .lazyFlagsSource1))
+    fragment.append(Self.encodeLoad64(register: 2, word: .lazyFlagsSource2))
+    Self.emitImmediate(8, register: 3, into: &fragment)
+    fragment.append(Self.encodeBranchWithLink(register: 21))
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        Self.encodeLoad64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    fragment.append(Self.encodeLoad64(register: 4, word: .lazyFlagsSource1))
+    words.append(contentsOf: fragment)
+    return true
+  }
+
+  /// Resolves lazy flags and performs one restartable POPQ through the preserved read callback.
+  /// POP RSP installs the loaded value; every other destination observes old RSP plus eight.
+  func emitStackPop(destinationGuestRegister: Int, into words: inout [UInt32]) -> Bool {
+    guard (0..<16).contains(destinationGuestRegister) else { return false }
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+
+    fragment.append(Self.encodeStore64(register: 4, word: .lazyFlagsSource1))
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        Self.encodeStore64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    fragment.append(Self.encodeMove(destination: 0, source: 19, is64Bit: true))
+    fragment.append(Self.encodeLoad64(register: 1, word: .lazyFlagsSource1))
+    Self.emitImmediate(8, register: 2, into: &fragment)
+    fragment.append(Self.encodeBranchWithLink(register: 20))
+    fragment.append(Self.encodeStore64(register: 0, word: .lazyFlagsSource2))
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        Self.encodeLoad64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    let destination = UInt32(destinationGuestRegister)
+    fragment.append(Self.encodeLoad64(register: destination, word: .lazyFlagsSource2))
+    if destinationGuestRegister != 4 {
+      fragment.append(
+        Self.encodeAddSubtractImmediate(
+          add: true, is64Bit: true, left: 4, immediate: 8, destination: 4))
+    }
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Materializes flags and performs one restartable PUSHFQ through the generated-function
   /// memory callback. The executor discards the temporary context when that callback reports a
   /// fault, so RSP is published only together with a successful eight-byte stack write.

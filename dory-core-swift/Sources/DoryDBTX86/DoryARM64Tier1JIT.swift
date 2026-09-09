@@ -11,9 +11,23 @@ struct DoryARM64Tier1Emitter: Sendable {
 
   func compile(_ block: DoryIRBasicBlock) -> DoryARM64CompiledBlock? {
     guard block.guestInstructionCount > 0 else { return nil }
+    var memoryCallbackCount = 0
+    var wroteMemory = false
+    for statement in block.statements {
+      switch statement {
+      case .stackPush, .stackPushFlags:
+        guard !wroteMemory else { return nil }
+        memoryCallbackCount += 1
+        wroteMemory = true
+      case .stackPop:
+        guard !wroteMemory else { return nil }
+        memoryCallbackCount += 1
+      default:
+        break
+      }
+    }
     var body: [UInt32] = []
     var nativeFlags: DoryARM64Tier1ALUEmitter.NativeFlags?
-    var requiresMemoryCallbacks = false
 
     for statement in block.statements {
       switch statement {
@@ -171,7 +185,21 @@ struct DoryARM64Tier1Emitter: Sendable {
       case .stackPushFlags:
         alu.emitPushFlags(into: &body)
         nativeFlags = nil
-        requiresMemoryCallbacks = true
+
+      case .stackPush(let source):
+        guard let source = lowSource(source, matching: .i64),
+          alu.emitStackPush(source: source, into: &body)
+        else { return nil }
+        nativeFlags = nil
+
+      case .stackPop(let destination):
+        guard let destination = lowRegister(destination), destination.width == .i64,
+          alu.emitStackPop(
+            destinationGuestRegister: Int(destination.index),
+            into: &body
+          )
+        else { return nil }
+        nativeFlags = nil
 
       case .loadFlagsIntoAH:
         alu.emitLoadFlagsIntoAH(into: &body)
@@ -239,8 +267,9 @@ struct DoryARM64Tier1Emitter: Sendable {
       machineWords: words,
       tier: .tier1,
       exitCode: exitCode,
-      requiresMemoryCallbacks: requiresMemoryCallbacks,
-      mayExitToInterpreter: requiresMemoryCallbacks
+      requiresMemoryCallbacks: memoryCallbackCount > 0,
+      requiresRestartableMemoryReads: memoryCallbackCount > 1,
+      mayExitToInterpreter: memoryCallbackCount > 0
     )
   }
 
