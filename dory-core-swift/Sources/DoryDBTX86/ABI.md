@@ -139,6 +139,10 @@ architectural destination byte. Native CMOV64 selects a pinned source without
 clobbering NZCV, and a fused conditional terminator selects the next guest RIP
 in `x27`; constant logical-domain predicates collapse to a move or no-op. Their
 materializing fallbacks share the same complete predicate evaluator as SETcc.
+CLC, STC, and CMC resolve an older lazy producer before replacing or toggling
+the materialized CF bit. CLI, CLD, and STD change only a non-arithmetic bit in
+the base image, so they leave a pending arithmetic record and eligible native
+NZCV token intact; the later materializer preserves the updated IF/DF value.
 LAHF and SAHF have explicit IR operations and share the materialization
 boundary. LAHF replaces AH from the canonical low RFLAGS image. SAHF first
 resolves any pending producer, then replaces only CF, PF, AF, ZF, and SF from
