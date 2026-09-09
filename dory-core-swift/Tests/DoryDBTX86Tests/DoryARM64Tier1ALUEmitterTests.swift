@@ -7,9 +7,11 @@ import Testing
     #if arch(arm64)
       let cases: [(DoryIRBinaryOperation, UInt8, DoryARM64LazyFlagsState.Operation, Bool)] = [
         (.add, 0x01, .add, true),
+        (.addWithCarry, 0x11, .addWithCarry, true),
         (.or, 0x09, .logical, true),
         (.and, 0x21, .logical, true),
         (.subtract, 0x29, .subtract, true),
+        (.subtractWithBorrow, 0x19, .subtractWithBorrow, true),
         (.xor, 0x31, .logical, true),
         (.compare, 0x39, .subtract, false),
         (.test, 0x85, .logical, false),
@@ -19,8 +21,9 @@ import Testing
         (0x7FFF_FFFF, 1), (0x8000_0000, 0xFFFF_FFFF),
         (0x7FFF_FFFF_FFFF_FFFF, 1), (.max, 1),
       ]
-      let prior: DoryX86RFLAGS = [
-        .reservedOne, .carry, .parity, .auxiliaryCarry, .direction, .overflow,
+      let priorFlags: [DoryX86RFLAGS] = [
+        [.reservedOne, .parity, .auxiliaryCarry, .direction, .overflow],
+        [.reservedOne, .carry, .parity, .auxiliaryCarry, .direction, .overflow],
       ]
 
       for width: DoryIRIntegerWidth in [.i32, .i64] {
@@ -40,32 +43,104 @@ import Testing
           DoryARM64Tier1BoundaryEmitter().emitExit(.dispatch, into: &words)
           let region = try executableRegion(words)
 
-          for (lhs, rhs) in values {
-            var context = makeContext(rax: lhs, rcx: rhs, rdx: 0, rflags: prior)
-            #expect(try region.execute(at: 0, context: &context) == .dispatch)
+          for prior in priorFlags {
+            for (lhs, rhs) in values {
+              var context = makeContext(rax: lhs, rcx: rhs, rdx: 0, rflags: prior)
+              #expect(try region.execute(at: 0, context: &context) == .dispatch)
 
-            var interpreted = try DoryX86ArchitecturalState(
-              registers: .init(rax: lhs, rcx: rhs), rip: 0x100, rflags: prior)
-            let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
-            var bytes = [opcode, UInt8(0xC8)]
-            if width == .i64 { bytes.insert(0x48, at: 0) }
-            try memory.write(at: 0x100, bytes: bytes)
-            guard case .retired = DoryX86Interpreter().step(
-              state: &interpreted, memory: memory, mode: .long64)
-            else {
-              Issue.record("interpreter did not retire \(operation) \(width)")
-              continue
+              var interpreted = try DoryX86ArchitecturalState(
+                registers: .init(rax: lhs, rcx: rhs), rip: 0x100, rflags: prior)
+              let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+              var bytes = [opcode, UInt8(0xC8)]
+              if width == .i64 { bytes.insert(0x48, at: 0) }
+              try memory.write(at: 0x100, bytes: bytes)
+              guard case .retired = DoryX86Interpreter().step(
+                state: &interpreted, memory: memory, mode: .long64)
+              else {
+                Issue.record("interpreter did not retire \(operation) \(width)")
+                continue
+              }
+
+              let lazy = try #require(DoryARM64LazyFlagsState(context: context))
+              #expect(lazy.operation == lazyOperation)
+              #expect(lazy.width == width)
+              #expect(lazy.source1 == lhs & mask)
+              #expect(lazy.source2 == rhs & mask)
+              #expect(lazy.materialized == prior)
+              #expect(lazy.materialize() == interpreted.rflags)
+              #expect(context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
+                == interpreted.registers.rax)
             }
+          }
+        }
+      }
+    #endif
+  }
 
-            let lazy = try #require(DoryARM64LazyFlagsState(context: context))
-            #expect(lazy.operation == lazyOperation)
-            #expect(lazy.width == width)
-            #expect(lazy.source1 == lhs & mask)
-            #expect(lazy.source2 == rhs & mask)
-            #expect(lazy.materialized == prior)
-            #expect(lazy.materialize() == interpreted.rflags)
-            #expect(context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
-              == interpreted.registers.rax)
+  @Test func nativeUnaryProducersMatchInterpreterAndPreserveCarryWhereRequired() throws {
+    #if arch(arm64)
+      let cases: [(DoryIRUnaryOperation, [UInt8], DoryARM64LazyFlagsState.Operation)] = [
+        (.increment, [0xFF, 0xC0], .increment),
+        (.decrement, [0xFF, 0xC8], .decrement),
+        (.negate, [0xF7, 0xD8], .negate),
+      ]
+      let values: [UInt64] = [
+        0, 1, 0x7FFF_FFFF, 0x8000_0000,
+        0x7FFF_FFFF_FFFF_FFFF, 0x8000_0000_0000_0000, .max,
+      ]
+      let priorFlags: [DoryX86RFLAGS] = [
+        [.reservedOne, .direction], [.reservedOne, .carry, .direction],
+      ]
+
+      for width: DoryIRIntegerWidth in [.i32, .i64] {
+        for (operation, opcode, lazyOperation) in cases {
+          var words: [UInt32] = []
+          let boundary = DoryARM64Tier1BoundaryEmitter()
+          let alu = DoryARM64Tier1ALUEmitter()
+          boundary.emitEntry(into: &words)
+          let flags = try #require(alu.emitUnary(
+            operation,
+            width: width,
+            destinationGuestRegister: 0,
+            into: &words
+          ))
+          #expect(flags.origin == .unary(operation))
+          #expect(alu.emitFusedSetCondition(
+            .equal, flags: flags, destinationGuestRegister: 2, into: &words))
+          if operation != .negate {
+            let before = words.count
+            #expect(!alu.emitFusedSetCondition(
+              .below, flags: flags, destinationGuestRegister: 2, into: &words))
+            #expect(words.count == before)
+          }
+          boundary.emitExit(.dispatch, into: &words)
+          let region = try executableRegion(words)
+
+          for prior in priorFlags {
+            for value in values {
+              var context = makeContext(rax: value, rcx: 0, rdx: 0xDD00, rflags: prior)
+              #expect(try region.execute(at: 0, context: &context) == .dispatch)
+
+              var interpreted = try DoryX86ArchitecturalState(
+                registers: .init(rax: value), rip: 0x100, rflags: prior)
+              let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+              let bytes = width == .i64 ? [UInt8(0x48)] + opcode : opcode
+              try memory.write(at: 0x100, bytes: bytes)
+              guard case .retired = DoryX86Interpreter().step(
+                state: &interpreted, memory: memory, mode: .long64)
+              else {
+                Issue.record("interpreter did not retire \(operation) \(width)")
+                continue
+              }
+
+              let lazy = try #require(DoryARM64LazyFlagsState(context: context))
+              #expect(lazy.operation == lazyOperation)
+              #expect(lazy.materialize() == interpreted.rflags)
+              #expect(context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
+                == interpreted.registers.rax)
+              #expect(context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue]
+                == 0xDD00 | (interpreted.rflags.contains(.zero) ? 1 : 0))
+            }
           }
         }
       }
@@ -114,11 +189,17 @@ import Testing
     #endif
   }
 
-  @Test func fusedAdditionAndLogicalConditionsUseTheirNativeCarryDomains() throws {
+  @Test func fusedArithmeticAndLogicalConditionsUseTheirNativeCarryDomains() throws {
     #if arch(arm64)
       let cases: [(DoryIRBinaryOperation, [DoryX86Condition])] = [
         (.add, allX86Conditions.filter {
           $0 != .parity && $0 != .notParity && $0 != .belowOrEqual && $0 != .above
+        }),
+        (.addWithCarry, allX86Conditions.filter {
+          $0 != .parity && $0 != .notParity && $0 != .belowOrEqual && $0 != .above
+        }),
+        (.subtractWithBorrow, allX86Conditions.filter {
+          $0 != .parity && $0 != .notParity
         }),
         (.and, allX86Conditions.filter { $0 != .parity && $0 != .notParity }),
       ]

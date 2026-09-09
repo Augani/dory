@@ -74,16 +74,19 @@ chain; its target consumes the pinned state.
 
 ## Native flags producers and fusion
 
-`DoryARM64Tier1ALUEmitter` emits pinned-register ADD/SUB/CMP/AND/TEST/OR/XOR
-producers for 32- and 64-bit operands. Each producer stores its complete lazy
-record at words 43...47 while leaving ARM NZCV live. A returned `NativeFlags`
-token may be used only by an immediately adjacent fused consumer.
+`DoryARM64Tier1ALUEmitter` emits pinned-register ADD/ADC/SUB/SBB/CMP,
+AND/TEST/OR/XOR, and INC/DEC/NEG producers for 32- and 64-bit operands. Each
+producer stores its complete lazy record at words 43...47 while leaving ARM
+NZCV live. A returned `NativeFlags` token may be used only by an immediately
+adjacent fused consumer. ADC/SBB and carry-preserving INC/DEC require any older
+pending record to be materialized before emission so `x25.CF` is current.
 
 Subtraction maps x86 CF to inverted ARM C: JB/JAE/JBE/JA therefore use CC/CS/LS/HI.
 Addition maps CF directly to ARM C, so JB/JAE use CS/CC; JBE/JA after addition do
 not have a single native condition and materialize. Logical operations treat CF
 and OF as zero. ZF/SF/OF and signed comparisons map directly in every domain.
-PF/NP always materialize.
+PF/NP always materialize. INC/DEC can fuse ZF/SF/OF and signed conditions, but
+conditions involving their preserved CF materialize.
 
 ## Helper-call shim
 

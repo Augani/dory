@@ -10,13 +10,19 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
   }
 
   struct NativeFlags: Sendable, Equatable {
+    enum Origin: Sendable, Equatable {
+      case binary(DoryIRBinaryOperation)
+      case unary(DoryIRUnaryOperation)
+    }
+
     fileprivate enum Domain: Sendable, Equatable {
       case addition
       case subtraction
       case logical
+      case carryPreserving
     }
 
-    let operation: DoryIRBinaryOperation
+    let origin: Origin
     let width: DoryIRIntegerWidth
     fileprivate let domain: Domain
   }
@@ -45,22 +51,24 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     let lazyOperation: DoryARM64LazyFlagsState.Operation
     let domain: NativeFlags.Domain
     switch operation {
-    case .add:
-      lazyOperation = .add
+    case .add, .addWithCarry:
+      lazyOperation = operation == .add ? .add : .addWithCarry
       domain = .addition
-    case .subtract, .compare:
-      lazyOperation = .subtract
+    case .subtract, .subtractWithBorrow, .compare:
+      lazyOperation = operation == .subtractWithBorrow ? .subtractWithBorrow : .subtract
       domain = .subtraction
     case .and, .test, .or, .xor:
       lazyOperation = .logical
       domain = .logical
-    case .addWithCarry, .subtractWithBorrow:
-      return nil
     }
 
     var fragment: [UInt32] = []
     let is64Bit = width == .i64
     let destination = UInt32(destinationGuestRegister)
+    if operation == .addWithCarry || operation == .subtractWithBorrow {
+      Self.emitCarryFromMaterializedFlags(
+        inverted: operation == .subtractWithBorrow, into: &fragment)
+    }
     fragment.append(Self.encodeMove(
       destination: 16, source: destination, is64Bit: is64Bit))
     fragment.append(Self.encodeStore64(
@@ -81,8 +89,14 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     case .add:
       fragment.append(Self.encodeAddSubtractSetFlags(
         add: true, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
+    case .addWithCarry:
+      fragment.append(Self.encodeAddSubtractCarrySetFlags(
+        add: true, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
     case .subtract, .compare:
       fragment.append(Self.encodeAddSubtractSetFlags(
+        add: false, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
+    case .subtractWithBorrow:
+      fragment.append(Self.encodeAddSubtractCarrySetFlags(
         add: false, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
     case .and, .test:
       fragment.append(Self.encodeLogical(
@@ -95,8 +109,6 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       fragment.append(Self.encodeLogical(
         .andSetFlags, is64Bit: is64Bit, left: resultRegister, right: resultRegister,
         destination: 31))
-    case .addWithCarry, .subtractWithBorrow:
-      return nil
     }
 
     fragment.append(Self.encodeStore64(register: resultRegister, word: .lazyFlagsResult))
@@ -105,7 +117,60 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
     fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
     words.append(contentsOf: fragment)
-    return .init(operation: operation, width: width, domain: domain)
+    return .init(origin: .binary(operation), width: width, domain: domain)
+  }
+
+  /// Emits INC/DEC/NEG for a pinned register. INC and DEC consume the carry bit from the last
+  /// materialized RFLAGS image and preserve it through the pending record; callers must first
+  /// materialize an older pending operation.
+  func emitUnary(
+    _ operation: DoryIRUnaryOperation,
+    width: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    into words: inout [UInt32]
+  ) -> NativeFlags? {
+    guard operation != .bitwiseNot, width == .i32 || width == .i64,
+      (0..<16).contains(destinationGuestRegister)
+    else { return nil }
+
+    var fragment: [UInt32] = []
+    let is64Bit = width == .i64
+    let destination = UInt32(destinationGuestRegister)
+    fragment.append(Self.encodeMove(
+      destination: 16, source: destination, is64Bit: is64Bit))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    Self.emitImmediate(operation == .negate ? 0 : 1, register: 17, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+
+    let lazyOperation: DoryARM64LazyFlagsState.Operation
+    let domain: NativeFlags.Domain
+    switch operation {
+    case .increment:
+      lazyOperation = .increment
+      domain = .carryPreserving
+      fragment.append(Self.encodeAddSubtractSetFlags(
+        add: true, is64Bit: is64Bit, left: 16, right: 17, destination: destination))
+    case .decrement:
+      lazyOperation = .decrement
+      domain = .carryPreserving
+      fragment.append(Self.encodeAddSubtractSetFlags(
+        add: false, is64Bit: is64Bit, left: 16, right: 17, destination: destination))
+    case .negate:
+      lazyOperation = .negate
+      domain = .subtraction
+      fragment.append(Self.encodeAddSubtractSetFlags(
+        add: false, is64Bit: is64Bit, left: 31, right: 16, destination: destination))
+    case .bitwiseNot:
+      return nil
+    }
+
+    fragment.append(Self.encodeStore64(register: destination, word: .lazyFlagsResult))
+    Self.emitImmediate(UInt64(width.rawValue), register: 17, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
+    Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
+    words.append(contentsOf: fragment)
+    return .init(origin: .unary(operation), width: width, domain: domain)
   }
 
   /// Writes a fused x86 condition result into the low byte of a pinned guest register.
@@ -177,24 +242,28 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       case .addition: .condition(.carrySet)
       case .subtraction: .condition(.carryClear)
       case .logical: .constant(false)
+      case .carryPreserving: nil
       }
     case .aboveOrEqual:
       return switch domain {
       case .addition: .condition(.carryClear)
       case .subtraction: .condition(.carrySet)
       case .logical: .constant(true)
+      case .carryPreserving: nil
       }
     case .belowOrEqual:
       return switch domain {
       case .addition: nil
       case .subtraction: .condition(.lowerOrSame)
       case .logical: .condition(.equal)
+      case .carryPreserving: nil
       }
     case .above:
       return switch domain {
       case .addition: nil
       case .subtraction: .condition(.higher)
       case .logical: .condition(.notEqual)
+      case .carryPreserving: nil
       }
     }
   }
@@ -266,6 +335,37 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     case (false, false): 0x6B00_0000
     }
     return base | right << 16 | left << 5 | destination
+  }
+
+  private static func encodeAddSubtractCarrySetFlags(
+    add: Bool,
+    is64Bit: Bool,
+    left: UInt32,
+    right: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    let base: UInt32 = switch (add, is64Bit) {
+    case (true, true): 0xBA00_0000
+    case (true, false): 0x3A00_0000
+    case (false, true): 0xFA00_0000
+    case (false, false): 0x7A00_0000
+    }
+    return base | right << 16 | left << 5 | destination
+  }
+
+  private static func emitCarryFromMaterializedFlags(
+    inverted: Bool,
+    into words: inout [UInt32]
+  ) {
+    emitImmediate(1, register: 17, into: &words)
+    words.append(encodeLogical(
+      .and, is64Bit: true, left: 25, right: 17, destination: 16))
+    if inverted {
+      words.append(encodeLogical(
+        .xor, is64Bit: true, left: 16, right: 17, destination: 16))
+    }
+    words.append(encodeAddSubtractSetFlags(
+      add: false, is64Bit: true, left: 16, right: 17, destination: 31))
   }
 
   private static func encodeLogical(
