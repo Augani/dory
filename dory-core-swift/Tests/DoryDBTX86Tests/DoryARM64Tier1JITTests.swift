@@ -26,6 +26,154 @@ import Testing
     #expect(DoryARM64Tier1Emitter().compile(memoryBlock) == nil)
   }
 
+  @Test func measuredCR3ReadsMatchTheInterpreterAndPreserveTheNativeConditionPath() throws {
+    let measuredSites: [(UInt64, [UInt8], DoryX86GeneralRegister, UInt16)] = [
+      (0xFFFF_FFFF_8100_1779, [0x0F, 0x20, 0xDF], .rdi, 7),
+      (0xFFFF_FFFF_8100_1B35, [0x0F, 0x20, 0xD8], .rax, 0),
+    ]
+    for (address, bytes, destination, destinationIndex) in measuredSites {
+      let block = try DoryX86IRTranslator().translate(bytes, at: address, mode: .long64)
+      #expect(
+        block.statements == [
+          .readControlRegister(
+            index: 3,
+            destination: .init(bank: "x86.gpr", index: destinationIndex, width: .i64)
+          )
+        ])
+
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0xAAAA, rdi: 0xDDDD),
+        rip: address,
+        rflags: [.reservedOne, .carry, .direction],
+        cs: .init(selector: 0x10, attributes: 0xA09B, limit: .max),
+        control: .init(cr3: 0x1234_5ABC)
+      )
+      var interpreted = initial
+      guard
+        case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: try DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes),
+          mode: .long64
+        )
+      else {
+        Issue.record("interpreter did not retire measured CR3 read")
+        return
+      }
+      #expect(interpreted.registers[destination] == initial.control.cr3)
+
+      #if arch(arm64)
+        for tier1Enabled in [false, true] {
+          var native = initial
+          let execution = try #require(
+            DoryARM64BaselineExecutor(
+              maximumCodeBytes: 4096,
+              tier1Enabled: tier1Enabled
+            ).execute(
+              bytes: bytes,
+              at: address,
+              mode: .long64,
+              addressSpaceID: initial.control.cr3,
+              maximumInstructions: 1,
+              state: &native
+            ))
+          #expect(execution.block.tier == (tier1Enabled ? .tier1 : .baseline))
+          #expect(native == interpreted)
+        }
+
+        var user = initial
+        user.cs.selector = 0x33
+        let expectedUser = user
+        let userExecution = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: true
+        ).execute(
+          bytes: bytes,
+          at: address,
+          mode: .long64,
+          addressSpaceID: initial.control.cr3,
+          maximumInstructions: 1,
+          state: &user
+        )
+        #expect(userExecution == nil)
+        #expect(user == expectedUser)
+      #endif
+    }
+
+    let unsupported = try DoryX86IRTranslator().translate(
+      [0x0F, 0x20, 0xC0],  // mov rax,cr0
+      at: 0x2000,
+      mode: .long64
+    )
+    #expect(unsupported.statements.contains { if case .helper = $0 { true } else { false } })
+
+    let optimized = DoryIROptimizer().optimize(
+      try DoryX86IRTranslator().translate(
+        [
+          0xBF, 1, 0, 0, 0,  // mov edi,1
+          0x0F, 0x20, 0xDF,  // mov rdi,cr3
+          0x48, 0x89, 0xF8,  // mov rax,rdi
+        ],
+        at: 0x2100,
+        mode: .long64
+      )
+    ).block
+    guard case .copy(_, .register(let optimizedSource)) = optimized.statements.last else {
+      Issue.record("optimizer reused a constant invalidated by the CR3 read")
+      return
+    }
+    #expect(optimizedSource.index == 7)
+
+    #if arch(arm64)
+      let address: UInt64 = 0x5200
+      let bytes: [UInt8] = [
+        0x48, 0x39, 0xCB,  // cmp rbx,rcx
+        0x0F, 0x20, 0xDF,  // mov rdi,cr3
+        0x75, 0x02,  // jne +2
+      ]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rcx: 4, rbx: 9, rdi: .max),
+        rip: address,
+        rflags: [.reservedOne, .direction],
+        cs: .init(selector: 0x10, attributes: 0xA09B, limit: .max),
+        control: .init(cr3: 0x5678_9000)
+      )
+      let memory = try DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+      var interpreted = initial
+      for _ in 0..<3 {
+        guard
+          case .retired = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: memory,
+            mode: .long64
+          )
+        else {
+          Issue.record("interpreter did not retire CR3 condition-path fixture")
+          return
+        }
+      }
+
+      var tier1 = initial
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        tier1Enabled: true
+      )
+      let execution = try #require(
+        executor.execute(
+          bytes: bytes,
+          at: address,
+          mode: .long64,
+          addressSpaceID: initial.control.cr3,
+          maximumInstructions: 3,
+          state: &tier1
+        ))
+      #expect(execution.block.tier == .tier1)
+      #expect(tier1 == interpreted)
+      #expect(tier1.registers.rdi == initial.control.cr3)
+      #expect(tier1.rip == address + UInt64(bytes.count) + 2)
+      #expect(executor.diagnostics.lazyFlagMaterializations == 1)
+    #endif
+  }
+
   @Test func measuredDelayTSCMulLoadBlockCompilesInTier1() throws {
     let address: UInt64 = 0xFFFF_FFFF_81E2_DC36
     let bytes: [UInt8] = [
