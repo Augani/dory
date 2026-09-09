@@ -1,0 +1,213 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.pc-boot-cost-attribution",
+  "observedAt": "2026-09-09T02:21:39Z",
+  "status": "partial",
+  "qualification": "local development evidence; not signed release qualification",
+  "source": {
+    "commit": "84e4b96f3d0346687cbcba63c26a76f89e5c4ce1",
+    "instrumentationCommits": [
+      "d0ecccbc0",
+      "6f0cd3474",
+      "5a20602ac",
+      "f27b637b9",
+      "84e4b96f3"
+    ],
+    "buildConfiguration": "release",
+    "runnerSHA256": "7abb7dcc80e49ca51c22c128570d30d80f51273a22df4c0c6e9a4c3530007ee5",
+    "runnerByteCount": 11013408
+  },
+  "fixture": {
+    "firmwareBuildIdentifier": "dory-pc-v1-179de597cd4b5b9a4f8f",
+    "firmwareCodeSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
+    "installerMediaSHA256": "b98b737b7fd14a1cf2bdd52889be6809bc0065ac567b9173d354fc7b05a887eb",
+    "pristineSystemDiskSHA256": "d851c88763032f2b6169c2427f88c2d971b9ca93b8ec2e3800939bf0c6c063b9",
+    "kernelCommandLineControl": "unmodified; KASLR enabled",
+    "memoryBytes": 1073741824,
+    "processorCount": 1,
+    "executionTier": "optimizing-jit",
+    "clock": "host-dispatch-uptime-nanoseconds",
+    "clockSource": "host-monotonic"
+  },
+  "instrumentationOverhead": {
+    "method": "Alternating runs from copy-on-write clones of the same pristine disk. Every run used the same release runner, firmware, installer, resources, 100,000,000-instruction budget, and host-monotonic clock. Execution elapsed time excludes runner setup and JSON encoding.",
+    "disabledExecutionNanoseconds": [
+      18319110791,
+      18226283083,
+      18817331333
+    ],
+    "enabledExecutionNanoseconds": [
+      19260151625,
+      19219198166,
+      19476998333
+    ],
+    "disabledMedianNanoseconds": 18319110791,
+    "enabledMedianNanoseconds": 19260151625,
+    "medianOverheadPercent": 5.1369351096578475,
+    "pairedOverheadPercent": [
+      5.1369351096578475,
+      5.4477102022304935,
+      3.5056352483050723
+    ],
+    "disabledCountersStayedZero": true,
+    "enabledMemoryHelperCallCounts": [
+      81700157,
+      81704223,
+      81721273
+    ],
+    "interpretation": "Instrumentation is opt-in. The enabled release-build cost was about five percent on this bounded early-boot workload; debug-build throughput is not used as a product-performance claim."
+  },
+  "fullBoot": {
+    "timeoutSeconds": 720,
+    "executionElapsedNanoseconds": 720000408583,
+    "completedInstructions": 4027629219,
+    "instructionsPerSecond": 5593926.296412239,
+    "stop": "poweredOff(instructionCount: 4027629219)",
+    "timedOutAfterInitMilestone": true,
+    "tripleFaultObserved": false,
+    "bootTimelineNanoseconds": {
+      "executionStarted": 0,
+      "grub": 12598235458,
+      "kernel": 157688323750,
+      "rootMounted": 570961252833,
+      "initStarted": 656404966875
+    },
+    "hostWallTime": {
+      "totalNanoseconds": 719971539167,
+      "processorExecutionNanoseconds": 673468936168,
+      "processorEventNanoseconds": 3734374347,
+      "clockAdvancementNanoseconds": 10689343802,
+      "interruptDeliveryNanoseconds": 7073119183,
+      "idleWaitNanoseconds": 255304292,
+      "attributedNanoseconds": 695221077792,
+      "unattributedNanoseconds": 24750461375,
+      "attributedBasisPoints": 9656,
+      "attributedPercent": 96.56,
+      "processorExecutionPercent": 93.54104982360788,
+      "processorEventPercent": 0.5186836067604331,
+      "clockAdvancementPercent": 1.484689771816184,
+      "interruptDeliveryPercent": 0.9824164981831822,
+      "idleWaitPercent": 0.03546033115355984,
+      "unattributedPercent": 3.43769996847876
+    },
+    "hostThreadCPUTime": {
+      "totalNanoseconds": 715368896210,
+      "processorExecutionNanoseconds": 669773489564,
+      "processorEventNanoseconds": 3768727691,
+      "clockAdvancementNanoseconds": 10725611788,
+      "interruptDeliveryNanoseconds": 7079611322,
+      "idleWaitNanoseconds": 1110248,
+      "attributedNanoseconds": 691348550613,
+      "unattributedNanoseconds": 24020345597,
+      "attributedBasisPoints": 9664
+    },
+    "executionCounters": {
+      "interpreterInstructions": 6896441,
+      "baselineJITInstructions": 32480186,
+      "baselineJITBlocks": 11349180,
+      "optimizingJITInstructions": 3988252592,
+      "optimizingJITBlocks": 1412689164
+    },
+    "jitCacheCounters": {
+      "baseline": {
+        "recentLookupHits": 9089806,
+        "dictionaryLookupHits": 2006411,
+        "lookupMisses": 381890,
+        "sharedCodeHits": 89893,
+        "compiledBlocks": 161975,
+        "declinedCompilations": 20144,
+        "chainedDispatcherCalls": 147561,
+        "codeGenerationChecks": 11504573,
+        "codeGenerationMismatches": 10806
+      },
+      "optimizing": {
+        "recentLookupHits": 847327712,
+        "dictionaryLookupHits": 567909325,
+        "lookupMisses": 12331627,
+        "sharedCodeHits": 90226,
+        "compiledBlocks": 154150,
+        "declinedCompilations": 65888,
+        "chainedDispatcherCalls": 20607419,
+        "codeGenerationChecks": 1429212523,
+        "codeGenerationMismatches": 35147
+      },
+      "dispatcherCoverage": "chainedExecutionCalls counts entries into the chained dispatcher; JIT block completion and cache lookup counters cover returned and non-chained execution paths"
+    },
+    "pagingCounters": {
+      "translationRequests": 2952969797,
+      "pagingDisabledBypasses": 191417,
+      "recentTLBHits": 2277532160,
+      "dictionaryTLBHits": 669677983,
+      "pageWalks": 5568237,
+      "pageWalkFailures": 5741,
+      "linearInvalidations": 70417,
+      "globalInvalidations": 93781,
+      "capacityFlushes": 23
+    },
+    "physicalMemoryCounters": {
+      "instructionFetchHelperCalls": 42985661,
+      "readHelperCalls": 964528171,
+      "writeHelperCalls": 501051410,
+      "validationHelperCalls": 11563528,
+      "codeGenerationHelperCalls": 1444253092,
+      "atomicHelperCalls": 4046088,
+      "bulkHelperCalls": 2755254,
+      "dmaValidationCalls": 8468,
+      "totalMemoryHelperCalls": 2971191672,
+      "mmioInstructionFetchExits": 121680,
+      "mmioReadExits": 567456,
+      "mmioWriteExits": 1076734,
+      "totalMMIOExits": 1765870
+    },
+    "timerInterruptRequestCounters": {
+      "localAPIC": 521641,
+      "pit": 0,
+      "rtc": 0,
+      "hpet": [
+        35700,
+        1,
+        0
+      ],
+      "total": 557342
+    },
+    "blockDevices": {
+      "systemDiskRequests": 508,
+      "installerMediaRequests": 436,
+      "failedRequests": 0
+    }
+  },
+  "verification": {
+    "focusedTests": "104 passed",
+    "focusedSuites": [
+      "DoryPCDirectKernelMachineTests",
+      "DoryPCPhysicalMemoryTests",
+      "DoryPCHPETTests",
+      "DoryPCRTCTests",
+      "DoryPCLegacyInterruptTests",
+      "DoryX86PagingTests"
+    ],
+    "disabledModeContract": "host time, paging, physical-memory, MMIO, and timer-request counters remain zero",
+    "physicalCounterPublication": "exact thread-confined counters are published at the serialized machine run-slice boundary"
+  },
+  "milestoneCoverage": {
+    "observedOnOneHostClock": [
+      "firmware execution",
+      "GRUB",
+      "kernel entry",
+      "root mount",
+      "init"
+    ],
+    "notObservableWithThisFixture": [
+      "agent bind",
+      "agent handshake",
+      "RPC"
+    ]
+  },
+  "limitations": [
+    "The smoke fixture has no production dorycfg virtio-fs share or authenticated vsock agent channel; its serial log ends this window with 'virtio-fs: tag <dorycfg> not found'. Agent bind, handshake, and RPC therefore remain for A02.2/A02.3 production-path evidence.",
+    "Serial milestone recognition is diagnostic evidence and is not an authenticated readiness signal.",
+    "The full run was deliberately deadline-censored after init and does not claim agent readiness.",
+    "Raw local runner output remains under .dory-build/a02-attribution-full-release and .dory-build/a02-attribution-overhead-release; those ignored files are not release evidence.",
+    "The firmware and runner were locally built and are not a signed or notarized release candidate."
+  ]
+}

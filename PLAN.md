@@ -279,6 +279,7 @@ Task directory:
 
 #### A02.2 — Instrument and attribute the whole boot
 - [ ] **Action:** On the fixed build, capture firmware, GRUB, kernel entry, root mount, init, agent bind, handshake, RPC milestones with one host clock. Add bounded counters: guest instructions executed, blocks translated/looked up/missed, dispatcher entries, TLB misses/walks, memory helper calls, device MMIO exits, timer interrupts, host CPU time per category. Measure instrumentation overhead.
+- **Progress (2026-09-09):** Opt-in paging, memory-helper/MMIO, timer-request, and host wall/thread-CPU counters now join the existing instruction/JIT-cache/dispatcher telemetry. A release-build run on the fixed KASLR fixture reached GRUB, kernel, root mount, and init on one clock and reconciled 96.56% of wall time; three alternating 100 M-instruction pairs measured 5.14% median instrumentation overhead. The smoke fixture does not provide the production `dorycfg`/authenticated vsock agent path, so agent bind, handshake, and RPC remain open. [Receipt](docs/virtualization/evidence/wave0-2026-09-08/pc-boot-cost-attribution.json)
 - **Check:** A report reconciles ≥ 90 % of wall time to counted categories; retained under `docs/virtualization/evidence/`.
 
 #### A02.3 — Separate RPC from execution
