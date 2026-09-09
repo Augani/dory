@@ -14,7 +14,8 @@ per-block boundaries atomically in the dispatcher.
 | `x0`...`x15` | guest GPRs | RAX, RCX, RDX, RBX, RSP, RBP, RSI, RDI, R8...R15, in context order |
 | `x16`, `x17` | translator | intra-procedure scratch and indirect helper/chain targets; never live across a helper |
 | `x18` | Darwin | platform-reserved; generated code must never read or write it |
-| `x19`...`x24` | dispatcher | callee-saved dispatcher state, helper table, and cache/chaining state; never allocated to a guest value |
+| `x19`...`x23` | dispatcher callbacks | memory context, read, write, compare-exchange, and synchronize arguments preserved from `x1`...`x5` |
+| `x24` | dispatcher | reserved cache/chaining state; never allocated to a guest value |
 | `x25`, `x26` | lazy flags | last materialized RFLAGS image and pending operation/count descriptor |
 | `x27` | guest RIP | current architectural instruction pointer |
 | `x28` | vCPU context | base of the stable context-word array and derived TLB state |
@@ -57,7 +58,8 @@ pointers.
 ## Entry, exit, and chaining
 
 The C dispatcher initially calls an entry shim using the Darwin C ABI. The shim
-loads guest GPRs into `x0`...`x15`, RIP into `x27`, the last materialized RFLAGS
+preserves the memory context and callback arguments in `x19`...`x23`, then loads
+guest GPRs into `x0`...`x15`, RIP into `x27`, the last materialized RFLAGS
 image into `x25`, the pending operation/count descriptor into `x26`, and installs
 `x28`. Direct chains branch to a tier-1 block entry after this setup and therefore
 cannot target the C entry shim.
@@ -123,8 +125,10 @@ clobbering NZCV, and a fused conditional terminator selects the next guest RIP
 in `x27`; constant logical-domain predicates collapse to a move or no-op. Their
 materializing fallbacks share the same complete predicate evaluator as SETcc.
 LAHF consumes the same boundary and replaces AH from the canonical low RFLAGS
-image; PUSHF lowering receives an image with RF and VM cleared and bit 1 set
-before the tier-1 memory path performs the stack write.
+image. PUSHF materializes that image, clears RF and VM, sets bit 1, and invokes
+the preserved scalar-write callback. Its temporary context and RSP change are
+published only when the callback succeeds; callback failure returns to the
+interpreter with the original architectural state.
 
 ## Helper-call shim
 
