@@ -192,6 +192,13 @@ unconditionally, and only then evaluates its predicate from `x25`; a false CMOV
 can therefore fault exactly like the interpreter. Qword selection preserves the
 untaken destination, while dword selection zero-extends on either outcome. The
 mandatory read uses the same replay and rollback contract as scalar MOV.
+Register-destination ADD/ADC/SUB/SBB/CMP/AND/TEST/OR/XOR also accept scalar
+memory sources at every integer width. Read-only memory-destination CMP/TEST
+accept register and immediate sources. Both families stage the read before
+publishing the destination or replacement lazy-flags record, retain the same
+native condition-fusion token as their register-only equivalents, and share the
+replay and rollback contract above. Memory-writing and atomic ALU forms remain
+outside tier 1 until they can use the inline transactional write path.
 
 ## Helper-call shim
 

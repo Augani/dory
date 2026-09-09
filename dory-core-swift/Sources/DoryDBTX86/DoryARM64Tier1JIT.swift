@@ -24,6 +24,10 @@ struct DoryARM64Tier1Emitter: Sendable {
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
+      case .binary(_, .register, .memory, _), .binary(_, .memory, _, _):
+        guard !wroteMemory else { return nil }
+        memoryCallbackCount += 1
+        requiresMemoryCallbacks = true
       case .stackPush, .stackPushFlags:
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
@@ -69,12 +73,32 @@ struct DoryARM64Tier1Emitter: Sendable {
         }
 
       case .binary(let operation, let destination, let source, let writesDestination):
-        guard let destination = register(destination) else { return nil }
         if operation == .addWithCarry || operation == .subtractWithBorrow {
           boundary.emitMaterializeLazyFlags(into: &body)
           nativeFlags = nil
         }
-        if destination.bank == "x86.high8" {
+        if case .memory(let address, let width) = source {
+          guard let destination = lowRegister(destination), destination.width == width else {
+            return nil
+          }
+          nativeFlags = alu.emitMemorySourceBinary(
+            operation,
+            width: width,
+            destinationGuestRegister: Int(destination.index),
+            address: address,
+            writesDestination: writesDestination,
+            into: &body
+          )
+        } else if case .memory(let address, let width) = destination {
+          guard let source = lowSource(source, matching: width) else { return nil }
+          nativeFlags = alu.emitMemoryDestinationBinary(
+            operation,
+            width: width,
+            address: address,
+            source: source,
+            into: &body
+          )
+        } else if let destination = register(destination), destination.bank == "x86.high8" {
           guard destination.width == .i8,
             let highByteSource = highByteSource(source)
           else { return nil }
@@ -85,7 +109,7 @@ struct DoryARM64Tier1Emitter: Sendable {
             writesDestination: writesDestination,
             into: &body
           )
-        } else {
+        } else if let destination = register(destination) {
           guard destination.bank == "x86.gpr",
             let lowSource = lowSource(source, matching: destination.width)
           else { return nil }
@@ -97,6 +121,8 @@ struct DoryARM64Tier1Emitter: Sendable {
             writesDestination: writesDestination,
             into: &body
           )
+        } else {
+          return nil
         }
         guard nativeFlags != nil else { return nil }
 

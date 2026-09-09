@@ -59,6 +59,190 @@ import Testing
     #expect(compiled.mayExitToInterpreter)
   }
 
+  @Test func measuredMemoryALUDeclineBlocksCompileInTier1() throws {
+    let serialAddress: UInt64 = 0xFFFF_FFFF_81A0_7CCD
+    let serialBytes: [UInt8] = [
+      0x66, 0x03, 0x77, 0x08,  // add si,[rdi+8]
+      0x89, 0xF2,  // mov edx,esi
+    ]
+    let serialBlock = try DoryX86IRTranslator().translate(
+      serialBytes,
+      at: serialAddress,
+      mode: .long64
+    )
+    let compiledSerial = try #require(DoryARM64Tier1Emitter().compile(serialBlock))
+    #expect(compiledSerial.tier == .tier1)
+    #expect(compiledSerial.guestByteCount == serialBytes.count)
+    #expect(compiledSerial.guestInstructionCount == 2)
+    #expect(compiledSerial.requiresMemoryCallbacks)
+    #expect(!compiledSerial.requiresRestartableMemoryReads)
+
+    let irqAddress: UInt64 = 0xFFFF_FFFF_812F_BF71
+    let irqBytes: [UInt8] = [
+      0x65, 0x66, 0xF7, 0x05, 0xB6, 0xC0, 0xFB, 0x01, 0xFF, 0xFF,
+      0x75, 0x0F,  // testw $0xffff,gs:[rip+0x1fbc0b6]; jne
+    ]
+    let irqBlock = try DoryX86IRTranslator().translate(
+      irqBytes,
+      at: irqAddress,
+      mode: .long64
+    )
+    let compiledIRQ = try #require(DoryARM64Tier1Emitter().compile(irqBlock))
+    #expect(compiledIRQ.tier == .tier1)
+    #expect(compiledIRQ.guestByteCount == irqBytes.count)
+    #expect(compiledIRQ.guestInstructionCount == 2)
+    #expect(compiledIRQ.requiresMemoryCallbacks)
+    #expect(!compiledIRQ.requiresRestartableMemoryReads)
+  }
+
+  @Test func scalarMemoryBinaryOperationsMatchTheInterpreterAcrossWidths() throws {
+    #if arch(arm64)
+      struct MemoryALUCase {
+        let bytes: [UInt8]
+        let comment: String
+      }
+      let cases = [
+        MemoryALUCase(bytes: [0x48, 0x03, 0x43, 0x08], comment: "add rax,[rbx+8]"),
+        MemoryALUCase(bytes: [0x13, 0x43, 0x08], comment: "adc eax,[rbx+8]"),
+        MemoryALUCase(bytes: [0x66, 0x2B, 0x43, 0x08], comment: "sub ax,[rbx+8]"),
+        MemoryALUCase(bytes: [0x1A, 0x43, 0x08], comment: "sbb al,[rbx+8]"),
+        MemoryALUCase(bytes: [0x48, 0x3B, 0x43, 0x08], comment: "cmp rax,[rbx+8]"),
+        MemoryALUCase(bytes: [0x23, 0x43, 0x08], comment: "and eax,[rbx+8]"),
+        MemoryALUCase(bytes: [0x66, 0x0B, 0x43, 0x08], comment: "or ax,[rbx+8]"),
+        MemoryALUCase(bytes: [0x32, 0x43, 0x08], comment: "xor al,[rbx+8]"),
+        MemoryALUCase(bytes: [0x48, 0x83, 0x7B, 0x08, 0x7F], comment: "cmpq [rbx+8],127"),
+        MemoryALUCase(bytes: [0x48, 0x85, 0x43, 0x08], comment: "test [rbx+8],rax"),
+      ]
+      for (index, testCase) in cases.enumerated() {
+        let address = UInt64(0x400 + index * 0x20)
+        let dataAddress: UInt64 = 0x800
+        let initial = try DoryX86ArchitecturalState(
+          registers: .init(rax: 0xFFFF_FFFF_8000_00FF, rbx: dataAddress - 8),
+          rip: address,
+          rflags: [.reservedOne, .carry, .direction]
+        )
+        let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+        let tier1Memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+        for memory in [interpretedMemory, tier1Memory] {
+          try memory.write(at: address, bytes: testCase.bytes)
+          try memory.writeScalar(
+            at: dataAddress,
+            value: 0x0123_4567_89AB_CDEF,
+            byteCount: 8
+          )
+        }
+
+        var interpreted = initial
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: interpretedMemory,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire \(testCase.comment)")
+          return
+        }
+
+        var tier1 = initial
+        let execution = try #require(DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: true
+        ).execute(
+          bytes: testCase.bytes,
+          at: address,
+          mode: .long64,
+          addressSpaceID: UInt64(index),
+          maximumInstructions: 1,
+          state: &tier1,
+          memory: tier1Memory
+        ))
+        #expect(execution.block.tier == .tier1, Comment(rawValue: testCase.comment))
+        #expect(!execution.block.requiresRestartableMemoryReads)
+        #expect(tier1 == interpreted, Comment(rawValue: testCase.comment))
+        #expect(tier1Memory.snapshot() == interpretedMemory.snapshot())
+      }
+    #endif
+  }
+
+  @Test func measuredSegmentMemoryTestExecutesAndFusesItsBranch() throws {
+    #if arch(arm64)
+      let address: UInt64 = 0x1000
+      let dataAddress: UInt64 = 0x1020
+      let bytes: [UInt8] = [
+        0x65, 0x66, 0xF7, 0x05, 0x16, 0x00, 0x00, 0x00, 0xFF, 0xFF,
+        0x75, 0x02,  // testw $0xffff,gs:[rip+0x16]; jne
+      ]
+      for value: UInt64 in [0, 0x8000] {
+        let initial = try DoryX86ArchitecturalState(
+          rip: address,
+          rflags: [.reservedOne, .carry, .direction],
+          gs: .init(base: 0)
+        )
+        let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
+        let tier1Memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
+        for memory in [interpretedMemory, tier1Memory] {
+          try memory.write(at: address, bytes: bytes)
+          try memory.writeScalar(at: dataAddress, value: value, byteCount: 2)
+        }
+        var interpreted = initial
+        for _ in 0..<2 {
+          guard case .retired = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: interpretedMemory,
+            mode: .long64
+          ) else {
+            Issue.record("interpreter did not retire segment memory-TEST fixture")
+            return
+          }
+        }
+
+        var tier1 = initial
+        let execution = try #require(DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: true
+        ).execute(
+          bytes: bytes,
+          at: address,
+          mode: .long64,
+          addressSpaceID: value,
+          maximumInstructions: 2,
+          state: &tier1,
+          memory: tier1Memory
+        ))
+        #expect(execution.block.tier == .tier1)
+        #expect(tier1 == interpreted)
+      }
+    #endif
+  }
+
+  @Test func failedScalarMemoryBinaryReadLeavesStateRestartable() throws {
+    #if arch(arm64)
+      let address: UInt64 = 0x400
+      let bytes: [UInt8] = [0x48, 0x03, 0x03]  // add rax,[rbx]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x1122, rbx: 0x2000),
+        rip: address,
+        rflags: [.reservedOne, .carry, .direction]
+      )
+      var state = initial
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+      let execution = try #require(DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        tier1Enabled: true
+      ).execute(
+        bytes: bytes,
+        at: address,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &state,
+        memory: memory
+      ))
+      #expect(execution.block.tier == .tier1)
+      #expect(execution.exitCode == .interpreter)
+      #expect(state == initial)
+    #endif
+  }
+
   @Test func completeMeasuredDelayTSCBodyCompilesInTier1() throws {
     let address: UInt64 = 0xFFFF_FFFF_81E2_DC14
     let bytes: [UInt8] = [

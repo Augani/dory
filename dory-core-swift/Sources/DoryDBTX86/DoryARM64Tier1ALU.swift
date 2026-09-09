@@ -17,6 +17,12 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     case immediate(UInt64)
   }
 
+  private enum BinaryValue: Sendable, Equatable {
+    case guestRegister(Int)
+    case immediate(UInt64)
+    case stagedMemory
+  }
+
   enum HighByteSource: Sendable, Equatable {
     case guestHighByte(Int)
     case immediate(UInt8)
@@ -728,11 +734,101 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     writesDestination: Bool,
     into words: inout [UInt32]
   ) -> NativeFlags? {
-    guard (0..<16).contains(destinationGuestRegister),
-      Self.validWriteMode(operation: operation, writesDestination: writesDestination)
+    let binarySource: BinaryValue
+    switch source {
+    case .guestRegister(let register):
+      binarySource = .guestRegister(register)
+    case .immediate(let value):
+      binarySource = .immediate(value)
+    }
+    return emitBinaryCore(
+      operation,
+      width: width,
+      left: .guestRegister(destinationGuestRegister),
+      source: binarySource,
+      writesDestination: writesDestination,
+      into: &words
+    )
+  }
+
+  /// Emits a binary operation whose source is read through the preserved memory callback.
+  /// The read completes before this operation changes its destination or publishes a new
+  /// lazy-flags record, so a failed callback can restart the block from its entry checkpoint.
+  func emitMemorySourceBinary(
+    _ operation: DoryIRBinaryOperation,
+    width: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    address: DoryIRMemoryAddress,
+    writesDestination: Bool,
+    into words: inout [UInt32]
+  ) -> NativeFlags? {
+    var fragment: [UInt32] = []
+    guard Self.emitMemoryRead(width: width, address: address, into: &fragment),
+      let nativeFlags = emitBinaryCore(
+        operation,
+        width: width,
+        left: .guestRegister(destinationGuestRegister),
+        source: .stagedMemory,
+        writesDestination: writesDestination,
+        into: &fragment
+      )
     else { return nil }
-    if case .guestRegister(let sourceRegister) = source {
-      guard (0..<16).contains(sourceRegister) else { return nil }
+    words.append(contentsOf: fragment)
+    return nativeFlags
+  }
+
+  /// Emits read-only CMP/TEST forms whose left operand is memory. Memory-writing ALU forms remain
+  /// outside tier 1 until the block can provide a restartable write transaction.
+  func emitMemoryDestinationBinary(
+    _ operation: DoryIRBinaryOperation,
+    width: DoryIRIntegerWidth,
+    address: DoryIRMemoryAddress,
+    source: Source,
+    into words: inout [UInt32]
+  ) -> NativeFlags? {
+    guard operation == .compare || operation == .test else { return nil }
+    let binarySource: BinaryValue
+    switch source {
+    case .guestRegister(let register):
+      binarySource = .guestRegister(register)
+    case .immediate(let value):
+      binarySource = .immediate(value)
+    }
+    var fragment: [UInt32] = []
+    guard Self.emitMemoryRead(width: width, address: address, into: &fragment),
+      let nativeFlags = emitBinaryCore(
+        operation,
+        width: width,
+        left: .stagedMemory,
+        source: binarySource,
+        writesDestination: false,
+        into: &fragment
+      )
+    else { return nil }
+    words.append(contentsOf: fragment)
+    return nativeFlags
+  }
+
+  private func emitBinaryCore(
+    _ operation: DoryIRBinaryOperation,
+    width: DoryIRIntegerWidth,
+    left: BinaryValue,
+    source: BinaryValue,
+    writesDestination: Bool,
+    into words: inout [UInt32]
+  ) -> NativeFlags? {
+    guard Self.validWriteMode(operation: operation, writesDestination: writesDestination) else {
+      return nil
+    }
+    if writesDestination {
+      guard case .guestRegister = left else { return nil }
+    }
+    for value in [left, source] {
+      if case .guestRegister(let register) = value,
+        !(0..<16).contains(register)
+      {
+        return nil
+      }
     }
 
     let isNarrow = width == .i8 || width == .i16
@@ -759,14 +855,27 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     let is64Bit = width == .i64
     let narrowShift = isNarrow ? UInt32(32 - Int(width.rawValue)) : 0
     let mask = Self.mask(for: width)
-    let destination = UInt32(destinationGuestRegister)
+    let destination: UInt32
+    switch left {
+    case .guestRegister(let register):
+      destination = UInt32(register)
+    case .immediate, .stagedMemory:
+      destination = 16
+    }
     if operation == .addWithCarry || operation == .subtractWithBorrow {
       Self.emitCarryFromMaterializedFlags(
         inverted: operation == .subtractWithBorrow, into: &fragment)
     }
-    fragment.append(
-      Self.encodeMove(
-        destination: 16, source: destination, is64Bit: isNarrow || is64Bit))
+    switch left {
+    case .guestRegister:
+      fragment.append(
+        Self.encodeMove(
+          destination: 16, source: destination, is64Bit: isNarrow || is64Bit))
+    case .stagedMemory:
+      fragment.append(Self.encodeLoad64(register: 16, word: .rip))
+    case .immediate:
+      return nil
+    }
     if isNarrow {
       Self.emitImmediate(mask, register: 17, into: &fragment)
       fragment.append(
@@ -790,6 +899,14 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       }
     case .immediate(let value):
       Self.emitImmediate(value & mask, register: 17, into: &fragment)
+    case .stagedMemory:
+      fragment.append(Self.encodeLoad64(register: 17, word: .rip))
+      if isNarrow {
+        Self.emitImmediate(mask, register: 26, into: &fragment)
+        fragment.append(
+          Self.encodeLogical(
+            .and, is64Bit: true, left: 17, right: 26, destination: 17))
+      }
     }
     fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
 
