@@ -247,9 +247,9 @@ Task directory:
 - [x] Done. [inventory](docs/virtualization/evidence/wave0-2026-09-08/candidate-producer-inventory.json); all three Mesa profiles verify; FFI archive at 14.0 floor.
 
 #### A01.2 — Re-point and rerun the historical-evidence audit
-- [ ] **Action:** Update `scripts/audit-plan-evidence.py` to the citations in this plan's **Where we actually are** section. Reclassify `p07-macos-2026-09-05/host-metal-compute.json` as host evidence. Keep the four receipts already flagged as reacquisition-only.
+- [x] **Done:** `scripts/audit-plan-evidence.py` now audits every evidence citation in **Where we actually are**, classifies `p07-macos-2026-09-05/host-metal-compute.json` as `host-only-not-guest`, and retains the four legacy receipts as `reacquisition-only`. [Current audit](docs/virtualization/evidence/wave0-2026-09-08/historical-evidence-audit-current.json)
 - **Why:** The audit must check the claims the plan actually makes.
-- **Check:** Audit passes against this document; every cited path resolves; misdescribed receipts are labeled.
+- **Check:** Passed with 12/12 cited paths resolved, no qualification-blocking documents, and no unresolved citations; seven focused auditor tests pass.
 
 #### A01.3 — Freeze the test matrix
 - [ ] **Action:** Finalize [`Config/DoryWave0QualificationMatrix.json`](Config/DoryWave0QualificationMatrix.json): host classes (oldest admitted M-series, midrange, high), macOS versions, Ubuntu 24.04 LTS + Fedora (current) for both Linux ISAs with immutable media digests, stock and managed kernel/Mesa profiles, GPU profiles (`venus`, `venus+zink` or `virgl2-angle` per D07 outcome), CPU profiles (`baseline`, `v2`, `v3`), 4 KiB/16 KiB page split, resource classes, Mac restore image. Supply the missing `arm64-virgl2-angle-metal` kernel/Mesa pins or drop the cell after A14.1 decides.

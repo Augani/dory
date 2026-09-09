@@ -14,11 +14,20 @@ from typing import Any
 
 
 EVIDENCE_SECTION = re.compile(
-    r"^### Evidence worth reading first\s*$\n(?P<body>.*?)(?=^## )", re.MULTILINE | re.DOTALL
+    r"^## Where we actually are\s*$\n(?P<body>.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL
 )
 EVIDENCE_REFERENCE = re.compile(
-    r"docs/virtualization/evidence/[A-Za-z0-9._/-]+\.(?:jsonl|json)"
+    r"docs/virtualization/evidence/[A-Za-z0-9._/-]+"
 )
+REACQUISITION_ONLY = {
+    "docs/virtualization/evidence/p05-arm-2026-09-05/actual-manager-desktop-installer-detach-cold-reopen.json",
+    "docs/virtualization/evidence/p06-pc-2026-09-06/clock-stall-rescope.json",
+    "docs/virtualization/evidence/p06-pc-2026-09-06/tier-comparison-rpcdiag.json",
+    "docs/virtualization/evidence/p07-macos-2026-09-05/actual-managed-suspend-restore.json",
+}
+HOST_ONLY = {
+    "docs/virtualization/evidence/p07-macos-2026-09-05/host-metal-compute.json",
+}
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -201,25 +210,34 @@ def commit_bindings(root: Path, receipt: dict[str, Any]) -> list[dict[str, str]]
     return result
 
 
+def evidence_admission(relative: str) -> str:
+    if relative in REACQUISITION_ONLY:
+        return "reacquisition-only"
+    if relative in HOST_ONLY:
+        return "host-only-not-guest"
+    return "historical-only"
+
+
 def audit_document(root: Path, relative: str) -> dict[str, Any]:
+    admission = evidence_admission(relative)
     status, document = local_attachment(root / "PLAN.md", relative)
     if status != "available" or document is None:
-        return {"path": relative, "status": "unavailable", "admission": "historical-only"}
+        return {"path": relative, "status": "unavailable", "admission": admission}
     if document.suffix == ".jsonl":
         try:
             count = parse_jsonl(document)
         except AuditError as error:
-            return {"path": relative, "status": "invalid-jsonl", "error": str(error), "admission": "historical-only"}
+            return {"path": relative, "status": "invalid-jsonl", "error": str(error), "admission": admission}
         return {
             "path": relative,
             "status": "preserved-jsonl",
             "jsonValues": count,
-            "admission": "historical-only",
+            "admission": admission,
         }
     try:
         receipt = read_json(document)
     except AuditError as error:
-        return {"path": relative, "status": "invalid-json", "error": str(error), "admission": "historical-only"}
+        return {"path": relative, "status": "invalid-json", "error": str(error), "admission": admission}
     attachments = declared_attachments(document, receipt)
     commits = commit_bindings(root, receipt)
     references = receipt_references(document, receipt)
@@ -229,6 +247,10 @@ def audit_document(root: Path, relative: str) -> dict[str, Any]:
     )
     if attachments_match and auxiliary_match:
         status = "preserved"
+    elif not attachments and auxiliary_match:
+        # A standalone JSON receipt is itself a portable historical artifact.  This
+        # classification does not promote it to candidate or qualification evidence.
+        status = "preserved-document"
     elif not attachments:
         status = "insufficient-portable-bindings"
     else:
@@ -236,11 +258,29 @@ def audit_document(root: Path, relative: str) -> dict[str, Any]:
     return {
         "path": relative,
         "status": status,
-        "admission": "historical-only",
+        "admission": admission,
         "attachments": attachments,
         "commitBindings": commits,
         "receiptReferences": references,
     }
+
+
+def citation_status(root: Path, relative: str) -> dict[str, str]:
+    raw = root / relative
+    current = root
+    for part in Path(relative).parts:
+        if part == "..":
+            return {"path": relative, "status": "unsafe-relative-path"}
+        current /= part
+        if current.is_symlink():
+            return {"path": relative, "status": "unsafe-symbolic-link"}
+    if within(root, raw) is None:
+        return {"path": relative, "status": "unsafe-relative-path"}
+    if direct_regular(raw):
+        return {"path": relative, "status": "available-file"}
+    if raw.is_dir():
+        return {"path": relative, "status": "available-directory"}
+    return {"path": relative, "status": "unavailable"}
 
 
 def main() -> int:
@@ -261,20 +301,44 @@ def main() -> int:
     plan_bytes = plan.read_bytes()
     match = EVIDENCE_SECTION.search(plan_bytes.decode("utf-8"))
     if match is None:
-        fail("PLAN.md has no 'Evidence worth reading first' section")
-    references = sorted(set(EVIDENCE_REFERENCE.findall(match.group("body"))))
-    if not references:
-        fail("historical evidence section cites no JSON or JSONL files")
+        fail("PLAN.md has no 'Where we actually are' section")
+    citations = sorted({item.group(0).rstrip(".") for item in EVIDENCE_REFERENCE.finditer(match.group("body"))})
+    if not citations:
+        fail("'Where we actually are' cites no evidence paths")
+    citation_bindings = [citation_status(root, relative) for relative in citations]
+    supplemental = sorted(
+        relative for relative in REACQUISITION_ONLY | HOST_ONLY if (root / relative).exists()
+    )
+    references = sorted(
+        {relative for relative in citations if Path(relative).suffix in {".json", ".jsonl"}}
+        | set(supplemental)
+    )
     documents = [audit_document(root, relative) for relative in references]
-    incomplete = [item["path"] for item in documents if item["status"] not in {"preserved", "preserved-jsonl"}]
+    preserved_statuses = {"preserved", "preserved-document", "preserved-jsonl"}
+    incomplete = [item["path"] for item in documents if item["status"] not in preserved_statuses]
+    reacquisition = [item["path"] for item in documents if item["admission"] == "reacquisition-only"]
+    qualification_blocking = [
+        item["path"] for item in documents
+        if item["status"] not in preserved_statuses
+        and item["admission"] not in {"reacquisition-only", "host-only-not-guest"}
+    ]
+    unresolved_citations = [
+        item["path"] for item in citation_bindings
+        if item["status"] not in {"available-file", "available-directory"}
+    ]
     output = {
         "schemaVersion": 1,
         "kind": "dory.plan-evidence-audit",
         "auditorSHA256": digest(Path(__file__).resolve()),
         "planSHA256": hashlib.sha256(plan_bytes).hexdigest(),
         "historicalEvidenceOnly": True,
+        "evidenceSection": "Where we actually are",
+        "citationBindings": citation_bindings,
         "documents": documents,
         "incompleteDocuments": incomplete,
+        "reacquisitionOnlyDocuments": reacquisition,
+        "qualificationBlockingDocuments": qualification_blocking,
+        "unresolvedCitations": unresolved_citations,
     }
     encoded = (json.dumps(output, sort_keys=True, indent=2) + "\n").encode("utf-8")
     if arguments.output is None:
@@ -285,7 +349,7 @@ def main() -> int:
             fail(f"output must not be a symbolic link: {destination}")
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_bytes(encoded)
-    return 1 if arguments.require_complete and incomplete else 0
+    return 1 if arguments.require_complete and (qualification_blocking or unresolved_citations) else 0
 
 
 if __name__ == "__main__":
