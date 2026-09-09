@@ -1,0 +1,119 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-measured-memory-bit-reset",
+  "observedAt": "2026-09-09T19:11:01Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "3a82aca415641312e4a320da2274355be375ad68",
+    "candidateRunnerSHA256": "df89e49f8ee7213ba12397dc6573148611f88207c479644d7549ac5e656ac517",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "measuredSite": {
+      "guestRIP": "0xffffffff81e1b3a6",
+      "instruction": "btrq %rcx,(%rax)",
+      "bytes": "48 0f b3 08",
+      "priorNegativeCacheHits": 17036,
+      "remainsInCandidateRunNegativeCache": false
+    },
+    "boundedRule": "Tier one admits register-indexed qword BTR only at the measured fixture RIP with RCX as the index. The same operation at another RIP declines.",
+    "implementation": "The existing signed bit-string address lowering stages the exact adjusted qword address, performs one replay-safe read, clears only the selected bit, and commits through one final transactional write. CF publishes only after the write succeeds.",
+    "deferred": "All other unmeasured memory BTR/BTS/BTC forms retain their prior paths."
+  },
+  "verification": {
+    "focusedGate": "218 tests in DoryARM64BaselineJITTests, DoryARM64Tier1JITTests, DoryX86BitTestAddressingTests, and DoryX86IRTests passed.",
+    "dbtAndPCGate": "1,448 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Indices 0, 63, 64, -1, and -65 match the interpreter for initially clear and set bits while preserving every unselected bit.",
+    "rollbackCoverage": "An injected final-write page fault leaves flags, RIP, registers, and backing memory at the block-entry checkpoint.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "10a8005a-61b6-459e-8631-37f54ed9fa84",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 146514173916,
+    "retiredInstructions": 733953186,
+    "throughputMIPS": 5.009434694153,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731191214,
+    "interpreterInstructions": 2761972,
+    "deliveredMaskableInterrupts": 57984,
+    "retiredInterruptReturns": 146155,
+    "byteValidationHits": 72247,
+    "codeGenerationMismatches": 78115,
+    "sharedCodeHits": 115027,
+    "compiledBlocks": 185825,
+    "tier1CompilationAttempts": 226761,
+    "tier1CompilationDeclines": 128014,
+    "tier1DeclinePercentOfAttempts": 56.453270183144,
+    "tier1CompiledBlocks": 98747,
+    "lazyFlagMaterializations": 59400355,
+    "translationCacheInvalidations": 225198
+  },
+  "unmatchedPriorRunComparison": {
+    "memoryBitTestElapsedNanoseconds": 153713333542,
+    "memoryBitResetElapsedNanoseconds": 146514173916,
+    "directionalElapsedReductionPercent": 4.683497169771,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. The elapsed difference is reported for completeness and is not a performance claim."
+  },
+  "nextVisibleKernelSites": [
+    {
+      "guestRIP": "0xffffffff81001b43",
+      "instruction": "movq %rax,%cr3",
+      "guestByteCount": 3,
+      "hitCount": 12113,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81e35772",
+      "symbol": "sync_regs+0x22",
+      "instruction": "rep movsq (%rsi),%es:(%rdi)",
+      "guestByteCount": 3,
+      "hitCount": 11064,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff810017b7",
+      "instruction": "movq %rdi,%cr3",
+      "guestByteCount": 3,
+      "hitCount": 9606,
+      "declineReason": "interpreterHelper"
+    }
+  ],
+  "interpretation": "The measured write-side memory BTR site is absent from the retained negative-cache sample and the authenticated workload completes. A05.2 remains open because 128,014 of 226,761 full-run tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no performance delta and does not satisfy G1-G5."
+  ]
+}
