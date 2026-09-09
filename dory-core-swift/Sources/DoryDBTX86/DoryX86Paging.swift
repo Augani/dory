@@ -63,6 +63,21 @@ public struct DoryX86Translation: Sendable, Hashable {
   public let executable: Bool
 }
 
+/// Bounded, process-local paging-path counters used to attribute full-system execution cost.
+/// They are diagnostic only and do not participate in guest-visible architectural state.
+public struct DoryX86PagingDiagnostics: Sendable, Hashable {
+  public let translationRequests: UInt64
+  public let pagingDisabledBypasses: UInt64
+  public let recentTLBHits: UInt64
+  public let dictionaryTLBHits: UInt64
+  public let pageWalks: UInt64
+  public let pageWalkFailures: UInt64
+  public let linearInvalidations: UInt64
+  public let globalInvalidations: UInt64
+  public let capacityFlushes: UInt64
+  public let cachedTranslations: Int
+}
+
 /// Architectural x86 paging walker. The TLB is an implementation cache only: its key contains all
 /// guest-visible permission inputs and every invalidation operation removes lookup visibility
 /// synchronously before returning.
@@ -100,6 +115,15 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
   private var entries: [TLBKey: TLBValue] = [:]
   private var recentEntries: [TLBEntry?] = [nil, nil, nil]
   private var generation: UInt64 = 0
+  private var translationRequestCount: UInt64 = 0
+  private var pagingDisabledBypassCount: UInt64 = 0
+  private var recentTLBHitCount: UInt64 = 0
+  private var dictionaryTLBHitCount: UInt64 = 0
+  private var pageWalkCount: UInt64 = 0
+  private var pageWalkFailureCount: UInt64 = 0
+  private var linearInvalidationCount: UInt64 = 0
+  private var globalInvalidationCount: UInt64 = 0
+  private var capacityFlushCount: UInt64 = 0
   public let physicalAddressBits: UInt8
   public let maximumEntryCount: Int
 
@@ -112,6 +136,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 
   public func invalidate(linearAddress: UInt64) {
     lock.lock()
+    increment(&linearInvalidationCount)
     // A large translation may occupy several 4 KiB cache slots. INVLPG must remove
     // every slot belonging to the large page, including the hot lookup entries.
     func containsAddress(_ key: TLBKey, _ value: TLBValue) -> Bool {
@@ -129,6 +154,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 
   public func invalidateAll() {
     lock.lock()
+    increment(&globalInvalidationCount)
     generation &+= 1
     entries.removeAll(keepingCapacity: true)
     recentEntries = [nil, nil, nil]
@@ -139,6 +165,23 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     lock.lock()
     defer { lock.unlock() }
     return entries.count
+  }
+
+  public var diagnostics: DoryX86PagingDiagnostics {
+    lock.withLock {
+      .init(
+        translationRequests: translationRequestCount,
+        pagingDisabledBypasses: pagingDisabledBypassCount,
+        recentTLBHits: recentTLBHitCount,
+        dictionaryTLBHits: dictionaryTLBHitCount,
+        pageWalks: pageWalkCount,
+        pageWalkFailures: pageWalkFailureCount,
+        linearInvalidations: linearInvalidationCount,
+        globalInvalidations: globalInvalidationCount,
+        capacityFlushes: capacityFlushCount,
+        cachedTranslations: entries.count
+      )
+    }
   }
 
   public func translate(
@@ -153,6 +196,10 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
       throw DoryX86MemoryError.addressOverflow(address: linearAddress, byteCount: 1)
     }
     guard context.control.cr0 & (1 << 31) != 0 else {
+      lock.withLock {
+        increment(&translationRequestCount)
+        increment(&pagingDisabledBypassCount)
+      }
       return .init(
         linearAddress: linearAddress,
         physicalAddress: linearAddress,
@@ -165,6 +212,7 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
 
     lock.lock()
     defer { lock.unlock() }
+    increment(&translationRequestCount)
     let key = TLBKey(
       linearPage: linearAddress >> 12,
       cr3: context.control.cr3,
@@ -182,40 +230,51 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     )
     let recentIndex = recentEntryIndex(access)
     if let recent = recentEntries[recentIndex], recent.key == key {
+      increment(&recentTLBHitCount)
       return makeTranslation(
         linearAddress: linearAddress,
         value: recent.value
       )
     }
     if let cached = entries[key] {
+      increment(&dictionaryTLBHitCount)
       recentEntries[recentIndex] = .init(key: key, value: cached)
       return makeTranslation(linearAddress: linearAddress, value: cached)
     }
 
+    increment(&pageWalkCount)
     let translation: DoryX86Translation
-    if ia32eActive {
-      translation = try walkIA32e(
-        linearAddress: linearAddress,
-        access: access,
-        context: context,
-        physicalMemory: physicalMemory
-      )
-    } else if context.control.cr4 & (1 << 5) != 0 {
-      translation = try walkPAE(
-        linearAddress: linearAddress,
-        access: access,
-        context: context,
-        physicalMemory: physicalMemory
-      )
-    } else {
-      translation = try walkLegacy32(
-        linearAddress: linearAddress,
-        access: access,
-        context: context,
-        physicalMemory: physicalMemory
-      )
+    do {
+      if ia32eActive {
+        translation = try walkIA32e(
+          linearAddress: linearAddress,
+          access: access,
+          context: context,
+          physicalMemory: physicalMemory
+        )
+      } else if context.control.cr4 & (1 << 5) != 0 {
+        translation = try walkPAE(
+          linearAddress: linearAddress,
+          access: access,
+          context: context,
+          physicalMemory: physicalMemory
+        )
+      } else {
+        translation = try walkLegacy32(
+          linearAddress: linearAddress,
+          access: access,
+          context: context,
+          physicalMemory: physicalMemory
+        )
+      }
+    } catch {
+      increment(&pageWalkFailureCount)
+      throw error
     }
-    if entries.count >= maximumEntryCount { entries.removeAll(keepingCapacity: true) }
+    if entries.count >= maximumEntryCount {
+      increment(&capacityFlushCount)
+      entries.removeAll(keepingCapacity: true)
+    }
     let value = TLBValue(
       physicalPage: translation.physicalAddress & ~0xfff,
       pageSize: translation.pageSize,
@@ -234,6 +293,10 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     case .read: 1
     case .write: 2
     }
+  }
+
+  private func increment(_ value: inout UInt64) {
+    if value < .max { value += 1 }
   }
 
   private func makeTranslation(

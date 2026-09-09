@@ -350,6 +350,24 @@ private func jitDiagnostics(_ diagnostics: DoryPCJITCacheStatistics?) -> Any {
   ] as [String: Any]
 }
 
+private func pagingDiagnostics(_ diagnostics: [DoryX86PagingDiagnostics]) -> [[String: Any]] {
+  diagnostics.enumerated().map { index, value in
+    [
+      "processor": index,
+      "translationRequests": value.translationRequests,
+      "pagingDisabledBypasses": value.pagingDisabledBypasses,
+      "recentTLBHits": value.recentTLBHits,
+      "dictionaryTLBHits": value.dictionaryTLBHits,
+      "pageWalks": value.pageWalks,
+      "pageWalkFailures": value.pageWalkFailures,
+      "linearInvalidations": value.linearInvalidations,
+      "globalInvalidations": value.globalInvalidations,
+      "capacityFlushes": value.capacityFlushes,
+      "cachedTranslations": value.cachedTranslations,
+    ]
+  }
+}
+
 private func completedInstructions(for stop: DoryPCMachineStop) -> UInt64 {
   switch stop {
   case .halted(let instructionCount), .exception(_, let instructionCount),
@@ -632,6 +650,7 @@ private func runWithProgress(
         "interpreterInstructions": statistics.interpreterInstructions,
         "baselineJITInstructions": statistics.baselineJITInstructions,
         "optimizingJITInstructions": statistics.optimizingJITInstructions,
+        "pagingDiagnostics": pagingDiagnostics(machine.pagingDiagnostics),
         "blockDevices": blockDeviceDiagnostics(blockDevices, memory: machine.physicalMemory),
       ]
       let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
@@ -932,6 +951,7 @@ private func run() throws {
     "optimizingJITInstructions": executionStatistics.optimizingJITInstructions,
     "optimizingJITBlocks": executionStatistics.optimizingJITBlocks,
     "optimizingJITDiagnostics": jitDiagnostics(composed.machine.optimizingJITDiagnostics),
+    "pagingDiagnostics": pagingDiagnostics(composed.machine.pagingDiagnostics),
     "persistentSystemDisk": arguments.systemDisk?.path ?? "in-memory",
     "installerMedia": arguments.installerMedia?.path ?? "none",
     "installerMediaByteCount": installerIdentity.map { $0.byteCount as Any } ?? NSNull(),

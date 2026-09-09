@@ -752,6 +752,10 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     optimizingJIT.map { .init($0.diagnostics) }
   }
 
+  public var pagingDiagnostics: [DoryX86PagingDiagnostics] {
+    pagingUnits.map(\.diagnostics)
+  }
+
   public func state(forProcessor index: Int) -> DoryX86ArchitecturalState? {
     lock.withLock { loadedStates.indices.contains(index) ? loadedStates[index]?.value : nil }
   }

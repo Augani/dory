@@ -82,6 +82,38 @@ import Testing
     #expect(try read64(memory, 0x4000) & (1 << 6) != 0)
   }
 
+  @Test func diagnosticsSeparateRecentDictionaryWalkAndInvalidationPaths() throws {
+    let memory = try DoryX86ByteArrayMemory(byteCount: 0x20_000)
+    let first: UInt64 = 0x0040_0123
+    let second: UInt64 = 0x0040_1123
+    try installFourLevelMapping(linear: first, physicalPage: 0x8000, flags: 0x7, memory: memory)
+    try write64(memory, 0x4000 + 8, 0x9000 | 0x7)
+    let paging = DoryX86PagingUnit(maximumEntryCount: 1)
+    let context = longModeContext(cpl: 3)
+
+    _ = try paging.translate(
+      linearAddress: first, access: .read, context: context, physicalMemory: memory)
+    _ = try paging.translate(
+      linearAddress: first, access: .read, context: context, physicalMemory: memory)
+    _ = try paging.translate(
+      linearAddress: first, access: .write, context: context, physicalMemory: memory)
+    _ = try paging.translate(
+      linearAddress: second, access: .read, context: context, physicalMemory: memory)
+    paging.invalidate(linearAddress: second)
+    paging.invalidateAll()
+
+    let diagnostics = paging.diagnostics
+    #expect(diagnostics.translationRequests == 4)
+    #expect(diagnostics.recentTLBHits == 1)
+    #expect(diagnostics.dictionaryTLBHits == 0)
+    #expect(diagnostics.pageWalks == 3)
+    #expect(diagnostics.pageWalkFailures == 0)
+    #expect(diagnostics.linearInvalidations == 1)
+    #expect(diagnostics.globalInvalidations == 1)
+    #expect(diagnostics.capacityFlushes == 2)
+    #expect(diagnostics.cachedTranslations == 0)
+  }
+
   @Test func walksOneGiBPagesAdvertisedByTheCompatibleCPUProfile() throws {
     let memory = try DoryX86ByteArrayMemory(byteCount: 0x10_000)
     let linear: UInt64 = 0x5234_5678
