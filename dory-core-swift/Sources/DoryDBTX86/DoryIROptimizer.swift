@@ -159,7 +159,7 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
         invalidate(.register(destination), knownConstants: &knownConstants)
 
-      case .clearInterruptFlag, .setDirectionFlag, .memoryFence:
+      case .clearInterruptFlag, .setDirectionFlag, .memoryFence, .swapGS:
         statements.append(statement)
 
       case .bitTestRegister(let operation, let base, _),

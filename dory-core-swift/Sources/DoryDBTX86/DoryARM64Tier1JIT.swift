@@ -427,6 +427,9 @@ struct DoryARM64Tier1Emitter: Sendable {
           )
         else { return nil }
 
+      case .swapGS:
+        alu.emitSwapGS(into: &body)
+
       case .bitScan(let reverse, let destination, let source):
         guard let destination = lowRegister(destination),
           let source = lowRegister(source),

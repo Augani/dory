@@ -97,6 +97,9 @@ public struct DoryARM64BaselineEmitter: Sendable {
     DoryARM64Tier1ABI.ContextWord.atomicCompareExchangePair.byteOffset
   private static let rspOffset = DoryARM64Tier1ABI.ContextWord.rsp.byteOffset
   private static let cr3Offset = DoryARM64Tier1ABI.ContextWord.cr3.byteOffset
+  private static let kernelGSBaseOffset = DoryARM64Tier1ABI.ContextWord.kernelGSBase.byteOffset
+  private static let swapGSPerformedOffset =
+    DoryARM64Tier1ABI.ContextWord.swapGSPerformed.byteOffset
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
   private static let arithmeticFlagMask: UInt64 =
@@ -252,7 +255,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return false
       case .stackPushFlags, .loadFlagsIntoAH, .storeAHIntoFlags, .setCarryFlag,
         .complementCarryFlag, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
-        .signExtendAccumulatorHigh, .readControlRegister, .memoryFence, .helper:
+        .signExtendAccumulatorHigh, .readControlRegister, .swapGS, .memoryFence, .helper:
         return false
       }
     }
@@ -305,6 +308,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitReadSegment(segment, destination: destination, into: &words)
     case .readControlRegister(let index, let destination):
       return emitReadControlRegister(index, destination: destination, into: &words)
+    case .swapGS:
+      return emitSwapGS(into: &words)
     case .copy(let destination, let source):
       return emitCopy(destination: destination, source: source, into: &words)
     case .binary(let operation, let destination, let source, let writesDestination):
@@ -425,6 +430,16 @@ public struct DoryARM64BaselineEmitter: Sendable {
     words.append(encodeLogical(.and, left: 9, right: 11, destination: 9))
     words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
     words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+    return true
+  }
+
+  private func emitSwapGS(into words: inout [UInt32]) -> Bool {
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Self.gsBaseOffset))
+    words.append(encodeLoad64(register: 10, base: 0, byteOffset: Self.kernelGSBaseOffset))
+    words.append(encodeStore64(register: 10, base: 0, byteOffset: Self.gsBaseOffset))
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.kernelGSBaseOffset))
+    emitImmediate(1, register: 9, into: &words)
+    words.append(encodeStore64(register: 9, base: 0, byteOffset: Self.swapGSPerformedOffset))
     return true
   }
 
@@ -1075,7 +1090,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
     case .readSegment(_, let destination):
       if case .memory = destination { return 1 }
       return 0
-    case .effectiveAddress, .readControlRegister, .loadFlagsIntoAH, .storeAHIntoFlags,
+    case .effectiveAddress, .readControlRegister, .swapGS, .loadFlagsIntoAH, .storeAHIntoFlags,
       .setCarryFlag,
       .complementCarryFlag, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,
       .signExtendAccumulatorHigh, .helper:
@@ -5701,8 +5716,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     }
     if mode != .long64 || key.privilegeLevel != 0,
       block.statements.contains(where: {
-        if case .readControlRegister = $0 { return true }
-        return false
+        switch $0 {
+        case .readControlRegister, .swapGS: return true
+        default: return false
+        }
       })
     {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
@@ -6228,6 +6245,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       doryARM64LazyFlagsMaterializerAddress()
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.cr3.rawValue] = state.control.cr3
+    context[DoryARM64Tier1ABI.ContextWord.kernelGSBase.rawValue] =
+      state.modelSpecific.kernelGSBase
+    context[DoryARM64Tier1ABI.ContextWord.swapGSPerformed.rawValue] = 0
   }
 
   private func recordLazyFlagMaterializations(
@@ -6281,6 +6301,12 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state.rflags =
       DoryARM64LazyFlagsState(context: context)?.materialize()
       ?? DoryX86RFLAGS(rawValue: context[17])
+    if context[DoryARM64Tier1ABI.ContextWord.swapGSPerformed.rawValue] != 0 {
+      state.gs.base = context[DoryARM64Tier1ABI.ContextWord.gsBase.rawValue]
+      state.modelSpecific.gsBase = state.gs.base
+      state.modelSpecific.kernelGSBase =
+        context[DoryARM64Tier1ABI.ContextWord.kernelGSBase.rawValue]
+    }
   }
 
   private static func fingerprint(bytes: [UInt8], mode: DoryX86ExecutionMode) -> UInt64 {

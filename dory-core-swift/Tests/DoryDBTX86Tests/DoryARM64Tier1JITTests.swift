@@ -174,6 +174,135 @@ import Testing
     #endif
   }
 
+  @Test func hotKernelSwapGSMatchesInterpreterAndPreservesTheNativeConditionPath() throws {
+    let measuredSites: [UInt64] = [
+      0xFFFF_FFFF_8100_0084,  // entry_SYSCALL_64+0x4
+      0xFFFF_FFFF_8100_1B2D,  // error_entry+0x4d
+    ]
+    for address in measuredSites {
+      let block = try DoryX86IRTranslator().translate(
+        [0x0F, 0x01, 0xF8],
+        at: address,
+        mode: .long64
+      )
+      #expect(block.statements == [.swapGS])
+
+      let initial = try DoryX86ArchitecturalState(
+        rip: address,
+        rflags: [.reservedOne, .carry, .direction],
+        cs: .init(selector: 0x10, attributes: 0xA09B, limit: .max),
+        gs: .init(selector: 0, attributes: 0, limit: 0, base: 0x1111_2222_3333_4444),
+        modelSpecific: .init(
+          gsBase: 0xEEEE_DDDD_CCCC_BBBB,
+          kernelGSBase: 0xAAAA_BBBB_CCCC_DDDD
+        )
+      )
+      var interpreted = initial
+      guard
+        case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: try DoryX86ByteArrayMemory(
+            baseAddress: address,
+            bytes: [0x0F, 0x01, 0xF8]
+          ),
+          mode: .long64
+        )
+      else {
+        Issue.record("interpreter did not retire measured SWAPGS")
+        return
+      }
+
+      #if arch(arm64)
+        for tier1Enabled in [false, true] {
+          var native = initial
+          let execution = try #require(
+            DoryARM64BaselineExecutor(
+              maximumCodeBytes: 4096,
+              tier1Enabled: tier1Enabled
+            ).execute(
+              bytes: [0x0F, 0x01, 0xF8],
+              at: address,
+              mode: .long64,
+              addressSpaceID: 0,
+              maximumInstructions: 1,
+              state: &native
+            ))
+          #expect(execution.block.tier == (tier1Enabled ? .tier1 : .baseline))
+          #expect(native == interpreted)
+        }
+
+        var user = initial
+        user.cs.selector = 0x33
+        let expectedUser = user
+        let userExecution = try DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: true
+        ).execute(
+          bytes: [0x0F, 0x01, 0xF8],
+          at: address,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &user
+        )
+        #expect(userExecution == nil)
+        #expect(user == expectedUser)
+      #endif
+    }
+
+    #if arch(arm64)
+      let address: UInt64 = 0x5300
+      let bytes: [UInt8] = [
+        0x48, 0x39, 0xCB,  // cmp rbx,rcx
+        0x0F, 0x01, 0xF8,  // swapgs
+        0x75, 0x02,  // jne +2
+      ]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rcx: 4, rbx: 9),
+        rip: address,
+        rflags: [.reservedOne, .direction],
+        cs: .init(selector: 0x10, attributes: 0xA09B, limit: .max),
+        gs: .init(selector: 0, attributes: 0, limit: 0, base: 0x1234),
+        modelSpecific: .init(gsBase: 0x1234, kernelGSBase: 0x5678)
+      )
+      let memory = try DoryX86ByteArrayMemory(baseAddress: address, bytes: bytes)
+      var interpreted = initial
+      for _ in 0..<3 {
+        guard
+          case .retired = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: memory,
+            mode: .long64
+          )
+        else {
+          Issue.record("interpreter did not retire SWAPGS condition-path fixture")
+          return
+        }
+      }
+
+      var tier1 = initial
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        tier1Enabled: true
+      )
+      let execution = try #require(
+        executor.execute(
+          bytes: bytes,
+          at: address,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 3,
+          state: &tier1
+        ))
+      #expect(execution.block.tier == .tier1)
+      #expect(tier1 == interpreted)
+      #expect(tier1.rip == address + UInt64(bytes.count) + 2)
+      #expect(tier1.gs.base == initial.modelSpecific.kernelGSBase)
+      #expect(tier1.modelSpecific.kernelGSBase == initial.gs.base)
+      #expect(executor.diagnostics.lazyFlagMaterializations == 1)
+    #endif
+  }
+
   @Test func measuredDelayTSCMulLoadBlockCompilesInTier1() throws {
     let address: UInt64 = 0xFFFF_FFFF_81E2_DC36
     let bytes: [UInt8] = [

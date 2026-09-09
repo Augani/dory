@@ -112,6 +112,7 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   case memoryFence(DoryX86MemoryFence)
   case readSegment(DoryX86SegmentRegister, destination: DoryIROperand)
   case readControlRegister(index: UInt8, destination: DoryIRRegister)
+  case swapGS
   case setDirectionFlag(enabled: Bool)
   case readTimestampCounter
   case signExtendAccumulatorHigh(width: DoryIRIntegerWidth)
@@ -726,6 +727,8 @@ public struct DoryX86IRTranslator: Sendable {
         ],
         nil
       )
+    case .swapGS where mode == .long64:
+      return ([.swapGS], nil)
     case .jump(let relative) where mode == .long64 || mode == .protected32:
       return ([], .branch(nearRelativeTarget(instruction, relative: relative, mode: mode)))
     case .call(let relative) where mode == .long64:
@@ -1145,7 +1148,7 @@ public struct DoryX86IRTranslator: Sendable {
       return index == 3 && destination.width == .i64 && isJITGeneralRegister(destination)
     case .signExtendAccumulatorHigh(let width):
       return width == .i32 || width == .i64
-    case .loadFlagsIntoAH, .storeAHIntoFlags, .setCarryFlag, .complementCarryFlag,
+    case .loadFlagsIntoAH, .storeAHIntoFlags, .setCarryFlag, .complementCarryFlag, .swapGS,
       .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter, .memoryFence:
       return true
     case .helper:
@@ -1241,7 +1244,7 @@ public struct DoryX86IRTranslator: Sendable {
       return .none
     case .readSegment(_, let destination):
       return isMemory(destination) ? .write : .none
-    case .readControlRegister:
+    case .readControlRegister, .swapGS:
       return .none
     case .effectiveAddress, .loadFlagsIntoAH, .storeAHIntoFlags, .setCarryFlag,
       .complementCarryFlag, .clearInterruptFlag, .setDirectionFlag, .readTimestampCounter,

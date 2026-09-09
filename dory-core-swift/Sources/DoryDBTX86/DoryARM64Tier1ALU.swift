@@ -47,6 +47,18 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     fileprivate let domain: Domain
   }
 
+  /// Exchanges the architectural GS base with IA32_KERNEL_GS_BASE without disturbing the
+  /// pinned GPR bank, lazy flags, or NZCV. The executor preflights long mode and CPL0 before a
+  /// block containing this privileged instruction can be published.
+  func emitSwapGS(into words: inout [UInt32]) {
+    words.append(Self.encodeLoad64(register: 16, word: .gsBase))
+    words.append(Self.encodeLoad64(register: 17, word: .kernelGSBase))
+    words.append(Self.encodeStore64(register: 17, word: .gsBase))
+    words.append(Self.encodeStore64(register: 16, word: .kernelGSBase))
+    Self.emitImmediate(1, register: 16, into: &words)
+    words.append(Self.encodeStore64(register: 16, word: .swapGSPerformed))
+  }
+
   /// Copies a register or immediate into a pinned low-byte/word/dword/qword destination without
   /// changing NZCV or the pending lazy-flags record. Narrow writes preserve the surrounding guest
   /// register bits; a dword write uses a W-register move and therefore zero-extends architecturally.
