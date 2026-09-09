@@ -5233,6 +5233,20 @@ import Testing
           executor: executor,
           expectedTier: expectedTier
         )
+        for registers: DoryX86GeneralRegisters in [
+          .init(rax: 0, rdx: 0xFFFF_FFFF_1234_5678),
+          .init(rax: 1, rdx: 0xFFFF_FFFF_FFFF_FFFF),
+          .init(rax: 0xFFFF_FFFF, rdx: 2),
+          .init(rax: 0x8000_0000, rdx: 2),
+        ] {
+          try assertNativeArithmeticParity(
+            bytes: [0xF7, 0xE2],  // mul edx (measured delay_tsc shape)
+            registers: registers,
+            flags: initialFlags,
+            executor: executor,
+            expectedTier: expectedTier
+          )
+        }
         for (registers, flags) in shiftCases {
           try assertNativeArithmeticParity(
             bytes: [0x48, 0x0F, 0xAD, 0xD0],

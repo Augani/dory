@@ -1045,7 +1045,8 @@ public struct DoryX86IRTranslator: Sendable {
       }
     case .unsignedAccumulatorMultiply(let source):
       guard case .register(let register) = source else { return false }
-      return register.width == .i64 && isJITGeneralRegister(register)
+      return (register.width == .i32 || register.width == .i64)
+        && isJITGeneralRegister(register)
     case .unsignedAccumulatorDivide(let source), .signedAccumulatorDivide(let source):
       guard case .register(let register) = source else { return false }
       return (register.width == .i32 || register.width == .i64) && isJITGeneralRegister(register)

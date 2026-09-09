@@ -474,23 +474,44 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
   /// Only CF/OF are defined; both report whether the high half is nonzero. Results remain staged
   /// until both inputs have been consumed so source aliases with RAX or RDX are exact.
   func emitUnsignedAccumulatorMultiply(
+    width: DoryIRIntegerWidth,
     sourceGuestRegister: Int,
     into words: inout [UInt32]
   ) -> Bool {
-    guard (0..<16).contains(sourceGuestRegister) else { return false }
+    guard width == .i32 || width == .i64,
+      (0..<16).contains(sourceGuestRegister)
+    else { return false }
 
     var fragment: [UInt32] = []
     DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
     let source = UInt32(sourceGuestRegister)
-    fragment.append(Self.encodeMultiply64(left: 0, right: source, destination: 16))
-    fragment.append(
-      Self.encodeUnsignedMultiplyHigh64(left: 0, right: source, destination: 17))
+    if width == .i64 {
+      fragment.append(Self.encodeMultiply64(left: 0, right: source, destination: 16))
+      fragment.append(
+        Self.encodeUnsignedMultiplyHigh64(left: 0, right: source, destination: 17))
+    } else {
+      fragment.append(Self.encodeMove(destination: 16, source: 0, is64Bit: false))
+      fragment.append(Self.encodeMove(destination: 17, source: source, is64Bit: false))
+      fragment.append(Self.encodeMultiply64(left: 16, right: 17, destination: 16))
+      fragment.append(
+        Self.encodeLogical(
+          .or,
+          is64Bit: true,
+          left: 31,
+          right: 16,
+          shiftAmount: 32,
+          logicalRightShift: true,
+          destination: 17
+        ))
+    }
     fragment.append(
       Self.encodeAddSubtractSetFlags(
         add: false, is64Bit: true, left: 17, right: 31, destination: 31))
     fragment.append(Self.encodeConditionalSet(register: 26, condition: .notEqual))
-    fragment.append(Self.encodeMove(destination: 0, source: 16, is64Bit: true))
-    fragment.append(Self.encodeMove(destination: 2, source: 17, is64Bit: true))
+    fragment.append(
+      Self.encodeMove(destination: 0, source: 16, is64Bit: width == .i64))
+    fragment.append(
+      Self.encodeMove(destination: 2, source: 17, is64Bit: width == .i64))
 
     let overflowMask = DoryX86RFLAGS.carry.rawValue | DoryX86RFLAGS.overflow.rawValue
     Self.emitImmediate(~overflowMask, register: 16, into: &fragment)

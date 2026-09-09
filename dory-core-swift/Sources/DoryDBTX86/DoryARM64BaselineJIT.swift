@@ -1179,12 +1179,34 @@ public struct DoryARM64BaselineEmitter: Sendable {
     into words: inout [UInt32]
   ) -> Bool {
     guard case .register(let sourceRegister) = source,
-      sourceRegister.bank == "x86.gpr", sourceRegister.index < 16, sourceRegister.width == .i64
+      sourceRegister.bank == "x86.gpr", sourceRegister.index < 16,
+      sourceRegister.width == .i32 || sourceRegister.width == .i64
     else { return false }
-    words.append(encodeLoad64(register: 9, base: 0, byteOffset: 0))
-    words.append(encodeLoad64(register: 10, base: 0, byteOffset: Int(sourceRegister.index) * 8))
+    let is64Bit = sourceRegister.width == .i64
+    words.append(
+      is64Bit
+        ? encodeLoad64(register: 9, base: 0, byteOffset: 0)
+        : encodeLoad32(register: 9, base: 0, byteOffset: 0))
+    words.append(
+      is64Bit
+        ? encodeLoad64(register: 10, base: 0, byteOffset: Int(sourceRegister.index) * 8)
+        : encodeLoad32(register: 10, base: 0, byteOffset: Int(sourceRegister.index) * 8))
     words.append(encodeMultiply64(left: 9, right: 10, destination: 11))
-    words.append(encodeUnsignedMultiplyHigh64(left: 9, right: 10, destination: 12))
+    if is64Bit {
+      words.append(encodeUnsignedMultiplyHigh64(left: 9, right: 10, destination: 12))
+    } else {
+      words.append(
+        encodeLogical(
+          .or,
+          is64Bit: true,
+          left: 31,
+          right: 11,
+          shiftAmount: 32,
+          logicalRightShift: true,
+          destination: 12
+        ))
+      words.append(encodeLogical(.or, is64Bit: false, 31, 11, 11))
+    }
     words.append(encodeStore64(register: 11, base: 0, byteOffset: 0))
     words.append(encodeStore64(register: 12, base: 0, byteOffset: 16))
 
