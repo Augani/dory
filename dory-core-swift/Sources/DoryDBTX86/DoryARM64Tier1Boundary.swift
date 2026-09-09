@@ -64,6 +64,11 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
           byteOffset: pairIndex * 16))
     }
     words.append(Self.encodeMove(destination: 28, source: 0))
+    // Preserve the remaining generated-function ABI arguments in the dispatcher-owned
+    // callee-saved bank before x1...x15 become pinned guest registers.
+    for (destination, source) in zip(19...23, 1...5) {
+      words.append(Self.encodeMove(destination: UInt32(destination), source: UInt32(source)))
+    }
     for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
       words.append(
         Self.encodeLoad64(

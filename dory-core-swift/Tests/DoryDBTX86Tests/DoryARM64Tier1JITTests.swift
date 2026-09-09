@@ -187,4 +187,90 @@ import Testing
       #expect(executor.diagnostics.lazyFlagMaterializations == 1)
     #endif
   }
+
+  @Test func pushFlagsMaterializesWritesAndPublishesStackPointerAtomically() throws {
+    #if arch(arm64)
+      let address: UInt64 = 0x600
+      let bytes: [UInt8] = [
+        0x48, 0x01, 0xD8,  // add rax, rbx
+        0x9C,  // pushfq
+      ]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: 1, rbx: 2, rsp: 0x1800),
+        rip: address,
+        rflags: [.reservedOne, .carry, .direction]
+      )
+      let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
+      try interpretedMemory.write(at: address, bytes: bytes)
+      var interpreted = initial
+      for _ in 0..<2 {
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: interpretedMemory,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire PUSHFQ fixture")
+          return
+        }
+      }
+
+      let tier1Memory = try DoryX86ByteArrayMemory(byteCount: 0x2000)
+      var tier1 = initial
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        tier1Enabled: true
+      )
+      let execution = try #require(executor.execute(
+        bytes: bytes,
+        at: address,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 2,
+        state: &tier1,
+        memory: tier1Memory
+      ))
+
+      #expect(execution.block.tier == .tier1)
+      #expect(execution.block.requiresMemoryCallbacks)
+      #expect(execution.block.mayExitToInterpreter)
+      #expect(execution.exitCode == .dispatch)
+      #expect(tier1.registers == interpreted.registers)
+      #expect(tier1.rip == interpreted.rip)
+      #expect(tier1.rflags == interpreted.rflags)
+      #expect(try tier1Memory.read(at: tier1.registers.rsp, byteCount: 8)
+        == interpretedMemory.read(at: interpreted.registers.rsp, byteCount: 8))
+      #expect(executor.diagnostics.lazyFlagMaterializations == 1)
+    #endif
+  }
+
+  @Test func failedPushFlagsWriteLeavesArchitecturalStateRestartable() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0x9C]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rsp: 4),
+        rip: 0x700,
+        rflags: [.reservedOne, .direction]
+      )
+      var state = initial
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 4096,
+        tier1Enabled: true
+      )
+      let execution = try #require(executor.execute(
+        bytes: bytes,
+        at: state.rip,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 1,
+        state: &state,
+        memory: memory
+      ))
+
+      #expect(execution.block.tier == .tier1)
+      #expect(execution.exitCode == .interpreter)
+      #expect(state == initial)
+      #expect(memory.snapshot().allSatisfy { $0 == 0 })
+    #endif
+  }
 }

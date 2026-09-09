@@ -1230,6 +1230,53 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Materializes flags and performs one restartable PUSHFQ through the generated-function
+  /// memory callback. The executor discards the temporary context when that callback reports a
+  /// fault, so RSP is published only together with a successful eight-byte stack write.
+  func emitPushFlags(into words: inout [UInt32]) {
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+
+    fragment.append(
+      Self.encodeAddSubtractImmediate(
+        add: false, is64Bit: true, left: 4, immediate: 8, destination: 16))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+
+    Self.emitImmediate(
+      ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue),
+      register: 16,
+      into: &fragment
+    )
+    fragment.append(
+      Self.encodeLogical(
+        .and, is64Bit: true, left: 25, right: 16, destination: 17))
+    Self.emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 16, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: 17, right: 16, destination: 17))
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        Self.encodeStore64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    fragment.append(Self.encodeMove(destination: 0, source: 19, is64Bit: true))
+    fragment.append(Self.encodeLoad64(register: 1, word: .lazyFlagsSource1))
+    fragment.append(Self.encodeLoad64(register: 2, word: .lazyFlagsSource2))
+    Self.emitImmediate(8, register: 3, into: &fragment)
+    fragment.append(Self.encodeBranchWithLink(register: 21))
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        Self.encodeLoad64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    fragment.append(Self.encodeLoad64(register: 4, word: .lazyFlagsSource1))
+    words.append(contentsOf: fragment)
+  }
+
   /// Emits the materialized x86 predicate as zero/one in x16. Uses x17 as the constant one and
   /// x26 as scratch; callers must clear x26 before returning to the pinned lazy-state convention.
   private static func emitConditionFromMaterializedFlags(
@@ -1452,6 +1499,10 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
   ) -> UInt32 {
     0xF940_0000 | UInt32(word.rawValue) << 10
       | DoryARM64Tier1ABI.contextRegister << 5 | register
+  }
+
+  private static func encodeBranchWithLink(register: UInt32) -> UInt32 {
+    0xD63F_0000 | register << 5
   }
 
   private static func encodeAddSubtractSetFlags(

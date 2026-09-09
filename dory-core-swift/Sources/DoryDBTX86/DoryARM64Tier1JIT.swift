@@ -13,6 +13,7 @@ struct DoryARM64Tier1Emitter: Sendable {
     guard block.guestInstructionCount > 0 else { return nil }
     var body: [UInt32] = []
     var nativeFlags: DoryARM64Tier1ALUEmitter.NativeFlags?
+    var requiresMemoryCallbacks = false
 
     for statement in block.statements {
       switch statement {
@@ -146,6 +147,11 @@ struct DoryARM64Tier1Emitter: Sendable {
         else { return nil }
         nativeFlags = nil
 
+      case .stackPushFlags:
+        alu.emitPushFlags(into: &body)
+        nativeFlags = nil
+        requiresMemoryCallbacks = true
+
       default:
         return nil
       }
@@ -189,7 +195,9 @@ struct DoryARM64Tier1Emitter: Sendable {
       guestInstructionCount: block.guestInstructionCount,
       machineWords: words,
       tier: .tier1,
-      exitCode: exitCode
+      exitCode: exitCode,
+      requiresMemoryCallbacks: requiresMemoryCallbacks,
+      mayExitToInterpreter: requiresMemoryCallbacks
     )
   }
 
