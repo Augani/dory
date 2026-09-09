@@ -60,6 +60,22 @@ import Testing
     #expect(device.accesses == 4)
   }
 
+  @Test func deviceDMAWriteInvalidatesProtectedGuestCode() throws {
+    let ram = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+    let bus = try DoryPCPhysicalMemoryBus(ram: ram)
+    bus.seal()
+    try bus.write(at: 0x100, bytes: [0x90])
+    let generation = try #require(try bus.codeGeneration(at: 0x100, byteCount: 1))
+    try bus.protectTranslatedCode(at: 0x100, byteCount: 1)
+
+    try bus.validateDMA(at: 0x100, byteCount: 1, deviceWillWrite: true)
+    try bus.write(at: 0x100, bytes: [0xCC])
+
+    #expect(ram.protectedTranslatedCodePageCount == 0)
+    #expect(try bus.read(at: 0x100, byteCount: 1) == [0xCC])
+    #expect(try bus.codeGeneration(at: 0x100, byteCount: 1) != generation)
+  }
+
   @Test(arguments: [false, true])
   func relocatedRAMMustFitItsCompletePhysicalAddressRange(mmap: Bool) throws {
     let ram = try backing(mmap: mmap)

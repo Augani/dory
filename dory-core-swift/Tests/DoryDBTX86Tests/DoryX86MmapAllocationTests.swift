@@ -166,6 +166,20 @@ import Testing
     #expect(try memory.codeGeneration(at: 0, byteCount: 1) != protectedGeneration)
   }
 
+  @Test func repeatedProtectedCodeWritesNeverRetainAStaleGeneration() throws {
+    let memory = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+    var generation = try #require(try memory.codeGeneration(at: 0x100, byteCount: 1))
+    for value in 0..<512 {
+      try memory.protectTranslatedCode(at: 0x100, byteCount: 1)
+      #expect(memory.protectedTranslatedCodePageCount == 1)
+      try memory.writeScalar(at: 0x100, value: UInt64(value), byteCount: 1)
+      #expect(memory.protectedTranslatedCodePageCount == 0)
+      let next = try #require(try memory.codeGeneration(at: 0x100, byteCount: 1))
+      #expect(next != generation)
+      generation = next
+    }
+  }
+
   @Test func sparseReservationRejectsReadOnlyOverlapAndOverflow() throws {
     let page = Int(getpagesize())
     for mapping in [
