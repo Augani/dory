@@ -10,6 +10,141 @@
 #include <sys/mman.h>
 #include <unistd.h>
 
+enum {
+    dory_jit_tlb_magic = 0x544c4231,
+    dory_jit_tlb_access_count = 3,
+};
+
+struct dory_jit_tlb {
+    uint32_t magic;
+    size_t entry_count;
+    dory_jit_tlb_entry *entries;
+};
+
+_Static_assert(sizeof(dory_jit_tlb_entry) == 16, "JIT TLB entries must remain two words");
+
+static int dory_jit_tlb_access_is_valid(dory_jit_tlb_access access) {
+    return access >= DORY_JIT_TLB_ACCESS_READ && access <= DORY_JIT_TLB_ACCESS_EXECUTE;
+}
+
+static size_t dory_jit_tlb_index(const dory_jit_tlb *tlb, uint64_t linear_address) {
+    return (size_t)((linear_address >> 12) & (tlb->entry_count - 1));
+}
+
+int dory_jit_tlb_create(size_t entry_count, dory_jit_tlb **tlb_out) {
+    if (tlb_out == NULL || entry_count == 0 || (entry_count & (entry_count - 1)) != 0) {
+        return EINVAL;
+    }
+    *tlb_out = NULL;
+    if (entry_count > SIZE_MAX / dory_jit_tlb_access_count ||
+        entry_count * dory_jit_tlb_access_count > SIZE_MAX / sizeof(dory_jit_tlb_entry)) {
+        return EOVERFLOW;
+    }
+    dory_jit_tlb *tlb = calloc(1, sizeof(*tlb));
+    if (tlb == NULL) {
+        return ENOMEM;
+    }
+    tlb->entries = calloc(
+        entry_count * dory_jit_tlb_access_count,
+        sizeof(dory_jit_tlb_entry)
+    );
+    if (tlb->entries == NULL) {
+        free(tlb);
+        return ENOMEM;
+    }
+    tlb->magic = dory_jit_tlb_magic;
+    tlb->entry_count = entry_count;
+    *tlb_out = tlb;
+    return 0;
+}
+
+void dory_jit_tlb_destroy(dory_jit_tlb *tlb) {
+    if (tlb == NULL || tlb->magic != dory_jit_tlb_magic) {
+        return;
+    }
+    tlb->magic = 0;
+    free(tlb->entries);
+    free(tlb);
+}
+
+size_t dory_jit_tlb_entry_count(const dory_jit_tlb *tlb) {
+    return tlb != NULL && tlb->magic == dory_jit_tlb_magic ? tlb->entry_count : 0;
+}
+
+size_t dory_jit_tlb_entry_size(void) {
+    return sizeof(dory_jit_tlb_entry);
+}
+
+dory_jit_tlb_entry *dory_jit_tlb_entries(
+    dory_jit_tlb *tlb,
+    dory_jit_tlb_access access
+) {
+    if (tlb == NULL || tlb->magic != dory_jit_tlb_magic ||
+        !dory_jit_tlb_access_is_valid(access)) {
+        return NULL;
+    }
+    return tlb->entries + ((size_t)access * tlb->entry_count);
+}
+
+int dory_jit_tlb_lookup(
+    const dory_jit_tlb *tlb,
+    dory_jit_tlb_access access,
+    uint64_t linear_address,
+    uint64_t tag,
+    uint64_t *host_address_out
+) {
+    if (tlb == NULL || tlb->magic != dory_jit_tlb_magic ||
+        !dory_jit_tlb_access_is_valid(access) || tag == 0 || host_address_out == NULL) {
+        return EINVAL;
+    }
+    const dory_jit_tlb_entry *entries =
+        tlb->entries + ((size_t)access * tlb->entry_count);
+    const dory_jit_tlb_entry entry = entries[dory_jit_tlb_index(tlb, linear_address)];
+    if (entry.tag != tag) {
+        return ENOENT;
+    }
+    *host_address_out = linear_address + entry.host_address_delta;
+    return 0;
+}
+
+int dory_jit_tlb_fill(
+    dory_jit_tlb *tlb,
+    dory_jit_tlb_access access,
+    uint64_t linear_address,
+    uint64_t tag,
+    uint64_t host_address
+) {
+    dory_jit_tlb_entry *entries = dory_jit_tlb_entries(tlb, access);
+    if (entries == NULL || tag == 0) {
+        return EINVAL;
+    }
+    dory_jit_tlb_entry *entry = &entries[dory_jit_tlb_index(tlb, linear_address)];
+    entry->host_address_delta = host_address - linear_address;
+    entry->tag = tag;
+    return 0;
+}
+
+void dory_jit_tlb_invalidate_page(dory_jit_tlb *tlb, uint64_t linear_address) {
+    if (tlb == NULL || tlb->magic != dory_jit_tlb_magic) {
+        return;
+    }
+    const size_t index = dory_jit_tlb_index(tlb, linear_address);
+    for (size_t access = 0; access < dory_jit_tlb_access_count; access++) {
+        tlb->entries[access * tlb->entry_count + index].tag = 0;
+    }
+}
+
+void dory_jit_tlb_invalidate_all(dory_jit_tlb *tlb) {
+    if (tlb == NULL || tlb->magic != dory_jit_tlb_magic) {
+        return;
+    }
+    memset(
+        tlb->entries,
+        0,
+        tlb->entry_count * dory_jit_tlb_access_count * sizeof(dory_jit_tlb_entry)
+    );
+}
+
 #if defined(__aarch64__)
 
 enum { dory_jit_region_magic = 0x444f5259 };

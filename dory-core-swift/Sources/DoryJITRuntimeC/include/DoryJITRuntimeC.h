@@ -5,6 +5,18 @@
 #include <stdint.h>
 
 typedef struct dory_jit_region dory_jit_region;
+typedef struct dory_jit_tlb dory_jit_tlb;
+
+typedef enum dory_jit_tlb_access {
+    DORY_JIT_TLB_ACCESS_READ = 0,
+    DORY_JIT_TLB_ACCESS_WRITE = 1,
+    DORY_JIT_TLB_ACCESS_EXECUTE = 2,
+} dory_jit_tlb_access;
+
+typedef struct dory_jit_tlb_entry {
+    uint64_t tag;
+    uint64_t host_address_delta;
+} dory_jit_tlb_entry;
 typedef uint64_t (*dory_jit_memory_read_function)(
     void *memory_context,
     uint64_t address,
@@ -26,6 +38,31 @@ typedef int32_t (*dory_jit_memory_compare_exchange_function)(
 );
 
 typedef void (*dory_jit_memory_synchronize_function)(void *memory_context);
+
+int dory_jit_tlb_create(size_t entry_count, dory_jit_tlb **tlb_out);
+void dory_jit_tlb_destroy(dory_jit_tlb *tlb);
+size_t dory_jit_tlb_entry_count(const dory_jit_tlb *tlb);
+size_t dory_jit_tlb_entry_size(void);
+dory_jit_tlb_entry *dory_jit_tlb_entries(
+    dory_jit_tlb *tlb,
+    dory_jit_tlb_access access
+);
+int dory_jit_tlb_lookup(
+    const dory_jit_tlb *tlb,
+    dory_jit_tlb_access access,
+    uint64_t linear_address,
+    uint64_t tag,
+    uint64_t *host_address_out
+);
+int dory_jit_tlb_fill(
+    dory_jit_tlb *tlb,
+    dory_jit_tlb_access access,
+    uint64_t linear_address,
+    uint64_t tag,
+    uint64_t host_address
+);
+void dory_jit_tlb_invalidate_page(dory_jit_tlb *tlb, uint64_t linear_address);
+void dory_jit_tlb_invalidate_all(dory_jit_tlb *tlb);
 
 int dory_jit_region_create(size_t minimum_capacity, dory_jit_region **region_out);
 void dory_jit_region_destroy(dory_jit_region *region);
