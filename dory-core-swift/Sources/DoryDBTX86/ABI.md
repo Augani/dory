@@ -76,7 +76,13 @@ can select either path. It compiles a whole register-only IR block or declines
 it without publishing code; a decline is compiled by the legacy baseline
 emitter. Admitted blocks cover the producer and condition-consumer families
 below plus direct and conditional terminators. Their compiled tier is reported
-as `tier1` and contributes to the machine's baseline execution totals.
+as `tier1` and contributes to the machine's baseline execution totals. Executor,
+machine, UEFI-smoke, and PVH-runner diagnostics expose cumulative
+`tier1CompilationAttempts`, `tier1CompilationDeclines`, and
+`tier1CompiledBlocks` counters. An attempt is counted only after architectural
+preflight submits an optimized IR block to tier-1; a decline is counted when
+that emitter returns no block and the executor continues through the legacy
+baseline emitter. Cache hits do not increment either compiler-boundary counter.
 
 An exit publishes every dirty architectural value and the complete pending-flags
 record to the context before returning an exit code. The executor materializes
