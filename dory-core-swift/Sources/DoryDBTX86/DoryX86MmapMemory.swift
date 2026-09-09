@@ -466,6 +466,13 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     }
   }
 
+  public func isTrackedPageTablePage(containing address: UInt64) -> Bool {
+    lock.withLock {
+      guard address >= baseAddress, address - baseAddress < UInt64(byteCount) else { return false }
+      return trackedPageTablePages.contains(Int((address - baseAddress) / 4_096))
+    }
+  }
+
   public func beginPageTableWalkerWrite() {
     lock.withLock { pageTableWalkerWriteDepth += 1 }
   }

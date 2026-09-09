@@ -885,6 +885,18 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
       context: context,
       physicalMemory: physicalMemory
     )
+    if access == .write {
+      if (physicalMemory as? any DoryX86PageTableWriteTrackingMemory)?
+        .isTrackedPageTablePage(containing: translation.physicalAddress) == true
+      {
+        return nil
+      }
+      _ = try (physicalMemory as? any DoryX86TranslatedCodeProtectionMemory)?
+        .invalidateTranslatedCode(
+          at: translation.physicalAddress,
+          byteCount: byteCount
+        )
+    }
     return (physicalMemory as? any DoryX86DirectHostAddressSpaceMemory)?
       .hostAddressSpaceOffset(
         at: translation.physicalAddress,

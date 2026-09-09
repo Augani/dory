@@ -205,6 +205,7 @@ public protocol DoryX86DirectHostAddressSpaceMemory: DoryX86HostAddressSpaceMemo
 /// before reading them and suppresses only its own architectural A/D-bit stores.
 public protocol DoryX86PageTableWriteTrackingMemory: DoryX86Memory {
   func trackPageTablePage(containing address: UInt64)
+  func isTrackedPageTablePage(containing address: UInt64) -> Bool
   func beginPageTableWalkerWrite()
   func endPageTableWalkerWrite()
   var hasPendingPageTableWrite: Bool { get }
@@ -492,6 +493,13 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     lock.withLock {
       guard address >= baseAddress, address - baseAddress < UInt64(byteCount) else { return }
       trackedPageTablePages.insert(Int((address - baseAddress) / 4_096))
+    }
+  }
+
+  public func isTrackedPageTablePage(containing address: UInt64) -> Bool {
+    lock.withLock {
+      guard address >= baseAddress, address - baseAddress < UInt64(byteCount) else { return false }
+      return trackedPageTablePages.contains(Int((address - baseAddress) / 4_096))
     }
   }
 

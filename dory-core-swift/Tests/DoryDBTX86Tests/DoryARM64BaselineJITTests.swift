@@ -701,6 +701,57 @@ import Testing
     #endif
   }
 
+  @Test func executorFillsThenHitsInlineWriteTLBWithoutAnotherSwiftWalk() throws {
+    #if arch(arm64)
+      let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+      let paging = DoryX86PagingUnit()
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x80, rbx: 0x1122_3344_5566_7788),
+        rip: 0x3300
+      )
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: state, mode: .long64)
+      )
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+
+      _ = try #require(
+        executor.execute(
+          bytes: [0x48, 0x89, 0x18],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(try physical.readScalar(at: 0x80, byteCount: 8) == 0x1122_3344_5566_7788)
+      #expect(paging.diagnostics.translationRequests == 1)
+
+      state.rip = 0x3300
+      state.registers.rax = 0x80
+      state.registers.rbx = 0x8877_6655_4433_2211
+      translated.updateContext(.init(state: state, mode: .long64))
+      _ = try #require(
+        executor.execute(
+          bytes: [0x48, 0x89, 0x18],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(try physical.readScalar(at: 0x80, byteCount: 8) == 0x8877_6655_4433_2211)
+      #expect(paging.diagnostics.translationRequests == 1)
+      #expect(executor.diagnostics.translationCacheHits == 1)
+      #expect(executor.diagnostics.translationCacheMisses == 1)
+      #expect(executor.diagnostics.translationCacheFills == 1)
+      #expect(executor.diagnostics.translationCacheHitRate == 0.5)
+    #endif
+  }
+
   @Test func executorProtectsCompiledGuestCodeAndRecompilesAfterCheckedSMCWrite() throws {
     #if arch(arm64)
       let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
@@ -754,6 +805,88 @@ import Testing
       #expect(state.registers.rax == 2)
       #expect(executor.diagnostics.codeGenerationMismatches == 1)
       #expect(physical.protectedTranslatedCodePageCount == 1)
+    #endif
+  }
+
+  @Test func inlineWriteSlowPathUnprotectsAndInvalidatesCompiledGuestCode() throws {
+    #if arch(arm64)
+      let physical = try DoryX86MmapMemory(validatingByteCount: 0x8000)
+      let paging = DoryX86PagingUnit()
+      var state = try DoryX86ArchitecturalState(rip: 0x100)
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: state, mode: .long64)
+      )
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 8_192)
+      let targetAddress: UInt64 = 0x100
+      let writerAddress: UInt64 = 0x5000
+      let writerBytes: [UInt8] = [0x48, 0x89, 0x18]
+
+      try physical.write(at: targetAddress, bytes: [0xB8, 1, 0, 0, 0, 0x90, 0x90, 0x90])
+      try physical.write(at: writerAddress, bytes: writerBytes)
+      _ = try #require(
+        executor.executeSummary(
+          byteProvider: { count in
+            try translated.instructionBytes(at: targetAddress, maximumCount: count)
+          },
+          codeGenerationProvider: { count in
+            try translated.codeGeneration(at: targetAddress, byteCount: count)
+          },
+          at: targetAddress,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(state.registers.rax == 1)
+      #expect(physical.protectedTranslatedCodePageCount == 1)
+
+      state.rip = writerAddress
+      state.registers.rax = targetAddress
+      state.registers.rbx = 0x9090_9000_0000_02B8
+      translated.updateContext(.init(state: state, mode: .long64))
+      _ = try #require(
+        executor.executeSummary(
+          byteProvider: { count in
+            try translated.instructionBytes(at: writerAddress, maximumCount: count)
+          },
+          codeGenerationProvider: { count in
+            try translated.codeGeneration(at: writerAddress, byteCount: count)
+          },
+          at: writerAddress,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(try physical.read(at: targetAddress, byteCount: 8) == [
+        0xB8, 2, 0, 0, 0, 0x90, 0x90, 0x90,
+      ])
+      #expect(physical.protectedTranslatedCodePageCount == 1)
+
+      state.rip = targetAddress
+      translated.updateContext(.init(state: state, mode: .long64))
+      _ = try #require(
+        executor.executeSummary(
+          byteProvider: { count in
+            try translated.instructionBytes(at: targetAddress, maximumCount: count)
+          },
+          codeGenerationProvider: { count in
+            try translated.codeGeneration(at: targetAddress, byteCount: count)
+          },
+          at: targetAddress,
+          mode: .long64,
+          addressSpaceID: 0,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(state.registers.rax == 2)
+      #expect(executor.diagnostics.codeGenerationMismatches == 1)
+      #expect(physical.protectedTranslatedCodePageCount == 2)
     #endif
   }
 
@@ -6213,6 +6346,7 @@ import Testing
     #expect(words[DoryJITExecutableRegion.tlbStorageWordIndex] != 0)
     #expect(words[DoryJITExecutableRegion.tlbResolverWordIndex] != 0)
     #expect(words[DoryJITExecutableRegion.readTLBHitCounterWordIndex] != 0)
+    #expect(words[DoryJITExecutableRegion.writeTLBHitCounterWordIndex] != 0)
 
     words.withUnsafeMutableBufferPointer { context in
       DoryARM64BaselineExecutor.populateExecutionContext(
@@ -6230,6 +6364,7 @@ import Testing
     #expect(words[DoryJITExecutableRegion.tlbStorageWordIndex] == 0)
     #expect(words[DoryJITExecutableRegion.tlbResolverWordIndex] == 0)
     #expect(words[DoryJITExecutableRegion.readTLBHitCounterWordIndex] == 0)
+    #expect(words[DoryJITExecutableRegion.writeTLBHitCounterWordIndex] == 0)
   }
 
   @Test func executorAdvancesTLBGenerationAndScopesPageInvalidation() throws {

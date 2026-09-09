@@ -577,6 +577,13 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     tracker.trackPageTablePage(containing: resolved.backingAddress)
   }
 
+  public func isTrackedPageTablePage(containing address: UInt64) -> Bool {
+    guard let tracker = ram as? any DoryX86PageTableWriteTrackingMemory,
+      let resolved = try? resolveRAM(address: address, byteCount: 1, access: .read)
+    else { return false }
+    return tracker.isTrackedPageTablePage(containing: resolved.backingAddress)
+  }
+
   public func beginPageTableWalkerWrite() {
     (ram as? any DoryX86PageTableWriteTrackingMemory)?.beginPageTableWalkerWrite()
   }
