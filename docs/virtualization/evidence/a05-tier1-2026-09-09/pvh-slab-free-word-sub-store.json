@@ -1,0 +1,125 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-slab-free-word-sub-store",
+  "observedAt": "2026-09-09T22:46:02Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "6e23b39d5eaa62ca6a25d28ec2db2d27d391e443",
+    "candidateRunnerSHA256": "6cb5b5d3380355725284c10571ed463899416c273ef04028aa4716e3be113a69",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "guestRIP": "0xffffffff815e3559",
+    "symbol": "__slab_free+0x69",
+    "guestByteCount": 11,
+    "guestInstructionCount": 2,
+    "instructions": [
+      "subw 0x14(%rsp),%r12w",
+      "movq %rcx,0x58(%rsp)"
+    ],
+    "instructionBytes": [102, 68, 43, 100, 36, 20, 72, 137, 76, 36, 88],
+    "lowering": "The word subtraction uses one restartable scalar read and keeps its flags lazy until the qword store materializes them. The final store uses the existing transactional write callback.",
+    "boundedRule": "The measured RIP, complete 11-byte/two-instruction block, R12/RSP/RCX registers, widths, and both stack displacements must all match. An adjacent RIP or changed read displacement declines.",
+    "priorNegativeCacheHits": 3687,
+    "remainsInCandidateRunNegativeCache": false
+  },
+  "verification": {
+    "focusedGate": "The exact slab-free block passes successful and rejected-write tier-one execution cases.",
+    "dbtPCAndRunnerGate": "1,493 tests in 175 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "A nontrivial R12 upper value, word subtraction, complete flags, RCX qword store, final RIP, and full memory image match the interpreter.",
+    "faultCoverage": "A forced final-write rejection returns the tier-one interpreter exit with complete block-entry state and memory unchanged after exactly one write attempt.",
+    "negativeCoverage": "An adjacent RIP and a mutated source displacement both decline tier one.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "2b368eb3-522f-469c-8068-663706238238",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 149052386750,
+    "retiredInstructions": 734049723,
+    "throughputMIPS": 4.925,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731664919,
+    "interpreterInstructions": 2384804,
+    "deliveredMaskableInterrupts": 57997,
+    "retiredInterruptReturns": 146184,
+    "compiledBlocks": 184960,
+    "tier1CompilationAttempts": 217968,
+    "tier1CompilationDeclines": 116572,
+    "tier1DeclinePercentOfAttempts": 53.48124495338765,
+    "tier1CompiledBlocks": 101396,
+    "lazyFlagMaterializations": 54798191,
+    "translationCacheInvalidations": 247464
+  },
+  "unmatchedPriorRunComparison": {
+    "thirdMemorySetNEElapsedNanoseconds": 147528386125,
+    "slabFreeElapsedNanoseconds": 149052386750,
+    "directionalElapsedIncreasePercent": 1.0330219593866652,
+    "tier1AttemptDecrease": 2175,
+    "tier1DeclineDecrease": 1510,
+    "tier1CompiledBlockDecrease": 665,
+    "interpreterInstructionIncrease": 14945,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. Exact-site absence establishes production use; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleSites": [
+    {
+      "guestRIP": "aslr-dependent-userspace",
+      "instructionBytes": [243, 15, 111, 6],
+      "instruction": "movdqu xmm0,(rsi)",
+      "hitCount": 53775,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81681086",
+      "symbol": "dup_fd+0x2c6",
+      "instructionBytes": [72, 15, 163, 7],
+      "instruction": "btq %rax,(%rdi); jb",
+      "blockGuestByteCount": 6,
+      "hitCount": 7648,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff8133cb12",
+      "instructionBytes": [62, 72, 15, 171, 6],
+      "instruction": "DS-prefixed btsq %rax,(%rsi)",
+      "hitCount": 3945,
+      "declineReason": "nativeEmitter",
+      "note": "The live alternatives-patched prefix differs from the previously admitted LOCK-prefixed static instruction and remains a separate boundary."
+    },
+    {
+      "guestRIP": "0xffffffff815e357a",
+      "symbol": "__slab_free+0x8a",
+      "instructionBytes": [15, 148, 68, 36, 47],
+      "instruction": "sete 0x2f(%rsp)",
+      "hitCount": 3939,
+      "declineReason": "nativeEmitter"
+    }
+  ],
+  "interpretation": "The exact 3,687-hit mixed read/write block is absent from the candidate's capped live negative-cache sample. A05.2 remains open because 116,572 of 217,968 tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
