@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-mixed-tier-flags-recovery",
+  "observedAt": "2026-09-09T13:35:06Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture userspace and workload evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "commit": "88a53adb2dbadde08b5f45fc63519609261dc28b",
+    "memoryCMOVImplementationCommit": "b7cc8ea8c982533eb19f44edcc89060f40044e3f",
+    "runnerSHA256": "da30d8cb79906c0c3e2ae82c13ecd3de619b91f73612e6ad58dd781a44a1c30b",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "commandLine": "console=ttyS0 earlycon=uart,io,0x3f8,115200 panic=-1 rdinit=/init plus a unique runner-owned dory.pvh_run_id",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "guestClock": "deterministic"
+  },
+  "diagnosis": {
+    "symptom": "After memory-CMOV admission, a one-billion-instruction tier-one run emitted zero console bytes, delivered zero interrupts, and remained in the delay-loop calibration fallback with PIT, HPET, and the local APIC timer disabled.",
+    "control": "The same fixture and legacy-baseline setting completed all seven workloads and powered off, isolating the regression to tier-one admission.",
+    "narrowing": "Temporarily declining every tier-one binary statement restored normal boot; allowing any individual ADD, SUB, CMP, or TEST family reproduced a fatal or stalled run.",
+    "rootCause": "A tier-one block could publish a deferred arithmetic-flags descriptor and chain directly into a legacy baseline or optimizing resident. Legacy code reads only the materialized RFLAGS context word, so its flag consumers observed the stale pre-producer image.",
+    "repair": "The executor now materializes a pending descriptor before every tier-one-to-legacy transition, collects the materialization count before rollback checkpoints, and records only compilation-tier-homogeneous native traces. All temporary diagnostic admission controls were removed before the source commit."
+  },
+  "verification": {
+    "mixedTierDifferential": "A tier-one ADD produces carry and chains into a legacy memory ADC; the result and complete architectural state match the interpreter, with exactly one transition materialization.",
+    "tier1Suite": "30 tests passed",
+    "dbtAndPCGate": "1,428 tests in 171 suites passed; one pinned PVH environment test skipped because its environment variables were absent",
+    "inputHashesReverifiedByEveryRunnerInvocation": true
+  },
+  "fixedCheckpoint": {
+    "runID": "675a3746-1cdd-4813-a30b-cf084f219751",
+    "tier1Enabled": true,
+    "maximumInstructions": 200000000,
+    "wallSeconds": 180,
+    "elapsedNanoseconds": 38223234417,
+    "retiredInstructions": 200000000,
+    "outcome": "instruction-budget",
+    "consoleBytes": 8172,
+    "tscMHz": 1000.049,
+    "delayLoopCalibration": "skipped using timer frequency; lpj=1000049",
+    "hpetEnabled": true,
+    "deliveredMaskableInterrupts": 4920,
+    "baselineJITInstructions": 199010278,
+    "interpreterInstructions": 989722,
+    "tier1CompiledBlocks": 18845,
+    "tier1CompilationAttempts": 43928,
+    "tier1CompilationDeclines": 25083,
+    "lazyFlagMaterializations": 23606723
+  },
+  "fixedFullRun": {
+    "runID": "ca78912d-55af-47a5-9df1-01a32cecafb0",
+    "tier1Enabled": true,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 146319906500,
+    "retiredInstructions": 737988972,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19247,
+    "baselineJITInstructions": 734840285,
+    "interpreterInstructions": 3148687,
+    "deliveredMaskableInterrupts": 58375,
+    "retiredInterruptReturns": 146527,
+    "compiledBlocks": 185599,
+    "tier1CompiledBlocks": 94637,
+    "tier1CompilationAttempts": 241414,
+    "tier1CompilationDeclines": 146777,
+    "lazyFlagMaterializations": 58346724,
+    "nativeTraceAttempts": 658777,
+    "nativeTraceReplays": 460387
+  },
+  "matchedLegacyControl": {
+    "sourceCommit": "b4e8e2019a53c65389f36502c64dc292bb7f1034",
+    "runnerSHA256": "27d9c1e0a67aa464cb3e7af770c1ec1780dad71386a023e8b0ac45da733248df",
+    "tier1Enabled": false,
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 197560562208,
+    "retiredInstructions": 737899045,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true
+  },
+  "comparison": {
+    "enabledElapsedSeconds": 146.3199065,
+    "disabledElapsedSeconds": 197.560562208,
+    "elapsedReductionPercent": 25.936682471095473,
+    "speedupRatio": 1.3501960665071913,
+    "throughputUpliftPercent": 35.019606650719126,
+    "note": "This is one recovery run per setting and demonstrates correctness plus directional performance only; it is not a statistical benchmark. The control predates the transition repair, which is unreachable while tier-one admission is disabled."
+  },
+  "interpretation": "The repaired production tier-one path now crosses the original calibration failure, reaches authenticated userspace, passes every requested workload, and shuts down through ACPI. The legacy baseline remains required because 146,777 of 241,414 tier-one attempts declined during the successful run.",
+  "limitations": [
+    "The recovery and legacy comparison each contain one local full run on one Apple M2 Pro; no confidence interval or cross-host conclusion is claimed.",
+    "The diagnostic runner explicitly marks these records releaseQualified=false; this receipt does not satisfy the later G1-G5 qualification gates.",
+    "Raw diagnostic and narrowing runs remain in an ignored local build directory and are not release evidence.",
+    "Successful userspace does not close A05.2 while the legacy baseline is still required for declined blocks."
+  ]
+}
