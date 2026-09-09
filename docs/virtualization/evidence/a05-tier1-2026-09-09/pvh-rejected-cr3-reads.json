@@ -1,0 +1,100 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-rejected-cr3-reads",
+  "observedAt": "2026-09-09T16:38:04Z",
+  "status": "rejected-engineering-evidence",
+  "qualification": "negative local production-admission evidence; not correctness, performance, hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "721a3e584fc5c54ba6bdb3f664f85848d7e205c3",
+    "withdrawalCommit": "d9d06cc34ffabf2f77257a84b3c97b0ba8bd6511",
+    "parentEvidenceCommit": "358f8c8f1681d3cd2542c5766cc8a8dde4990f76",
+    "candidateRunnerSHA256": "008d534b65022e44b42c1c004b212742ec9c36e9bce511d80cfa764ccee51d9b",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "candidateAdmission": {
+    "measuredSites": [
+      {
+        "guestRIP": "0xffffffff81001779",
+        "symbol": "swapgs_restore_regs_and_return_to_usermode+0x89",
+        "guestByteCount": 3,
+        "instruction": "movq %cr3,%rdi",
+        "priorNegativeCacheHits": 11577
+      },
+      {
+        "guestRIP": "0xffffffff81001b35",
+        "symbol": "error_entry+0x55",
+        "guestByteCount": 3,
+        "instruction": "movq %cr3,%rax",
+        "priorNegativeCacheHits": 10309
+      }
+    ],
+    "totalPriorNegativeCacheHits": 21886,
+    "boundedRule": "The candidate admitted only long-mode CPL0 reads of CR3; other control-register reads, all control-register writes, and user-mode reads continued through the interpreter.",
+    "implementation": "An explicit readControlRegister IR statement loaded the exact immutable dispatch-entry CR3 snapshot appended at context ABI word 50. Both native emitters supported the operation, and the optimizer invalidated equivalent cached values across the read.",
+    "withdrawal": "The production admission was reverted after the pinned full workload reproduced the NX init-text panic. Both measured sites remain deferred."
+  },
+  "verificationBeforeProduction": {
+    "focusedGate": "44 tests in DoryARM64Tier1JITTests passed",
+    "dbtAndPCGate": "1,442 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent",
+    "differentialCoverage": "Both measured kernel sites matched the interpreter in the legacy baseline and tier-one emitters; CR0 remained on the helper path, and CPL3 admission declined without publishing state.",
+    "flagsCoverage": "A compare-to-CR3-read-to-Jcc block preserved the eligible native condition and matched the interpreter.",
+    "optimizerCoverage": "The optimizer invalidated cached control-register values at the explicit read boundary.",
+    "interpretation": "The passing local differentials were insufficient to establish safe production admission."
+  },
+  "rejectedFullRun": {
+    "runID": "bd87ef64-d679-4f96-9399-1f6b2b39f8e0",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 121642685666,
+    "retiredInstructions": 630266878,
+    "outcome": "guest-reset",
+    "exitCode": 1,
+    "guestReceiptSeen": false,
+    "workloadsPassed": false,
+    "consoleBytes": 20513,
+    "baselineJITInstructions": 627998844,
+    "interpreterInstructions": 2268034,
+    "deliveredMaskableInterrupts": 47674,
+    "retiredInterruptReturns": 134428,
+    "compiledBlocks": 119077,
+    "tier1CompilationAttempts": 140475,
+    "tier1CompilationDeclines": 78733,
+    "tier1CompiledBlocks": 61742,
+    "lazyFlagMaterializations": 54301971,
+    "nativeTraceAttempts": 464314,
+    "nativeTraceReplays": 316972,
+    "failure": {
+      "address": "0xffffffff830c96ac",
+      "type": "supervisor instruction fetch from an NX-protected init-text page",
+      "context": "A timer interrupt arrived while free_init_pages was reaching set_memory_nx; the fatal exception in interrupt reset the guest before it emitted an authenticated receipt.",
+      "signature": "The address and free_init_pages/set_memory_nx call path exactly match the rejected memory-SETcc admission, despite this candidate adding only a read-only register operation."
+    }
+  },
+  "verificationAfterWithdrawal": {
+    "dbtAndPCGate": "1,441 tests in 171 suites passed after reverting the candidate; the pinned PVH environment test skipped because its environment variables were absent",
+    "knownGoodState": "The source tree again contains the bounded byte-XOR admission and no native control-register-read admission."
+  },
+  "interpretation": "A read-only, exact-semantics CR3 candidate passed focused and aggregate differentials but failed the pinned production workload with the same NX init-text signature as unrelated write admissions. This points investigation away from memory-write semantics alone and toward an admission, tier-transition, or interrupt interaction, but it does not establish a cause. The implementation was withdrawn, the known-good aggregate gate is green, and both sites remain deferred.",
+  "limitations": [
+    "The failure was observed in one local pinned-fixture production run, though its signature exactly matches other rejected admission experiments.",
+    "The raw diagnostic remains a local build artifact and is not committed because it includes host-local paths and a large console transcript.",
+    "No causal mechanism has yet been isolated between the CR3-read admission and the later init-text execution fault.",
+    "This rejected record supports neither a correctness claim nor a performance comparison."
+  ]
+}
