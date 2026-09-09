@@ -3148,7 +3148,12 @@ private let doryJITMemoryCompareExchange: dory_jit_memory_compare_exchange_funct
 
 public final class DoryJITExecutableRegion: @unchecked Sendable {
   public static let hostAddressSpaceBaseWordIndex = 27
-  public static let contextWordCount = 28
+  public static let readTLBBaseWordIndex = 28
+  public static let writeTLBBaseWordIndex = 29
+  public static let executeTLBBaseWordIndex = 30
+  public static let tlbEntryMaskWordIndex = 31
+  public static let tlbAddressSpaceGenerationWordIndex = 32
+  public static let contextWordCount = 33
 
   private let lock = NSLock()
   private let region: OpaquePointer
@@ -3403,6 +3408,10 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   public let chainedExecutionCalls: UInt64
   public let chainedRequestedInstructions: UInt64
   public let chainedRetiredInstructions: UInt64
+  public let translationCacheEntryCount: UInt64
+  public let translationCacheAllocatedBytes: UInt64
+  public let translationCacheAddressSpaceGeneration: UInt64
+  public let translationCacheInvalidations: UInt64
 }
 
 struct DoryARM64NativeBatchExecution: Sendable, Hashable {
@@ -3558,6 +3567,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private let optimization: DoryARM64JITOptimization
   private let optimizer: DoryIROptimizer
   private let region: DoryJITExecutableRegion
+  private let translationTLB: DoryX86JITTLB
   private var entries: [LookupKey: ResidentBlock] = [:]
   private var sharedCodeEntries: [SharedCodeKey: ResidentBlock] = [:]
   private var recentEntries: [RecentResidentBlock?] = .init(repeating: nil, count: 256)
@@ -3585,6 +3595,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var chainedRetiredInstructionCount: UInt64 = 0
   private var codeCacheEpoch: UInt64 = 0
   private var nextOffset = 0
+  private var currentTLBAddressSpaceID: UInt64?
+  private var translationTLBGeneration: UInt64 = 1
+  private var translationTLBInvalidationCount: UInt64 = 0
 
   public init(
     maximumCodeBytes: Int = DoryARM64BaselineExecutor.defaultMaximumCodeBytes,
@@ -3608,6 +3621,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     self.optimization = optimization
     self.optimizer = optimizer
     region = try DoryJITExecutableRegion(minimumCapacity: self.maximumCodeBytes)
+    translationTLB = try DoryX86JITTLB()
   }
 
   public var residentBlockCount: Int { lock.withLock { entries.count } }
@@ -3654,7 +3668,11 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         codeGenerationMismatches: codeGenerationMismatchCount,
         chainedExecutionCalls: chainedExecutionCallCount,
         chainedRequestedInstructions: chainedRequestedInstructionCount,
-        chainedRetiredInstructions: chainedRetiredInstructionCount
+        chainedRetiredInstructions: chainedRetiredInstructionCount,
+        translationCacheEntryCount: UInt64(translationTLB.entryCount),
+        translationCacheAllocatedBytes: UInt64(translationTLB.allocatedByteCount),
+        translationCacheAddressSpaceGeneration: translationTLBGeneration,
+        translationCacheInvalidations: translationTLBInvalidationCount
       )
     }
   }
@@ -3668,6 +3686,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
       negativeEntries = .init(repeating: nil, count: negativeEntries.count)
       codeCacheEpoch &+= 1
       nextOffset = 0
+      invalidateAllTranslations()
     }
   }
 
@@ -3696,7 +3715,50 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           negativeEntries[index] = nil
         }
       }
+      if currentTLBAddressSpaceID == addressSpaceID {
+        invalidateTranslations(in: guestRange)
+      }
     }
+  }
+
+  /// Selects one exact address-space generation for the context about to enter generated code.
+  /// A vCPU-local table can retain stale entries across CR3 switches because the generation is
+  /// part of every tag. The only wrap point performs a full flush before generation one is reused.
+  private func selectTLBAddressSpace(_ addressSpaceID: UInt64) -> UInt64 {
+    guard currentTLBAddressSpaceID != addressSpaceID else { return translationTLBGeneration }
+    if currentTLBAddressSpaceID != nil {
+      if translationTLBGeneration == DoryX86JITTLB.maximumAddressSpaceGeneration {
+        translationTLB.invalidateAll()
+        translationTLBGeneration = 1
+        translationTLBInvalidationCount &+= 1
+      } else {
+        translationTLBGeneration += 1
+      }
+    }
+    currentTLBAddressSpaceID = addressSpaceID
+    return translationTLBGeneration
+  }
+
+  private func invalidateTranslations(in guestRange: Range<UInt64>) {
+    guard !guestRange.isEmpty else { return }
+    let pageMask = UInt64((1 << DoryX86JITTLB.pageShift) - 1)
+    var page = guestRange.lowerBound & ~pageMask
+    let lastPage = (guestRange.upperBound - 1) & ~pageMask
+    while true {
+      translationTLB.invalidate(linearAddress: page)
+      if page == lastPage { break }
+      page &+= pageMask + 1
+    }
+    translationTLBInvalidationCount &+= 1
+  }
+
+  private func invalidateAllTranslations() {
+    translationTLB.invalidateAll()
+    translationTLBInvalidationCount &+= 1
+    translationTLBGeneration =
+      translationTLBGeneration == DoryX86JITTLB.maximumAddressSpaceGeneration
+      ? 1 : translationTLBGeneration + 1
+    currentTLBAddressSpaceID = nil
   }
 
   public func execute(
@@ -3834,7 +3896,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
           of: UInt64.self,
           capacity: DoryJITExecutableRegion.contextWordCount
         ) { checkpoint in
-          Self.populateExecutionContext(context, from: state, memory: memory)
+          let translationGeneration = selectTLBAddressSpace(addressSpaceID)
+          Self.populateExecutionContext(
+            context,
+            from: state,
+            memory: memory,
+            translationTLB: translationTLB,
+            addressSpaceGeneration: translationGeneration
+          )
           var completed = 0
           var blockCount = 0
           let traceKey = makeLookupKey(
@@ -4184,7 +4253,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         of: UInt64.self,
         capacity: DoryJITExecutableRegion.contextWordCount
       ) { context in
-        Self.populateExecutionContext(context, from: state, memory: memory)
+        let translationGeneration = selectTLBAddressSpace(addressSpaceID)
+        Self.populateExecutionContext(
+          context,
+          from: state,
+          memory: memory,
+          translationTLB: translationTLB,
+          addressSpaceGeneration: translationGeneration
+        )
         let exit = try region.execute(
           at: resident.offset,
           context: context,
@@ -4763,7 +4839,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   static func populateExecutionContext(
     _ context: UnsafeMutableBufferPointer<UInt64>,
     from state: DoryX86ArchitecturalState,
-    memory: (any DoryX86Memory)?
+    memory: (any DoryX86Memory)?,
+    translationTLB: DoryX86JITTLB? = nil,
+    addressSpaceGeneration: UInt64 = 0
   ) {
     precondition(context.count == DoryJITExecutableRegion.contextWordCount)
     context[0] = state.registers.rax
@@ -4795,6 +4873,16 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[26] = UInt64(state.ss.selector)
     context[DoryJITExecutableRegion.hostAddressSpaceBaseWordIndex] =
       (memory as? any DoryX86HostAddressSpaceMemory)?.hostAddressSpaceBase ?? 0
+    context[DoryJITExecutableRegion.readTLBBaseWordIndex] =
+      translationTLB?.entriesBaseAddress(for: .read) ?? 0
+    context[DoryJITExecutableRegion.writeTLBBaseWordIndex] =
+      translationTLB?.entriesBaseAddress(for: .write) ?? 0
+    context[DoryJITExecutableRegion.executeTLBBaseWordIndex] =
+      translationTLB?.entriesBaseAddress(for: .execute) ?? 0
+    context[DoryJITExecutableRegion.tlbEntryMaskWordIndex] =
+      translationTLB.map { UInt64($0.entryCount - 1) } ?? 0
+    context[DoryJITExecutableRegion.tlbAddressSpaceGenerationWordIndex] =
+      translationTLB == nil ? 0 : addressSpaceGeneration
   }
 
   private static func apply(

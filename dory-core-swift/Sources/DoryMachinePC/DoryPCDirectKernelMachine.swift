@@ -226,6 +226,10 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let chainedExecutionCalls: UInt64
   public let chainedRequestedInstructions: UInt64
   public let chainedRetiredInstructions: UInt64
+  public let translationCacheEntryCount: UInt64
+  public let translationCacheAllocatedBytes: UInt64
+  public let translationCacheAddressSpaceGeneration: UInt64
+  public let translationCacheInvalidations: UInt64
 
   fileprivate init(_ source: DoryARM64BaselineExecutorDiagnostics) {
     recentLookupHits = source.recentLookupHits
@@ -249,6 +253,10 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     chainedExecutionCalls = source.chainedExecutionCalls
     chainedRequestedInstructions = source.chainedRequestedInstructions
     chainedRetiredInstructions = source.chainedRetiredInstructions
+    translationCacheEntryCount = source.translationCacheEntryCount
+    translationCacheAllocatedBytes = source.translationCacheAllocatedBytes
+    translationCacheAddressSpaceGeneration = source.translationCacheAddressSpaceGeneration
+    translationCacheInvalidations = source.translationCacheInvalidations
   }
 }
 

@@ -6009,6 +6009,84 @@ import Testing
     #expect(words[DoryJITExecutableRegion.hostAddressSpaceBaseWordIndex] == 0)
   }
 
+  @Test func executionContextCarriesPerAccessTLBBasesAndGeneration() throws {
+    let tlb = try DoryX86JITTLB(entryCount: 1_024)
+    var words = [UInt64](repeating: .max, count: DoryJITExecutableRegion.contextWordCount)
+    words.withUnsafeMutableBufferPointer { context in
+      DoryARM64BaselineExecutor.populateExecutionContext(
+        context,
+        from: .reset(),
+        memory: nil,
+        translationTLB: tlb,
+        addressSpaceGeneration: 19
+      )
+    }
+
+    #expect(
+      words[DoryJITExecutableRegion.readTLBBaseWordIndex]
+        == tlb.entriesBaseAddress(for: .read))
+    #expect(
+      words[DoryJITExecutableRegion.writeTLBBaseWordIndex]
+        == tlb.entriesBaseAddress(for: .write))
+    #expect(
+      words[DoryJITExecutableRegion.executeTLBBaseWordIndex]
+        == tlb.entriesBaseAddress(for: .execute))
+    #expect(words[DoryJITExecutableRegion.tlbEntryMaskWordIndex] == 1_023)
+    #expect(words[DoryJITExecutableRegion.tlbAddressSpaceGenerationWordIndex] == 19)
+
+    words.withUnsafeMutableBufferPointer { context in
+      DoryARM64BaselineExecutor.populateExecutionContext(
+        context,
+        from: .reset(),
+        memory: nil
+      )
+    }
+    #expect(words[DoryJITExecutableRegion.readTLBBaseWordIndex] == 0)
+    #expect(words[DoryJITExecutableRegion.writeTLBBaseWordIndex] == 0)
+    #expect(words[DoryJITExecutableRegion.executeTLBBaseWordIndex] == 0)
+    #expect(words[DoryJITExecutableRegion.tlbEntryMaskWordIndex] == 0)
+    #expect(words[DoryJITExecutableRegion.tlbAddressSpaceGenerationWordIndex] == 0)
+  }
+
+  @Test func executorAdvancesTLBGenerationAndScopesPageInvalidation() throws {
+    #if arch(arm64)
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4_096)
+      var state = try DoryX86ArchitecturalState(rip: 0x7000)
+      _ = try #require(
+        executor.execute(
+          bytes: [0x90],
+          at: 0x7000,
+          mode: .long64,
+          addressSpaceID: 0x1000,
+          maximumInstructions: 1,
+          state: &state
+        ))
+      #expect(executor.diagnostics.translationCacheEntryCount == 1_024)
+      #expect(executor.diagnostics.translationCacheAllocatedBytes == 48 * 1_024)
+      #expect(executor.diagnostics.translationCacheAddressSpaceGeneration == 1)
+
+      state.rip = 0x7000
+      _ = try #require(
+        executor.execute(
+          bytes: [0x90],
+          at: 0x7000,
+          mode: .long64,
+          addressSpaceID: 0x2000,
+          maximumInstructions: 1,
+          state: &state
+        ))
+      #expect(executor.diagnostics.translationCacheAddressSpaceGeneration == 2)
+
+      executor.invalidate(addressSpaceID: 0x1000, guestRange: 0x7000..<0x7001)
+      #expect(executor.diagnostics.translationCacheInvalidations == 0)
+      executor.invalidate(addressSpaceID: 0x2000, guestRange: 0x7000..<0x7001)
+      #expect(executor.diagnostics.translationCacheInvalidations == 1)
+      executor.invalidateAll()
+      #expect(executor.diagnostics.translationCacheInvalidations == 2)
+      #expect(executor.diagnostics.translationCacheAddressSpaceGeneration == 3)
+    #endif
+  }
+
   @Test func nativeBatchReplaysGuardedCallbackFreeBlocksUntilTerminalExit() throws {
     #if arch(arm64)
       let emitter = DoryARM64BaselineEmitter()
