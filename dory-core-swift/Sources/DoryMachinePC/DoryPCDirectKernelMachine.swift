@@ -613,6 +613,7 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
           cpuProfileIdentifier: interpreter.profile.identifier,
           physicalAddressBits: interpreter.profile.physicalAddressBits,
           profile: interpreter.profile,
+          tier1Enabled: true,
           optimization: .baseline
         )
       }

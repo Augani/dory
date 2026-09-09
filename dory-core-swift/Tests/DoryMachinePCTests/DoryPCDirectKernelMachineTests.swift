@@ -198,6 +198,37 @@ import Testing
     #endif
   }
 
+  @Test func baselineMachineAdmitsTier1AndRetainsLegacyFallback() throws {
+    #if arch(arm64)
+      let machine = try DoryPCDirectKernelMachine(
+        memoryBytes: 2 * 1024 * 1024,
+        executionTier: .baselineJIT,
+        baselineJITMaximumCodeBytes: 16 * 1024
+      )
+      // mov eax,1; add eax,2; jmp $
+      try machine.load(
+        kernel: makeELF(code: [0xB8, 1, 0, 0, 0, 0x83, 0xC0, 2, 0xEB, 0xFE]),
+        commandLine: "x"
+      )
+
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 6) == .instructionBudget(6))
+      #expect(machine.state?.registers.rax == 3)
+      #expect(machine.executionStatistics.baselineJITInstructions == 6)
+      let diagnostics = try #require(machine.baselineJITDiagnostics)
+      #expect(diagnostics.tier1CompiledBlocks == 2)
+      #expect(diagnostics.compiledBlocks == 2)
+
+      // CPUID is still outside tier-1 and legacy native emission, so its exact site remains an
+      // interpreter fallback rather than making production admission optimistic.
+      try machine.memory.write(at: machine.state!.rip, bytes: [0x0F, 0xA2])
+      let priorInterpreterInstructions = machine.executionStatistics.interpreterInstructions
+      #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
+      #expect(
+        machine.executionStatistics.interpreterInstructions
+          == priorInterpreterInstructions + 1)
+    #endif
+  }
+
   @Test func soleRunnableJITProcessorUsesTheAdaptive4096InstructionQuantum() throws {
     #if arch(arm64)
       for (budget, expectedCalls) in [(4_095, UInt64(1)), (4_096, 1), (4_097, 2)] {
