@@ -8,6 +8,7 @@ import Foundation
 struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredPatchedByteXORRIP: UInt64 = 0xFFFF_FFFF_8153_A159
   private static let measuredMemorySetEqualRIP: UInt64 = 0xFFFF_FFFF_815C_AB95
+  private static let measuredMemoryBitTestRIP: UInt64 = 0xFFFF_FFFF_81E1_C883
   private let boundary = DoryARM64Tier1BoundaryEmitter()
   private let alu = DoryARM64Tier1ALUEmitter()
 
@@ -42,6 +43,10 @@ struct DoryARM64Tier1Emitter: Sendable {
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
         wroteMemory = true
+      case .bitTestMemoryRegister:
+        guard Self.isMeasuredMemoryBitTestBlock(block), !wroteMemory else { return nil }
+        memoryCallbackCount += 1
+        requiresMemoryCallbacks = true
       case .binary where Self.isMeasuredPatchedByteXORBlock(block):
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 2
@@ -457,6 +462,20 @@ struct DoryARM64Tier1Emitter: Sendable {
         else { return nil }
         nativeFlags = nil
 
+      case .bitTestMemoryRegister(let operation, let base, let index):
+        guard Self.isMeasuredMemoryBitTestBlock(block),
+          case .memory(let address, let width) = base,
+          let index = lowRegister(index), index.width == width,
+          alu.emitMeasuredMemoryBitTest(
+            operation,
+            width: width,
+            address: address,
+            indexGuestRegister: Int(index.index),
+            into: &body
+          )
+        else { return nil }
+        nativeFlags = nil
+
       case .signedMultiply(let destination, let lhs, let rhs):
         guard let destination = lowRegister(destination),
           let lhs = lowRegister(lhs),
@@ -599,6 +618,18 @@ struct DoryARM64Tier1Emitter: Sendable {
       case .setCondition(.equal, .memory(_, let width)) = block.statements[0]
     else { return false }
     return width == .i8
+  }
+
+  private static func isMeasuredMemoryBitTestBlock(_ block: DoryIRBasicBlock) -> Bool {
+    guard block.guestStart == measuredMemoryBitTestRIP,
+      let statement = block.statements.first,
+      case .bitTestMemoryRegister(
+        .test,
+        .memory(_, let width),
+        .register(let index)
+      ) = statement
+    else { return false }
+    return width == .i64 && index == .init(bank: "x86.gpr", index: 2, width: .i64)
   }
 
   private func lowRegister(_ operand: DoryIROperand) -> DoryIRRegister? {

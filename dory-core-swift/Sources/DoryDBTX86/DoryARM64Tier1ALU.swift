@@ -654,6 +654,71 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Executes the measured read-only register-indexed memory BT. The signed index selects a
+  /// qword before or after the ModRM address and a bit within that qword. The adjusted address is
+  /// complete before the restartable callback; only CF is published after the read succeeds.
+  func emitMeasuredMemoryBitTest(
+    _ operation: DoryX86BitOperation,
+    width: DoryIRIntegerWidth,
+    address: DoryIRMemoryAddress,
+    indexGuestRegister: Int,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard operation == .test, width == .i64, (0..<16).contains(indexGuestRegister) else {
+      return false
+    }
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    guard Self.emitMemoryAddress(address, into: &fragment) else { return false }
+
+    Self.emitImmediate(6, register: 26, into: &fragment)
+    fragment.append(
+      Self.encodeVariableShift(
+        .arithmeticRight,
+        is64Bit: true,
+        value: UInt32(indexGuestRegister),
+        count: 26,
+        destination: 17
+      ))
+    fragment.append(
+      Self.encodeAddSubtract(
+        add: true,
+        is64Bit: true,
+        left: 16,
+        right: 17,
+        leftShift: 3,
+        destination: 16
+      ))
+    Self.emitMemoryReadAtAddress(width: width, into: &fragment)
+
+    fragment.append(Self.encodeLoad64(register: 16, word: .rip))
+    Self.emitImmediate(63, register: 17, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .and,
+        is64Bit: true,
+        left: UInt32(indexGuestRegister),
+        right: 17,
+        destination: 17
+      ))
+    Self.emitImmediate(1, register: 26, into: &fragment)
+    fragment.append(
+      Self.encodeVariableShift(
+        .left, is64Bit: true, value: 26, count: 17, destination: 17))
+    fragment.append(
+      Self.encodeLogical(
+        .andSetFlags, is64Bit: true, left: 16, right: 17, destination: 26))
+    fragment.append(Self.encodeConditionalSet(register: 17, condition: .notEqual))
+    Self.emitImmediate(~DoryX86RFLAGS.carry.rawValue, register: 26, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(.and, is64Bit: true, left: 25, right: 26, destination: 25))
+    fragment.append(
+      Self.encodeLogical(.or, is64Bit: true, left: 25, right: 17, destination: 25))
+    fragment.append(Self.encodeMove(destination: 26, source: 31, is64Bit: true))
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Emits the two- and three-operand signed IMUL forms for pinned registers. Only CF/OF are
   /// defined; both become one when the full signed product is not the sign extension of the
   /// truncated result. Other flags follow the engine's deterministic preserve policy.
@@ -2568,7 +2633,17 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
   ) -> Bool {
     var fragment: [UInt32] = []
     guard emitMemoryAddress(address, into: &fragment) else { return false }
+    emitMemoryReadAtAddress(width: width, into: &fragment)
+    words.append(contentsOf: fragment)
+    return true
+  }
 
+  /// Reads through the preserved callback using a fully formed linear address in x16.
+  private static func emitMemoryReadAtAddress(
+    width: DoryIRIntegerWidth,
+    into words: inout [UInt32]
+  ) {
+    var fragment: [UInt32] = []
     for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
       fragment.append(
         encodeStore64(
@@ -2587,7 +2662,6 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
           word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
     }
     words.append(contentsOf: fragment)
-    return true
   }
 
   /// Forms one supported scalar effective address in x16 while preserving all pinned guest GPRs.

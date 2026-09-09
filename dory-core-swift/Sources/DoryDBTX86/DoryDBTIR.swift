@@ -93,6 +93,11 @@ public enum DoryIRStatement: Codable, Sendable, Hashable {
   )
   case setCondition(DoryX86Condition, destination: DoryIROperand)
   case bitTestRegister(operation: DoryX86BitOperation, base: DoryIROperand, index: DoryIROperand)
+  case bitTestMemoryRegister(
+    operation: DoryX86BitOperation,
+    base: DoryIROperand,
+    index: DoryIROperand
+  )
   case bitTestMemoryImmediate(operation: DoryX86BitOperation, base: DoryIROperand, index: UInt8)
   case atomicBitTestMemory(
     operation: DoryX86BitOperation,
@@ -460,6 +465,13 @@ public struct DoryX86IRTranslator: Sendable {
             operation: operation,
             base: operand(base, instructionRelativeBase: instruction.nextInstructionAddress),
             index: UInt8(truncatingIfNeeded: bit)
+          )], nil)
+        }
+        if case .register(_, let indexWidth) = index, indexWidth == memory.width {
+          return ([.bitTestMemoryRegister(
+            operation: operation,
+            base: operand(base, instructionRelativeBase: instruction.nextInstructionAddress),
+            index: operand(index)
           )], nil)
         }
       }
@@ -995,6 +1007,12 @@ public struct DoryX86IRTranslator: Sendable {
     case .bitTestMemoryImmediate(_, let base, _):
       guard case .memory(let address, let width) = base else { return false }
       return (width == .i32 || width == .i64) && isJITMemoryAddress(address)
+    case .bitTestMemoryRegister(_, let base, let index):
+      guard case .memory(let address, let width) = base,
+        (width == .i32 || width == .i64), isJITMemoryAddress(address),
+        case .register(let register) = index
+      else { return false }
+      return register.width == width && isJITGeneralRegister(register)
     case .atomicBitTestMemory(let operation, let base, let index):
       guard operation != .test,
         case .memory(let address, let width) = base,
@@ -1207,6 +1225,8 @@ public struct DoryX86IRTranslator: Sendable {
     case .setCondition(_, let destination):
       return isMemory(destination) ? .write : .none
     case .bitTestMemoryImmediate(let operation, _, _):
+      return operation == .test ? .read : .write
+    case .bitTestMemoryRegister(let operation, _, _):
       return operation == .test ? .read : .write
     case .atomicBitTestMemory:
       return .write

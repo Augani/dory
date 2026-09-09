@@ -163,6 +163,7 @@ public struct DoryIROptimizer: Sendable {
         statements.append(statement)
 
       case .bitTestRegister(let operation, let base, _),
+        .bitTestMemoryRegister(let operation, let base, _),
         .bitTestMemoryImmediate(let operation, let base, _):
         statements.append(statement)
         if operation != .test {

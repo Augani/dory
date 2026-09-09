@@ -225,6 +225,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
         return isFSOrGS(destination)
       case .bitTestMemoryImmediate(_, let base, _):
         return isFSOrGS(base)
+      case .bitTestMemoryRegister(_, let base, _):
+        return isFSOrGS(base)
       case .atomicBitTestMemory(_, let base, _):
         return isFSOrGS(base)
       case .bitTestRegister:
@@ -272,6 +274,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
       .atomicBitTestMemory(_, .memory, _):
       true
     case .bitTestMemoryImmediate(let operation, .memory, _): operation != .test
+    case .bitTestMemoryRegister(let operation, .memory, _): operation != .test
     default: false
     }
   }
@@ -340,6 +343,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       return emitSetCondition(condition, destination: destination, into: &words)
     case .bitTestRegister(let operation, let base, let index):
       return emitBitTest(operation: operation, base: base, index: index, into: &words)
+    case .bitTestMemoryRegister:
+      return false
     case .bitTestMemoryImmediate(let operation, let base, let index):
       return emitBitTest(
         operation: operation, base: base, index: .immediate(UInt64(index), width: .i8), into: &words
@@ -1051,6 +1056,8 @@ public struct DoryARM64BaselineEmitter: Sendable {
       if case .memory = destination { return 2 }
       return 0
     case .bitTestMemoryImmediate(let operation, _, _):
+      return operation == .test ? 1 : 2
+    case .bitTestMemoryRegister(let operation, _, _):
       return operation == .test ? 1 : 2
     case .atomicBitTestMemory:
       return 1
@@ -5739,7 +5746,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         switch $0 {
         case .unsignedAccumulatorMultiply, .unsignedAccumulatorDivide, .signedAccumulatorDivide,
           .doubleShiftRightCL,
-          .doubleShiftRightImmediate, .bitTestMemoryImmediate, .atomicBitTestMemory:
+          .doubleShiftRightImmediate, .bitTestMemoryRegister, .bitTestMemoryImmediate,
+          .atomicBitTestMemory:
           return true
         default:
           return false
