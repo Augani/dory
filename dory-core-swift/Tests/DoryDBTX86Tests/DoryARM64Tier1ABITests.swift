@@ -98,4 +98,82 @@ import Testing
       #expect(state == expected)
     #endif
   }
+
+  @Test func emittedPinnedHelperShimSurvivesCallerSavedClobbersAndPublishesState() throws {
+    #if arch(arm64)
+      let helper: @convention(c) (UnsafeMutablePointer<UInt64>?, UInt64) -> UInt64 =
+        doryTestTier1UnaryHelper
+      let helperAddress = UInt64(unsafeBitCast(helper, to: UInt.self))
+      let helperArgument: UInt64 = 0xFEDC_BA98_7654_3210
+      let resultRegister = 10
+      var words: [UInt32] = []
+      let emitter = DoryARM64Tier1BoundaryEmitter()
+      emitter.emitEntry(into: &words)
+      emitter.emitHelperCall(.init(
+        target: .tlbResolver,
+        arguments: [.contextPointer, .immediate(helperArgument)],
+        liveGuestMask: .max,
+        resultGuestRegister: resultRegister
+      ), into: &words)
+      emitter.emitExit(.dispatch, into: &words)
+
+      let block = DoryARM64CompiledBlock(
+        guestStart: 0,
+        guestByteCount: 1,
+        guestInstructionCount: 1,
+        machineWords: words,
+        tier: .baseline,
+        exitCode: .dispatch
+      )
+      let region = try DoryJITExecutableRegion(minimumCapacity: 4_096)
+      try region.publish(block, at: 0)
+      var context = (0..<DoryARM64Tier1ABI.contextWordCount).map {
+        UInt64($0) &* 0x0101_0101_0101_0101
+      }
+      let initialGuestRegisters = Array(context[0..<16])
+      let initialRIP = context[DoryARM64Tier1ABI.ContextWord.rip.rawValue]
+      let initialRFLAGS = context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue]
+      context[DoryARM64Tier1ABI.ContextWord.tlbResolver.rawValue] = helperAddress
+
+      let exit = try region.execute(at: 0, context: &context)
+
+      #expect(exit == .dispatch)
+      for register in 0..<16 where register != resultRegister {
+        #expect(context[register] == initialGuestRegisters[register])
+      }
+      #expect(context[resultRegister] == helperArgument ^ doryTier1HelperResultMask)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.rip.rawValue] == initialRIP)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue] == initialRFLAGS)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.tsc.rawValue] == helperArgument)
+    #endif
+  }
+
+  @Test func emittedHelperShimAddsOnlyDeclaredLiveGuestSpillsAndReloads() {
+    let emitter = DoryARM64Tier1BoundaryEmitter()
+    func emittedWords(mask: UInt16) -> [UInt32] {
+      var words: [UInt32] = []
+      emitter.emitHelperCall(.init(
+        target: .tlbResolver,
+        arguments: [.contextPointer],
+        liveGuestMask: mask
+      ), into: &words)
+      return words
+    }
+
+    let emptyCount = emittedWords(mask: 0).count
+    #expect(emittedWords(mask: 1 << 4).count == emptyCount + 2)
+    #expect(emittedWords(mask: (1 << 2) | (1 << 13)).count == emptyCount + 4)
+    #expect(emittedWords(mask: .max).count == emptyCount + 32)
+  }
+}
+
+private let doryTier1HelperResultMask: UInt64 = 0xA55A_5AA5_F00D_CAFE
+
+@_cdecl("dory_test_tier1_unary_helper")
+private func doryTestTier1UnaryHelper(
+  _ context: UnsafeMutablePointer<UInt64>?,
+  _ value: UInt64
+) -> UInt64 {
+  context?[DoryARM64Tier1ABI.ContextWord.tsc.rawValue] = value
+  return value ^ doryTier1HelperResultMask
 }

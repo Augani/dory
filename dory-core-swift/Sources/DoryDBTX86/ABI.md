@@ -58,6 +58,11 @@ loads guest GPRs into `x0`...`x15`, RIP into `x27`, materialized flags into the
 A05.2 flag registers, and installs `x28`. Direct chains branch to a tier-1 block
 entry after this setup and therefore cannot target the C entry shim.
 
+`DoryARM64Tier1BoundaryEmitter` is the executable implementation of these
+boundaries. Its entry saves `x19`...`x30` in one 96-byte, 16-byte-aligned host
+frame before installing pinned state. Its exit writes architectural state,
+restores that frame, and returns a `DoryJITExitCode` through `w0`.
+
 An exit materializes every dirty architectural value to the context before
 returning an exit code. Interpreter, exception, interrupt, and code-cache exits
 must publish the precise RIP of the next instruction to execute. A direct chain
@@ -81,6 +86,10 @@ A C helper may clobber `x0`...`x18` and NZCV. A generated shim therefore:
 Helper shims are the only generated-code path allowed to call C or Swift. A
 helper that can exit must return through the dispatcher exit shim, never branch
 directly to another translated block with partially restored state.
+`DoryARM64Tier1BoundaryEmitter.HelperCall` makes the live mask, helper-table
+slot, typed register arguments, and optional guest result explicit. Guest
+arguments are reloaded from their checkpoint slots during marshalling, so
+writing `x0`...`x7` cannot destroy a later argument.
 
 ## Invariants
 
