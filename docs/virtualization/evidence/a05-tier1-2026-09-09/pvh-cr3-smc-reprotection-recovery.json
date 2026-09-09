@@ -1,0 +1,117 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-cr3-smc-reprotection-recovery",
+  "observedAt": "2026-09-09T18:07:28Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission recovery evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "reprotectionFixCommit": "8277ef0caef092247e5bc873ed591c9e71a60dc1",
+    "restoredCR3AdmissionCommit": "ae76faad22428a72f42bd14ffa475c945260afbc",
+    "originalCR3CandidateCommit": "721a3e584fc5c54ba6bdb3f664f85848d7e205c3",
+    "negativeEvidenceCommit": "58fa3c6cb40f9571ce6de9d4152fb6a05331242b",
+    "candidateRunnerSHA256": "a8bbc8021c0cc081ffaacef6bda60215bc4905ec08e52439674c03cf07509382",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "priorFailure": {
+    "receipt": "pvh-rejected-cr3-reads.json",
+    "runID": "bd87ef64-d679-4f96-9399-1f6b2b39f8e0",
+    "retiredInstructions": 630266878,
+    "outcome": "guest-reset",
+    "failureAddress": "0xffffffff830c96ac",
+    "failureSection": ".altinstr_aux",
+    "interpretationBeforeIsolation": "The read-only CR3 admission reproduced the same NX init-text fetch as unrelated memory-writing candidates, leaving the causal mechanism unknown."
+  },
+  "isolatedCoherencyFailure": {
+    "trigger": "A write to any protected guest code page made its complete host allocation granule writable and advanced the shared code-protection generation.",
+    "missingBoundary": "When an unchanged resident block survived byte-fingerprint validation, or an unchanged shared block was reused, the executor republished it without restoring translated-code protection.",
+    "unsafeState": "The block could remain writable while an older inline write-TLB entry still named the same host granule. A later native store could then modify guest code without another protection fault or code-generation advance, leaving stale native translation lookup-visible.",
+    "repair": "Fresh compilation, byte-validated resident reuse, and shared-code reuse now all pass through one protection boundary. When protection changes, the executor flushes translation TLB entries and records the new protection generation before publishing the native block.",
+    "scope": "This repairs a general self-modifying-code coherency boundary; it is not specific to the CR3 instruction or either measured CR3 site."
+  },
+  "verification": {
+    "regressionCoverage": [
+      "An inline sibling write unprotects a shared host granule; unchanged byte revalidation must re-protect it, revoke the old write-TLB entry, and recompile after a second write changes the target bytes.",
+      "Shared-code reuse restores protection after a sibling mutation before publishing the unchanged block."
+    ],
+    "focusedGate": "44 tests in DoryARM64Tier1JITTests passed after restoring the CR3 admission; the exact new reprotection regressions also pass.",
+    "dbtAndPCGate": "1,444 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "restoredAdmission": {
+    "measuredSites": [
+      {
+        "guestRIP": "0xffffffff81001779",
+        "symbol": "swapgs_restore_regs_and_return_to_usermode+0x89",
+        "instruction": "movq %cr3,%rdi",
+        "priorNegativeCacheHits": 11577
+      },
+      {
+        "guestRIP": "0xffffffff81001b35",
+        "symbol": "error_entry+0x55",
+        "instruction": "movq %cr3,%rax",
+        "priorNegativeCacheHits": 10309
+      }
+    ],
+    "boundedRule": "Only long-mode CPL0 reads of CR3 are admitted; other control-register reads, all control-register writes, and user-mode reads continue through the interpreter.",
+    "implementation": "The explicit readControlRegister IR reads the immutable dispatch-entry CR3 snapshot at context ABI word 50 in both native tiers and invalidates optimizer knowledge at the read boundary."
+  },
+  "successfulFullRun": {
+    "runID": "b5b42f33-bab1-47dc-a8d5-510e07659ca9",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 146186261125,
+    "retiredInstructions": 733843413,
+    "throughputMIPS": 5.019920527091,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731051955,
+    "interpreterInstructions": 2791458,
+    "deliveredMaskableInterrupts": 57987,
+    "retiredInterruptReturns": 146174,
+    "byteValidationHits": 72162,
+    "codeGenerationMismatches": 78054,
+    "sharedCodeHits": 114293,
+    "compiledBlocks": 186105,
+    "tier1CompilationAttempts": 225663,
+    "tier1CompilationDeclines": 126783,
+    "tier1DeclinePercentOfAttempts": 56.182449050132,
+    "tier1CompiledBlocks": 98880,
+    "lazyFlagMaterializations": 59497249,
+    "translationCacheInvalidations": 225442
+  },
+  "interpretation": "The unchanged CR3 admission failed with the old lookup/protection boundary and completed the authenticated workload after the isolated reprotection fix. Together with the exact regressions, this supports the stale write-TLB/code-page protection path as the cause of the repeated NX init-text failures and admits the bounded CR3-read lowering. A04.3 and A05.2 remain open for their broader plan checks.",
+  "limitations": [
+    "The complete workload evidence contains one recovery run on one local Apple M2 Pro.",
+    "The causal claim combines an exact synthetic reproduction with an A/B source change and production recovery; no host fault trace captured the original silent stale write itself.",
+    "The raw diagnostic remains a local build artifact because it includes host-local paths and a large console transcript.",
+    "This evidence does not close the named A04.3 SMC corpus or establish a performance delta."
+  ]
+}
