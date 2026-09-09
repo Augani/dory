@@ -205,6 +205,87 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Materializes a pending record, evaluates any x86 condition from `x25`, and replaces only the
+  /// destination's low byte. This is the fallback for parity and native-domain mismatches.
+  func emitMaterializedSetCondition(
+    _ condition: DoryX86Condition,
+    destinationGuestRegister: Int,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(destinationGuestRegister) else { return false }
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    Self.emitImmediate(1, register: 17, into: &fragment)
+
+    func emitFlag(_ flag: DoryX86RFLAGS, into result: UInt32) {
+      fragment.append(Self.encodeLogical(
+        .or,
+        is64Bit: true,
+        left: 31,
+        right: 25,
+        shiftAmount: UInt32(flag.rawValue.trailingZeroBitCount),
+        logicalRightShift: true,
+        destination: result
+      ))
+      fragment.append(Self.encodeLogical(
+        .and, is64Bit: true, left: result, right: 17, destination: result))
+    }
+
+    func invert(_ result: UInt32) {
+      fragment.append(Self.encodeLogical(
+        .xor, is64Bit: true, left: result, right: 17, destination: result))
+    }
+
+    switch condition {
+    case .overflow, .notOverflow:
+      emitFlag(.overflow, into: 16)
+      if condition == .notOverflow { invert(16) }
+    case .below, .aboveOrEqual:
+      emitFlag(.carry, into: 16)
+      if condition == .aboveOrEqual { invert(16) }
+    case .equal, .notEqual:
+      emitFlag(.zero, into: 16)
+      if condition == .notEqual { invert(16) }
+    case .belowOrEqual, .above:
+      emitFlag(.carry, into: 16)
+      emitFlag(.zero, into: 26)
+      fragment.append(Self.encodeLogical(
+        .or, is64Bit: true, left: 16, right: 26, destination: 16))
+      if condition == .above { invert(16) }
+    case .sign, .notSign:
+      emitFlag(.sign, into: 16)
+      if condition == .notSign { invert(16) }
+    case .parity, .notParity:
+      emitFlag(.parity, into: 16)
+      if condition == .notParity { invert(16) }
+    case .less, .greaterOrEqual:
+      emitFlag(.sign, into: 16)
+      emitFlag(.overflow, into: 26)
+      fragment.append(Self.encodeLogical(
+        .xor, is64Bit: true, left: 16, right: 26, destination: 16))
+      if condition == .greaterOrEqual { invert(16) }
+    case .lessOrEqual, .greater:
+      emitFlag(.sign, into: 16)
+      emitFlag(.overflow, into: 26)
+      fragment.append(Self.encodeLogical(
+        .xor, is64Bit: true, left: 16, right: 26, destination: 16))
+      emitFlag(.zero, into: 26)
+      fragment.append(Self.encodeLogical(
+        .or, is64Bit: true, left: 16, right: 26, destination: 16))
+      if condition == .greater { invert(16) }
+    }
+
+    Self.emitImmediate(~UInt64(0xFF), register: 26, into: &fragment)
+    let destination = UInt32(destinationGuestRegister)
+    fragment.append(Self.encodeLogical(
+      .and, is64Bit: true, left: destination, right: 26, destination: destination))
+    fragment.append(Self.encodeLogical(
+      .or, is64Bit: true, left: destination, right: 16, destination: destination))
+    fragment.append(Self.encodeMove(destination: 26, source: 31, is64Bit: true))
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   private static func validWriteMode(
     operation: DoryIRBinaryOperation,
     writesDestination: Bool
@@ -373,6 +454,8 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     is64Bit: Bool,
     left: UInt32,
     right: UInt32,
+    shiftAmount: UInt32 = 0,
+    logicalRightShift: Bool = false,
     destination: UInt32
   ) -> UInt32 {
     let base: UInt32 = switch (operation, is64Bit) {
@@ -385,7 +468,8 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     case (.andSetFlags, true): 0xEA00_0000
     case (.andSetFlags, false): 0x6A00_0000
     }
-    return base | right << 16 | left << 5 | destination
+    let shift = logicalRightShift ? UInt32(1) << 22 : 0
+    return base | shift | shiftAmount << 10 | right << 16 | left << 5 | destination
   }
 
   private static func encodeConditionalSet(

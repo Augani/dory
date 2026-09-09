@@ -87,7 +87,9 @@ Addition maps CF directly to ARM C, so JB/JAE use CS/CC; JBE/JA after addition d
 not have a single native condition and materialize. Logical operations treat CF
 and OF as zero. ZF/SF/OF and signed comparisons map directly in every domain.
 PF/NP always materialize. INC/DEC can fuse ZF/SF/OF and signed conditions, but
-conditions involving their preserved CF materialize.
+conditions involving their preserved CF materialize. The materializing SETcc
+fallback evaluates all sixteen x86 conditions from `x25` and replaces only the
+architectural destination byte.
 
 ## Helper-call shim
 
