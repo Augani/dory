@@ -346,6 +346,8 @@ private func jitDiagnostics(_ diagnostics: DoryPCJITCacheStatistics?) -> Any {
     "byteValidationHits": diagnostics.byteValidationHits,
     "sharedCodeHits": diagnostics.sharedCodeHits,
     "compiledBlocks": diagnostics.compiledBlocks,
+    "tier1CompilationAttempts": diagnostics.tier1CompilationAttempts,
+    "tier1CompilationDeclines": diagnostics.tier1CompilationDeclines,
     "tier1CompiledBlocks": diagnostics.tier1CompiledBlocks,
     "lazyFlagMaterializations": diagnostics.lazyFlagMaterializations,
     "declinedCompilations": diagnostics.declinedCompilations,

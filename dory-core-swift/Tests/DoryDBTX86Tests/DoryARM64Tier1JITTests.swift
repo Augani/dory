@@ -82,6 +82,8 @@ import Testing
       #expect(tier1.rip == interpreted.rip)
       #expect(tier1.rflags == interpreted.rflags)
       #expect(executor.diagnostics.compiledBlocks == 1)
+      #expect(executor.diagnostics.tier1CompilationAttempts == 1)
+      #expect(executor.diagnostics.tier1CompilationDeclines == 0)
       #expect(executor.diagnostics.tier1CompiledBlocks == 1)
       #expect(executor.diagnostics.lazyFlagMaterializations == 1)
     #endif
@@ -111,6 +113,8 @@ import Testing
           ))
         #expect(execution.block.tier == .baseline)
         #expect(state.registers.rax == (tier1Enabled ? 0 : 1))
+        #expect(executor.diagnostics.tier1CompilationAttempts == (tier1Enabled ? 1 : 0))
+        #expect(executor.diagnostics.tier1CompilationDeclines == (tier1Enabled ? 1 : 0))
         #expect(executor.diagnostics.tier1CompiledBlocks == 0)
       }
     #endif

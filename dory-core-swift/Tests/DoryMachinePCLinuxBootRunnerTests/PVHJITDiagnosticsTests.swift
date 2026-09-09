@@ -95,7 +95,8 @@ import Testing
     let counterNames = [
       "recentLookupHits", "dictionaryLookupHits", "lookupMisses", "memoryGenerationHits",
       "byteValidationHits", "sharedCodeHits", "compiledBlocks", "declinedCompilations",
-      "tier1CompiledBlocks", "lazyFlagMaterializations",
+      "tier1CompilationAttempts", "tier1CompilationDeclines", "tier1CompiledBlocks",
+      "lazyFlagMaterializations",
       "negativeCacheHits", "negativeCacheMisses", "negativeGenerationMismatches",
       "codeCacheWraps", "nativeTraceAttempts", "nativeTraceReplays", "codeGenerationChecks",
       "codeGenerationMismatches", "chainedExecutionCalls", "chainedRequestedInstructions",

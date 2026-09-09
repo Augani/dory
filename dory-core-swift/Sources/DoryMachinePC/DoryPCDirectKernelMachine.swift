@@ -213,6 +213,8 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let byteValidationHits: UInt64
   public let sharedCodeHits: UInt64
   public let compiledBlocks: UInt64
+  public let tier1CompilationAttempts: UInt64
+  public let tier1CompilationDeclines: UInt64
   public let tier1CompiledBlocks: UInt64
   public let lazyFlagMaterializations: UInt64
   public let declinedCompilations: UInt64
@@ -259,6 +261,8 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     byteValidationHits = sum(\.byteValidationHits)
     sharedCodeHits = sum(\.sharedCodeHits)
     compiledBlocks = sum(\.compiledBlocks)
+    tier1CompilationAttempts = sum(\.tier1CompilationAttempts)
+    tier1CompilationDeclines = sum(\.tier1CompilationDeclines)
     tier1CompiledBlocks = sum(\.tier1CompiledBlocks)
     lazyFlagMaterializations = sum(\.lazyFlagMaterializations)
     declinedCompilations = sum(\.declinedCompilations)

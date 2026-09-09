@@ -215,6 +215,8 @@ import Testing
       #expect(machine.state?.registers.rax == 3)
       #expect(machine.executionStatistics.baselineJITInstructions == 6)
       let diagnostics = try #require(machine.baselineJITDiagnostics)
+      #expect(diagnostics.tier1CompilationAttempts == 2)
+      #expect(diagnostics.tier1CompilationDeclines == 0)
       #expect(diagnostics.tier1CompiledBlocks == 2)
       #expect(diagnostics.compiledBlocks == 2)
 

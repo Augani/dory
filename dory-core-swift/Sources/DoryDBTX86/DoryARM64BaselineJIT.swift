@@ -4454,6 +4454,10 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   public let byteValidationHits: UInt64
   public let sharedCodeHits: UInt64
   public let compiledBlocks: UInt64
+  /// Blocks submitted to the tier-one emitter after architectural preflight succeeds.
+  public let tier1CompilationAttempts: UInt64
+  /// Tier-one attempts that declined and continued through the legacy baseline emitter.
+  public let tier1CompilationDeclines: UInt64
   public let tier1CompiledBlocks: UInt64
   public let lazyFlagMaterializations: UInt64
   public let declinedCompilations: UInt64
@@ -4653,6 +4657,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   private var byteValidationHitCount: UInt64 = 0
   private var sharedCodeHitCount: UInt64 = 0
   private var compiledBlockCount: UInt64 = 0
+  private var tier1CompilationAttemptCount: UInt64 = 0
+  private var tier1CompilationDeclineCount: UInt64 = 0
   private var tier1CompiledBlockCount: UInt64 = 0
   private var lazyFlagMaterializationCount: UInt64 = 0
   private var declinedCompilationCount: UInt64 = 0
@@ -4735,6 +4741,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         byteValidationHits: byteValidationHitCount,
         sharedCodeHits: sharedCodeHitCount,
         compiledBlocks: compiledBlockCount,
+        tier1CompilationAttempts: tier1CompilationAttemptCount,
+        tier1CompilationDeclines: tier1CompilationDeclineCount,
         tier1CompiledBlocks: tier1CompiledBlockCount,
         lazyFlagMaterializations: lazyFlagMaterializationCount,
         declinedCompilations: declinedCompilationCount,
@@ -5645,8 +5653,15 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     {
       return .init(resident: nil, emitterDeclineByteCount: nil, declineReason: nil)
     }
-    let compiled =
-      (tier1Enabled ? tier1Emitter.compile(block) : nil)
+    let tier1Compiled: DoryARM64CompiledBlock?
+    if tier1Enabled {
+      tier1CompilationAttemptCount &+= 1
+      tier1Compiled = tier1Emitter.compile(block)
+      if tier1Compiled == nil { tier1CompilationDeclineCount &+= 1 }
+    } else {
+      tier1Compiled = nil
+    }
+    let compiled = tier1Compiled
       ?? emitter.compile(
         block,
         tier: optimization == .optimizing ? .optimizing : .baseline,

@@ -617,6 +617,8 @@ struct PVHJITCacheSnapshot: Codable, Sendable {
         "byteValidationHits": source.byteValidationHits,
         "sharedCodeHits": source.sharedCodeHits,
         "compiledBlocks": source.compiledBlocks,
+        "tier1CompilationAttempts": source.tier1CompilationAttempts,
+        "tier1CompilationDeclines": source.tier1CompilationDeclines,
         "tier1CompiledBlocks": source.tier1CompiledBlocks,
         "lazyFlagMaterializations": source.lazyFlagMaterializations,
         "declinedCompilations": source.declinedCompilations,
