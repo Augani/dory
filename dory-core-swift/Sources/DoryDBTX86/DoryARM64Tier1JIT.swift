@@ -7,6 +7,7 @@ import Foundation
 /// to compile it with the old baseline emitter while tier-1 coverage grows.
 struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredPatchedByteXORRIP: UInt64 = 0xFFFF_FFFF_8153_A159
+  private static let measuredMemorySetEqualRIP: UInt64 = 0xFFFF_FFFF_815C_AB95
   private let boundary = DoryARM64Tier1BoundaryEmitter()
   private let alu = DoryARM64Tier1ALUEmitter()
 
@@ -36,6 +37,11 @@ struct DoryARM64Tier1Emitter: Sendable {
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
+      case .setCondition where Self.isMeasuredMemorySetEqualBlock(block):
+        guard !wroteMemory else { return nil }
+        memoryCallbackCount += 1
+        requiresMemoryCallbacks = true
+        wroteMemory = true
       case .binary where Self.isMeasuredPatchedByteXORBlock(block):
         guard !wroteMemory else { return nil }
         memoryCallbackCount += 2
@@ -279,6 +285,13 @@ struct DoryARM64Tier1Emitter: Sendable {
         nativeFlags = nil
 
       case .setCondition(let condition, let destination):
+        if case .memory(let address, let width) = destination {
+          guard Self.isMeasuredMemorySetEqualBlock(block), condition == .equal, width == .i8,
+            alu.emitMeasuredMemorySetCondition(condition, address: address, into: &body)
+          else { return nil }
+          nativeFlags = nil
+          continue
+        }
         guard let destination = lowRegister(destination), destination.width == .i8 else {
           return nil
         }
@@ -573,6 +586,16 @@ struct DoryARM64Tier1Emitter: Sendable {
       let statement = block.statements.first
     else { return false }
     return isMeasuredPatchedByteXOR(statement)
+  }
+
+  private static func isMeasuredMemorySetEqualBlock(_ block: DoryIRBasicBlock) -> Bool {
+    guard block.guestStart == measuredMemorySetEqualRIP,
+      block.guestByteCount == 5,
+      block.guestInstructionCount == 1,
+      block.statements.count == 1,
+      case .setCondition(.equal, .memory(_, let width)) = block.statements[0]
+    else { return false }
+    return width == .i8
   }
 
   private func lowRegister(_ operand: DoryIROperand) -> DoryIRRegister? {

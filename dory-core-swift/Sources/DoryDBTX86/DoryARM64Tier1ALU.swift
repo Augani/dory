@@ -2112,6 +2112,25 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Stores one measured materialized condition result through the transactional byte callback.
+  /// The destination write is the block's final callback and does not alter architectural flags.
+  func emitMeasuredMemorySetCondition(
+    _ condition: DoryX86Condition,
+    address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    guard Self.emitMemoryAddress(address, into: &fragment) else { return false }
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    Self.emitConditionFromMaterializedFlags(condition, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource2))
+    Self.emitStagedMemoryWrite(byteCount: 1, into: &fragment)
+    fragment.append(Self.encodeMove(destination: 26, source: 31, is64Bit: true))
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Materializing fallback for a 64-bit conditional move.
   func emitMaterializedConditionalMove(
     _ condition: DoryX86Condition,
