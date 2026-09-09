@@ -70,10 +70,13 @@ frame before installing pinned state. Its exit writes architectural state,
 restores that frame, and returns a `DoryJITExitCode` through `w0`.
 
 `DoryARM64Tier1Emitter` is admitted through the executor's `tier1Enabled`
-feature flag. It compiles a whole register-only IR block or declines it without
-publishing code; a decline is compiled by the legacy baseline emitter. Admitted
-blocks cover the producer and condition-consumer families below plus direct and
-conditional terminators. Their compiled tier is reported as `tier1`.
+feature flag. The PC machine enables it for the production baseline executor;
+standalone executors retain an explicit opt-in so legacy/tier differential tests
+can select either path. It compiles a whole register-only IR block or declines
+it without publishing code; a decline is compiled by the legacy baseline
+emitter. Admitted blocks cover the producer and condition-consumer families
+below plus direct and conditional terminators. Their compiled tier is reported
+as `tier1` and contributes to the machine's baseline execution totals.
 
 An exit publishes every dirty architectural value and the complete pending-flags
 record to the context before returning an exit code. The executor materializes
