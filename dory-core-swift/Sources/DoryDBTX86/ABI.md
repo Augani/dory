@@ -34,7 +34,7 @@ a prologue or epilogue.
 
 ## Stable vCPU context
 
-The context is an array of 51 little-endian `UInt64` words. It is not a Swift
+The context is an array of 50 little-endian `UInt64` words. It is not a Swift
 struct ABI. The word layout is:
 
 | Words | Contents |
@@ -48,7 +48,6 @@ struct ABI. The word layout is:
 | 38...42 | scalar compare-exchange, exchange, fetch-add, generic RMW, and pair compare-exchange helpers |
 | 43...47 | lazy-flags operation plus count (low/high byte), width, result, source 1, and source 2 |
 | 48...49 | lazy-flags materializer helper and per-dispatch materialization count |
-| 50 | dispatch-entry CR3 snapshot |
 
 The context pointer remains stable for a dispatch. TLB bases and helper
 addresses are derived from it; generated code must not retain them beyond that
@@ -268,8 +267,6 @@ writing `x0`...`x7` cannot destroy a later argument.
   allocation candidates.
 - Interpreter-to-JIT and JIT-to-interpreter transitions round-trip all 16 GPRs,
   RIP, RFLAGS, FS/GS bases, TSC, and visible segment selectors.
-- CPL0 long-mode control-register reads may consume the immutable CR3 snapshot
-  appended at word 50; writes and every other control register remain interpreter-owned.
 - Faultable memory helpers see a fully restartable architectural checkpoint.
 - A05.2 may change the encoding held in `x25`/`x26`, but not their ownership or
   the materialized RFLAGS context index.

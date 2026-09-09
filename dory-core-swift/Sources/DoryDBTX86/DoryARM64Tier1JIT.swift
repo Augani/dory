@@ -405,15 +405,6 @@ struct DoryARM64Tier1Emitter: Sendable {
           )
         else { return nil }
 
-      case .readControlRegister(let index, let destination):
-        guard destination.width == .i64,
-          alu.emitReadControlRegister(
-            index,
-            destinationGuestRegister: Int(destination.index),
-            into: &body
-          )
-        else { return nil }
-
       case .bitScan(let reverse, let destination, let source):
         guard let destination = lowRegister(destination),
           let source = lowRegister(source),

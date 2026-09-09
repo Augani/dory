@@ -77,7 +77,6 @@ enum DoryARM64Tier1ABI {
     case lazyFlagsSource2
     case lazyFlagsMaterializer
     case lazyFlagsMaterializationCount
-    case cr3
 
     var byteOffset: Int { rawValue * MemoryLayout<UInt64>.stride }
   }

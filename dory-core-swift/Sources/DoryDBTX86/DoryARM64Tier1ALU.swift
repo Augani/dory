@@ -481,22 +481,6 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
-  /// Copies the dispatch-entry CR3 snapshot into a pinned qword GPR. The operation is
-  /// flag-neutral; privilege admission is enforced before either native emitter runs.
-  func emitReadControlRegister(
-    _ index: UInt8,
-    destinationGuestRegister: Int,
-    into words: inout [UInt32]
-  ) -> Bool {
-    guard index == 3, (0..<16).contains(destinationGuestRegister) else { return false }
-    words.append(
-      Self.encodeLoad64(
-        register: UInt32(destinationGuestRegister),
-        word: .cr3
-      ))
-    return true
-  }
-
   /// Emits register-source BSF/BSR. The legacy deterministic policy preserves all undefined
   /// status bits and leaves the entire destination unchanged for a zero source, including the
   /// upper half of a dword destination. A prior lazy producer is therefore materialized first.
