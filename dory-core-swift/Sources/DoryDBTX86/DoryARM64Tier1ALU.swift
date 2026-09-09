@@ -41,6 +41,72 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     fileprivate let domain: Domain
   }
 
+  /// Copies a register or immediate into a pinned low-byte/word/dword/qword destination without
+  /// changing NZCV or the pending lazy-flags record. Narrow writes preserve the surrounding guest
+  /// register bits; a dword write uses a W-register move and therefore zero-extends architecturally.
+  func emitCopy(
+    width: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    source: Source,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(destinationGuestRegister) else { return false }
+    if case .guestRegister(let sourceRegister) = source {
+      guard (0..<16).contains(sourceRegister) else { return false }
+    }
+
+    let destination = UInt32(destinationGuestRegister)
+    let mask = Self.mask(for: width)
+    switch width {
+    case .i32, .i64:
+      switch source {
+      case .guestRegister(let sourceRegister):
+        words.append(
+          Self.encodeMove(
+            destination: destination,
+            source: UInt32(sourceRegister),
+            is64Bit: width == .i64))
+      case .immediate(let value):
+        Self.emitImmediate(value & mask, register: destination, into: &words)
+      }
+    case .i8, .i16:
+      switch source {
+      case .guestRegister(let sourceRegister):
+        words.append(
+          Self.encodeMove(destination: 16, source: UInt32(sourceRegister), is64Bit: true))
+      case .immediate(let value):
+        Self.emitImmediate(value & mask, register: 16, into: &words)
+      }
+      Self.emitImmediate(mask, register: 17, into: &words)
+      words.append(
+        Self.encodeLogical(.and, is64Bit: true, left: 16, right: 17, destination: 16))
+      Self.emitImmediate(~mask, register: 17, into: &words)
+      words.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: destination, right: 17, destination: destination))
+      words.append(
+        Self.encodeLogical(
+          .or, is64Bit: true, left: destination, right: 16, destination: destination))
+    }
+    return true
+  }
+
+  /// Inverts a pinned register operand without changing NZCV or lazy flags.
+  func emitBitwiseNot(
+    width: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(destinationGuestRegister) else { return false }
+    let destination = UInt32(destinationGuestRegister)
+    Self.emitImmediate(Self.mask(for: width), register: 16, into: &words)
+    words.append(
+      Self.encodeLogical(
+        .xor, is64Bit: width != .i32,
+        left: destination, right: 16, destination: destination))
+    return true
+  }
+
   /// Emits ADD/SUB/CMP/AND/TEST/OR/XOR for a pinned register destination.
   ///
   /// The result, both inputs, width, and operation are checkpointed to the stable lazy-flags

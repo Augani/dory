@@ -788,14 +788,14 @@ public struct DoryX86IRTranslator: Sendable {
     switch statement {
     case .copy(let destination, let source):
       switch destination {
-      case .register(let target) where isJITLowByteRegister(target):
+      case .register(let target) where isJITNarrowRegister(target):
         switch source {
         case .register(let register):
-          return isJITLowByteRegister(register)
+          return isJITNarrowRegister(register) && register.width == target.width
         case .immediate(_, let width):
-          return width == .i8
+          return width == target.width
         case .memory(let address, let width):
-          return width == .i8 && isJITMemoryAddress(address)
+          return width == target.width && isJITMemoryAddress(address)
         }
       case .register(let target) where isJITGeneralRegister(target):
         switch source {
@@ -927,7 +927,7 @@ public struct DoryX86IRTranslator: Sendable {
       switch operand {
       case .register(let register):
         return isJITGeneralRegister(register)
-          || (operation == .bitwiseNot && isJITLowByteRegister(register))
+          || (operation == .bitwiseNot && isJITNarrowRegister(register))
       case .memory(let address, let width):
         return (width == .i32 || width == .i64) && isJITMemoryAddress(address)
       case .immediate:
@@ -1119,6 +1119,11 @@ public struct DoryX86IRTranslator: Sendable {
 
   private func isJITLowByteRegister(_ register: DoryIRRegister) -> Bool {
     register.bank == "x86.gpr" && register.index < 16 && register.width == .i8
+  }
+
+  private func isJITNarrowRegister(_ register: DoryIRRegister) -> Bool {
+    register.bank == "x86.gpr" && register.index < 16
+      && (register.width == .i8 || register.width == .i16)
   }
 
   private func isJITMemoryAddress(_ address: DoryIRMemoryAddress) -> Bool {

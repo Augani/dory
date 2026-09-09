@@ -860,20 +860,28 @@ public struct DoryARM64BaselineEmitter: Sendable {
     into words: inout [UInt32]
   ) -> Bool {
     switch destination {
-    case .register(let target) where isLowByteRegister(target):
+    case .register(let target)
+    where target.bank == "x86.gpr" && target.index < 16
+      && (target.width == .i8 || target.width == .i16):
       switch source {
-      case .register, .immediate:
-        guard loadLowByteOperand(source, into: 10, words: &words) else { return false }
-      case .memory(let address, width: .i8):
+      case .register(let register)
+      where register.bank == "x86.gpr" && register.index < 16
+        && register.width == target.width:
+        words.append(
+          encodeLoad64(register: 10, base: 0, byteOffset: Int(register.index) * 8))
+      case .immediate(let value, let width) where width == target.width:
+        emitImmediate(value, register: 10, into: &words)
+      case .memory(let address, let width) where width == target.width:
         guard emitMemoryAddress(address, into: 9, words: &words) else { return false }
-        emitMemoryRead(addressRegister: 9, width: .i8, resultRegister: 10, words: &words)
+        emitMemoryRead(addressRegister: 9, width: width, resultRegister: 10, words: &words)
       default:
         return false
       }
-      emitImmediate(0xFF, register: 11, into: &words)
+      let mask: UInt64 = target.width == .i8 ? 0xFF : 0xFFFF
+      emitImmediate(mask, register: 11, into: &words)
       words.append(encodeLogical(.and, left: 10, right: 11, destination: 10))
       words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
-      emitImmediate(~UInt64(0xFF), register: 11, into: &words)
+      emitImmediate(~mask, register: 11, into: &words)
       words.append(encodeLogical(.and, left: 9, right: 11, destination: 9))
       words.append(encodeLogical(.or, left: 9, right: 10, destination: 9))
       words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
@@ -2986,12 +2994,16 @@ public struct DoryARM64BaselineEmitter: Sendable {
     }
   }
 
-  private func emitLowByteBitwiseNot(_ target: DoryIRRegister, into words: inout [UInt32]) -> Bool {
-    guard loadLowByteRegister(target, into: 9, words: &words) else { return false }
-    emitImmediate(0xFF, register: 10, into: &words)
+  private func emitNarrowBitwiseNot(_ target: DoryIRRegister, into words: inout [UInt32]) -> Bool {
+    guard target.bank == "x86.gpr", target.index < 16,
+      target.width == .i8 || target.width == .i16
+    else { return false }
+    let mask: UInt64 = target.width == .i8 ? 0xFF : 0xFFFF
+    words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
+    emitImmediate(mask, register: 10, into: &words)
     words.append(encodeLogical(.xor, left: 9, right: 10, destination: 11))
     words.append(encodeLoad64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
-    emitImmediate(~UInt64(0xFF), register: 10, into: &words)
+    emitImmediate(~mask, register: 10, into: &words)
     words.append(encodeLogical(.and, left: 9, right: 10, destination: 9))
     words.append(encodeLogical(.or, left: 9, right: 11, destination: 9))
     words.append(encodeStore64(register: 9, base: 0, byteOffset: Int(target.index) * 8))
@@ -3011,8 +3023,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
     operand: DoryIROperand,
     into words: inout [UInt32]
   ) -> Bool {
-    if case .register(let target) = operand, isLowByteRegister(target), operation == .bitwiseNot {
-      return emitLowByteBitwiseNot(target, into: &words)
+    if case .register(let target) = operand, operation == .bitwiseNot,
+      target.bank == "x86.gpr", target.index < 16,
+      target.width == .i8 || target.width == .i16
+    {
+      return emitNarrowBitwiseNot(target, into: &words)
     }
     let width: DoryIRIntegerWidth
     switch operand {
@@ -4964,7 +4979,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               blockCount = replay.residentBlockCount
               if replay.exitCode != .dispatch || completed >= maximumInstructions {
                 chainedRetiredInstructionCount &+= UInt64(completed)
-                Self.apply(context: context, to: &state)
+                publishExecutionContext(context, to: &state)
                 return DoryARM64ExecutionSummary(
                   guestInstructionCount: UInt32(completed),
                   residentBlockCount: UInt32(blockCount),
@@ -5003,7 +5018,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               guard completed > 0 else { return nil }
               chainedRetiredInstructionCount &+= UInt64(completed)
-              Self.apply(context: context, to: &state)
+              publishExecutionContext(context, to: &state)
               return DoryARM64ExecutionSummary(
                 guestInstructionCount: UInt32(completed),
                 residentBlockCount: UInt32(blockCount),
@@ -5035,7 +5050,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             if resident.endsTimeBoundary, completed > 0 {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               chainedRetiredInstructionCount &+= UInt64(completed)
-              Self.apply(context: context, to: &state)
+              publishExecutionContext(context, to: &state)
               return DoryARM64ExecutionSummary(
                 guestInstructionCount: UInt32(completed),
                 residentBlockCount: UInt32(blockCount),
@@ -5065,7 +5080,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               for index in context.indices { context[index] = checkpoint[index] }
               guard completed > 0 else { return nil }
               chainedRetiredInstructionCount &+= UInt64(completed)
-              Self.apply(context: context, to: &state)
+              publishExecutionContext(context, to: &state)
               return DoryARM64ExecutionSummary(
                 guestInstructionCount: UInt32(completed),
                 residentBlockCount: UInt32(blockCount),
@@ -5080,7 +5095,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
             else {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)
               chainedRetiredInstructionCount &+= UInt64(completed)
-              Self.apply(context: context, to: &state)
+              publishExecutionContext(context, to: &state)
               return DoryARM64ExecutionSummary(
                 guestInstructionCount: UInt32(completed),
                 residentBlockCount: UInt32(blockCount),
@@ -5313,7 +5328,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         {
           return ResidentExecution(resident: resident, exitCode: exit)
         }
-        Self.apply(context: context, to: &state)
+        publishExecutionContext(context, to: &state)
         return ResidentExecution(resident: resident, exitCode: exit)
       }
     }
@@ -6029,6 +6044,24 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     let index = DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue
     lazyFlagMaterializationCount &+= context[index]
     context[index] = 0
+  }
+
+  /// Publishes a fully materialized architectural state at every Swift/dispatcher boundary. The
+  /// PC run loop checks and delivers interrupts only after such a return, so an interrupt consumer
+  /// can never observe the tier-1-private lazy descriptor. Count this final materialization along
+  /// with in-code materializer calls so the diagnostic is a complete rate rather than a helper-only
+  /// subset.
+  private func publishExecutionContext(
+    _ context: UnsafeMutableBufferPointer<UInt64>,
+    to state: inout DoryX86ArchitecturalState
+  ) {
+    recordLazyFlagMaterializations(in: context)
+    if let lazyFlags = DoryARM64LazyFlagsState(context: context),
+      lazyFlags.operation != .materialized
+    {
+      lazyFlagMaterializationCount &+= 1
+    }
+    Self.apply(context: context, to: &state)
   }
 
   private static func apply(

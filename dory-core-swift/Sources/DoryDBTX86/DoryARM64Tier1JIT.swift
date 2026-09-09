@@ -17,6 +17,17 @@ struct DoryARM64Tier1Emitter: Sendable {
 
     for statement in block.statements {
       switch statement {
+      case .copy(let destination, let source):
+        guard let destination = lowRegister(destination),
+          let source = lowSource(source, matching: destination.width),
+          alu.emitCopy(
+            width: destination.width,
+            destinationGuestRegister: Int(destination.index),
+            source: source,
+            into: &body
+          )
+        else { return nil }
+
       case .binary(let operation, let destination, let source, let writesDestination):
         guard let destination = register(destination) else { return nil }
         if operation == .addWithCarry || operation == .subtractWithBorrow {
@@ -51,6 +62,16 @@ struct DoryARM64Tier1Emitter: Sendable {
 
       case .unary(let operation, let operand):
         guard let destination = register(operand) else { return nil }
+        if operation == .bitwiseNot {
+          guard destination.bank == "x86.gpr",
+            alu.emitBitwiseNot(
+              width: destination.width,
+              destinationGuestRegister: Int(destination.index),
+              into: &body
+            )
+          else { return nil }
+          continue
+        }
         if operation == .increment || operation == .decrement {
           boundary.emitMaterializeLazyFlags(into: &body)
           nativeFlags = nil
