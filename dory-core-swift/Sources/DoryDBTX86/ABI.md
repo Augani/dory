@@ -89,7 +89,9 @@ and OF as zero. ZF/SF/OF and signed comparisons map directly in every domain.
 PF/NP always materialize. INC/DEC can fuse ZF/SF/OF and signed conditions, but
 conditions involving their preserved CF materialize. The materializing SETcc
 fallback evaluates all sixteen x86 conditions from `x25` and replaces only the
-architectural destination byte.
+architectural destination byte. Native CMOV64 selects a pinned source without
+clobbering NZCV, and a fused conditional terminator selects the next guest RIP
+in `x27`; constant logical-domain predicates collapse to a move or no-op.
 
 ## Helper-call shim
 

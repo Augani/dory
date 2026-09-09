@@ -205,6 +205,78 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Emits a 64-bit CMOV consumer while the producer's NZCV value is still live.
+  func emitFusedConditionalMove(
+    _ condition: DoryX86Condition,
+    flags: NativeFlags,
+    destinationGuestRegister: Int,
+    source: Source,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(destinationGuestRegister),
+      let lowering = Self.lowering(condition, domain: flags.domain)
+    else { return false }
+    if case .guestRegister(let sourceRegister) = source {
+      guard (0..<16).contains(sourceRegister) else { return false }
+    }
+
+    var fragment: [UInt32] = []
+    switch lowering {
+    case .constant(false):
+      break
+    case .constant(true):
+      Self.emitSource(source, register: UInt32(destinationGuestRegister), into: &fragment)
+    case .condition(let nativeCondition):
+      let sourceRegister: UInt32
+      switch source {
+      case .guestRegister(let index):
+        sourceRegister = UInt32(index)
+      case .immediate:
+        sourceRegister = 16
+        Self.emitSource(source, register: sourceRegister, into: &fragment)
+      }
+      let destination = UInt32(destinationGuestRegister)
+      fragment.append(Self.encodeConditionalSelect(
+        destination: destination,
+        trueRegister: sourceRegister,
+        falseRegister: destination,
+        condition: nativeCondition
+      ))
+    }
+    words.append(contentsOf: fragment)
+    return true
+  }
+
+  /// Emits a fused conditional terminator by selecting the next guest RIP in `x27`.
+  func emitFusedBranch(
+    _ condition: DoryX86Condition,
+    flags: NativeFlags,
+    taken: UInt64,
+    notTaken: UInt64,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard let lowering = Self.lowering(condition, domain: flags.domain) else { return false }
+    var fragment: [UInt32] = []
+    switch lowering {
+    case .constant(let value):
+      Self.emitImmediate(value ? taken : notTaken, register: 27, into: &fragment)
+    case .condition(let nativeCondition):
+      let takenBranch = fragment.count
+      fragment.append(0)
+      Self.emitImmediate(notTaken, register: 27, into: &fragment)
+      let doneBranch = fragment.count
+      fragment.append(0)
+      let takenStart = fragment.count
+      Self.emitImmediate(taken, register: 27, into: &fragment)
+      let done = fragment.count
+      fragment[takenBranch] = Self.encodeConditionalBranch(
+        condition: nativeCondition, wordOffset: takenStart - takenBranch)
+      fragment[doneBranch] = Self.encodeUnconditionalBranch(wordOffset: done - doneBranch)
+    }
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Materializes a pending record, evaluates any x86 condition from `x25`, and replaces only the
   /// destination's low byte. This is the fallback for parity and native-domain mismatches.
   func emitMaterializedSetCondition(
@@ -386,6 +458,19 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     }
   }
 
+  private static func emitSource(
+    _ source: Source,
+    register: UInt32,
+    into words: inout [UInt32]
+  ) {
+    switch source {
+    case .guestRegister(let index):
+      words.append(encodeMove(destination: register, source: UInt32(index), is64Bit: true))
+    case .immediate(let value):
+      emitImmediate(value, register: register, into: &words)
+    }
+  }
+
   private static func encodeMove(
     destination: UInt32,
     source: UInt32,
@@ -477,5 +562,30 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     condition: ARM64Condition
   ) -> UInt32 {
     0x9A9F_07E0 | ((condition.rawValue ^ 1) << 12) | register
+  }
+
+  private static func encodeConditionalSelect(
+    destination: UInt32,
+    trueRegister: UInt32,
+    falseRegister: UInt32,
+    condition: ARM64Condition
+  ) -> UInt32 {
+    0x9A80_0000 | falseRegister << 16 | condition.rawValue << 12
+      | trueRegister << 5 | destination
+  }
+
+  private static func encodeConditionalBranch(
+    condition: ARM64Condition,
+    wordOffset: Int
+  ) -> UInt32 {
+    precondition((-262_144..<262_144).contains(wordOffset))
+    return 0x5400_0000
+      | (UInt32(truncatingIfNeeded: wordOffset) & 0x7_FFFF) << 5
+      | condition.rawValue
+  }
+
+  private static func encodeUnconditionalBranch(wordOffset: Int) -> UInt32 {
+    precondition((-33_554_432..<33_554_432).contains(wordOffset))
+    return 0x1400_0000 | (UInt32(truncatingIfNeeded: wordOffset) & 0x3FF_FFFF)
   }
 }
