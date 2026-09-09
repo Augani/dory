@@ -14,6 +14,11 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
     case increment
     case decrement
     case negate
+    case shiftLeft
+    case logicalShiftRight
+    case arithmeticShiftRight
+    case rotateLeft
+    case rotateRight
   }
 
   let materialized: DoryX86RFLAGS
@@ -117,6 +122,10 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
       set(.overflow, ((0 ^ lhs) & (0 ^ value) & sign) != 0, in: &flags)
       set(.auxiliaryCarry, ((0 ^ lhs ^ value) & 0x10) != 0, in: &flags)
       setResultFlags(value, sign: sign, in: &flags)
+    case .shiftLeft, .logicalShiftRight, .arithmeticShiftRight,
+      .rotateLeft, .rotateRight:
+      materializeShiftOrRotate(
+        operation: operation, original: lhs, result: value, sign: sign, in: &flags)
     }
     flags.insert(.reservedOne)
     return flags
@@ -134,6 +143,58 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
     set(.zero, value == 0, in: &flags)
     set(.sign, value & sign != 0, in: &flags)
     set(.parity, (value & 0xFF).nonzeroBitCount.isMultiple(of: 2), in: &flags)
+  }
+
+  private func materializeShiftOrRotate(
+    operation: Operation,
+    original: UInt64,
+    result: UInt64,
+    sign: UInt64,
+    in flags: inout DoryX86RFLAGS
+  ) {
+    let bitCount = Int(width.rawValue)
+    let countMask: UInt8 = width == .i64 ? 0x3F : 0x1F
+    let maskedCount = Int(UInt8(truncatingIfNeeded: source2) & countMask)
+    guard maskedCount != 0 else { return }
+
+    switch operation {
+    case .rotateLeft:
+      set(.carry, result & 1 != 0, in: &flags)
+      if maskedCount == 1 {
+        set(.overflow, (result & sign != 0) != flags.contains(.carry), in: &flags)
+      }
+    case .rotateRight:
+      set(.carry, result & sign != 0, in: &flags)
+      if maskedCount == 1 {
+        set(.overflow, ((result >> UInt64(bitCount - 2)) & 3) == 1
+          || ((result >> UInt64(bitCount - 2)) & 3) == 2, in: &flags)
+      }
+    case .shiftLeft:
+      set(.carry, maskedCount <= bitCount
+        && original & (UInt64(1) << UInt64(bitCount - maskedCount)) != 0, in: &flags)
+      if maskedCount == 1 {
+        set(.overflow, (result & sign != 0) != flags.contains(.carry), in: &flags)
+      }
+      flags.remove(.auxiliaryCarry)
+      setResultFlags(result, sign: sign, in: &flags)
+    case .logicalShiftRight:
+      set(.carry, maskedCount <= bitCount
+        && original & (UInt64(1) << UInt64(maskedCount - 1)) != 0, in: &flags)
+      if maskedCount == 1 { set(.overflow, original & sign != 0, in: &flags) }
+      flags.remove(.auxiliaryCarry)
+      setResultFlags(result, sign: sign, in: &flags)
+    case .arithmeticShiftRight:
+      if maskedCount <= bitCount {
+        set(.carry, original & (UInt64(1) << UInt64(maskedCount - 1)) != 0, in: &flags)
+      } else {
+        set(.carry, original & sign != 0, in: &flags)
+      }
+      if maskedCount == 1 { flags.remove(.overflow) }
+      flags.remove(.auxiliaryCarry)
+      setResultFlags(result, sign: sign, in: &flags)
+    default:
+      preconditionFailure("non-shift operation reached shift materializer")
+    }
   }
 
   private func set(

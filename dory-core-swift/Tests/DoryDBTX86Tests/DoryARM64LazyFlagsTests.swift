@@ -109,6 +109,64 @@ import Testing
       }
     }
   }
+
+  @Test func shiftAndRotateMaterializersMatchInterpreterAcrossWidthsAndCounts() throws {
+    let cases: [(operation: DoryARM64LazyFlagsState.Operation, extension: UInt8)] = [
+      (.rotateLeft, 0), (.rotateRight, 1), (.shiftLeft, 4),
+      (.logicalShiftRight, 5), (.arithmeticShiftRight, 7),
+    ]
+    for width: DoryIRIntegerWidth in [.i8, .i16, .i32, .i64] {
+      let mask = width == .i64 ? UInt64.max : (UInt64(1) << UInt64(width.rawValue)) - 1
+      let values = [UInt64(0), 1, mask >> 1, UInt64(1) << UInt64(width.rawValue - 1), mask]
+      let counts = [UInt8(0), 1, UInt8(width.rawValue - 1), UInt8(width.rawValue),
+        UInt8(width.rawValue &+ 1), 31, 63]
+      for testCase in cases {
+        for value in values {
+          for count in counts {
+            let bytes = shiftBytes(
+              width: width, operationExtension: testCase.extension, count: count)
+            let prior: DoryX86RFLAGS = [
+              .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .sign,
+              .direction, .overflow,
+            ]
+            var interpreted = try DoryX86ArchitecturalState(
+              registers: .init(rax: value), rip: 0x100, rflags: prior)
+            let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+            try memory.write(at: 0x100, bytes: bytes)
+            guard case .retired = DoryX86Interpreter().step(
+              state: &interpreted, memory: memory, mode: .long64)
+            else {
+              Issue.record("interpreter did not retire \(testCase.operation) \(width) \(count)")
+              continue
+            }
+            let lazy = DoryARM64LazyFlagsState(
+              materialized: prior,
+              operation: testCase.operation,
+              width: width,
+              result: interpreted.registers.rax & mask,
+              source1: value,
+              source2: UInt64(count)
+            )
+            #expect(lazy.materialize() == interpreted.rflags)
+          }
+        }
+      }
+    }
+  }
+}
+
+private func shiftBytes(
+  width: DoryIRIntegerWidth,
+  operationExtension: UInt8,
+  count: UInt8
+) -> [UInt8] {
+  let modRM = UInt8(0xC0) | operationExtension << 3
+  switch width {
+  case .i8: return [0xC0, modRM, count]
+  case .i16: return [0x66, 0xC1, modRM, count]
+  case .i32: return [0xC1, modRM, count]
+  case .i64: return [0x48, 0xC1, modRM, count]
+  }
 }
 
 private func eagerFlags(
