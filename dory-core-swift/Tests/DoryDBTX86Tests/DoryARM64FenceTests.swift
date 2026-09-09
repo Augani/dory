@@ -5,10 +5,14 @@ import Testing
 @Suite struct DoryARM64FenceTests {
   // LFENCE, MFENCE and SFENCE register encodings. Feature qualification is separate;
   // these checks establish that a decoded fence retains its existing memory-ordering effect.
-  private let fences: [[UInt8]] = [[0x0F, 0xAE, 0xE8], [0x0F, 0xAE, 0xF0], [0x0F, 0xAE, 0xF8]]
+  private let fences: [(bytes: [UInt8], effect: DoryX86MemoryFence)] = [
+    ([0x0F, 0xAE, 0xE8], .load),
+    ([0x0F, 0xAE, 0xF0], .full),
+    ([0x0F, 0xAE, 0xF8], .store),
+  ]
 
-  @Test func translationPreservesEveryFenceAsAnExactInterpreterBoundary() throws {
-    for fence in fences {
+  @Test func translationPreservesEveryFenceAsANativeOrderingBoundary() throws {
+    for (fence, effect) in fences {
       let translator = DoryX86IRTranslator()
       let prefix = try translator.translate(
         [0x48, 0xFF, 0xC1] + fence + [0x48, 0xFF, 0xC2], at: 0x1000, mode: .long64)
@@ -19,32 +23,30 @@ import Testing
       let boundary = try translator.translate(fence + [0x48, 0xFF, 0xC2], at: 0x1003, mode: .long64)
       #expect(boundary.guestInstructionCount == 1)
       #expect(boundary.guestByteCount == 3)
-      #expect(boundary.statements == [.helper(identifier: "x86.interpret.one", payload: fence)])
-      #expect(boundary.terminator == .exit(.interpreter, resumeAt: 0x1003))
+      #expect(boundary.statements == [.memoryFence(effect)])
+      #expect(boundary.terminator == .next(0x1006))
       for tier in [DoryARM64CompilationTier.baseline, .optimizing] {
         #expect(DoryARM64BaselineEmitter().compile(prefix, tier: tier).tier == tier)
-        #expect(DoryARM64BaselineEmitter().compile(boundary, tier: tier).tier == .interpreterFallback)
+        #expect(DoryARM64BaselineEmitter().compile(boundary, tier: tier).tier == tier)
       }
     }
   }
 
-  @Test func fenceAtEntryDeclinesWithoutMutationThenInvokesOrderingExactlyOnce() throws {
+  @Test func fenceAtEntryExecutesAndOrdersExactlyOnce() throws {
     #if arch(arm64)
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
-        for fence in fences {
+        for (fence, _) in fences {
           let memory = try FenceObservingMemory()
           try memory.backing.write(at: 0x1000, bytes: fence + [0x48, 0xFF, 0xC1])
           var state = try DoryX86ArchitecturalState(registers: .init(rcx: 9), rip: 0x1000)
           let initial = state
           let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 4096, optimization: optimization)
-          #expect(try executor.executeSummary(
+          let summary = try #require(executor.executeSummary(
             byteProvider: { try memory.instructionBytes(at: 0x1000, maximumCount: $0) },
             at: state.rip, mode: .long64, addressSpaceID: 0, maximumInstructions: 2,
-            state: &state, memory: memory) == nil)
-          #expect(state == initial)
-          #expect(memory.events.isEmpty)
-          let decoded = try DoryX86Decoder().decode(fence, at: initial.rip, mode: .long64)
-          #expect(DoryX86Interpreter().step(state: &state, memory: memory, mode: .long64) == .retired(decoded))
+            state: &state, memory: memory))
+          #expect(summary.guestInstructionCount == 1)
+          #expect(summary.tier.rawValue == optimization.rawValue)
           var expected = initial
           expected.rip += 3
           #expect(state == expected)
@@ -57,7 +59,7 @@ import Testing
   @Test func coldAndReplayedChainsPublishEachStoreOnceAndOrderTheFollowingLoad() throws {
     #if arch(arm64)
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
-        for fence in fences {
+        for (fence, _) in fences {
           // Two register-only blocks permit actual hot native-batch replay. The store then
           // publishes once before the fence, and the following load stays after synchronize().
           let bytes: [UInt8] = [
@@ -91,35 +93,8 @@ import Testing
               codeGenerationProvider: { _, _ in 1 },
               at: state.rip, mode: .long64, addressSpaceID: 0, maximumInstructions: 32,
               state: &state, memory: memory))
-            #expect(prefix.guestInstructionCount == 5)
+            #expect(prefix.guestInstructionCount == 8)
             #expect(prefix.exitCode == .dispatch)
-            #expect(state.rip == 0x100D)
-            #expect(state.registers.rax == 1 && state.registers.rcx == 1)
-            #expect(state.registers.rdx == 0 && state.registers.rsi == 0)
-            #expect(memory.events == [.write(1)])
-
-            // Retrying native entry at this boundary cannot replay the completed prefix.
-            let atFence = state
-            for _ in 0..<2 {
-              #expect(try executor.executeChainedSummary(
-                byteProvider: { try memory.instructionBytes(at: $0, maximumCount: $1) },
-                codeGenerationProvider: { _, _ in 1 },
-                at: state.rip, mode: .long64, addressSpaceID: 0, maximumInstructions: 32,
-                state: &state, memory: memory) == nil)
-              #expect(state == atFence)
-              #expect(memory.events == [.write(1)])
-            }
-            let decoded = try DoryX86Decoder().decode(fence, at: state.rip, mode: .long64)
-            #expect(DoryX86Interpreter().step(state: &state, memory: memory, mode: .long64) == .retired(decoded))
-            #expect(state.rip == 0x1010)
-            #expect(memory.events == [.write(1), .synchronize])
-
-            let suffix = try #require(executor.executeChainedSummary(
-              byteProvider: { try memory.instructionBytes(at: $0, maximumCount: $1) },
-              codeGenerationProvider: { _, _ in 1 },
-              at: state.rip, mode: .long64, addressSpaceID: 0, maximumInstructions: 2,
-              state: &state, memory: memory))
-            #expect(suffix.guestInstructionCount == 2)
             #expect(state == reference)
             #expect(memory.events == referenceMemory.events)
             #expect(try memory.backing.readScalar(at: 0x8000, byteCount: 8) == 1)
