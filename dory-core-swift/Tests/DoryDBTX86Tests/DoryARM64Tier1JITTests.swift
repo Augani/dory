@@ -4245,8 +4245,13 @@ import Testing
   }
 
   @Test func measuredAdditionalMemorySetNotEqualSitesAreExactAndMatchInterpreter() throws {
-    let bytes: [UInt8] = [0x0F, 0x95, 0x03]  // setne (%rbx)
-    for codeAddress: UInt64 in [0xFFFF_FFFF_812D_F23D, 0xFFFF_FFFF_812D_F2DF] {
+    let fixtures: [(codeAddress: UInt64, modRM: UInt8, usesRCX: Bool)] = [
+      (0xFFFF_FFFF_812D_F23D, 0x03, false),
+      (0xFFFF_FFFF_812D_F2DF, 0x03, false),
+      (0xFFFF_FFFF_812D_F1E6, 0x01, true),
+    ]
+    for (codeAddress, modRM, usesRCX) in fixtures {
+      let bytes: [UInt8] = [0x0F, 0x95, modRM]
       let block = try DoryX86IRTranslator().translate(bytes, at: codeAddress, mode: .long64)
       let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
       #expect(compiled.tier == .tier1)
@@ -4261,6 +4266,14 @@ import Testing
         mode: .long64
       )
       #expect(DoryARM64Tier1Emitter().compile(adjacent) == nil)
+      var wrongBaseBytes = bytes
+      wrongBaseBytes[2] = usesRCX ? 0x03 : 0x01
+      let wrongBase = try DoryX86IRTranslator().translate(
+        wrongBaseBytes,
+        at: codeAddress,
+        mode: .long64
+      )
+      #expect(DoryARM64Tier1Emitter().compile(wrongBase) == nil)
 
       #if arch(arm64)
         let dataAddress = codeAddress + 0x100
@@ -4280,7 +4293,10 @@ import Testing
           var flags: DoryX86RFLAGS = [.reservedOne, .carry, .direction, .overflow]
           if zeroIsSet { flags.insert(.zero) }
           let initial = try DoryX86ArchitecturalState(
-            registers: .init(rbx: dataAddress),
+            registers: .init(
+              rcx: usesRCX ? dataAddress : 0,
+              rbx: usesRCX ? 0 : dataAddress
+            ),
             rip: codeAddress,
             rflags: flags
           )
