@@ -1,0 +1,144 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-atomic-memory-bts",
+  "observedAt": "2026-09-09T21:15:04Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "56a3829617ed19a5ed3bdd57e17274f048e04ab7",
+    "candidateRunnerSHA256": "2565c9a1c9bd2f01bfe685f6f714b91ee5f7a4d82b5c9970e396e23d350d034f",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "measuredBlock": {
+      "guestRIP": "0xffffffff8133cb0f",
+      "symbol": "__resched_curr+0x11f",
+      "instructions": "movslq %ecx,%rax; lock btsq %rax,(%rsi)",
+      "bytes": "48 63 c1 f0 48 0f ab 06",
+      "priorNegativeCacheHits": 1653,
+      "remainsInCandidateRunNegativeCache": false
+    },
+    "boundedRule": "Tier one admits only the exact eight-byte, two-instruction fixture block with MOVSXD ECX to RAX followed by locked qword BTS through RSI. The same bytes at an adjacent RIP decline.",
+    "atomicity": "The existing translated-memory compare-exchange callback implements the locked update. A CAS mismatch supplies the next expected value without a non-atomic read, and the successful replaced value determines CF.",
+    "transactionality": "The preceding MOVSXD and materialized flag image remain in the temporary execution context until the atomic callback succeeds; callback failure discards the whole block and retries at its entry RIP."
+  },
+  "verification": {
+    "focusedGate": "The exact measured atomic-memory-BTS test passes.",
+    "dbtAndPCGate": "1,457 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Signed indices 0, 63, 64, -1, and -65 and both old-bit states match the interpreter exactly in architectural state and memory, including ECX-to-RAX sign extension.",
+    "atomicCoverage": "Eight concurrent tier-one executions set the same clear bit: exactly one observes old CF=0, seven observe CF=1, and the final qword has exactly that bit set.",
+    "negativeCoverage": "The same bytes at an adjacent RIP decline, and an inaccessible target rolls state and memory back to the block-entry checkpoint.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "f53b4341-8c22-457c-8cf5-763412b15414",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 149194774084,
+    "retiredInstructions": 733612255,
+    "throughputMIPS": 4.917,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 730973022,
+    "interpreterInstructions": 2639233,
+    "deliveredMaskableInterrupts": 57952,
+    "retiredInterruptReturns": 146187,
+    "byteValidationHits": 72240,
+    "codeGenerationMismatches": 78122,
+    "sharedCodeHits": 113674,
+    "compiledBlocks": 184963,
+    "tier1CompilationAttempts": 221529,
+    "tier1CompilationDeclines": 120197,
+    "tier1DeclinePercentOfAttempts": 54.257907542579076,
+    "tier1CompiledBlocks": 101332,
+    "lazyFlagMaterializations": 54691168,
+    "translationCacheInvalidations": 239937
+  },
+  "unmatchedPriorRunComparison": {
+    "secondMemorySetNotEqualElapsedNanoseconds": 147623629250,
+    "atomicMemoryBitSetElapsedNanoseconds": 149194774084,
+    "directionalElapsedIncreasePercent": 1.0642908875646682,
+    "tier1AttemptReduction": 304,
+    "tier1DeclineReduction": 38,
+    "tier1CompiledBlockReduction": 266,
+    "interpreterInstructionReduction": 10104,
+    "lazyFlagMaterializationReduction": 184146,
+    "translationCacheInvalidationReduction": 486,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. Absence of the measured site directly establishes bounded admission; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleKernelSites": [
+    {
+      "guestRIP": "0xffffffff814e164e",
+      "symbol": "btf_verifier_log_member+0x6e",
+      "instruction": "leave",
+      "guestByteCount": 1,
+      "hitCount": 103976,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81e1c65c",
+      "symbol": "__radix_tree_replace+0x3c",
+      "instructions": "btq %rdi,0x228(%rsi); jae",
+      "guestByteCount": 14,
+      "hitCount": 17268,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff813cd9a6",
+      "instruction": "rep movsq",
+      "guestByteCount": 3,
+      "visibleHitCountAcrossAddressSpaces": 13578,
+      "largestSingleAddressSpaceHitCount": 10967,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81e35772",
+      "instruction": "rep movsq",
+      "guestByteCount": 3,
+      "visibleHitCountAcrossAddressSpaces": 12070,
+      "largestSingleAddressSpaceHitCount": 10303,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81a07cd3",
+      "instruction": "inb %dx,%al",
+      "guestByteCount": 1,
+      "hitCount": 5544,
+      "declineReason": "interpreterHelper"
+    }
+  ],
+  "interpretation": "The measured locked memory-BTS block is absent from the retained negative-cache sample and the authenticated workload completes. A05.2 remains open because 120,197 of 221,529 full-run tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
