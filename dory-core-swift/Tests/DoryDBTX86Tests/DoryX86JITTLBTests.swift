@@ -1,3 +1,4 @@
+import Darwin
 import Testing
 
 @testable import DoryDBTX86
@@ -244,6 +245,33 @@ import Testing
     #expect(paging.diagnostics.translationRequests == 1)
     #expect(
       try tlb.lookup(linearAddress: 0x2_000, addressSpaceGeneration: 1, access: .read) == nil)
+  }
+
+  @Test func cSlowPathUsesSparseHostOffsetRatherThanCompactPhysicalOffset() throws {
+    let page = Int(getpagesize())
+    let physical = try DoryX86MmapMemory(
+      validatingByteCount: page * 2,
+      hostAddressSpaceByteCount: page * 4,
+      ramMappings: [
+        .init(logicalOffset: 0, hostOffset: page, byteCount: page),
+        .init(logicalOffset: page, hostOffset: page * 3, byteCount: page),
+      ]
+    )
+    let translated = DoryX86TranslatedMemory(
+      physicalMemory: physical,
+      pagingUnit: DoryX86PagingUnit(),
+      context: .init(state: .reset(), mode: .real16)
+    )
+    let tlb = try DoryX86JITTLB(entryCount: 16)
+
+    #expect(
+      try tlb.resolve(
+        linearAddress: UInt64(page + 0x123),
+        byteCount: 8,
+        addressSpaceGeneration: 1,
+        access: .write,
+        memory: translated
+      ) == .filled(hostAddress: physical.hostAddressSpaceBase + UInt64(page * 3 + 0x123)))
   }
 
   private func longModeContext() -> DoryX86PagingContext {

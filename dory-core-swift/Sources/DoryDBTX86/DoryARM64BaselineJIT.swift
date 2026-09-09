@@ -3067,11 +3067,14 @@ func doryX86JITTranslate(
   _ opaque: UnsafeMutableRawPointer?,
   _ linearAddress: UInt64,
   _ rawAccess: UInt32,
-  _ physicalAddressOut: UnsafeMutablePointer<UInt64>?,
+  _ rawByteCount: UInt32,
+  _ hostAddressSpaceOffsetOut: UnsafeMutablePointer<UInt64>?,
   _ faultAddressOut: UnsafeMutablePointer<UInt64>?,
   _ faultErrorCodeOut: UnsafeMutablePointer<UInt32>?
 ) -> Int32 {
-  guard let opaque, let physicalAddressOut, let faultAddressOut, let faultErrorCodeOut else {
+  guard let opaque, rawByteCount > 0, let hostAddressSpaceOffsetOut, let faultAddressOut,
+    let faultErrorCodeOut
+  else {
     return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue)
   }
   let access: DoryX86MemoryAccessKind
@@ -3086,11 +3089,12 @@ func doryX86JITTranslate(
     let translatedMemory = callback.pointee.capabilities.memory as? DoryX86TranslatedMemory
   else { return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue) }
   do {
-    let translation = try translatedMemory.translateForJIT(
+    guard let hostAddressSpaceOffset = try translatedMemory.hostAddressSpaceOffsetForJIT(
       linearAddress: linearAddress,
+      byteCount: Int(rawByteCount),
       access: access
-    )
-    physicalAddressOut.pointee = translation.physicalAddress
+    ) else { return Int32(DORY_JIT_TLB_RESOLUTION_FALLBACK.rawValue) }
+    hostAddressSpaceOffsetOut.pointee = hostAddressSpaceOffset
     return Int32(DORY_JIT_TLB_RESOLUTION_FILLED.rawValue)
   } catch DoryX86MemoryError.pageFault(let address, let errorCode) {
     faultAddressOut.pointee = address

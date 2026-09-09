@@ -44,7 +44,7 @@ public struct DoryX86MmapReadOnlyMapping: Sendable, Equatable {
 /// by the host's VM system, so allocating 16 GB of guest RAM does not consume
 /// 16 GB of host physical memory — only pages that are actually touched cost RAM.
 public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMemory,
-  DoryX86HostAddressSpaceMemory, @unchecked Sendable
+  DoryX86DirectHostAddressSpaceMemory, @unchecked Sendable
 {
   public let baseAddress: UInt64
   public let byteCount: Int
@@ -302,6 +302,23 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
       mapping.hostOffset + logicalOffset - mapping.logicalOffset,
       mapping.logicalOffset + mapping.byteCount - logicalOffset
     )
+  }
+
+  public func hostAddressSpaceOffset(
+    at address: UInt64,
+    byteCount: Int,
+    access: DoryX86MemoryAccessKind
+  ) -> UInt64? {
+    guard byteCount > 0,
+      let logicalOffset = try? checkedOffset(
+        address: address,
+        byteCount: byteCount,
+        access: access
+      )
+    else { return nil }
+    let resolved = resolvedHostOffset(forLogicalOffset: logicalOffset)
+    guard byteCount <= resolved.availableByteCount else { return nil }
+    return UInt64(resolved.offset)
   }
 
   private func copyBytes(fromLogicalOffset offset: Int, byteCount: Int, into output: inout [UInt8])

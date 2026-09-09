@@ -92,7 +92,7 @@ extension DoryPCMMIODevice {
 /// Sealed physical address router. RAM and devices share one DoryX86Memory boundary, so paging,
 /// interpreter, and every future JIT helper observe an identical DoryPC-v1 memory map.
 public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
-  DoryX86AtomicScalarMemory, DoryX86CodeGenerationMemory, DoryX86HostAddressSpaceMemory,
+  DoryX86AtomicScalarMemory, DoryX86CodeGenerationMemory, DoryX86DirectHostAddressSpaceMemory,
   @unchecked Sendable
 {
   private enum DiagnosticCounter: Int, CaseIterable {
@@ -472,6 +472,25 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
     let devices = withMappings { $0.map(\.device) }
     ram.synchronize()
     for device in devices { device.synchronize() }
+  }
+
+  public func hostAddressSpaceOffset(
+    at address: UInt64,
+    byteCount: Int,
+    access: DoryX86MemoryAccessKind
+  ) -> UInt64? {
+    guard let directRAM = ram as? any DoryX86DirectHostAddressSpaceMemory,
+      let resolved = try? resolveRAM(
+        address: address,
+        byteCount: byteCount,
+        access: access
+      )
+    else { return nil }
+    return directRAM.hostAddressSpaceOffset(
+      at: resolved.backingAddress,
+      byteCount: byteCount,
+      access: access
+    )
   }
 
   /// VirtIO DMA is deliberately RAM-only. A descriptor can never trigger an APIC, PCI, or other

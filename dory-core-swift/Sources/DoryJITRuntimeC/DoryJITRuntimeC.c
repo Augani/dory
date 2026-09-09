@@ -203,14 +203,15 @@ int dory_jit_tlb_resolve(
         return lookup;
     }
 
-    uint64_t physical_address = 0;
+    uint64_t host_address_space_offset = 0;
     uint64_t fault_address = 0;
     uint32_t fault_error_code = 0;
     const int32_t translation = dory_x86_jit_translate(
         memory_context,
         linear_address,
         (uint32_t)access,
-        &physical_address,
+        byte_count,
+        &host_address_space_offset,
         &fault_address,
         &fault_error_code
     );
@@ -221,13 +222,13 @@ int dory_jit_tlb_resolve(
         return 0;
     }
     if (translation != DORY_JIT_TLB_RESOLUTION_FILLED ||
-        physical_address > host_address_space_byte_count ||
-        (uint64_t)byte_count > host_address_space_byte_count - physical_address ||
-        host_address_space_base > UINT64_MAX - physical_address) {
+        host_address_space_offset > host_address_space_byte_count ||
+        (uint64_t)byte_count > host_address_space_byte_count - host_address_space_offset ||
+        host_address_space_base > UINT64_MAX - host_address_space_offset) {
         resolution_out->status = DORY_JIT_TLB_RESOLUTION_FALLBACK;
         return 0;
     }
-    host_address = host_address_space_base + physical_address;
+    host_address = host_address_space_base + host_address_space_offset;
     const int fill = dory_jit_tlb_fill(tlb, access, linear_address, tag, host_address);
     if (fill != 0) {
         return fill;

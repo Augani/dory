@@ -94,7 +94,8 @@ int32_t dory_x86_jit_translate(
     void *memory_context,
     uint64_t linear_address,
     uint32_t access,
-    uint64_t *physical_address_out,
+    uint32_t byte_count,
+    uint64_t *host_address_space_offset_out,
     uint64_t *fault_address_out,
     uint32_t *fault_error_code_out
 );

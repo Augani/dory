@@ -189,6 +189,17 @@ public protocol DoryX86HostAddressSpaceMemory: AnyObject, Sendable {
   var hostAddressSpaceByteCount: Int { get }
 }
 
+/// Optional proof that an architectural physical access has a directly accessible offset in the
+/// reserved host address space. Device routes and inaccessible holes return nil without touching
+/// the mapping; generated code then retains the existing callback/interpreter path.
+public protocol DoryX86DirectHostAddressSpaceMemory: DoryX86HostAddressSpaceMemory {
+  func hostAddressSpaceOffset(
+    at address: UInt64,
+    byteCount: Int,
+    access: DoryX86MemoryAccessKind
+  ) -> UInt64?
+}
+
 extension DoryX86Memory {
   public func validateRead(at address: UInt64, byteCount: Int) throws {
     _ = try read(at: address, byteCount: byteCount)

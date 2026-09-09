@@ -140,6 +140,33 @@ import Testing
     #expect(device.accesses == 2)
   }
 
+  @Test func directHostOffsetsAdmitOnlyLowAndRelocatedHighRAM() throws {
+    let page = Int(getpagesize())
+    let ram = try DoryX86MmapMemory(
+      validatingByteCount: page * 3,
+      hostAddressSpaceByteCount: page * 6,
+      ramMappings: [
+        .init(logicalOffset: 0, hostOffset: 0, byteCount: page),
+        .init(logicalOffset: page, hostOffset: page * 4, byteCount: page * 2),
+      ]
+    )
+    let bus = try DoryPCPhysicalMemoryBus(
+      ram: ram,
+      mmioHoleStart: UInt64(page),
+      above4GRAMStart: UInt64(page * 4)
+    )
+    let device = BoundaryMMIO(baseAddress: UInt64(page * 2), byteCount: 0x100)
+    try bus.attach(device)
+    bus.seal()
+
+    #expect(bus.hostAddressSpaceOffset(at: 0x800, byteCount: 8, access: .read) == 0x800)
+    let highAddress = UInt64(page * 4 + 0x123)
+    #expect(
+      bus.hostAddressSpaceOffset(at: highAddress, byteCount: 4, access: .write) == highAddress)
+    #expect(bus.hostAddressSpaceOffset(at: device.baseAddress, byteCount: 4, access: .read) == nil)
+    #expect(device.accesses == 0)
+  }
+
 
   @Test func atomicCompareExchangeRoutesOnlyOrdinaryRAMAndHighRAM() throws {
     let ram = try DoryX86ByteArrayMemory(byteCount: 0x3000)
