@@ -440,6 +440,145 @@ import Testing
     #endif
   }
 
+  @Test func measuredMemoryBitResetClearsOnlyTheSelectedBitAndRollsBackWriteFailure() throws {
+    let codeAddress: UInt64 = 0xFFFF_FFFF_81E1_B3A6
+    let bytes: [UInt8] = [0x48, 0x0F, 0xB3, 0x08]  // btrq %rcx,(%rax)
+    let block = try DoryX86IRTranslator().translate(bytes, at: codeAddress, mode: .long64)
+    #expect(block.guestByteCount == 4)
+    #expect(block.guestInstructionCount == 1)
+    #expect(
+      block.statements
+        == [
+          .bitTestMemoryRegister(
+            operation: .reset,
+            base: .memory(
+              .init(
+                base: .init(bank: "x86.gpr", index: 0, width: .i64),
+                addressWidth: .i64
+              ),
+              width: .i64
+            ),
+            index: .register(.init(bank: "x86.gpr", index: 1, width: .i64))
+          )
+        ])
+    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+    #expect(compiled.tier == .tier1)
+    #expect(compiled.requiresMemoryCallbacks)
+    #expect(compiled.requiresRestartableMemoryReads)
+    #expect(compiled.mayExitToInterpreter)
+
+    let sameOperationElsewhere = try DoryX86IRTranslator().translate(
+      bytes,
+      at: codeAddress + 4,
+      mode: .long64
+    )
+    #expect(DoryARM64Tier1Emitter().compile(sameOperationElsewhere) == nil)
+
+    #if arch(arm64)
+      let memoryBase = codeAddress - 0x200
+      let dataAddress = codeAddress + 0x1800
+      for signedIndex: Int64 in [0, 63, 64, -1, -65] {
+        let elementOffset = signedIndex >> 6
+        let bitOffset = UInt64(bitPattern: signedIndex) & 63
+        let selectedAddress = UInt64(
+          bitPattern: Int64(bitPattern: dataAddress) &+ elementOffset &* 8
+        )
+        let bit = UInt64(1) << bitOffset
+        for selected in [false, true] {
+          let interpretedMemory = try DoryX86ByteArrayMemory(
+            baseAddress: memoryBase,
+            byteCount: 0x3000
+          )
+          let tier1Memory = try DoryX86ByteArrayMemory(
+            baseAddress: memoryBase,
+            byteCount: 0x3000
+          )
+          let pattern: UInt64 = 0xA55A_6996_C33C_F00F
+          let initialQword = selected ? pattern | bit : pattern & ~bit
+          let qwordBytes = (0..<8).map {
+            UInt8(truncatingIfNeeded: initialQword >> ($0 * 8))
+          }
+          for memory in [interpretedMemory, tier1Memory] {
+            try memory.write(at: codeAddress, bytes: bytes)
+            try memory.write(at: selectedAddress, bytes: qwordBytes)
+          }
+          let initial = try DoryX86ArchitecturalState(
+            registers: .init(
+              rax: dataAddress,
+              rcx: UInt64(bitPattern: signedIndex)
+            ),
+            rip: codeAddress,
+            rflags: selected
+              ? [.reservedOne, .direction]
+              : [.reservedOne, .carry, .direction]
+          )
+          var interpreted = initial
+          guard case .retired = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: interpretedMemory,
+            mode: .long64
+          ) else {
+            Issue.record("interpreter did not retire measured memory BTR fixture")
+            return
+          }
+          var tier1 = initial
+          let execution = try #require(
+            DoryARM64BaselineExecutor(
+              maximumCodeBytes: 16 * 1024,
+              tier1Enabled: true
+            ).execute(
+              bytes: bytes,
+              at: codeAddress,
+              mode: .long64,
+              addressSpaceID: UInt64(bitPattern: signedIndex),
+              maximumInstructions: 1,
+              state: &tier1,
+              memory: tier1Memory
+            ))
+          #expect(execution.block.tier == .tier1)
+          #expect(tier1 == interpreted)
+          #expect(tier1Memory.snapshot() == interpretedMemory.snapshot())
+          #expect(tier1.rflags.contains(.carry) == selected)
+        }
+      }
+
+      let rejectedWriteMemory = try Tier1RejectingWriteMemory(
+        baseAddress: memoryBase,
+        byteCount: 0x3000
+      )
+      try rejectedWriteMemory.backing.write(at: codeAddress, bytes: bytes)
+      try rejectedWriteMemory.backing.write(
+        at: dataAddress,
+        bytes: [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]
+      )
+      let failedInitial = try DoryX86ArchitecturalState(
+        registers: .init(rax: dataAddress, rcx: 7),
+        rip: codeAddress,
+        rflags: [.reservedOne, .direction]
+      )
+      var failed = failedInitial
+      let initialMemory = rejectedWriteMemory.backing.snapshot()
+      let failure = try #require(
+        DoryARM64BaselineExecutor(
+          maximumCodeBytes: 4096,
+          tier1Enabled: true
+        ).execute(
+          bytes: bytes,
+          at: codeAddress,
+          mode: .long64,
+          addressSpaceID: 0xB7,
+          maximumInstructions: 1,
+          state: &failed,
+          memory: rejectedWriteMemory
+        ))
+      #expect(failure.block.tier == .tier1)
+      #expect(failure.exitCode == .interpreter)
+      #expect(failed == failedInitial)
+      #expect(rejectedWriteMemory.backing.snapshot() == initialMemory)
+      #expect(rejectedWriteMemory.writeAttempts == 1)
+    #endif
+  }
+
   @Test func measuredDelayTSCMulLoadBlockCompilesInTier1() throws {
     let address: UInt64 = 0xFFFF_FFFF_81E2_DC36
     let bytes: [UInt8] = [

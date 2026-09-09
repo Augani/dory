@@ -654,17 +654,20 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
-  /// Executes the measured read-only register-indexed memory BT. The signed index selects a
+  /// Executes the measured register-indexed memory BT/BTR slices. The signed index selects a
   /// qword before or after the ModRM address and a bit within that qword. The adjusted address is
-  /// complete before the restartable callback; only CF is published after the read succeeds.
-  func emitMeasuredMemoryBitTest(
+  /// complete before the restartable read; BTR stages a final transactional write before CF is
+  /// published, while read-only BT publishes CF immediately after its read.
+  func emitMeasuredMemoryBitOperation(
     _ operation: DoryX86BitOperation,
     width: DoryIRIntegerWidth,
     address: DoryIRMemoryAddress,
     indexGuestRegister: Int,
     into words: inout [UInt32]
   ) -> Bool {
-    guard operation == .test, width == .i64, (0..<16).contains(indexGuestRegister) else {
+    guard operation == .test || operation == .reset, width == .i64,
+      (0..<16).contains(indexGuestRegister)
+    else {
       return false
     }
     var fragment: [UInt32] = []
@@ -689,6 +692,7 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
         leftShift: 3,
         destination: 16
       ))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
     Self.emitMemoryReadAtAddress(width: width, into: &fragment)
 
     fragment.append(Self.encodeLoad64(register: 16, word: .rip))
@@ -705,10 +709,27 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     fragment.append(
       Self.encodeVariableShift(
         .left, is64Bit: true, value: 26, count: 17, destination: 17))
+    if operation == .reset {
+      fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+    }
     fragment.append(
       Self.encodeLogical(
         .andSetFlags, is64Bit: true, left: 16, right: 17, destination: 26))
     fragment.append(Self.encodeConditionalSet(register: 17, condition: .notEqual))
+    if operation == .reset {
+      fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsResult))
+      fragment.append(Self.encodeLoad64(register: 17, word: .lazyFlagsSource2))
+      Self.emitImmediate(.max, register: 26, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .xor, is64Bit: true, left: 17, right: 26, destination: 17))
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: 16, right: 17, destination: 16))
+      fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource2))
+      Self.emitStagedMemoryWrite(byteCount: 8, into: &fragment)
+      fragment.append(Self.encodeLoad64(register: 17, word: .lazyFlagsResult))
+    }
     Self.emitImmediate(~DoryX86RFLAGS.carry.rawValue, register: 26, into: &fragment)
     fragment.append(
       Self.encodeLogical(.and, is64Bit: true, left: 25, right: 26, destination: 25))
