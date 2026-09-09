@@ -62,6 +62,7 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
   private var interruptStatus: UInt64 = 0
   private var mainCounter: UInt64 = 0
   private var timers: [Timer]
+  private var interruptRequestCounts: [UInt64]
 
   public init(
     baseAddress: UInt64 = DoryPCV1ABI.hpetBase,
@@ -75,6 +76,7 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
     self.timerCount = timerCount
     self.interruptSink = interruptSink
     timers = .init(repeating: .init(), count: timerCount)
+    interruptRequestCounts = .init(repeating: 0, count: timerCount)
   }
 
   public func advance(by ticks: UInt64) {
@@ -91,6 +93,7 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
         interruptStatus |= UInt64(1) << UInt64(index)
         let route = interruptRouteLocked(timer: index)
         if timers[index].configuration & (1 << 2) != 0 {
+          if interruptRequestCounts[index] < .max { interruptRequestCounts[index] += 1 }
           if timers[index].configuration & (1 << 1) != 0 {
             notifications.append(.init(timer: index, route: route, asserted: true))
           } else {
@@ -162,6 +165,8 @@ public final class DoryPCHPET: DoryPCMMIODevice, @unchecked Sendable {
       )
     }
   }
+
+  public var timerInterruptRequests: [UInt64] { lock.withLock { interruptRequestCounts } }
 
   public func read(offset: UInt64, byteCount: Int) throws -> [UInt8] {
     try validateAccess(offset: offset, byteCount: byteCount, write: false)

@@ -436,6 +436,26 @@ import Testing
     #expect(try currentCount(divideConfiguration: 0x3) == 994)
   }
 
+  @Test func timerDiagnosticsCountRequestsAtTheirDeviceSource() throws {
+    let machine = try DoryPCDirectKernelMachine(memoryBytes: 2 * 1024 * 1024)
+    try machine.load(kernel: makeELF(code: [0xEB, 0xFE]), commandLine: "x")
+    try machine.localAPIC.configureSpuriousVector(0xFF, softwareEnabled: true)
+    try machine.localAPIC.configureTimer(
+      vector: 0x30,
+      masked: false,
+      mode: .oneShot,
+      initialCount: 1
+    )
+
+    #expect(try machine.runOnDedicatedStack(maximumInstructions: 1) == .instructionBudget(1))
+    let diagnostics = machine.timerInterruptDiagnostics
+    #expect(diagnostics.localAPICRequests == [1])
+    #expect(diagnostics.pitRequests == 0)
+    #expect(diagnostics.rtcRequests == 0)
+    #expect(diagnostics.hpetRequests == [0, 0, 0])
+    #expect(diagnostics.totalRequests == 1)
+  }
+
   @Test func productionClockAdvancesTSCAndDevicesFromHostMonotonicTime() throws {
     final class ManualClock: @unchecked Sendable {
       private let lock = NSLock()

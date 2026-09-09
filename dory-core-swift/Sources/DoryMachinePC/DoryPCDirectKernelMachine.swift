@@ -146,6 +146,22 @@ public struct DoryPCExecutionStatistics: Codable, Sendable, Hashable {
   }
 }
 
+/// Timer-origin interrupt requests. Counts are captured at the device source, before controller
+/// coalescing or guest interrupt masking, so they remain distinct from delivered vector totals.
+public struct DoryPCTimerInterruptDiagnostics: Sendable, Hashable {
+  public let localAPICRequests: [UInt64]
+  public let pitRequests: UInt64
+  public let rtcRequests: UInt64
+  public let hpetRequests: [UInt64]
+
+  public var totalRequests: UInt64 {
+    (localAPICRequests + [pitRequests, rtcRequests] + hpetRequests).reduce(0) { partial, value in
+      let (sum, overflow) = partial.addingReportingOverflow(value)
+      return overflow ? .max : sum
+    }
+  }
+}
+
 public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let recentLookupHits: UInt64
   public let dictionaryLookupHits: UInt64
@@ -754,6 +770,15 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
 
   public var pagingDiagnostics: [DoryX86PagingDiagnostics] {
     pagingUnits.map(\.diagnostics)
+  }
+
+  public var timerInterruptDiagnostics: DoryPCTimerInterruptDiagnostics {
+    .init(
+      localAPICRequests: localAPICs.map(\.timerInterruptRequests),
+      pitRequests: legacyPIT.timerInterruptRequests,
+      rtcRequests: rtc.timerInterruptRequests,
+      hpetRequests: hpet.timerInterruptRequests
+    )
   }
 
   public func state(forProcessor index: Int) -> DoryX86ArchitecturalState? {

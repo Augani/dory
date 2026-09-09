@@ -61,6 +61,7 @@ import Testing
     #expect(try read(rtc, 0x00) == 0x59)
     #expect(try read(rtc, 0x0C) == 0xD0)
     #expect(levels.values == [false, true, false, true, false])
+    #expect(rtc.timerInterruptRequests == 2)
   }
 
   @Test func alarmInterruptUsesDontCareFields() throws {

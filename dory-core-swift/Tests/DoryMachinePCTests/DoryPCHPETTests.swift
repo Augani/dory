@@ -39,6 +39,7 @@ import Testing
       ])
     #expect(hpet.snapshot().interruptStatus == 1)
     #expect(!hpet.snapshot().timers[0].armed)
+    #expect(hpet.timerInterruptRequests == [1, 0, 0])
     try write64(hpet, 0x20, 1)
     #expect(hpet.snapshot().interruptStatus == 0)
   }
@@ -75,6 +76,7 @@ import Testing
 
     #expect(hpet.snapshot().mainCounter == 10_000_000_000)
     #expect(hpet.snapshot().timers[0].comparator == 10_000_000_001)
+    #expect(hpet.timerInterruptRequests == [1, 0, 0])
   }
 
   @Test func machineMapsHPETAndRoutesComparatorInterrupts() throws {

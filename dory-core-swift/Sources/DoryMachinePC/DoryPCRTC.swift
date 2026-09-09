@@ -33,6 +33,7 @@ public final class DoryPCRTC146818: DoryPCPortIODevice, @unchecked Sendable {
   private var oscillatorTicks: UInt64 = 0
   private var interruptSink: (@Sendable (Bool) -> Void)?
   private var lastInterruptLevel = false
+  private var interruptRequestCount: UInt64 = 0
 
   public init(initialDate: Date = Date()) {
     var calendar = Calendar(identifier: .gregorian)
@@ -76,6 +77,8 @@ public final class DoryPCRTC146818: DoryPCPortIODevice, @unchecked Sendable {
       )
     }
   }
+
+  public var timerInterruptRequests: UInt64 { lock.withLock { interruptRequestCount } }
 
   /// Returns oscillator ticks until the next enabled RTC event can assert IRQ8. This lets a halted
   /// virtual CPU jump directly to the next deterministic device deadline instead of busy waiting.
@@ -298,6 +301,7 @@ public final class DoryPCRTC146818: DoryPCPortIODevice, @unchecked Sendable {
     let level = interruptLevelLocked()
     guard level != lastInterruptLevel else { return nil }
     lastInterruptLevel = level
+    if level, interruptRequestCount < .max { interruptRequestCount += 1 }
     return interruptSink.map { ($0, level) }
   }
 

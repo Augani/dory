@@ -39,6 +39,7 @@ import Testing
     pit.advance(by: 26)
 
     let snapshot = pit.snapshot()
+    #expect(pit.timerInterruptRequests == 1)
     #expect(snapshot.mode == .rateGenerator)
     #expect(snapshot.reload == 10)
     #expect(snapshot.current == 4)

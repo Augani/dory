@@ -64,6 +64,7 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
   private var timer = DoryPCLocalAPICTimerState()
   private var timerDivideValue: UInt64 = 2
   private var timerBaseClockRemainder: UInt64 = 0
+  private var timerInterruptRequestCount: UInt64 = 0
 
   public init(apicID: UInt32) {
     self.apicID = apicID
@@ -258,6 +259,8 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
     lock.withLock { advanceTimerLocked(by: ticks) }
   }
 
+  public var timerInterruptRequests: UInt64 { lock.withLock { timerInterruptRequestCount } }
+
   private func advanceTimerLocked(by ticks: UInt64) {
     guard ticks > 0, timer.currentCount > 0 else { return }
     let current = UInt64(timer.currentCount)
@@ -267,6 +270,7 @@ public final class DoryPCLocalAPIC: @unchecked Sendable {
     }
 
     if !timer.masked {
+      if timerInterruptRequestCount < .max { timerInterruptRequestCount += 1 }
       injectLocked(vector: timer.vector, levelTriggered: false)
     }
     switch timer.mode {

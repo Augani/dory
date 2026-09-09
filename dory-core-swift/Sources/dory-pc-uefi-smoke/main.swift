@@ -388,6 +388,18 @@ private func physicalMemoryDiagnostics(
   ]
 }
 
+private func timerInterruptDiagnostics(
+  _ diagnostics: DoryPCTimerInterruptDiagnostics
+) -> [String: Any] {
+  [
+    "localAPICRequests": diagnostics.localAPICRequests,
+    "pitRequests": diagnostics.pitRequests,
+    "rtcRequests": diagnostics.rtcRequests,
+    "hpetRequests": diagnostics.hpetRequests,
+    "totalRequests": diagnostics.totalRequests,
+  ]
+}
+
 private func completedInstructions(for stop: DoryPCMachineStop) -> UInt64 {
   switch stop {
   case .halted(let instructionCount), .exception(_, let instructionCount),
@@ -672,6 +684,8 @@ private func runWithProgress(
         "optimizingJITInstructions": statistics.optimizingJITInstructions,
         "pagingDiagnostics": pagingDiagnostics(machine.pagingDiagnostics),
         "physicalMemoryDiagnostics": physicalMemoryDiagnostics(machine.physicalMemory.diagnostics),
+        "timerInterruptDiagnostics": timerInterruptDiagnostics(
+          machine.timerInterruptDiagnostics),
         "blockDevices": blockDeviceDiagnostics(blockDevices, memory: machine.physicalMemory),
       ]
       let data = try JSONSerialization.data(withJSONObject: payload, options: [.sortedKeys])
@@ -975,6 +989,8 @@ private func run() throws {
     "pagingDiagnostics": pagingDiagnostics(composed.machine.pagingDiagnostics),
     "physicalMemoryDiagnostics": physicalMemoryDiagnostics(
       composed.machine.physicalMemory.diagnostics),
+    "timerInterruptDiagnostics": timerInterruptDiagnostics(
+      composed.machine.timerInterruptDiagnostics),
     "persistentSystemDisk": arguments.systemDisk?.path ?? "in-memory",
     "installerMedia": arguments.installerMedia?.path ?? "none",
     "installerMediaByteCount": installerIdentity.map { $0.byteCount as Any } ?? NSNull(),
