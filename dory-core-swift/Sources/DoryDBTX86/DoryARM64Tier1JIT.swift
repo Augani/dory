@@ -11,6 +11,7 @@ struct DoryARM64Tier1Emitter: Sendable {
   private static let measuredMemorySetEqualFreePageStack23RIP: UInt64 = 0xFFFF_FFFF_815C_AB95
   private static let measuredMemorySetEqualPrintkStack22RIP: UInt64 = 0xFFFF_FFFF_8138_8B5D
   private static let measuredMemorySetNotEqualRIP: UInt64 = 0xFFFF_FFFF_812D_F36A
+  private static let measuredMemorySetNotEqualSecondaryRIP: UInt64 = 0xFFFF_FFFF_812D_F23D
   private static let measuredMemoryBitTestRIP: UInt64 = 0xFFFF_FFFF_81E1_C883
   private static let measuredMemoryBitTestRCXRIP: UInt64 = 0xFFFF_FFFF_81E1_B3A0
   private static let measuredMemoryBitResetRIP: UInt64 = 0xFFFF_FFFF_81E1_B3A6
@@ -688,7 +689,7 @@ struct DoryARM64Tier1Emitter: Sendable {
       measuredMemorySetEqualFreePageStack23RIP,
       measuredMemorySetEqualPrintkStack22RIP:
       return block.guestByteCount == 5 && condition == .equal
-    case measuredMemorySetNotEqualRIP:
+    case measuredMemorySetNotEqualRIP, measuredMemorySetNotEqualSecondaryRIP:
       return block.guestByteCount == 3 && condition == .notEqual
     default:
       return false
