@@ -43,7 +43,7 @@ import Testing
     }
   }
 
-  @Test func bothNativeTiersDeclineBeforeEffectsThenInterpreterRetiresExactlyOnce() throws {
+  @Test func nativeLongModeFormsMatchInterpreterAndOtherFormsDeclineCleanly() throws {
     #if arch(arm64)
       for optimization in [DoryARM64JITOptimization.baseline, .optimizing] {
         let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 16384, optimization: optimization)
@@ -52,22 +52,27 @@ import Testing
             let bytes = form.prefix + [highHalf ? 0x99 : 0x98]
             let memory = try DoryX86ByteArrayMemory(baseAddress: 0x1000, bytes: bytes)
             var state = try initialState(mode: form.mode, rax: .max)
-            let before = state
+            var expected = state
             let snapshot = memory.snapshot()
+            let decoded = try DoryX86Decoder().decode(bytes, at: state.rip, mode: form.mode)
+            #expect(
+              DoryX86Interpreter().step(state: &expected, memory: memory, mode: form.mode)
+                == .retired(decoded))
             let summary = try executor.executeSummary(
               byteProvider: { Array(bytes.prefix($0)) }, at: state.rip, mode: form.mode,
               addressSpaceID: 0, maximumInstructions: 1, state: &state, memory: memory)
-            #expect(summary == nil)
-            #expect(state == before && memory.snapshot() == snapshot)
-            let expectedRAX: UInt64 = highHalf ? .max : (form.width == .doubleword ? 0xFFFF_FFFF : .max)
-            let expectedRDX: UInt64 = form.width == .word ? 0x1234_5678_9ABC_FFFF
-              : (form.width == .doubleword ? 0xFFFF_FFFF : .max)
-            var expected = before
-            expected.registers.rax = expectedRAX
-            if highHalf { expected.registers.rdx = expectedRDX }
-            expected.rip += UInt64(bytes.count)
-            let decoded = try DoryX86Decoder().decode(bytes, at: before.rip, mode: form.mode)
-            #expect(DoryX86Interpreter().step(state: &state, memory: memory, mode: form.mode) == .retired(decoded))
+            let isNative = form.mode == .long64
+              && (form.width == .quadword || (highHalf && form.width == .doubleword))
+            if isNative {
+              let nativeSummary = try #require(summary)
+              #expect(nativeSummary.guestInstructionCount == 1)
+              #expect(nativeSummary.tier.rawValue == optimization.rawValue)
+            } else {
+              #expect(summary == nil)
+              #expect(
+                DoryX86Interpreter().step(state: &state, memory: memory, mode: form.mode)
+                  == .retired(decoded))
+            }
             #expect(state == expected && memory.snapshot() == snapshot)
           }
         }
