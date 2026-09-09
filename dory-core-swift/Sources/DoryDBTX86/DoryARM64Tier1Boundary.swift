@@ -47,7 +47,8 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
   private static let hostFrameByteCount = 12 * MemoryLayout<UInt64>.stride
 
   /// Saves the Darwin callee-saved register set owned by tier-1, installs x28, and loads every
-  /// architectural GPR plus RIP and the currently materialized RFLAGS image.
+  /// architectural GPR plus RIP, the currently materialized RFLAGS image, and the pending lazy
+  /// operation descriptor.
   func emitEntry(into words: inout [UInt32]) {
     words.append(Self.encodeSubtractImmediate(left: 31, immediate: Self.hostFrameByteCount,
       destination: 31))
@@ -68,8 +69,9 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
     words.append(Self.encodeLoad64(
       register: DoryARM64Tier1ABI.lazyFlagsRegisters[0], base: 28,
       byteOffset: DoryARM64Tier1ABI.ContextWord.rflags.byteOffset))
-    words.append(Self.encodeMove(
-      destination: DoryARM64Tier1ABI.lazyFlagsRegisters[1], source: 31))
+    words.append(Self.encodeLoad64(
+      register: DoryARM64Tier1ABI.lazyFlagsRegisters[1], base: 28,
+      byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
   }
 
   /// Emits one conservative helper boundary. Only the live pinned guest subset is checkpointed
@@ -91,6 +93,10 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
       register: DoryARM64Tier1ABI.lazyFlagsRegisters[0],
       base: DoryARM64Tier1ABI.contextRegister,
       byteOffset: DoryARM64Tier1ABI.ContextWord.rflags.byteOffset))
+    words.append(Self.encodeStore64(
+      register: DoryARM64Tier1ABI.lazyFlagsRegisters[1],
+      base: DoryARM64Tier1ABI.contextRegister,
+      byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
     words.append(Self.encodeLoad64(
       register: DoryARM64Tier1ABI.scratchRegisters[0],
       base: DoryARM64Tier1ABI.contextRegister,
@@ -154,6 +160,10 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
       register: DoryARM64Tier1ABI.lazyFlagsRegisters[0],
       base: DoryARM64Tier1ABI.contextRegister,
       byteOffset: DoryARM64Tier1ABI.ContextWord.rflags.byteOffset))
+    words.append(Self.encodeStore64(
+      register: DoryARM64Tier1ABI.lazyFlagsRegisters[1],
+      base: DoryARM64Tier1ABI.contextRegister,
+      byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
     words.append(Self.encodeMoveWideZero32(
       register: 0, immediate: UInt16(exitCode.rawValue)))
     for (pairIndex, first) in stride(from: 19, through: 29, by: 2).enumerated() {

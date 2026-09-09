@@ -14,7 +14,7 @@ that external entry boundary until the dispatcher changes atomically.
 | `x16`, `x17` | translator | intra-procedure scratch and indirect helper/chain targets; never live across a helper |
 | `x18` | Darwin | platform-reserved; generated code must never read or write it |
 | `x19`...`x24` | dispatcher | callee-saved dispatcher state, helper table, and cache/chaining state; never allocated to a guest value |
-| `x25`, `x26` | lazy flags | operation descriptor and flag payload defined by A05.2 |
+| `x25`, `x26` | lazy flags | last materialized RFLAGS image and pending operation/count descriptor |
 | `x27` | guest RIP | current architectural instruction pointer |
 | `x28` | vCPU context | base of the stable context-word array and derived TLB state |
 | `x29`, `x30` | host frame/link | standard frame pointer and link register |
@@ -55,19 +55,35 @@ pointers.
 ## Entry, exit, and chaining
 
 The C dispatcher initially calls an entry shim using the Darwin C ABI. The shim
-loads guest GPRs into `x0`...`x15`, RIP into `x27`, materialized flags into the
-A05.2 flag registers, and installs `x28`. Direct chains branch to a tier-1 block
-entry after this setup and therefore cannot target the C entry shim.
+loads guest GPRs into `x0`...`x15`, RIP into `x27`, the last materialized RFLAGS
+image into `x25`, the pending operation/count descriptor into `x26`, and installs
+`x28`. Direct chains branch to a tier-1 block entry after this setup and therefore
+cannot target the C entry shim.
 
 `DoryARM64Tier1BoundaryEmitter` is the executable implementation of these
 boundaries. Its entry saves `x19`...`x30` in one 96-byte, 16-byte-aligned host
 frame before installing pinned state. Its exit writes architectural state,
 restores that frame, and returns a `DoryJITExitCode` through `w0`.
 
-An exit materializes every dirty architectural value to the context before
-returning an exit code. Interpreter, exception, interrupt, and code-cache exits
-must publish the precise RIP of the next instruction to execute. A direct chain
-publishes nothing solely for the chain; its target consumes the pinned state.
+An exit publishes every dirty architectural value and the complete pending-flags
+record to the context before returning an exit code. The executor materializes
+that record before architectural state becomes externally visible. Interpreter,
+exception, interrupt, and code-cache exits must publish the precise RIP of the
+next instruction to execute. A direct chain publishes nothing solely for the
+chain; its target consumes the pinned state.
+
+## Native flags producers and fusion
+
+`DoryARM64Tier1ALUEmitter` emits pinned-register ADD/SUB/CMP/AND/TEST/OR/XOR
+producers for 32- and 64-bit operands. Each producer stores its complete lazy
+record at words 43...47 while leaving ARM NZCV live. A returned `NativeFlags`
+token may be used only by an immediately adjacent fused consumer.
+
+Subtraction maps x86 CF to inverted ARM C: JB/JAE/JBE/JA therefore use CC/CS/LS/HI.
+Addition maps CF directly to ARM C, so JB/JAE use CS/CC; JBE/JA after addition do
+not have a single native condition and materialize. Logical operations treat CF
+and OF as zero. ZF/SF/OF and signed comparisons map directly in every domain.
+PF/NP always materialize.
 
 ## Helper-call shim
 

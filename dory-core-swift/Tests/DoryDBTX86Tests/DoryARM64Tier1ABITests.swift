@@ -133,6 +133,8 @@ import Testing
       let initialGuestRegisters = Array(context[0..<16])
       let initialRIP = context[DoryARM64Tier1ABI.ContextWord.rip.rawValue]
       let initialRFLAGS = context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue]
+      let initialLazyOperation =
+        context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue]
       context[DoryARM64Tier1ABI.ContextWord.tlbResolver.rawValue] = helperAddress
 
       let exit = try region.execute(at: 0, context: &context)
@@ -144,6 +146,8 @@ import Testing
       #expect(context[resultRegister] == helperArgument ^ doryTier1HelperResultMask)
       #expect(context[DoryARM64Tier1ABI.ContextWord.rip.rawValue] == initialRIP)
       #expect(context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue] == initialRFLAGS)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue]
+        == initialLazyOperation)
       #expect(context[DoryARM64Tier1ABI.ContextWord.tsc.rawValue] == helperArgument)
     #endif
   }

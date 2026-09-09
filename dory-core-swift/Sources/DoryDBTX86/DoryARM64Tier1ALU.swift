@@ -1,0 +1,297 @@
+/// Straight-line integer fragments for the pinned tier-1 ABI.
+///
+/// Producers leave ARM NZCV live, preserve the last materialized x86 RFLAGS image in `x25`, and
+/// persist a complete lazy-flags record through `x28`. A directly adjacent consumer can therefore
+/// use NZCV without synthesizing x86 flags. Later consumers materialize the persisted record.
+struct DoryARM64Tier1ALUEmitter: Sendable {
+  enum Source: Sendable, Equatable {
+    case guestRegister(Int)
+    case immediate(UInt64)
+  }
+
+  struct NativeFlags: Sendable, Equatable {
+    fileprivate enum Domain: Sendable, Equatable {
+      case addition
+      case subtraction
+      case logical
+    }
+
+    let operation: DoryIRBinaryOperation
+    let width: DoryIRIntegerWidth
+    fileprivate let domain: Domain
+  }
+
+  /// Emits ADD/SUB/CMP/AND/TEST/OR/XOR for a pinned register destination.
+  ///
+  /// The result, both inputs, width, and operation are checkpointed to the stable lazy-flags
+  /// context words. The returned token proves which native flag domain remains in NZCV and must
+  /// only be passed to an immediately following fused consumer.
+  func emitBinary(
+    _ operation: DoryIRBinaryOperation,
+    width: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    source: Source,
+    writesDestination: Bool,
+    into words: inout [UInt32]
+  ) -> NativeFlags? {
+    guard width == .i32 || width == .i64,
+      (0..<16).contains(destinationGuestRegister),
+      Self.validWriteMode(operation: operation, writesDestination: writesDestination)
+    else { return nil }
+    if case .guestRegister(let sourceRegister) = source {
+      guard (0..<16).contains(sourceRegister) else { return nil }
+    }
+
+    let lazyOperation: DoryARM64LazyFlagsState.Operation
+    let domain: NativeFlags.Domain
+    switch operation {
+    case .add:
+      lazyOperation = .add
+      domain = .addition
+    case .subtract, .compare:
+      lazyOperation = .subtract
+      domain = .subtraction
+    case .and, .test, .or, .xor:
+      lazyOperation = .logical
+      domain = .logical
+    case .addWithCarry, .subtractWithBorrow:
+      return nil
+    }
+
+    var fragment: [UInt32] = []
+    let is64Bit = width == .i64
+    let destination = UInt32(destinationGuestRegister)
+    fragment.append(Self.encodeMove(
+      destination: 16, source: destination, is64Bit: is64Bit))
+    fragment.append(Self.encodeStore64(
+      register: 16, word: .lazyFlagsSource1))
+
+    switch source {
+    case .guestRegister(let sourceRegister):
+      fragment.append(Self.encodeMove(
+        destination: 17, source: UInt32(sourceRegister), is64Bit: is64Bit))
+    case .immediate(let value):
+      Self.emitImmediate(
+        is64Bit ? value : value & 0xFFFF_FFFF, register: 17, into: &fragment)
+    }
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+
+    let resultRegister = writesDestination ? destination : 16
+    switch operation {
+    case .add:
+      fragment.append(Self.encodeAddSubtractSetFlags(
+        add: true, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
+    case .subtract, .compare:
+      fragment.append(Self.encodeAddSubtractSetFlags(
+        add: false, is64Bit: is64Bit, left: 16, right: 17, destination: resultRegister))
+    case .and, .test:
+      fragment.append(Self.encodeLogical(
+        .andSetFlags, is64Bit: is64Bit, left: 16, right: 17,
+        destination: resultRegister))
+    case .or, .xor:
+      fragment.append(Self.encodeLogical(
+        operation == .or ? .or : .xor, is64Bit: is64Bit,
+        left: 16, right: 17, destination: resultRegister))
+      fragment.append(Self.encodeLogical(
+        .andSetFlags, is64Bit: is64Bit, left: resultRegister, right: resultRegister,
+        destination: 31))
+    case .addWithCarry, .subtractWithBorrow:
+      return nil
+    }
+
+    fragment.append(Self.encodeStore64(register: resultRegister, word: .lazyFlagsResult))
+    Self.emitImmediate(UInt64(width.rawValue), register: 17, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
+    Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
+    words.append(contentsOf: fragment)
+    return .init(operation: operation, width: width, domain: domain)
+  }
+
+  /// Writes a fused x86 condition result into the low byte of a pinned guest register.
+  ///
+  /// Conditions without a single native mapping return `false` without appending any words.
+  /// Parity always takes the lazy materialization path. Addition's `CF || ZF` combinations also
+  /// materialize because ARM's LS/HI conditions encode the subtraction interpretation of C.
+  func emitFusedSetCondition(
+    _ condition: DoryX86Condition,
+    flags: NativeFlags,
+    destinationGuestRegister: Int,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(destinationGuestRegister),
+      let lowering = Self.lowering(condition, domain: flags.domain)
+    else { return false }
+
+    var fragment: [UInt32] = []
+    switch lowering {
+    case .condition(let nativeCondition):
+      fragment.append(Self.encodeConditionalSet(register: 16, condition: nativeCondition))
+    case .constant(let value):
+      Self.emitImmediate(value ? 1 : 0, register: 16, into: &fragment)
+    }
+    Self.emitImmediate(~UInt64(0xFF), register: 17, into: &fragment)
+    let destination = UInt32(destinationGuestRegister)
+    fragment.append(Self.encodeLogical(
+      .and, is64Bit: true, left: destination, right: 17, destination: destination))
+    fragment.append(Self.encodeLogical(
+      .or, is64Bit: true, left: destination, right: 16, destination: destination))
+    words.append(contentsOf: fragment)
+    return true
+  }
+
+  private static func validWriteMode(
+    operation: DoryIRBinaryOperation,
+    writesDestination: Bool
+  ) -> Bool {
+    switch operation {
+    case .compare, .test: !writesDestination
+    default: writesDestination
+    }
+  }
+
+  private enum ConditionLowering {
+    case condition(ARM64Condition)
+    case constant(Bool)
+  }
+
+  private static func lowering(
+    _ condition: DoryX86Condition,
+    domain: NativeFlags.Domain
+  ) -> ConditionLowering? {
+    switch condition {
+    case .overflow: return .condition(.overflowSet)
+    case .notOverflow: return .condition(.overflowClear)
+    case .equal: return .condition(.equal)
+    case .notEqual: return .condition(.notEqual)
+    case .sign: return .condition(.minus)
+    case .notSign: return .condition(.plus)
+    case .less: return .condition(.lessThan)
+    case .greaterOrEqual: return .condition(.greaterOrEqual)
+    case .lessOrEqual: return .condition(.lessOrEqual)
+    case .greater: return .condition(.greaterThan)
+    case .parity, .notParity:
+      return nil
+    case .below:
+      return switch domain {
+      case .addition: .condition(.carrySet)
+      case .subtraction: .condition(.carryClear)
+      case .logical: .constant(false)
+      }
+    case .aboveOrEqual:
+      return switch domain {
+      case .addition: .condition(.carryClear)
+      case .subtraction: .condition(.carrySet)
+      case .logical: .constant(true)
+      }
+    case .belowOrEqual:
+      return switch domain {
+      case .addition: nil
+      case .subtraction: .condition(.lowerOrSame)
+      case .logical: .condition(.equal)
+      }
+    case .above:
+      return switch domain {
+      case .addition: nil
+      case .subtraction: .condition(.higher)
+      case .logical: .condition(.notEqual)
+      }
+    }
+  }
+
+  private enum LogicalOperation {
+    case and, or, xor, andSetFlags
+  }
+
+  private enum ARM64Condition: UInt32 {
+    case equal = 0
+    case notEqual = 1
+    case carrySet = 2
+    case carryClear = 3
+    case minus = 4
+    case plus = 5
+    case overflowSet = 6
+    case overflowClear = 7
+    case higher = 8
+    case lowerOrSame = 9
+    case greaterOrEqual = 10
+    case lessThan = 11
+    case greaterThan = 12
+    case lessOrEqual = 13
+  }
+
+  private static func emitImmediate(
+    _ value: UInt64,
+    register: UInt32,
+    into words: inout [UInt32]
+  ) {
+    for halfword in 0..<4 {
+      let immediate = UInt16(truncatingIfNeeded: value >> UInt64(halfword * 16))
+      if halfword == 0 {
+        words.append(0xD280_0000 | UInt32(immediate) << 5 | register)
+      } else if immediate != 0 {
+        words.append(
+          0xF280_0000 | UInt32(halfword) << 21 | UInt32(immediate) << 5 | register)
+      }
+    }
+  }
+
+  private static func encodeMove(
+    destination: UInt32,
+    source: UInt32,
+    is64Bit: Bool
+  ) -> UInt32 {
+    (is64Bit ? 0xAA00_03E0 : 0x2A00_03E0) | source << 16 | destination
+  }
+
+  private static func encodeStore64(
+    register: UInt32,
+    word: DoryARM64Tier1ABI.ContextWord
+  ) -> UInt32 {
+    0xF900_0000 | UInt32(word.rawValue) << 10
+      | DoryARM64Tier1ABI.contextRegister << 5 | register
+  }
+
+  private static func encodeAddSubtractSetFlags(
+    add: Bool,
+    is64Bit: Bool,
+    left: UInt32,
+    right: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    let base: UInt32 = switch (add, is64Bit) {
+    case (true, true): 0xAB00_0000
+    case (true, false): 0x2B00_0000
+    case (false, true): 0xEB00_0000
+    case (false, false): 0x6B00_0000
+    }
+    return base | right << 16 | left << 5 | destination
+  }
+
+  private static func encodeLogical(
+    _ operation: LogicalOperation,
+    is64Bit: Bool,
+    left: UInt32,
+    right: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    let base: UInt32 = switch (operation, is64Bit) {
+    case (.and, true): 0x8A00_0000
+    case (.and, false): 0x0A00_0000
+    case (.or, true): 0xAA00_0000
+    case (.or, false): 0x2A00_0000
+    case (.xor, true): 0xCA00_0000
+    case (.xor, false): 0x4A00_0000
+    case (.andSetFlags, true): 0xEA00_0000
+    case (.andSetFlags, false): 0x6A00_0000
+    }
+    return base | right << 16 | left << 5 | destination
+  }
+
+  private static func encodeConditionalSet(
+    register: UInt32,
+    condition: ARM64Condition
+  ) -> UInt32 {
+    0x9A9F_07E0 | ((condition.rawValue ^ 1) << 12) | register
+  }
+}
