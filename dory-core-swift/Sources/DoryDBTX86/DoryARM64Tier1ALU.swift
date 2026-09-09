@@ -274,6 +274,167 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return .init(origin: .unary(operation), width: width, domain: domain)
   }
 
+  /// Emits SHL/SHR/SAR/ROL/ROR with either an immediate or pinned CL count.
+  ///
+  /// Shift flags retain undefined or unchanged bits from the prior image, so a nonzero operation
+  /// first resolves any older lazy record. CL is masked before execution; its zero path publishes
+  /// a materialized descriptor and therefore preserves the resolved flags. These producers do not
+  /// return a `NativeFlags` token: condition consumers use the dedicated lazy materializer.
+  func emitShift(
+    _ operation: DoryIRShiftOperation,
+    width: DoryIRIntegerWidth,
+    destinationGuestRegister: Int,
+    count: DoryIRShiftCount,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(destinationGuestRegister) else { return false }
+    let countMask: UInt64 = width == .i64 ? 0x3F : 0x1F
+    if case .immediate(let rawCount) = count,
+      UInt64(rawCount) & countMask == 0
+    {
+      if width == .i32 {
+        let destination = UInt32(destinationGuestRegister)
+        words.append(Self.encodeMove(
+          destination: destination, source: destination, is64Bit: false))
+      }
+      return true
+    }
+
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+
+    switch count {
+    case .immediate(let rawCount):
+      Self.emitImmediate(UInt64(rawCount) & countMask, register: 17, into: &fragment)
+    case .cl:
+      Self.emitImmediate(countMask, register: 26, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: 1, right: 26, destination: 17))
+    }
+
+    let destination = UInt32(destinationGuestRegister)
+    let is64Bit = width == .i64
+    let isNarrow = width == .i8 || width == .i16
+    let narrowShift = isNarrow ? UInt32(32 - Int(width.rawValue)) : 0
+    let mask = Self.mask(for: width)
+    fragment.append(
+      Self.encodeMove(
+        destination: 16, source: destination, is64Bit: isNarrow || is64Bit))
+    if isNarrow {
+      Self.emitImmediate(mask, register: 26, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: 16, right: 26, destination: 16))
+    }
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    fragment.append(Self.encodeStore64(register: 31, word: .lazyFlagsSource2))
+
+    switch operation {
+    case .left, .logicalRight, .arithmeticRight:
+      if isNarrow {
+        fragment.append(
+          Self.encodeLogical(
+            .or, is64Bit: false, left: 31, right: 16,
+            shiftAmount: narrowShift, destination: 16))
+      }
+      let nativeOperation: VariableShiftOperation =
+        switch operation {
+        case .left: .left
+        case .logicalRight: .logicalRight
+        case .arithmeticRight: .arithmeticRight
+        case .rotateLeft, .rotateRight: preconditionFailure("rotate reached shift lowering")
+        }
+      fragment.append(
+        Self.encodeVariableShift(
+          nativeOperation, is64Bit: is64Bit, value: 16, count: 17, destination: 16))
+      if isNarrow {
+        fragment.append(
+          Self.encodeLogical(
+            .or, is64Bit: false, left: 31, right: 16,
+            shiftAmount: narrowShift, logicalRightShift: true, destination: 16))
+      }
+    case .rotateLeft, .rotateRight:
+      if isNarrow {
+        let replicationShift = UInt32(width.rawValue)
+        fragment.append(
+          Self.encodeLogical(
+            .or, is64Bit: false, left: 16, right: 16,
+            shiftAmount: replicationShift, destination: 16))
+        if width == .i8 {
+          fragment.append(
+            Self.encodeLogical(
+              .or, is64Bit: false, left: 16, right: 16,
+              shiftAmount: 16, destination: 16))
+        }
+      }
+      let rotateCount: UInt32
+      if operation == .rotateLeft {
+        fragment.append(
+          Self.encodeAddSubtract(
+            add: false, is64Bit: is64Bit, left: 31, right: 17, destination: 26))
+        rotateCount = 26
+      } else {
+        rotateCount = 17
+      }
+      fragment.append(
+        Self.encodeVariableShift(
+          .rotateRight, is64Bit: is64Bit, value: 16,
+          count: rotateCount, destination: 16))
+      if isNarrow {
+        Self.emitImmediate(mask, register: 26, into: &fragment)
+        fragment.append(
+          Self.encodeLogical(
+            .and, is64Bit: true, left: 16, right: 26, destination: 16))
+      }
+    }
+
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
+    if isNarrow {
+      Self.emitImmediate(~mask, register: 26, into: &fragment)
+      fragment.append(
+        Self.encodeLogical(
+          .and, is64Bit: true, left: destination, right: 26, destination: destination))
+      fragment.append(
+        Self.encodeLogical(
+          .or, is64Bit: true, left: destination, right: 16, destination: destination))
+    } else if width == .i32 {
+      fragment.append(Self.encodeMove(destination: destination, source: 16, is64Bit: false))
+    } else {
+      fragment.append(Self.encodeMove(destination: destination, source: 16, is64Bit: true))
+    }
+
+    Self.emitImmediate(UInt64(width.rawValue), register: 26, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsWidth))
+    let lazyOperation: DoryARM64LazyFlagsState.Operation =
+      switch operation {
+      case .left: .shiftLeft
+      case .logicalRight: .logicalShiftRight
+      case .arithmeticRight: .arithmeticShiftRight
+      case .rotateLeft: .rotateLeft
+      case .rotateRight: .rotateRight
+      }
+    Self.emitImmediate(lazyOperation.rawValue, register: 26, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .or, is64Bit: true, left: 26, right: 17, shiftAmount: 8, destination: 26))
+    if case .cl = count {
+      fragment.append(
+        Self.encodeAddSubtractSetFlags(
+          add: false, is64Bit: true, left: 17, right: 31, destination: 31))
+      fragment.append(
+        Self.encodeConditionalSelect(
+          destination: 26,
+          trueRegister: 26,
+          falseRegister: 31,
+          condition: .notEqual
+        ))
+    }
+    fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Writes a fused x86 condition result into the low byte of a pinned guest register.
   ///
   /// Conditions without a single native mapping return `false` without appending any words.
@@ -667,6 +828,10 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     case and, or, xor, andSetFlags
   }
 
+  private enum VariableShiftOperation {
+    case left, logicalRight, arithmeticRight, rotateRight
+  }
+
   private enum ARM64Condition: UInt32 {
     case equal = 0
     case notEqual = 1
@@ -746,6 +911,23 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return base | right << 16 | left << 5 | destination
   }
 
+  private static func encodeAddSubtract(
+    add: Bool,
+    is64Bit: Bool,
+    left: UInt32,
+    right: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    let base: UInt32 =
+      switch (add, is64Bit) {
+      case (true, true): 0x8B00_0000
+      case (true, false): 0x0B00_0000
+      case (false, true): 0xCB00_0000
+      case (false, false): 0x4B00_0000
+      }
+    return base | right << 16 | left << 5 | destination
+  }
+
   private static func encodeAddSubtractCarrySetFlags(
     add: Bool,
     is64Bit: Bool,
@@ -803,6 +985,27 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
       }
     let shift = logicalRightShift ? UInt32(1) << 22 : 0
     return base | shift | shiftAmount << 10 | right << 16 | left << 5 | destination
+  }
+
+  private static func encodeVariableShift(
+    _ operation: VariableShiftOperation,
+    is64Bit: Bool,
+    value: UInt32,
+    count: UInt32,
+    destination: UInt32
+  ) -> UInt32 {
+    let base: UInt32 =
+      switch (operation, is64Bit) {
+      case (.left, true): 0x9AC0_2000
+      case (.left, false): 0x1AC0_2000
+      case (.logicalRight, true): 0x9AC0_2400
+      case (.logicalRight, false): 0x1AC0_2400
+      case (.arithmeticRight, true): 0x9AC0_2800
+      case (.arithmeticRight, false): 0x1AC0_2800
+      case (.rotateRight, true): 0x9AC0_2C00
+      case (.rotateRight, false): 0x1AC0_2C00
+      }
+    return base | count << 16 | value << 5 | destination
   }
 
   private static func encodeConditionalSet(

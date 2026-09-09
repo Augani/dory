@@ -87,6 +87,13 @@ NZCV live. A returned `NativeFlags` token may be used only by an immediately
 adjacent fused consumer. ADC/SBB and carry-preserving INC/DEC require any older
 pending record to be materialized before emission so `x25.CF` is current.
 
+SHL/SHR/SAR/ROL/ROR producers accept immediate or pinned-CL counts at every
+architectural width. They resolve older lazy flags before a nonzero operation,
+mask counts according to x86 rules, preserve upper register parts, and publish a
+dedicated lazy record. A masked-zero immediate leaves the older record intact; a
+runtime masked-zero CL count resolves that record once and publishes no new one.
+Shift/rotate consumers currently materialize rather than claiming an NZCV token.
+
 Subtraction maps x86 CF to inverted ARM C: JB/JAE/JBE/JA therefore use CC/CS/LS/HI.
 Addition maps CF directly to ARM C, so JB/JAE use CS/CC; JBE/JA after addition do
 not have a single native condition and materialize. Logical operations treat CF

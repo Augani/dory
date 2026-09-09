@@ -284,6 +284,175 @@ import Testing
     }
   }
 
+  @Test func shiftAndRotateProducersMatchInterpreterAcrossWidthsAndCounts() throws {
+    #if arch(arm64)
+      let operations: [(DoryIRShiftOperation, UInt8)] = [
+        (.rotateLeft, 0xC0),
+        (.rotateRight, 0xC8),
+        (.left, 0xE0),
+        (.logicalRight, 0xE8),
+        (.arithmeticRight, 0xF8),
+      ]
+      let values: [UInt64] = [
+        0, 1, 0x7F, 0x80, 0xFF, 0x7FFF, 0x8000,
+        0xA5A5_A5A5_8000_0001, 0x8000_0000_0000_0001, .max,
+      ]
+      let counts: [UInt8] = [0, 1, 7, 8, 15, 16, 31, 32, 63, 64, 255]
+      let prior: DoryX86RFLAGS = [
+        .reservedOne, .carry, .parity, .auxiliaryCarry, .direction, .overflow,
+      ]
+
+      for width: DoryIRIntegerWidth in [.i8, .i16, .i32, .i64] {
+        for (operation, modRM) in operations {
+          for countKind in [DoryIRShiftCount.immediate(0), .cl] {
+            let emittedCounts: [UInt8] =
+              switch countKind {
+              case .immediate: counts
+              case .cl: [0]
+              }
+            for emittedCount in emittedCounts {
+              let actualCount: DoryIRShiftCount =
+                switch countKind {
+                case .immediate: .immediate(emittedCount)
+                case .cl: .cl
+                }
+              var words: [UInt32] = []
+              let boundary = DoryARM64Tier1BoundaryEmitter()
+              boundary.emitEntry(into: &words)
+              #expect(
+                DoryARM64Tier1ALUEmitter().emitShift(
+                  operation,
+                  width: width,
+                  destinationGuestRegister: 0,
+                  count: actualCount,
+                  into: &words
+                ))
+              boundary.emitExit(.dispatch, into: &words)
+              let region = try executableRegion(words)
+              let runtimeCounts: [UInt8] =
+                switch actualCount {
+                case .immediate: [emittedCount]
+                case .cl: counts
+                }
+
+              for rawCount in runtimeCounts {
+                for value in values {
+                  var context = makeContext(
+                    rax: value, rcx: UInt64(rawCount), rdx: 0, rflags: prior)
+                  #expect(try region.execute(at: 0, context: &context) == .dispatch)
+
+                  var interpreted = try DoryX86ArchitecturalState(
+                    registers: .init(rax: value, rcx: UInt64(rawCount)),
+                    rip: 0x100,
+                    rflags: prior
+                  )
+                  let memory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+                  var bytes: [UInt8] = []
+                  if width == .i16 { bytes.append(0x66) }
+                  if width == .i64 { bytes.append(0x48) }
+                  switch actualCount {
+                  case .immediate:
+                    bytes.append(width == .i8 ? 0xC0 : 0xC1)
+                    bytes.append(modRM)
+                    bytes.append(rawCount)
+                  case .cl:
+                    bytes.append(width == .i8 ? 0xD2 : 0xD3)
+                    bytes.append(modRM)
+                  }
+                  try memory.write(at: 0x100, bytes: bytes)
+                  guard
+                    case .retired = DoryX86Interpreter().step(
+                      state: &interpreted, memory: memory, mode: .long64)
+                  else {
+                    Issue.record("interpreter did not retire \(operation) \(width)")
+                    continue
+                  }
+
+                  let lazy = try #require(DoryARM64LazyFlagsState(context: context))
+                  #expect(lazy.materialize() == interpreted.rflags)
+                  #expect(
+                    context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
+                      == interpreted.registers.rax)
+                }
+              }
+            }
+          }
+        }
+      }
+    #endif
+  }
+
+  @Test func zeroShiftCountsPreserveEarlierLazyFlags() throws {
+    #if arch(arm64)
+      let boundary = DoryARM64Tier1BoundaryEmitter()
+      let alu = DoryARM64Tier1ALUEmitter()
+
+      var immediateWords: [UInt32] = []
+      boundary.emitEntry(into: &immediateWords)
+      _ = try #require(
+        alu.emitBinary(
+          .add,
+          width: .i64,
+          destinationGuestRegister: 0,
+          source: .guestRegister(2),
+          writesDestination: true,
+          into: &immediateWords
+        ))
+      #expect(
+        alu.emitShift(
+          .left,
+          width: .i64,
+          destinationGuestRegister: 0,
+          count: .immediate(64),
+          into: &immediateWords
+        ))
+      boundary.emitExit(.dispatch, into: &immediateWords)
+      let immediateRegion = try executableRegion(immediateWords)
+      var immediateContext = makeContext(
+        rax: .max, rcx: 0, rdx: 1,
+        rflags: [.reservedOne, .direction, .overflow])
+      #expect(try immediateRegion.execute(at: 0, context: &immediateContext) == .dispatch)
+      let immediateLazy = try #require(DoryARM64LazyFlagsState(context: immediateContext))
+      #expect(immediateLazy.operation == .add)
+      #expect(immediateLazy.materialize().contains([.carry, .zero]))
+      #expect(
+        immediateContext[
+          DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] == 0)
+
+      var clWords: [UInt32] = []
+      boundary.emitEntry(into: &clWords)
+      _ = try #require(
+        alu.emitBinary(
+          .add,
+          width: .i64,
+          destinationGuestRegister: 0,
+          source: .guestRegister(2),
+          writesDestination: true,
+          into: &clWords
+        ))
+      #expect(
+        alu.emitShift(
+          .left,
+          width: .i64,
+          destinationGuestRegister: 0,
+          count: .cl,
+          into: &clWords
+        ))
+      boundary.emitExit(.dispatch, into: &clWords)
+      let clRegion = try executableRegion(clWords)
+      var clContext = makeContext(
+        rax: .max, rcx: 64, rdx: 1,
+        rflags: [.reservedOne, .direction, .overflow])
+      #expect(try clRegion.execute(at: 0, context: &clContext) == .dispatch)
+      let clLazy = try #require(DoryARM64LazyFlagsState(context: clContext))
+      #expect(clLazy.operation == .materialized)
+      #expect(clLazy.materialize() == immediateLazy.materialize())
+      #expect(
+        clContext[
+          DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] == 1)
+    #endif
+  }
+
   @Test func fusedArithmeticAndLogicalConditionsUseTheirNativeCarryDomains() throws {
     #if arch(arm64)
       let cases: [(DoryIRBinaryOperation, [DoryX86Condition])] = [
