@@ -176,18 +176,10 @@ public struct DoryX86DifferentialHarness: Sendable {
   }
 
   public func executionContext(from state: DoryX86ArchitecturalState) -> [UInt64] {
-    var context = DoryX86GeneralRegister.allCases.map { state.registers[$0] }
-    context.append(state.rip)
-    context.append(state.rflags.rawValue)
-    context.append(state.fs.base)
-    context.append(state.gs.base)
-    context.append(state.tsc)
-    context.append(UInt64(state.cs.selector))
-    context.append(UInt64(state.ds.selector))
-    context.append(UInt64(state.es.selector))
-    context.append(UInt64(state.fs.selector))
-    context.append(UInt64(state.gs.selector))
-    context.append(UInt64(state.ss.selector))
+    var context = [UInt64](repeating: 0, count: DoryJITExecutableRegion.contextWordCount)
+    context.withUnsafeMutableBufferPointer {
+      DoryARM64BaselineExecutor.populateExecutionContext($0, from: state, memory: nil)
+    }
     return context
   }
 
