@@ -1,0 +1,130 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-btf-stack-sete",
+  "observedAt": "2026-09-09T21:48:05Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "70a1c6d8bdb645e7b9f2ed97b9d09beb1945c066",
+    "candidateRunnerSHA256": "544a2b5801083bc41086f5c0417f80f6e090665c9cc815f99d0ff094e008ce1a",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "measuredBlock": {
+      "guestRIP": "0xffffffff814e2090",
+      "symbol": "btf_struct_check_meta+0x80",
+      "instruction": "sete 0xb(%rsp)",
+      "bytes": "0f 94 44 24 0b",
+      "priorNegativeCacheHits": 18547,
+      "remainsInCandidateRunNegativeCache": false
+    },
+    "boundedRule": "Tier one admits the exact five-byte, one-instruction SETE fixture at the measured RIP only when its byte destination is RSP+0x0b. The same operation at an adjacent RIP and a different displacement at the measured RIP decline.",
+    "exactnessHardening": "Every previously measured memory-SETcc site now also requires its exact base register and displacement instead of matching only RIP, length, condition, and width.",
+    "restartability": "Lazy flags materialize before the final transactional byte write. A rejected write exits to the interpreter with the original block-entry state."
+  },
+  "verification": {
+    "focusedGate": "All four measured memory-SETcc tests pass.",
+    "dbtAndPCGate": "1,459 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Both zero-flag states produce interpreter-equivalent full architectural state and memory at the measured RSP+0x0b destination.",
+    "negativeCoverage": "The same bytes at an adjacent RIP and a one-byte displacement mutation at the measured RIP decline.",
+    "sharedEmitterCoverage": "The reused transactional memory-SETcc emitter retains explicit rejected-write rollback coverage.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "e6e4f210-7027-439d-b57e-fe9d377728cb",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 148366512084,
+    "retiredInstructions": 734402052,
+    "throughputMIPS": 4.950,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731786265,
+    "interpreterInstructions": 2615787,
+    "deliveredMaskableInterrupts": 58035,
+    "retiredInterruptReturns": 146274,
+    "byteValidationHits": 72247,
+    "codeGenerationMismatches": 78043,
+    "sharedCodeHits": 115227,
+    "compiledBlocks": 186016,
+    "tier1CompilationAttempts": 222890,
+    "tier1CompilationDeclines": 120729,
+    "tier1DeclinePercentOfAttempts": 54.16528332361254,
+    "tier1CompiledBlocks": 102161,
+    "lazyFlagMaterializations": 54798001,
+    "translationCacheInvalidations": 241056
+  },
+  "unmatchedPriorRunComparison": {
+    "standaloneAtomicMemoryBitSetElapsedNanoseconds": 150515263458,
+    "btfStackSetEqualElapsedNanoseconds": 148366512084,
+    "directionalElapsedReductionPercent": 1.4275969922476273,
+    "tier1AttemptDecrease": 625,
+    "tier1DeclineDecrease": 976,
+    "tier1CompiledBlockIncrease": 351,
+    "interpreterInstructionDecrease": 23181,
+    "lazyFlagMaterializationIncrease": 110127,
+    "translationCacheInvalidationDecrease": 6131,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, invalidation, and instruction totals. Absence of the measured site directly establishes bounded admission; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleKernelSites": [
+    {
+      "guestRIP": "0xffffffff813cd9a6",
+      "instruction": "rep movsq",
+      "guestByteCount": 3,
+      "visibleHitCountAcrossAddressSpaces": 15290,
+      "largestSingleAddressSpaceHitCount": 12925,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff815e351d",
+      "symbol": "__slab_free+0x2d",
+      "instruction": "rep stosq",
+      "guestByteCount": 3,
+      "hitCount": 9075,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff810017e8",
+      "symbol": "native_irq_return_iret",
+      "instruction": "iretq",
+      "guestByteCount": 2,
+      "visibleHitCountAcrossAddressSpaces": 4115,
+      "largestSingleAddressSpaceHitCount": 1891,
+      "declineReason": "interpreterHelper"
+    }
+  ],
+  "interpretation": "The measured BTF stack SETE block is absent from the retained negative-cache sample and the authenticated workload completes. No native-emitter decline remains in the capped hot-site list. A05.2 remains open because 120,729 of 222,890 tier-one attempts still decline, with REP-string helpers now the dominant visible kernel frontier.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
