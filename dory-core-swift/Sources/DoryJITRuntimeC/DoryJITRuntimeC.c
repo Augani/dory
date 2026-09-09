@@ -910,8 +910,8 @@ int dory_jit_region_create(size_t minimum_capacity, dory_jit_region **region_out
     void *reservation = mmap(
         NULL,
         reservation_size,
-        PROT_NONE,
-        MAP_PRIVATE | MAP_ANON,
+        PROT_READ | PROT_WRITE | PROT_EXEC,
+        MAP_PRIVATE | MAP_ANON | MAP_JIT,
         -1,
         0
     );
@@ -919,27 +919,36 @@ int dory_jit_region_create(size_t minimum_capacity, dory_jit_region **region_out
         return errno;
     }
     uint8_t *requested_code = (uint8_t *)reservation + page_size;
-    if (munmap(requested_code, capacity) != 0) {
+    // Keep code and guards in one indivisible mapping. The former two-mapping construction
+    // temporarily exposed the code span as an unmapped hole, allowing an unrelated concurrent
+    // mmap to claim it before cleanup unmapped the complete reservation.
+    void *leading_guard = mmap(
+        reservation,
+        page_size,
+        PROT_NONE,
+        MAP_PRIVATE | MAP_ANON | MAP_FIXED,
+        -1,
+        0
+    );
+    if (leading_guard == MAP_FAILED) {
         const int result = errno;
         munmap(reservation, reservation_size);
         return result;
     }
-    void *code = mmap(
-        requested_code,
-        capacity,
-        PROT_READ | PROT_WRITE | PROT_EXEC,
-        MAP_PRIVATE | MAP_ANON | MAP_JIT,
+    void *trailing_guard = mmap(
+        requested_code + capacity,
+        page_size,
+        PROT_NONE,
+        MAP_PRIVATE | MAP_ANON | MAP_FIXED,
         -1,
         0
     );
-    if (code == MAP_FAILED || code != requested_code) {
-        const int result = code == MAP_FAILED ? errno : EADDRNOTAVAIL;
-        if (code != MAP_FAILED) {
-            munmap(code, capacity);
-        }
+    if (trailing_guard == MAP_FAILED) {
+        const int result = errno;
         munmap(reservation, reservation_size);
         return result;
     }
+    void *code = requested_code;
     struct dory_jit_region *region = calloc(1, sizeof(*region));
     if (region == NULL) {
         munmap(reservation, reservation_size);

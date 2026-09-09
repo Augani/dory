@@ -4302,6 +4302,37 @@ import Testing
     #endif
   }
 
+  @Test func concurrentJITAndRAMMappingsNeverUnmapEachOther() throws {
+    #if arch(arm64)
+      let workerCount = 8
+      let iterationsPerWorker = 128
+      let failures = ConcurrentAtomicLitmusResults()
+
+      DispatchQueue.concurrentPerform(iterations: workerCount) { worker in
+        do {
+          for iteration in 0..<iterationsPerWorker {
+            let memory = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()))
+            let value = UInt64(worker) << 32 | UInt64(iteration)
+            try memory.writeScalar(at: 0x80, value: value, byteCount: 8)
+            let region = try DoryJITExecutableRegion(minimumCapacity: 4_096)
+            try memory.writeScalar(at: 0x88, value: ~value, byteCount: 8)
+            guard try memory.readScalar(at: 0x80, byteCount: 8) == value,
+              try memory.readScalar(at: 0x88, byteCount: 8) == ~value
+            else {
+              failures.recordFailure("worker \(worker) iteration \(iteration) lost RAM mapping")
+              return
+            }
+            withExtendedLifetime(region) {}
+          }
+        } catch {
+          failures.recordFailure("worker \(worker): \(error)")
+        }
+      }
+
+      #expect(failures.failures.isEmpty)
+    #endif
+  }
+
   @Test func lockedCompareExchangeDeclinesBeforeUnsupportedMemoryOrPrivilegeSideEffects() throws {
     #if arch(arm64)
       let bytes: [UInt8] = [0xF0, 0x0F, 0xB1, 0x17]
