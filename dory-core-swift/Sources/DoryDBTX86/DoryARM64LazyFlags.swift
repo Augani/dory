@@ -261,3 +261,36 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
     if enabled { flags.insert(flag) } else { flags.remove(flag) }
   }
 }
+
+@_cdecl("dory_arm64_materialize_lazy_flags_context")
+private func doryARM64MaterializeLazyFlagsContext(
+  _ context: UnsafeMutablePointer<UInt64>?
+) -> UInt64 {
+  guard let context else { return DoryX86RFLAGS.reservedOne.rawValue }
+  let buffer = UnsafeBufferPointer(
+    start: context,
+    count: DoryARM64Tier1ABI.contextWordCount
+  )
+  guard let pending = DoryARM64LazyFlagsState(context: buffer) else {
+    return context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue]
+  }
+  guard pending.operation != .materialized else { return pending.materialize().rawValue }
+
+  let materialized = pending.materialize().rawValue
+  context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue] = materialized
+  context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] =
+    DoryARM64LazyFlagsState.Operation.materialized.rawValue
+  context[DoryARM64Tier1ABI.ContextWord.lazyFlagsWidth.rawValue] =
+    UInt64(DoryIRIntegerWidth.i64.rawValue)
+  context[DoryARM64Tier1ABI.ContextWord.lazyFlagsResult.rawValue] = 0
+  context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource1.rawValue] = 0
+  context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource2.rawValue] = 0
+  context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] &+= 1
+  return materialized
+}
+
+func doryARM64LazyFlagsMaterializerAddress() -> UInt64 {
+  let materializer: @convention(c) (UnsafeMutablePointer<UInt64>?) -> UInt64 =
+    doryARM64MaterializeLazyFlagsContext
+  return UInt64(unsafeBitCast(materializer, to: UInt.self))
+}

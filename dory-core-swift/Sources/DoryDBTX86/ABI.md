@@ -32,7 +32,7 @@ a prologue or epilogue.
 
 ## Stable vCPU context
 
-The context is an array of 48 little-endian `UInt64` words. It is not a Swift
+The context is an array of 50 little-endian `UInt64` words. It is not a Swift
 struct ABI. The word layout is:
 
 | Words | Contents |
@@ -45,6 +45,7 @@ struct ABI. The word layout is:
 | 36...37 | inline read/write hit-counter pointers |
 | 38...42 | scalar compare-exchange, exchange, fetch-add, generic RMW, and pair compare-exchange helpers |
 | 43...47 | lazy-flags operation plus count (low/high byte), width, result, source 1, and source 2 |
+| 48...49 | lazy-flags materializer helper and per-dispatch materialization count |
 
 The context pointer remains stable for a dispatch. TLB bases and helper
 addresses are derived from it; generated code must not retain them beyond that
@@ -94,7 +95,8 @@ A C helper may clobber `x0`...`x18` and NZCV. A generated shim therefore:
 
 1. Computes a 16-bit live guest mask and spills exactly those pinned guest GPRs
    to context words 0...15. Dead guest values are not spilled.
-2. Materializes RFLAGS and RIP before a helper that can observe state, fault,
+2. Materializes RFLAGS before a helper whose `requiresMaterializedFlags` contract
+   is set, and publishes RIP before every helper that can observe state, fault,
    interrupt, or request interpreter fallback.
 3. Places the helper target in `x16`, marshals arguments in `x0`...`x7`, keeps
    `sp` 16-byte aligned, and executes `blr x16`.

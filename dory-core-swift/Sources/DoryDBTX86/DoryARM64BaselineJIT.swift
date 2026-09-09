@@ -5943,6 +5943,9 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsResult.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource1.rawValue] = 0
     context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource2.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializer.rawValue] =
+      doryARM64LazyFlagsMaterializerAddress()
+    context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] = 0
   }
 
   private static func apply(

@@ -17,12 +17,14 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
     let arguments: [HelperArgument]
     let liveGuestMask: UInt16
     let resultGuestRegister: Int?
+    let requiresMaterializedFlags: Bool
 
     init(
       target: DoryARM64Tier1ABI.ContextWord,
       arguments: [HelperArgument],
       liveGuestMask: UInt16,
-      resultGuestRegister: Int? = nil
+      resultGuestRegister: Int? = nil,
+      requiresMaterializedFlags: Bool = false
     ) {
       precondition(arguments.count <= 8, "Darwin register helper ABI has eight arguments")
       if let resultGuestRegister {
@@ -41,6 +43,7 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
       self.arguments = arguments
       self.liveGuestMask = liveGuestMask
       self.resultGuestRegister = resultGuestRegister
+      self.requiresMaterializedFlags = requiresMaterializedFlags
     }
   }
 
@@ -74,10 +77,52 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
       byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
   }
 
+  /// Materializes a pending record through the stable context helper. The zero-descriptor path is
+  /// one CBZ. A real call spills every pinned caller-saved guest register because the Darwin C ABI
+  /// permits the materializer to clobber x0...x18; its returned RFLAGS image becomes the new x25.
+  func emitMaterializeLazyFlags(into words: inout [UInt32]) {
+    let materializedBranch = words.count
+    words.append(0)
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      words.append(Self.encodeStore64(
+        register: register, base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: index)!.byteOffset))
+    }
+    words.append(Self.encodeStore64(
+      register: DoryARM64Tier1ABI.lazyFlagsRegisters[0],
+      base: DoryARM64Tier1ABI.contextRegister,
+      byteOffset: DoryARM64Tier1ABI.ContextWord.rflags.byteOffset))
+    words.append(Self.encodeStore64(
+      register: DoryARM64Tier1ABI.lazyFlagsRegisters[1],
+      base: DoryARM64Tier1ABI.contextRegister,
+      byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.byteOffset))
+    words.append(Self.encodeLoad64(
+      register: DoryARM64Tier1ABI.scratchRegisters[0],
+      base: DoryARM64Tier1ABI.contextRegister,
+      byteOffset: DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializer.byteOffset))
+    words.append(Self.encodeMove(destination: 0, source: DoryARM64Tier1ABI.contextRegister))
+    words.append(Self.encodeBranchWithLink(register: DoryARM64Tier1ABI.scratchRegisters[0]))
+    words.append(Self.encodeMove(
+      destination: DoryARM64Tier1ABI.lazyFlagsRegisters[0], source: 0))
+    words.append(Self.encodeMove(
+      destination: DoryARM64Tier1ABI.lazyFlagsRegisters[1], source: 31))
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      words.append(Self.encodeLoad64(
+        register: register, base: DoryARM64Tier1ABI.contextRegister,
+        byteOffset: DoryARM64Tier1ABI.ContextWord(rawValue: index)!.byteOffset))
+    }
+    words[materializedBranch] = Self.encodeCompareAndBranchZero(
+      register: DoryARM64Tier1ABI.lazyFlagsRegisters[1],
+      wordOffset: words.count - materializedBranch)
+  }
+
   /// Emits one conservative helper boundary. Only the live pinned guest subset is checkpointed
   /// and restored; RIP and materialized flags are always published because a helper may fault,
   /// interrupt, or request interpreter fallback.
   func emitHelperCall(_ call: HelperCall, into words: inout [UInt32]) {
+    if call.requiresMaterializedFlags {
+      emitMaterializeLazyFlags(into: &words)
+    }
     for register in DoryARM64Tier1ABI.helperSpillRegisters(
       liveGuestMask: call.liveGuestMask
     ) {
@@ -250,5 +295,15 @@ struct DoryARM64Tier1BoundaryEmitter: Sendable {
 
   private static func encodeBranchWithLink(register: UInt32) -> UInt32 {
     0xD63F_0000 | register << 5
+  }
+
+  private static func encodeCompareAndBranchZero(
+    register: UInt32,
+    wordOffset: Int
+  ) -> UInt32 {
+    precondition((-262_144..<262_144).contains(wordOffset))
+    return 0xB400_0000
+      | (UInt32(truncatingIfNeeded: wordOffset) & 0x7_FFFF) << 5
+      | register
   }
 }

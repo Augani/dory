@@ -272,6 +272,105 @@ import Testing
       .above, flags: addFlags, destinationGuestRegister: 1, into: &words))
     #expect(words.count == addEnd)
   }
+
+  @Test func onDemandMaterializerPublishesFlagsClearsRecordAndCountsOnce() throws {
+    #if arch(arm64)
+      var words: [UInt32] = []
+      let boundary = DoryARM64Tier1BoundaryEmitter()
+      boundary.emitEntry(into: &words)
+      _ = try #require(DoryARM64Tier1ALUEmitter().emitBinary(
+        .add,
+        width: .i64,
+        destinationGuestRegister: 0,
+        source: .guestRegister(1),
+        writesDestination: true,
+        into: &words
+      ))
+      boundary.emitMaterializeLazyFlags(into: &words)
+      boundary.emitMaterializeLazyFlags(into: &words)
+      boundary.emitExit(.dispatch, into: &words)
+      let region = try executableRegion(words)
+      let prior: DoryX86RFLAGS = [.reservedOne, .direction, .overflow]
+      var context = makeContext(rax: .max, rcx: 1, rdx: 0x1234, rflags: prior)
+
+      #expect(try region.execute(at: 0, context: &context) == .dispatch)
+
+      let lazy = try #require(DoryARM64LazyFlagsState(context: context))
+      #expect(lazy.operation == .materialized)
+      #expect(lazy.result == 0)
+      #expect(lazy.source1 == 0)
+      #expect(lazy.source2 == 0)
+      #expect(lazy.materialize() == [
+        .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .direction,
+      ])
+      #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] == 1)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.rax.rawValue] == 0)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue] == 0x1234)
+    #endif
+  }
+
+  @Test func materializerFastPathDoesNotCallAHelperForMaterializedFlags() throws {
+    #if arch(arm64)
+      var words: [UInt32] = []
+      let boundary = DoryARM64Tier1BoundaryEmitter()
+      boundary.emitEntry(into: &words)
+      boundary.emitMaterializeLazyFlags(into: &words)
+      boundary.emitExit(.dispatch, into: &words)
+      let region = try executableRegion(words)
+      var context = makeContext(
+        rax: 0x1122, rcx: 0x3344, rdx: 0x5566,
+        rflags: [.reservedOne, .carry, .direction])
+      context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializer.rawValue] = 0
+
+      #expect(try region.execute(at: 0, context: &context) == .dispatch)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.rax.rawValue] == 0x1122)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.rcx.rawValue] == 0x3344)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue] == 0x5566)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue]
+        == (DoryX86RFLAGS.reservedOne.union([.carry, .direction])).rawValue)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] == 0)
+    #endif
+  }
+
+  @Test func flagObservingHelperReceivesMaterializedState() throws {
+    #if arch(arm64)
+      let helper: @convention(c) (UnsafeMutablePointer<UInt64>?) -> UInt64 =
+        doryTestObserveMaterializedFlags
+      var words: [UInt32] = []
+      let boundary = DoryARM64Tier1BoundaryEmitter()
+      boundary.emitEntry(into: &words)
+      _ = try #require(DoryARM64Tier1ALUEmitter().emitBinary(
+        .subtract,
+        width: .i64,
+        destinationGuestRegister: 0,
+        source: .guestRegister(1),
+        writesDestination: true,
+        into: &words
+      ))
+      boundary.emitHelperCall(.init(
+        target: .tlbResolver,
+        arguments: [.contextPointer],
+        liveGuestMask: .max,
+        requiresMaterializedFlags: true
+      ), into: &words)
+      boundary.emitExit(.dispatch, into: &words)
+      let region = try executableRegion(words)
+      var context = makeContext(
+        rax: 0, rcx: 1, rdx: 0xCAFE,
+        rflags: [.reservedOne, .direction, .overflow])
+      context[DoryARM64Tier1ABI.ContextWord.tlbResolver.rawValue] =
+        UInt64(unsafeBitCast(helper, to: UInt.self))
+
+      #expect(try region.execute(at: 0, context: &context) == .dispatch)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.rax.rawValue] == .max)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue] == 0xCAFE)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] == 0)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] == 1)
+      #expect(context[DoryARM64Tier1ABI.ContextWord.tsc.rawValue]
+        == context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue])
+      #expect(context[DoryARM64Tier1ABI.ContextWord.fsBase.rawValue] == 0)
+    #endif
+  }
 }
 
 private func executableRegion(_ words: [UInt32]) throws -> DoryJITExecutableRegion {
@@ -301,6 +400,8 @@ private func makeContext(
   context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue] = rflags.rawValue
   context[DoryARM64Tier1ABI.ContextWord.lazyFlagsWidth.rawValue] =
     UInt64(DoryIRIntegerWidth.i64.rawValue)
+  context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializer.rawValue] =
+    doryARM64LazyFlagsMaterializerAddress()
   return context
 }
 
@@ -336,3 +437,15 @@ private let allX86Conditions: [DoryX86Condition] = [
   .sign, .notSign, .parity, .notParity,
   .less, .greaterOrEqual, .lessOrEqual, .greater,
 ]
+
+@_cdecl("dory_test_observe_materialized_flags")
+private func doryTestObserveMaterializedFlags(
+  _ context: UnsafeMutablePointer<UInt64>?
+) -> UInt64 {
+  guard let context else { return 0 }
+  context[DoryARM64Tier1ABI.ContextWord.tsc.rawValue] =
+    context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue]
+  context[DoryARM64Tier1ABI.ContextWord.fsBase.rawValue] =
+    context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue]
+  return 0
+}

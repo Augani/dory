@@ -37,6 +37,8 @@ import Testing
     #expect(lazy.source2 == 0)
     #expect(lazy.count == 0)
     #expect(lazy.materialize() == architectural.rflags)
+    #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializer.rawValue] != 0)
+    #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] == 0)
   }
 
   @Test func binaryArithmeticAndLogicalMaterializationMatchesEagerReference() {
