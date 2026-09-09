@@ -82,6 +82,32 @@ import Testing
     #expect(try read64(memory, 0x4000) & (1 << 6) != 0)
   }
 
+  @Test func tracksGuestPageTableWritesButNotWalkerAccessedDirtyUpdates() throws {
+    let memory = try DoryX86MmapMemory(validatingByteCount: 0x10_000)
+    let linear: UInt64 = 0x0040_0123
+    try memory.writeScalar(at: 0x1000, value: 0x2000 | 0x7, byteCount: 8)
+    try memory.writeScalar(at: 0x2000, value: 0x3000 | 0x7, byteCount: 8)
+    try memory.writeScalar(at: 0x3000 + 2 * 8, value: 0x4000 | 0x7, byteCount: 8)
+    try memory.writeScalar(at: 0x4000, value: 0x8000 | 0x7, byteCount: 8)
+    let paging = DoryX86PagingUnit()
+
+    _ = try paging.translate(
+      linearAddress: linear,
+      access: .write,
+      context: longModeContext(cpl: 3),
+      physicalMemory: memory
+    )
+    #expect(memory.hasPendingPageTableWrite == false)
+
+    try memory.writeScalar(at: 0x4000, value: 0x9000 | 0x7, byteCount: 8)
+    #expect(memory.hasPendingPageTableWrite)
+    #expect(memory.consumePendingPageTableWrite())
+    #expect(memory.hasPendingPageTableWrite == false)
+
+    try memory.writeScalar(at: 0x8000, value: 1, byteCount: 1)
+    #expect(memory.hasPendingPageTableWrite == false)
+  }
+
   @Test func diagnosticsSeparateRecentDictionaryWalkAndInvalidationPaths() throws {
     let memory = try DoryX86ByteArrayMemory(byteCount: 0x20_000)
     let first: UInt64 = 0x0040_0123

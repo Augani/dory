@@ -187,7 +187,8 @@ public final class DoryX86JITTLB: @unchecked Sendable {
     else { return .fallback }
     var callback = DoryJITMemoryCallbackContext(
       capabilities: .init(memory: memory),
-      requiresRestartableReads: false
+      requiresRestartableReads: false,
+      translationTLB: nil
     )
     var resolution = dory_jit_tlb_resolution()
     let result = withUnsafeMutablePointer(to: &callback) { callback in

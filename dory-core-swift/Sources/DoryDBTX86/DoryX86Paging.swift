@@ -734,6 +734,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     access: DoryX86MemoryAccessKind,
     context: DoryX86PagingContext
   ) throws -> UInt64 {
+    (physicalMemory as? any DoryX86PageTableWriteTrackingMemory)?
+      .trackPageTablePage(containing: address)
     do { return fromLittleEndian(try physicalMemory.read(at: address, byteCount: 8)) } catch {
       throw pageFault(linearAddress, access, context, protection: false)
     }
@@ -746,6 +748,8 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
     access: DoryX86MemoryAccessKind,
     context: DoryX86PagingContext
   ) throws -> UInt32 {
+    (physicalMemory as? any DoryX86PageTableWriteTrackingMemory)?
+      .trackPageTablePage(containing: address)
     do {
       return UInt32(
         truncatingIfNeeded: fromLittleEndian(try physicalMemory.read(at: address, byteCount: 4)))
@@ -755,12 +759,18 @@ public final class DoryX86PagingUnit: @unchecked Sendable {
   private func writeUInt64(_ value: UInt64, at address: UInt64, physicalMemory: any DoryX86Memory)
     throws
   {
+    let tracker = physicalMemory as? any DoryX86PageTableWriteTrackingMemory
+    tracker?.beginPageTableWalkerWrite()
+    defer { tracker?.endPageTableWalkerWrite() }
     try physicalMemory.write(at: address, bytes: littleEndian(value, byteCount: 8))
   }
 
   private func writeUInt32(_ value: UInt32, at address: UInt64, physicalMemory: any DoryX86Memory)
     throws
   {
+    let tracker = physicalMemory as? any DoryX86PageTableWriteTrackingMemory
+    tracker?.beginPageTableWalkerWrite()
+    defer { tracker?.endPageTableWalkerWrite() }
     try physicalMemory.write(at: address, bytes: littleEndian(UInt64(value), byteCount: 4))
   }
 
@@ -816,6 +826,16 @@ public final class DoryX86TranslatedMemory: DoryX86Memory, DoryX86ScalarMemory,
   /// never mutate this context concurrently with a memory operation.
   public func updateContext(_ context: DoryX86PagingContext) {
     self.context = context
+  }
+
+  var hasPendingPageTableWrite: Bool {
+    (physicalMemory as? any DoryX86PageTableWriteTrackingMemory)?
+      .hasPendingPageTableWrite ?? false
+  }
+
+  public func consumePendingPageTableWrite() -> Bool {
+    (physicalMemory as? any DoryX86PageTableWriteTrackingMemory)?
+      .consumePendingPageTableWrite() ?? false
   }
 
   /// Permission-checks one generated-code miss through the architectural walker. Backing access

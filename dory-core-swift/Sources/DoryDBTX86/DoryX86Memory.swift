@@ -200,6 +200,17 @@ public protocol DoryX86DirectHostAddressSpaceMemory: DoryX86HostAddressSpaceMemo
   ) -> UInt64?
 }
 
+/// Sparse page-table write watch used to keep native translation caches coherent without
+/// trapping or scanning ordinary guest data writes. The paging walker registers structure pages
+/// before reading them and suppresses only its own architectural A/D-bit stores.
+public protocol DoryX86PageTableWriteTrackingMemory: DoryX86Memory {
+  func trackPageTablePage(containing address: UInt64)
+  func beginPageTableWalkerWrite()
+  func endPageTableWalkerWrite()
+  var hasPendingPageTableWrite: Bool { get }
+  func consumePendingPageTableWrite() -> Bool
+}
+
 extension DoryX86Memory {
   public func validateRead(at address: UInt64, byteCount: Int) throws {
     _ = try read(at: address, byteCount: byteCount)
@@ -258,7 +269,9 @@ extension DoryX86ScalarMemory {
 /// Its checked calloc/free ownership is independent of mmap RAM. Array-returning read/snapshot
 /// APIs still allocate diagnostic copies through Swift; those copies do not promise recoverable
 /// allocation exhaustion. Product paging composes a translator over this exact bounds behavior.
-public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMemory, @unchecked Sendable {
+public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMemory,
+  DoryX86PageTableWriteTrackingMemory, @unchecked Sendable
+{
   public let baseAddress: UInt64
   public let byteCount: Int
   private let lock = NSLock()
@@ -266,6 +279,9 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
   private let allocator: DoryX86HeapAllocator
   // Reserve generation metadata only for pages actually written, independently of virtual size.
   private var codePageGenerations: [Int: UInt64] = [:]
+  private var trackedPageTablePages: Set<Int> = []
+  private var pageTableWalkerWriteDepth = 0
+  private var pendingPageTableWrite = false
 
   var trackedCodePageCount: Int { lock.withLock { codePageGenerations.count } }
 
@@ -452,7 +468,42 @@ public final class DoryX86ByteArrayMemory: DoryX86PhysicalRAM, DoryX86AtomicScal
     guard byteCount > 0 else { return }
     let first = offset / 4_096
     let last = (offset + byteCount - 1) / 4_096
-    for page in first...last { codePageGenerations[page, default: 0] &+= 1 }
+    for page in first...last {
+      codePageGenerations[page, default: 0] &+= 1
+      if pageTableWalkerWriteDepth == 0, trackedPageTablePages.contains(page) {
+        pendingPageTableWrite = true
+      }
+    }
+  }
+
+  public func trackPageTablePage(containing address: UInt64) {
+    lock.withLock {
+      guard address >= baseAddress, address - baseAddress < UInt64(byteCount) else { return }
+      trackedPageTablePages.insert(Int((address - baseAddress) / 4_096))
+    }
+  }
+
+  public func beginPageTableWalkerWrite() {
+    lock.withLock { pageTableWalkerWriteDepth += 1 }
+  }
+
+  public func endPageTableWalkerWrite() {
+    lock.withLock {
+      precondition(pageTableWalkerWriteDepth > 0)
+      pageTableWalkerWriteDepth -= 1
+    }
+  }
+
+  public var hasPendingPageTableWrite: Bool {
+    lock.withLock { pendingPageTableWrite }
+  }
+
+  public func consumePendingPageTableWrite() -> Bool {
+    lock.withLock {
+      let pending = pendingPageTableWrite
+      pendingPageTableWrite = false
+      return pending
+    }
   }
 }
 

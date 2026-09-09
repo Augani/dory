@@ -93,7 +93,7 @@ extension DoryPCMMIODevice {
 /// interpreter, and every future JIT helper observe an identical DoryPC-v1 memory map.
 public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
   DoryX86AtomicScalarMemory, DoryX86CodeGenerationMemory, DoryX86DirectHostAddressSpaceMemory,
-  @unchecked Sendable
+  DoryX86PageTableWriteTrackingMemory, @unchecked Sendable
 {
   private enum DiagnosticCounter: Int, CaseIterable {
     case instructionFetchHelperCalls
@@ -568,6 +568,29 @@ public final class DoryPCPhysicalMemoryBus: DoryX86Memory, DoryX86ScalarMemory,
         address: address, byteCount: byteCount, access: access)
     }
     return (backingAddress, Int(ordinaryRAMBytes))
+  }
+
+  public func trackPageTablePage(containing address: UInt64) {
+    guard let tracker = ram as? any DoryX86PageTableWriteTrackingMemory,
+      let resolved = try? resolveRAM(address: address, byteCount: 1, access: .read)
+    else { return }
+    tracker.trackPageTablePage(containing: resolved.backingAddress)
+  }
+
+  public func beginPageTableWalkerWrite() {
+    (ram as? any DoryX86PageTableWriteTrackingMemory)?.beginPageTableWalkerWrite()
+  }
+
+  public func endPageTableWalkerWrite() {
+    (ram as? any DoryX86PageTableWriteTrackingMemory)?.endPageTableWalkerWrite()
+  }
+
+  public var hasPendingPageTableWrite: Bool {
+    (ram as? any DoryX86PageTableWriteTrackingMemory)?.hasPendingPageTableWrite ?? false
+  }
+
+  public func consumePendingPageTableWrite() -> Bool {
+    (ram as? any DoryX86PageTableWriteTrackingMemory)?.consumePendingPageTableWrite() ?? false
   }
 
   /// Once the router is sealed and RAM has no device overlays, the two binary mapping searches

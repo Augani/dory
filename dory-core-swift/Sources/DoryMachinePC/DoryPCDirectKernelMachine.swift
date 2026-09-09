@@ -1318,6 +1318,9 @@ public final class DoryPCDirectKernelMachine: @unchecked Sendable {
     maximumInstructions: UInt64,
     jitInstructionBudget: Int?
   ) throws -> ProcessorExecution {
+    if translatedMemories[processor].consumePendingPageTableWrite() {
+      for pagingUnit in pagingUnits { pagingUnit.invalidateAll() }
+    }
     let mode = executionMode(state)
     if let jit = selectedJIT(for: state, mode: mode),
       mode == .long64 || (mode == .protected32 && state.cs.base == 0),

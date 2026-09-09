@@ -3209,7 +3209,21 @@ struct DoryJITMemoryCapabilities {
 struct DoryJITMemoryCallbackContext {
   let capabilities: DoryJITMemoryCapabilities
   let requiresRestartableReads: Bool
+  var translationTLB: DoryX86JITTLB?
   var failed = false
+  var pageTableWriteObserved = false
+}
+
+private func doryJITInvalidatePageTableWrite(
+  _ context: UnsafeMutablePointer<DoryJITMemoryCallbackContext>
+) {
+  guard !context.pointee.pageTableWriteObserved,
+    let translatedMemory = context.pointee.capabilities.memory as? DoryX86TranslatedMemory,
+    translatedMemory.hasPendingPageTableWrite
+  else { return }
+  translatedMemory.translationUnit.invalidateAll()
+  context.pointee.translationTLB?.invalidateAll()
+  context.pointee.pageTableWriteObserved = true
 }
 
 /// C-callable architectural translation boundary used only by the JIT TLB miss resolver.
@@ -3305,6 +3319,7 @@ private let doryJITMemoryWrite: dory_jit_memory_write_function = {
   do {
     if let scalarMemory = context.pointee.capabilities.scalarMemory {
       try scalarMemory.writeScalar(at: address, value: value, byteCount: Int(byteCount))
+      doryJITInvalidatePageTableWrite(context)
       return
     }
     let bytes = (0..<Int(byteCount)).map {
@@ -3312,6 +3327,7 @@ private let doryJITMemoryWrite: dory_jit_memory_write_function = {
     }
     try context.pointee.capabilities.memory.validateWrite(at: address, byteCount: bytes.count)
     try context.pointee.capabilities.memory.write(at: address, bytes: bytes)
+    doryJITInvalidatePageTableWrite(context)
   } catch {
     context.pointee.failed = true
   }
@@ -3338,6 +3354,7 @@ private let doryJITMemoryCompareExchange: dory_jit_memory_compare_exchange_funct
       return 0
     }
     observedOut.pointee = observed
+    doryJITInvalidatePageTableWrite(context)
     return 1
   } catch {
     context.pointee.failed = true
@@ -3431,7 +3448,8 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     at offset: Int,
     context: UnsafeMutableBufferPointer<UInt64>,
     memoryCapabilities: DoryJITMemoryCapabilities?,
-    requiresRestartableReads: Bool
+    requiresRestartableReads: Bool,
+    translationTLB: DoryX86JITTLB? = nil
   ) throws -> DoryJITExitCode {
     guard offset >= 0, offset.isMultiple(of: 4), offset < capacity else {
       throw DoryJITRuntimeError.invalidOffset(offset)
@@ -3445,7 +3463,8 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
     if let memoryCapabilities {
       var memoryContext = DoryJITMemoryCallbackContext(
         capabilities: memoryCapabilities,
-        requiresRestartableReads: requiresRestartableReads
+        requiresRestartableReads: requiresRestartableReads,
+        translationTLB: translationTLB
       )
       result = withUnsafeMutablePointer(to: &memoryContext) { memoryContext in
         dory_jit_region_execute(
@@ -4262,7 +4281,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               at: resident.offset,
               context: context,
               memoryCapabilities: resident.block.requiresMemoryCallbacks ? memoryCapabilities : nil,
-              requiresRestartableReads: resident.block.requiresRestartableMemoryReads
+              requiresRestartableReads: resident.block.requiresRestartableMemoryReads,
+              translationTLB: translationTLB
             )
             if exit == .interpreter, hasCheckpoint {
               publishNativeTrace(newTrace, for: traceKey, if: recordsTrace)

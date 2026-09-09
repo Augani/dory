@@ -44,7 +44,7 @@ public struct DoryX86MmapReadOnlyMapping: Sendable, Equatable {
 /// by the host's VM system, so allocating 16 GB of guest RAM does not consume
 /// 16 GB of host physical memory — only pages that are actually touched cost RAM.
 public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMemory,
-  DoryX86DirectHostAddressSpaceMemory, @unchecked Sendable
+  DoryX86DirectHostAddressSpaceMemory, DoryX86PageTableWriteTrackingMemory, @unchecked Sendable
 {
   public let baseAddress: UInt64
   public let byteCount: Int
@@ -54,6 +54,9 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
   private let ramMappings: [DoryX86MmapRAMMapping]
   // Reserve generation metadata only for pages actually written, independently of virtual size.
   private var codePageGenerations: [Int: UInt64] = [:]
+  private var trackedPageTablePages: Set<Int> = []
+  private var pageTableWalkerWriteDepth = 0
+  private var pendingPageTableWrite = false
 
   var trackedCodePageCount: Int { lock.withLock { codePageGenerations.count } }
 
@@ -356,7 +359,42 @@ public final class DoryX86MmapMemory: DoryX86PhysicalRAM, DoryX86AtomicScalarMem
     guard byteCount > 0 else { return }
     let first = offset / 4_096
     let last = (offset + byteCount - 1) / 4_096
-    for page in first...last { codePageGenerations[page, default: 0] &+= 1 }
+    for page in first...last {
+      codePageGenerations[page, default: 0] &+= 1
+      if pageTableWalkerWriteDepth == 0, trackedPageTablePages.contains(page) {
+        pendingPageTableWrite = true
+      }
+    }
+  }
+
+  public func trackPageTablePage(containing address: UInt64) {
+    lock.withLock {
+      guard address >= baseAddress, address - baseAddress < UInt64(byteCount) else { return }
+      trackedPageTablePages.insert(Int((address - baseAddress) / 4_096))
+    }
+  }
+
+  public func beginPageTableWalkerWrite() {
+    lock.withLock { pageTableWalkerWriteDepth += 1 }
+  }
+
+  public func endPageTableWalkerWrite() {
+    lock.withLock {
+      precondition(pageTableWalkerWriteDepth > 0)
+      pageTableWalkerWriteDepth -= 1
+    }
+  }
+
+  public var hasPendingPageTableWrite: Bool {
+    lock.withLock { pendingPageTableWrite }
+  }
+
+  public func consumePendingPageTableWrite() -> Bool {
+    lock.withLock {
+      let pending = pendingPageTableWrite
+      pendingPageTableWrite = false
+      return pending
+    }
   }
 
   public func instructionBytes(at address: UInt64, maximumCount: Int) throws -> [UInt8] {

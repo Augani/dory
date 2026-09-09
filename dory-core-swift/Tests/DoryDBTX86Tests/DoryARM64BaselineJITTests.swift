@@ -701,6 +701,71 @@ import Testing
     #endif
   }
 
+  @Test func nativePageTableWriteInvalidatesAnEarlierInlineReadBeforeBlockContinues() throws {
+    #if arch(arm64)
+      let physical = try DoryX86MmapMemory(validatingByteCount: 0x10_000)
+      try physical.writeScalar(at: 0x1000, value: 0x2000 | 0x7, byteCount: 8)
+      try physical.writeScalar(at: 0x2000, value: 0x3000 | 0x7, byteCount: 8)
+      try physical.writeScalar(at: 0x3000, value: 0x5000 | 0x7, byteCount: 8)
+      try physical.writeScalar(at: 0x3000 + 2 * 8, value: 0x4000 | 0x7, byteCount: 8)
+      try physical.writeScalar(at: 0x5000 + 4 * 8, value: 0x4000 | 0x7, byteCount: 8)
+      try physical.writeScalar(at: 0x4000, value: 0x8000 | 0x7, byteCount: 8)
+      try physical.writeScalar(at: 0x8000, value: 0x1111, byteCount: 8)
+      try physical.writeScalar(at: 0x9000, value: 0x2222, byteCount: 8)
+
+      var state = try DoryX86ArchitecturalState(
+        registers: .init(rax: 0x4000, rdx: 0x0040_0000, rbx: 0x9000 | 0x7),
+        rip: 0x6000,
+        control: .init(
+          cr0: 0x8001_0011,
+          cr3: 0x1000,
+          cr4: 1 << 5,
+          efer: (1 << 10) | (1 << 11)
+        )
+      )
+      let paging = DoryX86PagingUnit()
+      let translated = DoryX86TranslatedMemory(
+        physicalMemory: physical,
+        pagingUnit: paging,
+        context: .init(state: state, mode: .long64)
+      )
+      let executor = try DoryARM64BaselineExecutor(maximumCodeBytes: 8_192)
+
+      _ = try #require(
+        executor.execute(
+          bytes: [0x48, 0x8B, 0x0A],
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: state.control.cr3,
+          maximumInstructions: 1,
+          state: &state,
+          memory: translated
+        ))
+      #expect(state.registers.rcx == 0x1111)
+
+      state.rip = 0x7000
+      translated.updateContext(.init(state: state, mode: .long64))
+      let bytes: [UInt8] = [0x48, 0x89, 0x18, 0x48, 0x8B, 0x0A]
+      let remapAndRead = try #require(
+        executor.executeChainedSummary(
+          byteProvider: { address, maximumCount in
+            guard address >= 0x7000, address - 0x7000 < UInt64(bytes.count) else { return [] }
+            return Array(bytes[Int(address - 0x7000)...].prefix(maximumCount))
+          },
+          at: state.rip,
+          mode: .long64,
+          addressSpaceID: state.control.cr3,
+          maximumInstructions: 2,
+          state: &state,
+          memory: translated
+        ))
+
+      #expect(remapAndRead.guestInstructionCount == 2)
+      #expect(state.registers.rcx == 0x2222)
+      #expect(paging.diagnostics.globalInvalidations == 1)
+    #endif
+  }
+
   @Test func executorRunsMultipleOrdinaryRAMReadsAsOneRestartableBlock() throws {
     #if arch(arm64)
       let memory = try DoryX86ByteArrayMemory(byteCount: 0x100)
