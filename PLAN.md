@@ -284,6 +284,7 @@ Task directory:
 
 #### A02.3 — Separate RPC from execution
 - [ ] **Action:** On a ready guest compare serial echo, protocol ping and command RPC; capture request receipt → response delivery. Attribute vsock transport, guest scheduling and process creation separately.
+- **Progress (2026-09-09):** `ExecResponse` now carries backward-compatible guest-monotonic queue, process-spawn, process-wait, output-drain, and request-receipt-to-response timings. The calibration CLI gained a bounded `profile` command that samples an echo-safe serial round trip, protocol handshake, uncached info RPC, and command RPC, then emits raw samples plus nearest-rank p50/p95 and an explicitly named transport/framing/host-scheduling residual. Parser, aggregation, compatibility, and canonical-receipt tests pass. A source-bound ready-guest run is still required; the retained 6 Sep observation remains 16.5 s handshake and 218.7 s `/bin/true`, so no performance gate is claimed. [Historical receipt](docs/virtualization/evidence/p06-pc-2026-09-06/tier-comparison-rpcdiag.json)
 - **Check:** Three latencies reported with their owners; the dominant component named.
 
 #### A02.4 — Fair tier comparison on the fixed build
