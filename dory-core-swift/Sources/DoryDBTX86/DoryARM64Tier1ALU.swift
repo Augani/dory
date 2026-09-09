@@ -162,6 +162,96 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     return true
   }
 
+  /// Executes the measured `lock xorb $1,(base)` family with a compare-exchange loop. Starting
+  /// with an expected value of zero lets the first failed comparison supply the real byte without
+  /// a separate read; only the successful comparison mutates memory. Callback failure leaves the
+  /// lazy descriptor clear so the executor can discard the temporary context and retry precisely.
+  func emitMeasuredAtomicByteXOR(
+    address: DoryIRMemoryAddress,
+    into words: inout [UInt32]
+  ) -> Bool {
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    guard Self.emitMemoryAddress(address, into: &fragment) else { return false }
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    fragment.append(Self.encodeStore64(register: 31, word: .lazyFlagsResult))
+
+    let retry = fragment.count
+    fragment.append(Self.encodeLoad64(register: 16, word: .lazyFlagsResult))
+    Self.emitImmediate(1, register: 17, into: &fragment)
+    fragment.append(
+      Self.encodeLogical(
+        .xor, is64Bit: true, left: 16, right: 17, destination: 17))
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        Self.encodeStore64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    fragment.append(Self.encodeMove(destination: 0, source: 19, is64Bit: true))
+    fragment.append(Self.encodeLoad64(register: 1, word: .lazyFlagsSource1))
+    fragment.append(Self.encodeLoad64(register: 2, word: .lazyFlagsResult))
+    fragment.append(Self.encodeLoad64(register: 3, word: .lazyFlagsSource2))
+    Self.emitImmediate(1, register: 4, into: &fragment)
+    fragment.append(
+      Self.encodeAddSubtractImmediate(
+        add: true,
+        is64Bit: true,
+        left: DoryARM64Tier1ABI.contextRegister,
+        immediate: UInt32(DoryARM64Tier1ABI.ContextWord.lazyFlagsSource2.byteOffset),
+        destination: 5
+      ))
+    fragment.append(Self.encodeBranchWithLink(register: 22))
+    fragment.append(
+      Self.encodeAddSubtractSetFlags(
+        add: false, is64Bit: false, left: 0, right: 31, destination: 31))
+    for (index, register) in DoryARM64Tier1ABI.guestRegisterMap.enumerated() {
+      fragment.append(
+        Self.encodeLoad64(
+          register: register,
+          word: DoryARM64Tier1ABI.ContextWord(rawValue: index)!))
+    }
+    let failure = fragment.count
+    fragment.append(0)
+
+    fragment.append(Self.encodeLoad64(register: 16, word: .lazyFlagsSource2))
+    fragment.append(Self.encodeLoad64(register: 17, word: .lazyFlagsResult))
+    fragment.append(
+      Self.encodeAddSubtractSetFlags(
+        add: false, is64Bit: true, left: 16, right: 17, destination: 31))
+    let succeeded = fragment.count
+    fragment.append(0)
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
+    fragment.append(Self.encodeUnconditionalBranch(wordOffset: retry - fragment.count))
+
+    let success = fragment.count
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsSource1))
+    Self.emitImmediate(1, register: 17, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsSource2))
+    fragment.append(
+      Self.encodeLogical(
+        .xor, is64Bit: true, left: 16, right: 17, destination: 16))
+    fragment.append(Self.encodeStore64(register: 16, word: .lazyFlagsResult))
+    Self.emitImmediate(UInt64(DoryIRIntegerWidth.i8.rawValue), register: 17, into: &fragment)
+    fragment.append(Self.encodeStore64(register: 17, word: .lazyFlagsWidth))
+    Self.emitImmediate(
+      DoryARM64LazyFlagsState.Operation.logical.rawValue,
+      register: 26,
+      into: &fragment
+    )
+    fragment.append(Self.encodeStore64(register: 26, word: .lazyFlagsOperation))
+
+    let done = fragment.count
+    fragment[failure] = Self.encodeConditionalBranch(
+      condition: .equal, wordOffset: done - failure)
+    fragment[succeeded] = Self.encodeConditionalBranch(
+      condition: .equal, wordOffset: success - succeeded)
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Performs the mandatory source read for a dword/qword memory CMOV before evaluating the
   /// predicate. A false CMOV therefore still faults; dword forms apply the architecture's
   /// destination zero-extension on either predicate outcome.

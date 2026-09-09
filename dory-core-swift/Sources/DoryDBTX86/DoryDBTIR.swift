@@ -311,9 +311,15 @@ public struct DoryX86IRTranslator: Sendable {
           source,
           instructionRelativeBase: instruction.nextInstructionAddress
         )
-        guard case .memory(_, let memoryWidth) = destinationOperand,
-          memoryWidth == .i32 || memoryWidth == .i64
-        else { return fallback(instruction, reason: .interpreter) }
+        guard case .memory(_, let memoryWidth) = destinationOperand else {
+          return fallback(instruction, reason: .interpreter)
+        }
+        let isMeasuredByteXOR =
+          memoryWidth == .i8 && loweredOperation == .xor
+          && sourceOperand == .immediate(1, width: .i8)
+        guard memoryWidth == .i32 || memoryWidth == .i64 || isMeasuredByteXOR else {
+          return fallback(instruction, reason: .interpreter)
+        }
         switch sourceOperand {
         case .register(let register):
           guard register.bank == "x86.gpr", register.index < 16,
@@ -324,11 +330,15 @@ public struct DoryX86IRTranslator: Sendable {
         case .memory:
           return fallback(instruction, reason: .interpreter)
         }
-        return ([.atomicBinary(
-          loweredOperation,
-          destination: destinationOperand,
-          source: sourceOperand
-        )], .next(instruction.nextInstructionAddress))
+        return (
+          [
+            .atomicBinary(
+              loweredOperation,
+              destination: destinationOperand,
+              source: sourceOperand
+            )
+          ], .next(instruction.nextInstructionAddress)
+        )
       }
       return (
         [

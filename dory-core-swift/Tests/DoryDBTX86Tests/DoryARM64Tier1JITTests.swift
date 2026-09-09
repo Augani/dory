@@ -1,3 +1,6 @@
+import Darwin
+import Dispatch
+import Foundation
 import Testing
 
 @testable import DoryDBTX86
@@ -2044,5 +2047,189 @@ import Testing
       #expect(state == initial)
       #expect(memory.snapshot().allSatisfy { $0 == 0 })
     #endif
+  }
+
+  @Test func measuredLockedByteXORAdmissionRemainsExact() throws {
+    let address: UInt64 = 0xFFFF_FFFF_8153_A159
+    let bytes: [UInt8] = [0xF0, 0x80, 0x75, 0x00, 0x01]
+    let block = try DoryX86IRTranslator().translate(bytes, at: address, mode: .long64)
+    let compiled = try #require(DoryARM64Tier1Emitter().compile(block))
+
+    #expect(compiled.tier == .tier1)
+    #expect(compiled.guestByteCount == 5)
+    #expect(compiled.guestInstructionCount == 1)
+    #expect(compiled.requiresMemoryCallbacks)
+    #expect(!compiled.requiresRestartableMemoryReads)
+    #expect(compiled.mayExitToInterpreter)
+
+    for unsupportedBytes: [UInt8] in [
+      [0xF0, 0x80, 0x75, 0x00, 0x02],  // lock xorb $2,0(%rbp)
+      [0xF0, 0x30, 0x4D, 0x00],  // lock xorb %cl,0(%rbp)
+      [0xF0, 0x66, 0x83, 0x75, 0x00, 0x01],  // lock xorw $1,0(%rbp)
+    ] {
+      let unsupported = try DoryX86IRTranslator().translate(
+        unsupportedBytes,
+        at: 0x2000,
+        mode: .long64
+      )
+      #expect(DoryARM64Tier1Emitter().compile(unsupported) == nil)
+    }
+  }
+
+  @Test func measuredLockedByteXORMatchesInterpreterAndRollsBackFailure() throws {
+    #if arch(arm64)
+      let bytes: [UInt8] = [0xF0, 0x80, 0x75, 0x00, 0x01]
+      let codeAddress: UInt64 = 0x700
+      let dataAddress: UInt64 = 0x1200
+      for (index, initialByte) in [UInt8(0), 1, 0x7F, 0x80, 0xFF].enumerated() {
+        let interpretedMemory = try DoryX86ByteArrayMemory(byteCount: 0x3000)
+        let tier1Memory = try DoryX86ByteArrayMemory(byteCount: 0x3000)
+        for memory in [interpretedMemory, tier1Memory] {
+          try memory.write(at: codeAddress, bytes: bytes)
+          try memory.write(at: dataAddress, bytes: [initialByte])
+        }
+        let initial = try DoryX86ArchitecturalState(
+          registers: .init(rax: 0x1111, rbp: dataAddress, r15: 0xFFFF),
+          rip: codeAddress,
+          rflags: [.reservedOne, .carry, .auxiliaryCarry, .direction, .overflow]
+        )
+        var interpreted = initial
+        guard
+          case .retired = DoryX86Interpreter().step(
+            state: &interpreted,
+            memory: interpretedMemory,
+            mode: .long64
+          )
+        else {
+          Issue.record("interpreter did not retire measured locked byte XOR")
+          return
+        }
+
+        var tier1 = initial
+        let execution = try #require(
+          DoryARM64BaselineExecutor(
+            maximumCodeBytes: 16 * 1024,
+            tier1Enabled: true
+          ).execute(
+            bytes: bytes,
+            at: codeAddress,
+            mode: .long64,
+            addressSpaceID: UInt64(index),
+            maximumInstructions: 1,
+            state: &tier1,
+            memory: tier1Memory
+          ))
+
+        #expect(execution.block.tier == .tier1)
+        #expect(tier1 == interpreted)
+        #expect(tier1Memory.snapshot() == interpretedMemory.snapshot())
+      }
+
+      let failedInitial = try DoryX86ArchitecturalState(
+        registers: .init(rbp: 0x4000),
+        rip: codeAddress,
+        rflags: [.reservedOne, .carry, .direction]
+      )
+      var failedState = failedInitial
+      let failedMemory = try DoryX86ByteArrayMemory(byteCount: 0x1000)
+      try failedMemory.write(at: codeAddress, bytes: bytes)
+      let initialMemory = failedMemory.snapshot()
+      let failedExecution = try #require(
+        DoryARM64BaselineExecutor(
+          maximumCodeBytes: 16 * 1024,
+          tier1Enabled: true
+        ).execute(
+          bytes: bytes,
+          at: codeAddress,
+          mode: .long64,
+          addressSpaceID: 100,
+          maximumInstructions: 1,
+          state: &failedState,
+          memory: failedMemory
+        ))
+      #expect(failedExecution.block.tier == .tier1)
+      #expect(failedExecution.exitCode == .interpreter)
+      #expect(failedState == failedInitial)
+      #expect(failedMemory.snapshot() == initialMemory)
+    #endif
+  }
+
+  @Test func measuredLockedByteXORIsSingleCopyAcrossInterpreterAndTier1() throws {
+    #if arch(arm64)
+      let workerCount = 3
+      let iterationsPerWorker = 65
+      let codeAddress: UInt64 = 0x2000
+      let dataAddress: UInt64 = 0x100
+      let bytes: [UInt8] = [0xF0, 0x80, 0x75, 0x00, 0x01]
+      let physical = try DoryX86MmapMemory(validatingByteCount: Int(getpagesize()) * 3)
+      try physical.write(at: codeAddress, bytes: bytes)
+      try physical.write(at: dataAddress, bytes: [0])
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rbp: dataAddress),
+        rip: codeAddress
+      )
+      let executors = try (0..<workerCount).map { _ in
+        try DoryARM64BaselineExecutor(maximumCodeBytes: 16 * 1024, tier1Enabled: true)
+      }
+      let memories = (0..<workerCount).map { _ in
+        DoryX86TranslatedMemory(
+          physicalMemory: physical,
+          pagingUnit: DoryX86PagingUnit(),
+          context: .init(state: initial, mode: .long64)
+        )
+      }
+      let results = Tier1AtomicResults()
+
+      DispatchQueue.concurrentPerform(iterations: workerCount) { worker in
+        do {
+          for _ in 0..<iterationsPerWorker {
+            var state = initial
+            if worker == 0 {
+              guard
+                case .retired = DoryX86Interpreter().step(
+                  state: &state,
+                  memory: physical,
+                  mode: .long64
+                )
+              else {
+                results.record("interpreter did not retire")
+                return
+              }
+            } else {
+              guard
+                let execution = try executors[worker].execute(
+                  bytes: bytes,
+                  at: codeAddress,
+                  mode: .long64,
+                  addressSpaceID: UInt64(worker),
+                  maximumInstructions: 1,
+                  state: &state,
+                  memory: memories[worker]
+                ), execution.block.tier == .tier1, execution.exitCode != .interpreter
+              else {
+                results.record("tier-one worker declined")
+                return
+              }
+            }
+          }
+        } catch {
+          results.record(String(describing: error))
+        }
+      }
+
+      #expect(results.failures.isEmpty)
+      #expect(try physical.readScalar(at: dataAddress, byteCount: 1) == 1)
+    #endif
+  }
+}
+
+private final class Tier1AtomicResults: @unchecked Sendable {
+  private let lock = NSLock()
+  private var storedFailures: [String] = []
+
+  var failures: [String] { lock.withLock { storedFailures } }
+
+  func record(_ failure: String) {
+    lock.withLock { storedFailures.append(failure) }
   }
 }

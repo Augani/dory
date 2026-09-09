@@ -17,6 +17,11 @@ struct DoryARM64Tier1Emitter: Sendable {
     var previousWasQwordMemoryAccumulatorMultiply = false
     for statement in block.statements {
       switch statement {
+      case .atomicBinary:
+        guard Self.isMeasuredAtomicByteXOR(statement), !wroteMemory else { return nil }
+        memoryCallbackCount += 1
+        requiresMemoryCallbacks = true
+        wroteMemory = true
       case .copy(.memory, _):
         guard previousWasQwordMemoryAccumulatorMultiply, !wroteMemory else { return nil }
         memoryCallbackCount += 1
@@ -447,6 +452,15 @@ struct DoryARM64Tier1Emitter: Sendable {
         }
         nativeFlags = nil
 
+      case .atomicBinary(let operation, let destination, let source):
+        guard operation == .xor,
+          case .memory(let address, let width) = destination,
+          width == .i8,
+          source == .immediate(1, width: .i8),
+          alu.emitMeasuredAtomicByteXOR(address: address, into: &body)
+        else { return nil }
+        nativeFlags = nil
+
       default:
         return nil
       }
@@ -508,6 +522,13 @@ struct DoryARM64Tier1Emitter: Sendable {
       return false
     }
     return width == .i64
+  }
+
+  private static func isMeasuredAtomicByteXOR(_ statement: DoryIRStatement) -> Bool {
+    guard case .atomicBinary(.xor, .memory(_, let width), let source) = statement else {
+      return false
+    }
+    return width == .i8 && source == .immediate(1, width: .i8)
   }
 
   private func lowRegister(_ operand: DoryIROperand) -> DoryIRRegister? {

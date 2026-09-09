@@ -200,9 +200,9 @@ memory sources at every integer width. The measured read-only word
 memory-destination TEST-immediate family is also admitted. Both forms stage the
 read before publishing the destination or replacement lazy-flags record, retain
 the same native condition-fusion token as their register-only equivalents, and
-share the replay and rollback contract above. Wider memory-destination,
-memory-writing, and atomic ALU forms remain outside tier 1 pending dedicated
-qualification or an inline transactional write path.
+share the replay and rollback contract above. Wider memory-destination and
+memory-writing ALU forms remain outside tier 1 pending dedicated qualification
+or an inline transactional write path.
 
 The measured qword accumulator MUL memory-source form reads and stages its
 operand before publishing RDX:RAX or replacing CF/OF. Effective addresses based
@@ -215,6 +215,18 @@ pair requires replay-safe scalar memory, and failure at either callback rolls
 the complete block back. Narrower memory-source accumulator MUL and every other
 memory-store family remain outside tier 1 until independently measured and
 qualified.
+
+The measured byte-immediate `lock xor $1,(memory)` form is the sole tier-1
+atomic ALU admission. It materializes an older lazy producer, forms the address
+from the pinned register image, and retries the preserved scalar
+compare-exchange callback until the observed byte matches. An initial expected
+value of zero makes a mismatch supply the real byte without a separate read;
+only the successful comparison writes memory. The old byte, immediate one, and
+new byte then publish a width-eight logical lazy record. Callback failure leaves
+that descriptor clear and causes the executor checkpoint to retry through the
+interpreter. The callback shares the process-wide x86 atomic gate, so mixed
+interpreter/tier-1 vCPUs remain single-copy. Every other byte immediate, source
+kind, width, and atomic ALU operation remains outside tier 1.
 
 ## Helper-call shim
 
