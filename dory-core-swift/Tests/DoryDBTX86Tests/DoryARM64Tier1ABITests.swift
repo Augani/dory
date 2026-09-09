@@ -41,7 +41,7 @@ import Testing
   }
 
   @Test func stableContextLayoutMatchesTheExecutableBaselineBoundary() {
-    #expect(DoryARM64Tier1ABI.ContextWord.allCases.map(\.rawValue) == Array(0..<43))
+    #expect(DoryARM64Tier1ABI.ContextWord.allCases.map(\.rawValue) == Array(0..<48))
     #expect(DoryARM64Tier1ABI.contextWordCount == DoryJITExecutableRegion.contextWordCount)
     #expect(DoryARM64Tier1ABI.ContextWord.hostAddressSpaceBase.rawValue
       == DoryJITExecutableRegion.hostAddressSpaceBaseWordIndex)

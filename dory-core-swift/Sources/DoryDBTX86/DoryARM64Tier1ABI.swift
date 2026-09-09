@@ -70,6 +70,11 @@ enum DoryARM64Tier1ABI {
     case atomicFetchAdd
     case atomicRMW
     case atomicCompareExchangePair
+    case lazyFlagsOperation
+    case lazyFlagsWidth
+    case lazyFlagsResult
+    case lazyFlagsSource1
+    case lazyFlagsSource2
 
     var byteOffset: Int { rawValue * MemoryLayout<UInt64>.stride }
   }

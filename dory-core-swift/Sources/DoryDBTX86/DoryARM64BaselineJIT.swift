@@ -5936,6 +5936,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[DoryJITExecutableRegion.atomicCompareExchangePairWordIndex] =
       translationTLB == nil
       ? 0 : UInt64(dory_jit_atomic_compare_exchange_pair_from_context_address())
+    context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] =
+      DoryARM64LazyFlagsState.Operation.materialized.rawValue
+    context[DoryARM64Tier1ABI.ContextWord.lazyFlagsWidth.rawValue] =
+      UInt64(DoryIRIntegerWidth.i64.rawValue)
+    context[DoryARM64Tier1ABI.ContextWord.lazyFlagsResult.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource1.rawValue] = 0
+    context[DoryARM64Tier1ABI.ContextWord.lazyFlagsSource2.rawValue] = 0
   }
 
   private static func apply(
@@ -5960,7 +5967,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     state.registers.r14 = context[14]
     state.registers.r15 = context[15]
     state.rip = context[16]
-    state.rflags = DoryX86RFLAGS(rawValue: context[17])
+    state.rflags = DoryARM64LazyFlagsState(context: context)?.materialize()
+      ?? DoryX86RFLAGS(rawValue: context[17])
   }
 
   private static func fingerprint(bytes: [UInt8], mode: DoryX86ExecutionMode) -> UInt64 {
