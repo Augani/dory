@@ -93,6 +93,9 @@ architectural destination byte. Native CMOV64 selects a pinned source without
 clobbering NZCV, and a fused conditional terminator selects the next guest RIP
 in `x27`; constant logical-domain predicates collapse to a move or no-op. Their
 materializing fallbacks share the same complete predicate evaluator as SETcc.
+LAHF consumes the same boundary and replaces AH from the canonical low RFLAGS
+image; PUSHF lowering receives an image with RF and VM cleared and bit 1 set
+before the tier-1 memory path performs the stack write.
 
 ## Helper-call shim
 

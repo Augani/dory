@@ -583,6 +583,52 @@ import Testing
       }
     #endif
   }
+
+  @Test func LAHFAndPushedFlagsImageConsumeOneMaterializedRecord() throws {
+    #if arch(arm64)
+      let values: [(UInt64, UInt64)] = [
+        (0, 0), (0, 1), (.max, 1),
+        (0x7FFF_FFFF_FFFF_FFFF, 1), (0x55, 0xAA),
+      ]
+      let prior: DoryX86RFLAGS = [
+        .reservedOne, .carry, .parity, .auxiliaryCarry, .zero, .sign,
+        .direction, .overflow, .resume, .virtual8086,
+      ]
+      var words: [UInt32] = []
+      let boundary = DoryARM64Tier1BoundaryEmitter()
+      let alu = DoryARM64Tier1ALUEmitter()
+      boundary.emitEntry(into: &words)
+      _ = try #require(alu.emitBinary(
+        .compare,
+        width: .i64,
+        destinationGuestRegister: 0,
+        source: .guestRegister(1),
+        writesDestination: false,
+        into: &words
+      ))
+      alu.emitLoadFlagsIntoAH(into: &words)
+      #expect(alu.emitPushedFlagsImage(destinationGuestRegister: 2, into: &words))
+      boundary.emitExit(.dispatch, into: &words)
+      let region = try executableRegion(words)
+
+      for (lhs, rhs) in values {
+        var context = makeContext(rax: lhs, rcx: rhs, rdx: 0, rflags: prior)
+        #expect(try region.execute(at: 0, context: &context) == .dispatch)
+        let flags = DoryX86RFLAGS(
+          rawValue: context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue])
+        let ah = (flags.rawValue & 0xD5) | DoryX86RFLAGS.reservedOne.rawValue
+        #expect(context[DoryARM64Tier1ABI.ContextWord.rax.rawValue]
+          == (lhs & ~UInt64(0xFF00)) | ah << 8)
+        let pushed =
+          (flags.rawValue
+            & ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue))
+          | DoryX86RFLAGS.reservedOne.rawValue
+        #expect(context[DoryARM64Tier1ABI.ContextWord.rdx.rawValue] == pushed)
+        #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] == 0)
+        #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] == 1)
+      }
+    #endif
+  }
 }
 
 private func executableRegion(_ words: [UInt32]) throws -> DoryJITExecutableRegion {

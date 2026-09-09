@@ -361,6 +361,48 @@ struct DoryARM64Tier1ALUEmitter: Sendable {
     words.append(contentsOf: fragment)
   }
 
+  /// Materializes flags and applies LAHF's architectural low-byte image to AH.
+  func emitLoadFlagsIntoAH(into words: inout [UInt32]) {
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    Self.emitImmediate(0xD5, register: 16, into: &fragment)
+    fragment.append(Self.encodeLogical(
+      .and, is64Bit: true, left: 25, right: 16, destination: 16))
+    Self.emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 17, into: &fragment)
+    fragment.append(Self.encodeLogical(
+      .or, is64Bit: true, left: 16, right: 17, destination: 16))
+    Self.emitImmediate(~UInt64(0xFF00), register: 17, into: &fragment)
+    fragment.append(Self.encodeLogical(
+      .and, is64Bit: true, left: 0, right: 17, destination: 0))
+    fragment.append(Self.encodeLogical(
+      .or, is64Bit: true, left: 0, right: 16, shiftAmount: 8, destination: 0))
+    words.append(contentsOf: fragment)
+  }
+
+  /// Materializes and stages the architecturally sanitized PUSHF image in a pinned register.
+  /// The tier-1 memory lowering consumes this value when it emits the stack write.
+  func emitPushedFlagsImage(
+    destinationGuestRegister: Int,
+    into words: inout [UInt32]
+  ) -> Bool {
+    guard (0..<16).contains(destinationGuestRegister) else { return false }
+    var fragment: [UInt32] = []
+    DoryARM64Tier1BoundaryEmitter().emitMaterializeLazyFlags(into: &fragment)
+    Self.emitImmediate(
+      ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue),
+      register: 16,
+      into: &fragment
+    )
+    let destination = UInt32(destinationGuestRegister)
+    fragment.append(Self.encodeLogical(
+      .and, is64Bit: true, left: 25, right: 16, destination: destination))
+    Self.emitImmediate(DoryX86RFLAGS.reservedOne.rawValue, register: 16, into: &fragment)
+    fragment.append(Self.encodeLogical(
+      .or, is64Bit: true, left: destination, right: 16, destination: destination))
+    words.append(contentsOf: fragment)
+    return true
+  }
+
   /// Emits the materialized x86 predicate as zero/one in x16. Uses x17 as the constant one and
   /// x26 as scratch; callers must clear x26 before returning to the pinned lazy-state convention.
   private static func emitConditionFromMaterializedFlags(
