@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-live-negative-site-bytes",
+  "observedAt": "2026-09-09T22:08:47Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture diagnostics evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "269c2321a70c0452cd6791110df99b1e31afbed8",
+    "candidateRunnerSHA256": "6570c472cd9ff4f87c5088def49dad689ef868c9cc815f99d0ff094e008ce1a",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "diagnosticChange": {
+    "field": "jitDiagnostics.baseline.negativeCacheHotSites[].instructionBytes",
+    "source": "decoder-confirmed bytes retained by each live negative-cache entry at publication",
+    "scope": "The field describes only the capped live-entry sample at the last completed coarse sample or normal terminal slice; it is not a cumulative histogram.",
+    "purpose": "Identify ASLR-dependent and alternatives-patched hot sites without inferring live code from a static address."
+  },
+  "verification": {
+    "dbtPCAndRunnerGate": "1,492 tests in 175 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "projectionCoverage": "Runner JSON tests assert that instruction bytes are present and remain within the bounded diagnostic size.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "6d0cb803-8d86-45cb-84ac-26113f226175",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 139051497167,
+    "retiredInstructions": 733544936,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "consoleBytes": 19246,
+    "tier1CompilationAttempts": 220914,
+    "tier1CompilationDeclines": 119022,
+    "tier1CompiledBlocks": 101892,
+    "interpreterInstructions": 2490342,
+    "lazyFlagMaterializations": 54682139,
+    "translationCacheInvalidations": 240771
+  },
+  "identifiedLiveSites": [
+    {
+      "guestRIP": "aslr-dependent-userspace",
+      "instructionBytes": [146],
+      "instruction": "xchg eax,edx",
+      "hitCount": 122159,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "aslr-dependent-userspace",
+      "instructionBytes": [15, 17, 71, 240],
+      "instruction": "movups xmmword ptr [rdi-0x10],xmm0",
+      "hitCount": 53691,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff812df1e6",
+      "symbol": "lookup_address_in_pgd_attr+0x66",
+      "instructionBytes": [15, 149, 1],
+      "instruction": "setne byte ptr [rcx]",
+      "hitCount": 11523,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff81001732",
+      "instructionBytes": [15, 0, 45, 7, 233, 255, 255],
+      "hitCount": 8149,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81e1c104",
+      "symbol": "__radix_tree_delete+0xb4",
+      "instructionBytes": [72, 15, 163, 152, 40, 2, 0, 0],
+      "instruction": "btq rbx,0x228(rax)",
+      "hitCount": 2129,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff810017e8",
+      "symbol": "native_irq_return_iret",
+      "instructionBytes": [72, 207],
+      "instruction": "iretq",
+      "hitCount": 1815,
+      "declineReason": "interpreterHelper"
+    }
+  ],
+  "interpretation": "Live byte capture resolves the formerly unidentified dominant userspace site as xchg eax,edx and creates a byte-stable acceptance target across ASLR runs. It also distinguishes live alternatives-patched kernel bytes from the static image.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and its sites are live-entry observations rather than cumulative reason totals.",
+    "This diagnostics-only slice establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
