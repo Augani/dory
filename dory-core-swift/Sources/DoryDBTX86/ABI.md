@@ -77,10 +77,14 @@ conditional terminators. Their compiled tier is reported as `tier1`.
 
 An exit publishes every dirty architectural value and the complete pending-flags
 record to the context before returning an exit code. The executor materializes
-that record before architectural state becomes externally visible. Interpreter,
-exception, interrupt, and code-cache exits must publish the precise RIP of the
-next instruction to execute. A direct chain publishes nothing solely for the
-chain; its target consumes the pinned state.
+that record before architectural state becomes externally visible and counts
+that publication in the same diagnostic as generated materializer calls. The PC
+run loop delivers pending interrupts only before the next processor execution,
+after the preceding native return has crossed this publication boundary; an
+interrupt consumer therefore never observes a tier-1-private lazy descriptor.
+Interpreter, exception, interrupt, and code-cache exits must publish the precise
+RIP of the next instruction to execute. A direct chain publishes nothing solely
+for the chain; its target consumes the pinned state.
 
 ## Native flags producers and fusion
 
@@ -98,6 +102,14 @@ pending record to be materialized before emission so `x25.CF` is current.
 AH/CH/DH/BH binary and unary forms use the same aligned flag lowering and merge
 only bits 8...15 of their legacy parent register; they are unavailable when REX
 encoding would suppress the high-byte namespace.
+
+Flag-neutral register MOV and NOT forms cover low 8-, 16-, 32-, and 64-bit
+operands. Byte and word writes merge into the pinned parent, dword writes
+zero-extend through a W-register operation, and qword writes replace the full
+register. Their ARM instructions do not set NZCV or modify the lazy descriptor,
+so a validated native-flags token can cross them into the next fused condition
+consumer. The legacy baseline emitter admits the same word MOV/NOT forms so a
+tier-1 decline never changes fallback coverage.
 
 SHL/SHR/SAR/ROL/ROR/RCL/RCR producers accept immediate or pinned-CL counts at every
 architectural width. They resolve older lazy flags before a nonzero operation,
