@@ -1,0 +1,118 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-bounded-memory-mul-store",
+  "observedAt": "2026-09-09T15:10:12Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and bounded production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "implementationCommit": "a81d15d03e72ed38c89eb52a7b1fcdc6af63fde5",
+    "admissionBoundaryCommit": "0922b4b02ad2771dece72ee5652c1ebc2471d6d9",
+    "parentCommit": "09b962bcb5c6b4d5d7f04b5044ce7757c0a70805",
+    "candidateRunnerSHA256": "c6790a3d7c7e0e9d98532dc8a58ac6fad1ae035ebc08a60ea33744515b07e9fa",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "operation": "long-mode qword unsigned accumulator MUL from scalar memory immediately followed by qword register-to-memory MOV",
+    "callbacks": "restartable scalar read followed by transactional scalar write",
+    "ordering": "the MUL source is staged from the old register image before RDX:RAX publication; the following store materializes flags before borrowing lazy-payload words for its address and value",
+    "measuredSite": {
+      "guestRIP": "0xffffffff81362ebe",
+      "symbol": "__update_load_avg_se+0x11e",
+      "guestByteCount": 12,
+      "instructions": [
+        "mulq 0x8(%rsp)",
+        "movq %r11,0xc8(%rsi)"
+      ],
+      "priorNegativeCacheHits": 9027,
+      "remainsInBoundedRunNegativeCache": false
+    },
+    "boundedRule": "The memory store is admissible only as the immediate successor of a qword memory-source accumulator MUL in the same block.",
+    "deferred": "standalone and narrower memory stores, narrower memory-source accumulator MUL, signed accumulator multiply, divide, and atomic or locked memory read-modify-write forms"
+  },
+  "verification": {
+    "focusedGate": "210 tests in 3 suites passed",
+    "dbtAndPCGate": "1,438 tests in 171 suites passed; one pinned PVH environment test skipped because its environment variables were absent",
+    "differentialCoverage": "The exact 12-byte measured pair and RAX/RDX address-aliasing variants match the interpreter in architectural state and memory.",
+    "rollbackCoverage": "A failed MUL-source read and a failed following store both preserve the original architectural state and memory.",
+    "negativeAdmissionCoverage": "Standalone qword stores, dword memory-source MUL, and dword stores after qword MUL remain tier-one declines.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "rejectedBroadAdmissionDiagnostic": {
+    "status": "correctness-passing experiment rejected for excessive production scope",
+    "runID": "2f566e9b-24eb-439b-abcd-58d811297a20",
+    "elapsedNanoseconds": 159758243208,
+    "retiredInstructions": 735497440,
+    "outcome": "userspace-workloads-powered-off",
+    "tier1CompilationAttempts": 223931,
+    "tier1CompilationDeclines": 103808,
+    "tier1CompiledBlocks": 120123,
+    "compiledBlockExcessVersusBoundedRun": 21238,
+    "declineReductionVersusBoundedRun": 21740,
+    "interpretation": "The broad qword-store rule completed correctly but changed tens of thousands of dynamically observed admission decisions beyond the one measured block. Dynamic totals are unmatched-run diagnostics, not a performance or exact site-count comparison. Production retains only the immediate MUL/store pair."
+  },
+  "boundedFullRun": {
+    "runID": "b1c9a474-d893-4709-ac04-d729aa7ce015",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 139661276375,
+    "retiredInstructions": 734496554,
+    "throughputMIPS": 5.259128178292,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19247,
+    "baselineJITInstructions": 731699875,
+    "interpreterInstructions": 2796679,
+    "deliveredMaskableInterrupts": 58094,
+    "retiredInterruptReturns": 146291,
+    "compiledBlocks": 185779,
+    "tier1CompilationAttempts": 224433,
+    "tier1CompilationDeclines": 125548,
+    "tier1DeclinePercentOfAttempts": 55.940080112996,
+    "tier1CompiledBlocks": 98885,
+    "lazyFlagMaterializations": 60590744,
+    "nativeTraceAttempts": 640961,
+    "nativeTraceReplays": 455564,
+    "measuredMulStoreSiteRemainsInNegativeCache": false,
+    "nextLockedXORSiteRemainsInNegativeCache": true
+  },
+  "unmatchedFullRunComparison": {
+    "priorMemoryPushElapsedNanoseconds": 147529939667,
+    "boundedCandidateElapsedNanoseconds": 139661276375,
+    "directionalElapsedReductionPercent": 5.333604358384,
+    "interpretation": "The single sequential full runs differ in dynamic instruction, interrupt, compilation, and trace totals. This direction is reassuring but is not a matched or statistical performance claim."
+  },
+  "interpretation": "The exact measured memory-MUL/store pair now executes as one restartable tier-one block, disappears from the bounded full-run negative cache, and completes the authenticated seven-workload userspace run. The follow-up boundary prevents the generic qword-store admission exposed by the broad diagnostic run. A05.2 remains open because 125,548 of 224,433 full-run tier-one attempts still declined.",
+  "limitations": [
+    "The complete workload evidence contains one bounded candidate run on one local Apple M2 Pro.",
+    "The broad and bounded runs are unmatched dynamic executions and do not establish a performance delta or an exact count of extra static sites.",
+    "The hot-site sampler is capped and proves absence only from the retained visible list, not from every historical cache entry.",
+    "The diagnostic runner marks every record releaseQualified=false; this evidence does not satisfy G1-G5."
+  ]
+}
