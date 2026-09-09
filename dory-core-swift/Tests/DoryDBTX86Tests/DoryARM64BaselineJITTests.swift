@@ -609,9 +609,7 @@ import Testing
           memory: memory
         )
       )
-      #expect(store.block.tier == .tier1)
-      #expect(store.block.requiresMemoryCallbacks)
-      #expect(!store.block.requiresRestartableMemoryReads)
+      #expect(store.block.tier == .baseline)
       #expect(store.exitCode == .dispatch)
       #expect(
         try memory.read(at: 0x88, byteCount: 8) == [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11])

@@ -555,7 +555,7 @@ import Testing
     #if arch(arm64)
       let address: UInt64 = 0x3000
       let registerBytes: [UInt8] = [0x48, 0xB8, 1, 0, 0, 0, 0, 0, 0, 0]  // mov rax, 1
-      let memoryBytes: [UInt8] = [0x89, 0x00]  // dword memory stores remain bounded
+      let memoryBytes: [UInt8] = [0x48, 0x89, 0x00]  // standalone stores remain bounded
       for (tier1Enabled, bytes) in [(false, registerBytes), (true, memoryBytes)] {
         let memory = try DoryX86ByteArrayMemory(byteCount: 0x4000)
         let executor = try DoryARM64BaselineExecutor(
@@ -1622,6 +1622,7 @@ import Testing
 
     for unsupportedBytes: [UInt8] in [
       [0xF7, 0x64, 0x24, 0x08],  // mull 0x8(%rsp)
+      [0x48, 0x89, 0x18],  // standalone movq %rbx,(%rax)
       [0x44, 0x89, 0x9E, 0xC8, 0x00, 0x00, 0x00],  // movl %r11d,0xc8(%rsi)
     ] {
       let unsupported = try DoryX86IRTranslator().translate(

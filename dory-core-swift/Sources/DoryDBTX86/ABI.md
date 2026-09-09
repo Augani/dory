@@ -206,13 +206,15 @@ qualification or an inline transactional write path.
 
 The measured qword accumulator MUL memory-source form reads and stages its
 operand before publishing RDX:RAX or replacing CF/OF. Effective addresses based
-on the old RAX or RDX therefore remain exact. A qword register-to-memory MOV may
-terminate the same block through the transactional write callback; it resolves
-pending flags before borrowing the lazy-payload words for address and value
-staging. A MUL-read followed by that store requires replay-safe scalar memory,
-and failure at either callback rolls the complete block back. Narrower
-memory-source accumulator MUL and narrower or immediate memory stores remain
-outside tier 1 until independently measured and qualified.
+on the old RAX or RDX therefore remain exact. A qword register-to-memory MOV is
+admitted only when it immediately follows that memory-source MUL and terminates
+the same block through the transactional write callback; standalone and other
+qword stores remain bounded. The store resolves pending flags before borrowing
+the lazy-payload words for address and value staging. This measured read/write
+pair requires replay-safe scalar memory, and failure at either callback rolls
+the complete block back. Narrower memory-source accumulator MUL and every other
+memory-store family remain outside tier 1 until independently measured and
+qualified.
 
 ## Helper-call shim
 

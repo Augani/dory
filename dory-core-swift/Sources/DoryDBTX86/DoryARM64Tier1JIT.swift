@@ -14,10 +14,11 @@ struct DoryARM64Tier1Emitter: Sendable {
     var memoryCallbackCount = 0
     var requiresMemoryCallbacks = false
     var wroteMemory = false
+    var previousWasQwordMemoryAccumulatorMultiply = false
     for statement in block.statements {
       switch statement {
       case .copy(.memory, _):
-        guard !wroteMemory else { return nil }
+        guard previousWasQwordMemoryAccumulatorMultiply, !wroteMemory else { return nil }
         memoryCallbackCount += 1
         requiresMemoryCallbacks = true
         wroteMemory = true
@@ -52,6 +53,7 @@ struct DoryARM64Tier1Emitter: Sendable {
       default:
         break
       }
+      previousWasQwordMemoryAccumulatorMultiply = Self.isQwordMemoryAccumulatorMultiply(statement)
     }
     var body: [UInt32] = []
     var nativeFlags: DoryARM64Tier1ALUEmitter.NativeFlags?
@@ -499,6 +501,13 @@ struct DoryARM64Tier1Emitter: Sendable {
     guard case .register(let value) = operand, value.index < 16 else { return nil }
     if value.bank == "x86.high8" { return value.index < 4 ? value : nil }
     return value.bank == "x86.gpr" ? value : nil
+  }
+
+  private static func isQwordMemoryAccumulatorMultiply(_ statement: DoryIRStatement) -> Bool {
+    guard case .unsignedAccumulatorMultiply(.memory(_, let width)) = statement else {
+      return false
+    }
+    return width == .i64
   }
 
   private func lowRegister(_ operand: DoryIROperand) -> DoryIRRegister? {
