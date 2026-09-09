@@ -153,6 +153,14 @@ and invokes the preserved scalar-write callback. Its temporary context and RSP
 change are published only when the callback succeeds; callback failure returns
 to the interpreter with the original architectural state.
 
+Register/immediate PUSH and register POP use the same restartable callback
+boundary. They materialize before borrowing the lazy-payload words as staging
+storage, spill all pinned GPRs, preserve pre-decrement PUSH RSP values, and give
+POP RSP its loaded-value precedence over the ordinary increment. No later
+callback may follow a committed stack write. A read-before-write sequence is
+admitted only with the executor's replay-safe scalar-read path, so failure can
+discard the temporary context without duplicating an observable read.
+
 ## Helper-call shim
 
 A C helper may clobber `x0`...`x18` and NZCV. A generated shim therefore:
