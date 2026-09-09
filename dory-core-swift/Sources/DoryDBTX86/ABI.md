@@ -91,7 +91,8 @@ conditions involving their preserved CF materialize. The materializing SETcc
 fallback evaluates all sixteen x86 conditions from `x25` and replaces only the
 architectural destination byte. Native CMOV64 selects a pinned source without
 clobbering NZCV, and a fused conditional terminator selects the next guest RIP
-in `x27`; constant logical-domain predicates collapse to a move or no-op.
+in `x27`; constant logical-domain predicates collapse to a move or no-op. Their
+materializing fallbacks share the same complete predicate evaluator as SETcc.
 
 ## Helper-call shim
 

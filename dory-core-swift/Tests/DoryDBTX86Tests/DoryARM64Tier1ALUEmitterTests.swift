@@ -527,6 +527,62 @@ import Testing
       #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue] == 0)
     #endif
   }
+
+  @Test func materializedConditionalMoveAndBranchCoverEveryX86Condition() throws {
+    #if arch(arm64)
+      let values: [(UInt64, UInt64)] = [
+        (0, 0), (0, 1), (1, 0), (.max, 1),
+        (0x7FFF_FFFF_FFFF_FFFF, 1), (0x8000_0000_0000_0000, .max),
+        (0x55, 0xAA), (0x03, 0),
+      ]
+      let originalDestination: UInt64 = 0x1020_3040_5060_7080
+      let source: UInt64 = 0x8877_6655_4433_2211
+      let taken: UInt64 = 0xAAAA_BBBB_CCCC_DDDD
+      let notTaken: UInt64 = 0x1111_2222_3333_4444
+
+      for condition in allX86Conditions {
+        var words: [UInt32] = []
+        let boundary = DoryARM64Tier1BoundaryEmitter()
+        let alu = DoryARM64Tier1ALUEmitter()
+        boundary.emitEntry(into: &words)
+        _ = try #require(alu.emitBinary(
+          .compare,
+          width: .i64,
+          destinationGuestRegister: 0,
+          source: .guestRegister(1),
+          writesDestination: false,
+          into: &words
+        ))
+        #expect(alu.emitMaterializedConditionalMove(
+          condition,
+          destinationGuestRegister: 3,
+          source: .guestRegister(2),
+          into: &words
+        ))
+        alu.emitMaterializedBranch(
+          condition, taken: taken, notTaken: notTaken, into: &words)
+        boundary.emitExit(.dispatch, into: &words)
+        let region = try executableRegion(words)
+
+        for (lhs, rhs) in values {
+          var context = makeContext(
+            rax: lhs, rcx: rhs, rdx: source, rflags: [.reservedOne, .direction])
+          context[DoryARM64Tier1ABI.ContextWord.rbx.rawValue] = originalDestination
+          #expect(try region.execute(at: 0, context: &context) == .dispatch)
+          let flags = DoryX86RFLAGS(
+            rawValue: context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue])
+          let matches = evaluate(condition, flags: flags)
+          #expect(context[DoryARM64Tier1ABI.ContextWord.rbx.rawValue]
+            == (matches ? source : originalDestination))
+          #expect(context[DoryARM64Tier1ABI.ContextWord.rip.rawValue]
+            == (matches ? taken : notTaken))
+          #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] == 0)
+          #expect(context[DoryARM64Tier1ABI.ContextWord.lazyFlagsMaterializationCount.rawValue]
+            == 1)
+        }
+      }
+    #endif
+  }
 }
 
 private func executableRegion(_ words: [UInt32]) throws -> DoryJITExecutableRegion {
