@@ -1,0 +1,114 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-patched-memory-btr",
+  "observedAt": "2026-09-09T23:06:21Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "e64c2fab0c52fa5190505c5ac66ce70fba871c9a",
+    "candidateRunnerSHA256": "6380974dac0cc111ffef986f29cc76e61fed04765ce516b8a7ffd0fabb71396c",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "guestRIP": "0xffffffff812dc46a",
+    "symbol": "unuse_temporary_mm+0x3a",
+    "guestByteCount": 9,
+    "guestInstructionCount": 1,
+    "instructionBytes": [62, 72, 15, 179, 144, 192, 5, 0, 0],
+    "instruction": "DS-prefixed btrq %rdx,0x5c0(%rax)",
+    "livePatch": "The single-vCPU alternatives patch replaces the static LOCK prefix with a legacy DS prefix, which long mode ignores for this address.",
+    "lowering": "The exact live form reuses signed bit-string address selection, one restartable qword read, a final transactional qword write, and CF-only publication.",
+    "boundedRule": "The measured RIP, complete nine-byte single instruction, non-locking DS prefix as decoded, RAX base, 0x5c0 displacement, qword width, and RDX index must all match. An adjacent RIP or changed displacement declines.",
+    "priorNegativeCacheHits": 13268,
+    "remainsInCandidateRunNegativeCache": false
+  },
+  "verification": {
+    "focusedGate": "The exact alternatives-patched memory-BTR block passes its tier-one differential and rejected-write matrix.",
+    "dbtPCAndRunnerGate": "1,495 tests in 175 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Signed indices 0, 64, and -1, both old-bit states, complete state, resulting memory, and CF match the interpreter.",
+    "faultCoverage": "A forced final-write rejection preserves complete block-entry state and memory after exactly one write attempt.",
+    "negativeCoverage": "An adjacent RIP and a changed displacement both decline tier one.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "4ddfc9ab-9d5b-4001-b917-dabfaf3f812d",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 153000422833,
+    "retiredInstructions": 734168762,
+    "throughputMIPS": 4.798,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731807762,
+    "interpreterInstructions": 2361000,
+    "deliveredMaskableInterrupts": 58009,
+    "retiredInterruptReturns": 146200,
+    "compiledBlocks": 186097,
+    "tier1CompilationAttempts": 218684,
+    "tier1CompilationDeclines": 116540,
+    "tier1DeclinePercentOfAttempts": 53.29150738051252,
+    "tier1CompiledBlocks": 102144,
+    "lazyFlagMaterializations": 54864559,
+    "translationCacheInvalidations": 241273
+  },
+  "unmatchedPriorRunComparison": {
+    "raxRdiMemoryBTElapsedNanoseconds": 154752187375,
+    "patchedMemoryBTRElapsedNanoseconds": 153000422833,
+    "directionalElapsedDecreasePercent": 1.1319804725958886,
+    "tier1AttemptDecrease": 1258,
+    "tier1DeclineDecrease": 1244,
+    "tier1CompiledBlockDecrease": 14,
+    "interpreterInstructionIncrease": 5615,
+    "interpretation": "The executions have different interrupt, compilation, trace, address-space, and instruction totals. Exact-site absence establishes production use; aggregate and elapsed movements are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleSites": [
+    {
+      "guestRIP": "0xffffffff815cc28b",
+      "symbol": "free_frozen_page_commit+0x2b",
+      "instructionBytes": [208, 110, 25],
+      "instruction": "shrb 0x19(%rsi)",
+      "hitCount": 5039,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff813cd9a6",
+      "instructionBytes": [243, 72, 165],
+      "instruction": "rep movsq",
+      "hitCount": 12839,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff810017e8",
+      "symbol": "native_irq_return_iret",
+      "instructionBytes": [72, 207],
+      "instruction": "iretq",
+      "hitCount": 9273,
+      "declineReason": "interpreterHelper"
+    }
+  ],
+  "interpretation": "The exact 13,268-hit alternatives-patched BTR site is absent from the candidate's capped live negative-cache sample. A05.2 remains open because 116,540 of 218,684 tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
