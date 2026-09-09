@@ -230,6 +230,12 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
   public let translationCacheAllocatedBytes: UInt64
   public let translationCacheAddressSpaceGeneration: UInt64
   public let translationCacheInvalidations: UInt64
+  public let translationCacheHits: UInt64
+  public let translationCacheMisses: UInt64
+  public let translationCacheFills: UInt64
+  public let translationCachePageFaults: UInt64
+  public let translationCacheFallbacks: UInt64
+  public let translationCacheHitRate: Double
 
   fileprivate init(_ source: DoryARM64BaselineExecutorDiagnostics) {
     recentLookupHits = source.recentLookupHits
@@ -257,6 +263,12 @@ public struct DoryPCJITCacheStatistics: Sendable, Hashable {
     translationCacheAllocatedBytes = source.translationCacheAllocatedBytes
     translationCacheAddressSpaceGeneration = source.translationCacheAddressSpaceGeneration
     translationCacheInvalidations = source.translationCacheInvalidations
+    translationCacheHits = source.translationCacheHits
+    translationCacheMisses = source.translationCacheMisses
+    translationCacheFills = source.translationCacheFills
+    translationCachePageFaults = source.translationCachePageFaults
+    translationCacheFallbacks = source.translationCacheFallbacks
+    translationCacheHitRate = source.translationCacheHitRate
   }
 }
 

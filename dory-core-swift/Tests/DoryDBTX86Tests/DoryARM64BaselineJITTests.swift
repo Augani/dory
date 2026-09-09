@@ -694,6 +694,10 @@ import Testing
         ))
       #expect(state.registers.rbx == 0x8877_6655_4433_2211)
       #expect(paging.diagnostics.translationRequests == 1)
+      #expect(executor.diagnostics.translationCacheHits == 1)
+      #expect(executor.diagnostics.translationCacheMisses == 1)
+      #expect(executor.diagnostics.translationCacheFills == 1)
+      #expect(executor.diagnostics.translationCacheHitRate == 0.5)
     #endif
   }
 
@@ -6087,6 +6091,7 @@ import Testing
         == UInt64(memory.hostAddressSpaceByteCount))
     #expect(words[DoryJITExecutableRegion.tlbStorageWordIndex] != 0)
     #expect(words[DoryJITExecutableRegion.tlbResolverWordIndex] != 0)
+    #expect(words[DoryJITExecutableRegion.readTLBHitCounterWordIndex] != 0)
 
     words.withUnsafeMutableBufferPointer { context in
       DoryARM64BaselineExecutor.populateExecutionContext(
@@ -6103,6 +6108,7 @@ import Testing
     #expect(words[DoryJITExecutableRegion.hostAddressSpaceByteCountWordIndex] == 0)
     #expect(words[DoryJITExecutableRegion.tlbStorageWordIndex] == 0)
     #expect(words[DoryJITExecutableRegion.tlbResolverWordIndex] == 0)
+    #expect(words[DoryJITExecutableRegion.readTLBHitCounterWordIndex] == 0)
   }
 
   @Test func executorAdvancesTLBGenerationAndScopesPageInvalidation() throws {

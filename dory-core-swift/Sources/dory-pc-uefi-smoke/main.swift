@@ -355,6 +355,16 @@ private func jitDiagnostics(_ diagnostics: DoryPCJITCacheStatistics?) -> Any {
     "chainedExecutionCalls": diagnostics.chainedExecutionCalls,
     "chainedRequestedInstructions": diagnostics.chainedRequestedInstructions,
     "chainedRetiredInstructions": diagnostics.chainedRetiredInstructions,
+    "translationCacheEntryCount": diagnostics.translationCacheEntryCount,
+    "translationCacheAllocatedBytes": diagnostics.translationCacheAllocatedBytes,
+    "translationCacheAddressSpaceGeneration": diagnostics.translationCacheAddressSpaceGeneration,
+    "translationCacheInvalidations": diagnostics.translationCacheInvalidations,
+    "translationCacheHits": diagnostics.translationCacheHits,
+    "translationCacheMisses": diagnostics.translationCacheMisses,
+    "translationCacheFills": diagnostics.translationCacheFills,
+    "translationCachePageFaults": diagnostics.translationCachePageFaults,
+    "translationCacheFallbacks": diagnostics.translationCacheFallbacks,
+    "translationCacheHitRate": diagnostics.translationCacheHitRate,
   ] as [String: Any]
 }
 

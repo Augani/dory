@@ -21,6 +21,11 @@ struct dory_jit_tlb {
     uint32_t magic;
     size_t entry_count;
     dory_jit_tlb_entry *entries;
+    uint64_t inline_hit_counts[dory_jit_tlb_access_count];
+    uint64_t miss_counts[dory_jit_tlb_access_count];
+    uint64_t fill_counts[dory_jit_tlb_access_count];
+    uint64_t page_fault_counts[dory_jit_tlb_access_count];
+    uint64_t fallback_counts[dory_jit_tlb_access_count];
 };
 
 _Static_assert(sizeof(dory_jit_tlb_entry) == 16, "JIT TLB entries must remain two words");
@@ -101,6 +106,34 @@ dory_jit_tlb_entry *dory_jit_tlb_entries(
     }
     return tlb->entries + ((size_t)access * tlb->entry_count);
 }
+
+uint64_t *dory_jit_tlb_inline_hit_counter(
+    dory_jit_tlb *tlb,
+    dory_jit_tlb_access access
+) {
+    if (tlb == NULL || tlb->magic != dory_jit_tlb_magic ||
+        !dory_jit_tlb_access_is_valid(access)) {
+        return NULL;
+    }
+    return &tlb->inline_hit_counts[access];
+}
+
+#define DORY_JIT_TLB_COUNTER_GETTER(name, field) \
+    uint64_t name(const dory_jit_tlb *tlb, dory_jit_tlb_access access) { \
+        if (tlb == NULL || tlb->magic != dory_jit_tlb_magic || \
+            !dory_jit_tlb_access_is_valid(access)) { \
+            return 0; \
+        } \
+        return tlb->field[access]; \
+    }
+
+DORY_JIT_TLB_COUNTER_GETTER(dory_jit_tlb_inline_hit_count, inline_hit_counts)
+DORY_JIT_TLB_COUNTER_GETTER(dory_jit_tlb_miss_count, miss_counts)
+DORY_JIT_TLB_COUNTER_GETTER(dory_jit_tlb_fill_count, fill_counts)
+DORY_JIT_TLB_COUNTER_GETTER(dory_jit_tlb_page_fault_count, page_fault_counts)
+DORY_JIT_TLB_COUNTER_GETTER(dory_jit_tlb_fallback_count, fallback_counts)
+
+#undef DORY_JIT_TLB_COUNTER_GETTER
 
 int dory_jit_tlb_lookup(
     const dory_jit_tlb *tlb,
@@ -183,6 +216,7 @@ int dory_jit_tlb_resolve(
         return EINVAL;
     }
     if ((uint64_t)byte_count > UINT64_C(4096) - (linear_address & UINT64_C(4095))) {
+        tlb->fallback_counts[access]++;
         resolution_out->status = DORY_JIT_TLB_RESOLUTION_FALLBACK;
         return 0;
     }
@@ -195,6 +229,7 @@ int dory_jit_tlb_resolve(
         &host_address
     );
     if (lookup == 0) {
+        tlb->inline_hit_counts[access]++;
         resolution_out->host_address = host_address;
         resolution_out->status = DORY_JIT_TLB_RESOLUTION_HIT;
         return 0;
@@ -202,6 +237,7 @@ int dory_jit_tlb_resolve(
     if (lookup != ENOENT) {
         return lookup;
     }
+    tlb->miss_counts[access]++;
 
     uint64_t host_address_space_offset = 0;
     uint64_t fault_address = 0;
@@ -216,6 +252,7 @@ int dory_jit_tlb_resolve(
         &fault_error_code
     );
     if (translation == DORY_JIT_TLB_RESOLUTION_PAGE_FAULT) {
+        tlb->page_fault_counts[access]++;
         resolution_out->fault_address = fault_address;
         resolution_out->fault_error_code = fault_error_code;
         resolution_out->status = DORY_JIT_TLB_RESOLUTION_PAGE_FAULT;
@@ -225,6 +262,7 @@ int dory_jit_tlb_resolve(
         host_address_space_offset > host_address_space_byte_count ||
         (uint64_t)byte_count > host_address_space_byte_count - host_address_space_offset ||
         host_address_space_base > UINT64_MAX - host_address_space_offset) {
+        tlb->fallback_counts[access]++;
         resolution_out->status = DORY_JIT_TLB_RESOLUTION_FALLBACK;
         return 0;
     }
@@ -233,6 +271,7 @@ int dory_jit_tlb_resolve(
     if (fill != 0) {
         return fill;
     }
+    tlb->fill_counts[access]++;
     resolution_out->host_address = host_address;
     resolution_out->status = DORY_JIT_TLB_RESOLUTION_FILLED;
     return 0;

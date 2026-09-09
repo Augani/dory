@@ -173,6 +173,10 @@ import Testing
         memory: translated
       ) == .hit(hostAddress: physical.hostAddressSpaceBase + 0x4_127))
     #expect(paging.diagnostics.translationRequests == 1)
+    #expect(tlb.diagnostics.hits == 1)
+    #expect(tlb.diagnostics.misses == 1)
+    #expect(tlb.diagnostics.fills == 1)
+    #expect(tlb.diagnostics.hitRate == 0.5)
   }
 
   @Test func cSlowPathReturnsExactPageFaultAndRetriesAfterMappingAppears() throws {
@@ -213,6 +217,9 @@ import Testing
     #expect(paging.diagnostics.translationRequests == 2)
     #expect(try physical.readScalar(at: 0x1_000, byteCount: 8) & (1 << 5) != 0)
     #expect(try physical.readScalar(at: 0x4_000, byteCount: 8) & (1 << 5) != 0)
+    #expect(tlb.diagnostics.misses == 2)
+    #expect(tlb.diagnostics.fills == 1)
+    #expect(tlb.diagnostics.pageFaults == 1)
   }
 
   @Test func cSlowPathDeclinesCrossPageAndOutOfReservationSpansBeforeCaching() throws {
@@ -245,6 +252,8 @@ import Testing
     #expect(paging.diagnostics.translationRequests == 1)
     #expect(
       try tlb.lookup(linearAddress: 0x2_000, addressSpaceGeneration: 1, access: .read) == nil)
+    #expect(tlb.diagnostics.misses == 1)
+    #expect(tlb.diagnostics.fallbacks == 2)
   }
 
   @Test func cSlowPathUsesSparseHostOffsetRatherThanCompactPhysicalOffset() throws {

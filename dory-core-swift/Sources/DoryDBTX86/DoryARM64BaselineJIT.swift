@@ -81,6 +81,7 @@ public struct DoryARM64BaselineEmitter: Sendable {
   private static let tlbEntryMaskOffset = 31 * 8
   private static let tlbAddressSpaceGenerationOffset = 32 * 8
   private static let tlbResolverOffset = 35 * 8
+  private static let readTLBHitCounterOffset = 36 * 8
   private static let rspOffset = 4 * 8
   private static let pushedRFLAGSImageMask =
     ~(DoryX86RFLAGS.resume.rawValue | DoryX86RFLAGS.virtual8086.rawValue)
@@ -1688,6 +1689,11 @@ public struct DoryARM64BaselineEmitter: Sendable {
     let missBranch = words.count
     words.append(0)
 
+    words.append(
+      encodeLoad64(register: 16, base: 19, byteOffset: Self.readTLBHitCounterOffset))
+    words.append(encodeLoad64(register: 14, base: 16, byteOffset: 0))
+    words.append(encodeAddImmediate64(left: 14, immediate: 1, destination: 14))
+    words.append(encodeStore64(register: 14, base: 16, byteOffset: 0))
     words.append(encodeAdd(is64Bit: true, left: addressRegister, right: 17, destination: 13))
     words.append(encodeDirectLoad(width: width, register: resultRegister, base: 13))
     let hitDoneBranch = words.count
@@ -3349,7 +3355,8 @@ public final class DoryJITExecutableRegion: @unchecked Sendable {
   public static let hostAddressSpaceByteCountWordIndex = 33
   public static let tlbStorageWordIndex = 34
   public static let tlbResolverWordIndex = 35
-  public static let contextWordCount = 36
+  public static let readTLBHitCounterWordIndex = 36
+  public static let contextWordCount = 37
 
   private let lock = NSLock()
   private let region: OpaquePointer
@@ -3608,6 +3615,12 @@ public struct DoryARM64BaselineExecutorDiagnostics: Sendable, Hashable {
   public let translationCacheAllocatedBytes: UInt64
   public let translationCacheAddressSpaceGeneration: UInt64
   public let translationCacheInvalidations: UInt64
+  public let translationCacheHits: UInt64
+  public let translationCacheMisses: UInt64
+  public let translationCacheFills: UInt64
+  public let translationCachePageFaults: UInt64
+  public let translationCacheFallbacks: UInt64
+  public let translationCacheHitRate: Double
 }
 
 struct DoryARM64NativeBatchExecution: Sendable, Hashable {
@@ -3827,6 +3840,7 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   }
   public var diagnostics: DoryARM64BaselineExecutorDiagnostics {
     lock.withLock {
+      let tlbDiagnostics = translationTLB.diagnostics
       let negativeCacheHotSites = negativeEntries.compactMap { entry in
         guard let entry, entry.hitCount > 0 else { return nil }
         let lookup = entry.key.lookupKey
@@ -3868,7 +3882,13 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
         translationCacheEntryCount: UInt64(translationTLB.entryCount),
         translationCacheAllocatedBytes: UInt64(translationTLB.allocatedByteCount),
         translationCacheAddressSpaceGeneration: translationTLBGeneration,
-        translationCacheInvalidations: translationTLBInvalidationCount
+        translationCacheInvalidations: translationTLBInvalidationCount,
+        translationCacheHits: tlbDiagnostics.hits,
+        translationCacheMisses: tlbDiagnostics.misses,
+        translationCacheFills: tlbDiagnostics.fills,
+        translationCachePageFaults: tlbDiagnostics.pageFaults,
+        translationCacheFallbacks: tlbDiagnostics.fallbacks,
+        translationCacheHitRate: tlbDiagnostics.hitRate
       )
     }
   }
@@ -5084,6 +5104,8 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
     context[DoryJITExecutableRegion.tlbStorageWordIndex] = translationTLB?.storageAddress ?? 0
     context[DoryJITExecutableRegion.tlbResolverWordIndex] =
       translationTLB == nil ? 0 : UInt64(dory_jit_tlb_resolve_from_context_address())
+    context[DoryJITExecutableRegion.readTLBHitCounterWordIndex] =
+      translationTLB?.inlineHitCounterAddress(for: .read) ?? 0
   }
 
   private static func apply(

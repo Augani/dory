@@ -28,6 +28,20 @@ public enum DoryX86JITTLBResolution: Sendable, Hashable {
   case fallback
 }
 
+public struct DoryX86JITTLBDiagnostics: Sendable, Hashable {
+  public let hits: UInt64
+  public let misses: UInt64
+  public let fills: UInt64
+  public let pageFaults: UInt64
+  public let fallbacks: UInt64
+
+  public var hitRate: Double {
+    let lookups = hits.addingReportingOverflow(misses)
+    let denominator = lookups.overflow ? UInt64.max : lookups.partialValue
+    return denominator == 0 ? 0 : Double(hits) / Double(denominator)
+  }
+}
+
 /// Per-vCPU direct-mapped translation storage shared by generated code and its slow path.
 ///
 /// Each access class owns a distinct power-of-two array. An entry is exactly two words: an exact
@@ -74,6 +88,34 @@ public final class DoryX86JITTLB: @unchecked Sendable {
   public func entriesBaseAddress(for access: DoryX86JITTLBAccess) -> UInt64 {
     guard let pointer = dory_jit_tlb_entries(storage, access.runtimeValue) else { return 0 }
     return UInt64(UInt(bitPattern: pointer))
+  }
+
+  func inlineHitCounterAddress(for access: DoryX86JITTLBAccess) -> UInt64 {
+    guard let pointer = dory_jit_tlb_inline_hit_counter(storage, access.runtimeValue) else {
+      return 0
+    }
+    return UInt64(UInt(bitPattern: pointer))
+  }
+
+  public var diagnostics: DoryX86JITTLBDiagnostics {
+    let accesses = DoryX86JITTLBAccess.allCases
+    return .init(
+      hits: accesses.reduce(0) {
+        $0 &+ dory_jit_tlb_inline_hit_count(storage, $1.runtimeValue)
+      },
+      misses: accesses.reduce(0) {
+        $0 &+ dory_jit_tlb_miss_count(storage, $1.runtimeValue)
+      },
+      fills: accesses.reduce(0) {
+        $0 &+ dory_jit_tlb_fill_count(storage, $1.runtimeValue)
+      },
+      pageFaults: accesses.reduce(0) {
+        $0 &+ dory_jit_tlb_page_fault_count(storage, $1.runtimeValue)
+      },
+      fallbacks: accesses.reduce(0) {
+        $0 &+ dory_jit_tlb_fallback_count(storage, $1.runtimeValue)
+      }
+    )
   }
 
   public func lookup(

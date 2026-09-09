@@ -61,6 +61,30 @@ dory_jit_tlb_entry *dory_jit_tlb_entries(
     dory_jit_tlb *tlb,
     dory_jit_tlb_access access
 );
+uint64_t *dory_jit_tlb_inline_hit_counter(
+    dory_jit_tlb *tlb,
+    dory_jit_tlb_access access
+);
+uint64_t dory_jit_tlb_inline_hit_count(
+    const dory_jit_tlb *tlb,
+    dory_jit_tlb_access access
+);
+uint64_t dory_jit_tlb_miss_count(
+    const dory_jit_tlb *tlb,
+    dory_jit_tlb_access access
+);
+uint64_t dory_jit_tlb_fill_count(
+    const dory_jit_tlb *tlb,
+    dory_jit_tlb_access access
+);
+uint64_t dory_jit_tlb_page_fault_count(
+    const dory_jit_tlb *tlb,
+    dory_jit_tlb_access access
+);
+uint64_t dory_jit_tlb_fallback_count(
+    const dory_jit_tlb *tlb,
+    dory_jit_tlb_access access
+);
 int dory_jit_tlb_lookup(
     const dory_jit_tlb *tlb,
     dory_jit_tlb_access access,
