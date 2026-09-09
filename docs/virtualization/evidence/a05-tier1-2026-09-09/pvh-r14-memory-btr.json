@@ -1,0 +1,137 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.a05-tier1-pvh-r14-memory-btr",
+  "observedAt": "2026-09-09T20:21:48Z",
+  "status": "engineering-evidence",
+  "qualification": "local pinned-fixture correctness and production-admission evidence; not hardware, cross-host, G1-G5, or release qualification",
+  "source": {
+    "candidateCommit": "0972df56de282bb22e532adb4180a38320142c60",
+    "candidateRunnerSHA256": "fc39940d6e5d2305fa94c30ae9d88ea0161c46a46430458d26d1f1b6e4889c42",
+    "buildConfiguration": "release"
+  },
+  "host": {
+    "architecture": "arm64",
+    "processor": "Apple M2 Pro",
+    "operatingSystem": "macOS 27.0 (26A5425a)",
+    "xcode": "26.6 (17F109)"
+  },
+  "fixture": {
+    "catalogID": "alpine-virt-3.24.1-x86_64",
+    "kernelSHA256": "e48a2de81362198d41bcac5519c6ae2d8f19e056aec4763fa590d000abf348d8",
+    "initrdSHA256": "22bdcf6331ac87da9fb427037086c9b9b77a4d1ac277e6f2891e2c83adac2249",
+    "systemMapSHA256": "a1909638842396ba3c5acfb88c47678be3c808c7278d04c71241e4ab6935288a",
+    "memoryMiB": 512,
+    "executionTier": "baseline-jit",
+    "tier1Enabled": true,
+    "guestClock": "deterministic"
+  },
+  "admission": {
+    "measuredSite": {
+      "guestRIP": "0xffffffff81681078",
+      "instruction": "btrq %r14,(%rax)",
+      "bytes": "4c 0f b3 30",
+      "priorNegativeCacheHits": 1661,
+      "remainsInCandidateRunNegativeCache": false
+    },
+    "boundedRule": "Tier one admits only the exact four-byte, one-instruction RAX-based memory BTR at the measured fixture RIP with R14 as its bit index. The same operation at an adjacent RIP declines.",
+    "matcherHardening": "The older measured RCX-indexed BTR matcher now also requires its exact four-byte, one-instruction, one-statement RAX-base shape.",
+    "transactionality": "The signed bit-string path performs one replay-safe qword read and one final transactional write. CF and memory publish only after the write commits.",
+    "deferred": "Every other R14-indexed or unmeasured memory BTR remains interpreter-owned."
+  },
+  "verification": {
+    "focusedGate": "Both measured memory-BTR tests pass.",
+    "dbtAndPCGate": "1,452 tests in 171 suites passed; the pinned PVH environment test skipped because its environment variables were absent.",
+    "differentialCoverage": "Signed indexes 0, 64, and -1 and both selected-bit states match the interpreter exactly in architectural state and memory; the older RCX matrix covers 0, 63, 64, -1, and -65 plus failed-write rollback.",
+    "negativeCoverage": "The identical R14 encoding at the adjacent RIP declines.",
+    "inputHashesReverifiedByRunner": true
+  },
+  "successfulFullRun": {
+    "runID": "a80c8d4c-a0d4-4600-b99f-dbc4f2c65728",
+    "maximumInstructions": 1000000000,
+    "wallSeconds": 600,
+    "elapsedNanoseconds": 143326298833,
+    "retiredInstructions": 734029357,
+    "throughputMIPS": 5.121,
+    "outcome": "userspace-workloads-powered-off",
+    "exitCode": 0,
+    "guestReceiptSeen": true,
+    "workloadsPassed": true,
+    "workloads": [
+      "bootstrap.filesystems",
+      "filesystem.write_read_sync",
+      "memory.allocation_copy",
+      "process.creation_exec_wait",
+      "signal.handler_return",
+      "syscall.identity",
+      "timer.sleep_elapsed"
+    ],
+    "consoleBytes": 19246,
+    "baselineJITInstructions": 731302599,
+    "interpreterInstructions": 2726758,
+    "deliveredMaskableInterrupts": 57994,
+    "retiredInterruptReturns": 146222,
+    "byteValidationHits": 72291,
+    "codeGenerationMismatches": 78132,
+    "sharedCodeHits": 114537,
+    "compiledBlocks": 185696,
+    "tier1CompilationAttempts": 226462,
+    "tier1CompilationDeclines": 127757,
+    "tier1DeclinePercentOfAttempts": 56.414321166465015,
+    "tier1CompiledBlocks": 98705,
+    "lazyFlagMaterializations": 59550803,
+    "translationCacheInvalidations": 241133
+  },
+  "unmatchedPriorRunComparison": {
+    "printkMemorySetEqualElapsedNanoseconds": 142007143875,
+    "r14MemoryBitResetElapsedNanoseconds": 143326298833,
+    "directionalElapsedIncreasePercent": 0.9289356309856985,
+    "tier1DeclineIncrease": 1754,
+    "interpreterInstructionReduction": 6824,
+    "interpretation": "The candidate produced 2,227 more tier-one attempts and different interrupt, cache, trace, address-space, and instruction totals. The elapsed and decline differences are reported for completeness and are not a performance claim."
+  },
+  "nextVisibleKernelSites": [
+    {
+      "guestRIP": "0xffffffff810017e8",
+      "instruction": "iretq",
+      "guestByteCount": 2,
+      "largestSingleAddressSpaceHitCount": 10282,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff81e35772",
+      "instruction": "rep movsq",
+      "guestByteCount": 3,
+      "hitCount": 9633,
+      "declineReason": "interpreterHelper"
+    },
+    {
+      "guestRIP": "0xffffffff815cc28b",
+      "symbol": "free_frozen_page_commit+0x2b",
+      "instruction": "shrb 0x19(%rsi)",
+      "guestByteCount": 3,
+      "hitCount": 5042,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff81e1b3a0",
+      "instruction": "btq %rcx,(%rax); jae",
+      "guestByteCount": 6,
+      "hitCount": 4517,
+      "declineReason": "nativeEmitter"
+    },
+    {
+      "guestRIP": "0xffffffff81723a8c",
+      "symbol": "__kernfs_remove.part.0+0x2c",
+      "instruction": "orw $0x4000,0x3c(%rbx)",
+      "guestByteCount": 6,
+      "hitCount": 2124,
+      "declineReason": "nativeEmitter"
+    }
+  ],
+  "interpretation": "The measured R14 memory-BTR site is absent from the retained negative-cache sample and the authenticated workload completes. A05.2 remains open because 127,757 of 226,462 full-run tier-one attempts still decline.",
+  "limitations": [
+    "The complete workload evidence contains one candidate run on one local Apple M2 Pro.",
+    "The negative-cache sampler is capped and proves absence only from the retained visible list.",
+    "This evidence establishes no statistical performance delta and does not satisfy G1-G5."
+  ]
+}
