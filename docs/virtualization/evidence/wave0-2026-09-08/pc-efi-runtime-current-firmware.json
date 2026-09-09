@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 1,
+  "kind": "dev.dory.pc-efi-runtime-current-firmware",
+  "observedAt": "2026-09-09",
+  "qualification": "local development evidence; not signed release qualification",
+  "diagnosis": {
+    "classification": "stale-produced-firmware-not-engine-regression",
+    "historicalFaultAddress": "0x3fdc3743",
+    "historicalPointerOwner": "DXE Core CoreEfiNotAvailableYetArg* stub in BootServicesCode",
+    "historicalFirmwareSHA256": "461cc0af580f1cfc91c944250950f18ea151c70e2d12e34739ad1ec38c47f4ca",
+    "historicalBuildIdentifier": "dory-pc-v1-fcd59c46737fa5837e0a",
+    "historicalPlatformConfigurationSHA256": "c67a234dc6a0327b769a86a1358bc0307900182701bb395684d990517ae2c00f",
+    "sourceFixCommit": "c8bfc2b0ff19fe21c1d8bef12932e8f91179201b",
+    "sourceFixWasAncestorOfMeasuredHead": true,
+    "bisectDisposition": "The 051c97f25 reference and current source both contain c8bfc2b0ff. The failing fixture instead used a firmware bundle produced before that fix, so a source-code bisect between those revisions would not hold the fixture constant and could not identify the fault.",
+    "semanticLayerDisposition": "No x86 paging, fetch, or TLB semantic defect was found. Linux correctly rejected execution from a BootServicesCode page omitted from the EFI runtime map."
+  },
+  "currentFirmware": {
+    "sourceCommit": "9dc46de3aa2e9e53c62d58272acf9b4d67577b24",
+    "edk2Revision": "2970e5699ba6267f3384ffab20f96647578aebc8",
+    "buildIdentifier": "dory-pc-v1-179de597cd4b5b9a4f8f",
+    "firmwareCodeSHA256": "ff6889e9d5491674918edf4fe3f8f61d1cded759f9c00ccc121bd77fe1b040fe",
+    "platformConfigurationSHA256": "2ff7547939446f10d4ad5e625a5af0781becb48f2f12d58eac0a5bc84880a76f",
+    "buildResult": "clean pinned EDK2 build completed"
+  },
+  "optimizingJITFirmwareProbe": {
+    "runnerSHA256": "04ea5b2b913dc19ff7cbce6c3123a4bf78d5876b8d3fe79f7c7cfb8f61832a8f",
+    "completedInstructions": 55010421,
+    "executionElapsedNanoseconds": 10264414125,
+    "stop": "poweredOff(instructionCount: 55010421)",
+    "serialMarker": "DORY-PC-UEFI-BOOT",
+    "serialMarkerObserved": true,
+    "runtimePointers": [
+      {
+        "service": "GetVariable",
+        "address": "0x000000003f7f6072",
+        "memoryType": 5,
+        "attributes": "0x800000000000000f"
+      },
+      {
+        "service": "SetVariable",
+        "address": "0x000000003f7f64ec",
+        "memoryType": 5,
+        "attributes": "0x800000000000000f"
+      },
+      {
+        "service": "GetNextVariableName",
+        "address": "0x000000003f7f6165",
+        "memoryType": 5,
+        "attributes": "0x800000000000000f"
+      },
+      {
+        "service": "QueryVariableInfo",
+        "address": "0x000000003f7f6707",
+        "memoryType": 5,
+        "attributes": "0x800000000000000f"
+      }
+    ]
+  },
+  "kaslrBoot": {
+    "executionTier": "optimizing-jit",
+    "clockSource": "host-monotonic",
+    "runnerSHA256": "04ea5b2b913dc19ff7cbce6c3123a4bf78d5876b8d3fe79f7c7cfb8f61832a8f",
+    "installerMediaSHA256": "b98b737b7fd14a1cf2bdd52889be6809bc0065ac567b9173d354fc7b05a887eb",
+    "pristineSystemDiskSHA256": "d851c88763032f2b6169c2427f88c2d971b9ca93b8ec2e3800939bf0c6c063b9",
+    "kernelCommandLineControl": "unmodified; KASLR enabled; efi=debug absent",
+    "timeoutSeconds": 720,
+    "completedInstructions": 4101159990,
+    "timedOutAfterAcceptanceMilestone": true,
+    "tripleFaultObserved": false,
+    "bootTimelineNanoseconds": {
+      "executionStarted": 0,
+      "grub": 11253680417,
+      "kernel": 151705247209,
+      "rootMounted": 523635641417,
+      "initStarted": 606732216167
+    },
+    "serialAcceptanceLine": "Run /sbin/init as init process"
+  },
+  "interpreterControl": {
+    "executionTier": "interpreter",
+    "completedInstructions": 100000000,
+    "executionElapsedNanoseconds": 172180771792,
+    "stop": "instructionBudget(100000000)",
+    "timedOut": false,
+    "faultObserved": false,
+    "bootProbeMarkerObserved": false,
+    "classification": "censored before firmware boot-probe completion",
+    "interpretation": "This is bounded interpreter coverage only. Retained tier evidence already shows the interpreter still in GRUB after two hours; no full interpreter Linux boot is claimed."
+  },
+  "regressionGuards": {
+    "commits": [
+      "bcd907b5d",
+      "650b7afc7"
+    ],
+    "inventoryBehavior": "PC firmware is incomplete unless its manifest build identifier equals the canonical identifier derived from every DoryPC platform and patch input.",
+    "firmwareBuildContract": [
+      "DoryVariableRuntimeDxe is excluded from DXE APRIORI",
+      "DoryVariableRuntimeDxe depends on gEfiCpuArchProtocolGuid",
+      "runtime MMIO preserves existing GCD attributes and adds EFI_MEMORY_RUNTIME"
+    ],
+    "focusedTests": "11 passed"
+  },
+  "historicalEvidence": [
+    "docs/virtualization/evidence/p06-pc-2026-09-05/efi-runtime-pointer-ownership.json",
+    "docs/virtualization/evidence/p06-pc-2026-09-05/efi-variable-driver-initialization.json",
+    "docs/virtualization/evidence/p06-pc-2026-09-06/tier-comparison-rpcdiag.json",
+    "docs/virtualization/evidence/wave0-2026-09-08/pc-boot-timeline/unmodified-strict-control/receipt.json"
+  ],
+  "limitations": [
+    "The 720-second run was deliberately deadline-censored after the init acceptance milestone; it does not claim guest-agent bind or RPC.",
+    "The interpreter control did not reach the firmware-owned boot-probe marker within 100 million instructions.",
+    "The current firmware bundle was locally built and is not a signed or notarized release candidate."
+  ]
+}

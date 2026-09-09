@@ -26,15 +26,11 @@
       "status": "available-file"
     },
     {
-      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-boot-timeline/efi-debug-only/receipt.json",
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-boot-timeline/unmodified-strict-control/receipt.json",
       "status": "available-file"
     },
     {
-      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-boot-timeline/measurement.json",
-      "status": "available-file"
-    },
-    {
-      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-boot-timeline/nokaslr-only/receipt.json",
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-efi-runtime-current-firmware.json",
       "status": "available-file"
     },
     {
@@ -173,21 +169,7 @@
       "admission": "historical-only",
       "attachments": [],
       "commitBindings": [],
-      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-boot-timeline/efi-debug-only/receipt.json",
-      "receiptReferences": [],
-      "status": "preserved-document"
-    },
-    {
-      "admission": "historical-only",
-      "attachments": [],
-      "commitBindings": [
-        {
-          "label": "sourceCommit",
-          "status": "reachable",
-          "value": "f38c4033a57c7aae49e5a0c4b476f1e0048bbfa2"
-        }
-      ],
-      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-boot-timeline/measurement.json",
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-boot-timeline/unmodified-strict-control/receipt.json",
       "receiptReferences": [],
       "status": "preserved-document"
     },
@@ -195,7 +177,7 @@
       "admission": "historical-only",
       "attachments": [],
       "commitBindings": [],
-      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-boot-timeline/nokaslr-only/receipt.json",
+      "path": "docs/virtualization/evidence/wave0-2026-09-08/pc-efi-runtime-current-firmware.json",
       "receiptReferences": [],
       "status": "preserved-document"
     },
@@ -248,7 +230,7 @@
     "docs/virtualization/evidence/p05-arm-2026-09-05/actual-manager-desktop-installer-detach-cold-reopen.json"
   ],
   "kind": "dory.plan-evidence-audit",
-  "planSHA256": "5b4ac322ed77fb2ab8de173e3090b54b03ffb9d9e58c64da60d01f5bf938db4f",
+  "planSHA256": "cd0ab9ea1091a59e8f695e4c3ac896837c26be4ed9b276e2cc8d2900c346fbf2",
   "qualificationBlockingDocuments": [],
   "reacquisitionOnlyDocuments": [
     "docs/virtualization/evidence/p05-arm-2026-09-05/actual-manager-desktop-installer-detach-cold-reopen.json",
