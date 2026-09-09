@@ -924,6 +924,71 @@ import Testing
     #endif
   }
 
+  @Test func chainedExecutionMaterializesFlagsBeforeLegacyResident() throws {
+    #if arch(arm64)
+      let firstAddress: UInt64 = 0x5200
+      let secondAddress: UInt64 = 0x5210
+      let storedAddress: UInt64 = 0x5230
+      let first: [UInt8] = [
+        0x48, 0x01, 0xD8,  // add rax,rbx
+        0xEB, 0x0B,  // jmp 0x5210
+      ]
+      let second: [UInt8] = [
+        0x48, 0x11, 0x15, 0x19, 0x00, 0x00, 0x00,  // adc [rip+0x19],rdx
+      ]
+      let initial = try DoryX86ArchitecturalState(
+        registers: .init(rax: .max, rdx: 7, rbx: 1),
+        rip: firstAddress,
+        rflags: [.reservedOne, .direction]
+      )
+      let memory = try DoryX86ByteArrayMemory(byteCount: 0x5300)
+      try memory.write(at: firstAddress, bytes: first)
+      try memory.write(at: secondAddress, bytes: second)
+      try memory.writeScalar(at: storedAddress, value: 5, byteCount: 8)
+      var interpreted = initial
+      for _ in 0..<3 {
+        guard case .retired = DoryX86Interpreter().step(
+          state: &interpreted,
+          memory: memory,
+          mode: .long64
+        ) else {
+          Issue.record("interpreter did not retire mixed-tier lazy-flags fixture")
+          return
+        }
+      }
+      try memory.writeScalar(at: storedAddress, value: 5, byteCount: 8)
+
+      var tiered = initial
+      let executor = try DoryARM64BaselineExecutor(
+        maximumCodeBytes: 16 * 1024,
+        tier1Enabled: true
+      )
+      let summary = try #require(executor.executeChainedSummary(
+        byteProvider: { rip, count in
+          try memory.instructionBytes(at: rip, maximumCount: count)
+        },
+        at: firstAddress,
+        mode: .long64,
+        addressSpaceID: 0,
+        maximumInstructions: 3,
+        state: &tiered,
+        memory: memory
+      ))
+
+      #expect(summary.guestInstructionCount == 3)
+      #expect(summary.residentBlockCount == 2)
+      #expect(tiered == interpreted)
+      #expect(tiered.rip == secondAddress + UInt64(second.count))
+      #expect(try memory.read(at: storedAddress, byteCount: 8) == [
+        0x0D, 0, 0, 0, 0, 0, 0, 0,
+      ])
+      #expect(executor.diagnostics.tier1CompilationAttempts == 2)
+      #expect(executor.diagnostics.tier1CompilationDeclines == 1)
+      #expect(executor.diagnostics.tier1CompiledBlocks == 1)
+      #expect(executor.diagnostics.lazyFlagMaterializations == 1)
+    #endif
+  }
+
   @Test func loadFlagsIntoAHMaterializesThePendingTier1Producer() throws {
     #if arch(arm64)
       let address: UInt64 = 0x5800

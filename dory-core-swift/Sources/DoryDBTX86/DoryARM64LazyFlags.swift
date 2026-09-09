@@ -262,16 +262,14 @@ struct DoryARM64LazyFlagsState: Sendable, Equatable {
   }
 }
 
-@_cdecl("dory_arm64_materialize_lazy_flags_context")
-private func doryARM64MaterializeLazyFlagsContext(
-  _ context: UnsafeMutablePointer<UInt64>?
+/// Materializes a pending tier-one descriptor in place before code that only understands the
+/// architectural RFLAGS context word executes. Generated tier-one consumers call the C thunk
+/// below; the executor uses this Swift entry point at a tier-one-to-legacy chain boundary.
+@discardableResult
+func doryARM64MaterializeLazyFlagsContext(
+  _ context: UnsafeMutableBufferPointer<UInt64>
 ) -> UInt64 {
-  guard let context else { return DoryX86RFLAGS.reservedOne.rawValue }
-  let buffer = UnsafeBufferPointer(
-    start: context,
-    count: DoryARM64Tier1ABI.contextWordCount
-  )
-  guard let pending = DoryARM64LazyFlagsState(context: buffer) else {
+  guard let pending = DoryARM64LazyFlagsState(context: context) else {
     return context[DoryARM64Tier1ABI.ContextWord.rflags.rawValue]
   }
   guard pending.operation != .materialized else { return pending.materialize().rawValue }
@@ -289,8 +287,20 @@ private func doryARM64MaterializeLazyFlagsContext(
   return materialized
 }
 
+@_cdecl("dory_arm64_materialize_lazy_flags_context")
+private func doryARM64MaterializeLazyFlagsContextC(
+  _ context: UnsafeMutablePointer<UInt64>?
+) -> UInt64 {
+  guard let context else { return DoryX86RFLAGS.reservedOne.rawValue }
+  return doryARM64MaterializeLazyFlagsContext(
+    UnsafeMutableBufferPointer(
+      start: context,
+      count: DoryARM64Tier1ABI.contextWordCount
+    ))
+}
+
 func doryARM64LazyFlagsMaterializerAddress() -> UInt64 {
   let materializer: @convention(c) (UnsafeMutablePointer<UInt64>?) -> UInt64 =
-    doryARM64MaterializeLazyFlagsContext
+    doryARM64MaterializeLazyFlagsContextC
   return UInt64(unsafeBitCast(materializer, to: UInt.self))
 }

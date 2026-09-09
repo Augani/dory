@@ -95,6 +95,12 @@ Interpreter, exception, interrupt, and code-cache exits must publish the precise
 RIP of the next instruction to execute. A direct chain publishes nothing solely
 for the chain; its target consumes the pinned state.
 
+The Swift dispatcher also materializes a pending tier-1 record before entering a
+legacy baseline or optimizing resident in the same chain. Those emitters consume
+only the architectural RFLAGS context word and cannot safely inherit the private
+descriptor. Recorded native traces are therefore homogeneous by compilation tier;
+trace replay cannot skip this tier-transition boundary.
+
 ## Native flags producers and fusion
 
 `DoryARM64Tier1ALUEmitter` emits pinned-register ADD/ADC/SUB/SBB/CMP,

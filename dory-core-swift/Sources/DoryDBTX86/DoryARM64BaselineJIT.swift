@@ -5126,6 +5126,14 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
               {
                 publishNativeTrace(newTrace, for: traceKey, if: true)
                 recordsTrace = false
+              } else if let recordedTier = newTrace.first?.resident.block.tier,
+                resident.block.tier != recordedTier
+              {
+                // A batch replay has no Swift boundary between entries. Keep traces within one
+                // compiler ABI so a tier-one lazy-flags producer cannot flow directly into legacy
+                // code that only reads the materialized RFLAGS word.
+                publishNativeTrace(newTrace, for: traceKey, if: true)
+                recordsTrace = false
               } else {
                 newTrace.append(
                   .init(
@@ -5150,6 +5158,20 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
                 tier: resident.block.tier,
                 exitCode: .dispatch
               )
+            }
+
+            // Tier-one blocks retain a deferred arithmetic-flags descriptor across native block
+            // boundaries. Legacy baseline and optimizing blocks know only context word 17, so
+            // resolve that descriptor before they can consume or preserve architectural flags.
+            // The materializer increments the per-dispatch counter collected after execution.
+            if resident.block.tier != .tier1,
+              context[DoryARM64Tier1ABI.ContextWord.lazyFlagsOperation.rawValue] & 0xFF
+                != DoryARM64LazyFlagsState.Operation.materialized.rawValue
+            {
+              doryARM64MaterializeLazyFlagsContext(context)
+              // Checkpointed legacy blocks may roll their context back. Collect the transition
+              // now so the counter itself is not restored and counted a second time.
+              recordLazyFlagMaterializations(in: context)
             }
 
             let hasCheckpoint =
@@ -5993,7 +6015,10 @@ public final class DoryARM64BaselineExecutor: @unchecked Sendable {
   ) {
     guard shouldPublish, entries.count >= 2,
       entries.count <= Self.maximumRecordedNativeTraceBlocks,
-      entries.allSatisfy({ $0.codeCacheEpoch == codeCacheEpoch })
+      let tier = entries.first?.resident.block.tier,
+      entries.allSatisfy({
+        $0.codeCacheEpoch == codeCacheEpoch && $0.resident.block.tier == tier
+      })
     else { return }
     var validations: [NativeTraceValidation] = []
     var seenValidations = Set<NativeTraceValidation>()
